@@ -832,8 +832,12 @@ async def test_kill_child_terminates_running_process() -> None:
 
 async def test_kill_child_already_exited() -> None:
     child = _make_child()
-    child.process = _proc(FakeProcess(returncode=0))
+    proc = FakeProcess(returncode=0)
+    child.process = _proc(proc)
     await _kill_child(child)
+    # The already-exited child took the early return: no signal reached it.
+    # A _kill_child that signals before checking the returncode turns this red.
+    assert proc._signals == []
 
 
 async def test_kill_child_none_process() -> None:
@@ -857,8 +861,18 @@ def _reader(payload: bytes, limit: int = 64) -> asyncio.StreamReader:
 
 
 async def test_stream_output_forwards_lines() -> None:
-    with patch("taskq.worker.workgroup.logger"):
+    with structlog.testing.capture_logs() as captured:
         await _stream_output(_reader(b"line1\nline2\n"), "test", "info")
+    # Both lines forwarded, each as its own info-level child_output event
+    # carrying the exact line and the naming level - a streamer that
+    # dropped, joined or re-levelled the lines turns this red.
+    events = [e for e in captured if e["event"] == "workgroup.child_output"]
+    assert [e["line"] for e in events] == ["line1", "line2"], (
+        f"the forwarded lines are not one event per line in order: {captured!r}"
+    )
+    assert all(e["log_level"] == "info" for e in events), (
+        f"the forwarded lines left at a level other than info: {events!r}"
+    )
 
 
 async def test_stream_output_survives_an_overlong_line() -> None:

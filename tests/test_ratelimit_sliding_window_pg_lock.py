@@ -91,6 +91,7 @@ class _NullSavepoint:
 
 class _ContendedFakeConn:
     """ConnLike stand-in modelling deterministic advisory-lock contention.
+        fail-closed-exempt: the advisory-lock CONTENTION fault injection: the held lock + lock_timeout tier, deterministically
 
     Two-tier shapes: the fast-path ``pg_try_advisory_xact_lock`` returns
     *try_lock_result* (False models a holder owning the bucket lock at

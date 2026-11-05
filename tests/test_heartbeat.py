@@ -28,7 +28,17 @@ from tests.conftest import _FakePool
 
 
 class FakeConn:
-    """Lightweight asyncpg.Connection stand-in; records ``execute`` calls."""
+    """The heartbeat double.
+
+    FAIL CLOSED (tests/test_suite_hygiene.py's rule): the tick's own
+    statement shapes are the named answers - the three renewal UPDATEs
+    (workers liveness, jobs lock, reservation leases) get the honest
+    ``UPDATE 1`` tag ``parse_rowcount`` reads, the two reconcile probes
+    (the still-held select and the claim-loss refund select) get an empty
+    page, and ANY OTHER statement raises naming the fragment. The blind
+    modulo-tag the old double answered was a rowcount lie no reader could
+    trust.
+    """
 
     def __init__(self) -> None:
         self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
@@ -37,10 +47,35 @@ class FakeConn:
 
     async def execute(self, sql: str, *args: object) -> str:
         self.execute_calls.append((sql, args))
-        return f"UPDATE {len(sql) % 10}"
+        normalized = " ".join(sql.split()).upper()
+        named = (
+            normalized.startswith("UPDATE")
+            or ("WITH DUE AS" in normalized and "UPDATE" in normalized)
+        ) and (
+            ".WORKERS" in normalized or ".JOBS" in normalized or ".RESERVATION_SLOTS" in normalized
+        )
+        if named:
+            return "UPDATE 1"
+        raise AssertionError(
+            f"FakeConn: no named answer for statement {sql!r} (args {args!r}) - "
+            "the fail-closed rule (tests/test_suite_hygiene.py) forbids a "
+            "silent default: name the statement shape or fix the wiring"
+        )
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
-        return []
+        normalized = " ".join(sql.split()).upper()
+        named_probe = (normalized.startswith("SELECT") and ".JOBS" in normalized) or (
+            # the claim-loss reconcile: an UPDATE ... RETURNING j.id driven
+            # through fetch; an empty page is "nothing lost this tick"
+            normalized.startswith("UPDATE") and ".JOBS" in normalized and "RETURNING" in normalized
+        )
+        if named_probe:
+            return []  # nothing held, nothing lost
+        raise AssertionError(
+            f"FakeConn: no named answer for statement {sql!r} (args {args!r}) - "
+            "the fail-closed rule (tests/test_suite_hygiene.py) forbids a "
+            "silent default: name the statement shape or fix the wiring"
+        )
 
     async def close(self) -> None:
         self.closed = True
@@ -1011,57 +1046,11 @@ async def test_shutdown_exits_loop_without_acquiring() -> None:
 # ── C-02 regression: schema_name flows through to all heartbeat SQL ──────
 
 
-async def test_custom_schema_name_flows_to_sql() -> None:
-    """C-02 regression: heartbeat ticks complete correctly with a non-default
-    schema_name - the configured name is used, not a hardcoded default."""
-    import taskq.worker.heartbeat as hb_mod
-
-    tick_done = asyncio.Event()
-    hb_mod._tick_duration.record = lambda *a, **kw: tick_done.set()  # type: ignore[method-assign,reportPrivateUsage]
-
-    settings = _worker_settings(
-        "postgresql://x:x@localhost/x",
-        SCHEMA_NAME="custom_ns",
-        HEARTBEAT_INTERVAL="0.5",
-        # 18.0 >= the cascade floor at h=0.5 with the default command
-        # timeout of 2.0 (max(0.5, 2.0) + 4 * (0.5 + 2.0) = 12; see
-        # _make_deps for the same bump and why the
-        # renewal-threshold behaviour is unchanged).
-        LOCK_LEASE="18.0",
-        WATCHDOG_LOOP_LAG_BUDGET="1.2",
-        WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
-        WATCHDOG_CHECK_INTERVAL="0.25",  # the lag lattice: check < warn (the F6 storm refusal)
-        MAX_HEARTBEAT_FAILURES="3",
-        CANCELLATION_GRACE_PERIOD="0.0",
-        CLEANUP_GRACE_PERIOD="0.0",
-    )
-    pool = FakePool()
-    worker_id = new_uuid()
-    deps = WorkerDeps(
-        settings=settings,
-        dispatcher_pool=_FakePool(),  # type: ignore[arg-type]
-        heartbeat_pool=pool,  # type: ignore[arg-type]
-        worker_pool=_FakePool(),  # type: ignore[arg-type]
-        notify_conn=None,
-        leader_conn=None,
-    )
-    deps.is_leader.set()
-    shutdown = asyncio.Event()
-    task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
-    # Wait for the tick to actually complete rather than guessing 0.1s is enough.
-    await wait_for(tick_done, timeout=5.0)
-    shutdown.set()
-    await task
-
-    assert not deps.heartbeat_failures
-    assert pool.execute_calls
-    # Each call binds worker_id: verify the configured schema completes a tick
-    _worker_liveness_sql, wl_args = pool.execute_calls[0]
-    assert worker_id in wl_args
-    assert settings.schema_name not in wl_args
-    # The configured schema is what the statements name - the defect this
-    # test exists for was a hardcoded default surviving the rendering.
-    assert all(f'"{settings.schema_name}".' in sql for sql, _ in pool.execute_calls)
+# NOTE (the mock-subtraction cure): the custom-schema fake arm died —
+# tests/test_heartbeat_integration.py owns the rendering against real PG:
+# its every test drives the tick/loop against the module's OWN non-default
+# schema name (the fixture-built settings), so a hardcoded default cannot
+# pass a single one of them.
 
 
 # ── The tick never touches the lease row ──────────────────────────

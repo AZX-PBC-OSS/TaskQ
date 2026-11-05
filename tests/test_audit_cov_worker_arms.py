@@ -548,24 +548,6 @@ async def _ok_actor(job: Any, ctx: Any) -> object:
     return {"ok": True}
 
 
-# ── the transactional path's KeyboardInterrupt re-raise ─────────────────
-
-
-def test_transactional_keyboard_interrupt_arm_is_defensive_unreachable() -> None:
-    """``KeyboardInterrupt`` keeps operator-intent semantics everywhere.
-    AUDIT CLASSIFICATION (c) — defensive-unreachable through an actor
-    body: a KeyboardInterrupt raised inside the attempt task never reaches
-    the ``except BaseException`` capture at the shielded await —
-    ``Task.__step`` re-raises KI bare into the loop before
-    ``set_exception`` can deliver it (the same mechanism the
-    SystemExit-carrier conversion documents). The capture's KI arm guards
-    a KI the loop delivers into the main coroutine itself; the reachable
-    KI contract (propagate raw, the row stays running for lease-reclaim)
-    is pinned on the autonomous path by
-    tests/test_attempt_baseexception_capture.py.
-    """
-
-
 # ── the transactional success path's state-change publish ───────────────
 
 

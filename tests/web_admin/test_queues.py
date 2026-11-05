@@ -367,7 +367,10 @@ def test_queue_detail_queries_select_retry_kind() -> None:
 
 
 class _ScriptedConn:
-    """Connection returning preset ``fetch`` results in call order."""
+    """Connection returning preset ``fetch`` results in call order.
+
+    fail-closed-exempt: the queues page's scripted rows (the REAL census is tests/test_web_admin_integration.py's)
+    """
 
     def __init__(self, fetch_results: list[list[StubRecord]]) -> None:
         self._results = list(fetch_results)

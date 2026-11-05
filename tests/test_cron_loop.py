@@ -114,6 +114,23 @@ class _FakeCronConn(FakeConn):
             return self._disabled_count
         raise AssertionError(f"unexpected fetchval: {sql}")
 
+    async def execute(self, sql: str, *args: object) -> str:
+        """The tick's two batched UPDATE shapes, named (the fail-closed
+        rule, tests/test_suite_hygiene.py): the success branch's
+        last_fired_at stamp and the failure branch's strike UPDATE. Any
+        other statement is an unnamed write this double does not model."""
+        self.execute_calls.append((sql, args))
+        if "last_fired_at = clock_timestamp()" in sql or (
+            "consecutive_failures = f.consecutive" in sql
+        ):
+            return "UPDATE 1"
+        if "SET next_fire_at = f.next_fire" in sql:
+            return "UPDATE 1"  # the defer arm: the schedule's next fire moved out
+        raise AssertionError(
+            f"unexpected execute: {sql!r} (args {args!r}) - add the statement "
+            "shape explicitly to this double"
+        )
+
     async def fetchrow(self, sql: str, *args: object) -> object:
         """Answer the tick's one single-row read: the per-actor failure
         totals aggregate (an empty totals object - this fake holds no
@@ -268,177 +285,19 @@ pytestmark = [pytest.mark.asyncio]
 # ── consecutive_failures increments on factory error ────────────────
 
 
-async def test_cron_fire_failure_increments_consecutive_failures() -> None:
-    """Factory raising → the batched failure UPDATE carries the schedule id,
-    the raw error text, consecutive=1, disable=False; no success UPDATE
-    runs, so last_fired_at is never stamped."""
-    schedule_id = new_uuid()
-    row = _make_schedule_row(
-        actor="failing_actor",
-        payload_factory="nonexistent.module.fn",
-        consecutive_failures=0,
-        next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
-        schedule_id=schedule_id,
-    )
-    conn = _FakeCronConn(
-        schedule_rows=[row],
-        actor_config_rows=[_make_actor_config_row(actor="failing_actor")],
-    )
-    settings = _cron_settings()
-    backend = InMemoryBackend(clock=FakeClock(_NOW))
-
-    fired = await _tick(conn, settings, backend)
-
-    assert fired == 0, "a tick whose only schedule failed to plan fires nothing"
-    failure_updates = _failure_updates(conn)
-    assert len(failure_updates) == 1
-    sql, args = failure_updates[0]
-    assert "consecutive_failures" in sql
-    assert args[0] == [schedule_id]
-    error_texts: object = args[1]
-    assert isinstance(error_texts, list)
-    assert "nonexistent" in str(error_texts[0]), "the raw error text reaches last_fire_error"
-    assert args[2] == [1]
-    assert args[3] == [False]
-
-    assert _success_updates(conn) == [], "a failed fire must not stamp last_fired_at"
-    for sql, _args in conn.execute_calls:
-        assert "last_fired_at = clock_timestamp()" not in sql
-
-
 # ── 3-strike auto-disable ──────────────────────────────────────────
-
-
-async def test_cron_fire_auto_disable_after_threshold(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """3 consecutive factory failures → the third tick's failure UPDATE
-    carries disable=True and consecutive=3; the OTel span event
-    cron.auto_disabled carries failure_count=3; the disabled-schedule
-    count is re-read after the disabling tick."""
-    _, exporter = setup_tracer(monkeypatch)
-
-    schedule_id = new_uuid()
-    conn = _FakeCronConn(
-        actor_config_rows=[_make_actor_config_row(actor="failing_actor")],
-        disabled_count=1,
-    )
-    settings = _cron_settings()
-    backend = InMemoryBackend(clock=FakeClock(_NOW))
-
-    for i in range(3):
-        conn.schedule_rows = [
-            _make_schedule_row(
-                actor="failing_actor",
-                payload_factory="nonexistent.module.fn",
-                consecutive_failures=i,
-                next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
-                schedule_id=schedule_id,
-            )
-        ]
-        await _tick(conn, settings, backend)
-
-    failure_updates = _failure_updates(conn)
-    assert len(failure_updates) == 3, "one failure UPDATE per tick"
-    disable_flags = [args[3] for _sql, args in failure_updates]
-    assert disable_flags == [[False], [False], [True]]
-    _, third_args = failure_updates[2]
-    assert third_args[0] == [schedule_id]
-    assert third_args[2] == [3]
-
-    assert any("COUNT" in sql for sql, _args in conn.fetchval_calls), (
-        "the disabling tick must refresh the disabled-schedules count"
-    )
-
-    auto_disabled_spans = [
-        s
-        for s in exporter.spans_named("cron fire")
-        if any(ev.name == "cron.auto_disabled" for ev in s.events)
-    ]
-    assert len(auto_disabled_spans) == 1
-    event_attrs = dict(auto_disabled_spans[0].events[0].attributes or {})
-    assert event_attrs.get("failure_count") == 3
-    assert event_attrs.get("schedule_name") == "failing_actor"
-    assert isinstance(event_attrs.get("last_error"), str)
-    assert event_attrs["last_error"]
-
-
-# ── consecutive_failures resets on success ─────────────────────────
-
-
-async def test_cron_fire_success_resets_consecutive_failures() -> None:
-    """2 failure ticks then a success tick → the success tick issues the
-    batched success UPDATE resetting consecutive_failures to 0, clearing
-    last_fire_error, stamping last_fired_at, and advancing next_fire_at
-    strictly into the future."""
-    schedule_id = new_uuid()
-    settings = _cron_settings()
-    backend = InMemoryBackend(clock=FakeClock(_NOW))
-
-    for i in range(2):
-        conn = _FakeCronConn(
-            schedule_rows=[
-                _make_schedule_row(
-                    actor="recovering_actor",
-                    payload_factory="nonexistent.module.fn",
-                    consecutive_failures=i,
-                    next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
-                    schedule_id=schedule_id,
-                )
-            ],
-            actor_config_rows=[_make_actor_config_row(actor="recovering_actor")],
-        )
-        await _tick(conn, settings, backend)
-
-    success_conn = _FakeCronConn(
-        schedule_rows=[
-            _make_schedule_row(
-                actor="recovering_actor",
-                consecutive_failures=2,
-                next_fire_at=_NOW,
-                schedule_id=schedule_id,
-            )
-        ],
-        actor_config_rows=[_make_actor_config_row(actor="recovering_actor")],
-    )
-    fired = await _tick(success_conn, settings, backend)
-
-    assert fired == 1
-    assert success_conn.read_due_schedules, "the tick must read the due-schedule set"
-    success_updates = _success_updates(success_conn)
-    assert len(success_updates) >= 1
-    sql, args = success_updates[0]
-    assert "consecutive_failures = 0" in sql
-    assert "last_fire_error = NULL" in sql
-    assert "last_fired_at = clock_timestamp()" in sql
-    next_fires: object = args[1]
-    assert isinstance(next_fires, list)
-    next_fire_arg: object = next_fires[0]
-    assert isinstance(next_fire_arg, datetime)
-    assert next_fire_arg > _NOW, "next_fire_at must advance strictly into the future"
-
-
-# ── last_fired_at NOT updated on factory failure ────────────────────
-
-
-async def test_cron_fire_failure_does_not_update_last_fired_at() -> None:
-    """last_fired_at unchanged after factory failure."""
-    row = _make_schedule_row(
-        actor="failing_actor",
-        payload_factory="nonexistent.module.fn",
-        consecutive_failures=0,
-        next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
-    )
-    conn = _FakeCronConn(
-        schedule_rows=[row],
-        actor_config_rows=[_make_actor_config_row(actor="failing_actor")],
-    )
-    backend = InMemoryBackend(clock=FakeClock(_NOW))
-
-    await _tick(conn, _cron_settings(), backend)
-
-    for sql, _args in conn.execute_calls:
-        assert "last_fired_at = clock_timestamp()" not in sql
+#
+# NOTE (the mock-subtraction cure): the fire-arm fake tests that re-derived
+# the failure/success UPDATE semantics (the batched UPDATE's argument lists,
+# the 3-strike ladder, the failure branch's last_fired_at abstention) are
+# deleted — tests/test_cron_integration.py owns the behavior against real PG
+# (test_ti2_auto_disable_after_3_failures: consecutive_failures == 3 with
+# last_fire_error set and the auto_disabled span; test_ti5_import_error:
+# last_fired_at still NULL after a fire-time failure; test_ti1: the success
+# stamps). The success-tick's ladder RESET has no real sibling, so it
+# converted to the real fixture there
+# (test_success_tick_resets_the_failure_ladder) instead of surviving as a
+# fake arm asserting the UPDATE's SET spelling.
 
 
 # ── Miss within catch-up window - not skipped ─────────────────────
@@ -2410,6 +2269,7 @@ async def test_failure_totals_round_trip_only_when_telemetry_enabled(
 
 class _GateSession:
     """A connection that CAN carry the commit gate: records the channel
+    fail-closed-exempt: the commit-gate's LISTEN session: scripted gate pages for the gate's own state machine (no PG)
     listener, captures the arming ``pg_notify``, and fires termination
     listeners on death (asyncpg's ``Connection._cleanup`` behavior).
 

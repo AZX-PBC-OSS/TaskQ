@@ -266,6 +266,8 @@ def test_no_page_serves_an_inline_event_handler(
     monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
 
     class _HostileConn(_ClockConn):
+        """fail-closed-exempt: the XSS/hostile-input ATTACK injection: metacharacter rows no honest writer produces"""
+
         async def fetch(self, query: str, *args: object) -> list[StubRecord]:
             if "rate_limit_buckets" in query:
                 return [
@@ -488,6 +490,8 @@ def test_every_capped_page_announces_when_the_cap_bites(
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
 
     class _WorkersConn(_ClockConn):
+        """fail-closed-exempt: the hostile-input attack's scripted worker rows"""
+
         def __init__(self, n: int) -> None:
             self._n = n
 
@@ -519,6 +523,8 @@ def test_every_capped_page_announces_when_the_cap_bites(
     )
 
     class _BucketsConn(_ClockConn):
+        """fail-closed-exempt: the hostile-input attack's scripted bucket rows"""
+
         def __init__(self, n: int) -> None:
             self._n = n
 
@@ -549,6 +555,8 @@ def test_every_capped_page_announces_when_the_cap_bites(
     )
 
     class _ReservationsConn(_ClockConn):
+        """fail-closed-exempt: the hostile-input attack's scripted reservation rows"""
+
         def __init__(self, n: int) -> None:
             self._n = n
 

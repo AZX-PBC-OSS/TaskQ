@@ -456,6 +456,8 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
     runner = None
 
     class StubConn(FakeConn):
+        """fail-closed-exempt: the isolate-self's scripted row shape (the lease-reclaim's exact row, no PG)"""
+
         async def execute(self, sql: str, *args: object) -> str:
             nonlocal runner
             if "SET status = CASE" in sql:

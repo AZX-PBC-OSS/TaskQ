@@ -33,7 +33,6 @@ from taskq.backend._enqueue import (
 from taskq.backend._protocol import EnqueueArgs, IdentityKey, JobRow
 from taskq.backend._sql_templates import render as render_sql
 from taskq.exceptions import (
-    MaxPendingExceededError,
     PayloadValidationError,
     ScopedIdempotencyMigrationPendingError,
     SingletonCollisionError,
@@ -126,7 +125,16 @@ class _FakeTx:
 
 
 class _FakeEnqueueConn:
-    """asyncpg.Connection stand-in that routes calls by SQL substring."""
+    """asyncpg.Connection stand-in that routes calls by SQL substring.
+
+    fail-closed-exempt: FAULT-INJECTION harness for the enqueue error
+    arms this pack owns (the legacy-index violation retry ladder, the
+    poisoned-insert retry points, the injected UniqueViolationError/
+    InternalClientError raises) - branches a real PG cannot reach
+    deterministically. Its statement routing is NOT the assertion
+    surface: the SQL-semantics arms converted to the real-PG packs
+    (tests/test_postgres_unique_for.py, tests/test_singleton.py,
+    tests/test_postgres_enqueue.py, tests/test_postgres_enqueue_max_pending_lock.py)."""
 
     def __init__(
         self,
@@ -232,83 +240,20 @@ def _make_args(
 # ── _enqueue_on_conn: unique_for preflight dedup ─────────────────────────
 
 
-async def test_unique_for_preflight_returns_existing_row() -> None:
-    """When ``unique_for`` + ``identity_key`` are set and a matching row
-    exists, the existing row is returned without inserting."""
-    existing_id = new_job_id()
-    conn = _FakeEnqueueConn(
-        fetchrow_map={"identity_key = $2": _Record(_full_record(job_id=existing_id))}
-    )
-    args = _make_args(unique_for=timedelta(minutes=5), identity_key="dedup-key")
-    clock = FakeClock(_NOW)
-
-    row = await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    assert isinstance(row, JobRow)
-    assert row.id == existing_id
-
-
 # ── _enqueue_on_conn: singleton preflight collision ──────────────────────
-
-
-async def test_singleton_preflight_raises_collision() -> None:
-    """When ``metadata['singleton']`` is True and a blocking row exists,
-    ``SingletonCollisionError`` is raised with a retry_after when the
-    blocking job has a future ``schedule_to_close``."""
-    blocking_id = new_job_id()
-    future = _NOW + timedelta(minutes=10)
-    conn = _FakeEnqueueConn(
-        fetchrow_map={
-            "schedule_to_close FROM": _Record({"id": blocking_id, "schedule_to_close": future})
-        }
-    )
-    args = _make_args(singleton=True)
-    clock = FakeClock(_NOW)
-
-    with pytest.raises(SingletonCollisionError) as exc_info:
-        await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    err = exc_info.value
-    assert err.blocking_job_id == blocking_id
-    assert err.retry_after is not None
-    assert err.retry_after > timedelta(seconds=0)
-
-
-async def test_singleton_preflight_no_retry_after_when_no_deadline() -> None:
-    """A singleton collision with no ``schedule_to_close`` yields
-    ``retry_after=None``."""
-    conn = _FakeEnqueueConn(
-        fetchrow_map={
-            "schedule_to_close FROM": _Record({"id": new_job_id(), "schedule_to_close": None})
-        }
-    )
-    args = _make_args(singleton=True)
-    clock = FakeClock(_NOW)
-
-    with pytest.raises(SingletonCollisionError) as exc_info:
-        await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    assert exc_info.value.retry_after is None
 
 
 # ── _enqueue_on_conn: max_pending exceeded ───────────────────────────────
 
 
-async def test_max_pending_exceeded_raises() -> None:
-    """When the pending count reaches ``max_pending``, a
-    ``MaxPendingExceededError`` is raised."""
-    conn = _FakeEnqueueConn(fetchval_map={"count": 10})
-    args = _make_args(max_pending=10)
-    clock = FakeClock(_NOW)
-
-    with pytest.raises(MaxPendingExceededError) as exc_info:
-        await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    assert exc_info.value.max_pending == 10
-    assert exc_info.value.current_count == 10
-
-
-# ── _enqueue_on_conn: singleton UniqueViolationError catch ───────────────
+# NOTE (the mock-subtraction cure): the singleton preflight arms converted —
+# the layer-1 collision and the layer-2 UniqueViolation race are owned by
+# tests/test_singleton.py (test_singleton_enqueue_collision_layer1,
+# test_singleton_concurrent_race_layer2) on real PG; the retry_after arms
+# (deadline and no-deadline) converted to real PG there too. The max-pending
+# typed fields, the result_ttl stamp, and the idempotency dedup moved the
+# same way (tests/test_postgres_enqueue_max_pending_lock.py,
+# tests/test_postgres_enqueue.py).
 
 
 async def test_singleton_unique_violation_raises_collision() -> None:
@@ -332,44 +277,13 @@ async def test_singleton_unique_violation_raises_collision() -> None:
 
 
 # ── _enqueue_on_conn: result_ttl sets result_expires_at ──────────────────
-
-
-async def test_result_ttl_path_succeeds_without_an_app_side_notify() -> None:
-    """When ``result_ttl`` is set, the INSERT succeeds and the row is
-    returned; the wake is the INSERT trigger's, so no pg_notify statement
-    follows."""
-    rec = _Record(_full_record())
-    conn = _FakeEnqueueConn(fetchrow_map={"RETURNING": rec, "INSERT": rec})
-    args = _make_args(result_ttl=timedelta(hours=1))
-    clock = FakeClock(_NOW)
-
-    row = await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    assert isinstance(row, JobRow)
-    assert not any("pg_notify" in sql for sql in conn.execute_calls)
-
-
-# ── _enqueue_on_conn: idempotency-key ON CONFLICT dedup ──────────────────
-
-
-async def test_idempotency_key_conflict_returns_existing_row() -> None:
-    """When the INSERT returns no row (ON CONFLICT), the follow-up SELECT by
-    idempotency_key returns the existing row."""
-    existing_id = new_job_id()
-    existing_rec = _Record(_full_record(job_id=existing_id))
-    conn = _FakeEnqueueConn(
-        fetchrow_map={"idempotency_key = $2": existing_rec},
-        # INSERT RETURNING returns None (conflict) - default fetchrow returns None.
-    )
-    args = _make_args(idempotency_key="idem-1")
-    clock = FakeClock(_NOW)
-
-    row = await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    assert isinstance(row, JobRow)
-    assert row.id == existing_id
-    # No pg_notify for a deduplicated (not-new) row.
-    assert not any("pg_notify" in sql for sql in conn.execute_calls)
+#
+# NOTE (the mock-subtraction cure): the fake arm died; the result_ttl →
+# result_expires_at stamp converted to the real fixture
+# (tests/test_postgres_enqueue.py::test_result_ttl_stamps_result_expires_at).
+# The idempotency dedup arm died with it (owned by
+# test_postgres_enqueue.py::test_duplicate_enqueue_returns_same_job_id and
+# ::test_no_notify_on_conflict on real PG).
 
 
 # ── _enqueue_batch: empty args_list ──────────────────────────────────────

@@ -1543,6 +1543,7 @@ class _HungRenewConn:
 
 class _HungElectConn:
     """A leader_conn stand-in whose elect never answers.
+        fail-closed-exempt: the elect HANG fault injection: a wedged lease statement the deadline must abort, deterministically
 
     Used after a demotion so the election loop parks inside the elect:
     nothing can rewrite the lease row while the test reads it, which is

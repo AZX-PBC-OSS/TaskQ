@@ -345,7 +345,9 @@ async def test_missing_provider_raises_before_taskgroup() -> None:
 
 def test_validate_error_reporter_scope_accepts_hook_lifetimes() -> None:
     """PROCESS, THREAD and LOOP registrations outlive the actor invocation,
-    so bootstrap accepts them and the per-dispatch resolution serves them."""
+    so bootstrap accepts them. (That the per-dispatch resolution then
+    serves the hook is the DI scope containers' own contract - the
+    resolver's scope walk - not this validator's.)"""
     from taskq.worker._bootstrap import _validate_error_reporter_scope
 
     for scope in (Scope.PROCESS, Scope.THREAD, Scope.LOOP):

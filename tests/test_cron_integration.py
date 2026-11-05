@@ -479,6 +479,67 @@ async def test_ti5_import_error_at_fire_time(pg_dsn: str) -> None:
         assert sched["last_fired_at"] is None
 
 
+async def test_success_tick_resets_the_failure_ladder(pg_dsn: str) -> None:
+    """Two failing ticks, then a fire that succeeds: the success tick
+    resets consecutive_failures to 0, clears last_fire_error, stamps
+    last_fired_at, and advances next_fire_at - the recovering schedule
+    re-arms fully, on the real rows the batched UPDATEs touch.
+
+    (Converted from tests/test_cron_loop.py's fake arm in the
+    mock-subtraction cure: the fake asserted the UPDATE's SET spelling;
+    this pins the STATE the spelling buys.)
+    """
+    async with _open_cron_single(pg_dsn, f"test_cron_{new_base62()}") as (
+        schema,
+        _stack,
+        deps,
+        backend,
+        worker_id,
+    ):
+        async with deps.dispatcher_pool.acquire() as conn:
+            await _insert_actor_config(conn, schema, "recovering_actor")
+            await _insert_schedule(
+                conn,
+                schema,
+                "recovering_actor",
+                payload_factory="nonexistent.module.fn",
+                next_fire_at=datetime.now(UTC) - timedelta(hours=2),
+            )
+
+        for _ in range(2):
+            async with _tick_conn(deps.dispatcher_pool, schema) as conn:
+                async with conn.transaction():
+                    await tick_cron(conn, deps.settings, backend, schema, worker_id)
+
+        # The factory is fixed: a static payload fires without one.
+        async with deps.dispatcher_pool.acquire() as conn:
+            await conn.execute(
+                f'UPDATE "{schema}".cron_schedules '
+                "SET payload_factory = NULL, "
+                'metadata = \'{"static_payload": {"recovered": true}}\'::jsonb '
+                "WHERE actor = 'recovering_actor'"
+            )
+
+        async with _tick_conn(deps.dispatcher_pool, schema) as conn:
+            async with conn.transaction():
+                await tick_cron(conn, deps.settings, backend, schema, worker_id)
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            sched = await conn.fetchrow(
+                f"SELECT consecutive_failures, last_fire_error, last_fired_at, "
+                f'next_fire_at FROM "{schema}".cron_schedules '
+                "WHERE actor = 'recovering_actor'",
+            )
+
+        assert sched is not None
+        assert sched["consecutive_failures"] == 0, "the success tick must reset the ladder"
+        assert sched["last_fire_error"] is None, "the success tick must clear the error"
+        assert sched["last_fired_at"] is not None, "the success tick must stamp the fire"
+        assert sched["next_fire_at"] > datetime.now(UTC) - timedelta(hours=1), (
+            "the success tick must advance next_fire_at into the future"
+        )
+
+
 # ── Tick query uses partial index ────────────────────────────────────
 
 

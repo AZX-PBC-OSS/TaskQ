@@ -1351,3 +1351,93 @@ async def test_deploy_release_is_not_reclaimable_until_the_hold(
         "immediately - the hold exists so the row cannot be claimed while "
         "the interrupted actor might still be alive"
     )
+
+
+async def test_the_ladder_stops_dispatch_before_the_hand_back(
+    clean_jobs_app: JobsApp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real ladder's DRAINING order, on the real ladder: the producer's
+    stop event lands BEFORE the drain's hand-back statement runs - a claim
+    landing between the two steps is missed by the sweep and stranded
+    locked until lease expiry. The phase marker is already DRAINING when
+    the hand-back runs (health endpoints and the consumer loops read it
+    to decide they are draining).
+
+    (Converted from tests/test_shutdown_orchestrator.py's mock arm in the
+    mock-subtraction cure: the wrapper here RECORDS the order and
+    DELEGATES to the real drain - COUNT, DON'T ANSWER - so the ordering
+    property is pinned on the ladder that runs in production, with real
+    rows handed back.)
+
+    The patch site is the exempt-registry entry itself: the wrapper is a
+    recording proxy over the REAL drain, not a mock answering for it.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+    from taskq._ids import new_uuid as _new_uuid
+    from taskq.worker.shutdown import ShutdownPhase, drain_local_queue_to_pending
+
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    worker_id = new_uuid()
+
+    jid = new_uuid()
+    await backend.enqueue(
+        EnqueueArgs(
+            id=JobId(jid),
+            actor="test_actor",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_immediate(),
+        )
+    )
+    await _mark_jobs_running(deps, [jid], worker_id, cancel_phase=0)
+
+    order: list[str] = []
+    observed_phase: list[ShutdownPhase] = []
+    producer_stopped_at_drain: list[bool] = []
+
+    async def _recording_drain(d: WorkerDeps, w: UUID) -> int:
+        order.append("hand_back")
+        observed_phase.append(d.shutdown_phase)
+        producer_stopped_at_drain.append(d.producer_stop_event.is_set())
+        return await drain_local_queue_to_pending(d, w)  # the REAL drain
+
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", _recording_drain)
+
+    original_set = deps.producer_stop_event.set
+
+    def _recording_set() -> None:
+        order.append("stop_dispatch")
+        original_set()
+
+    deps.producer_stop_event.set = _recording_set  # type: ignore[method-assign]  # Why: recording wrapper observing the DRAINING phase's own two steps.
+
+    active = _fake_active_job(job_id=jid)
+    _ = active  # the drain's shape is a locked row with NO consumer registered
+
+    shutdown_event = asyncio.Event()
+    result = await orchestrate_shutdown(
+        deps,
+        deps.settings,
+        worker_id,
+        shutdown_event,
+        None,
+        backend=backend,
+    )
+    assert result == 0
+    assert order == ["stop_dispatch", "hand_back"], (
+        f"consumers must stop taking new work before claimed work is handed "
+        f"back; observed {order!r}"
+    )
+    assert producer_stopped_at_drain == [True]
+    assert observed_phase == [ShutdownPhase.DRAINING], (
+        f"the draining marker must be readable when the hand-back runs; observed {observed_phase!r}"
+    )
+    row = await backend.get(JobId(jid))
+    assert row is not None and row.status == "pending", (
+        "the real drain must have handed the claimed row back to the fleet"
+    )
+    _ = _new_uuid

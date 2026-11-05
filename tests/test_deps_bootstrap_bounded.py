@@ -93,6 +93,7 @@ class _FakePool:
 
 class _FakeConn:
     """Fake asyncpg.Connection.
+    fail-closed-exempt: the bootstrap's bounded-wait fault injection: a hung statement the budget must cut, deterministically
 
     ``hang_listen`` parks every LISTEN execute forever (a connection that
     completes the factory handshake and then black-holes on LISTEN);

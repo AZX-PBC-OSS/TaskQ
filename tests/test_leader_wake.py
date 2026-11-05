@@ -222,8 +222,11 @@ class TestWakeCallbackRouting:
         """Mid-bootstrap: the wake lands before the election loop exists.
 
         No subscriber registered (run() has not entered the subscription
-        yet, or this worker never leads) - the callback must not crash,
-        and the election is not lost: the loop's next park rides the tick.
+        yet, or this worker never leads) - the callback must not crash.
+        (The park's own half of the contract - no subscriber means no
+        armed wake, so the next park sleeps the full tick - is pinned on
+        the park side by test_follower_park_without_wake_sleeps_the_tick;
+        there is no event here to assert on.)
         """
         backend = SimpleNamespace(_leader_wake_subscribers=set())  # type: ignore[arg-type]
         cb = _make_leader_wake_callback(backend, new_uuid())

@@ -65,6 +65,7 @@ class _FakeTx:
 
 class _AbortConn:
     """asyncpg connection stand-in recording every awaited statement.
+    fail-closed-exempt: the batch-abort FLIP fault injection: a driver error landing mid-batch, deterministically
 
     ``flip_raises`` models a batches row held past the wrapper's
     ``lock_timeout``: the flip statement answers 55P03, everything else

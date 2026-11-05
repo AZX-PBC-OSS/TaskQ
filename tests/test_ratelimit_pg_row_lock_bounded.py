@@ -101,6 +101,7 @@ class _NullSavepoint:
 
 class _RowLockFakeConn:
     """ConnLike stand-in modelling a stuck row lock on the bucket row.
+        fail-closed-exempt: the row-lock WAIT's contention fault injection: a deterministic holder owning the row
 
     The fused acquires (token bucket and GCRA) take the bucket
     row's lock in the ``ON CONFLICT (bucket_name) DO UPDATE`` arm, so

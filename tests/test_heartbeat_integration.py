@@ -1112,3 +1112,68 @@ async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
             await task
     finally:
         await stack.aclose()
+
+
+async def test_tick_issues_no_maintenance_leader_statement(
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The heartbeat's statements never touch the lease row, on the real
+    statements the tick issues: a RECORDING PROXY over the module pool
+    counts, never answers - the lease is the election loop's fenced row,
+    and an unfenced refresh from this loop would hold a lapsed leader
+    open past the takeover horizon.
+
+    (Converted from tests/test_heartbeat.py's fake arm in the
+    mock-subtraction cure: the fake asserted the SQL substrings it
+    answered; this counts the real statements.)"""
+    from taskq._ids import new_uuid
+
+    stack, deps, _schema, _obs_conn = await _setup_fast(module_pg_schema)
+
+    seen: list[str] = []
+
+    class _RecordingPool:
+        def __init__(self, pool: asyncpg.Pool) -> None:
+            self._pool = pool
+
+        def acquire(self, **kwargs: object) -> object:
+            outer = self
+
+            class _Ctx:
+                async def __aenter__(self) -> object:
+                    conn = await outer._pool.acquire(**kwargs)
+
+                    class _Conn:
+                        async def execute(self, sql: str, *args: object) -> str:
+                            seen.append(sql)
+                            return await conn.execute(sql, *args)
+
+                        def __getattr__(self, name: str) -> object:
+                            return getattr(conn, name)
+
+                    return _Conn()
+
+                async def __aexit__(self, *args: object) -> None:
+                    pass
+
+            return _Ctx()
+
+    deps.heartbeat_pool = _RecordingPool(deps.heartbeat_pool)  # type: ignore[assignment]
+    try:
+        worker_id = new_uuid()
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
+        await asyncio.sleep(0.3)
+        shutdown.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    finally:
+        await stack.aclose()
+
+    assert seen, "fixture broken: the loop issued no statement through the proxy"
+    offenders = [sql for sql in seen if "maintenance_leader" in sql]
+    assert not offenders, (
+        f"the heartbeat tick wrote the lease row: {offenders[:1]!r} - the "
+        "lease is renewed only by the election loop, fenced on the term it holds"
+    )

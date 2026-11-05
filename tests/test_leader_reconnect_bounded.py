@@ -59,7 +59,10 @@ def _make_settings(**overrides: str) -> WorkerSettings:
 
 
 class _FakeConn:
-    """Fake asyncpg.Connection for the election loop (mirrors test_leader.py)."""
+    """Fake asyncpg.Connection for the election loop (mirrors test_leader.py).
+
+    fail-closed-exempt: the reconnect's bounded-wait fault injection: transient PG errors raised at the named statements
+    """
 
     def __init__(self, *, fetchval_result: object = None) -> None:
         self.fetchval_calls: list[tuple[str, tuple[object, ...]]] = []

@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
+import structlog.testing
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import EnqueueArgs, JobRow
@@ -358,6 +359,17 @@ class TestPollFallback:
                 worker_id=new_uuid(),
             )
         )
+        # The loop stamps its cadence at start: with NOTIFY disabled the
+        # poll fallback IS settings.poll_interval - a wiring that reads
+        # notify_poll_interval unconditionally (or vice versa) turns this red.
+        with structlog.testing.capture_logs() as start_logs:
+            await asyncio.sleep(0)
+        starts = [e for e in start_logs if e["event"] == "producer-loop-start"]
+        assert starts, f"the producer never announced its start: {start_logs!r}"
+        assert starts[0]["poll_interval"] == 0.1, (
+            f"the notify-disabled producer's poll cadence is not the "
+            f"poll_interval setting: {starts[0]!r}"
+        )
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
         await asyncio.wait_for(task, timeout=2.0)
 
@@ -425,6 +437,17 @@ class TestPollFallback:
                 backend=backend,
                 worker_id=new_uuid(),
             )
+        )
+        # The loop stamps its cadence at start: with NOTIFY enabled the
+        # fallback poll is notify_poll_interval (0.5), NOT poll_interval
+        # (0.05) - a wiring that ignores the notify flag turns this red.
+        with structlog.testing.capture_logs() as start_logs:
+            await asyncio.sleep(0)
+        starts = [e for e in start_logs if e["event"] == "producer-loop-start"]
+        assert starts, f"the producer never announced its start: {start_logs!r}"
+        assert starts[0]["poll_interval"] == 0.5, (
+            f"the notify-enabled producer's poll cadence is not the "
+            f"notify_poll_interval setting: {starts[0]!r}"
         )
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
         await asyncio.wait_for(task, timeout=2.0)

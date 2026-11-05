@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
+import structlog.testing
 
 from taskq import migrate as migrate_mod
 from taskq._ids import new_job_id, new_uuid
@@ -1552,3 +1553,176 @@ async def test_prune_write_statement_rechecks_retention_age_at_lock_time(
         jid,
     )
     assert ghost == 0
+
+
+# ── The mock-subtraction conversions (the fake arms' survivors) ────────
+#
+# The fake arms tests/test_leader.py once kept for these two contracts are
+# deleted (the mock auditor's subtraction): the entry points' schema
+# validation and the batch statement-timeout's capture/restore ride the REAL
+# connection here, where the probe is the real server, not a scripted
+# catalog.
+
+
+async def test_prune_rejects_a_non_identifier_schema_before_any_sql(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """prune_terminal_jobs validates the schema identifier at its typed
+    boundary: a non-identifier schema raises ValueError BEFORE a single
+    statement runs - no interpolation ever sees the value."""
+    with pytest.raises(ValueError, match="invalid schema"):
+        await prune_terminal_jobs(
+            pg_conn,
+            retention_per_status={"succeeded": timedelta(days=30)},
+            archive_retention=timedelta(days=365),
+            schema="bad schema",
+        )
+    # The proof the raise beat the SQL: the connection is still healthy
+    # and the session untouched (a statement would have logged in
+    # pg_stat_activity; a broken one errored the conn).
+    assert not pg_conn.is_closed()
+
+
+async def test_archive_expiry_rejects_a_non_identifier_schema_before_any_sql(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """archive_expiry_sweep validates the schema identifier the same way."""
+    with pytest.raises(ValueError, match="invalid schema"):
+        await archive_expiry_sweep(pg_conn, schema="bad;schema")
+    assert not pg_conn.is_closed()
+
+
+async def test_prune_batches_run_under_a_server_timeout_and_restore_the_session(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """The prune batch's statement_timeout is SERVER-side (SET LOCAL inside
+    the batch transaction) and leaves no residue: after the drain, the
+    SESSION's statement_timeout is exactly what it was before - the
+    capture/restore contract the backend sweeps pin in
+    tests/test_rt_sweeps_timeout_leak.py, now pinned for the leader's own
+    prune family on a real connection."""
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    await _seed_terminal_jobs_bulk(
+        pg_conn,
+        count=5,
+        status="succeeded",
+        finished_at=datetime.now(UTC) - timedelta(days=31),
+        schema=schema,
+    )
+    before = await pg_conn.fetchval("SELECT current_setting('statement_timeout')")
+    result = await prune_terminal_jobs(
+        pg_conn,
+        retention_per_status={"succeeded": timedelta(days=30)},
+        archive_retention=timedelta(days=365),
+        batch_size=10,
+        schema=schema,
+        statement_timeout_ms=4321,
+    )
+    assert result.total_deleted == 5, "the seeded rows must drain (the batch ran)"
+    after = await pg_conn.fetchval("SELECT current_setting('statement_timeout')")
+    assert after == before, (
+        f"the prune drain leaked its statement_timeout into the session: "
+        f"{before!r} before, {after!r} after"
+    )
+
+
+async def test_archive_expiry_batches_run_under_a_server_timeout_and_restore_the_session(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """The archive-expiry batch carries the same server-side bound and the
+    same restore."""
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    now = datetime.now(UTC)
+    await _seed_archive_rows_bulk(
+        pg_conn,
+        count=7,
+        expire_at=now - timedelta(hours=1),
+        finished_at=now - timedelta(days=31),
+        schema=schema,
+    )
+    before = await pg_conn.fetchval("SELECT current_setting('statement_timeout')")
+    result = await archive_expiry_sweep(
+        pg_conn, batch_size=7, schema=schema, statement_timeout_ms=4321
+    )
+    assert result.total_deleted == 7, "the seeded rows must drain (the batch ran)"
+    after = await pg_conn.fetchval("SELECT current_setting('statement_timeout')")
+    assert after == before, (
+        f"the archive-expiry drain leaked its statement_timeout into the "
+        f"session: {before!r} before, {after!r} after"
+    )
+
+
+# ── _load_actor_retention_overrides (converted from the fake arms) ─────
+
+
+async def test_load_actor_retention_overrides_parses_every_valid_row(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """Per-actor overrides parse to timedeltas, one entry per valid row."""
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    for actor, days in (("telemetry_ingest", 7), ("audit_critical", 365)):
+        await pg_conn.execute(
+            f"""INSERT INTO {schema}.actor_config (actor, max_concurrent, queue, metadata)
+                VALUES ($1, 5, 'default', $2::jsonb)""",  # noqa: S608
+            actor,
+            f'{{"retention_days": {days}}}',
+        )
+    overrides = await _load_actor_retention_overrides(pg_conn, schema=schema)
+    assert overrides == {
+        "telemetry_ingest": timedelta(days=7),
+        "audit_critical": timedelta(days=365),
+    }
+
+
+async def test_load_actor_retention_overrides_isolates_invalid_rows(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """Invalid rows are skipped with a warning that never carries the raw
+    value (a log-extraction cardinality rule): the valid rows still load."""
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    await pg_conn.executemany(
+        f"""INSERT INTO {schema}.actor_config (actor, max_concurrent, queue, metadata)
+            VALUES ($1, 5, 'default', $2::jsonb)""",  # noqa: S608
+        [
+            ("numeric", '{"retention_days": 7}'),
+            ("legacy_text", '{"retention_days": "30"}'),
+            ("too_large", '{"retention_days": 4000000000}'),
+            ("malformed", '{"retention_days": "not-a-number"}'),
+            ("json_null", '{"retention_days": null}'),
+        ],
+    )
+    with structlog.testing.capture_logs() as captured:
+        result = await _load_actor_retention_overrides(pg_conn, schema=schema)
+    assert result == {
+        "numeric": timedelta(days=7),
+        "legacy_text": timedelta(days=30),
+    }
+    warnings = [e for e in captured if e["event"] == "actor-retention-override-invalid"]
+    assert {e["actor"] for e in warnings} == {"too_large", "malformed", "json_null"}
+    assert all(e["log_level"] == "warning" for e in warnings)
+    assert all("value" not in e for e in warnings)
+
+
+async def test_load_actor_retention_overrides_no_rows_is_empty(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """No actor carries the override key: an empty mapping, no error."""
+    await _apply(pg_conn, settings)
+    result = await _load_actor_retention_overrides(pg_conn, schema=settings.schema_name)
+    assert result == {}
+
+
+async def test_load_actor_retention_overrides_invalid_schema_is_fail_open(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """A non-identifier schema answers the FAIL-OPEN empty mapping - the
+    loader's typed boundary validates before interpolating, and an
+    unparseable schema is an empty override set, never a raised error
+    through the sweep loop and never a tainted statement."""
+    result = await _load_actor_retention_overrides(pg_conn, schema="bad;schema")
+    assert result == {}
+    assert not pg_conn.is_closed()

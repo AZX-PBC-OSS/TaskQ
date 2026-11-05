@@ -319,6 +319,7 @@ class _FabricatedTx:
 
 class _FabricatedReturningConn:
     """ConnLike whose sweep fetch returns fabricated RETURNING rows.
+        fail-closed-exempt: a FABRICATED RETURNING row: a row shape no honest driver produces deterministically (the counter-arm's exact input)
 
     The adversarial review shape: everything else answers like Postgres
     would (the statement_timeout probe, set_config, the batched INSERTs,

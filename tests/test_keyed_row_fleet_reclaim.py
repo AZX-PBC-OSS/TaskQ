@@ -63,6 +63,7 @@ from taskq.migrate import apply_pending
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry, sync_rate_limit_buckets
 from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.settings import WorkerSettings
 
@@ -1260,6 +1261,48 @@ async def test_concurrent_acquire_on_a_reclaim_candidate_never_partially_deletes
         )
 
         await res.release(lease, new_uuid(), pool=pool)
+    finally:
+        await pool.close()
+        await _drop_schema(pg_dsn)
+
+
+async def test_startup_sync_publishes_pg_backed_kinds_only(pg_dsn: str) -> None:
+    """The startup sync's kind dispatch, on real rows: a TokenBucket and a
+    GCRA window each land one rate_limit_buckets row (keyed=False); a
+    log-style window - no PG backend to sync - lands none.
+
+    (Converted from tests/test_ratelimit_registry.py's fake arm in the
+    mock-subtraction cure: the fake recorded the upsert calls; this counts
+    the rows the upserts wrote, and the absence of the log-style row.)"""
+    await _fresh_schema(pg_dsn)
+    pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
+    try:
+        reg = RateLimitRegistry()
+        reg.register(
+            TokenBucket(
+                name="sync-tb",
+                capacity=5,
+                refill_per_second=0.5,
+                backend="postgres",
+            )
+        )
+        reg.register(
+            SlidingWindow(name="sync-gcra", limit=5, window=timedelta(minutes=1), style="gcra")
+        )
+        reg.register(
+            SlidingWindow(name="sync-log", limit=5, window=timedelta(minutes=1), style="log")
+        )
+        await sync_rate_limit_buckets(reg, pool, schema=_schema())
+
+        assert await _bucket_rows(pool, "sync-tb") == 1
+        assert await _bucket_rows(pool, "sync-gcra") == 1
+        assert await _bucket_rows(pool, "sync-log") == 0, (
+            "a log-style window has no PG backend - the startup sync must "
+            "not publish a row for it (the admin UI would show a limiter "
+            "the worker never enforces on PG)"
+        )
+        assert await _bucket_keyed(pool, "sync-tb") is False
+        assert await _bucket_keyed(pool, "sync-gcra") is False
     finally:
         await pool.close()
         await _drop_schema(pg_dsn)

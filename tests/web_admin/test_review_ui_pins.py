@@ -46,8 +46,12 @@ pytestmark = [pytest.mark.fastapi]
 
 class _ClockConn:
     """Connection answering every ``fetch`` with an empty list and every
-    ``fetchrow`` with *fetchrow* (None unless given) - the empty-fleet
-    render every no-transport page must survive."""
+    ``fetchval`` with the server clock - the shared conn the scripted
+    render every no-transport page must survive.
+
+    fail-closed-exempt: the UI review pins' scripted clock-domain rows
+    (render-only pages; the real data is tests/test_web_admin_integration.py's).
+    """
 
     def __init__(self, fetchrow: StubRecord | None = None) -> None:
         self._fetchrow = fetchrow
@@ -278,6 +282,8 @@ def test_schedules_page_announces_when_the_cap_bites(
     ]
 
     class _SchedConn(_ClockConn):
+        """fail-closed-exempt: the UI review pins' scripted schedule rows"""
+
         async def fetch(self, query: str, *args: object) -> list[StubRecord]:
             if "cron_schedules" in query:
                 return rows
@@ -294,6 +300,8 @@ def test_schedules_page_announces_when_the_cap_bites(
     assert str(_SCHEDULES_PAGE_SIZE) in html
 
     class _OneConn(_SchedConn):  # pyright: ignore[reportUnusedClass]  # Why: defined to seed exactly one row; the base's SQL routing is inherited.
+        """fail-closed-exempt: the UI review pins' scripted single-row pages (the base _SchedConn's SQL routing is inherited)"""
+
         async def fetch(self, query: str, *args: object) -> list[StubRecord]:
             if "cron_schedules" in query:
                 return rows[:1]
@@ -329,6 +337,8 @@ def test_held_slots_section_announces_when_its_cap_bites(
     ]
 
     class _SlotsConn(_ClockConn):
+        """fail-closed-exempt: the UI review pins' scripted slot rows"""
+
         async def fetch(self, query: str, *args: object) -> list[StubRecord]:
             if "SELECT bucket_name, slot_index" in query:
                 return slots
@@ -388,6 +398,8 @@ def test_rate_limit_reset_confirm_never_interpolates_the_bucket_name_into_inline
     )
 
     class _BucketsConn(_ClockConn):
+        """fail-closed-exempt: the UI review pins' scripted bucket rows"""
+
         async def fetch(self, query: str, *args: object) -> list[StubRecord]:
             if "rate_limit_buckets" in query:
                 return [

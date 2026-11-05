@@ -30,17 +30,30 @@ from taskq.worker.deps import WorkerDeps
 
 
 class _FakeConn:
+    """The deps' connection shell (close/is_closed only).
+
+    FAIL CLOSED (tests/test_suite_hygiene.py's rule): no statement may
+    flow through this double — the loop's statement-bearing paths are
+    either intercepted by the backend/registry doubles above or converted
+    to the real fixture (tests/test_leader_sweep_wiring_pg.py). A
+    statement reaching this class is a wiring drift; the raise names it.
+    """
+
     async def execute(self, sql: str, *args: object) -> str:
-        return "DELETE 0"
+        raise AssertionError(
+            f"no statement may reach the wiring pack's conn shell: {sql!r} - "
+            "the statement-bearing paths converted to "
+            "tests/test_leader_sweep_wiring_pg.py"
+        )
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
-        return []
+        raise AssertionError(f"no statement may reach the wiring pack's conn shell: {sql!r}")
 
     async def fetchval(self, sql: str, *args: object) -> object:
-        return None
+        raise AssertionError(f"no statement may reach the wiring pack's conn shell: {sql!r}")
 
     async def fetchrow(self, sql: str, *args: object) -> object | None:
-        return None
+        raise AssertionError(f"no statement may reach the wiring pack's conn shell: {sql!r}")
 
     async def close(self) -> None:
         pass

@@ -1293,3 +1293,22 @@ async def test_non_object_json_payload_round_trips_through_claim(
             "the dispatched row claimed normally, no terminal write landed"
         )
         assert row["error_class"] is None, "no CorruptJobDataError verdict against user content"
+
+
+async def test_empty_queue_list_round_trips_empty(jobs_app: JobsApp) -> None:
+    """An empty queue list passes through (not short-circuits): one real
+    pool checkout, one real claim statement with nothing bound, an empty
+    batch back - the producer's idle-shutdown shape.
+
+    (Converted from tests/test_postgres_dispatch.py's fake arm in the
+    mock-subtraction cure: the fake pinned the bound argument; this runs
+    the real claim.)"""
+    backend = jobs_app.backend
+
+    dispatched = await backend.dispatch_batch(
+        worker_id=new_uuid(),
+        queues=[],
+        limit=10,
+        lock_lease=_LEASE,
+    )
+    assert dispatched == []

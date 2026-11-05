@@ -52,6 +52,7 @@ _CONTENTION_COUNTER = "taskq.cron.lock_contention"
 
 class _RecordingConn:
     """Records every statement :func:`tick_cron` issues.
+    fail-closed-exempt: the advisory-lock CONTENTION fault injection: the refused/timed-out lock probe, deterministically
 
     The lock verdict is the only input; everything downstream of it is what
     the tests observe.  The tick's one folded statement carries the verdict

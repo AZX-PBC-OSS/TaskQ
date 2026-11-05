@@ -29,7 +29,11 @@ class _StubRecord(dict[str, object]):
 
 
 class _StubConn:
-    """Minimal asyncpg.Connection duck type that returns empty results."""
+    """Minimal asyncpg.Connection duck type that returns empty results.
+
+    fail-closed-exempt: the admin history page's registration pins - scripted
+    rows, no PG (the page's data is tests/test_web_admin_integration.py's).
+    """
 
     async def fetch(self, query: str, *args: object) -> list[_StubRecord]:
         return []

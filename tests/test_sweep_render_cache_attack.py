@@ -172,6 +172,7 @@ class _NullTransaction:
 
 class _RecordingConn:
     """Duck-typed ConnLike recording every SQL text it is handed.
+        fail-closed-exempt: the render-cache ATTACK injection: a poisoned render seam (a statement shape no honest caller issues)
 
     ``fetch`` answers the statement_timeout probe (a mapping row) and
     returns no sweep rows; ``execute`` returns a zero-change tag, so

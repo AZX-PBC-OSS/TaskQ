@@ -696,7 +696,10 @@ class _StubTxn:
 
 
 class _ScriptedConn:
-    """asyncpg connection stub with SQL-substring-matched responses."""
+    """asyncpg connection stub with SQL-substring-matched responses.
+
+    fail-closed-exempt: the ops pages' scripted rows (the mutation arms' real behavior is the _pg packs')
+    """
 
     def __init__(
         self,

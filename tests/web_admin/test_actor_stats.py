@@ -38,6 +38,7 @@ pytestmark = [pytest.mark.fastapi]
 
 class _FetchConn:
     """Connection returning preset ``fetch`` results in call order, and
+        fail-closed-exempt: the actor-stats page's scripted rows (the stats' real data is tests/test_web_admin_actors.py's)
     recording each call's (query, args) so parameter binding is
     assertable."""
 

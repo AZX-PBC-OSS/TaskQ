@@ -24,6 +24,7 @@ from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
 from taskq.worker._leader_shared import SweepContext
 
@@ -835,6 +836,20 @@ class _SimpleBackend:
         return 0
 
 
+class _TickingBackend(_SimpleBackend):
+    """_SimpleBackend that WITNESSES its own ticks: the count the skip
+    assertions hang on, so ``assert_not_called`` can only fire after the
+    sweep loop provably ran a tick (a loop that never ticked would pass
+    the not-called assert vacuously)."""
+
+    def __init__(self) -> None:
+        self.reclaim_ticks = 0
+
+    async def reclaim_expired_locks(self, cg: timedelta, ug: timedelta) -> int:
+        self.reclaim_ticks += 1
+        return 0
+
+
 async def test_leader_sweep_calls_evict_idle_keyed_reservations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -934,11 +949,17 @@ async def test_leader_sweep_skips_eviction_when_no_keyed_reservations(
     deps.is_leader.set()
 
     clock: Clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
-    ctx = SweepContext(deps=deps, backend=_SimpleBackend(), clock=clock, worker_id=new_uuid())
+    backend = _TickingBackend()
+    ctx = SweepContext(deps=deps, backend=backend, clock=clock, worker_id=new_uuid())
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))
-    await asyncio.sleep(0.05)
+    # The positive tick witness, behind the house bounded wait: a tick
+    # PROVABLY ran before the not-called assert means anything.
+    await wait_for_condition(
+        lambda: backend.reclaim_ticks >= 1,
+        description="the sweep loop must run a tick before the skip assertion means anything",
+    )
 
     shutdown.set()
     task.cancel()
@@ -1050,11 +1071,17 @@ async def test_leader_sweep_skips_eviction_when_no_keyed_rate_limits(
     deps.is_leader.set()
 
     clock: Clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
-    ctx = SweepContext(deps=deps, backend=_SimpleBackend(), clock=clock, worker_id=new_uuid())
+    backend = _TickingBackend()
+    ctx = SweepContext(deps=deps, backend=backend, clock=clock, worker_id=new_uuid())
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))
-    await asyncio.sleep(0.05)
+    # The positive tick witness, behind the house bounded wait: a tick
+    # PROVABLY ran before the not-called assert means anything.
+    await wait_for_condition(
+        lambda: backend.reclaim_ticks >= 1,
+        description="the sweep loop must run a tick before the skip assertion means anything",
+    )
 
     shutdown.set()
     task.cancel()

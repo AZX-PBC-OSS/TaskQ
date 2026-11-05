@@ -1204,42 +1204,21 @@ async def test_acquire_pg_defensive_row_none_denies_never_admits() -> None:
     assert r.backend == "postgres"
 
 
+# NOTE (the mock-subtraction cure): the acquire-decode fake arms (the fused
+# statement's RETURNING row decoded into allowed/remaining/retry_after) are
+# deleted — tests/test_ratelimit_token_bucket_pg.py owns the decode against
+# real rows (test_pg_burst_throttle_refill: the allowed/remaining monotone
+# decode, the denial's positive retry_after under refill, the rewind-refill).
+# The peek/reset/fixed-quota arms had no real sibling; they converted there
+# (peek-exhausted, peek-no-row, reset-delete, fixed-quota retry_after None).
+# The defensive no-RETURNING-row arm STAYS as the fault injection it is (a
+# trigger swallowing RETURNING is not a state real rows can produce).
+
+
 # ── acquire() postgres: existing-row decode (allowed + denied) ────────
 
 
-async def test_acquire_pg_existing_row_allowed_decodes_state() -> None:
-    """acquire() decodes the fused statement's RETURNING row, the final
-    token count and the decision bit, and reports both."""
-    pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 6.0, "granted": True})
-    tb = _pg_bucket(capacity=10, refill=1, name="pg-row-existing-allowed")
-
-    r = await tb.acquire(count=4, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
-
-    assert r.allowed is True
-    assert r.remaining == 6.0
-    assert r.retry_after == timedelta(0)
-
-
-async def test_acquire_pg_existing_row_denied_with_refill_computes_retry_after() -> None:
-    """acquire() denied by the fused row's decision bit with refill>0
-    computes retry_after from the deficit against the reported tokens."""
-    pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 0.0, "granted": False})
-    tb = _pg_bucket(capacity=10, refill=2, name="pg-row-existing-denied")
-
-    r = await tb.acquire(count=5, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
-
-    assert r.allowed is False
-    assert r.retry_after is not None
-    assert abs(r.retry_after.total_seconds() - 2.5) < 1e-9
-
-
-async def test_acquire_pg_existing_row_denied_fixed_quota_retry_after_none() -> None:
-    """acquire() denied by the fused row's decision bit with refill=0
-    reports retry_after=None, a fixed quota has no recovery time."""
-    pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 0.0, "granted": False})
-    tb = _pg_bucket(capacity=10, refill=0, name="pg-row-existing-fixed")
-
-    r = await tb.acquire(count=1, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
-
-    assert r.allowed is False
-    assert r.retry_after is None
+# NOTE (the mock-subtraction cure): the remaining decode arms converted to
+# tests/test_ratelimit_token_bucket_pg.py (see the note above the defensive
+# arm). The fake answered the fused statement's row from a configured dict -
+# the real pack answers with the real statement's own row.

@@ -1555,3 +1555,424 @@ def test_the_listen_group_stays_whole() -> None:
     assert groups and set(groups) == {"listen"}, (
         f"test_listen_coverage.py: the listen group moved, renamed or split: {groups}"
     )
+
+
+# ── The mock-subtraction law, part 1: the fakes fail closed ──────────────
+#
+# A fake connection class whose fetch/fetchrow/fetchval/execute answers an
+# UNKNOWN statement from a silent default (a literal, an unscripted
+# ``self._x_result`` attribute, a sequential ``.pop(0)`` script) is a liar
+# double: the recorded incident had the availability gate's probe eat a
+# scripted batch and the sweeps deleted 0 of 7 — the probe matched nothing,
+# the fake answered anyway, and every downstream assertion measured the
+# answer, not the database. Two cures exist:
+#
+#   1. FAIL CLOSED — the method's fall-through raises AssertionError naming
+#      the statement fragment (every statement shape is a named match), and
+#      the sequential pop(0) script dies with it; a named-subclass match
+#      with an explicit raise-on-unmatched replaces it.
+#   2. COUNT, DON'T ANSWER — where the property is statement
+#      identity/order/count, the test wraps the REAL connection (the
+#      recording-proxy pattern:
+#      tests/test_cancel_where_bounded.py::_StatementRecordingPool); a fake
+#      ANSWERS only for fault injection.
+#
+# A fake whose remaining purpose IS fault injection (a branch no real
+# database reaches deterministically — a driver raising mid-statement, a
+# trigger swallowing RETURNING) stays exempt, but must SAY SO: the class
+# docstring carries the marker ``fail-closed-exempt:`` followed by the
+# fault-injection subject it exists to inject. A marker without a subject
+# is an offender like an unmarked class.
+
+_FAIL_CLOSED_EXEMPT_MARKER = "fail-closed-exempt:"
+_FAKE_CONN_METHOD_NAMES = frozenset({"fetch", "fetchrow", "fetchval", "execute"})
+
+
+def _class_docstring(node: ast.ClassDef) -> str:
+    body = node.body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        doc = body[0].value.value
+        return doc if isinstance(doc, str) else ""
+    return ""
+
+
+def _is_default_answer_value(value: ast.AST) -> bool:
+    """Whether *value* is the blind-default answer shape: a bare constant,
+    an unscripted private-attribute answer (``self._x_result``), or the
+    sequential pop(0) script's next page."""
+    if isinstance(value, ast.Constant):
+        return True
+    if isinstance(value, ast.List) and not value.elts:
+        return True  # the empty page the fake hands every unknown query
+    if isinstance(value, ast.Attribute):
+        return (
+            isinstance(value.value, ast.Name)
+            and value.value.id == "self"
+            and value.attr.startswith("_")
+        )
+    if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute):
+        # the sequential script: return self._results.pop(0)
+        func = value.func
+        return (
+            func.attr == "pop"
+            and isinstance(func.value, ast.Attribute)
+            and isinstance(func.value.value, ast.Name)
+            and func.value.value.id == "self"
+            and func.value.attr.startswith("_")
+        )
+    return False
+
+
+def _method_discriminates_on_sql(item: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether the method's control flow BRANCHES on the statement text:
+    the sql parameter (or a helper predicate called on it) participates in
+    a comparison or a call — the shape that can answer unmatched SQL from
+    a fall-through default. A method that never reads the statement (a
+    pure recorder: record + return the tag) cannot lie per-statement."""
+    params = {a.arg for a in item.args.args}
+    sql_names = params & {"sql", "query", "statement", "q"}
+    for n in ast.walk(item):
+        # `if "fragment" in sql` / `sql == ...` / `sql.startswith(...)`
+        if isinstance(n, ast.Compare):
+            for side in (n.left, *n.comparators):
+                for name in ast.walk(side):
+                    if isinstance(name, ast.Name) and name.id in sql_names:
+                        return True
+        # `if _is_lease_statement(sql)` / `sql.strip().upper()...`
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and "sql" in n.func.id.lower()
+            and n.args
+        ):
+            for a in n.args:
+                if isinstance(a, ast.Name) and a.id in sql_names:
+                    return True
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+            base = n.func.value
+            if isinstance(base, ast.Name) and base.id in sql_names:
+                return True
+    return False
+
+
+def _fake_conn_default_answer_sites(tree: ast.Module) -> list[str]:
+    """Every fake-class conn method that DISCRIMINATES on the statement
+    text and whose fall-through answers from a silent default: the
+    method's FINAL statement is ``return <default-shape>`` (or a bare
+    ``return``) and the method body carries no raise at all — a raise the
+    method reaches before the fall-through would be the named-unmatched
+    discipline; a raise buried in a conditional arm with the default
+    returning after it is exactly the shape that lied (the recorded
+    incident: the availability gate's probe matched nothing and the
+    fall-through fed it the next scripted batch anyway). A method that
+    never reads the statement text (a pure recorder — record + return the
+    tag) cannot lie per-statement; it is not an offender. Returns
+    offender descriptions."""
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for item in node.body:
+            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if item.name not in _FAKE_CONN_METHOD_NAMES:
+                continue
+            if not _method_discriminates_on_sql(item):
+                continue  # a pure recorder answers no "unmatched" SQL
+            body = item.body
+            if not body:
+                continue
+            last = body[-1]
+            if not isinstance(last, ast.Return):
+                continue  # the fall-through is not a return (a raise, a helper call)
+            value = last.value
+            if value is None or not _is_default_answer_value(value):
+                continue
+            has_raise = any(isinstance(n, ast.Raise) for n in ast.walk(item))
+            if has_raise:
+                # A raise exists — but is it the FALL-THROUGH? Only the
+                # final statement being the raise counts; a raise inside a
+                # conditional arm still leaves the default answering.
+                continue
+            offenders.append(
+                f"{node.name}.{item.name} (line {item.lineno}): the fall-through "
+                f"answers from a silent default"
+            )
+    return offenders
+
+
+def test_fake_connection_classes_fail_closed_on_unmatched_sql() -> None:
+    """No fake class under tests/ may answer an unmatched statement from a
+    silent default.
+
+    A conn double (any class defining ``fetch``/``fetchrow``/``fetchval``/
+    ``execute``) whose method's fall-through returns a literal, an
+    unscripted ``self._x_result`` attribute, an empty page, or the next
+    ``.pop(0)`` script is the shape that produced the probe-ate-a-batch
+    incident (the availability gate's probe consumed a scripted batch; the
+    sweeps deleted 0 of 7; every assertion downstream measured the fake's
+    answer, not the database). The fall-through must RAISE naming the
+    statement fragment, or the class docstring must carry
+    ``fail-closed-exempt: <subject>`` naming the fault injection the fake
+    exists to inject — a driver raising mid-statement, a trigger swallowing
+    RETURNING — the branches no real database reaches deterministically.
+    Where the property under test is statement identity/order/count, do not
+    answer at all: wrap the real connection in a recording proxy
+    (tests/test_cancel_where_bounded.py::_StatementRecordingPool).
+    """
+    offenders: list[str] = []
+    for path in _all_test_tree_files():
+        tree = ast.parse(path.read_text())
+        sites = _fake_conn_default_answer_sites(tree)
+        if not sites:
+            continue
+        docstrings = {
+            node.name: _class_docstring(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef)
+        }
+        for site in sites:
+            class_name = site.split(".")[0]
+            doc = docstrings.get(class_name, "")
+            if _FAIL_CLOSED_EXEMPT_MARKER in doc:
+                continue  # the marker names the fault-injection subject
+            offenders.append(f"{path.relative_to(_TESTS_DIR)}: {site}")
+    assert not offenders, (
+        "Found fake conn class(es) answering unmatched SQL from a silent default:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nThe fall-through must raise AssertionError naming the statement "
+        "fragment (every shape a named match), or the class docstring must "
+        "carry 'fail-closed-exempt: <subject>' naming the fault injection the "
+        "fake exists to inject. Where the property is statement identity/order/"
+        "count, wrap the real connection in a recording proxy instead "
+        "(tests/test_cancel_where_bounded.py::_StatementRecordingPool) - the "
+        "assertion counts real statements."
+    )
+
+
+# ── The mock-subtraction law, part 2: the patch-site registry ────────────
+#
+# PART A's mock subtraction cured the unit packs whose modules-under-test
+# have real-PG sibling packs: the SQL-semantics arms died, the survivors are
+# fault injection and wiring the siblings do not own. The cured packs' ---
+# and only their --- ``monkeypatch.setattr`` sites on ``taskq.*`` attributes
+# live in the registry below: each attribute gets the reason it may stay
+# patched (the real-PG sibling that owns the behavior, or why no sibling
+# can). A NEW patch site in a registered pack must add its own entry with
+# its own reason - the registry is the ledger, the failure message points
+# at it. A patch site in an UNREGISTERED pack is not this guard's business
+# (whether that pack's module has a real-PG sibling is a human judgment the
+# registry records when the pack is cured).
+
+_TASKQ_PATCH_EXEMPT: dict[str, dict[str, str]] = {
+    "test_leader.py": {
+        "open_dedicated_conn": (
+            "the dedicated-conn FACTORY seam: the unit pins the loop's wiring "
+            "of the factory; the connections themselves are the real-PG packs' "
+            "(tests/test_leader_prune.py, tests/test_postgres_sweeps.py)"
+        ),
+        "croniter": (
+            "the cron CLOCK: the loops' fire cadence is time; the real-PG packs "
+            "own what a fire DOES (tests/test_leader_prune.py), not when the "
+            "schedule wakes"
+        ),
+        "_PRUNE_RETRY_BACKOFF_INITIAL_SECS": (
+            "the retry ladder's tunable: the ladder's CADENCE is the unit's "
+            "subject; the real-PG packs own the retried attempt's SQL"
+        ),
+        "_PRUNE_RETRY_BACKOFF_CAP_SECS": "same ladder tunable, the cap arm",
+        "_otel_enabled": "the obs seam: the gauge/counter stamps are pinned on the OTel test stack (tests/test_obs.py), no PG involved",
+        "_leader_lease_expires_in_seconds_cache": "same obs seam: the lease gauge's cached value",
+        "asyncio": (
+            "patched where LOOKED UP (tests/_ns_patch.py): the module's own "
+            "asyncio binding, so the TEST's real sleeps keep their timing - "
+            "the delegation-proxy pattern, not a behavior patch"
+        ),
+        "revert_stale_auto_disables": (
+            "the takeover recovery's SEAM: the unit pins the assume-path's "
+            "wiring; the recovery itself is the cron ownership pack's"
+        ),
+        "record_election_attempt": "the OTel counter's stamp site on the unit path; the counter's contract is tests/test_obs.py's",
+        "CLOSE_TIMEOUT_SECS": (
+            "the bounded-close deadline's TUNABLE: the hang/close arms drive "
+            "the deadline deterministically on the fake clock; the close "
+            "path's real behavior is tests/test_worker_deps_teardown.py's"
+        ),
+        "apply_keepalive_to_conn": (
+            "the keepalive wiring's SEAM: the unit pins the factory path "
+            "applies it; the socket work itself is the deps module's"
+        ),
+    },
+    "test_cron_loop.py": {
+        "resolve_payload": (
+            "the payload-resolution SEAM: the unit pins the tick's planning "
+            "arms around it; the resolution itself is the factories' unit pack"
+        ),
+        "time": "the tick's budget CLOCK: the deadline arithmetic is time; the fires' SQL is tests/test_cron_integration.py's",
+        "record_cron_budget_deferral": "the deferral telemetry's seam: the wiring pin observes the call; the metric's contract is tests/test_obs.py's",
+        "_otel_enabled": "the obs seam (no PG)",
+        "croniter": "the schedule CLOCK (see test_leader.py's entry)",
+        "compute_next_fire_after": "the fire computation's seam for the DST arms; the real DST behavior is tests/test_cron_integration.py's DST tests",
+        "logger": "structlog capture seam: capture_logs cannot see through a frozen proxy; re-binding the module logger is the recorded workaround",
+        "record_cron_failure": "the failure telemetry's seam: the wiring pins observe the emit; the counter's contract is tests/test_obs.py's",
+    },
+    "test_ratelimit_token_bucket.py": {
+        "_acquire_pg": (
+            "the BACKEND-DISPATCH isolation pin: backend='postgres' must reach "
+            "_acquire_pg and never Redis - the dispatch shape is the unit's "
+            "subject; the PG arm's behavior is tests/test_ratelimit_token_bucket_pg.py's"
+        ),
+        "_bucket_label_values": "the label-cap's cache reset (no PG; the cap's contract is tests/test_rt_worker_metric_cardinality.py's)",
+    },
+    "test_ratelimit_reservation.py": {
+        "_probe_pg_lock_timeout_guc": "the lock-budget seam: the typed boundary arms; the real lock behavior is tests/test_rt_pools_ratelimit_lock_timeout_guc.py's",
+    },
+    "test_heartbeat.py": {
+        "_tick_duration": (
+            "the tick-completion WITNESS: the histogram's record call is the "
+            "event the waits synchronize on (the house no-sleeps pattern); the "
+            "histogram's own contract is tests/test_obs.py's"
+        ),
+        "update_heartbeat_consecutive_failures": "the failure-counter gauge's seam: the counter increments are the unit's subject (fault injection); the gauge's contract is tests/test_obs.py's",
+        "_otel_enabled": "the obs seam (no PG)",
+    },
+    "test_shutdown_orchestrator.py": {
+        "drain_local_queue_to_pending": (
+            "the ladder's SCAFFOLDING: the phase-ladder arms (budgets, "
+            "isolation, timeouts) need the ladder driven deterministically on "
+            "the fake clock; the DRAIN itself is tests/test_shutdown_integration.py's "
+            "(test_ti4_drain_to_pending, and the converted ordering pin "
+            "test_the_ladder_stops_dispatch_before_the_hand_back)"
+        ),
+        "_METRICS_FLUSH_TIMEOUT_SECS": "the exit-tail constant the hold arithmetic reads (no PG; the bound's proof is test_suite_hygiene's own soak-budget pins)",
+        "CLOSE_TIMEOUT_SECS": (
+            "the bounded-close deadline's TUNABLE: the ladder's close arms "
+            "drive the deadline deterministically; the close path's real "
+            "behavior is tests/test_worker_deps_teardown.py's"
+        ),
+        "asyncio": "patched where LOOKED UP (tests/_ns_patch.py): the module's own asyncio binding - the delegation-proxy pattern, not a behavior patch",
+    },
+    "test_enqueue_coverage.py": {
+        "NATIVE_TYPES": (
+            "the record-shape fault injection: the enqueue paths' jsonb decode "
+            "arms (a row the real driver cannot produce deterministically); "
+            "the enqueue SQL's behavior is tests/test_postgres_enqueue.py's"
+        ),
+    },
+    "test_postgres_dispatch.py": {},
+    "test_dispatch_queue_mode_cache.py": {},
+    "test_ratelimit_sliding_window.py": {},
+    "test_ratelimit_refund_fix.py": {},
+    "test_ratelimit_registry.py": {},
+    "web_admin/test_ops_mutations.py": {
+        "logger": "structlog capture seam (the audit-trail arms re-bind the module logger capture cannot see through)",
+        "_SCHEDULE_RUN_COOLDOWN_SECONDS": (
+            "the run-now cooldown's TUNABLE: the churn-bound arms drive the "
+            "map's growth deterministically (no PG; the cooldown's own "
+            "behavior is the ops route's)"
+        ),
+        "_last_schedule_run": (
+            "the run-now cooldown map's STATE reset: the arms isolate the "
+            "process-global map between tests (a per-test hygiene reset, "
+            "not a behavior patch)"
+        ),
+        "_rate_limits": (
+            "the registry's bucket MAP: the mutation arms seed/clear the "
+            "in-process registry the route reads (the reset's real row "
+            "behavior is tests/test_ratelimit_token_bucket_pg.py's "
+            "test_pg_reset_deletes_the_bucket_row)"
+        ),
+        "_reservations": "same registry-state hygiene for the reservations page's arms",
+        "reset": "the reset SEAM: the arm pins the route's delegation to the registry's reset; the reset's real behavior is the token-bucket _pg pack's",
+        "peek_all": "the peek-all SEAM: the arm pins the route's error wrapping around the registry's own aggregate",
+    },
+}
+
+
+def _taskq_module_aliases(tree: ast.Module) -> dict[str, str]:
+    """Local names bound to taskq.* modules/classes by the file's imports."""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.startswith("taskq"):
+                    aliases[a.asname or a.name.split(".")[0]] = a.name
+        elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("taskq"):
+            for a in node.names:
+                aliases[a.asname or a.name] = f"{node.module}.{a.name}"
+    return aliases
+
+
+def _setattr_site_target(node: ast.Call, aliases: dict[str, str]) -> tuple[str, str] | None:
+    """The (taskq module path, attribute name) a ``setattr`` call patches,
+    when statically resolvable; ``None`` otherwise."""
+    args = node.args
+    if len(args) < 2:
+        return None
+    target, name = args[0], args[1]
+    module_path: str | None = None
+    if isinstance(target, ast.Name) and target.id in aliases:
+        module_path = aliases[target.id]
+    elif isinstance(target, ast.Constant) and isinstance(target.value, str):
+        dotted = target.value
+        if dotted.startswith("taskq"):
+            module_path = dotted
+    if module_path is None or not isinstance(name, ast.Constant):
+        return None
+    if not isinstance(name.value, str):
+        return None
+    # ``import taskq.worker.leader as leader_mod`` aliases the MODULE; a
+    # ``from taskq.x import Thing`` alias binds a CLASS - the attribute is
+    # patched on the class whose module the alias names.
+    return module_path, name.value
+
+
+def test_taskq_patch_sites_in_the_cured_packs_are_registered() -> None:
+    """Every ``monkeypatch.setattr`` on a ``taskq.*`` attribute inside a
+    pack the mock-subtraction cured must carry a registry entry with its
+    reason.
+
+    The registry (:data:`_TASKQ_PATCH_EXEMPT`) is the ledger: each entry
+    names the real-PG sibling pack that owns the patched attribute's
+    behavior, or the reason no sibling can (fault injection, the obs
+    seams, the delegation proxies). A NEW patch site in a registered pack
+    turns this guard red until it adds its own entry - the message says
+    exactly that. A patch site in an unregistered pack is not this guard's
+    business: whether THAT pack's module has a real-PG sibling is the
+    judgment the registry records when the pack is cured.
+    """
+    offenders: list[str] = []
+    registry_names = set(_TASKQ_PATCH_EXEMPT)
+    for name in sorted(registry_names):
+        path = _TESTS_DIR / name
+        if not path.exists():
+            offenders.append(f"{name}: a registry entry names a file that does not exist")
+            continue
+        tree = ast.parse(path.read_text())
+        aliases = _taskq_module_aliases(tree)
+        allowed = _TASKQ_PATCH_EXEMPT[name]
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            if not (node.func.attr == "setattr" and isinstance(node.func.value, ast.Name)):
+                continue
+            target = _setattr_site_target(node, aliases)
+            if target is None:
+                continue
+            module_path, attr = target
+            if attr not in allowed:
+                offenders.append(
+                    f"{name}:{node.lineno}: monkeypatch.setattr({module_path}, "
+                    f'"{attr}", ...) is unregistered'
+                )
+    assert not offenders, (
+        "Found unregistered taskq.* patch site(s) in the mock-subtraction's "
+        "cured packs:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nThese packs' SQL-semantics arms were subtracted because real-PG "
+        "sibling packs own the behavior; a patch site here must say why it may "
+        "stay. Add the attribute to _TASKQ_PATCH_EXEMPT[<this pack>] with the "
+        "reason naming the real-PG sibling that owns the attribute's behavior "
+        "(or why no sibling can - fault injection, the obs seams, the "
+        "delegation proxies) - or delete the patch and drive the real seam."
+    )

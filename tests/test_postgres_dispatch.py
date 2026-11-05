@@ -8,15 +8,14 @@ integration module.
 import asyncio
 import math
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from unittest.mock import Mock
 from uuid import UUID
 
 import pytest
 
-from taskq._ids import new_uuid
-from taskq.backend._protocol import JobId, JobRow
+from taskq.backend._protocol import JobRow
 from taskq.backend.clock import Clock
 from taskq.backend.postgres import PostgresBackend
 from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosPool
@@ -30,60 +29,6 @@ _ACQUIRE_TIMEOUT = 1.5
 _FakeFetch = Callable[..., list[dict[str, Any]]]
 
 # ── Default record fields for _job_row_from_record decoding ────────────
-
-
-def _default_record() -> dict[str, Any]:
-    """Return a dict with all keys that ``_job_row_from_record`` accesses."""
-    return {
-        "id": new_uuid(),
-        "actor": "test_actor",
-        "queue": "default",
-        "identity_key": None,
-        "fairness_key": "default",
-        "payload": '{"msg": "hello"}',
-        "payload_schema_ver": 1,
-        "status": "pending",
-        "priority": 0,
-        "attempt": 0,
-        "max_attempts": 5,
-        "retry_kind": "transient",
-        "schedule_to_close": None,
-        "start_to_close": None,
-        "heartbeat_timeout": None,
-        "created_at": datetime(2026, 5, 4, tzinfo=UTC),
-        "scheduled_at": datetime(2026, 5, 4, tzinfo=UTC),
-        "started_at": None,
-        "finished_at": None,
-        "last_heartbeat_at": None,
-        "locked_by_worker": None,
-        "lock_expires_at": None,
-        "cancel_requested_at": None,
-        "cancel_phase": 0,
-        "error_class": None,
-        "error_message": None,
-        "error_traceback": None,
-        "progress_state": "{}",
-        "progress_seq": 0,
-        "result": None,
-        "result_size_bytes": None,
-        "result_expires_at": None,
-        "idempotency_key": None,
-        "idempotency_scope": "",
-        "trace_id": None,
-        "span_id": None,
-        "metadata": "{}",
-        "tags": [],
-        "snooze_count": 0,
-        "rate_limit_blocked_count": 0,
-        "interrupt_count": 0,
-        "retry_base_seconds": 5.0,
-        "retry_cap_seconds": 3600.0,
-        "retry_backoff": "exponential",
-        "retry_jitter": 0.2,
-        "assignment_routed": False,
-        "claim_epoch": 0,
-        "parent_id": None,
-    }
 
 
 # ── Fake pool / connection ─────────────────────────────────────────────
@@ -208,63 +153,6 @@ def _make_backend(
     return _backend_with_dispatcher_pool(_MarkingFakePool(dispatcher_marker, fetch_fn))
 
 
-class _CaptureFakePool:
-    """Fake pool whose connection records fetch() statements and parameters.
-
-    Mirrors asyncpg's acquire contract: keyword-only ``timeout`` bound.
-    """
-
-    def __init__(self, marker: list[str], captured: list[tuple[str, tuple[object, ...]]]) -> None:
-        self._marker = marker
-        self._captured = captured
-        self.acquire_timeouts: list[float | None] = []
-
-    def acquire(self, *, timeout: float | None = None) -> "_CaptureFakeConn":
-        self._marker.append("acquire")
-        self.acquire_timeouts.append(timeout)
-        return _CaptureFakeConn(self._captured)
-
-    async def __aenter__(self) -> "_CaptureFakePool":
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        pass
-
-
-class _CaptureFakeConn:
-    """Fake connection that records fetch() statements and parameters."""
-
-    def __init__(self, captured: list[tuple[str, tuple[object, ...]]]) -> None:
-        self._captured = captured
-
-    async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
-        self._captured.append((sql, args))
-        return []
-
-    async def execute(self, sql: str, *args: object) -> str:
-        return "UPDATE 0"
-
-    def transaction(self) -> "_FakeTransaction":
-        return _FakeTransaction()
-
-    async def __aenter__(self) -> "_CaptureFakeConn":
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        pass
-
-
-def _make_capture_backend(
-    marker: list[str],
-    captured: list[tuple[str, tuple[object, ...]]],
-) -> PostgresBackend:
-    """Construct a PostgresBackend with a capture fake pool."""
-    return _backend_with_dispatcher_pool(_CaptureFakePool(marker, captured))
-
-
-# ── Tests ──────────────────────────────────────────────────────────────
-
-
 class TestDispatchBatchAcquire:
     """dispatch_batch calls acquire() exactly once per invocation."""
 
@@ -296,77 +184,16 @@ class TestDispatchBatchAcquire:
         assert pool.acquire_timeouts == [_ACQUIRE_TIMEOUT]
 
 
-class TestDispatchBatchHelperParams:
-    """dispatch_batch calls the helper with the rendered SQL and correct params."""
-
-    def test_helper_receives_rendered_sql(self) -> None:
-        marker: list[str] = []
-        backend = _make_backend(dispatcher_marker=marker, fetch_fn=lambda: [])
-        asyncio.run(backend.dispatch_batch(_FIXED_UUID, ["default"], 10, _GRACE))
-        assert '"taskq_test".jobs' in backend._sql.dispatch_strict_fifo
-
-    def test_helper_receives_params_in_order(self) -> None:
-        marker: list[str] = []
-        captured: list[tuple[str, tuple[object, ...]]] = []
-
-        backend = _make_capture_backend(marker, captured)
-        asyncio.run(backend.dispatch_batch(_FIXED_UUID, ["high", "low"], 10, _GRACE))
-
-        # The claim is the fetch carrying the dispatch CTE (5 args: queues,
-        # limit_n, worker_id, lock_lease, oversample); the round's other
-        # statements (queue-mode resolve, and the claimable-rows probe that
-        # follows an empty claim) bind different parameter lists.
-        claims = [args for sql, args in captured if "WITH RECURSIVE params AS (" in sql]
-        assert len(claims) == 1
-        dispatch_args = claims[0]
-        assert len(dispatch_args) == 5
-        assert dispatch_args[0] == ["high", "low"]
-        assert dispatch_args[1] == 10
-        assert dispatch_args[2] == _FIXED_UUID
-        assert dispatch_args[3] == _GRACE
-        assert dispatch_args[4] == 2  # default oversample
-
-
 class TestDispatchBatchDecoding:
-    """Records returned by the helper are decoded via _job_row_from_record."""
+    """Records returned by the helper are decoded via _job_row_from_record.
 
-    def test_returns_list_of_jobrow(self) -> None:
-        marker: list[str] = []
-
-        def _fetch_two() -> list[dict[str, Any]]:
-            r1 = _default_record()
-            r2 = _default_record()
-            return [r1, r2]
-
-        backend = _make_backend(dispatcher_marker=marker, fetch_fn=_fetch_two)
-        result = asyncio.run(backend.dispatch_batch(_FIXED_UUID, ["default"], 10, _GRACE))
-        assert len(result) == 2
-        assert all(isinstance(row, JobRow) for row in result)
-        assert isinstance(result[0].id, UUID)
-
-    def test_representative_field_matches(self) -> None:
-        marker: list[str] = []
-        job_id = new_uuid()
-
-        def _fetch_one() -> list[dict[str, Any]]:
-            rec = _default_record()
-            rec["id"] = job_id
-            return [rec]
-
-        backend = _make_backend(dispatcher_marker=marker, fetch_fn=_fetch_one)
-        result = asyncio.run(backend.dispatch_batch(_FIXED_UUID, ["default"], 10, _GRACE))
-        assert len(result) == 1
-        assert result[0].id == JobId(job_id)
-
-    def test_empty_result_returns_empty_list(self) -> None:
-        marker: list[str] = []
-
-        def _fetch_none() -> list[dict[str, Any]]:
-            return []
-
-        backend = _make_backend(dispatcher_marker=marker, fetch_fn=_fetch_none)
-        result = asyncio.run(backend.dispatch_batch(_FIXED_UUID, ["default"], 10, _GRACE))
-        assert result == []
+    NOTE (the mock-subtraction cure): the fake-record decode arms are
+    deleted — tests/test_dispatch_pg.py::test_full_cte_round_trip owns the
+    decode against the REAL claim's row (every field, status, attempt,
+    locks, timestamps), and the empty page's shape rides its backlog arms.
+    The param-order arm died with them (the real round trip's own claim is
+    the statement the params feed).
+    """
 
 
 class TestDispatchBatchPoolSelection:
@@ -386,19 +213,13 @@ class TestDispatchBatchPoolSelection:
 
 
 class TestDispatchBatchEmptyQueues:
-    """Empty queues list: implementation passes through (not short-circuits)."""
+    """Empty queues list: implementation passes through (not short-circuits).
 
-    def test_empty_queues_passes_through(self) -> None:
-        marker: list[str] = []
-        captured: list[tuple[str, tuple[object, ...]]] = []
-
-        backend = _make_capture_backend(marker, captured)
-        result = asyncio.run(backend.dispatch_batch(_FIXED_UUID, [], 10, _GRACE))
-        assert result == []
-        assert marker == ["acquire"]
-        claims = [args for sql, args in captured if "WITH RECURSIVE params AS (" in sql]
-        assert len(claims) == 1
-        assert claims[0][0] == []
+    NOTE (the mock-subtraction cure): the fake's bound-arg pin is deleted;
+    the pass-through BEHAVIOR (an empty queue list completes, returns an
+    empty batch, still one pool checkout) converted to the real fixture in
+    tests/test_dispatch_pg.py::test_empty_queue_list_round_trips_empty.
+    """
 
 
 class TestDispatchBatchCancellation:

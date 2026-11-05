@@ -827,6 +827,14 @@ async def test_cancel_event_on_live_ctx_works() -> None:
             ),
         )
 
+    # The witness must land: the actor observed ctx.cancellation_requested
+    # True through the LIVE context the dispatch handed it - a wiring that
+    # hands the actor a detached ctx leaves this False and the pin red.
+    assert actor_saw_cancellation is True, (
+        "the actor's live ctx did not report the cancellation the job's "
+        "cancel_event carries - the ctx wiring detached"
+    )
+
 
 # ── Escape paths apply the batch policy hook ──────────────────────────
 

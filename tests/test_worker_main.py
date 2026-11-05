@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
+import structlog.testing
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend, JobRow
@@ -670,27 +671,37 @@ async def test_deregister_worker_delete_shape(settings: WorkerSettings) -> None:
 
 
 async def test_deregister_worker_returns_on_timeout(settings: WorkerSettings) -> None:
-    """deregister_worker logs warning and returns cleanly on timeout."""
+    """deregister_worker logs warning and returns False (unconfirmed) on
+    timeout - the row's fate stays unknown, the backstop decides."""
     mock_pool = MagicMock()
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(side_effect=TimeoutError("pool exhausted"))
     cm.__aexit__ = AsyncMock()
     mock_pool.acquire.return_value = cm
 
-    # Should not raise.
-    await deregister_worker(mock_pool, settings, new_uuid())
+    with structlog.testing.capture_logs() as captured:
+        outcome = await deregister_worker(mock_pool, settings, new_uuid())
+    assert outcome is False, "a swallowed transient failure must report unconfirmed, not None/True"
+    warnings = [e for e in captured if e["event"] == "deregister_worker_failed"]
+    assert len(warnings) == 1, f"the timeout warning did not fire exactly once: {captured!r}"
 
 
 async def test_deregister_worker_returns_on_oserror(settings: WorkerSettings) -> None:
-    """deregister_worker logs warning and returns cleanly on OSError."""
+    """deregister_worker logs warning and returns False (unconfirmed) on
+    a connection loss - never raising into shutdown."""
     mock_pool = MagicMock()
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(side_effect=OSError("connection lost"))
     cm.__aexit__ = AsyncMock()
     mock_pool.acquire.return_value = cm
 
-    # Should not raise.
-    await deregister_worker(mock_pool, settings, new_uuid())
+    with structlog.testing.capture_logs() as captured:
+        outcome = await deregister_worker(mock_pool, settings, new_uuid())
+    assert outcome is False, "a swallowed connection loss must report unconfirmed"
+    warnings = [e for e in captured if e["event"] == "deregister_worker_failed"]
+    assert len(warnings) == 1, (
+        f"the connection-loss warning did not fire exactly once: {captured!r}"
+    )
 
 
 # ── deregister outcome contract: the finally gate and the backstop retry ──

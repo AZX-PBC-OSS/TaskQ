@@ -45,7 +45,11 @@ def _dev_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[report
 
 
 class _ScheduleRunConn:
-    """Fake asyncpg connection that returns configurable rows by query keyword."""
+    """Fake asyncpg connection that returns configurable rows by query keyword.
+
+    fail-closed-exempt: the schedule-run SECURITY refusal arms (auth/CSRF/gate
+    shapes scripted, no PG).
+    """
 
     def __init__(
         self,

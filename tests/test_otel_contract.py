@@ -346,6 +346,7 @@ async def test_mark_interrupted_fenced_out_emits_the_noop_counter(
 
 class _PruneScriptedConn:
     """Conn double for the leader's prune/expiry sweeps.
+        fail-closed-exempt: the prune sweep's scripted rows for the metric-contract arms (the sweep's SQL is tests/test_leader_prune.py's)
 
     Answers the two infrastructure reads every sweep makes (the GUC
     probe, the DB-clock read) and routes the batch statements by

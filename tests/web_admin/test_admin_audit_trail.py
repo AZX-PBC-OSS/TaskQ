@@ -45,7 +45,8 @@ def _get_csrf_token(client: Any) -> str:
 class _RecordingConnection(StubConnection):
     """Connection stub that records execute() calls and transaction() uses."""
 
-    def __init__(self) -> None:
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]  # Why: the fail-closed stub's script machinery (the render scripts + any per-test scripts) lives on the base.
         self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
         self.transaction_depth = 0
         self.max_transaction_depth = 0
@@ -468,7 +469,8 @@ _AUDIT_ROW = StubRecord(
 
 
 class _DetailConn(_RecordingConnection):
-    """Connection stub scripting the job detail route's four reads:
+    """
+    fail-closed-exempt: the audit-trail detail's scripted rows (the audit rows' real writes are the mutation arms' own recording)Connection stub scripting the job detail route's four reads:
     job fetchrow, attempts fetch, events fetch, admin_audit fetch."""
 
     def __init__(self, *, job: StubRecord | None, audit: list[StubRecord]) -> None:

@@ -21,6 +21,8 @@ from dataclasses import replace as _dc_replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
+
 import taskq.constants as _constants
 from taskq._ids import new_job_id
 from taskq.backend._protocol import CancelPhase, EnqueueArgs, JobId
@@ -196,20 +198,27 @@ class TestTickCancelNoYield:
     async def test_does_not_await(self) -> None:
         """tick_cancel_polling MUST NOT sleep or yield to the event loop.
 
-        This is verified by inspection of the implementation: it contains
-        no ``await`` calls. A runtime test cannot easily assert "no await
-        occurred"; this documentation-only test confirms the contract.
+        Proven at runtime, not by inspection: the coroutine is driven by
+        hand — one ``.send(None)``. A body that never awaits runs to
+        completion on that send and raises StopIteration; a body that
+        gained an await yields instead and this pin fails.
         """
-        # tick_cancel_polling is a sync-looking async function that
-        # doesn't actually await anything. Calling it should return
-        # immediately without any coroutine scheduling.
         clock = FakeClock(_START)
         backend = _make_backend(clock)
         job_id, _wid = await _make_running_job(backend)
         await backend.write_cancel_request(job_id, None)
 
-        # Should complete without yielding (no asyncio.sleep, no await)
-        await backend.tick_cancel_polling()
+        coro = backend.tick_cancel_polling()
+        try:
+            coro.send(None)
+        except StopIteration:
+            pass  # finished without a single yield - the contract
+        else:
+            coro.close()
+            pytest.fail(
+                "tick_cancel_polling yielded to the event loop - it gained "
+                "an await, and the cancel poll now schedules between tests"
+            )
 
 
 # ── Cancel-tracking cleanup ──────────────────────────────────────────

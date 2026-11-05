@@ -38,6 +38,7 @@ import pytest
 import structlog.testing
 
 import taskq.backend._enqueue as _enqueue_mod
+from taskq._ids import new_base62
 from taskq.backend._enqueue import _enqueue, _enqueue_on_conn
 from taskq.backend._sql_templates import render
 from taskq.backend.clock import SystemClock
@@ -93,6 +94,7 @@ class _NullSavepoint:
 
 class _ContendedFakeConn:
     """ConnLike stand-in for the BYO-transaction capped-enqueue path.
+        fail-closed-exempt: the advisory-lock CONTENTION fault injection: the 55P03 timeout / savepoint tier, deterministically
 
     Models a caller-owned transaction (``is_in_transaction() -> True``, so
     ``_enqueue_on_conn`` takes the no-wrap branch unchanged) and the
@@ -615,3 +617,43 @@ class TestMaxPendingLockBoundedWait:
         )
         assert not any("set_config" in s for s in counting.sql_log)
         assert not any("SAVEPOINT" in s for s in counting.sql_log)
+
+
+async def test_max_pending_exceeded_error_carries_the_typed_fields(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """The cap rejection's typed fields on the REAL path: the error names
+    the configured cap and the count that exceeded it.
+
+    (Converted from tests/test_enqueue_coverage.py's fake arm in the
+    mock-subtraction cure: the fake scripted the count; this fills a real
+    table to its cap.)"""
+    deps = clean_jobs_app.deps
+    schema = deps.settings.schema_name
+    sql = render(schema)
+    actor = f"capped_fields_{new_base62()}"
+
+    async with deps.worker_pool.acquire() as conn:
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, queue, max_pending) '  # noqa: S608  # Why: schema is the fixture-derived test identifier; values are $-bound.
+            "VALUES ($1, 'default', 2) ON CONFLICT (actor) DO UPDATE SET max_pending = 2",
+            actor,
+        )
+
+    def _args() -> object:
+        return dataclasses.replace(make_enqueue_args(actor=actor), max_pending=2)
+
+    first_two = [
+        await _enqueue(deps.worker_pool, sql, schema, SystemClock(), _args()) for _ in range(2)
+    ]
+    assert len(first_two) == 2
+
+    with pytest.raises(MaxPendingExceededError) as exc_info:
+        await _enqueue(deps.worker_pool, sql, schema, SystemClock(), _args())
+
+    assert exc_info.value.max_pending == 2, (
+        f"the typed error must name the configured cap: {exc_info.value.max_pending!r}"
+    )
+    assert exc_info.value.current_count == 2, (
+        f"the typed error must name the count that filled it: {exc_info.value.current_count!r}"
+    )

@@ -63,6 +63,7 @@ class _Transaction:
 
 class _ConnStandin:
     """ConnLike stand-in that routes calls by SQL substring and records,
+        fail-closed-exempt: the caller-conn serialization fault injection: a connection already in transaction, deterministically
     per statement, whether an open transaction surrounded it.
 
     ``caller_tx_open`` models the two caller shapes the wrap must

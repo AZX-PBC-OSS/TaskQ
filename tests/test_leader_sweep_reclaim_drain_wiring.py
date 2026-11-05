@@ -30,17 +30,41 @@ from taskq.worker.deps import WorkerDeps
 
 
 class _FakeConn:
-    async def execute(self, sql: str, *args: object) -> str:
-        return "DELETE 0"
+    """The deps' connection shell.
+
+    FAIL CLOSED (tests/test_suite_hygiene.py's rule) with exactly the
+    pending-reclaim drain's named fetch shapes answered: the registry's
+    real drain method runs its real statements (all RETURNING fetches)
+    through this pool, and an empty list is the drain's no-survivors
+    answer, so the pending set empties and the wiring under test is the
+    loop's, not a scripted drain. Any other statement is a wiring drift
+    the raise names; the drain's statement-COUNT properties converted to
+    the real fixture in tests/test_leader_sweep_wiring_pg.py.
+    """
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
-        return []
+        normalized = " ".join(sql.split())
+        if normalized.startswith('DELETE FROM "taskq".reservation_slots'):
+            return []  # the slice matched no rows: no survivors
+        if normalized.startswith("SELECT") and 'FROM "taskq".reservation_slots' in normalized:
+            return []  # the survivor probe: nothing exists
+        if normalized.startswith('DELETE FROM "taskq".rate_limit_buckets'):
+            return []  # the slice matched no rows: no survivors
+        raise AssertionError(
+            f"no named answer for the drain pool's statement: {sql!r} - the "
+            "statement-count properties converted to "
+            "tests/test_leader_sweep_wiring_pg.py; add a named shape here "
+            "only for a statement this pack's wiring legitimately issues"
+        )
+
+    async def execute(self, sql: str, *args: object) -> str:
+        raise AssertionError(f"no named answer for the drain pool's statement: {sql!r}")
 
     async def fetchval(self, sql: str, *args: object) -> object:
-        return None
+        raise AssertionError(f"no named answer for the drain pool's statement: {sql!r}")
 
     async def fetchrow(self, sql: str, *args: object) -> object | None:
-        return None
+        raise AssertionError(f"no named answer for the drain pool's statement: {sql!r}")
 
     async def close(self) -> None:
         pass

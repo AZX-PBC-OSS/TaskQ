@@ -124,6 +124,7 @@ def _worker_settings() -> WorkerSettings:
 
 class FakeConn:
     """asyncpg.Connection stand-in with recording fetchval/execute.
+        fail-closed-exempt: the no-leadership shutdown's scripted probes (the leaderless exit path, no PG)
 
     Lease statements are answered the way the real driver would: the
     elect and the renew return the term's timestamp when the double is

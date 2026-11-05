@@ -520,7 +520,10 @@ def test_workers_page_non_dict_metadata_defaults_notify_disabled(
 
 
 class _WorkersScriptedConn:
-    """Connection returning one preset workers fetch, then empty results."""
+    """Connection returning one preset workers fetch, then empty results.
+
+    fail-closed-exempt: the workers page's scripted rows (the REAL fleet view is tests/test_web_admin_integration.py's)
+    """
 
     def __init__(self, rows: list[StubRecord], *, schema: str = "taskq") -> None:
         self._rows = rows

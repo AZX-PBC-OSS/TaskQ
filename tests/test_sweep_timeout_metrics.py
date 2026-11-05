@@ -462,6 +462,7 @@ async def test_failing_gauge_sampler_publishes_no_success_stamp(
 
 class _BacklogTickConn:
     """Connection stand-in for the backlog tick: fleet-wide reads answer,
+        fail-closed-exempt: the backlog tick's scripted pages for the metric arms (the sweep SQL is tests/test_postgres_sweeps.py's)
     and the per-actor backlog read does whatever the test needs.
 
     Dispatches on the statement's own shape the way the real tick issues

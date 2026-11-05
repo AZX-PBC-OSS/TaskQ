@@ -139,6 +139,8 @@ def _patch_db(
     cron = [] if cron_rows is None else cron_rows
 
     class _FakeConn:
+        """fail-closed-exempt: the CLI doctor's scripted diagnostics rows (no PG; the real checks are the integration packs')"""
+
         async def execute(self, query: str, *args: Any) -> str:
             executed.append(query)
             return "OK"

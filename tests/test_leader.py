@@ -19,7 +19,6 @@ import structlog.testing
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import CancelPhase, JobId, JobRow
 from taskq.backend._sweeps import SweepBatchSizer
-from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.cron import CronScheduleSpec
 from taskq.settings import WorkerSettings
 from taskq.testing.assertions import (
@@ -37,9 +36,8 @@ from taskq.worker.deps import LeaderTerm, WorkerDeps
 from taskq.worker.leader import (
     MaintenanceLeader,
     _build_retention_per_status,
-    _load_actor_retention_overrides,
     _schedule_utc_to_cron,
-    archive_expiry_sweep,
+    build_leader_lease_sql,
     prune_terminal_jobs,
 )
 
@@ -161,7 +159,18 @@ class FakeConn:
             # when it does not. A double that handed back its generic bool
             # here would report the same outcome to the winner and the loser.
             return datetime.now(UTC) if self._fetchval_result else None
-        return self._fetchval_result
+        if "pg_try_advisory_lock" in sql or "pg_advisory_unlock" in sql:
+            # The courtesy lock probe / the release verdict: the configured
+            # verdict (True = held/won, anything falsy = not held). Named,
+            # never a fall-through default.
+            return self._fetchval_result
+        if sql.strip().upper() == "SELECT 1":
+            return 1  # the watchdog's liveness probe; the value is unread
+        raise AssertionError(
+            f"FakeConn: no named answer for statement {sql!r} (args {args!r}) - "
+            "the fail-closed rule (tests/test_suite_hygiene.py) forbids a silent "
+            "default: add the statement shape explicitly to this double"
+        )
 
     async def execute(self, sql: str, *args: object) -> str:
         self.execute_calls.append((sql, args))
@@ -175,13 +184,33 @@ class FakeConn:
         # shape the caller reads must be the shape the real driver sends).
         if sql.lstrip().upper().startswith("DELETE FROM") and "maintenance_leader" in sql:
             return "DELETE 1"
-        return "UPDATE 1"
+        if "pg_notify" in sql:
+            return "SELECT 1"  # the wake broadcast; the tag is unread
+        if "pg_advisory_unlock" in sql:
+            return "SELECT 1"  # the release's execute round; the verdict rides fetchval
+        if "set_config" in sql:
+            return "SELECT 1"  # the batch's SET LOCAL statement_timeout apply/restore
+        raise AssertionError(
+            f"FakeConn: no named answer for statement {sql!r} (args {args!r}) - "
+            "the fail-closed rule (tests/test_suite_hygiene.py) forbids a silent "
+            "default: add the statement shape explicitly to this double"
+        )
 
     async def fetchrow(self, sql: str, *args: object) -> object | None:
-        return None
+        raise AssertionError(
+            f"FakeConn: fetchrow has no named answer for statement {sql!r} "
+            "(args {args!r}) - the fail-closed rule "
+            "(tests/test_suite_hygiene.py) forbids a silent default: add the "
+            "statement shape explicitly to this double"
+        )
 
     async def fetch(self, sql: str, *args: object) -> Sequence[object]:
-        return []
+        raise AssertionError(
+            f"FakeConn: fetch has no named answer for statement {sql!r} "
+            f"(args {args!r}) - the fail-closed rule "
+            "(tests/test_suite_hygiene.py) forbids a silent default: add the "
+            "statement shape explicitly to this double"
+        )
 
     async def close(self) -> None:
         self.close_calls += 1
@@ -607,8 +636,12 @@ async def test_lease_gauge_is_stamped_on_election_and_each_renewal(
 
     from taskq.worker._transient import UnexpectedLoopErrorGuard
 
+    # The REAL renew statement, not a placeholder: the renewal rides the
+    # lease statement's shape (the fail-closed double answers only named
+    # shapes - the lease family's, by schema).
+    renew_sql = build_leader_lease_sql(deps.settings.schema_name)[1]
     should_sleep = await leader._renew_term(  # pyright: ignore[reportPrivateUsage]  # Why: driving the renew arm directly IS the test.
-        term, "renew-sql", UnexpectedLoopErrorGuard("test")
+        term, renew_sql, UnexpectedLoopErrorGuard("test")
     )
 
     assert should_sleep is True, "a healthy renewal keeps leading"
@@ -1480,62 +1513,12 @@ async def test_build_retention_per_status_crashed_uses_abandoned() -> None:
     assert result["abandoned"] == timedelta(days=120)
 
 
-# ── _load_actor_retention_overrides ────────────────────────────────────
-
-
-async def test_load_actor_retention_overrides_with_rows() -> None:
-    """_load_actor_retention_overrides returns per-actor timedelta overrides."""
-    rows = [
-        [
-            _FakeRecord({"actor": "telemetry_ingest", "retention_days": 7}),
-            _FakeRecord({"actor": "audit_critical", "retention_days": 365}),
-        ],
-    ]
-    conn = _FakeConnForPrune(batch_rows=rows)
-    result = await _load_actor_retention_overrides(conn, schema="taskq")
-    assert result == {
-        "telemetry_ingest": timedelta(days=7),
-        "audit_critical": timedelta(days=365),
-    }
-
-
-async def test_load_actor_retention_overrides_isolates_invalid_rows() -> None:
-    rows = [
-        [
-            _FakeRecord({"actor": "numeric", "retention_days": 7}),
-            _FakeRecord({"actor": "legacy_text", "retention_days": "30"}),
-            _FakeRecord({"actor": "too_large", "retention_days": "4000000000"}),
-            _FakeRecord({"actor": "malformed", "retention_days": "not-a-number"}),
-            _FakeRecord({"actor": "json_null", "retention_days": None}),
-        ],
-    ]
-    conn = _FakeConnForPrune(batch_rows=rows)
-
-    with structlog.testing.capture_logs() as captured:
-        result = await _load_actor_retention_overrides(conn, schema="taskq")
-
-    assert result == {
-        "numeric": timedelta(days=7),
-        "legacy_text": timedelta(days=30),
-    }
-    warnings = [e for e in captured if e["event"] == "actor-retention-override-invalid"]
-    assert {e["actor"] for e in warnings} == {"too_large", "malformed", "json_null"}
-    assert all(e["log_level"] == "warning" for e in warnings)
-    assert all("value" not in e for e in warnings)
-
-
-async def test_load_actor_retention_overrides_empty() -> None:
-    """_load_actor_retention_overrides returns empty dict when no rows."""
-    conn = _FakeConnForPrune(batch_rows=[[]])
-    result = await _load_actor_retention_overrides(conn, schema="taskq")
-    assert result == {}
-
-
-async def test_load_actor_retention_overrides_invalid_schema() -> None:
-    """_load_actor_retention_overrides returns empty dict on invalid schema."""
-    conn = _FakeConnForPrune(batch_rows=[])
-    result = await _load_actor_retention_overrides(conn, schema="bad;schema")
-    assert result == {}
+# NOTE (the mock-subtraction cure): the _load_actor_retention_overrides fake
+# arms rode the OLD positional contract (the actor-config fetch consuming the
+# next scripted batch — the probe-ate-a-batch shape). They converted to the
+# real fixture in tests/test_leader_prune.py, where the invalid-row isolation
+# contract already had its real-PG anchor
+# (test_invalid_actor_retention_does_not_stop_global_prune).
 
 
 # ── prune_terminal_jobs with FakeConn ────────────────────────
@@ -1553,6 +1536,14 @@ class _FakeRecord:
 
 
 class _FakeConnForPrune(FakeConn):
+    """The prune-family double: every statement shape the sweep machinery
+    issues is a NAMED match (fail-closed, the
+    tests/test_suite_hygiene.py rule); an unmatched statement raises
+    AssertionError naming the fragment instead of falling through to a
+    silent default — the fall-through shape is what once let the
+    availability gate's probe eat a scripted batch and made the sweeps
+    delete 0 of 7."""
+
     def __init__(
         self,
         *,
@@ -1589,11 +1580,12 @@ class _FakeConnForPrune(FakeConn):
         if "current_setting" in sql:
             return [_FakeRecord({"current_setting": "0"})]
         if "actor_config" in sql:
-            if self._actor_config_rows is not None:
-                return self._actor_config_rows
-            # Unscripted config rows: the old positional contract, where
-            # the actor-config fetch consumes the next scripted batch.
-            return self._next_scripted_batch()
+            # NAMED shape, never the scripted batches: the config read
+            # answers its own scripted rows, or the empty table (a
+            # legitimate server state) - the old positional contract
+            # (fall through and consume the next scripted batch) was the
+            # probe-ate-a-batch incident's shape.
+            return self._actor_config_rows if self._actor_config_rows is not None else []
         # The archive write locks the batch by id and returns the grouped
         # delete counts; the fake answers it from the batch the preceding
         # candidate fetch selected, asserting the bound ids are exactly
@@ -1612,17 +1604,28 @@ class _FakeConnForPrune(FakeConn):
                     f"the window returned {pending_ids!r}"
                 )
             return pending if pending is not None else []
+        # The expiry sweep is one statement per batch: the scripted batch
+        # is the statement's own result.
+        if "WITH expired AS MATERIALIZED" in sql:
+            return self._next_scripted_batch()
         # The availability gate's pre-check (the extension's catalog
         # read): the fake's server is vanilla — no rows — and the probe
         # consumes no scripted batch (it is a probe, not a batch
         # statement).
         if "pg_extension" in sql:
             return []
-        # The expiry sweep is one statement per batch: the scripted batch
-        # is the statement's own result.
-        if "WITH expired AS MATERIALIZED" in sql:
-            return self._next_scripted_batch()
-        return await self._fetch_candidates(sql, *args)
+        # The candidate window: the next scripted batch, one candidate id
+        # per scripted write row. An empty scripted batch selects nothing
+        # and ends the drain, the same contract an empty page has on the
+        # real backend.
+        if _is_prune_candidate_sql(sql):
+            return await self._fetch_candidates(sql, *args)
+        raise AssertionError(
+            f"_FakeConnForPrune: no named answer for statement {sql!r} "
+            f"(args {args!r}) - the fail-closed rule "
+            "(tests/test_suite_hygiene.py) forbids a silent default: add the "
+            "statement shape explicitly to this double"
+        )
 
     def _next_scripted_batch(self) -> list[_FakeRecord]:
         if self._batch_index < len(self._batch_rows):
@@ -1651,173 +1654,17 @@ class _FakeConnForPrune(FakeConn):
         return self._candidate_ids(rows)
 
 
-async def test_prune_terminal_jobs_returns_prune_result() -> None:
-    """prune_terminal_jobs returns PruneResult with aggregated counts.
-
-    Cutoffs are anchored to the database clock (7565d3f): each terminal
-    status's cutoff is exactly ``db_now - retention``, never an app-clock
-    instant - the caller feeds ``max(cutoffs.values())`` into
-    ``prune_old_batches``, so skew here would prune batches early or late.
-    """
-    rows = [
-        [
-            _FakeRecord({"actor": "test_actor", "status": "succeeded", "cnt": 5}),
-        ],
-    ]
-    db_now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
-    conn = _FakeConnForPrune(batch_rows=rows, db_now=db_now)
-    result = await prune_terminal_jobs(
-        conn,
-        retention_per_status={"succeeded": timedelta(days=30)},
-        archive_retention=timedelta(days=365),
-        batch_size=100,
-        schema="taskq",
-    )
-    assert result.total_deleted == 5
-    assert result.archived == 5
-    assert result.by_actor == {"test_actor": 5}
-    assert result.by_status == {"succeeded": 5}
-    assert result.cutoffs == {status: db_now - timedelta(days=30) for status in TERMINAL_STATUSES}
-    assert result.duration_ms >= 0
-
-
-async def test_prune_terminal_jobs_drains_to_empty() -> None:
-    """prune_terminal_jobs loops until a batch returns fewer than batch_size rows."""
-    rows = [
-        [
-            _FakeRecord({"actor": "a", "status": "succeeded", "cnt": 10}),
-        ],
-        [
-            _FakeRecord({"actor": "a", "status": "succeeded", "cnt": 3}),
-        ],
-        [],
-    ]
-    conn = _FakeConnForPrune(batch_rows=rows)
-    result = await prune_terminal_jobs(
-        conn,
-        retention_per_status={"succeeded": timedelta(days=30)},
-        archive_retention=timedelta(days=365),
-        batch_size=10,
-        schema="taskq",
-    )
-    assert result.total_deleted == 13
-    assert result.by_status["succeeded"] == 13
-
-
-async def test_prune_terminal_jobs_invalid_schema() -> None:
-    """prune_terminal_jobs raises ValueError on invalid schema identifier."""
-    conn = _FakeConnForPrune()
-    with pytest.raises(ValueError, match="invalid schema"):
-        await prune_terminal_jobs(
-            conn,
-            retention_per_status={"succeeded": timedelta(days=30)},
-            archive_retention=timedelta(days=365),
-            schema="bad schema",
-        )
-
-
-async def test_archive_expiry_sweep_returns_result() -> None:
-    """archive_expiry_sweep returns ArchiveExpiryResult with counts.
-
-    ``expire_before`` is the database clock's instant (7565d3f) so the
-    reported value cannot disagree with the server-side
-    ``expire_at < clock_timestamp()`` predicate that actually ran.
-    """
-    rows = [
-        [
-            _FakeRecord({"status": "succeeded", "cnt": 7}),
-        ],
-    ]
-    db_now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
-    conn = _FakeConnForPrune(batch_rows=rows, db_now=db_now)
-    result = await archive_expiry_sweep(
-        conn,
-        batch_size=100,
-        schema="taskq",
-    )
-    assert result.total_deleted == 7
-    assert result.by_status == {"succeeded": 7}
-    assert result.expire_before == db_now
-    assert result.duration_ms >= 0
-
-
-async def test_archive_expiry_sweep_drains_to_empty() -> None:
-    """archive_expiry_sweep loops until drain-to-empty."""
-    rows = [
-        [
-            _FakeRecord({"status": "failed", "cnt": 10}),
-        ],
-        [
-            _FakeRecord({"status": "failed", "cnt": 2}),
-        ],
-        [],
-    ]
-    conn = _FakeConnForPrune(batch_rows=rows)
-    result = await archive_expiry_sweep(
-        conn,
-        batch_size=10,
-        schema="taskq",
-    )
-    assert result.total_deleted == 12
-    assert result.by_status["failed"] == 12
-
-
-async def test_archive_expiry_sweep_invalid_schema() -> None:
-    """archive_expiry_sweep raises ValueError on invalid schema identifier."""
-    conn = _FakeConnForPrune()
-    with pytest.raises(ValueError, match="invalid schema"):
-        await archive_expiry_sweep(conn, schema="bad;schema")
-
-
-async def test_prune_terminal_jobs_actor_override_shorter_retention() -> None:
-    """Actor override with shorter retention runs per-actor batch for that status."""
-    global_rows = [
-        [_FakeRecord({"actor": "telemetry_ingest", "status": "succeeded", "cnt": 10})],
-        [],  # failed
-        [],  # cancelled
-        [],  # crashed
-        [],  # abandoned
-    ]
-    actor_rows = [
-        [_FakeRecord({"actor": "telemetry_ingest", "status": "succeeded", "cnt": 4})],
-    ]
-    conn = _FakeConnForPrune(batch_rows=global_rows + actor_rows)
-    result = await prune_terminal_jobs(
-        conn,
-        retention_per_status={"succeeded": timedelta(days=30)},
-        archive_retention=timedelta(days=365),
-        batch_size=100,
-        schema="taskq",
-        actor_overrides={"telemetry_ingest": timedelta(days=7)},
-    )
-    assert result.total_deleted == 14
-    assert result.by_actor["telemetry_ingest"] == 14
-    assert result.by_status["succeeded"] == 14
-
-
-async def test_prune_terminal_jobs_actor_override_longer_retention_skipped() -> None:
-    """Actor override with longer or equal retention is skipped; global batch suffices."""
-    global_rows = [
-        [_FakeRecord({"actor": "slow_actor", "status": "succeeded", "cnt": 8})],
-        [],  # failed
-        [],  # cancelled
-        [],  # crashed
-        [],  # abandoned
-    ]
-    actor_rows = [
-        [_FakeRecord({"actor": "slow_actor", "status": "succeeded", "cnt": 5})],
-    ]
-    conn = _FakeConnForPrune(batch_rows=global_rows + actor_rows)
-    result = await prune_terminal_jobs(
-        conn,
-        retention_per_status={"succeeded": timedelta(days=30)},
-        archive_retention=timedelta(days=365),
-        batch_size=100,
-        schema="taskq",
-        actor_overrides={"slow_actor": timedelta(days=90)},
-    )
-    assert result.total_deleted == 8
-    assert result.by_actor["slow_actor"] == 8
+# NOTE (the mock-subtraction cure): the sweep-function fake arms that
+# re-derived the prune/expiry CTE semantics (aggregate counts, drain-to-empty,
+# per-actor override routing) are deleted — the real-PG pack
+# tests/test_leader_prune.py owns that behavior against real data
+# (test_batch_drain, test_expiry_sweep, test_expiry_drain,
+# test_per_actor_retention, test_per_status_retention,
+# test_prune_cutoff_anchored_to_server_clock). The invalid-schema arms and the
+# statement-timeout arms converted to the real fixture there; the loop
+# machinery below (retry ladder, day latch, lock survival, shutdown drain)
+# keeps its scripted double because no real-PG sibling owns the loop, and the
+# double is fail-closed.
 
 
 # ── Date guard prevents double-prune on same UTC day ────────────────
@@ -2113,99 +1960,6 @@ class _HookedExpiryBatchConn(_FakeConnForPrune):
             self._on_batch()
             return list(self._row)
         return await super().fetch(sql, *args)
-
-
-async def test_prune_drain_stops_when_gate_closes() -> None:
-    """A drain gate returning False stops the drain between batches:
-    committed batches stay counted, the unbounded remainder is left for
-    the next attempt - a stopped drain is a pause, not a rollback."""
-    conn = _HookedPruneBatchConn(batch_size=10, on_batch=lambda: None)
-    allowed = 3
-
-    def gate() -> bool:
-        nonlocal allowed
-        if allowed == 0:
-            return False
-        allowed -= 1
-        return True
-
-    result = await prune_terminal_jobs(
-        conn,
-        retention_per_status={"succeeded": timedelta(days=30)},
-        archive_retention=timedelta(days=365),
-        batch_size=10,
-        schema="taskq",
-        drain_gate=gate,
-    )
-    assert conn.batches == 3, (
-        f"the drain ran {conn.batches} batches after the gate closed; a "
-        "False gate return must stop the drain before the next batch"
-    )
-    assert result.total_deleted == 30
-    assert result.archived == 30
-
-
-async def test_archive_expiry_drain_stops_when_gate_closes() -> None:
-    """The archive-expiry drain honors the same gate contract."""
-    conn = _HookedExpiryBatchConn(batch_size=10, on_batch=lambda: None)
-    allowed = 2
-
-    def gate() -> bool:
-        nonlocal allowed
-        if allowed == 0:
-            return False
-        allowed -= 1
-        return True
-
-    result = await archive_expiry_sweep(
-        conn,
-        batch_size=10,
-        schema="taskq",
-        drain_gate=gate,
-    )
-    assert conn.batches == 2
-    assert result.total_deleted == 20
-
-
-async def test_prune_batches_run_under_server_statement_timeout() -> None:
-    """Every prune batch - including the empty probe batch each status
-    runs - applies the server-side statement_timeout via SET LOCAL inside
-    the batch's transaction and restores the session value afterwards
-    (the same capture/restore contract the backend sweeps pin in
-    tests/test_rt_sweeps_timeout_leak.py)."""
-    conn = _FakeConnForPrune(batch_rows=[[_full_batch_record(5)]])
-    await prune_terminal_jobs(
-        conn,
-        retention_per_status={"succeeded": timedelta(days=30)},
-        archive_retention=timedelta(days=365),
-        schema="taskq",
-        statement_timeout_ms=4321,
-    )
-    set_config_calls = [(sql, args) for sql, args in conn.execute_calls if "set_config" in sql]
-    status_probes = len(TERMINAL_STATUSES)
-    assert len(set_config_calls) == 2 * status_probes, (
-        f"expected apply+restore per batch ({status_probes} probe batches, "
-        f"one per status); got {len(set_config_calls)} set_config calls"
-    )
-    applies = [args for _sql, args in set_config_calls[0::2]]
-    restores = [args for _sql, args in set_config_calls[1::2]]
-    assert applies and all(args == ("4321",) for args in applies), (
-        f"the bound must be the caller's statement_timeout_ms on every batch; got {applies}"
-    )
-    assert restores and all(args == ("0",) for args in restores), (
-        f"the captured session value must be restored after every batch; got {restores}"
-    )
-
-
-async def test_archive_expiry_batches_run_under_server_statement_timeout() -> None:
-    """The archive-expiry batches apply the same SET LOCAL bound."""
-    conn = _FakeConnForPrune(batch_rows=[[_FakeRecord({"status": "succeeded", "cnt": 7})], []])
-    await archive_expiry_sweep(conn, schema="taskq", batch_size=7, statement_timeout_ms=4321)
-    set_config_calls = [(sql, args) for sql, args in conn.execute_calls if "set_config" in sql]
-    # One full batch + the empty probe that ends the drain.
-    assert len(set_config_calls) == 4
-    assert [args for _sql, args in set_config_calls[0::2]] == [("4321",), ("4321",)]
-    assert [args for _sql, args in set_config_calls[1::2]] == [("0",), ("0",)]
 
 
 async def test_prune_timeout_latches_sizer_and_degrades_next_attempt() -> None:
@@ -2529,56 +2283,6 @@ async def test_archive_expiry_loop_retries_failed_attempt_with_backoff(
         shutdown.set()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-
-
-async def test_prune_loop_bounds_batches_under_pool_command_timeout(
-    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
-) -> None:
-    """The loop derives the per-batch server-side bound from the pool it
-    runs on: 80% of the default 5 s dispatcher_command_timeout = 4000 ms,
-    so the server's QueryCanceledError (breaker-counted, degrading)
-    always arrives before the pool's opaque client TimeoutError."""
-    import croniter as croniter_mod
-
-    leader_conn = _FakeConnForPrune(
-        batch_rows=[[_full_batch_record(5)]], fetchval_result=True, actor_config_rows=[]
-    )
-    leader, deps, _backend, _, _, shutdown = await _make_leader(
-        leader_conn=leader_conn,
-        dispatcher_pool=_PoolWithFixedConn(leader_conn),
-        is_leader=True,
-        monkeypatch=monkeypatch,
-    )
-    assert deps.settings.dispatcher_command_timeout == 5.0  # fixture precondition
-
-    class _InstantCroniter:
-        def __init__(self, expr: str, start_time: object) -> None:
-            pass
-
-        def get_next(self, dt_type: type[datetime]) -> datetime:
-            return datetime.now(UTC) + timedelta(seconds=0.05)
-
-    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
-    deps.settings.prune_cron_expr = "* * * * *"
-
-    task = asyncio.create_task(leader._prune_loop(shutdown))
-    try:
-        await wait_for_condition(
-            lambda: any("set_config" in sql for sql, _ in leader_conn.execute_calls),
-            description="the prune loop must bound its batches with a server-side timeout",
-        )
-    finally:
-        shutdown.set()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-
-    bound = [
-        args for sql, args in leader_conn.execute_calls if "set_config" in sql and args == ("4000",)
-    ]
-    assert bound, (
-        "prune batches must run under the pool-derived server-side bound "
-        "(0.8 x dispatcher_command_timeout); no 4000 ms set_config seen"
-    )
 
 
 async def test_prune_loop_drain_stops_on_shutdown_and_ticks_liveness(
@@ -4345,11 +4049,31 @@ async def test_watchdog_loop_exits_on_shutdown_while_awaiting_leadership() -> No
     ``MaintenanceLeader.run`` then waits forever and the worker cannot
     exit - the hang the PG-restart chaos path exposes.
     """
-    leader, _deps, _backend, _conn, _pool, shutdown = await _make_leader(is_leader=False)
+
+    class _ParkedWitnessEvent(asyncio.Event):
+        """Reports the park: *parked* sets the moment a waiter enters
+        ``wait()`` — the watchdog's own ``is_leader.wait()`` task is the
+        witness that the loop reached its park, no sleep-and-hope."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.parked = asyncio.Event()
+
+        async def wait(self) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]  # Why: the witness's wait returns whatever super() hands back; the override exists only to set the park witness.
+            self.parked.set()
+            return await super().wait()
+
+    leader, deps, _backend, _conn, _pool, shutdown = await _make_leader(is_leader=False)
+    witnessed = _ParkedWitnessEvent()
+    deps.is_leader = witnessed
     task = asyncio.create_task(leader._watchdog_loop(shutdown))
-    await asyncio.sleep(0.05)  # let the watchdog park on is_leader.wait()
+    # The parked-event witness: the watchdog is parked on is_leader.wait().
+    await wait_for_condition(
+        witnessed.parked.is_set,
+        description="the watchdog must park on is_leader.wait() before shutdown",
+    )
     shutdown.set()
-    # Unguarded this parks forever; the race wakes it promptly.
+    # The exit assert: unguarded this parks forever; the race wakes it promptly.
     await asyncio.wait_for(task, timeout=2.0)
 
 

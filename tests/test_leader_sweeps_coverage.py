@@ -1053,13 +1053,32 @@ async def test_loop_interval_sleep_is_shutdown_interruptible(
         clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
         worker_id=new_uuid(),
     )
-    shutdown = asyncio.Event()
+
+    class _WitnessedShutdown(asyncio.Event):
+        """Reports the park: *parked* sets the moment a waiter enters
+        ``wait()`` — the loop's own ``shutdown.wait()`` is the witness that
+        it reached the interval sleep, no fixed sleep-and-hope."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.parked = asyncio.Event()
+
+        async def wait(self) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]  # Why: the witness's wait returns whatever super() hands back; the override exists only to set the park witness.
+            self.parked.set()
+            return await super().wait()
+
+    shutdown = _WitnessedShutdown()
     loop_fn = getattr(_leader_sweeps, loop_name)
 
     task = asyncio.create_task(loop_fn(ctx, shutdown))
-    await asyncio.sleep(0.05)  # Let the loop reach its interval sleep.
+    # The parked-event witness: the loop is INSIDE the interval wait.
+    await wait_for_condition(
+        shutdown.parked.is_set,
+        description="the loop must reach its interval park before shutdown",
+    )
     shutdown.set()
-    # Must return promptly - unguarded this sleeps the full 3600s.
+    # The shutdown-exit assert: must return promptly - unguarded this
+    # sleeps the full 3600s.
     await asyncio.wait_for(task, timeout=2.0)
 
 

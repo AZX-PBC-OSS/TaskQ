@@ -94,6 +94,7 @@ class _RecordedStatement(NamedTuple):
 
 class _RecordingConn:
     """Connection double that records every statement it is handed.
+        fail-closed-exempt: the keyed-row reclamation's scripted rows and recording (the real reclamation is tests/test_keyed_row_fleet_reclaim.py's)
 
     ``fetch`` answers a ``DELETE ... RETURNING bucket_name`` with the
     sliced names echoed back as the deleted rows - the rowcount shape

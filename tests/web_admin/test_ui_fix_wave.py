@@ -59,6 +59,9 @@ class _JobDetailPool(StubPool):
 
     The job fetch returns a pending live row (so the cancel form's
     condition is met); every other read is empty, like :class:`StubPool`.
+
+    fail-closed-exempt: the fix-wave's scripted job-detail rows (the real
+    data is tests/test_web_admin_integration.py's).
     """
 
     def __init__(self) -> None:
@@ -107,7 +110,11 @@ class _JobDetailPool(StubPool):
 
 
 class _JobDetailConnection:
-    """Connection stub routing each admin read to the right canned answer."""
+    """Connection stub routing each admin read to the right canned answer.
+
+    fail-closed-exempt: the fix-wave's scripted job-detail rows (the real
+    data is tests/test_web_admin_integration.py's).
+    """
 
     def __init__(self, pool: _JobDetailPool) -> None:
         self._pool = pool
@@ -871,7 +878,11 @@ def test_api_ish_routes_stay_json_on_validation_errors(
 
 
 class _HistoryRowsConnection:
-    """Connection stub answering the history walk's fetch with PAGE+1 rows."""
+    """Connection stub answering the history walk's fetch with PAGE+1 rows.
+
+    fail-closed-exempt: the fix-wave's scripted history rows (same real
+    sibling).
+    """
 
     def __init__(self) -> None:
         from datetime import UTC, datetime, timedelta
@@ -1109,8 +1120,7 @@ class _RLRedisPipeline:
 
 
 class _RLRedis:
-    """Redis stub whose every read comes back empty (the bucket-has-no-
-    live-state shape): redis_available stays true, redis_state empty."""
+    """Redis stub whose every read comes back empty (the bucket-has-no-"""
 
     def pipeline(self) -> _RLRedisPipeline:
         return _RLRedisPipeline()
@@ -1126,6 +1136,8 @@ def _make_rate_limits_app(
     pool = _JobDetailPool()
 
     class _RLConn(_JobDetailConnection):
+        """fail-closed-exempt: the fix-wave's scripted rate-limit rows (same real sibling)"""
+
         async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
             if "rate_limit_buckets" in query:
                 # A worker-published keyed bucket that exists ONLY as a PG

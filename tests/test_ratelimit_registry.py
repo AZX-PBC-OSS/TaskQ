@@ -376,6 +376,10 @@ class _FakeAcquireCtx:
 
 
 class _FakePool:
+    """Pool double for the typed-boundary arm: the schema validation must
+    raise BEFORE any statement reaches the connection, so this double
+    answers nothing and no SQL ever flows through it."""
+
     def __init__(self) -> None:
         self.conn = _FakeConn()
 
@@ -393,23 +397,17 @@ async def test_sync_rate_limit_buckets_invalid_schema_raises() -> None:
         await sync_rate_limit_buckets(reg, pool, schema="not valid; drop table")
 
 
-async def test_sync_rate_limit_buckets_writes_token_bucket_and_gcra() -> None:
-    """sync_rate_limit_buckets() upserts TokenBucket and GCRA SlidingWindow
-    entries, and skips log-style SlidingWindow (no PG backend to sync)."""
-    reg = RateLimitRegistry()
-    reg.register(_token_bucket("tb"))
-    reg.register(SlidingWindow(name="gcra_sw", limit=5, window=timedelta(minutes=1), style="gcra"))
-    reg.register(_sliding_window("log_sw"))  # style="log" - should be skipped
+# NOTE (the mock-subtraction cure): the upsert-recording fake arm
+# (which kinds sync, the keyed=False mark) converted to the real fixture in
+# tests/test_keyed_row_fleet_reclaim.py
+# (test_startup_sync_publishes_pg_backed_kinds_only): the assertion counts
+# the rows the upserts wrote on real PG and the log-style window's absence,
+# not the recorded calls.
 
-    pool = _FakePool()
-    await sync_rate_limit_buckets(reg, pool, schema="taskq")  # type: ignore[arg-type]
 
-    synced = {(name, kind) for _sql, name, kind, *_mark in pool.conn.calls}
-    assert synced == {("tb", "token_bucket"), ("gcra_sw", "gcra")}
-    # The startup sync publishes STATIC buckets: the fleet-reclaim mark
-    # must be False on every row it writes (a static row is never
-    # deletable by the keyed-row sweep).
-    assert all(mark == [False] for _sql, _name, _kind, *mark in pool.conn.calls), (
-        "sync_rate_limit_buckets must publish static rows with keyed=False - a "
-        "statically declared bucket's rate_limit_buckets row is never fleet-reclaimable"
-    )
+# NOTE (the mock-subtraction cure): the upsert-recording fake arm
+# (which kinds sync, the keyed=False mark) converted to the real fixture in
+# tests/test_keyed_row_fleet_reclaim.py
+# (test_startup_sync_publishes_pg_backed_kinds_only): the assertion counts
+# the rows the upserts wrote on real PG and the log-style window's absence,
+# not the recorded calls.

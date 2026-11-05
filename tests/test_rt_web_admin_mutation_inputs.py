@@ -100,7 +100,10 @@ def _admin_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[
 
 
 class _DetailConn:
-    """Fake asyncpg connection serving one job row for the detail query."""
+    """Fake asyncpg connection serving one job row for the detail query.
+
+    fail-closed-exempt: the mutation-input VALIDATION arms' scripted rows (422 shapes; no PG)
+    """
 
     def __init__(self, job_row: dict[str, Any] | None) -> None:
         self._job_row = job_row

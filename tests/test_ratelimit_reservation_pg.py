@@ -536,3 +536,54 @@ async def test_release_wrong_worker_id(
     assert row is not None
     assert row["held_by_worker_id"] == worker_a
     assert row["job_id"] == job_a
+
+
+# ── The mock-subtraction conversions (the fake arms' survivors) ────────
+
+
+async def test_peek_counts_the_real_rows_after_acquires(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """peek() surfaces the row counts the real slots table holds: fresh
+    (all free), after acquires (held counts), and the no-row default.
+
+    (Converted from tests/test_ratelimit_reservation.py's fake arms in the
+    mock-subtraction cure: the fakes answered a dict-configured row; this
+    counts the real rows the acquire wrote.)"""
+    schema = module_pg_schema.schema_name
+    bucket = _unique_name()
+
+    res = ConcurrencyReservation(name=bucket, slots=6, lease=_LEASE, schema=schema)
+    await res.ensure_slots(module_pg_pool)
+
+    fresh = await res.peek(pool=module_pg_pool)
+    assert fresh == {"free_count": 6, "total_slots": 6, "held_count": 0}
+
+    worker_id = new_uuid()
+    first = await res.acquire(new_uuid(), worker_id, module_pg_pool)
+    second = await res.acquire(new_uuid(), worker_id, module_pg_pool)
+    assert {int(first), int(second)} == {0, 1}
+
+    after = await res.peek(pool=module_pg_pool)
+    assert after == {"free_count": 4, "total_slots": 6, "held_count": 2}
+
+    await res.release(first, worker_id, module_pg_pool)
+    released = await res.peek(pool=module_pg_pool)
+    assert released == {"free_count": 5, "total_slots": 6, "held_count": 1}
+
+
+async def test_peek_never_touched_bucket_falls_back_to_defaults(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """peek() on a bucket whose slots were never allocated answers the
+    empty aggregate - nothing allocated, nothing held. (The deleted fake
+    arm claimed the defaults mirrored slots=6; the real aggregate says
+    total_slots 0 until ensure_slots runs - the lie this conversion
+    caught.)"""
+    res = ConcurrencyReservation(
+        name=_unique_name(), slots=6, lease=_LEASE, schema=module_pg_schema.schema_name
+    )
+    result = await res.peek(pool=module_pg_pool)
+    assert result == {"free_count": 0, "total_slots": 0, "held_count": 0}

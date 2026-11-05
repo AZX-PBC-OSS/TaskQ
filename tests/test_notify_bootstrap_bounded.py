@@ -95,6 +95,7 @@ class _FakePool:
 
 class _FakeConn:
     """Fake asyncpg.Connection whose ``LISTEN`` execute parks forever.
+        fail-closed-exempt: the notify listener's bounded-wait fault injection: a wedged LISTEN arm the budget must cut
 
     The ``listen_gate`` event is never set by the test: a connection that
     completes the factory handshake and then black-holes on the LISTEN

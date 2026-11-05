@@ -48,8 +48,9 @@ Closed arms:
 """
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -541,6 +542,7 @@ class _PoisonStateConn:
 
     def __init__(self, results: list[object]) -> None:
         self._results = results
+        self.execute_calls: list[tuple[object, ...]] = []
 
     async def fetchrow(self, *args: object, **kwargs: object) -> object:
         if self._results:
@@ -548,6 +550,7 @@ class _PoisonStateConn:
         return None
 
     async def execute(self, *args: object, **kwargs: object) -> str:
+        self.execute_calls.append(args)
         return "UPDATE 0"
 
     def transaction(self) -> Any:
@@ -667,7 +670,9 @@ async def test_tb_pg_refund_poisoned_tokens_raise_the_sentinel() -> None:
 
 
 async def test_tb_pg_refund_honest_state_passes() -> None:
-    """Control pin: an honest refund through the same boundary refunds."""
+    """Control pin: an honest refund through the same boundary refunds —
+    and the WRITE is witnessed: the refund's UPDATE must carry the
+    refunded state, 5.0 read + 1.0 refunded at zero refill = 6.0 tokens."""
     tb = TokenBucket(
         name="pg_boundary_refund_ok", capacity=10, refill_per_second=0, backend="postgres"
     )
@@ -677,6 +682,16 @@ async def test_tb_pg_refund_honest_state_passes() -> None:
         pool,  # type: ignore[arg-type]
         _settings(),
         lock_timeout_ms=0,
+    )
+    conn = pool._conn  # pyright: ignore[reportPrivateUsage]  # Why: the test double's own recording seam.
+    # The lock_timeout_ms=0 path issues exactly one statement: the
+    # state-writing UPDATE (args[0] is the new jsonb document).
+    writes = [args for args in conn.execute_calls if "UPDATE" in str(args[0])]
+    assert writes, f"the refund never wrote the refunded state: {conn.execute_calls!r}"
+    written_state = json.loads(cast(str, writes[0][1]))
+    assert written_state["tokens"] == 6.0, (
+        f"the refund's written state is not the refunded balance: {written_state!r} "
+        "(5.0 stored + 1.0 refunded, zero refill)"
     )
 
 
