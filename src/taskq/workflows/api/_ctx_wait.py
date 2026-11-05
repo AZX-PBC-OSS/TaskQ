@@ -207,11 +207,13 @@ class CtxWaitOps(WaitHost):
         held row stands) RETURNS the :class:`Expired` member — the
         fail-close arm the checker forces. The re-execution never
         automatically mints a new epoch — hold → expire → re-hold → ∞
-        is the rejected dragon: the face fires once per abandoned row
-        per attempt (the face marker below); a DELIBERATE re-wait (the
-        body MATCHED the expiry member and waits again within the same
-        attempt) is a NEW body decision: it registers a NEW hold with a
-        NEW epoch.
+        is the rejected dragon: the read filters the site's OWN rows by
+        the call's identity, so EVERY replay of the attempt lands the
+        same deterministic face (the site's own abandoned row, never a
+        mint); a DELIBERATE re-wait (the body MATCHED the expiry member
+        and waits again) is a NEW body decision at a NEW call ordinal —
+        the next call's own site state is empty, so it registers a NEW
+        hold with a NEW epoch.
 
         ``discriminator=`` (the shape-keyed resolution's small honest API): when the
         payload fits MORE than one declared model, the gate's explicit
@@ -263,16 +265,18 @@ class CtxWaitOps(WaitHost):
         for model_name in names:
             refuse_reserved_timer_name(model_name, mint="ctx.wait_signal")
 
-        # THE CALL SITE'S DETERMINISTIC IDENTITY (the shared timeout-face
-        # marker's fix): this attempt's Nth wait CALL — the body replays
+        # THE CALL SITE'S DETERMINISTIC IDENTITY (the wait site's own
+        # rows' key): this attempt's Nth wait CALL — the body replays
         # the same call order within an attempt (the re-execution
         # doctrine: from the top), so the id is stable across the
         # resume's re-execution. The hold row carries it as its call_id
-        # (the mint below), the abandoned-row read filters its OWN
-        # site's rows by it, and the face marker keys on the pair — two
+        # (the mint below), and ALL THREE of the site's reads — the
+        # delivered-answer queue, the standing-hold re-hold arm, and
+        # the abandoned-row face — filter their rows by it: two
         # sequential waits on the SAME signal in one node can never
-        # surface each other's abandoned rows (the wrong-site claim that
-        # then re-held, leaving the run hung).
+        # surface each other's delivered answers, held rows, or
+        # abandoned rows (the wrong-site consumption that stole an
+        # answer, re-asked the operator, or claimed the wrong face).
         seq = self._wait_call_seq
         object.__setattr__(self, "_wait_call_seq", seq + 1)
         call_site = f"call:{self.attempt}:{seq}"
@@ -297,30 +301,35 @@ class CtxWaitOps(WaitHost):
                 await mark_awaited(conn, self._wsql.schema, self._ledger_id)
 
                 # two, both structural. (1) the answer queue — the delivered holds are
-        # the node's durable answers, consumed in epoch ORDER by each attempt's
-        # wait sequence (the per-site cursor — keyed to the wait site's own
-        # signal name, beneath the attempt): a retry replays the answers (they
-        # are the attempt's inputs — the operator never re-answers, the retry
-        # is deterministic); a wait past the queue's end registers a new hold
-        # (a new epoch — multi-hold). (2) the consumed hold can never answer
-        # twice. the loop's iteration INDEX is the cursor (the deploy matrix's
-        # multi-hitl fix): a loop resume is a continuation of the iteration
-        # sequence, never a replay of it — the per-attempt cursor restarts at 0
-        # on every resume (a new attempt), so the resumed loop's later
-        # iterations re-consumed the earlier answers (the deep-research march's
-        # third iteration received the second refine, the carry ran past the
-        # cap, the loop exhausted without the operator's third decision ever
-        # landing). For a loop-kind node the queue position is the row's
-        # iteration counter (the advance statement's own write — the derived
-        # value has exactly one writer): iteration k's wait consumes the k-th
-        # answer — a hold-resume continues, a retry of a failed iteration
-        # replays its own answer (the same k-th), both laws one mechanism. A
-        # loop body declares one wait per iteration (the loop's shape); the
-        # plain steps keep the per-site, per-attempt cursor (the per-site
-        # cursor fix — a body's timer site and its signal site count their own
-        # consumptions, so a timer's re-consume can never inflate a signal
-        # site's queue position: the delivered answer the operator sent reaches
-        # its wait site).
+        # the node's durable answers, consumed in epoch ORDER by each wait
+        # call's own sequence (the per-call cursor — keyed to the CALL's own
+        # ordinal, beneath the attempt, over the call-disjoint queue below): a
+        # retry replays the answers (they are the attempt's inputs — the
+        # operator never re-answers, the retry is deterministic); a wait past
+        # the queue's end registers a new hold (a new epoch — multi-hold). (2)
+        # the consumed hold can never answer twice. the loop's iteration INDEX
+        # is the cursor (the deploy matrix's multi-hitl fix): a loop resume is
+        # a continuation of the iteration sequence, never a replay of it — the
+        # per-attempt cursor restarts at 0 on every resume (a new attempt), so
+        # the resumed loop's later iterations re-consumed the earlier answers
+        # (the deep-research march's third iteration received the second
+        # refine, the carry ran past the cap, the loop exhausted without the
+        # operator's third decision ever landing). For a loop-kind node the
+        # queue position is the row's iteration counter (the advance
+        # statement's own write — the derived value has exactly one writer):
+        # iteration k's wait consumes the k-th answer — a hold-resume
+        # continues, a retry of a failed iteration replays its own answer (the
+        # same k-th), both laws one mechanism. A loop body declares one wait
+        # per iteration (the loop's shape); the plain steps keep the per-call,
+        # per-attempt cursor (the per-call cursor fix — each of the body's
+        # wait CALLS counts its own consumptions under its own ordinal key,
+        # over its own call-disjoint queue: a timer's re-consume can never
+        # inflate a signal site's queue position, and a body's SECOND wait on
+        # the same signal counts separately from the first — the shared
+        # per-signal cursor let the first site's consumption advance the
+        # second site's position past its own answer: on the replay the
+        # second site found its queue exhausted and re-asked the operator for
+        # an answer it had already given).
         async with self._pool.acquire() as conn:
             row_meta = await conn.fetchrow(
                 render_sql(
@@ -331,15 +340,17 @@ class CtxWaitOps(WaitHost):
                     self._wsql.schema,
                 ),
                 self.job_id,
-                # the cursor is keyed to the wait site (its own signal name),
-                # never bare to the attempt — one body's two wait sites (a
-                # timer then a signal; disjoint queues) must each count their
-                # own consumptions. The shared per-attempt cursor let the timer
-                # site's re-consume inflate the counter past the signal site's
-                # own queue: the delivered answer fell behind forever, the wait
-                # re-held silently, the operator's decision dead-lettered while
-                # the run terminal-succeeded.
-                f"hold_cursor_{self.attempt}_{signal_name}",
+                # the cursor is keyed to the wait CALL (its own ordinal,
+                # beneath the attempt), never bare to the attempt nor shared
+                # per signal name — one body's two wait CALLS (a timer then a
+                # signal; two waits on one signal) must each count their own
+                # consumptions. The shared keys let one site's consumption
+                # advance another site's position past its own answer (the
+                # per-signal spelling re-asked the operator on the replay; the
+                # per-attempt spelling let a timer's re-consume strand the
+                # signal site's delivered answer while the run
+                # terminal-succeeded).
+                f"hold_cursor_{self.attempt}_{seq}",
             )
             is_loop_kind = row_meta is not None and row_meta["kind"] == "loop"
             row_cursor = (
@@ -360,12 +371,22 @@ class CtxWaitOps(WaitHost):
             # sibling B's wait (the held-representation wedge) and
             # sibling B's resume steal sibling A's delivered answer (the
             # answer theft). `IS NOT DISTINCT FROM` keeps the plain
-            # step's NULL map_index exact.
+            # step's NULL map_index exact. And every wait-site read
+            # carries the CALL identity (the same `site_call_ids` the
+            # abandoned read filters by): the queue is the SITE'S OWN
+            # answers — the rows this call's ordinal minted, across the
+            # attempts this reader can replay. The unfiltered queue made
+            # the site consume whatever delivered row had the next epoch
+            # on the node: a sibling wait call's answer (the earlier
+            # ordinal's expired site, the later ordinal's answered hold,
+            # then a retry — the body received a model it did not ask
+            # for at that site, and the true site re-asked the operator).
             queue = await conn.fetch(
                 render_sql(
                     "SELECT id, payload, hold_epoch FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
                     "AND map_index IS NOT DISTINCT FROM $4 "
+                    "AND call_id = ANY($5) "
                     "AND status = 'delivered' ORDER BY hold_epoch ",
                     self._wsql.schema,
                 ),
@@ -373,6 +394,7 @@ class CtxWaitOps(WaitHost):
                 self.node_key,
                 [*names, "|".join(names)],
                 self._map_index,
+                site_call_ids,
             )
             if is_loop_kind and cursor > len(queue):
                 # the iteration cursor may never run past the answer queue. The
@@ -411,7 +433,7 @@ class CtxWaitOps(WaitHost):
                             self._wsql.schema,
                         ),
                         self.job_id,
-                        dumps_jsonb_str({f"hold_cursor_{self.attempt}_{signal_name}": cursor + 1}),
+                        dumps_jsonb_str({f"hold_cursor_{self.attempt}_{seq}": cursor + 1}),
                     )
                     # the resumed body's answer identity — the epoch of the hold
                 # this wait consumed (the body asserting on ctx sees which
@@ -420,12 +442,19 @@ class CtxWaitOps(WaitHost):
                 return cast("M", self._coerce_signal(models, payload, discriminator=discriminator))
             # past the queue: the node's pending hold (if any) is this
             # wait's wait — the held row stands (idempotent re-hold,
-            # never a second registration of one wait).
+            # never a second registration of one wait). the read is the
+            # SITE'S OWN (the same `call_id = ANY($5)` the queue and the
+            # abandoned reads filter by): an earlier call must never see
+            # a later call's standing hold and raise NodeHeldError for
+            # it — the duplicate execution (the reclaim race's second
+            # driver) rested on the later site's hold before the
+            # earlier site's own face could fire.
             held_row = await conn.fetchrow(
                 render_sql(
                     "SELECT id FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
                     "AND map_index IS NOT DISTINCT FROM $4 "
+                    "AND call_id = ANY($5) "
                     "AND status = 'held' ORDER BY hold_epoch DESC LIMIT 1",
                     self._wsql.schema,
                 ),
@@ -433,6 +462,7 @@ class CtxWaitOps(WaitHost):
                 self.node_key,
                 [*names, "|".join(names)],
                 self._map_index,
+                site_call_ids,
             )
             if held_row is not None:
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=names)
@@ -442,10 +472,22 @@ class CtxWaitOps(WaitHost):
             # failure raises the glossary exception itself off the member). no
             # automatic new epoch: a re-execution after abandonment never
             # re-holds (the hold→expire→re-hold→∞ dragon's kill site). The
-            # deliberate re-wait — the body caught the face and waits again
-            # within this attempt — is a new body decision: the face marker
-            # (per-attempt, beside the answer cursor) lets it register a new
-            # hold with a new epoch.
+            # return is UNCONDITIONAL on the site's own row — every replay of
+            # the attempt lands the same deterministic face, and a same-attempt
+            # re-execution (the duplicate driver's) never mints past it. The
+            # deliberate re-wait is a NEW body decision at a NEW call ordinal:
+            # the next call's own site identity has an empty state (its
+            # `call_id` set covers rows no earlier ordinal minted), so THAT
+            # registration mints the new hold with the new epoch. (The
+            # `timeout_face_{attempt}_{seq}` one-shot marker this return once
+            # wrote is GONE: with the reads site-disjoint by `call_id` the
+            # marker's only remaining effect was the marker-gated mint on a
+            # same-attempt re-execution — the non-idempotent replay — and its
+            # read's fall-through was unreachable: the marker was per-attempt
+            # and each (attempt, ordinal) of a plain step executes once; a
+            # loop's later iteration meets E13's cursor law before it ever
+            # re-reads an abandoned row. The rows are the truth; the metadata
+            # key carried no job the rows don't.)
             abandoned_row = await conn.fetchrow(
                 render_sql(
                     "SELECT id, hold_epoch, "
@@ -464,49 +506,23 @@ class CtxWaitOps(WaitHost):
                 site_call_ids,
             )
             if abandoned_row is not None:
-                # one body's second wait site must surface its own abandoned
-                # row's face — the face marker keys the CALL (attempt + the
-                # call ordinal), never the signal: two sequential waits on one
-                # signal each carry their own one-shot marker (the shared
-                # per-signal key let the first site's marker suppress the
-                # second site's Expired return — the wrong-site claim that
-                # then re-held).
-                face_key = f"timeout_face_{self.attempt}_{seq}"
-                face_seen = await conn.fetchval(
-                    render_sql(
-                        "SELECT (metadata ->> $2)::int FROM {schema}.jobs WHERE id = $1",
-                        self._wsql.schema,
-                    ),
-                    self.job_id,
-                    face_key,
+                # the expiry member returns — the closed union's second
+                # arm, the fail-close the checker forces. The member
+                # carries the DOOR that wrote the abandoned row (the
+                # sweep's rows read 'timeout'; the operator abandon's
+                # marker reads 'operator'). The body that wants the
+                # timeout failure raises SignalTimeoutError itself off
+                # this member (the escalation ladder's own use); the
+                # body that wants the operator failure raises
+                # SignalAbandonedError off the same arm when the door
+                # reads 'operator'; the body that matches it is the
+                # fail-close.
+                return Expired(
+                    signal=signal_name,
+                    node_key=self.node_key,
+                    hold_id=str(abandoned_row["id"]),
+                    abandoned_by=str(abandoned_row["abandoned_by"]),  # pyright: ignore[reportArgumentType]  # Why: the row's COALESCE vocabulary is the writer's own closed pair ('timeout'/'operator') — the member's Literal re-validates it.
                 )
-                if face_seen != int(abandoned_row["hold_epoch"]):
-                    await conn.execute(
-                        render_sql(
-                            "UPDATE {schema}.jobs SET metadata = metadata || $2::jsonb "
-                            "WHERE id = $1",
-                            self._wsql.schema,
-                        ),
-                        self.job_id,
-                        dumps_jsonb_str({face_key: int(abandoned_row["hold_epoch"])}),
-                    )
-                    # the expiry member returns — the closed union's second
-                    # arm, the fail-close the checker forces. The member
-                    # carries the DOOR that wrote the abandoned row (the
-                    # sweep's rows read 'timeout'; the operator abandon's
-                    # marker reads 'operator'). The body that wants the
-                    # timeout failure raises SignalTimeoutError itself off
-                    # this member (the escalation ladder's own use); the
-                    # body that wants the operator failure raises
-                    # SignalAbandonedError off the same arm when the door
-                    # reads 'operator'; the body that matches it is the
-                    # fail-close.
-                    return Expired(
-                        signal=signal_name,
-                        node_key=self.node_key,
-                        hold_id=str(abandoned_row["id"]),
-                        abandoned_by=str(abandoned_row["abandoned_by"]),  # pyright: ignore[reportArgumentType]  # Why: the row's COALESCE vocabulary is the writer's own closed pair ('timeout'/'operator') — the member's Literal re-validates it.
-                    )
             # A new hold: a new epoch (the count of this name's holds —
             # the identity's mint). the mint is per map sibling (the F2
             # fix): siblings of one source mint independent epoch

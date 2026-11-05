@@ -1424,8 +1424,7 @@ async def test_two_waits_one_signal_the_operator_abandon_fails_closed_at_its_own
     SECOND hold; on the resume the SECOND call returns
     ``Expired(abandoned_by="operator")`` and the run TERMINATES (no
     re-hold, ``runner.result`` not None) — the first call never claims
-    the second's row (the call_id filter), and the face marker keys the
-    CALL (attempt + ordinal), never the signal."""
+    the second's row (the call_id filter shared by every site read)."""
     from taskq.workflows import Expired
 
     rounds: list[tuple[str, str, str]] = []
@@ -1487,14 +1486,16 @@ async def test_two_waits_one_signal_the_operator_abandon_fails_closed_at_its_own
     assert len(after) == 2 and all(r["status"] == "abandoned" for r in after), (
         f"the operator door re-held the run: {[dict(r) for r in after]}"
     )
-    # the face marker keys the CALL: the second call's one-shot marker is
-    # its own (attempt, ordinal) key — never the shared per-signal key.
+    # no face marker: the Expired return is unconditional on the site's
+    # own row (the reads are site-disjoint by call_id) — the metadata
+    # carries no timeout_face key anymore (the redundant one-shot's
+    # removal).
     face_keys = await wf_conn.fetchval(
         f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', node_id
     )
     meta = json.loads(face_keys) if isinstance(face_keys, str) else face_keys
-    assert "timeout_face_3_1" in meta, (
-        f"the face marker is not per CALL: {sorted(k for k in meta if k.startswith('timeout_face'))}"
+    assert not [k for k in meta if k.startswith("timeout_face")], (
+        f"the redundant face marker is back: {sorted(k for k in meta if k.startswith('timeout_face'))}"
     )
 
 
@@ -1534,6 +1535,394 @@ async def test_the_deliberate_rewait_after_a_timeout_mints_a_new_hold(
     # the re-wait's hold carries the SECOND call site's id (attempt 2,
     # the second call ordinal) — the site identity the read filters by.
     assert rows[1]["call_id"] == "call:2:1", dict(rows[1])
+
+
+# ── the delivered-answer queue's call-site identity (the re-attack's cure) ──
+
+
+async def test_the_mixed_attempt_retry_replays_each_site_its_own_row(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE ANSWER THEFT (the red team's exact scenario): the FIRST wait
+    call's hold expires (the body matches ``Expired`` and continues),
+    the SECOND call mints and the operator answers it, then the retry
+    re-executes from the top. The unfiltered delivered queue let the
+    FIRST site consume the SECOND site's answer on the retry (the body
+    received a valid model it did not ask for at that site) while the
+    true site found its queue exhausted and re-asked the operator. The
+    queue read filters the site's OWN rows (the same ``call_id`` array
+    the abandoned read filters by): the first site replays its own
+    ``Expired`` face, the second site replays the operator's own
+    answer — no theft, no re-ask, exactly the two rows."""
+    from taskq.workflows import Expired
+
+    rounds: list[tuple[str, str, object]] = []
+
+    async def mixed_body(ctx: StepContext, params: Ingest) -> Any:
+        first = await ctx.wait_signal(Approval, timeout_s=0.3)
+        if isinstance(first, Expired):
+            rounds.append((str(ctx.attempt), "first-expired", first.hold_id))
+            second = await ctx.wait_signal(Approval, timeout_s=120.0)
+            if isinstance(second, Expired):
+                return {"fail_closed_on": second.abandoned_by}
+            rounds.append((str(ctx.attempt), "second-answered", second.verdict))
+            return {"first": "expired", "second": second.verdict}
+        # THE THEFT SHAPE: a valid model at the first site — the body
+        # never asked for one here (its own hold expired).
+        rounds.append((str(ctx.attempt), "first-answered", first.verdict))
+        return {"first": f"stolen:{first.verdict}", "second": None}
+
+    flow_id, runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=mixed_body, name="mixed_retry_flow"
+    )
+    # attempt 1: the first call's hold (0.3 s); the sweep abandons it.
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
+    assert await sweep_expired_signals(wf_pool, schema=wf_schema) == 1
+    # attempt 2: the first call replays its Expired face; the second
+    # call mints ITS hold (the operator's deadline).
+    verdict = await runner.drive(flow_id, until="held", max_ticks=60)
+    assert verdict == "held", verdict
+    holds = await wf_conn.fetch(
+        f'SELECT id, hold_epoch, status, call_id FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(holds) == 2, [dict(r) for r in holds]
+    assert holds[0]["status"] == "abandoned" and holds[0]["call_id"] == "call:1:0", dict(holds[0])
+    assert holds[1]["status"] == "held" and holds[1]["call_id"] == "call:2:1", dict(holds[1])
+    # the operator answers the SECOND site's hold — the queue now
+    # carries a delivered row that belongs to the LATER call ordinal.
+    delivered = await deliver_payload(
+        wf_pool,
+        schema=wf_schema,
+        workflow_id=flow_id,
+        hold_id=JobId(holds[1]["id"]),
+        payload={"verdict": "b-verdict"},
+        payload_json=json.dumps({"verdict": "b-verdict"}),
+    )
+    assert delivered.status == "delivered", delivered
+    # the retry: the body re-executes from the top.
+    out = await runner.drive(flow_id, max_ticks=60)
+    assert out == "terminal", f"the mixed retry never terminated: {out!r} ({rounds})"
+    flow_result = await runner.result(flow_id)
+    assert flow_result == {"first": "expired", "second": "b-verdict"}, (
+        f"THE ANSWER THEFT: the retry fed the first site the second "
+        f"site's answer: {flow_result!r} ({rounds})"
+    )
+    # the first site's every claim is its OWN Expired face (its own
+    # abandoned row, never the delivered row); the second site received
+    # the operator's own answer.
+    first_claims = [r for r in rounds if r[1] == "first-expired"]
+    assert first_claims and {r[2] for r in first_claims} == {str(holds[0]["id"])}, (
+        f"the first site claimed a row that is not its own: {rounds}"
+    )
+    assert ("3", "second-answered", "b-verdict") in rounds, rounds
+    # no re-ask: exactly the two rows (the abandoned face, the delivered
+    # answer) — no third hold minted for the second site.
+    after = await wf_conn.fetch(
+        f'SELECT hold_epoch, status FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(after) == 2, f"the retry re-asked the operator: {[dict(r) for r in after]}"
+
+
+async def test_two_sites_both_delivered_each_site_consumes_its_own_answer(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """BOTH SITES DELIVERED, IN ORDER: the first hold is answered, the
+    body continues, the second hold is answered, the run completes —
+    each site receives its OWN answer, and the final replay (after the
+    second site's answer re-pends the node) re-consumes without
+    re-minting or re-asking. The per-signal cursor made the SECOND site
+    find its queue exhausted on the replay (the first site's consumption
+    had advanced the shared counter past it) and re-ask the operator;
+    the unfiltered queue made the second site consume the FIRST site's
+    answer. The per-call cursor over the call-disjoint queue: both
+    sites replay their own rows."""
+    from taskq.workflows import Expired
+
+    async def two_answers_body(ctx: StepContext, params: Ingest) -> Any:
+        first = await ctx.wait_signal(Approval, timeout_s=120.0)
+        if isinstance(first, Expired):
+            return {"first": "expired", "second": None}
+        second = await ctx.wait_signal(Approval, timeout_s=120.0)
+        if isinstance(second, Expired):
+            return {"first": first.verdict, "second": "expired"}
+        return {"first": first.verdict, "second": second.verdict}
+
+    flow_id, runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=two_answers_body, name="two_answers_flow"
+    )
+    # attempt 1: the first site holds; the operator answers it.
+    verdict = await runner.drive(flow_id, until="held", max_ticks=40)
+    assert verdict == "held", verdict
+    (first_hold,) = await wf_conn.fetch(
+        f'SELECT id, hold_epoch, call_id FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert first_hold["call_id"] == "call:1:0", dict(first_hold)
+    delivered = await deliver_payload(
+        wf_pool,
+        schema=wf_schema,
+        workflow_id=flow_id,
+        hold_id=JobId(first_hold["id"]),
+        payload={"verdict": "a-verdict"},
+        payload_json=json.dumps({"verdict": "a-verdict"}),
+    )
+    assert delivered.status == "delivered", delivered
+    # attempt 2: the first site re-consumes its own answer (the replay);
+    # the second site mints; the operator answers it.
+    verdict = await runner.drive(flow_id, until="held", max_ticks=60)
+    assert verdict == "held", verdict
+    holds = await wf_conn.fetch(
+        f'SELECT id, hold_epoch, status, call_id FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(holds) == 2 and holds[1]["status"] == "held", [dict(r) for r in holds]
+    assert holds[1]["call_id"] == "call:2:1", dict(holds[1])
+    delivered = await deliver_payload(
+        wf_pool,
+        schema=wf_schema,
+        workflow_id=flow_id,
+        hold_id=JobId(holds[1]["id"]),
+        payload={"verdict": "b-verdict"},
+        payload_json=json.dumps({"verdict": "b-verdict"}),
+    )
+    assert delivered.status == "delivered", delivered
+    # attempt 3 (the replay after the second site's hold): the run
+    # COMPLETES — each site re-consumes its own answer.
+    out = await runner.drive(flow_id, max_ticks=60)
+    assert out == "terminal", f"the final replay never terminated: {out!r}"
+    flow_result = await runner.result(flow_id)
+    assert flow_result == {"first": "a-verdict", "second": "b-verdict"}, (
+        f"THE CROSS-SITE CONSUMPTION: {flow_result!r}"
+    )
+    # no re-mint, no re-ask: still exactly the two delivered rows.
+    after = await wf_conn.fetch(
+        f'SELECT hold_epoch, status FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(after) == 2 and all(r["status"] == "delivered" for r in after), (
+        f"the replay re-minted or re-asked: {[dict(r) for r in after]}"
+    )
+
+
+async def test_a_standing_hold_is_never_mistaken_for_an_earlier_sites_own(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE RE-HOLD ARM'S SITE IDENTITY: a LATER call's standing hold
+    must never answer the EARLIER call's re-hold read. The probe: the
+    first call's hold expires (the body matches ``Expired``), the
+    second call mints and its hold STANDS; the duplicate execution (the
+    reclaim race's surrogate — the hold-stamp surgery re-opens the
+    claim while the row stands) re-runs the body from the top. The
+    unfiltered re-hold read made the EARLIER site raise
+    ``NodeHeldError`` for the LATER site's hold — the earlier site's
+    own ``Expired`` face never fired. The read filters the site's own
+    rows: the earlier site lands its own face, the body reaches the
+    later site, and THAT site re-holds its own row (no second mint)."""
+    from taskq.workflows import Expired
+
+    rounds: list[tuple[str, str, str]] = []
+
+    async def earlier_site_body(ctx: StepContext, params: Ingest) -> Any:
+        first = await ctx.wait_signal(Approval, timeout_s=0.3)
+        if isinstance(first, Expired):
+            rounds.append((str(ctx.attempt), "first-expired", first.hold_id))
+            second = await ctx.wait_signal(Approval, timeout_s=120.0)
+            if isinstance(second, Expired):
+                return {"fail_closed_on": second.abandoned_by}
+            return {"answered": second.verdict}
+        return {"answered": first.verdict}
+
+    flow_id, runner, node_id = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=earlier_site_body, name="standing_hold_flow"
+    )
+    # attempt 1: the first call's hold expires; the sweep abandons it.
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
+    assert await sweep_expired_signals(wf_pool, schema=wf_schema) == 1
+    # attempt 2: the first call's Expired face; the second call mints —
+    # its hold STANDS.
+    verdict = await runner.drive(flow_id, until="held", max_ticks=60)
+    assert verdict == "held", verdict
+    holds = await wf_conn.fetch(
+        f'SELECT id, hold_epoch, status, call_id FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(holds) == 2 and holds[1]["status"] == "held", [dict(r) for r in holds]
+    standing = holds[1]
+    assert standing["call_id"] == "call:2:1", dict(standing)
+    # THE DUPLICATE EXECUTION's surrogate: the hold-stamp surgery
+    # re-opens the claim while the second site's hold row stands held —
+    # the same body re-execution the claim race's second driver lands
+    # (the stamp cleared + the schedule dropped, the resume's own
+    # writes).
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET metadata = metadata - 'hold' - 'held_signal', "
+        "scheduled_at = now() WHERE id = $1",
+        node_id,
+    )
+    await runner.tick(flow_id)
+    # the duplicate attempt ran (the claim bumped), the EARLIER site
+    # landed its OWN Expired face (never a NodeHeldError for the later
+    # site's hold), and the LATER site re-held its own row.
+    dup_attempts = [r for r in rounds if r[0] == "3" and r[1] == "first-expired"]
+    assert dup_attempts and {r[2] for r in dup_attempts} == {str(holds[0]["id"])}, (
+        f"THE WRONG SITE'S HOLD: the earlier call raised for the later "
+        f"site's standing hold (its own face never fired): {rounds}"
+    )
+    after = await wf_conn.fetch(
+        f'SELECT id, hold_epoch, status, call_id FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(after) == 2 and after[1]["status"] == "held", (
+        f"the standing hold was re-registered or consumed: {[dict(r) for r in after]}"
+    )
+    assert after[1]["id"] == standing["id"], dict(after[1])
+
+
+async def test_the_abandoned_site_expired_replay_is_deterministic_no_face_marker(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE ABANDONED SITE'S REPLAY IS IDEMPOTENT: the site whose own
+    hold was abandoned returns ``Expired`` on EVERY replay of the
+    attempt (the ladder's retries each land the same deterministic
+    face — the same row, the same door), never mints, and the metadata
+    carries NO ``timeout_face`` key (the one-shot marker is GONE: with
+    the reads site-disjoint by ``call_id`` its only remaining effect
+    was a same-attempt re-execution minting past the face — the
+    non-idempotent replay — and its read's fall-through was
+    unreachable)."""
+    from taskq.exceptions import SignalTimeoutError
+    from taskq.workflows import Expired
+
+    rounds: list[tuple[str, str, str]] = []
+
+    async def timeout_failure_body(ctx: StepContext, params: Ingest) -> Any:
+        outcome = await ctx.wait_signal(Approval, timeout_s=0.3)
+        match outcome:
+            case Approval() as approval:
+                return approval
+            case Expired():
+                rounds.append((str(ctx.attempt), "expired", outcome.hold_id))
+                raise SignalTimeoutError("the converted expiry face")
+
+    app = WorkflowApp()
+
+    @app.workflow("expired_replay_flow")
+    def expired_replay_flow() -> Promise[object]:
+        return build(step(timeout_failure_body, Ingest(doc_id="d1"), key="review"))
+
+    runner = FlowRunner(app.get("expired_replay_flow"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    await runner.drive(flow_id, until="held", max_ticks=40)
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
+    assert await sweep_expired_signals(wf_pool, schema=wf_schema) == 1
+    # the ladder's retries: EVERY replay lands the same deterministic
+    # face at the same site (the site's own abandoned row), then the
+    # ladder exhausts and the run fails.
+    out = await runner.drive(flow_id, max_ticks=200)
+    assert out == "terminal", f"the expired replay never terminated: {out!r} ({rounds})"
+    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
+    assert root == "failed", f"the converted expiry face never failed the run: {root!r}"
+    (abandoned,) = await wf_conn.fetch(
+        f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    # never minted past the face: exactly the ONE abandoned row.
+    assert abandoned["status"] == "abandoned" and abandoned["hold_epoch"] == 1, dict(abandoned)
+    replays = [r for r in rounds if r[1] == "expired"]
+    assert len(replays) >= 2, f"the face did not fire on every replay: {rounds}"
+    assert {r[2] for r in replays} == {str(abandoned["id"])}, (
+        f"the replays claimed a row that is not the site's own: {rounds}"
+    )
+    node_id = await wf_conn.fetchval(
+        f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = 'review' AND "
+        "(metadata->>'flow_id')::uuid = $1",
+        flow_id,
+    )
+    meta_raw = await wf_conn.fetchval(
+        f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', node_id
+    )
+    meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+    assert not [k for k in meta if k.startswith("timeout_face")], (
+        f"the redundant face marker is back: {sorted(k for k in meta if k.startswith('timeout_face'))}"
+    )
+
+
+async def test_the_symmetric_order_first_delivered_second_expired(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE SYMMETRIC ORDER (the crossed-orders matrix's other leg): the
+    FIRST call's hold is answered, the SECOND call's hold expires — the
+    replay's first site re-consumes its own answer and the second site
+    lands its OWN ``Expired`` face (never the first site's delivered
+    row, never a re-mint). The unfiltered queue made the second site
+    consume the first site's answer on attempt 2 itself (the body
+    completed on a verdict the second site never asked for)."""
+    from taskq.workflows import Expired
+
+    async def first_delivered_body(ctx: StepContext, params: Ingest) -> Any:
+        first = await ctx.wait_signal(Approval, timeout_s=120.0)
+        if isinstance(first, Expired):
+            return {"fail_closed_on": "first"}
+        second = await ctx.wait_signal(Approval, timeout_s=0.3)
+        if isinstance(second, Expired):
+            return {"first": first.verdict, "second": "expired"}
+        return {"first": first.verdict, "second": second.verdict}
+
+    flow_id, runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=first_delivered_body, name="symmetric_order_flow"
+    )
+    # attempt 1: the first site holds; the operator answers it.
+    verdict = await runner.drive(flow_id, until="held", max_ticks=40)
+    assert verdict == "held", verdict
+    (first_hold,) = await wf_conn.fetch(
+        f'SELECT id, hold_epoch, call_id FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert first_hold["call_id"] == "call:1:0", dict(first_hold)
+    delivered = await deliver_payload(
+        wf_pool,
+        schema=wf_schema,
+        workflow_id=flow_id,
+        hold_id=JobId(first_hold["id"]),
+        payload={"verdict": "a-verdict"},
+        payload_json=json.dumps({"verdict": "a-verdict"}),
+    )
+    assert delivered.status == "delivered", delivered
+    # attempt 2: the first site consumes its own answer; the second site
+    # mints (the short deadline); the sweep abandons it.
+    verdict = await runner.drive(flow_id, until="held", max_ticks=60)
+    assert verdict == "held", verdict
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
+    assert await sweep_expired_signals(wf_pool, schema=wf_schema) == 1
+    # attempt 3: the first site replays its own answer; the second site
+    # lands its OWN Expired face.
+    out = await runner.drive(flow_id, max_ticks=60)
+    assert out == "terminal", f"the symmetric replay never terminated: {out!r}"
+    flow_result = await runner.result(flow_id)
+    assert flow_result == {"first": "a-verdict", "second": "expired"}, (
+        f"THE CROSS-SITE CONSUMPTION (the second site took the first "
+        f"site's answer): {flow_result!r}"
+    )
+    after = await wf_conn.fetch(
+        f'SELECT hold_epoch, status FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(after) == 2, f"the face re-held or re-minted: {[dict(r) for r in after]}"
+    assert after[0]["status"] == "delivered" and after[1]["status"] == "abandoned", [
+        dict(r) for r in after
+    ]
 
 
 async def test_deliver_and_abandon_take_one_lock_order_no_deadlock(
