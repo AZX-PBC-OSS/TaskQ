@@ -1,17 +1,27 @@
 """Tests for job detail routes, templates, traceback truncation, and XSS prevention."""
 
+# ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
+# identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
+# header's own rule for the real-PG seeding this file carries).
+
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import asyncpg
+import httpx
 import pytest
 
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
+from fastapi import FastAPI  # Why: importorskip guard must precede.
+
 from taskq._ids import new_uuid
-from taskq.web.admin import create_router
+from taskq.testing.fixtures import ModulePgSchema
+from taskq.web.admin import create_router, setup_admin_state
 from taskq.web.admin.jobs import _normalize_row, _truncate_traceback
 
 from . import StubConnection, StubRecord, _StubPool
@@ -796,54 +806,36 @@ def test_build_paginated_sql_prev_direction_without_a_cursor_is_the_first_page()
         assert params == [["pending"]], cursor_id
 
 
-class _OneJobConnection(StubConnection):
-    """
-    fail-closed-exempt: the job pages' scripted rows (the real job data
-    is tests/test_web_admin_integration.py's).
-
-    Connection whose jobs-list query returns one row so the table (and its
-    pagination block) renders; every other query stays empty."""
-
-    async def fetch(self, query: str, *args: object) -> list[StubRecord]:
-        if ".jobs WHERE" in query:
-            return [StubRecord(_render_job_table_row(id=new_uuid()))]
-        return []
-
-
-class _OneJobPool(_StubPool):
-    def acquire(self, *, timeout: float | None = None) -> Any:
-        conn = _OneJobConnection()
-
-        class _Ctx:
-            async def __aenter__(self) -> StubConnection:
-                return conn
-
-            async def __aexit__(self, *args: object) -> None:
-                pass
-
-        return _Ctx()
-
-
-def test_jobs_route_malformed_cursor_renders_the_first_page_without_a_prev_link(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_jobs_route_malformed_cursor_renders_the_first_page_without_a_prev_link(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """A stale bookmark's cursor is dropped and the first page served; the
     page must then not claim to be paged-into. With one row and no more,
     neither a "Previous" nor a "Next" link may render - a link built from a
-    cursor that was never applied walks the operator into the wrong page."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from taskq.web.admin import setup_admin_state
-
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    bundle = create_router(_OneJobPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    cursor that was never applied walks the operator into the wrong page.
+    The row is a real job the real list query serves."""
+    schema = module_pg_schema.schema_name
+    await clean_pg_conn.execute(
+        f"""INSERT INTO "{schema}".jobs (
+                id, actor, queue, payload, payload_schema_ver, max_attempts,
+                retry_kind, status, priority, attempt, metadata,
+                created_at, scheduled_at)
+            VALUES ($1, 'send_email', 'default', '{{}}'::jsonb, 1, 3,
+                'transient', 'pending', 0, 0, '{{}}'::jsonb, now(), now())""",
+        new_uuid(),
+    )
     app = FastAPI()
+    bundle = create_router(module_pg_pool, schema=schema, base_path="")
     setup_admin_state(app, bundle)
     app.include_router(bundle.router)
-    client = TestClient(app)
-
-    response = client.get("/jobs?tab=live&cursor_at=garbage&cursor_id=garbage&cursor_dir=prev")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/jobs?tab=live&cursor_at=garbage&cursor_id=garbage&cursor_dir=prev"
+        )
     assert response.status_code == 200
     assert "cursor_dir=prev" not in response.text
     assert "cursor_dir=next" not in response.text
@@ -1262,8 +1254,17 @@ def test_started_at_sort_header_links_to_the_column(stub_pool: _StubPool) -> Non
 
 class _ArchivedJobConnection(StubConnection):
     """
-    fail-closed-exempt: the archived-job view's scripted rows (same real
-    sibling).
+    fail-closed-exempt: the ledger-holds-events-for-an-archived-job row
+    shape — an archived job whose job_events rows still exist. No honest
+    driver can produce it: job_events.job_id carries REFERENCES jobs(id) ON
+    DELETE CASCADE, so the archive sweep's own DELETE (the only path to
+    jobs_archive) cascades the job's events away in the same statement, and
+    an event INSERT after the archive fails the FK because the job row is
+    gone. The pin exists for the forward-compatible contract (whatever the
+    ledger holds must render) against the day that shape becomes
+    producible; the statement-shape pin beside it
+    (test_archived_job_detail_events_read_binds_the_path_job_id) drives the
+    real archive arm over real PG with a recording proxy.
 
     Connection answering the archive arm's reads: no live row, the
     archive row, its archived attempts, and the event rows the
@@ -1279,7 +1280,9 @@ class _ArchivedJobConnection(StubConnection):
         self.fetched_queries.append(query)
         if "jobs_archive" in query:
             return self._job_row
-        return None
+        if ".jobs WHERE id = $1" in query:
+            return None  # the live arm's read: the job is archived
+        raise AssertionError(f"unmatched statement: {query}")
 
     async def fetch(self, query: str, *args: object) -> list[StubRecord]:
         self.fetched_queries.append(query)
@@ -1287,7 +1290,9 @@ class _ArchivedJobConnection(StubConnection):
             return []
         if "job_events" in query:
             return self._events
-        return []  # admin_audit and anything else: empty
+        if "admin_audit" in query:
+            return []
+        raise AssertionError(f"unmatched statement: {query}")
 
 
 class _ArchivedJobPool(_StubPool):
@@ -1305,6 +1310,42 @@ class _ArchivedJobPool(_StubPool):
                 pass
 
         return _Ctx()
+
+
+class _ArchivedJobStatementRecordingPool:
+    """Recording proxy over the real pool: records the archive arm's reads
+    and lets every statement proceed untouched - COUNT, DON'T ANSWER (the
+    house pattern of tests/test_cancel_where_bounded.py::_StatementRecordingPool)."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+        self.fetched_queries: list[str] = []
+
+    @asynccontextmanager
+    async def acquire(self, **kwargs: object) -> AsyncGenerator[Any, None]:
+        async with self._pool.acquire(**kwargs) as conn:  # type: ignore[call-overload]  # Why: the real pool's acquire timeout kwarg passes through untouched.
+            outer = self
+
+            class _Recorder:
+                def __init__(self, inner: Any) -> None:
+                    self._inner = inner
+
+                async def fetchrow(self, sql: str, *args: object) -> Any:
+                    outer.fetched_queries.append(sql)
+                    return await self._inner.fetchrow(sql, *args)
+
+                async def fetch(self, sql: str, *args: object) -> Any:
+                    outer.fetched_queries.append(sql)
+                    return await self._inner.fetch(sql, *args)
+
+                async def fetchval(self, sql: str, *args: object) -> Any:
+                    outer.fetched_queries.append(sql)
+                    return await self._inner.fetchval(sql, *args)
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(self._inner, name)
+
+            yield _Recorder(conn)
 
 
 def _archived_job_row(job_id: uuid.UUID) -> StubRecord:
@@ -1391,15 +1432,41 @@ def test_archived_job_detail_renders_the_events_the_ledger_holds(
     )
 
 
-def test_archived_job_detail_events_read_binds_the_path_job_id(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_archived_job_detail_events_read_binds_the_path_job_id(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The events query the archive arm issues is the same per-job
-    ``_EVENTS_SQL`` shape the live arm issues (ORDER BY occurred_at)."""
-    conn = _ArchivedJobConnection(_archived_job_row(new_uuid()), _archived_job_events())
-    client = _archived_detail_client(monkeypatch, conn)
-
-    client.get(f"/jobs/{conn._job_row['id']}")  # pyright: ignore[reportAttributeAccessUsage]  # Why: test stub; the row was just assigned.
-    events_queries = [q for q in conn.fetched_queries if "job_events" in q]
+    ``_EVENTS_SQL`` shape the live arm issues (ORDER BY occurred_at) -
+    captured from the real pool while the arm reads a real jobs_archive
+    row."""
+    schema = module_pg_schema.schema_name
+    jid = new_uuid()
+    now = datetime.now(UTC)
+    await clean_pg_conn.execute(
+        f"""INSERT INTO "{schema}".jobs_archive (
+                id, actor, queue, payload, max_attempts, retry_kind, status,
+                attempt, metadata, created_at, scheduled_at, started_at,
+                finished_at, archived_at, expire_at)
+            VALUES ($1, 'send_email', 'default', '{{}}'::jsonb, 3, 'transient',
+                'succeeded'::{schema}.job_status, 1, '{{}}'::jsonb, $2, $2, $2,
+                $2, $3, $4)""",
+        jid,
+        now,
+        now + timedelta(days=1),
+        now + timedelta(days=365),
+    )
+    recording = _ArchivedJobStatementRecordingPool(module_pg_pool)
+    app = FastAPI()
+    bundle = create_router(recording, schema=schema, base_path="")  # pyright: ignore[reportArgumentType]  # Why: the recording proxy satisfies the checkout surface the router uses.
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/jobs/{jid}")
+    assert resp.status_code == 200
+    events_queries = [q for q in recording.fetched_queries if "job_events" in q]
     assert len(events_queries) == 1
     assert "ORDER BY occurred_at" in events_queries[0]

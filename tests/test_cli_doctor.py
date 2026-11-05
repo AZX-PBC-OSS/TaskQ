@@ -22,19 +22,27 @@ Unit tier: the database reads are faked at the ``taskq.cli`` boundary,
 following ``tests/test_cli_actor_config_diff_exit_code.py``.
 """
 
+# ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
+# identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
+# header's own rule for the real-PG seeding this file carries).
+
+import asyncio
 import os
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import asyncpg
 import pytest
 from pydantic import BaseModel
 from typer.testing import CliRunner
 
+from taskq._ids import new_job_id
 from taskq.actor import ActorRef, actor
 from taskq.actor_config_ops import ActorConfigRow
 from taskq.cli import app
 from taskq.testing.assertions import plain_cli_output
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.timescale import StorageMode
 from taskq.worker.queue_ops import QueueRow
 
@@ -86,10 +94,10 @@ def _row(
 def _patch_db(
     monkeypatch: pytest.MonkeyPatch,
     *,
+    pg_dsn: str,
+    schema: str,
     actor_rows: list[ActorConfigRow],
     queue_rows: list[QueueRow],
-    stranded_rows: list[dict[str, Any]] | None = None,
-    worker_rows: list[dict[str, Any]] | None = None,
     storage_mode: StorageMode | None = StorageMode.VANILLA,
     downgraded_policies: Sequence[str] = (),
     imbalance_rows: list[dict[str, Any]] | None = None,
@@ -98,17 +106,21 @@ def _patch_db(
     drain_rows: list[dict[str, Any]] | None = None,
     cron_rows: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    """Fake the doctor's reads at the ``taskq.cli`` boundary.
+    """Point `doctor` at the module's real schema; fake the insight reads
+    at the ``taskq.cli`` boundary.
 
     Returns the list every statement the command executes is recorded
     into, so the read-only property can be asserted rather than assumed.
 
-    ``stranded_rows`` feeds the pending/scheduled jobs scan (the one read
-    that reaches the raw connection rather than a patched helper): rows in
-    the per-actor shape ``_list_stranded_pending_jobs`` returns.  The scan
-    is identified by its ``.jobs`` table reference - the insights reads
-    ride the ``taskq.insights`` fetchers, faked as functions below like
-    ``list_actor_configs`` is.
+    The command's raw-connection reads (the stranded-jobs scan, the
+    workers metadata read) answer from the REAL schema - the rows a test
+    needs are seeded as real rows, and the connection is a recording
+    proxy (COUNT, DON'T ANSWER, the house pattern of
+    tests/test_cancel_where_bounded.py::_StatementRecordingPool), so the
+    read-only pin scans the statements the command really issued. The
+    insights reads ride the ``taskq.insights`` fetchers, faked as
+    functions below like ``list_actor_configs`` is; their real-Postgres
+    tier is ``tests/test_cli_doctor_insights_pg.py``.
 
     The ``*_rows`` insight parameters feed the four operational-insight
     families (the shapes ``fetch_queue_imbalance``, ``fetch_wait_distribution``,
@@ -130,41 +142,47 @@ def _patch_db(
     input. Empty (the default) on every healthy deployment.
     """
     executed: list[str] = []
-    stranded = [] if stranded_rows is None else stranded_rows
-    worker_rows = [] if worker_rows is None else worker_rows
     imbalance = [] if imbalance_rows is None else imbalance_rows
     wait = [] if wait_rows is None else wait_rows
     overprovisioning = [] if overprovisioning_rows is None else overprovisioning_rows
     drain = [] if drain_rows is None else drain_rows
     cron = [] if cron_rows is None else cron_rows
 
-    class _FakeConn:
-        """fail-closed-exempt: the CLI doctor's scripted diagnostics rows (no PG; the real checks are the integration packs')"""
+    real_connect = asyncpg.connect
+
+    class _RecordingConn:
+        """Recording proxy over the real connection: records every
+        statement, then lets the real read answer."""
+
+        def __init__(self, conn: Any) -> None:
+            self._conn = conn
 
         async def execute(self, query: str, *args: Any) -> str:
             executed.append(query)
-            return "OK"
+            return await self._conn.execute(query, *args)
 
         async def fetch(self, query: str, *args: Any) -> list[Any]:
             executed.append(query)
-            if ".jobs " in query:
-                return list(stranded)
-            if ".workers" in query:
-                return list(worker_rows)
-            return []
+            return await self._conn.fetch(query, *args)
 
         async def fetchval(self, query: str, *args: Any) -> Any:
             executed.append(query)
-            return 0
+            return await self._conn.fetchval(query, *args)
 
         async def fetchrow(self, query: str, *args: Any) -> Any:
             executed.append(query)
-            return None
+            return await self._conn.fetchrow(query, *args)
 
-        async def close(self) -> None: ...
+        async def close(self) -> None:
+            await self._conn.close()
 
     async def fake_connect(dsn: str) -> Any:
-        return _FakeConn()
+        # The command dials the per-module database the env pins; the
+        # proxy records what it really issues. The real connect is bound
+        # BEFORE the patch below replaces the ``taskq.cli.asyncpg.connect``
+        # attribute (which IS the global asyncpg module's attr - the fake
+        # must not call itself).
+        return _RecordingConn(await real_connect(pg_dsn))
 
     async def fake_detect_storage_mode(conn: Any) -> StorageMode | None:
         executed.append("fake: detect_storage_mode")
@@ -195,6 +213,13 @@ def _patch_db(
     async def fake_fetch_cron_ledger(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return list(cron)
 
+    # The env-var scan reads the real process environment; the ambient
+    # TASKQ_* variables must not decide what a finding test sees, and the
+    # command must dial the module's own database.
+    _clean_taskq_env(monkeypatch)
+    monkeypatch.setenv("TASKQ_PG_DSN", pg_dsn)
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", schema)
+
     monkeypatch.setattr("taskq.cli.asyncpg.connect", fake_connect)
     monkeypatch.setattr("taskq.cli.list_actor_configs", fake_list_actor_configs)
     monkeypatch.setattr("taskq.cli.list_queues", fake_list_queues)
@@ -203,10 +228,6 @@ def _patch_db(
     monkeypatch.setattr("taskq.cli.fetch_overprovisioning", fake_fetch_overprovisioning)
     monkeypatch.setattr("taskq.cli.fetch_drain_estimates", fake_fetch_drain_estimates)
     monkeypatch.setattr("taskq.cli.fetch_cron_ledger", fake_fetch_cron_ledger)
-
-    monkeypatch.setattr("taskq.cli.asyncpg.connect", fake_connect)
-    monkeypatch.setattr("taskq.cli.list_actor_configs", fake_list_actor_configs)
-    monkeypatch.setattr("taskq.cli.list_queues", fake_list_queues)
     monkeypatch.setattr("taskq.cli.detect_storage_mode", fake_detect_storage_mode)
     monkeypatch.setattr("taskq.cli.probe_registered_policy_jobs", fake_probe_registered_policy_jobs)
     return executed
@@ -216,7 +237,9 @@ def _invoke(*extra: str) -> Any:
     return runner.invoke(app, ["doctor", "--actors", _REGISTRY_PATH, *extra])
 
 
-def test_doctor_stranded_scan_applies_the_worker_liveness_window(
+async def test_doctor_stranded_scan_applies_the_worker_liveness_window(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Doctor's stranded-jobs scan must filter worker rows by the admin
@@ -230,11 +253,13 @@ def test_doctor_stranded_scan_applies_the_worker_liveness_window(
     against a real stale row."""
     executed = _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default")],
         queue_rows=[],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert result.exit_code == 0
     stranded_sql = [q for q in executed if ".jobs " in q]
@@ -246,7 +271,9 @@ def test_doctor_stranded_scan_applies_the_worker_liveness_window(
     assert "make_interval" in stranded_sql[0]
 
 
-def test_doctor_reports_actor_with_no_stored_config_row_as_never_dispatching(
+async def test_doctor_reports_actor_with_no_stored_config_row_as_never_dispatching(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The dispatch capacity gate joins ``actor_config``, so a registered
@@ -256,17 +283,23 @@ def test_doctor_reports_actor_with_no_stored_config_row_as_never_dispatching(
     say what actually happens, not just note the row's absence."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default")],
         queue_rows=[],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "doctor_beta" in plain_cli_output(result.output)
     assert "never dispatches" in plain_cli_output(result.output).lower()
 
 
-def test_doctor_reports_queue_cap_staleness(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_doctor_reports_queue_cap_staleness(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A ``queues`` row for a queue no actor is assigned to is a leftover - a
     queue move retires the assignment but the row's cap survives, and the
     next actor moved onto that queue silently inherits a cap nobody chose.
@@ -274,6 +307,8 @@ def test_doctor_reports_queue_cap_staleness(monkeypatch: pytest.MonkeyPatch) -> 
     belongs in a health report rather than in an error."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[
             _row("doctor_alpha", queue="default"),
             _row("doctor_beta", queue="batch"),
@@ -285,19 +320,25 @@ def test_doctor_reports_queue_cap_staleness(monkeypatch: pytest.MonkeyPatch) -> 
         ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "retired_tier" in plain_cli_output(result.output)
     assert "stale" in plain_cli_output(result.output).lower()
 
 
-def test_doctor_labels_drain_mode_explicitly(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_doctor_labels_drain_mode_explicitly(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A stored ``max_concurrent=0`` is a deliberate drain, and an actor in
     drain mode is indistinguishable from a broken one by its symptoms:
     jobs enqueue and never run. The label is what separates "someone did
     this on purpose" from an incident."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[
             _row("doctor_alpha", queue="default", max_concurrent=0),
             _row("doctor_beta", queue="batch", max_concurrent=4),
@@ -305,14 +346,16 @@ def test_doctor_labels_drain_mode_explicitly(monkeypatch: pytest.MonkeyPatch) ->
         queue_rows=[],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "drain" in plain_cli_output(result.output).lower(), (
         "a zero stored cap must be labelled drain mode, not printed as a bare 0"
     )
 
 
-def test_doctor_labels_stored_null_capacity_as_uncapped(
+async def test_doctor_labels_stored_null_capacity_as_uncapped(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``NULL`` means "no actor-level cap" - a real configuration, not
@@ -320,16 +363,20 @@ def test_doctor_labels_stored_null_capacity_as_uncapped(
     and sends the operator looking for a problem that is not there."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default", max_concurrent=None)],
         queue_rows=[],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "uncapped" in plain_cli_output(result.output).lower()
 
 
-def test_doctor_reports_incoherent_max_pending_below_max_concurrent(
+async def test_doctor_reports_incoherent_max_pending_below_max_concurrent(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``max_pending`` below ``max_concurrent`` cannot ever be satisfied: the
@@ -338,17 +385,21 @@ def test_doctor_reports_incoherent_max_pending_below_max_concurrent(
     its own, which is why only a combination check can catch it."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default", max_concurrent=10, max_pending=2)],
         queue_rows=[],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "doctor_alpha" in plain_cli_output(result.output)
     assert "max_pending" in plain_cli_output(result.output)
 
 
-def test_doctor_reports_queue_cap_below_actor_cap_as_incoherent(
+async def test_doctor_reports_queue_cap_below_actor_cap_as_incoherent(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An actor cap above its queue's cap can never be reached - the queue
@@ -356,17 +407,23 @@ def test_doctor_reports_queue_cap_below_actor_cap_as_incoherent(
     in its stored form, and only visible by reading two tables together."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default", max_concurrent=20)],
         queue_rows=[QueueRow(name="default", mode="strict_fifo", max_concurrent=2)],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "doctor_alpha" in plain_cli_output(result.output)
     assert "default" in plain_cli_output(result.output)
 
 
-def test_doctor_never_exits_non_zero_on_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_doctor_never_exits_non_zero_on_warnings(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A diagnostic that fails the shell on findings gets wrapped in
     ``|| true`` and then ignored. Every condition `doctor` reports is one
     TaskQ has decided a worker should keep running through, so reporting
@@ -374,6 +431,8 @@ def test_doctor_never_exits_non_zero_on_warnings(monkeypatch: pytest.MonkeyPatch
     job, and keeping the two separate is what lets each be trusted."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[
             # Every warnable condition at once: drain mode, an unreachable
             # actor cap under a smaller queue cap, and (via doctor_beta
@@ -383,25 +442,31 @@ def test_doctor_never_exits_non_zero_on_warnings(monkeypatch: pytest.MonkeyPatch
         queue_rows=[QueueRow(name="retired_tier", mode="strict_fifo", max_concurrent=1)],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert result.exit_code == 0, (
         f"doctor must exit 0 while reporting warnings; got {result.exit_code}: {result.output}"
     )
 
 
-def test_doctor_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_doctor_is_read_only(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Operators run `doctor` mid-incident against production. It must not be
     a command anyone has to reason about before running: no statement it
     issues may write. A reporting tool that repairs what it finds also
     destroys the evidence of what went wrong."""
     executed = _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default", max_concurrent=0)],
         queue_rows=[QueueRow(name="retired_tier", mode="strict_fifo", max_concurrent=1)],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert result.exit_code == 0, (
         "the read-only property is only meaningful once the command runs; "
@@ -411,7 +476,9 @@ def test_doctor_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert offenders == [], f"doctor issued writing statements: {offenders}"
 
 
-def test_doctor_on_a_healthy_deployment_exits_zero_and_reports_no_findings(
+async def test_doctor_on_a_healthy_deployment_exits_zero_and_reports_no_findings(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Control: with every registered actor seeded and every queue row
@@ -420,6 +487,8 @@ def test_doctor_on_a_healthy_deployment_exits_zero_and_reports_no_findings(
     pass every test above."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[
             _row("doctor_alpha", queue="default", max_concurrent=4, max_pending=100),
             _row("doctor_beta", queue="batch", max_concurrent=2, max_pending=100),
@@ -430,7 +499,7 @@ def test_doctor_on_a_healthy_deployment_exits_zero_and_reports_no_findings(
         ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert result.exit_code == 0
     lowered = plain_cli_output(result.output).lower()
@@ -462,7 +531,9 @@ def test_doctor_does_not_gate_boot(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
+async def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`doctor`'s own stated purpose is to surface "an actor with no stored
@@ -509,30 +580,35 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
     ``taskq/worker/_leader_sweeps.py``) and report them the same way it
     reports a registered actor with no row today.
     """
+    # The stranded scan reads the real schema: the ghost actor's pending
+    # job is a real row (no registry entry, no actor_config row).
+    schema = module_pg_schema.schema_name
+    await clean_pg_conn.execute(
+        f"""INSERT INTO "{schema}".jobs (
+                id, actor, queue, payload, payload_schema_ver, max_attempts,
+                retry_kind, status, priority, attempt, metadata,
+                created_at, scheduled_at)
+            VALUES ($1, 'ghost_actor_not_registered', 'default', '{{}}'::jsonb,
+                1, 3, 'transient', 'pending', 0, 0, '{{}}'::jsonb, now(), now())""",
+        new_job_id(),
+    )
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=schema,
         actor_rows=[
             _row("doctor_alpha", queue="default"),
             _row("doctor_beta", queue="batch"),
         ],
         queue_rows=[],
-        stranded_rows=[
-            {
-                "actor": "ghost_actor_not_registered",
-                "no_actor_config_cnt": 1,
-                "unserved_queue_cnt": 0,
-                "unserved_queues": [],
-            }
-        ],
     )
 
-    # The jobs scan is fed through `_patch_db`'s raw-fetch seam (the one
-    # read no patched helper covers); the assertion below is on the CLI's
-    # *printed report*, not on the query shape, so it stays valid across
-    # implementations that read jobs via fetch, a dedicated helper, or
-    # otherwise.
+    # The jobs scan reads the seeded row through the real schema; the
+    # assertion below is on the CLI's *printed report*, not on the query
+    # shape, so it stays valid across implementations that read jobs via
+    # fetch, a dedicated helper, or otherwise.
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     output = plain_cli_output(result.output).lower()
     assert "ghost_actor_not_registered" not in output or "no findings" not in output, (
@@ -560,26 +636,32 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
 # ── Attributed event-loop stalls (the workers metadata tally) ─────────
 
 
-def test_doctor_reports_attributed_stalls_from_worker_metadata(
+async def test_doctor_reports_attributed_stalls_from_worker_metadata(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A worker's stall tally rides the workers row metadata the heartbeat
     already rewrites, so doctor reads it without any new write surface:
     a non-empty tally becomes a finding naming the actor, the kind and
     the remedy, pointing back at the warning that carries the file:line."""
+    # The tally is a real workers row's jsonb metadata.
+    await clean_pg_conn.execute(
+        f"""INSERT INTO "{module_pg_schema.schema_name}".workers
+                (id, hostname, pid, queues, metadata)
+            VALUES ($1, 'doctor-stall-host', 4242, ARRAY['default']::text[], $2::jsonb)""",
+        "11111111-1111-1111-1111-111111111111",
+        '{"loop_stalls": {"send_email": {"gil_held": 12, "blocking_call": 3}}}',
+    )
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default"), _row("doctor_beta", queue="batch")],
         queue_rows=[],
-        worker_rows=[
-            {
-                "id": "11111111-1111-1111-1111-111111111111",
-                "metadata": {"loop_stalls": {"send_email": {"gil_held": 12, "blocking_call": 3}}},
-            }
-        ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "send_email" in plain_cli_output(result.output)
     assert "gil_held" in plain_cli_output(result.output)
@@ -590,51 +672,73 @@ def test_doctor_reports_attributed_stalls_from_worker_metadata(
     assert "event-loop-stall-attributed" in plain_cli_output(result.output)
 
 
-def test_doctor_is_silent_when_no_worker_attributed_stalls(
+async def test_doctor_is_silent_when_no_worker_attributed_stalls(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Clean fleet: no tally in any workers row, no attribution finding
     and no actor named for one."""
+    # A real workers row whose metadata carries no tally.
+    await clean_pg_conn.execute(
+        f"""INSERT INTO "{module_pg_schema.schema_name}".workers
+                (id, hostname, pid, queues, metadata)
+            VALUES ($1, 'doctor-clean-host', 4242, ARRAY['default']::text[],
+                '{{"notify_enabled": true, "max_concurrency": 4}}'::jsonb)""",
+        "11111111-1111-1111-1111-111111111111",
+    )
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default"), _row("doctor_beta", queue="batch")],
         queue_rows=[],
-        worker_rows=[
-            {
-                "id": "11111111-1111-1111-1111-111111111111",
-                "metadata": {"notify_enabled": True, "max_concurrency": 4},
-            }
-        ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "send_email" not in plain_cli_output(result.output)
     assert "stalled the event loop" not in plain_cli_output(result.output)
 
 
-def test_doctor_platform_grace_below_worst_case_reports_the_sigkill_risk(
+async def test_doctor_platform_grace_below_worst_case_reports_the_sigkill_risk(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The platform's stop grace is invisible to the running worker, so a
     deployment that pinned it against an older, smaller worst case gets
     SIGKILLed mid-teardown on every shutdown after the tail grew. Doctor
     names the shortfall and the fix when the operator supplies the number."""
-    _patch_db(monkeypatch, actor_rows=[_row("doctor_alpha", queue="default")], queue_rows=[])
+    _patch_db(
+        monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+    )
 
-    result = _invoke("--platform-grace-seconds", "30")
+    result = await asyncio.to_thread(_invoke, "--platform-grace-seconds", "30")
 
     assert "below the worker's modelled worst-case shutdown" in plain_cli_output(result.output)
     assert "crash reclaim" in plain_cli_output(result.output)
     assert "SIGKILL" in plain_cli_output(result.output)
 
 
-def test_doctor_platform_grace_above_worst_case_confirms_coverage(
+async def test_doctor_platform_grace_above_worst_case_confirms_coverage(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _patch_db(monkeypatch, actor_rows=[_row("doctor_alpha", queue="default")], queue_rows=[])
+    _patch_db(
+        monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+    )
 
-    result = _invoke("--platform-grace-seconds", "600")
+    result = await asyncio.to_thread(_invoke, "--platform-grace-seconds", "600")
 
     assert "covers the worker's modelled worst-case shutdown" in plain_cli_output(result.output)
     assert "SIGKILL" not in plain_cli_output(result.output)
@@ -656,7 +760,9 @@ def _clean_taskq_env(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(name, raising=False)
 
 
-def test_doctor_reports_unknown_taskq_env_var_naming_the_closest_real_name(
+async def test_doctor_reports_unknown_taskq_env_var_naming_the_closest_real_name(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The audit's real config-drift trap: a typo'd ``TASKQ_`` variable
@@ -667,13 +773,14 @@ def test_doctor_reports_unknown_taskq_env_var_naming_the_closest_real_name(
     name, the one-character-drift remedy a typo almost always wants."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default"), _row("doctor_beta", queue="batch")],
         queue_rows=[],
     )
-    _clean_taskq_env(monkeypatch)
     monkeypatch.setenv("TASKQ_MAX_PENDNG_LOCK_TIMEOUT_MS", "5000")
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "unknown TASKQ_ setting: TASKQ_MAX_PENDNG_LOCK_TIMEOUT_MS" in plain_cli_output(
         result.output
@@ -684,7 +791,9 @@ def test_doctor_reports_unknown_taskq_env_var_naming_the_closest_real_name(
     assert "a typo applies defaults silently" in plain_cli_output(result.output)
 
 
-def test_doctor_reports_no_unknown_env_finding_when_every_taskq_var_is_known(
+async def test_doctor_reports_no_unknown_env_finding_when_every_taskq_var_is_known(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Control: a fully legitimate ``TASKQ_`` environment - core settings,
@@ -693,21 +802,23 @@ def test_doctor_reports_no_unknown_env_finding_when_every_taskq_var_is_known(
     prefixed name would bury real findings in false positives."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default"), _row("doctor_beta", queue="batch")],
         queue_rows=[],
     )
-    _clean_taskq_env(monkeypatch)
-    monkeypatch.setenv("TASKQ_PG_DSN", "postgresql://taskq:taskq@localhost:5432/taskq")
     monkeypatch.setenv("TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS", "5000")
     monkeypatch.setenv("TASKQ_OIDC_ISSUER", "https://login.microsoftonline.com/tenant/v2.0")
     monkeypatch.setenv("TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE", "false")
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "unknown TASKQ_ setting" not in plain_cli_output(result.output)
 
 
-def test_doctor_unknown_env_finding_is_actionable_for_a_name_no_setting_resembles(
+async def test_doctor_unknown_env_finding_is_actionable_for_a_name_no_setting_resembles(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A ``TASKQ_`` variable that matches no real setting's name gets the
@@ -716,13 +827,14 @@ def test_doctor_unknown_env_finding_is_actionable_for_a_name_no_setting_resemble
     operator editing the wrong line."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default"), _row("doctor_beta", queue="batch")],
         queue_rows=[],
     )
-    _clean_taskq_env(monkeypatch)
     monkeypatch.setenv("TASKQ_FLEET_ENCHILADA_MODE", "1")
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "unknown TASKQ_ setting: TASKQ_FLEET_ENCHILADA_MODE" in plain_cli_output(result.output)
     assert "no similar setting name exists" in plain_cli_output(result.output)
@@ -749,7 +861,9 @@ def test_unknown_env_scan_ignores_non_taskq_names() -> None:
 # ── The storage-mode family: the detected mode, first in every report ──
 
 
-def test_doctor_leads_with_the_detected_storage_mode_vanilla(
+async def test_doctor_leads_with_the_detected_storage_mode_vanilla(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The vanilla mode renders its one-glance consequences: plain tables,
@@ -758,12 +872,14 @@ def test_doctor_leads_with_the_detected_storage_mode_vanilla(
     of the report's advice stands on."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default")],
         queue_rows=[],
         storage_mode=StorageMode.VANILLA,
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert (
         "storage mode: vanilla - plain tables - no hypertables, no columnstore; "
@@ -779,7 +895,9 @@ def test_doctor_leads_with_the_detected_storage_mode_vanilla(
     assert "storage mode drift" not in result.output
 
 
-def test_doctor_leads_with_the_detected_storage_mode_tsl(
+async def test_doctor_leads_with_the_detected_storage_mode_tsl(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The full TSL mode renders the whole consequence chain: hypertables,
@@ -788,12 +906,14 @@ def test_doctor_leads_with_the_detected_storage_mode_tsl(
     chunks)."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default")],
         queue_rows=[],
         storage_mode=StorageMode.TIMESCALE_TSL,
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert (
         "storage mode: timescale-tsl - hypertables + columnstore on the archive "
@@ -803,7 +923,9 @@ def test_doctor_leads_with_the_detected_storage_mode_tsl(
     assert "storage mode drift" not in result.output
 
 
-def test_doctor_leads_with_the_detected_storage_mode_apache(
+async def test_doctor_leads_with_the_detected_storage_mode_apache(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The apache mode renders the mode's truth in one glance: hypertables
@@ -812,12 +934,14 @@ def test_doctor_leads_with_the_detected_storage_mode_apache(
     the row-level sweeps."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default")],
         queue_rows=[],
         storage_mode=StorageMode.TIMESCALE_APACHE,
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert (
         "storage mode: timescale-apache - hypertables, rowstore - the chunk-drop "
@@ -828,7 +952,9 @@ def test_doctor_leads_with_the_detected_storage_mode_apache(
     assert "storage mode drift" not in result.output
 
 
-def test_doctor_names_the_license_downgrade_drift_apache_with_live_policies(
+async def test_doctor_names_the_license_downgrade_drift_apache_with_live_policies(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The family's second red arm, measured on real 2.30.1: a server
@@ -845,6 +971,8 @@ def test_doctor_names_the_license_downgrade_drift_apache_with_live_policies(
     API refuses too)."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default")],
         queue_rows=[],
         storage_mode=StorageMode.TIMESCALE_APACHE,
@@ -857,7 +985,7 @@ def test_doctor_names_the_license_downgrade_drift_apache_with_live_policies(
         ),
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert (
         "storage mode drift: this server's timescaledb.license is 'apache' but 5 "
@@ -873,7 +1001,9 @@ def test_doctor_names_the_license_downgrade_drift_apache_with_live_policies(
     assert "ALTER SYSTEM SET timescaledb.license = 'timescale'" in result.output
 
 
-def test_doctor_flags_the_flag_on_vanilla_drift_as_unworkable(
+async def test_doctor_flags_the_flag_on_vanilla_drift_as_unworkable(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The family's one red arm: the environment's flag says hypertables,
@@ -882,13 +1012,15 @@ def test_doctor_flags_the_flag_on_vanilla_drift_as_unworkable(
     the setting, and both remedies."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default")],
         queue_rows=[],
         storage_mode=StorageMode.VANILLA,
     )
     monkeypatch.setenv("TASKQ_TIMESCALEDB_HYPERTABLES", "true")
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert (
         "storage mode drift: TASKQ_TIMESCALEDB_HYPERTABLES=true but this server "
@@ -897,24 +1029,32 @@ def test_doctor_flags_the_flag_on_vanilla_drift_as_unworkable(
     assert "TimescaleDBUnavailableError" in result.output
 
 
-def test_doctor_flag_on_tsl_is_no_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_doctor_flag_on_tsl_is_no_drift(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The aligned case - flag on, server detects the full TSL mode - is
     the family's green: the mode line, no drift arm."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default")],
         queue_rows=[],
         storage_mode=StorageMode.TIMESCALE_TSL,
     )
     monkeypatch.setenv("TASKQ_TIMESCALEDB_HYPERTABLES", "true")
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "storage mode: timescale-tsl" in result.output
     assert "storage mode drift" not in result.output
 
 
-def test_doctor_stays_read_only_with_the_storage_mode_family(
+async def test_doctor_stays_read_only_with_the_storage_mode_family(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The mode detection rides the report's existing read-only connection
@@ -922,12 +1062,14 @@ def test_doctor_stays_read_only_with_the_storage_mode_family(
     write verb (the detection's probes are catalog reads)."""
     executed = _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_alpha", queue="default")],
         queue_rows=[],
         storage_mode=StorageMode.TIMESCALE_TSL,
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert result.exit_code == 0
     for statement in executed:
@@ -1019,7 +1161,9 @@ def _cron_row(**over: Any) -> dict[str, Any]:
     return row
 
 
-def test_doctor_reports_starved_queue_and_names_the_capacity_levers(
+async def test_doctor_reports_starved_queue_and_names_the_capacity_levers(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A queue whose utilization (depth / effective capacity) blows past the
@@ -1030,6 +1174,8 @@ def test_doctor_reports_starved_queue_and_names_the_capacity_levers(
     another worker on the queue, or a raised max_concurrent."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_beta", queue="batch", max_concurrent=4)],
         queue_rows=[],
         imbalance_rows=[
@@ -1043,7 +1189,7 @@ def test_doctor_reports_starved_queue_and_names_the_capacity_levers(
         ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "batch" in result.output
     assert "STARVED" in result.output
@@ -1054,7 +1200,9 @@ def test_doctor_reports_starved_queue_and_names_the_capacity_levers(
     assert "doctor_beta" in result.output
 
 
-def test_doctor_is_silent_on_a_burst_younger_than_the_persistence_floor(
+async def test_doctor_is_silent_on_a_burst_younger_than_the_persistence_floor(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Control (the measured false positive): a 12-deep queue at 6x
@@ -1063,6 +1211,8 @@ def test_doctor_is_silent_on_a_burst_younger_than_the_persistence_floor(
     rest on a depth snapshot younger than the claim-in-flight window."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_beta", queue="batch", max_concurrent=4)],
         queue_rows=[],
         imbalance_rows=[
@@ -1076,28 +1226,36 @@ def test_doctor_is_silent_on_a_burst_younger_than_the_persistence_floor(
         ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "STARVED" not in result.output
 
 
-def test_doctor_is_silent_on_a_balanced_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_doctor_is_silent_on_a_balanced_queue(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Control: utilization at the balanced edge (1.0 - one full wave, the
     shape any enqueue burst produces transiently) renders no imbalance
     finding. A threshold at 1.0 would cry wolf on every burst."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_beta", queue="batch")],
         queue_rows=[],
         imbalance_rows=[_imbalance_row(utilization=1.0)],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "STARVED" not in result.output
 
 
-def test_doctor_reports_stranded_work_when_oldest_due_blows_past_p95(
+async def test_doctor_reports_stranded_work_when_oldest_due_blows_past_p95(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The strand shape: a due row whose age exceeds its queue's own p95
@@ -1106,13 +1264,15 @@ def test_doctor_reports_stranded_work_when_oldest_due_blows_past_p95(
     the p95 is computed over the same window the burst would inflate."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_beta", queue="batch")],
         queue_rows=[],
         imbalance_rows=[_imbalance_row(oldest_due_age_s=600.0)],
         wait_rows=[_wait_row(p95_wait_s=5.0)],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "batch" in result.output
     assert "STRANDED WORK" in result.output
@@ -1121,7 +1281,9 @@ def test_doctor_reports_stranded_work_when_oldest_due_blows_past_p95(
     assert "max_concurrent" in result.output
 
 
-def test_doctor_is_silent_when_oldest_due_is_within_the_distribution(
+async def test_doctor_is_silent_when_oldest_due_is_within_the_distribution(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Control: an oldest-due age inside the observed distribution's tail
@@ -1129,18 +1291,22 @@ def test_doctor_is_silent_when_oldest_due_is_within_the_distribution(
     a just-enqueued job is not a strand."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_beta", queue="batch")],
         queue_rows=[],
         imbalance_rows=[_imbalance_row(oldest_due_age_s=10.0)],
         wait_rows=[_wait_row(p95_wait_s=5.0)],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "STRANDED WORK" not in result.output
 
 
-def test_doctor_reports_overprovisioned_queue_with_consolidation_remedy(
+async def test_doctor_reports_overprovisioned_queue_with_consolidation_remedy(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Live workers on a queue with zero due depth and near-zero
@@ -1149,6 +1315,8 @@ def test_doctor_reports_overprovisioned_queue_with_consolidation_remedy(
     never a destructive suggestion."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_beta", queue="over_q")],
         queue_rows=[],
         overprovisioning_rows=[
@@ -1156,7 +1324,7 @@ def test_doctor_reports_overprovisioned_queue_with_consolidation_remedy(
         ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "over_q" in result.output
     assert "OVERPROVISIONED" in result.output
@@ -1169,13 +1337,17 @@ def test_doctor_reports_overprovisioned_queue_with_consolidation_remedy(
     assert "drop" not in result.output.lower()
 
 
-def test_doctor_is_silent_when_the_queue_earns_its_workers(
+async def test_doctor_is_silent_when_the_queue_earns_its_workers(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Control: the same worker count with real throughput (the verdict
     keys on work done, not queue emptiness) renders NOTHING."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_beta", queue="over_q")],
         queue_rows=[],
         overprovisioning_rows=[
@@ -1185,12 +1357,14 @@ def test_doctor_is_silent_when_the_queue_earns_its_workers(
         ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "OVERPROVISIONED" not in result.output
 
 
-def test_doctor_reports_slow_drain_with_eta_and_confidence_caveat(
+async def test_doctor_reports_slow_drain_with_eta_and_confidence_caveat(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A drain eta beyond the observation window itself, on a depth that
@@ -1201,13 +1375,15 @@ def test_doctor_reports_slow_drain_with_eta_and_confidence_caveat(
     caveat."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_beta", queue="bulk_q")],
         queue_rows=[],
         imbalance_rows=[_imbalance_row(queue="bulk_q", oldest_due_age_s=600.0)],
         drain_rows=[_drain_row(eta_seconds=4 * 86400.0)],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "bulk_q" in result.output
     assert "SLOW DRAIN" in result.output
@@ -1216,7 +1392,9 @@ def test_doctor_reports_slow_drain_with_eta_and_confidence_caveat(
     assert "50 completion(s)" in result.output
 
 
-def test_doctor_is_silent_when_a_young_burst_reads_a_fictional_eta(
+async def test_doctor_is_silent_when_a_young_burst_reads_a_fictional_eta(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Control (the measured false positive): an idle-capacity fleet's
@@ -1225,24 +1403,30 @@ def test_doctor_is_silent_when_a_young_burst_reads_a_fictional_eta(
     read. No persistence, no rate claim."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_beta", queue="bulk_q")],
         queue_rows=[],
         imbalance_rows=[_imbalance_row(queue="bulk_q", oldest_due_age_s=2.0)],
         drain_rows=[_drain_row(eta_seconds=4 * 86400.0)],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "SLOW DRAIN" not in result.output
 
 
-def test_doctor_is_silent_when_drain_fits_inside_the_window(
+async def test_doctor_is_silent_when_drain_fits_inside_the_window(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Control: an eta inside the observation window (and the no-traffic
     shape, whose estimate is honestly undefined) renders NOTHING."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("doctor_beta", queue="bulk_q")],
         queue_rows=[],
         drain_rows=[
@@ -1251,12 +1435,14 @@ def test_doctor_is_silent_when_drain_fits_inside_the_window(
         ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "SLOW DRAIN" not in result.output
 
 
-def test_doctor_reports_cron_lag_naming_schedule_backlog_and_both_remedies(
+async def test_doctor_reports_cron_lag_naming_schedule_backlog_and_both_remedies(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A schedule whose fan-out outruns clearance (two consecutive windows,
@@ -1265,12 +1451,14 @@ def test_doctor_reports_cron_lag_naming_schedule_backlog_and_both_remedies(
     remedies: slow the cron, or add workers for the actor."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("send_email", queue="batch")],
         queue_rows=[],
         cron_rows=[_cron_row()],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "9e1e1e1e-1111-1111-1111-111111111111" in result.output
     assert "send_email" in result.output
@@ -1280,11 +1468,17 @@ def test_doctor_reports_cron_lag_naming_schedule_backlog_and_both_remedies(
     assert "max_concurrent" in result.output
 
 
-def test_doctor_is_silent_on_a_healthy_cron_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_doctor_is_silent_on_a_healthy_cron_ledger(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Control: fires fully cleared in both windows, zero outstanding -
     the ledger renders NOTHING."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("send_email", queue="batch")],
         queue_rows=[],
         cron_rows=[
@@ -1299,12 +1493,14 @@ def test_doctor_is_silent_on_a_healthy_cron_ledger(monkeypatch: pytest.MonkeyPat
         ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "CRON LAG" not in result.output
 
 
-def test_doctor_cron_lag_requires_demonstrated_clearance_history(
+async def test_doctor_cron_lag_requires_demonstrated_clearance_history(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A schedule that fired nothing in the trend horizon has no measured
@@ -1313,6 +1509,8 @@ def test_doctor_cron_lag_requires_demonstrated_clearance_history(
     schedule to have actually fired within the two windows."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("send_email", queue="batch")],
         queue_rows=[],
         cron_rows=[
@@ -1327,12 +1525,14 @@ def test_doctor_cron_lag_requires_demonstrated_clearance_history(
         ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "CRON LAG" not in result.output
 
 
-def test_doctor_is_silent_on_a_first_in_flight_fire_with_no_clearance_history(
+async def test_doctor_is_silent_on_a_first_in_flight_fire_with_no_clearance_history(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Control (the measured false positive): a brand-new schedule's first
@@ -1342,6 +1542,8 @@ def test_doctor_is_silent_on_a_first_in_flight_fire_with_no_clearance_history(
     arm requires a POSITIVE demonstrated clearance to compare against."""
     _patch_db(
         monkeypatch,
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
         actor_rows=[_row("send_email", queue="batch")],
         queue_rows=[],
         cron_rows=[
@@ -1356,6 +1558,6 @@ def test_doctor_is_silent_on_a_first_in_flight_fire_with_no_clearance_history(
         ],
     )
 
-    result = _invoke()
+    result = await asyncio.to_thread(_invoke)
 
     assert "CRON LAG" not in result.output

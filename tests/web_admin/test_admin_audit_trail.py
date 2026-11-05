@@ -9,16 +9,25 @@ disabled (403) paths write nothing. The end-to-end tier against a real
 migrated Postgres lives in tests/test_admin_audit_trail.py.
 """
 
+# ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
+# identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
+# header's own rule for the real-PG seeding this file carries).
+
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import asyncpg
+import httpx
 import pytest
 
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
+from fastapi import FastAPI  # Why: importorskip guard must precede.
+
 from taskq._ids import new_uuid
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin._audit import ANONYMOUS_SUBJECT, principal_subject
 from taskq.web.admin.auth import IdentityClaims
 
@@ -34,6 +43,31 @@ def _fixed_auth() -> Any:
         return _CLAIMS
 
     return _dependency
+
+
+# ── the real-PG tier ─────────────────────────────────────────────────────
+
+
+def _pg_app(pool: asyncpg.Pool, schema: str, **router_kwargs: object) -> FastAPI:
+    from taskq.web.admin import create_router, setup_admin_state
+
+    bundle = create_router(pool, schema=schema, base_path="", **router_kwargs)
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    return app
+
+
+async def _pg_csrf_token(pool: asyncpg.Pool, schema: str) -> str:
+    """Mint a real CSRF cookie the way the page does: one GET /queues."""
+    app = _pg_app(pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.get("/queues")
+        token = client.cookies.get("taskq_csrf_token", "")
+    assert token, "the queues page never minted a CSRF cookie"
+    return token
 
 
 def _get_csrf_token(client: Any) -> str:
@@ -457,55 +491,55 @@ def test_retry_403_writes_nothing(
 
 
 # ── Job detail page renders the trail ────────────────────────────────────
+#
+# The detail-page trail pin runs the real router over the module's real
+# pool: the audit row it renders is the one the cancel mutation itself
+# wrote through record_admin_action into the real admin_audit table (the
+# same write the mutation arms' recording stubs observe above), and the
+# job row it renders beside is a real seeded row.
 
 
-_AUDIT_ROW = StubRecord(
-    occurred_at=datetime.now(UTC),
-    principal_subject="ops-admin@example.com",
-    action="job.cancel",
-    reason="duplicate run",
-    detail='{"principal_subject": "ops-admin@example.com"}',
-)
-
-
-class _DetailConn(_RecordingConnection):
-    """
-    fail-closed-exempt: the audit-trail detail's scripted rows (the audit
-    rows' real writes are the mutation arms' own recording).
-
-    Connection stub scripting the job detail route's four reads:
-    job fetchrow, attempts fetch, events fetch, admin_audit fetch."""
-
-    def __init__(self, *, job: StubRecord | None, audit: list[StubRecord]) -> None:
-        super().__init__()
-        self._job = job
-        self._audit = audit
-
-    async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
-        if "admin_audit" in query:
-            return None
-        return self._job
-
-    async def fetch(self, query: str, *args: object) -> list[StubRecord]:
-        if "admin_audit" in query:
-            return self._audit
-        return []  # attempts, then events
-
-
-def test_job_detail_renders_audit_entries(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_job_detail_renders_audit_entries(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
-    """The job detail page renders the per-job audit trail."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    """The job detail page renders the per-job audit trail - the real row
+    the cancel mutation wrote, read back through the real detail route."""
+    schema = module_pg_schema.schema_name
     jid = new_uuid()
-    conn = _DetailConn(job=_job_record(jid), audit=[_AUDIT_ROW])
-    client = _make_app(_RecordingPool(conn))
-    resp = client.get(f"/jobs/{jid}")
-    assert resp.status_code == 200  # pyright: ignore[reportUnknownMemberType]
-    assert "Admin Audit Trail" in resp.text  # pyright: ignore[reportUnknownMemberType]
-    assert "ops-admin@example.com" in resp.text  # pyright: ignore[reportUnknownMemberType]
-    assert "job.cancel" in resp.text  # pyright: ignore[reportUnknownMemberType]
-    assert "duplicate run" in resp.text  # pyright: ignore[reportUnknownMemberType]
+    await clean_pg_conn.execute(
+        f"""INSERT INTO "{schema}".jobs (
+                id, actor, queue, payload, payload_schema_ver, max_attempts,
+                retry_kind, status, priority, attempt, metadata,
+                created_at, scheduled_at)
+            VALUES ($1, 'send_email', 'default', '{{}}'::jsonb, 1, 3,
+                'transient', 'pending', 0, 0, '{{}}'::jsonb, now(), now())""",
+        jid,
+    )
+    token = await _pg_csrf_token(module_pg_pool, schema)
+    app = _pg_app(
+        module_pg_pool,
+        schema,
+        backend=StubBackend(job_row=_stub_job_row(jid, status="pending")),
+        auth_dependency=_fixed_auth(),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        cancel_resp = await client.post(
+            f"/jobs/{jid}/cancel",
+            data={"csrf_token": token, "reason": "duplicate run"},
+            follow_redirects=False,
+        )
+        assert cancel_resp.status_code == 303
+        resp = await client.get(f"/jobs/{jid}")
+    assert resp.status_code == 200
+    assert "Admin Audit Trail" in resp.text
+    assert "ops-admin@example.com" in resp.text
+    assert "job.cancel" in resp.text
+    assert "duplicate run" in resp.text
 
 
 def test_job_detail_without_audit_table_renders_empty_section(
@@ -519,14 +553,22 @@ def test_job_detail_without_audit_table_renders_empty_section(
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     jid = new_uuid()
 
-    class _PreMigrationConn(_DetailConn):
+    class _PreMigrationConn(_RecordingConnection):
         """The schema before the audit migration: the audit statements
         raise UndefinedTableError, the job rows answer normally.
 
         fail-closed-exempt: the pre-migration schema injection — the
         audit table's absence raises UndefinedTableError at the named
         statements while the job-detail rows answer their scripted
-        shapes, so the page reaches the empty-section degrade."""
+        shapes, so the page reaches the empty-section degrade. (The
+        deployment state is honest — a schema migrated to the version
+        just before 01.00.19_03 — but producing it needs a partially
+        applied migration chain beside this module's fully applied one;
+        the injection stands in for it at the named statements.)"""
+
+        def __init__(self, *, job: StubRecord | None) -> None:
+            super().__init__()
+            self._job = job
 
         async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
             if "admin_audit" in query:
@@ -538,7 +580,7 @@ def test_job_detail_without_audit_table_renders_empty_section(
                 raise _asyncpg.exceptions.UndefinedTableError("missing")
             return []
 
-    conn = _PreMigrationConn(job=_job_record(jid), audit=[])
+    conn = _PreMigrationConn(job=_job_record(jid))
     client = _make_app(_RecordingPool(conn))
     resp = client.get(f"/jobs/{jid}")
     assert resp.status_code == 200  # pyright: ignore[reportUnknownMemberType]

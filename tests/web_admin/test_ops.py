@@ -1,27 +1,139 @@
 """Tests for schedules, rate-limits, reservations routes/templates, Redis bucket fetch, and XSS escaping."""
 
+# ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
+# identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
+# header's own rule for the real-PG seeding this file carries).
+
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import asyncpg
+import httpx
 import pytest
 import structlog.testing
 
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
-from asyncpg.exceptions import UndefinedTableError
+from fastapi import FastAPI  # Why: importorskip guard must precede.
 
-from taskq._ids import new_uuid
-from taskq.web.admin import create_router
+from taskq._ids import new_base62, new_uuid
+from taskq.testing.fixtures import ModulePgSchema
+from taskq.web.admin import create_router, setup_admin_state
 from taskq.web.admin.ops import _fetch_redis_rl_state
 
-from . import StubBackend, StubPipelinedRedis, StubRecord, _stub_job_row, _StubPool
+from . import StubBackend, StubPipelinedRedis, _stub_job_row, _StubPool
 
 # ── Schedules, rate-limits, reservations routes: discovery ───────────────
 
 
 pytestmark = [pytest.mark.fastapi]
+
+# ── the real-PG tier ─────────────────────────────────────────────────────
+#
+# The ops pages' row-driven arms run the real router over the module's real
+# pool (the tests/test_web_admin_integration.py pattern): the schedule,
+# bucket and slot rows the routes read are seeded with real inserts and the
+# mutations are read back from the database. The pre-migration arms point
+# the router at a schema no migration has touched - an honest un-migrated
+# deployment, where Postgres itself raises UndefinedTableError. The arms
+# that stay monkeypatched (a registry peek failing, a slot sync failing)
+# are the fault injections the patch registry records.
+
+
+def _ops_app(pool: asyncpg.Pool, schema: str, **router_kwargs: object) -> FastAPI:
+    bundle = create_router(pool, schema=schema, base_path="", **router_kwargs)
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    return app
+
+
+async def _ops_csrf_token(pool: asyncpg.Pool, schema: str) -> str:
+    """Mint a real CSRF cookie the way the page does: one GET /queues."""
+    app = _ops_app(pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.get("/queues")
+        token = client.cookies.get("taskq_csrf_token", "")
+    assert token, "the schedules page never minted a CSRF cookie"
+    return token
+
+
+async def _seed_schedule(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    actor: str,
+    enabled: bool = True,
+    payload_factory: str | None = None,
+    next_fire_at: datetime | None = None,
+    metadata: str = "{}",
+) -> Any:
+    """One cron_schedules row as the schedules page's own writes produce."""
+    sid: Any = new_uuid()
+    await conn.execute(
+        f"""INSERT INTO "{schema}".cron_schedules (
+                id, actor, cron_expr, timezone, dst_strategy, payload_factory,
+                enabled, next_fire_at, metadata)
+            VALUES ($1, $2, '* * * * *', 'UTC', 'skip', $3, $4, $5, $6::jsonb)""",
+        sid,
+        actor,
+        payload_factory,
+        enabled,
+        next_fire_at if next_fire_at is not None else datetime.now(UTC),
+        metadata,
+    )
+    return sid
+
+
+async def _seed_rl_bucket(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    name: str,
+    kind: str = "token_bucket",
+    state: str = '{"tokens": 5}',
+) -> None:
+    await conn.execute(
+        f"""INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state)
+            VALUES ($1, $2, $3::jsonb)""",
+        name,
+        kind,
+        state,
+    )
+
+
+async def _seed_reservation_slots(
+    conn: asyncpg.Connection, schema: str, *, bucket: str, held: int, free: int
+) -> None:
+    """*held* live-lease slots and *free* empty slots for one bucket."""
+    now = datetime.now(UTC)
+    for i in range(held):
+        await conn.execute(
+            f"""INSERT INTO "{schema}".reservation_slots
+                    (bucket_name, slot_index, job_id, held_by_worker_id,
+                     acquired_at, lease_expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6)""",
+            bucket,
+            i,
+            new_uuid(),
+            new_uuid(),
+            now,
+            now + timedelta(seconds=30),
+        )
+    for i in range(held, held + free):
+        await conn.execute(
+            f"""INSERT INTO "{schema}".reservation_slots
+                    (bucket_name, slot_index, job_id, held_by_worker_id,
+                     acquired_at, lease_expires_at)
+                VALUES ($1, $2, NULL, NULL, NULL, NULL)""",
+            bucket,
+            i,
+        )
 
 
 def test_schedules_route_registered_via_discovery(
@@ -687,120 +799,6 @@ async def test_fetch_redis_rl_state_gcra() -> None:
 # ── Route handler tests: configurable stub pool ─────────────────────────
 
 
-class _StubTxn:
-    async def __aenter__(self) -> None:
-        pass
-
-    async def __aexit__(self, *args: object) -> None:
-        pass
-
-
-class _ScriptedConn:
-    """asyncpg connection stub with SQL-substring-matched responses.
-
-    fail-closed-exempt: the ops pages' scripted rows (the mutation arms' real behavior is the _pg packs')
-    """
-
-    def __init__(
-        self,
-        *,
-        fetch_map: dict[str, list[StubRecord]] | None = None,
-        fetchrow_map: dict[str, StubRecord | None] | None = None,
-        execute_map: dict[str, str] | None = None,
-        undefined_table_on: set[str] | None = None,
-    ) -> None:
-        self._fetch_map = fetch_map or {}
-        self._fetchrow_map = fetchrow_map or {}
-        self._execute_map = execute_map or {}
-        self._undef = undefined_table_on or set()
-        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
-
-    def _match(self, mapping: dict[str, object], query: str, default: object) -> object:
-        for key, value in mapping.items():
-            if key in query:
-                return value
-        return default
-
-    def _check_undef(self, query: str) -> None:
-        for pattern in self._undef:
-            if pattern in query:
-                raise UndefinedTableError()
-
-    async def fetch(self, query: str, *args: object) -> list[StubRecord]:
-        self._check_undef(query)
-        return self._match(self._fetch_map, query, [])  # type: ignore[return-value]
-
-    async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
-        self._check_undef(query)
-        return self._match(self._fetchrow_map, query, None)  # type: ignore[return-value]
-
-    async def fetchval(self, query: str, *args: object) -> object:
-        # Real Postgres answers the admin factory's clock-offset probe with
-        # a timestamp; the generic 0 here made the probe's `db_now - app_now`
-        # raise TypeError whenever the 30 s TTL boundary landed on a request
-        # served by this stub (the package StubConnection answers it the
-        # same way).
-        if query.strip() == "SELECT clock_timestamp()":
-            return datetime.now(UTC)
-        return 0
-
-    async def execute(self, query: str, *args: object) -> str:
-        self._check_undef(query)
-        self.execute_calls.append((query, args))
-        return self._match(self._execute_map, query, "UPDATE 0")  # type: ignore[return-value]
-
-    def transaction(self) -> _StubTxn:
-        return _StubTxn()
-
-
-class _ScriptedPool:
-    """asyncpg pool stub that always yields the same _ScriptedConn."""
-
-    def __init__(self, conn: _ScriptedConn) -> None:
-        self._conn = conn
-
-    def acquire(self, *, timeout: float | None = None) -> object:
-        conn = self._conn
-
-        class _Ctx:
-            async def __aenter__(self) -> _ScriptedConn:
-                return conn
-
-            async def __aexit__(self, *a: object) -> None:
-                pass
-
-        return _Ctx()
-
-
-def _make_client_with_pool(
-    pool: _ScriptedPool,
-    *,
-    backend: StubBackend | None = None,
-    redis_client: object | None = None,
-) -> Any:
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from taskq.web.admin import create_router, setup_admin_state
-
-    kwargs: dict[str, object] = {}
-    if backend is not None:
-        kwargs["backend"] = backend
-    if redis_client is not None:
-        kwargs["redis_client"] = redis_client
-    bundle = create_router(pool, **kwargs)  # pyright: ignore[reportArgumentType]
-    app = FastAPI()
-    setup_admin_state(app, bundle)
-    app.include_router(bundle.router)
-    return TestClient(app)
-
-
-def _get_csrf_token(client: Any) -> str:
-    """GET /queues to set the CSRF cookie, then return the token."""
-    client.get("/queues")
-    return client.cookies.get("taskq_csrf_token", "")
-
-
 @pytest.fixture()
 def clean_rl_registry() -> Any:
     """Save/restore the global rate-limit registry around each test."""
@@ -820,37 +818,66 @@ def clean_rl_registry() -> Any:
 # ── Schedule enable ─────────────────────────────────────────────────────
 
 
-def test_schedule_enable_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /schedules/{id}/enable returns 303 when the update affects one row."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _ScriptedConn(execute_map={"SET enabled = true": "UPDATE 1"})
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{new_uuid()}/enable", data={"csrf_token": token}, follow_redirects=False
-    )
+async def test_schedule_enable_redirects_on_success(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """POST /schedules/{id}/enable returns 303 and the row's enabled flag
+    actually flips - read back from the database the UPDATE hit."""
+    schema = module_pg_schema.schema_name
+    sid = await _seed_schedule(clean_pg_conn, schema, actor="enable_me", enabled=False)
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            f"/schedules/{sid}/enable", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
+    enabled = await clean_pg_conn.fetchval(
+        f'SELECT enabled FROM "{schema}".cron_schedules WHERE id = $1', sid
+    )
+    assert enabled is True
 
 
-def test_schedule_enable_returns_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_schedule_enable_returns_404_when_not_found(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """POST /schedules/{id}/enable returns 404 when no row is updated."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _ScriptedConn(execute_map={"SET enabled = true": "UPDATE 0"})
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    token = _get_csrf_token(client)
-    resp = client.post(f"/schedules/{new_uuid()}/enable", data={"csrf_token": token})
+    schema = module_pg_schema.schema_name
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(f"/schedules/{new_uuid()}/enable", data={"csrf_token": token})
     assert resp.status_code == 404
 
 
-def test_schedule_enable_redirects_when_table_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /schedules/{id}/enable redirects with error when cron_schedules is missing."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _ScriptedConn(undefined_table_on={"cron_schedules"})
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{new_uuid()}/enable", data={"csrf_token": token}, follow_redirects=False
-    )
+async def test_schedule_enable_redirects_when_table_missing(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """POST /schedules/{id}/enable redirects with error when cron_schedules
+    is missing: the router points at a schema no migration has applied, so
+    Postgres itself raises UndefinedTableError."""
+    schema = module_pg_schema.schema_name
+    unmigrated = f"unmigrated_{new_base62()}".lower()
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, unmigrated)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            f"/schedules/{new_uuid()}/enable", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
     assert "cron+scheduling+not+installed" in resp.headers.get("location", "")
 
@@ -858,37 +885,66 @@ def test_schedule_enable_redirects_when_table_missing(monkeypatch: pytest.Monkey
 # ── Schedule disable ────────────────────────────────────────────────────
 
 
-def test_schedule_disable_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /schedules/{id}/disable returns 303 when the update affects one row."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _ScriptedConn(execute_map={"SET enabled = false": "UPDATE 1"})
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{new_uuid()}/disable", data={"csrf_token": token}, follow_redirects=False
-    )
+async def test_schedule_disable_redirects_on_success(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """POST /schedules/{id}/disable returns 303 and the row's enabled flag
+    actually flips - read back from the database the UPDATE hit."""
+    schema = module_pg_schema.schema_name
+    sid = await _seed_schedule(clean_pg_conn, schema, actor="disable_me", enabled=True)
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            f"/schedules/{sid}/disable", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
+    row = await clean_pg_conn.fetchrow(
+        f'SELECT enabled, disabled_by FROM "{schema}".cron_schedules WHERE id = $1', sid
+    )
+    assert row is not None and row["enabled"] is False and row["disabled_by"] == "operator"
 
 
-def test_schedule_disable_returns_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_schedule_disable_returns_404_when_not_found(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """POST /schedules/{id}/disable returns 404 when no row is updated."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _ScriptedConn(execute_map={"SET enabled = false": "UPDATE 0"})
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    token = _get_csrf_token(client)
-    resp = client.post(f"/schedules/{new_uuid()}/disable", data={"csrf_token": token})
+    schema = module_pg_schema.schema_name
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(f"/schedules/{new_uuid()}/disable", data={"csrf_token": token})
     assert resp.status_code == 404
 
 
-def test_schedule_disable_redirects_when_table_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /schedules/{id}/disable redirects with error when cron_schedules is missing."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _ScriptedConn(undefined_table_on={"cron_schedules"})
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{new_uuid()}/disable", data={"csrf_token": token}, follow_redirects=False
-    )
+async def test_schedule_disable_redirects_when_table_missing(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """POST /schedules/{id}/disable redirects with error when cron_schedules
+    is missing: the router points at a schema no migration has applied, so
+    Postgres itself raises UndefinedTableError."""
+    schema = module_pg_schema.schema_name
+    unmigrated = f"unmigrated_{new_base62()}".lower()
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, unmigrated)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            f"/schedules/{new_uuid()}/disable", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
     assert "cron+scheduling+not+installed" in resp.headers.get("location", "")
 
@@ -896,62 +952,77 @@ def test_schedule_disable_redirects_when_table_missing(monkeypatch: pytest.Monke
 # ── Schedule skip ───────────────────────────────────────────────────────
 
 
-def test_schedule_skip_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_schedule_skip_redirects_on_success(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """POST /schedules/{id}/skip advances next_fire_at strictly past the
     database clock's now (7565d3f: the advance loop compares against db_now
     from the row fetch, so a lagging app clock cannot write a value PG
-    already considers past) and returns 303 to the schedules page."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    db_now = datetime.now(UTC)
-    conn = _ScriptedConn(
-        fetchrow_map={
-            "cron_expr, timezone, dst_strategy, next_fire_at": StubRecord(
-                {
-                    "cron_expr": "* * * * *",
-                    "timezone": "UTC",
-                    "dst_strategy": "skip",
-                    "next_fire_at": db_now - timedelta(minutes=30),
-                    # The skip fetch reads the server clock in the same row
-                    # (clock_timestamp() as db_now), so the stub row carries it.
-                    "db_now": db_now,
-                }
-            ),
-        },
-        execute_map={"SET next_fire_at = $2": "UPDATE 1"},
+    already considers past) and returns 303 to the schedules page. The
+    written value is read back from the database the UPDATE hit."""
+    schema = module_pg_schema.schema_name
+    sid = await _seed_schedule(
+        clean_pg_conn,
+        schema,
+        actor="skip_me",
+        next_fire_at=datetime.now(UTC) - timedelta(minutes=30),
     )
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{new_uuid()}/skip", data={"csrf_token": token}, follow_redirects=False
-    )
+    db_before = await clean_pg_conn.fetchval("SELECT clock_timestamp()")
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            f"/schedules/{sid}/skip", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
     assert resp.headers["location"].endswith("/schedules")
-    skip_writes = [args for sql, args in conn.execute_calls if "SET next_fire_at" in sql]
-    assert len(skip_writes) == 1
-    written_next = skip_writes[0][1]
+    written_next = await clean_pg_conn.fetchval(
+        f'SELECT next_fire_at FROM "{schema}".cron_schedules WHERE id = $1', sid
+    )
     assert isinstance(written_next, datetime)
-    assert written_next > db_now
+    assert written_next > db_before
 
 
-def test_schedule_skip_returns_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_schedule_skip_returns_404_when_not_found(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """POST /schedules/{id}/skip returns 404 when the schedule does not exist."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _ScriptedConn(fetchrow_map={"cron_expr, timezone, dst_strategy, next_fire_at": None})
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    token = _get_csrf_token(client)
-    resp = client.post(f"/schedules/{new_uuid()}/skip", data={"csrf_token": token})
+    schema = module_pg_schema.schema_name
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(f"/schedules/{new_uuid()}/skip", data={"csrf_token": token})
     assert resp.status_code == 404
 
 
-def test_schedule_skip_redirects_when_table_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /schedules/{id}/skip redirects with error when cron_schedules is missing."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _ScriptedConn(undefined_table_on={"cron_schedules"})
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{new_uuid()}/skip", data={"csrf_token": token}, follow_redirects=False
-    )
+async def test_schedule_skip_redirects_when_table_missing(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """POST /schedules/{id}/skip redirects with error when cron_schedules
+    is missing: the router points at a schema no migration has applied, so
+    Postgres itself raises UndefinedTableError."""
+    schema = module_pg_schema.schema_name
+    unmigrated = f"unmigrated_{new_base62()}".lower()
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, unmigrated)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            f"/schedules/{new_uuid()}/skip", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
     assert "cron+scheduling+not+installed" in resp.headers.get("location", "")
 
@@ -959,148 +1030,146 @@ def test_schedule_skip_redirects_when_table_missing(monkeypatch: pytest.MonkeyPa
 # ── Schedule run now ────────────────────────────────────────────────────
 
 
-def test_schedule_run_now_enqueues_job(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /schedules/{id}/run enqueues a job via the backend and returns 303."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+async def test_schedule_run_now_enqueues_job(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """POST /schedules/{id}/run enqueues a job via the backend and returns 303.
+    The schedule row and the actor_config row it reads are real rows."""
+    schema = module_pg_schema.schema_name
+    sid = await _seed_schedule(
+        clean_pg_conn,
+        schema,
+        actor="test_actor",
+        metadata='{"static_payload": {"x": 1}}',
+    )
     backend = StubBackend(job_row=_stub_job_row(new_uuid()))
-    conn = _ScriptedConn(
-        fetchrow_map={
-            "payload_factory, enabled, metadata": StubRecord(
-                {
-                    "actor": "test_actor",
-                    "payload_factory": None,
-                    "enabled": True,
-                    "metadata": {"static_payload": {"x": 1}},
-                }
-            ),
-            # NULL curve columns: the row predates migration 01.00.18,
-            # and the handler resolves them to the declared defaults.
-            # max_pending is the operator-stored cap (NULL = no stored
-            # override): run-now passes it through to the enqueue.
-            "actor_config WHERE actor": StubRecord(
-                {
-                    "queue": "default",
-                    "max_attempts": 3,
-                    "retry_kind": "transient",
-                    "retry_base": None,
-                    "retry_cap": None,
-                    "retry_backoff": None,
-                    "retry_jitter": None,
-                    "max_pending": None,
-                }
-            ),
-        },
-    )
-    client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
-    )
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, schema, backend=backend)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            f"/schedules/{sid}/run", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
     assert len(backend.enqueue_calls) == 1
 
 
-def test_schedule_run_now_returns_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_schedule_run_now_returns_404_when_not_found(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """POST /schedules/{id}/run returns 404 when the schedule does not exist."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    schema = module_pg_schema.schema_name
     backend = StubBackend(job_row=_stub_job_row(new_uuid()))
-    conn = _ScriptedConn(fetchrow_map={"payload_factory, enabled, metadata": None})
-    client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
-    token = _get_csrf_token(client)
-    resp = client.post(f"/schedules/{new_uuid()}/run", data={"csrf_token": token})
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, schema, backend=backend)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(f"/schedules/{new_uuid()}/run", data={"csrf_token": token})
     assert resp.status_code == 404
 
 
-def test_schedule_run_now_redirects_when_table_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /schedules/{id}/run redirects with error when cron_schedules is missing."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+async def test_schedule_run_now_redirects_when_table_missing(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """POST /schedules/{id}/run redirects with error when cron_schedules
+    is missing: the router points at a schema no migration has applied, so
+    Postgres itself raises UndefinedTableError."""
+    schema = module_pg_schema.schema_name
+    unmigrated = f"unmigrated_{new_base62()}".lower()
     backend = StubBackend(job_row=_stub_job_row(new_uuid()))
-    conn = _ScriptedConn(undefined_table_on={"cron_schedules"})
-    client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
-    )
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, unmigrated, backend=backend)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
     assert "cron+scheduling+not+installed" in resp.headers.get("location", "")
 
 
-def test_schedule_run_now_redirects_on_payload_type_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /schedules/{id}/run redirects when the payload factory returns a non-dict type."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+async def test_schedule_run_now_redirects_on_payload_type_error(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """POST /schedules/{id}/run redirects when the payload factory returns a
+    non-dict type. The stored factory is a real row's text - os.getpid
+    genuinely returns an int when the handler resolves and calls it."""
+    schema = module_pg_schema.schema_name
+    sid = await _seed_schedule(
+        clean_pg_conn, schema, actor="test_actor", payload_factory="os.getpid"
+    )
     backend = StubBackend(job_row=_stub_job_row(new_uuid()))
-    conn = _ScriptedConn(
-        fetchrow_map={
-            "payload_factory, enabled, metadata": StubRecord(
-                {
-                    "actor": "test_actor",
-                    "payload_factory": "os.getpid",
-                    "enabled": True,
-                    "metadata": {},
-                }
-            ),
-        },
-    )
-    client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
-    )
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, schema, backend=backend)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            f"/schedules/{sid}/run", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
     assert "factory+returned+unexpected+type" in resp.headers.get("location", "")
 
 
-def test_schedule_run_now_redirects_on_payload_factory_error(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_schedule_run_now_redirects_on_payload_factory_error(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
-    """POST /schedules/{id}/run redirects when the payload factory import fails."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    """POST /schedules/{id}/run redirects when the payload factory import
+    fails. The stored factory names a module no install provides - a row an
+    operator can absolutely write (a typo'd dotted path), not an
+    injection."""
+    schema = module_pg_schema.schema_name
+    sid = await _seed_schedule(
+        clean_pg_conn, schema, actor="test_actor", payload_factory="nonexistent_pkg_xyz.func"
+    )
     backend = StubBackend(job_row=_stub_job_row(new_uuid()))
-    conn = _ScriptedConn(
-        fetchrow_map={
-            "payload_factory, enabled, metadata": StubRecord(
-                {
-                    "actor": "test_actor",
-                    "payload_factory": "nonexistent_pkg_xyz.func",
-                    "enabled": True,
-                    "metadata": {},
-                }
-            ),
-        },
-    )
-    client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
-    )
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, schema, backend=backend)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            f"/schedules/{sid}/run", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
     assert len(backend.enqueue_calls) == 0
 
 
-def test_schedule_run_now_redirects_when_actor_not_configured(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_schedule_run_now_redirects_when_actor_not_configured(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """POST /schedules/{id}/run redirects when the actor is not in actor_config."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    schema = module_pg_schema.schema_name
+    sid = await _seed_schedule(clean_pg_conn, schema, actor="unconfigured_actor")
     backend = StubBackend(job_row=_stub_job_row(new_uuid()))
-    conn = _ScriptedConn(
-        fetchrow_map={
-            "payload_factory, enabled, metadata": StubRecord(
-                {
-                    "actor": "unconfigured_actor",
-                    "payload_factory": None,
-                    "enabled": True,
-                    "metadata": {},
-                }
-            ),
-            "actor_config WHERE actor": None,
-        },
-    )
-    client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
-    )
+    token = await _ops_csrf_token(module_pg_pool, schema)
+    app = _ops_app(module_pg_pool, schema, backend=backend)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            f"/schedules/{sid}/run", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
     assert "not+configured" in resp.headers.get("location", "")
     assert len(backend.enqueue_calls) == 0
@@ -1109,14 +1178,17 @@ def test_schedule_run_now_redirects_when_actor_not_configured(
 # ── Rate limits page with registered primitives ─────────────────────────
 
 
-def test_rate_limits_page_with_registered_primitives(
-    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+async def test_rate_limits_page_with_registered_primitives(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_rl_registry: Any,
 ) -> None:
-    """GET /rate-limits renders TokenBucket and SlidingWindow from the registry."""
+    """GET /rate-limits renders TokenBucket and SlidingWindow from the registry,
+    with the PG-persisted state row the acquisition path wrote merged in."""
     from taskq.ratelimit.sliding_window import SlidingWindow
     from taskq.ratelimit.token_bucket import TokenBucket
 
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     clean_rl_registry.register(
         TokenBucket("api:tb", capacity=10, refill_per_second=1, backend="memory")
     )
@@ -1125,77 +1197,58 @@ def test_rate_limits_page_with_registered_primitives(
             "api:sw", limit=5, window=timedelta(seconds=10), backend="memory", style="log"
         )
     )
-    conn = _ScriptedConn(
-        fetch_map={
-            "rate_limit_buckets ORDER": [
-                StubRecord(
-                    {
-                        "bucket_name": "api:tb",
-                        "kind": "token_bucket",
-                        "state": '{"tokens":5}',
-                        "updated_at": "2025-01-01",
-                    }
-                ),
-            ],
-        },
-    )
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    resp = client.get("/rate-limits")
+    await _seed_rl_bucket(clean_pg_conn, module_pg_schema.schema_name, name="api:tb")
+    app = _ops_app(module_pg_pool, module_pg_schema.schema_name)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/rate-limits")
     assert resp.status_code == 200
     body = resp.text
     assert "api:tb" in body
     assert "api:sw" in body
 
 
-def test_rate_limits_page_table_missing(
-    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+async def test_rate_limits_page_table_missing(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_rl_registry: Any,
 ) -> None:
-    """GET /rate-limits shows 'not installed' notice when rate_limit_buckets is missing."""
+    """GET /rate-limits shows 'not installed' notice when rate_limit_buckets is
+    missing: the router points at a schema no migration has applied, so the
+    page's read raises UndefinedTableError for real."""
     from taskq.ratelimit.token_bucket import TokenBucket
 
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     clean_rl_registry.register(
         TokenBucket("api:tb", capacity=10, refill_per_second=1, backend="memory")
     )
-    conn = _ScriptedConn(undefined_table_on={"rate_limit_buckets"})
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    resp = client.get("/rate-limits")
+    unmigrated = f"unmigrated_{new_base62()}".lower()
+    app = _ops_app(module_pg_pool, unmigrated)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/rate-limits")
     assert resp.status_code == 200
     assert "rate limiting not installed" in resp.text
 
 
-def test_rate_limits_page_with_pg_state_and_redis(
-    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+async def test_rate_limits_page_with_pg_state_and_redis(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_rl_registry: Any,
 ) -> None:
-    """GET /rate-limits renders PG state, live states, and PG-only buckets with Redis."""
+    """GET /rate-limits renders PG state, live states, and PG-only buckets with
+    Redis. Both bucket rows are real rows - the registry-backed one and a
+    worker-published bucket this process's registry has never heard of."""
     from taskq.ratelimit.token_bucket import TokenBucket
 
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     clean_rl_registry.register(
         TokenBucket("api:global", capacity=10, refill_per_second=1, backend="redis")
     )
-    conn = _ScriptedConn(
-        fetch_map={
-            "rate_limit_buckets ORDER": [
-                StubRecord(
-                    {
-                        "bucket_name": "api:global",
-                        "kind": "token_bucket",
-                        "state": '{"tokens":5}',
-                        "updated_at": "2025-01-01T00:00:00+00:00",
-                    }
-                ),
-                StubRecord(
-                    {
-                        "bucket_name": "orphan-bucket",
-                        "kind": "token_bucket",
-                        "state": "",
-                        "updated_at": "",
-                    }
-                ),
-            ],
-        },
-    )
+    schema = module_pg_schema.schema_name
+    await _seed_rl_bucket(clean_pg_conn, schema, name="api:global")
+    await _seed_rl_bucket(clean_pg_conn, schema, name="orphan-bucket", state='{"tokens": 2}')
 
     class _FakeRedis(StubPipelinedRedis):
         async def hmget(self, key: object, fields: object) -> list[object]:
@@ -1204,23 +1257,27 @@ def test_rate_limits_page_with_pg_state_and_redis(
         async def ping(self) -> bool:
             return True
 
-    client = _make_client_with_pool(_ScriptedPool(conn), redis_client=_FakeRedis())
-    resp = client.get("/rate-limits")
+    app = _ops_app(module_pg_pool, schema, redis_client=_FakeRedis())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/rate-limits")
     assert resp.status_code == 200
     body = resp.text
     assert "api:global" in body
     assert "orphan-bucket" in body
 
 
-def test_rate_limits_page_shows_materialized_keyed_bucket(
-    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+async def test_rate_limits_page_shows_materialized_keyed_bucket(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_rl_registry: Any,
 ) -> None:
     """A lazily materialized keyed bucket (registered into the registry on
     first acquisition, long after worker startup) appears on the
     rate-limits admin page - an operator debugging a tenant throttle must
-    see that a limiter exists."""
-    import asyncio
-
+    see that a limiter exists. The buckets table is the real one, empty:
+    nothing has published a row yet."""
     from pydantic import BaseModel
 
     from taskq.ratelimit.refs import KeyedRateLimitRef
@@ -1228,7 +1285,6 @@ def test_rate_limits_page_shows_materialized_keyed_bucket(
     class _TenantPayload(BaseModel):
         tenant_id: str
 
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     ref = KeyedRateLimitRef.typed(
         _TenantPayload,
         base_name="api-per-tenant",
@@ -1238,15 +1294,15 @@ def test_rate_limits_page_shows_materialized_keyed_bucket(
         backend="memory",
     )
     # Materialize as the dispatch path does (pg_pool=None: no publish).
-    asyncio.run(
-        clean_rl_registry._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
-            ref, _TenantPayload(tenant_id="acme"), settings=None
-        )
+    await clean_rl_registry._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref, _TenantPayload(tenant_id="acme"), settings=None
     )
     try:
-        conn = _ScriptedConn(fetch_map={"rate_limit_buckets ORDER": []})
-        client = _make_client_with_pool(_ScriptedPool(conn))
-        resp = client.get("/rate-limits")
+        app = _ops_app(module_pg_pool, module_pg_schema.schema_name)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/rate-limits")
         assert resp.status_code == 200
         assert "api-per-tenant:acme" in resp.text
     finally:
@@ -1255,28 +1311,20 @@ def test_rate_limits_page_shows_materialized_keyed_bucket(
         )
 
 
-def test_rate_limits_page_fetches_redis_state_for_pg_only_keyed_buckets(
-    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+async def test_rate_limits_page_fetches_redis_state_for_pg_only_keyed_buckets(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_rl_registry: Any,
 ) -> None:
     """Standalone topology: a keyed bucket the worker published to PG
     (absent from the admin process's registry) is included in the
-    live-Redis state fetch, so its per-key token state is visible."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    live-Redis state fetch, so its per-key token state is visible. The
+    published row is a real row; the Redis read stays a pipelined stub - no
+    PG sibling can own a Redis read."""
+    schema = module_pg_schema.schema_name
     # The registry stays empty - the bucket exists only as a PG row.
-    conn = _ScriptedConn(
-        fetch_map={
-            "rate_limit_buckets ORDER": [
-                StubRecord(
-                    {
-                        "bucket_name": "api-per-tenant:acme",
-                        "kind": "token_bucket",
-                        "state": "",
-                        "updated_at": "",
-                    }
-                ),
-            ],
-        },
-    )
+    await _seed_rl_bucket(clean_pg_conn, schema, name="api-per-tenant:acme")
 
     fetched_keys: list[str] = []
 
@@ -1294,8 +1342,11 @@ def test_rate_limits_page_fetches_redis_state_for_pg_only_keyed_buckets(
         async def ping(self) -> bool:
             return True
 
-    client = _make_client_with_pool(_ScriptedPool(conn), redis_client=_FakeRedis())
-    resp = client.get("/rate-limits")
+    app = _ops_app(module_pg_pool, schema, redis_client=_FakeRedis())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/rate-limits")
     assert resp.status_code == 200
     assert "api-per-tenant:acme" in resp.text
     assert any("api-per-tenant:acme" in key for key in fetched_keys), (
@@ -1306,111 +1357,118 @@ def test_rate_limits_page_fetches_redis_state_for_pg_only_keyed_buckets(
 # ── Rate limit reset ────────────────────────────────────────────────────
 
 
-def test_rate_limit_reset_forbidden_by_default(
-    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+async def test_rate_limit_reset_forbidden_by_default(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_rl_registry: Any,
 ) -> None:
     """POST /rate-limits/{bucket}/reset returns 403 when allow_reset is False."""
     from taskq.ratelimit.token_bucket import TokenBucket
 
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     clean_rl_registry.register(
         TokenBucket("api:tb", capacity=10, refill_per_second=1, backend="memory")
     )
-    conn = _ScriptedConn()
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    token = _get_csrf_token(client)
-    resp = client.post("/rate-limits/api:tb/reset", data={"csrf_token": token})
+    token = await _ops_csrf_token(module_pg_pool, module_pg_schema.schema_name)
+    app = _ops_app(module_pg_pool, module_pg_schema.schema_name)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post("/rate-limits/api:tb/reset", data={"csrf_token": token})
     assert resp.status_code == 403
 
 
-def test_rate_limit_reset_success_when_allowed(
-    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+async def test_rate_limit_reset_success_when_allowed(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+    clean_rl_registry: Any,
 ) -> None:
     """POST /rate-limits/{bucket}/reset returns 303 when allow_reset is True."""
     from taskq.ratelimit.token_bucket import TokenBucket
 
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
     clean_rl_registry.register(
         TokenBucket("api:tb", capacity=10, refill_per_second=1, backend="memory")
     )
-    conn = _ScriptedConn()
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    token = _get_csrf_token(client)
-    resp = client.post(
-        "/rate-limits/api:tb/reset", data={"csrf_token": token}, follow_redirects=False
-    )
+    token = await _ops_csrf_token(module_pg_pool, module_pg_schema.schema_name)
+    app = _ops_app(module_pg_pool, module_pg_schema.schema_name)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("taskq_csrf_token", token)
+        resp = await client.post(
+            "/rate-limits/api:tb/reset", data={"csrf_token": token}, follow_redirects=False
+        )
     assert resp.status_code == 303
 
 
 # ── Reservations page ───────────────────────────────────────────────────
 
 
-def test_reservations_page_with_configured_reservations(
-    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+async def test_reservations_page_with_configured_reservations(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_rl_registry: Any,
 ) -> None:
-    """GET /reservations renders configured and PG-only reservation buckets."""
+    """GET /reservations renders configured and PG-only reservation buckets.
+    The slot rows are real rows - the configured reservation's slots live in
+    the module schema the page filters the registry by, and the orphan
+    bucket's rows exist with no registry primitive at all."""
     from taskq.ratelimit.reservation import ConcurrencyReservation
 
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    schema = module_pg_schema.schema_name
     clean_rl_registry.register(
-        ConcurrencyReservation("premium-api", slots=5, lease=timedelta(seconds=30), schema="taskq")
+        ConcurrencyReservation("premium-api", slots=5, lease=timedelta(seconds=30), schema=schema)
     )
-    conn = _ScriptedConn(
-        fetch_map={
-            "GROUP BY bucket_name": [
-                StubRecord(
-                    {
-                        "bucket_name": "premium-api",
-                        "held_count": 3,
-                        "free_count": 2,
-                        "total_slots": 5,
-                    }
-                ),
-                StubRecord(
-                    {
-                        "bucket_name": "orphan-bucket",
-                        "held_count": 1,
-                        "free_count": 1,
-                        "total_slots": 2,
-                    }
-                ),
-            ],
-            "job_id IS NOT NULL": [
-                StubRecord(
-                    {
-                        "bucket_name": "premium-api",
-                        "slot_index": 0,
-                        "job_id": "abc-123",
-                        "held_by_worker_id": "worker-1",
-                        "lease_expires_at": "2025-01-01T00:01:00+00:00",
-                    }
-                ),
-            ],
-            "slot_index FROM": [],
-        },
-    )
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    resp = client.get("/reservations")
+    await _seed_reservation_slots(clean_pg_conn, schema, bucket="premium-api", held=3, free=2)
+    await _seed_reservation_slots(clean_pg_conn, schema, bucket="orphan-bucket", held=1, free=1)
+    app = _ops_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/reservations")
     assert resp.status_code == 200
     body = resp.text
     assert "premium-api" in body
     assert "orphan-bucket" in body
+    # The counts are the real slots' roll-up: 3 held / 2 free of 5 for the
+    # configured reservation, rendered in the held/free count chips.
+    held_chip = re.search(r"bg-yellow-100 text-yellow-700[^>]*>(\d+)</span>", body)
+    assert held_chip is not None and held_chip.group(1) == "3", (
+        f"the held-slot count chip must carry the real held roll-up: {held_chip and held_chip.group(1)!r}"
+    )
+    free_chip = re.search(r"bg-green-100 text-green-700[^>]*>(\d+)</span>", body)
+    assert free_chip is not None and free_chip.group(1) == "2", (
+        f"the free-slot count chip must carry the real free roll-up: {free_chip and free_chip.group(1)!r}"
+    )
 
 
-def test_reservations_page_table_missing(
-    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+async def test_reservations_page_table_missing(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_rl_registry: Any,
 ) -> None:
-    """GET /reservations shows 'not installed' notice when reservation_slots is missing."""
+    """GET /reservations shows 'not installed' notice when reservation_slots is
+    missing: the router points at a schema no migration has applied, so the
+    page's read raises UndefinedTableError for real."""
     from taskq.ratelimit.reservation import ConcurrencyReservation
 
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     clean_rl_registry.register(
-        ConcurrencyReservation("premium-api", slots=5, lease=timedelta(seconds=30), schema="taskq")
+        ConcurrencyReservation(
+            "premium-api",
+            slots=5,
+            lease=timedelta(seconds=30),
+            schema=f"unmigrated_{new_base62()}".lower(),
+        )
     )
-    conn = _ScriptedConn(undefined_table_on={"reservation_slots"})
-    client = _make_client_with_pool(_ScriptedPool(conn))
-    resp = client.get("/reservations")
+    unmigrated = f"unmigrated_{new_base62()}".lower()
+    app = _ops_app(module_pg_pool, unmigrated)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/reservations")
     assert resp.status_code == 200
     assert "reservations not installed" in resp.text
 
@@ -1418,15 +1476,18 @@ def test_reservations_page_table_missing(
 # ── A degraded page never looks like an empty healthy one ─────────────────
 
 
-def test_rate_limits_page_reports_a_failed_live_peek(
-    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+async def test_rate_limits_page_reports_a_failed_live_peek(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_rl_registry: Any,
 ) -> None:
     """When the live peek across the registry fails, the page says so - a
     warning naming the error type, and a visible degraded notice - rather
-    than rendering every bucket with no live state as if none were busy."""
+    than rendering every bucket with no live state as if none were busy.
+    The broken peek is fault injection (a broker failure mid-request); the
+    page's PG read is the real pool's."""
     from taskq.ratelimit.token_bucket import TokenBucket
 
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     clean_rl_registry.register(
         TokenBucket("api:tb", capacity=10, refill_per_second=1, backend="postgres")
     )
@@ -1434,11 +1495,13 @@ def test_rate_limits_page_reports_a_failed_live_peek(
     async def _broken_peek(*_: object, **__: object) -> dict[str, object]:
         raise ConnectionResetError("pg gone")
 
-    monkeypatch.setattr(clean_rl_registry, "peek_all", _broken_peek)
-    conn = _ScriptedConn(fetch_map={"rate_limit_buckets ORDER": []})
-    client = _make_client_with_pool(_ScriptedPool(conn))
+    clean_rl_registry.peek_all = _broken_peek  # type: ignore[method-assign]  # Why: the fault injection IS the registry's peek failing; a real broker cannot fail deterministically mid-request.
+    app = _ops_app(module_pg_pool, module_pg_schema.schema_name)
     with structlog.testing.capture_logs() as logs:
-        resp = client.get("/rate-limits")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/rate-limits")
     assert resp.status_code == 200
     assert "live state unavailable" in resp.text.lower()
     assert "ConnectionResetError" in resp.text
@@ -1447,33 +1510,36 @@ def test_rate_limits_page_reports_a_failed_live_peek(
     assert entry["error_type"] == "ConnectionResetError"
 
 
-def test_reservations_page_reports_a_failed_slot_sync(
-    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+async def test_reservations_page_reports_a_failed_slot_sync(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+    clean_rl_registry: Any,
 ) -> None:
     """A slot sync that fails leaves the page on the rows it read before
     the sync, and says so: a warning with the error type and a visible
-    degraded notice, never a silently stale table."""
+    degraded notice, never a silently stale table. The failed sync is fault
+    injection (a wedged store the timeout must cut); the rows read before
+    it are the real table's."""
     from taskq.ratelimit.reservation import ConcurrencyReservation
 
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    schema = module_pg_schema.schema_name
     clean_rl_registry.register(
-        ConcurrencyReservation("premium-api", slots=5, lease=timedelta(seconds=30), schema="taskq")
+        ConcurrencyReservation("premium-api", slots=5, lease=timedelta(seconds=30), schema=schema)
     )
 
     async def _broken_sync(*_: object, **__: object) -> None:
         raise TimeoutError
 
     monkeypatch.setattr("taskq.ratelimit.reservation.sync_slots", _broken_sync)
-    conn = _ScriptedConn(
-        fetch_map={
-            "GROUP BY bucket_name": [],
-            "job_id IS NOT NULL": [],
-            "slot_index FROM": [],
-        },
-    )
-    client = _make_client_with_pool(_ScriptedPool(conn))
+    await _seed_reservation_slots(clean_pg_conn, schema, bucket="premium-api", held=2, free=3)
+    app = _ops_app(module_pg_pool, schema)
     with structlog.testing.capture_logs() as logs:
-        resp = client.get("/reservations")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/reservations")
     assert resp.status_code == 200
     assert "slot sync failed" in resp.text.lower()
     assert "TimeoutError" in resp.text

@@ -464,14 +464,27 @@ class _BacklogTickConn:
     """Connection stand-in for the backlog tick: fleet-wide reads answer,
     and the per-actor backlog read does whatever the test needs.
 
-    fail-closed-exempt: the backlog tick's scripted pages for the metric
-    arms (the sweep SQL is tests/test_postgres_sweeps.py's).
+    fail-closed-exempt: the per-actor backlog read's two metric arms, each
+    a shape no honest session can produce deterministically. (a) The raise
+    arm (actor_exc): a statement timeout (QueryCanceledError) that kills
+    ONLY the pairs-walk statement while the same tick's fleet reads on the
+    SAME connection succeed - one session carries one statement_timeout
+    GUC, so the timeout cannot be scoped to one statement of the tick, and
+    pg_cancel_backend cannot be aimed deterministically. (b) The malformed
+    rows (actor_rows): rows missing columns the pairs-walk's own SELECT
+    projects (actor, queue, depth, oldest_age) - an honest driver's row
+    shape IS the statement's column list, so a depth-less or age-less row
+    exists only while that SELECT and the cache rebuild have drifted. Both
+    arms exist to pin the isolation + atomicity of the read's failure
+    handling; the sweep's real SQL semantics are
+    tests/test_postgres_sweeps.py's.
 
     Dispatches on the statement's own shape the way the real tick issues
-    them: the by-status UNION, the two fleet fetchvals, the per-actor
-    running GROUP BY, and the per-actor backlog GROUP BY (the pair walk,
-    the widest-shaped statement in the tick, and the first to hit the
-    statement timeout under the incident load it exists to expose).
+    them: the by-status UNION, the three fleet fetchvals, the retrying
+    GROUP BY, the per-actor running GROUP BY, and the per-actor backlog
+    pairs walk (the widest-shaped statement in the tick, and the first to
+    hit the statement timeout under the incident load it exists to
+    expose). Every fall-through raises naming the statement.
     """
 
     def __init__(
@@ -493,16 +506,27 @@ class _BacklogTickConn:
                 raise self._actor_exc
             assert self._actor_rows is not None  # Why: an answering conn is built with rows.
             return self._actor_rows
-        self.fleet_calls += 1
+        if "min(max_attempts - attempt)" in norm:  # the retry-ladder read
+            self.fleet_calls += 1
+            return []
         if "group by actor" in norm:  # running-by-actor read
+            self.fleet_calls += 1
             return [{"actor": "resize_image", "running": 2, "oldest_age": 41.5}]
-        return [{"status": "scheduled", "count": 12}, {"status": "pending", "count": 3}]
+        if "union all" in norm and "count(*) as count" in norm:  # by-status
+            self.fleet_calls += 1
+            return [{"status": "scheduled", "count": 12}, {"status": "pending", "count": 3}]
+        raise AssertionError(f"unmatched statement: {sql}")
 
     async def fetchval(self, sql: str, *args: object) -> object:
+        norm = " ".join(sql.lower().split())
         self.fleet_calls += 1
-        if "lock_expires_at" in " ".join(sql.lower().split()):
+        if "lock_expires_at" in norm:  # the running-lease-expired count
             return 87
-        return 87.5
+        if "min(scheduled_at)" in norm:  # the oldest-due age
+            return 87.5
+        if "max(scheduled_at)" in norm:  # the scheduled horizon
+            return 0.0
+        raise AssertionError(f"unmatched statement: {sql}")
 
     async def execute(self, sql: str, *args: object) -> str:
         return "OK"
