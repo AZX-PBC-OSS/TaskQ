@@ -345,7 +345,7 @@ async def test_wrong_shaped_resolve_writes_the_refused_audit_row(
         detail = json.loads(detail)
     assert detail.get("refused"), "the row records WHY the payload was refused"
     assert await client.list(run_id), "the refused resolve moved nothing — the hold survives"
-    # AND THE PAGE'S CLAIM IS NOW TRUE: the trail renders the row.
+    # the page's claim is now true: the trail renders the row.
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as http:
