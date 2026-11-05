@@ -524,3 +524,32 @@ async def test_the_poll_belt_still_carries_the_frames(
         stop.set()
         with contextlib.suppress(Exception):
             await listener.stop()
+
+
+async def test_a_foreign_flows_notify_knocks_the_wait(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+) -> None:
+    """The knock fires at the RAW notify: a notify the listener's decoder
+    drops (another flow's payload on the global channel) still wakes
+    ``wait()`` — the stream takes its replay read immediately instead of
+    sleeping the poll. The row is the truth; the knock is the freshness."""
+    from taskq.workflows.api._progress_listen import ProgressListener
+    from tests._wf_fixtures import seed_flow
+
+    own_flow = await seed_flow(wf_conn, wf_schema)
+    foreign_flow = await seed_flow(wf_conn, wf_schema)
+    listener = ProgressListener(wf_pool, wf_schema, flow_id=own_flow)
+    async with listener:
+        await asyncio.sleep(0.3)  # the listener's own connect + backfill settles
+        await _raw_knock(
+            module_pg_schema.pg_dsn,
+            _stale_knock_payload(wf_schema, foreign_flow, new_job_id(), 99),
+        )
+        woken = await listener.wait(0.6)
+        assert woken is True, (
+            "a foreign flow's notify must knock the wait (the knock is owed "
+            "at the raw notify, before the decode drops the payload)"
+        )

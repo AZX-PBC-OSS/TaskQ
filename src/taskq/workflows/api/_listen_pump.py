@@ -67,6 +67,7 @@ def make_notify_callback(
     overflow_event: str = "listen-queue-overflow-drop-oldest",
     log: structlog.stdlib.BoundLogger = logger,
     carry_channel: bool = False,
+    on_payload: Callable[[str, str], None] | None = None,
 ) -> Callable[[_Conn, int, str, str], None]:
     """The session callback's shared body (sync, loop-thread): skip the
     empty payloads, drop-oldest on overflow — a slow/disconnected SSE
@@ -76,13 +77,18 @@ def make_notify_callback(
     ones is the right tradeoff — the overflow logged ONCE per callback,
     then enqueue. *carry_channel* enqueues the ``(channel, payload)``
     pair (the listeners' decoders key on the channel); the bare payload
-    otherwise (the admin feed's)."""
+    otherwise (the admin feed's). *on_payload* runs per non-empty
+    payload before the enqueue as ``on_payload(channel, payload)`` — a
+    knock owed at the raw notify fires here even when the decode later
+    drops the payload."""
     dropped_logged = False
 
     def _on_notify(c: _Conn, pid: int, ch: str, payload: str) -> None:
         nonlocal dropped_logged
         if not payload:
             return
+        if on_payload is not None:
+            on_payload(ch, payload)
         if q.full():
             with suppress(asyncio.QueueEmpty):
                 q.get_nowait()
@@ -208,6 +214,7 @@ async def pump(
             overflow_event=overflow_event,
             log=overflow_log,
             carry_channel=True,
+            on_payload=on_payload,
         )
         try:
             pool = resolve_pool()
