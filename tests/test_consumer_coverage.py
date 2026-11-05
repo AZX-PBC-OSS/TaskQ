@@ -754,7 +754,11 @@ async def test_transactional_cooperative_cancel_keeps_the_actors_result() -> Non
 
 class _RollbackFailsConn:
     """Connection whose ROLLBACK TO SAVEPOINT raises, exercising the
-    savepoint_rollback_failed warning path."""
+    savepoint_rollback_failed warning path.
+
+    fail-closed-exempt: the savepoint-rollback failure injection — the
+    named ROLLBACK TO SAVEPOINT statement raises while every other
+    statement succeeds, so the snooze reaches the warning path."""
 
     class _Transaction:
         async def __aenter__(self) -> "_RollbackFailsConn._Transaction":

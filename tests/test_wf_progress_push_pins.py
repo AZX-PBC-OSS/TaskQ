@@ -544,6 +544,13 @@ async def test_a_foreign_flows_notify_knocks_the_wait(
     listener = ProgressListener(wf_pool, wf_schema, flow_id=own_flow)
     async with listener:
         await asyncio.sleep(0.3)  # the listener's own connect + backfill settles
+        # The backfill's own emissions knock the same event (every emit
+        # sets it); consume that knock first, or the assertion below
+        # reads the stale flag and proves nothing about the foreign
+        # notify.
+        assert await listener.wait(0.6) is True, (
+            "the backfill's own knock must be pending once the listener has settled"
+        )
         await _raw_knock(
             module_pg_schema.pg_dsn,
             _stale_knock_payload(wf_schema, foreign_flow, new_job_id(), 99),

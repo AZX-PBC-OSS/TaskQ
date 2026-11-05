@@ -103,6 +103,10 @@ class _NullSavepoint:
 class _ContendedFakeConn:
     """ConnLike stand-in for the unique_for single-enqueue path.
 
+    fail-closed-exempt: the advisory-lock contention injection — a
+    deterministic 55P03 lock_timeout at the blocking-lock statement, the
+    GUC round trips and the granted tier answering their recorded shapes.
+
     Models a caller-owned transaction (``is_in_transaction() -> True``) and
     the TWO-TIER acquire's statement shapes: the fast-path
     ``pg_try_advisory_xact_lock`` returns *try_lock_result* (False models a

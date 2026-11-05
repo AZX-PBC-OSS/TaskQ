@@ -30,7 +30,7 @@ survive the snapshot (P6).
 The fan-out, not a partition (the product
 shape is ONE backend listener fanning out to N watching users, the
 progress stream's own pub/sub discipline): every subscriber —
-``async for event in listener``, ``events()``, ``holds(run=…)```,
+``async for event in listener``, ``events()``, ``holds(run=…)``,
 ``frames()`` — gets its OWN queue and its OWN end-of-stream sentinel;
 two concurrent consumers each see EVERY event (a shared queue would
 PARTITION the stream, each consumer stealing the other's events, and a

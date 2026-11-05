@@ -1,23 +1,26 @@
-"""The LISTEN pump: the shared LISTEN → BACKFILL → TAIL engine.
+"""The shared LISTEN pump: one body for the three surfaces that ride
+the same reconnect loop — the HITL listener and the progress listener
+(task-driven, fanning out to N subscribers) and the admin SSE feed (a
+generator yielding payloads). Each grew its own copy of the reconnect
+skeleton, the bounded raw queue, and the teardown; this module keeps
+the one shared copy.
 
-Three surfaces ride one body here — the HITL listener and the progress
-listener (task-driven, fanning out to N subscribers) and the admin SSE
-feed (a generator yielding payloads) — which grew three copies of the
-same reconnect skeleton, the same bounded raw queue, and the same
-teardown. The copy that mattered was the teardown: the admin's release
+The teardown is the part the copies disagreed on. The admin's release
 ran under :func:`taskq._shield.shield_with_retrieval` (a cancellation
-delivered mid-cleanup detaches the cleanup, the release happens), while
-both listeners' releases were bare ``suppress(Exception)`` — a
+delivered mid-cleanup detaches the cleanup, and the release happens),
+while both listeners' releases were bare ``suppress(Exception)`` — a
 cancellation landing on a cleanup step skipped ``pool.release`` and
 stranded the dedicated connection against the pool cap, the exact shape
 the admin's own docstring documented as unsafe. The shared
 :func:`release_listen_connection` is the shielded form everywhere.
 
-Leaf module by design (mirrors ``taskq._shield``): asyncio, asyncpg and
-the shield helper only — no taskq.workflows imports — so the workflows
-package and the admin package both reach it without a layering
-inversion. The admin's import law still applies at ITS side: the import
-is lazy (function scope), never at module scope.
+Layer rule: this module is a leaf of the workflows api layer. Its
+imports are asyncio, asyncpg, the standard-library helpers, and three
+taskq leaves — ``taskq._shield``, ``taskq.constants`` and
+``taskq.obs``. It imports nothing from ``taskq.workflows``, so the
+workflows package and the admin package can both depend on it without a
+layering inversion. The admin keeps its own import law at its side: the
+import is lazy (function scope), never at module scope.
 """
 
 from __future__ import annotations

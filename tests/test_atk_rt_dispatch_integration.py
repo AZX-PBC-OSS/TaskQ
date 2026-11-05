@@ -82,6 +82,10 @@ _TERMINAL = ("succeeded", "failed", "cancelled", "crashed", "abandoned")
 class _StageConn:
     """A connection that fails exactly ONE round stage and succeeds the rest.
 
+    fail-closed-exempt: the staged dispatch fault injection — the named
+    statement raises (optionally after a delay) while the resolve and
+    probe answer their scripted rows, so the round reaches the raise.
+
     Stage discrimination is by the statement's own shape: the resolve is
     the queues read, the probe is the claimable probe, the claim is the
     only statement that takes row locks. A conn with ``fail_mark=None``

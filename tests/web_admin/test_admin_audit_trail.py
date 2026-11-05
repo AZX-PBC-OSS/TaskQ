@@ -517,6 +517,14 @@ def test_job_detail_without_audit_table_renders_empty_section(
     jid = new_uuid()
 
     class _PreMigrationConn(_DetailConn):
+        """The schema before the audit migration: the audit statements
+        raise UndefinedTableError, the job rows answer normally.
+
+        fail-closed-exempt: the pre-migration schema injection — the
+        audit table's absence raises UndefinedTableError at the named
+        statements while the job-detail rows answer their scripted
+        shapes, so the page reaches the empty-section degrade."""
+
         async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
             if "admin_audit" in query:
                 raise _asyncpg.exceptions.UndefinedTableError("missing")

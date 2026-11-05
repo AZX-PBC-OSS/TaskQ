@@ -1295,15 +1295,63 @@ async def test_non_object_json_payload_round_trips_through_claim(
         assert row["error_class"] is None, "no CorruptJobDataError verdict against user content"
 
 
-async def test_empty_queue_list_round_trips_empty(jobs_app: JobsApp) -> None:
+class _RecordingDispatchPool:
+    """Recording proxy over the real pool (count, don't answer).
+
+    Every call delegates to the real connection untouched; the proxy
+    counts the checkouts and records the dispatch-CTE fetches (the
+    claim's SQL and its rows) — the round's shape, asserted instead of
+    trusted. Modeled on tests/test_dispatch_queue_mode_cache.py's
+    proxy of the same name."""
+
+    def __init__(self, pool: _asyncpg.Pool) -> None:
+        self._pool = pool
+        self.checkouts = 0
+        self.claim_fetches: list[tuple[str, list[_asyncpg.Record]]] = []
+
+    @contextlib.asynccontextmanager
+    async def acquire(
+        self,
+        **kwargs: object,  # Why: asyncpg.Pool.acquire's own kwargs forwarded verbatim.
+    ) -> AsyncGenerator[_asyncpg.Connection]:
+        outer = self
+        self.checkouts += 1
+        async with self._pool.acquire(**kwargs) as conn:
+
+            class _RecordingConn:
+                async def fetch(self, sql: str, *args: object) -> list[_asyncpg.Record]:
+                    rows = await conn.fetch(sql, *args)
+                    if "WITH RECURSIVE params AS (" in sql:
+                        outer.claim_fetches.append((sql, list(rows)))
+                    return rows
+
+                def __getattr__(self, name: str) -> object:
+                    return getattr(conn, name)
+
+            yield _RecordingConn()  # type: ignore[return-value]
+
+
+async def test_empty_queue_list_round_trips_empty(
+    jobs_app: JobsApp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An empty queue list passes through (not short-circuits): one real
     pool checkout, one real claim statement with nothing bound, an empty
     batch back - the producer's idle-shutdown shape.
 
+    The pool rides the recording proxy, so the round's shape is asserted,
+    not trusted: a short-circuit ``return []`` before the checkout, or a
+    round that never issues the rendered claim, reds here.
+
     (Converted from tests/test_postgres_dispatch.py's fake arm in the
     mock-subtraction cure: the fake pinned the bound argument; this runs
     the real claim.)"""
+    deps = jobs_app.deps
     backend = jobs_app.backend
+    schema = deps.settings.schema_name
+    tmpl = render(schema)
+    proxy = _RecordingDispatchPool(deps.dispatcher_pool)
+    monkeypatch.setattr(deps, "dispatcher_pool", proxy)
 
     dispatched = await backend.dispatch_batch(
         worker_id=new_uuid(),
@@ -1312,3 +1360,15 @@ async def test_empty_queue_list_round_trips_empty(jobs_app: JobsApp) -> None:
         lock_lease=_LEASE,
     )
     assert dispatched == []
+    assert proxy.checkouts == 1, (
+        "an empty queue list must checkout the pool exactly once - a "
+        "short-circuit return never reaches the acquire"
+    )
+    assert [sql for sql, _rows in proxy.claim_fetches] == [tmpl.dispatch_strict_fifo], (
+        "the round must issue the real claim statement - the rendered "
+        "strict-fifo dispatch CTE, which is what an empty queue list "
+        "resolves to"
+    )
+    assert all(rows == [] for _sql, rows in proxy.claim_fetches), (
+        "the claim statement must come back empty (nothing was pending)"
+    )

@@ -463,7 +463,11 @@ class _StageFaultConn:
     """Fake conn that raises a scripted non-transient error from a chosen
     stage of the real ``_dispatch_batch`` round: resolve (queue-mode
     resolution), claim (the dispatch CTE), or probe (the claimable-rows
-    probe)."""
+    probe).
+
+    fail-closed-exempt: the staged non-transient fault injection — one
+    chosen dispatch stage raises deterministically while the rest of the
+    round answers its empty shapes, so the loop reaches the raise."""
 
     def __init__(self, stage: str) -> None:
         self.stage = stage

@@ -1656,18 +1656,19 @@ def _method_discriminates_on_sql(item: ast.FunctionDef | ast.AsyncFunctionDef) -
 
 
 def _fake_conn_default_answer_sites(tree: ast.Module) -> list[str]:
-    """Every fake-class conn method that DISCRIMINATES on the statement
+    """Every fake-class conn method that discriminates on the statement
     text and whose fall-through answers from a silent default: the
-    method's FINAL statement is ``return <default-shape>`` (or a bare
-    ``return``) and the method body carries no raise at all — a raise the
-    method reaches before the fall-through would be the named-unmatched
-    discipline; a raise buried in a conditional arm with the default
-    returning after it is exactly the shape that lied (the recorded
-    incident: the availability gate's probe matched nothing and the
-    fall-through fed it the next scripted batch anyway). A method that
-    never reads the statement text (a pure recorder — record + return the
-    tag) cannot lie per-statement; it is not an offender. Returns
-    offender descriptions."""
+    method's final statement (the code an unmatched statement reaches)
+    is a ``return`` of a default answer shape — a constant, an empty
+    page, an unscripted private attribute, the next ``.pop(0)`` script
+    page. A raise buried in a conditional arm does not excuse the
+    fall-through: that raise fires only for the statements its arm
+    names, and the fall-through still answers everything else (the
+    recorded incident: the availability gate's probe matched nothing and
+    the fall-through fed it the next scripted batch anyway). A method
+    that never reads the statement text (a pure recorder — record +
+    return the tag) cannot lie per-statement; it is not an offender.
+    Returns offender descriptions."""
     offenders: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
@@ -1688,16 +1689,44 @@ def _fake_conn_default_answer_sites(tree: ast.Module) -> list[str]:
             value = last.value
             if value is None or not _is_default_answer_value(value):
                 continue
-            has_raise = any(isinstance(n, ast.Raise) for n in ast.walk(item))
-            if has_raise:
-                # A raise exists — but is it the FALL-THROUGH? Only the
-                # final statement being the raise counts; a raise inside a
-                # conditional arm still leaves the default answering.
-                continue
             offenders.append(
                 f"{node.name}.{item.name} (line {item.lineno}): the fall-through "
                 f"answers from a silent default"
             )
+    return offenders
+
+
+def _fail_closed_exempt_subject(doc: str) -> str:
+    """The subject the class docstring's ``fail-closed-exempt:`` marker
+    names, or ``""`` when the marker is absent or bare (nothing after
+    it). The subject is the fault injection the fake exists to inject —
+    a marker without one excuses nothing."""
+    idx = doc.find(_FAIL_CLOSED_EXEMPT_MARKER)
+    if idx < 0:
+        return ""
+    return doc[idx + len(_FAIL_CLOSED_EXEMPT_MARKER) :].strip()
+
+
+def _fail_closed_offenders(tree: ast.Module) -> list[str]:
+    """The tree's fail-closed offenders after the exempt adjudication: a
+    site whose class docstring carries ``fail-closed-exempt:`` with a
+    non-empty subject stays exempt; an unmarked class, or one carrying
+    the bare marker, is an offender."""
+    sites = _fake_conn_default_answer_sites(tree)
+    if not sites:
+        return []
+    docstrings = {
+        node.name: _class_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+    }
+    offenders: list[str] = []
+    for site in sites:
+        class_name = site.split(".")[0]
+        doc = docstrings.get(class_name, "")
+        if _fail_closed_exempt_subject(doc):
+            continue
+        offenders.append(site)
     return offenders
 
 
@@ -1723,20 +1752,9 @@ def test_fake_connection_classes_fail_closed_on_unmatched_sql() -> None:
     offenders: list[str] = []
     for path in _all_test_tree_files():
         tree = ast.parse(path.read_text())
-        sites = _fake_conn_default_answer_sites(tree)
-        if not sites:
-            continue
-        docstrings = {
-            node.name: _class_docstring(node)
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ClassDef)
-        }
-        for site in sites:
-            class_name = site.split(".")[0]
-            doc = docstrings.get(class_name, "")
-            if _FAIL_CLOSED_EXEMPT_MARKER in doc:
-                continue  # the marker names the fault-injection subject
-            offenders.append(f"{path.relative_to(_TESTS_DIR)}: {site}")
+        offenders.extend(
+            f"{path.relative_to(_TESTS_DIR)}: {site}" for site in _fail_closed_offenders(tree)
+        )
     assert not offenders, (
         "Found fake conn class(es) answering unmatched SQL from a silent default:\n"
         + "\n".join(f"  - {f}" for f in offenders)
@@ -1750,19 +1768,112 @@ def test_fake_connection_classes_fail_closed_on_unmatched_sql() -> None:
     )
 
 
-# ── The mock-subtraction law, part 2: the patch-site registry ────────────
+# The fail-closed guard's adversarial self-checks: the guard's own walk,
+# exercised on synthetic classes this pack carries as source strings (the
+# guard scans this pack too, so the offenders must never exist as real
+# class definitions).
+
+_FAIL_CLOSED_SELF_SILENT_DEFAULT = '''
+class _SyntheticSilentDefault:
+    """Answers every unmatched statement from the next scripted page."""
+
+    def __init__(self) -> None:
+        self._results: list[list[object]] = []
+
+    async def fetch(self, sql: str) -> list[object]:
+        if "sweep" in sql:
+            return [{"deleted": 7}]
+        return self._results.pop(0)
+'''
+
+_FAIL_CLOSED_SELF_CONDITIONAL_RAISE_DEFAULT = '''
+class _SyntheticConditionalRaiseDefault:
+    """The shape that escaped the guard's first body: one arm raises,
+    the fall-through still answers."""
+
+    def __init__(self) -> None:
+        self._results: list[list[object]] = []
+
+    async def fetchrow(self, sql: str) -> object:
+        if "availability_gate" in sql:
+            raise AssertionError(f"unmatched statement: {sql}")
+        return self._results.pop(0)
+'''
+
+_FAIL_CLOSED_SELF_FAIL_CLOSED = '''
+class _SyntheticFailClosed:
+    """Every shape a named match; the fall-through raises."""
+
+    async def fetchrow(self, sql: str) -> object:
+        if "hold" in sql:
+            return {"hold_id": "h1"}
+        raise AssertionError(f"unmatched statement: {sql}")
+'''
+
+_FAIL_CLOSED_SELF_BARE_EXEMPT = '''
+class _SyntheticBareExempt:
+    """fail-closed-exempt:"""
+
+    def __init__(self) -> None:
+        self._answer: object = None
+
+    async def fetchval(self, sql: str) -> object:
+        if "lease" in sql:
+            raise RuntimeError("injected lease fault")
+        return self._answer
+'''
+
+_FAIL_CLOSED_SELF_SUBJECT_EXEMPT = '''
+class _SyntheticSubjectExempt:
+    """fail-closed-exempt: the driver raises mid-statement — a branch no
+    real database reaches deterministically."""
+
+    async def execute(self, sql: str) -> str:
+        if "swallow" in sql:
+            raise ConnectionError("injected mid-statement drop")
+        return "UPDATE 10"
+'''
+
+
+def test_fail_closed_guard_adversarial_self_check() -> None:
+    """The guard's five verdicts on its own synthetic estate: the same
+    AST walk the real guard runs must red the silent default, red the
+    conditional-raise-plus-default shape, pass the fail-closed class,
+    red the bare exempt marker, and pass the subject-carrying exempt."""
+    silent = ast.parse(_FAIL_CLOSED_SELF_SILENT_DEFAULT)
+    conditional = ast.parse(_FAIL_CLOSED_SELF_CONDITIONAL_RAISE_DEFAULT)
+    closed = ast.parse(_FAIL_CLOSED_SELF_FAIL_CLOSED)
+    bare = ast.parse(_FAIL_CLOSED_SELF_BARE_EXEMPT)
+    subject = ast.parse(_FAIL_CLOSED_SELF_SUBJECT_EXEMPT)
+    assert _fail_closed_offenders(silent), "(a) the silent-default fall-through must be an offender"
+    assert _fail_closed_offenders(conditional), (
+        "(b) the conditional-raise-plus-default shape must be an offender — "
+        "the raise lives in one arm; the unmatched statement still reaches "
+        "the answering fall-through"
+    )
+    assert not _fail_closed_offenders(closed), (
+        "(c) the fail-closed class (its fall-through raises) must pass"
+    )
+    assert _fail_closed_offenders(bare), (
+        "(d) a bare 'fail-closed-exempt:' marker with no subject must be an offender"
+    )
+    assert not _fail_closed_offenders(subject), "(e) a subject-carrying exempt marker must pass"
+
+
+# The mock-subtraction law, part 2: the patch-site registry.
 #
-# PART A's mock subtraction cured the unit packs whose modules-under-test
-# have real-PG sibling packs: the SQL-semantics arms died, the survivors are
-# fault injection and wiring the siblings do not own. The cured packs' ---
-# and only their --- ``monkeypatch.setattr`` sites on ``taskq.*`` attributes
-# live in the registry below: each attribute gets the reason it may stay
-# patched (the real-PG sibling that owns the behavior, or why no sibling
-# can). A NEW patch site in a registered pack must add its own entry with
-# its own reason - the registry is the ledger, the failure message points
-# at it. A patch site in an UNREGISTERED pack is not this guard's business
-# (whether that pack's module has a real-PG sibling is a human judgment the
-# registry records when the pack is cured).
+# Part A's mock subtraction cured the unit packs whose modules-under-test
+# have real-PG sibling packs: the SQL-semantics arms died, and the
+# survivors are fault injection and wiring the siblings do not own. The
+# cured packs' — and only their — ``monkeypatch.setattr`` sites on
+# ``taskq.*`` attributes live in the registry below: each attribute gets
+# the reason it may stay patched (the real-PG sibling that owns the
+# behavior, or why no sibling can). A new patch site in a registered pack
+# must add its own entry with its own reason; the registry is the ledger,
+# and the failure message points at it. A patch site in an unregistered
+# pack is not this guard's business — whether that pack's module has a
+# real-PG sibling is a human judgment the registry records when the pack
+# is cured.
 
 _TASKQ_PATCH_EXEMPT: dict[str, dict[str, str]] = {
     "test_leader.py": {

@@ -15,7 +15,14 @@ from tests.conftest import _FakePool
 
 
 class FakeConn:
-    """Lightweight asyncpg.Connection stand-in for isolate_self tests."""
+    """Lightweight asyncpg.Connection stand-in for isolate_self tests.
+
+    fail-closed-exempt: the isolate fault injection — execute raises the
+    scripted driver error at every statement (fail_execute_with), and the
+    arbiter UPDATE's RETURNING emulation answers the held job's row or
+    None when this fake does not hold it (the lost-race shape the row
+    classification reads); no statement is answered from an unscripted
+    default."""
 
     def __init__(
         self,
