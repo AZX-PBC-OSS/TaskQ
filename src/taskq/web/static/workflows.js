@@ -553,6 +553,45 @@
     });
   });
 
+  // ── the Abandon form (the operator door: the resolve handler's guarded
+  // POST, minus the decision — an abandon is a stop-wait, not a verdict).
+  // Registered AFTER the confirm block: the confirm handler's cancel
+  // lands as defaultPrevented, and this handler's fetch skips it — the
+  // dialog asks once and a "no" never abandons. The success note names
+  // the fail-close (the body sees Expired), not a resume. ─────────────
+  document.querySelectorAll('[data-wf-form="abandon"]').forEach(function (form) {
+    form.addEventListener("submit", function (ev) {
+      if (ev.defaultPrevented) return; // the confirm dialog said no
+      ev.preventDefault();
+      var holdId = form.getAttribute("data-hold-id");
+      var fd = new FormData();
+      fd.set("hold_id", holdId);
+      fd.set("reason", "abandoned from the admin workflow page");
+      fd.set("csrf_token", form.querySelector('[name="csrf_token"]').value);
+      fetch(BASE + "/api/runs/" + (boot.state ? boot.state.run_id : boot.runId) + "/abandon", {
+        method: "POST",
+        body: fd
+      })
+        .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+        .then(function (res) {
+          var note = document.createElement("div");
+          note.className = res.ok && res.body.status === "delivered"
+            ? "text-xs text-green-700 dark:text-green-400 mt-1"
+            : "text-xs text-red-600 dark:text-red-400 mt-1";
+          note.textContent = res.ok && res.body.status === "delivered"
+            ? "abandoned — the wait fails closed"
+            : "refused: " + (res.body.detail || res.body.reason || "unknown");
+          form.appendChild(note);
+        })
+        .catch(function (err) {
+          var note = document.createElement("div");
+          note.className = "text-xs text-red-600 dark:text-red-400 mt-1";
+          note.textContent = "the abandon failed: " + err.message;
+          form.appendChild(note);
+        });
+    });
+  });
+
   // ── boot: render the mermaid once, then connect ──────────────────────
   if (window.mermaid) {
     window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });

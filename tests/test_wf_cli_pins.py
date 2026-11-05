@@ -124,7 +124,16 @@ def test_surface_walk_one_question_one_command() -> None:
     from taskq.cli import flows_app
 
     verbs = {cmd.name for cmd in flows_app.registered_commands}
-    assert verbs == {"list", "status", "holds", "signal", "resolve", "cancel", "retry"}, verbs
+    assert verbs == {
+        "list",
+        "status",
+        "holds",
+        "signal",
+        "resolve",
+        "abandon",
+        "cancel",
+        "retry",
+    }, verbs
 
 
 async def test_status_of_an_unknown_run_is_the_honest_error(cli_settings: Any) -> None:
@@ -255,6 +264,53 @@ async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
     # the refused delivery moved nothing.
     after = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
     assert "holds: 1 pending" in plain_cli_output(after.output)
+
+
+async def test_abandon_the_operator_door_exit_codes_and_rendering(
+    cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+) -> None:
+    """The abandon verb's contract (the operator door's shell face): a
+    held hold's abandon → exit 0 with the fail-close rendering; the
+    second abandon → exit 0 no-op; a DELIVERED hold's abandon → exit 1
+    refused. The delivered abandon is audited (the same row the resolve
+    verb writes — action ``hitl.abandon``)."""
+    run_id = await _held_run(wf_pool, wf_schema)
+    holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
+    hold_id = _hold_id_of(holds.output)
+    first = await to_thread(
+        runner.invoke,
+        app,
+        ["flows", "abandon", hold_id, "--reason", "the operator's stop"],
+    )
+    assert first.exit_code == 0, first.output
+    assert f"abandoned: hold {hold_id}" in plain_cli_output(first.output), first.output
+    assert "the wait fails closed on its next drive" in plain_cli_output(first.output)
+    assert "the body sees Expired" in plain_cli_output(first.output)
+    # the audit row (the CLI's own principal — the same-tx row).
+    audit = await wf_conn.fetchrow(
+        f'SELECT principal_subject, action, reason FROM "{wf_schema}".admin_audit '
+        "WHERE action = 'hitl.abandon'",
+    )
+    assert audit is not None, "an abandon without an audit row reds"
+    assert audit["principal_subject"].startswith("cli:")
+    assert audit["reason"] == "the operator's stop"
+    # the second abandon: the DEFINED no-op (exit 0).
+    second = await to_thread(runner.invoke, app, ["flows", "abandon", hold_id])
+    assert second.exit_code == 0, second.output
+    assert "no-op" in plain_cli_output(second.output), second.output
+    # a DELIVERED hold refuses the abandon (exit 1, the typed reason).
+    run2 = await _held_run(wf_pool, wf_schema)
+    holds2 = await to_thread(runner.invoke, app, ["flows", "holds", run2])
+    hold2 = _hold_id_of(holds2.output)
+    resolved = await to_thread(
+        runner.invoke,
+        app,
+        ["flows", "resolve", hold2, '{"verdict":"approve"}', "--app", f"{MODULE_NAME}:app"],
+    )
+    assert resolved.exit_code == 0, resolved.output
+    refused = await to_thread(runner.invoke, app, ["flows", "abandon", hold2])
+    assert refused.exit_code == 1, refused.output
+    assert "refused" in plain_cli_output(refused.output), refused.output
 
 
 async def test_retry_reopens_the_failed_closure_and_the_run_completes(

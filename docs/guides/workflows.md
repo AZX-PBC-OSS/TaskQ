@@ -2384,7 +2384,7 @@ four spellings the ROWS carry, in one table):
 | --- | --- | --- |
 | `held` | the wait site registered it (the live hold) | the wait site re-reads it (the idempotent re-hold) |
 | `delivered` | a resolve/deliver won the CAS | the answer queue replays its payload |
-| `abandoned` | the expiry sweep fired past `expires_at` | the wait returns the `Expired` member (the fail-close) |
+| `abandoned` | ONE state, TWO doors: the expiry sweep fired past `expires_at` (the timeout door), or the operator abandoned it (`taskq flows abandon <hold_id>` / the admin run page's Abandon — the operator door; the row's payload carries `abandoned_by='operator'`) | the wait returns the `Expired` member (the fail-close), carrying `abandoned_by` — `"timeout"` for the sweep's rows, `"operator"` for the operator door's |
 | `cancelled` | the run's cancel cascade swept it | the flow is terminal — the body does not resume |
 
 All four live on `wf_signals.status` (partial-unique over the
@@ -2414,7 +2414,10 @@ TRANSACTIONAL broadcast channels — `taskq_wf_hold_created` (the hold
 CREATED, inside the insert's own tx), `taskq_wf_hold_resolved` (inside
 the CAS-winning resolve/deliver tx, carrying `verdict_kind`: the
 payload model the typed door validated against), and
-`taskq_wf_hold_expired` (the sweep abandoned it). The channels are
+`taskq_wf_hold_expired` (the DEFINED `abandoned` state — the sweep's
+deadline pass OR the operator's abandon; the payload carries
+`abandoned_by`: `"timeout"` from the sweep, `"operator"` from the
+abandon door). The channels are
 GLOBAL and the payload carries the SCHEMA (`pg_notify` is
 per-database; the schema-per-module estate shares one database across
 many schemas — the listener filters by payload, never by channel
@@ -2505,10 +2508,25 @@ wrong slot — and the wait site REFUSES the mis-aligned state with the
 named `LoopWaitShapeError`. A plain step's cursor is
 consumption-ordered; conditional waits are legal there.)
 
+**The operator door:** a hold may also be abandoned by a HUMAN —
+`taskq flows abandon <hold_id> [--reason …]`, `HitlClient.abandon(...)`,
+or the admin run page's Abandon button. The row lands in the SAME
+DEFINED `abandoned` state (with `abandoned_by='operator'` on the
+row's payload) and the resumed wait returns the SAME `Expired` member —
+now carrying `abandoned_by="operator"` (the sweep's rows read
+`"timeout"`). The value-not-machinery law is the operator door's own:
+a body that wants the operator abandon to be a FAILURE raises
+`SignalAbandonedError` ITSELF off that arm (the machinery never raises
+it). An abandon is a stop-wait, not a verdict — no payload, no gate:
+the parent fail-closes while a child flow keeps running. Timer holds
+refuse the door (the clock is their only resolver), and a second
+abandon of an operator-abandoned hold is the defined no-op.
+
 **The timers:** the deadline is DB-CLOCK compared (the signal sweep's
 expiry arm is the ONLY live timer on a held row); the expired hold →
 the DEFINED `abandoned` state (the resume's wait site returns the
-union's `Expired` member — the typed face, never a silent orphan);
+union's `Expired` member — the typed face, never a silent orphan;
+`abandoned_by` names the door that wrote it);
 `timeout=None` must be EXPLICIT (the W1 validate warning).
 
 **The timeout face is the union's second arm**: after the sweep marks the hold `abandoned`, the
@@ -2519,7 +2537,9 @@ the failure raises `SignalTimeoutError`
 ITSELF off the member (the escalation ladder's own use — the machinery
 never raises): a step ladders and terminal-fails (the `fail` policy's
 shape); a loop's failure-class rules route it as the BODY failure it
-is. A DELIBERATE re-wait — the body MATCHED the expiry member and
+is. The operator door's failure is the same shape one door over —
+`SignalAbandonedError` raised by the body off the `Expired` member
+whose `abandoned_by` reads `"operator"`. A DELIBERATE re-wait — the body MATCHED the expiry member and
 waits again within the same attempt — is a NEW body decision: it
 registers a NEW hold with a NEW epoch. The other timer policies
 (`resume_with_default` / the escalation arm on the TIMER) are recorded

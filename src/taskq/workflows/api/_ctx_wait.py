@@ -13,7 +13,7 @@ cheap.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import asyncpg
 from pydantic import BaseModel
@@ -91,15 +91,27 @@ class Expired(BaseModel):
     attribute (``Expired`` carries no decision fields — only the
     pointers).
 
+    ``abandoned_by`` names the DOOR that wrote the abandoned state (the
+    state is one; the doors are two): ``"timeout"`` — the expiry sweep
+    fired past ``expires_at`` (the default; the sweep's rows carry no
+    payload marker) — or ``"operator"`` — the operator abandon door
+    (``HitlClient.abandon`` / ``taskq flows abandon`` / the admin's
+    Abandon) wrote ``abandoned_by='operator'`` on the row's payload.
+
     :class:`taskq.exceptions.SignalTimeoutError`
-    stays in the vocabulary for the body that WANTS the failure — it
-    raises the glossary exception ITSELF off the ``Expired`` member
-    (the machinery never raises it anymore; the exception face cannot
-    be forced, the union face can)."""
+    stays in the vocabulary for the body that WANTS the timeout
+    failure — it raises the glossary exception ITSELF off the
+    ``Expired`` member (the machinery never raises it anymore; the
+    exception face cannot be forced, the union face can). The same
+    value-not-machinery law is the operator door's:
+    :class:`taskq.exceptions.SignalAbandonedError` is raised by a body
+    that WANTS the operator-abandon to be a FAILURE — off this same
+    member when its ``abandoned_by`` reads ``"operator"``."""
 
     signal: str
     node_key: str
     hold_id: str
+    abandoned_by: Literal["timeout", "operator"] = "timeout"
 
 
 class WaitHost(Protocol):
@@ -413,7 +425,9 @@ class CtxWaitOps(WaitHost):
             # hold with a new epoch.
             abandoned_row = await conn.fetchrow(
                 render_sql(
-                    "SELECT id, hold_epoch FROM {schema}.wf_signals "
+                    "SELECT id, hold_epoch, "
+                    "COALESCE(payload->>'abandoned_by', 'timeout') AS abandoned_by "
+                    "FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
                     "AND map_index IS NOT DISTINCT FROM $4 "
                     "AND status = 'abandoned' ORDER BY hold_epoch DESC LIMIT 1",
@@ -449,14 +463,21 @@ class CtxWaitOps(WaitHost):
                         dumps_jsonb_str({face_key: int(abandoned_row["hold_epoch"])}),
                     )
                     # the expiry member returns — the closed union's second
-                    # arm, the fail-close the checker forces. The body that
-                    # wants the failure raises SignalTimeoutError itself off
-                    # this member (the escalation ladder's own use); the body
-                    # that matches it is the fail-close.
+                    # arm, the fail-close the checker forces. The member
+                    # carries the DOOR that wrote the abandoned row (the
+                    # sweep's rows read 'timeout'; the operator abandon's
+                    # marker reads 'operator'). The body that wants the
+                    # timeout failure raises SignalTimeoutError itself off
+                    # this member (the escalation ladder's own use); the
+                    # body that wants the operator failure raises
+                    # SignalAbandonedError off the same arm when the door
+                    # reads 'operator'; the body that matches it is the
+                    # fail-close.
                     return Expired(
                         signal=signal_name,
                         node_key=self.node_key,
                         hold_id=str(abandoned_row["id"]),
+                        abandoned_by=str(abandoned_row["abandoned_by"]),  # pyright: ignore[reportArgumentType]  # Why: the row's COALESCE vocabulary is the writer's own closed pair ('timeout'/'operator') — the member's Literal re-validates it.
                     )
             # A new hold: a new epoch (the count of this name's holds —
             # the identity's mint). the mint is per map sibling (the F2

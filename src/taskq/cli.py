@@ -4118,7 +4118,8 @@ def _format_event_detail(detail: Any) -> str:
 # ── flows: the workflow-run surface ───────────────────────────────
 #
 # One question, one command: stuck → status, deliver → signal, reply →
-# resolve, stop → cancel, retry-a-failed-node → retry, inventory → list.
+# resolve, abandon-a-wait → abandon, stop → cancel,
+# retry-a-failed-node → retry, inventory → list.
 # The analysis lives in taskq.workflows._cli (the _doctor seam); the
 # write verbs call the engine's module-level run-operator functions — the
 # same functions the FlowRunner methods delegate to, never a second write
@@ -4968,6 +4969,26 @@ def _echo_delivery(result: Any, hold_id: str) -> None:
         raise typer.Exit(code=1)
 
 
+def _echo_abandon(result: Any, hold_id: str) -> None:
+    """The abandon's DeliveryResult rendering (the same exit-code
+    contract the resolve verb keeps: delivered → 0, no-op → 0 with the
+    note, refused → 1) — the delivered arm's own line: the wait fails
+    closed on its next drive, the body sees ``Expired``."""
+    from taskq.workflows.api._hitl import DeliveryResult
+
+    assert isinstance(result, DeliveryResult)
+    if result.status == "delivered":
+        typer.echo(
+            f"abandoned: hold {hold_id} — the wait fails closed on its next "
+            "drive (the body sees Expired)"
+        )
+    elif result.status == "no-op":
+        typer.echo(f"no-op: hold {hold_id} — {result.reason}")
+    else:
+        typer.echo(f"refused: {result.reason}", err=True)
+        raise typer.Exit(code=1)
+
+
 @flows_app.command("resolve")
 def flows_resolve(
     hold_id: Annotated[str, typer.Argument(help="The hold's id (the reply handle).")],
@@ -5043,6 +5064,53 @@ async def _flows_resolve(
             )
             raise typer.Exit(code=1) from None
         _echo_delivery(result, str(hold_id))
+
+
+@flows_app.command("abandon")
+def flows_abandon(
+    hold_id: Annotated[str, typer.Argument(help="The hold's id (the reply handle).")],
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Why — recorded on the audit row.")
+    ] = None,
+) -> None:
+    """Abandon a hold BY ID (the operator door: the wait fails closed on
+    its next drive — the body sees ``Expired``). Timer holds refuse: the
+    clock is their only resolver."""
+    settings = TaskQSettings.load()
+    try:
+        parsed = UUID(hold_id)
+    except ValueError:
+        typer.echo(f"invalid hold id (expected a UUID): {hold_id!r}", err=True)
+        raise typer.Exit(code=1) from None
+    asyncio.run(_flows_abandon(settings, parsed, reason))
+
+
+async def _flows_abandon(
+    settings: TaskQSettings,
+    hold_id: UUID,
+    reason: str | None,
+) -> None:
+    from taskq.workflows.api._hitl import HitlClient
+
+    async with _flows_pool(settings) as pool:
+        client = HitlClient(pool, schema=settings.schema_name)
+        try:
+            result = await client.abandon(str(hold_id), reason=reason, principal=_cli_principal())
+        except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
+            # the race's honest loser (the same deadlock-refusal the
+            # resolve and cancel verbs carry — the verbs' cascades can
+            # deadlock; PG kills one writer; the CLI's answer is the
+            # named refusal with the remedy, never a rich traceback —
+            # the diagnostics-first law).
+            typer.echo(
+                f"the hold {hold_id}'s writers raced and PG resolved the "
+                "deadlock in another writer's favour — the hold is being "
+                "abandoned OR resolved/cancelled by the winner; re-run this "
+                "verb (or `taskq flows status`) to see the settled state",
+                err=True,
+            )
+            raise typer.Exit(code=1) from None
+        _echo_abandon(result, str(hold_id))
 
 
 @flows_app.command("cancel")

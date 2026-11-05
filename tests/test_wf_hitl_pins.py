@@ -30,10 +30,12 @@ from taskq.workflows import (
 )
 from taskq.workflows.api._hitl import (
     HOLD_CHANNEL,
+    HOLD_EXPIRED_CHANNEL,
     HitlClient,
     deliver_payload,
     sweep_expired_signals,
 )
+from tests._wf_fixtures import expire_holds
 
 
 class Approval(BaseModel):
@@ -47,6 +49,13 @@ class Escalate(BaseModel):
 
 class Ingest(BaseModel):
     doc_id: str
+
+
+async def _wait_body(ctx: StepContext, params: Ingest) -> Any:
+    """The plain hold body (the operator-door pins' arrangement): one
+    wait site, the default 120 s deadline, the fail-close never taken
+    while the pin holds the wheel."""
+    return await ctx.wait_signal(Approval, timeout_s=120.0)
 
 
 async def _held_flow(
@@ -533,6 +542,8 @@ async def test_signal_timeout_fires_on_db_clock(
     from taskq.exceptions import SignalTimeoutError
     from taskq.workflows import Expired
 
+    doors: list[str] = []
+
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         outcome = await ctx.wait_signal(Approval, timeout_s=1.0)
         match outcome:
@@ -540,6 +551,7 @@ async def test_signal_timeout_fires_on_db_clock(
                 return approval
             case Expired():
                 # the expiry member is the typed face; the raise is its own.
+                doors.append(outcome.abandoned_by)
                 raise SignalTimeoutError(
                     "the hold expired — this body treats the expiry as the failure"
                 )
@@ -575,6 +587,11 @@ async def test_signal_timeout_fires_on_db_clock(
         f"{[dict(r) for r in epochs]} — the wait site must RAISE, never "
         "mint an automatic new epoch"
     )
+    # the timeout door's own member: every Expired the sweep's row
+    # produced carries abandoned_by="timeout" (the sweep's rows carry no
+    # marker — the member's default IS the timeout door; an operator
+    # marker leaking here would mean the doors' records crossed).
+    assert doors and set(doors) == {"timeout"}, doors
 
 
 # ── the cancel cascade + the hold→resume band ───────────────────────────
@@ -779,3 +796,416 @@ async def test_resolve_delivers_through_a_non_canonical_id_spelling(
         "WHERE action = 'hitl.resolve' ORDER BY id DESC LIMIT 1"
     )
     assert pointer is not None and pointer["target_id"] == str(holds[0].hold_id), pointer
+
+
+# ── the operator abandon door (SignalAbandonedError's reachable use) ────
+
+
+async def test_operator_abandon_resumes_the_node_and_the_wait_sees_the_operator_door(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The operator door, end to end: ``HitlClient.abandon`` lands the
+    SAME DEFINED ``abandoned`` state the expiry sweep writes — with the
+    DOOR MARKER (``abandoned_by='operator'``) riding the row's payload
+    jsonb — resumes the node, and the resumed wait returns the
+    ``Expired`` member carrying ``abandoned_by="operator"``. A
+    marker-less abandoned row (the sweep's) is the timeout door: this
+    marker is the only thing that tells the doors apart."""
+    from taskq.workflows import Expired
+
+    doors: list[str] = []
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+        outcome = await ctx.wait_signal(Approval, timeout_s=120.0)
+        match outcome:
+            case Approval() as approval:
+                return approval
+            case Expired() as expired:
+                doors.append(expired.abandoned_by)
+                return {"fail_closed_on": expired.abandoned_by}
+
+    flow_id, runner, node_id = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="abandon_door_flow"
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    (hold,) = await client.list(run=flow_id)
+    result = await client.abandon(hold.hold_id, reason="the operator's stop", principal="op-7")
+    assert result.status == "delivered", result
+    # the row: the abandoned state + the operator door's marker.
+    row = await wf_conn.fetchrow(
+        f"SELECT status, payload->>'abandoned_by' AS door FROM \"{wf_schema}\".wf_signals "
+        "WHERE id = $1",
+        uuid_module.UUID(hold.hold_id),
+    )
+    assert row is not None and row["status"] == "abandoned", row
+    assert row["door"] == "operator", (
+        f"the operator abandon's marker is not on the row: {dict(row)} — the door "
+        "is indistinguishable from the sweep's (the false contract again)"
+    )
+    # the held representation cleared — the node re-pends.
+    node_status = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', node_id
+    )
+    assert node_status == "pending", node_status
+    # the resumed wait: the Expired member carries the operator door.
+    await runner.drive(flow_id, max_ticks=40)
+    assert doors == ["operator"], doors
+    flow_result = await runner.result(flow_id)
+    assert flow_result == {"fail_closed_on": "operator"}, flow_result
+
+
+async def test_body_wants_the_operator_failure_raises_signal_abandoned_off_the_arm(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The escalation-ladder shape (the value-not-machinery law at the
+    operator door): the body that WANTS the operator abandon to be a
+    FAILURE raises :class:`taskq.exceptions.SignalAbandonedError` ITSELF
+    off the ``Expired(abandoned_by="operator")`` member — the machinery
+    never raises it. The node ladders and terminal-fails, and NO new
+    epoch is ever minted (hold → abandon → re-hold → ∞ is the rejected
+    dragon)."""
+    from taskq.exceptions import SignalAbandonedError, SignalTimeoutError
+    from taskq.workflows import Expired
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+        outcome = await ctx.wait_signal(Approval, timeout_s=120.0)
+        match outcome:
+            case Approval() as approval:
+                return approval
+            case Expired() as expired:
+                if expired.abandoned_by == "operator":
+                    raise SignalAbandonedError(
+                        "the operator abandoned this wait — that is the failure"
+                    )
+                raise SignalTimeoutError("the hold timed out")
+
+    flow_id, runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="abandon_escalation_flow"
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    (hold,) = await client.list(run=flow_id)
+    result = await client.abandon(hold.hold_id, principal="op-7")
+    assert result.status == "delivered", result
+    await runner.drive(flow_id, max_ticks=40)
+    root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
+    assert root == "failed", (
+        f"the body's own SignalAbandonedError never reached the ladder: the flow is {root!r}"
+    )
+    rows = await wf_conn.fetch(
+        f'SELECT status, hold_epoch FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(rows) == 1 and rows[0]["status"] == "abandoned", (
+        f"the abandoned hold RE-HELD (a new epoch): {[dict(r) for r in rows]} — "
+        "the wait site must return the member, never mint an automatic re-hold"
+    )
+
+
+async def test_an_abandon_reason_with_a_nul_byte_is_the_typed_refusal(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The reason's wire shape (the NUL's own refusal — the discipline
+    the admin routes' jsonb-bind checks keep): a reason carrying a NUL
+    byte cannot ride the CAS's jsonb bind. The TYPED refusal, audited,
+    the hold SURVIVES — never a ValueError from the serializer's bind
+    crashing the caller."""
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+        return await ctx.wait_signal(Approval, timeout_s=120.0)
+
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="abandon_nul_flow"
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    (hold,) = await client.list(run=flow_id)
+    result = await client.abandon(hold.hold_id, reason="poisoned\x00reason", principal="op-7")
+    assert result.status == "refused", result
+    assert "NUL" in str(result.reason), result
+    status = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".wf_signals WHERE id = $1',
+        uuid_module.UUID(hold.hold_id),
+    )
+    assert status == "held", f"the refused abandon moved the hold: {status!r}"
+
+
+async def test_second_abandon_is_a_defined_no_op(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """Idempotence: the second abandon of an operator-abandoned hold is
+    the DEFINED no-op (the CAS is the fence — nothing moves twice, no
+    second audit row, no second knock)."""
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+        return await ctx.wait_signal(Approval, timeout_s=120.0)
+
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="abandon_noop_flow"
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    (hold,) = await client.list(run=flow_id)
+    first = await client.abandon(hold.hold_id, principal="op-7")
+    assert first.status == "delivered", first
+    second = await client.abandon(hold.hold_id, principal="op-7")
+    assert second.status == "no-op", second
+    audits = await wf_conn.fetchval(
+        f"SELECT count(*) FROM \"{wf_schema}\".admin_audit WHERE action = 'hitl.abandon' "
+        "AND target_id = $1",
+        hold.hold_id,
+    )
+    assert audits == 1, f"the no-op wrote a second audit row: {audits}"
+
+
+async def test_delivered_holds_abandon_is_refused(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A DELIVERED hold refuses the abandon: the operator's answer
+    already landed — the door cannot fail-close a wait that is no longer
+    waiting, and the delivered row stands."""
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+        return await ctx.wait_signal(Approval, timeout_s=120.0)
+
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="abandon_delivered_flow"
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    (hold,) = await client.list(run=flow_id)
+    resolved = await client.resolve(hold.hold_id, {"verdict": "approve"}, principal="op-7")
+    assert resolved.status == "delivered", resolved
+    refused = await client.abandon(hold.hold_id, principal="op-7")
+    assert refused.status == "refused", refused
+    status = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".wf_signals WHERE id = $1',
+        uuid_module.UUID(hold.hold_id),
+    )
+    assert status == "delivered", status
+
+
+async def test_sweep_abandoned_holds_abandon_is_refused(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A sweep-abandoned (expired) hold refuses the abandon: the
+    marker-less row reads as the timeout door — the deadline already
+    fail-closed the wait, the operator's abandon has nothing to add.
+    (An OPERATOR-abandoned hold's second abandon is the no-op — the
+    door marker is the difference.)"""
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+        return await ctx.wait_signal(Approval, timeout_s=120.0)
+
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="abandon_expired_flow"
+    )
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
+    abandoned = await sweep_expired_signals(wf_pool, schema=wf_schema)
+    assert abandoned == 1
+    client = HitlClient(wf_pool, schema=wf_schema)
+    hold_id = await wf_conn.fetchval(
+        f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
+    )
+    refused = await client.abandon(str(hold_id), principal="op-7")
+    assert refused.status == "refused", refused
+    assert "sweep" in str(refused.reason), refused
+
+
+async def test_timer_holds_abandon_is_refused_and_the_hold_survives(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE TIMER REFUSAL: a hold under the reserved ``__timer__`` prefix
+    refuses the abandon — the clock is its only resolver (the timer wait
+    site has no abandoned arm: a deadline pass is the WAKE, never the
+    fail-close). Refused: the hold SURVIVES, nothing is written."""
+    from taskq.workflows.api._hitl import TIMER_SIGNAL_PREFIX
+
+    async def timer_body(ctx: StepContext, params: Ingest) -> str:
+        await ctx.wait_until(3600.0, key="remind")
+        return "woken"
+
+    app = WorkflowApp()
+
+    @app.workflow("abandon_timer_flow")
+    def timer_flow() -> Promise[object]:
+        return build(step(timer_body, Ingest(doc_id="d1"), key="timer_node"))
+
+    runner = FlowRunner(app.get("abandon_timer_flow"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    await runner.drive(flow_id, until="held")
+    hold = await wf_conn.fetchrow(
+        f'SELECT id, signal_name, status FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY id DESC LIMIT 1",
+        flow_id,
+    )
+    assert hold is not None, "the timer hold never registered"
+    assert hold["signal_name"].startswith(TIMER_SIGNAL_PREFIX), (
+        f"the arrangement's guard: this hold must be the clock's — {dict(hold)}"
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    result = await client.abandon(str(hold["id"]), reason="an operator's mistake", principal="op-7")
+    assert result.status == "refused", result
+    assert "timer" in str(result.reason), result
+    after = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".wf_signals WHERE id = $1', hold["id"]
+    )
+    assert after == "held", f"the refused abandon moved the hold: {after!r}"
+
+
+async def test_child_join_holds_abandon_returns_expired(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """CHILD-JOIN HOLDS ARE ALLOWED (the abandon is a stop-wait, not a
+    verdict): the operator abandon lands on the join hold, the parent's
+    body resumes, and the childflow wait's abandoned arm returns the
+    ``Expired`` member carrying the operator door — the parent
+    fail-closes while the child keeps running (the child's probe holds
+    on its own signal — nobody answers it; its rows are its own
+    flow's)."""
+    from taskq.workflows import ChildCancelled, ChildFailed, ChildOk, Expired
+
+    class SubProbe(BaseModel):
+        doc_id: str
+
+    class SubReport(BaseModel):
+        findings: list[str]
+
+    child_app = WorkflowApp()
+
+    @child_app.actor(queue="cpu", max_attempts=1)
+    async def probe(ctx: StepContext) -> SubReport:
+        # the child stays LIVE: its own wait holds (nobody answers it) —
+        # the join's abandon must not need the child terminal either way.
+        outcome = await ctx.wait_signal(Approval, timeout_s=120.0)
+        assert isinstance(outcome, Approval)
+        probe_input = SubProbe.model_validate(ctx.input)
+        return SubReport(findings=[f"found:{probe_input.doc_id}:{outcome.verdict}"])
+
+    @child_app.workflow("abandon_join_chil")
+    def child_wf() -> Promise[object]:
+        return build(step(probe, key="probe"))
+
+    child_app.get("abandon_join_chil")  # the compile registry (the spawn's door)
+
+    doors: list[str] = []
+
+    async def parent_body(ctx: StepContext, params: Ingest) -> Any:
+        handle = await ctx.spawn_flow(
+            "abandon_join_chil", input=SubProbe(doc_id="d1"), result=SubReport
+        )
+        outcome = await handle.wait(timeout_s=120.0)
+        match outcome:
+            case ChildOk():
+                return {"child": "ok"}
+            case ChildFailed() | ChildCancelled():
+                return {"child": "dead"}
+            case Expired() as expired:
+                doors.append(expired.abandoned_by)
+                return {"fail_closed_on": expired.abandoned_by}
+
+    app = WorkflowApp()
+
+    @app.workflow("abandon_join_parent")
+    def parent_wf() -> Promise[object]:
+        return build(step(parent_body, Ingest(doc_id="d1"), key="spawn_join"))
+
+    runner = FlowRunner(app.get("abandon_join_parent"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    await runner.drive(flow_id, until="held")
+    join_hold = await wf_conn.fetchval(
+        f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1 '
+        "AND signal_name LIKE '__child__:%'",
+        flow_id,
+    )
+    assert join_hold is not None, "the join hold never registered"
+    join_status = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".wf_signals WHERE id = $1', join_hold
+    )
+    assert join_status == "held", (
+        f"the arrangement's guard: the join hold must still be held (the child is live) — {join_status!r}"
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    result = await client.abandon(str(join_hold), principal="op-7")
+    assert result.status == "delivered", (
+        f"the child-join hold's abandon must be ALLOWED (a stop-wait, not a verdict): {result}"
+    )
+    await runner.drive(flow_id, max_ticks=40)
+    assert doors == ["operator"], doors
+    flow_result = await runner.result(flow_id)
+    assert flow_result == {"fail_closed_on": "operator"}, flow_result
+    # the child kept running: its own hold row still stands.
+    child_hold = await wf_conn.fetchval(
+        f"SELECT status FROM \"{wf_schema}\".wf_signals WHERE signal_name = 'Approval' "
+        "AND status = 'held'"
+    )
+    assert child_hold is not None, "the child's own hold did not survive the join's abandon"
+
+
+async def test_abandon_audit_and_operator_door_broadcast_are_witnessed(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+) -> None:
+    """The abandon's legs are WITNESSED, not asserted from types: the
+    ``hitl.abandon`` audit row (the hold target, the reason, the
+    run/signal detail) and the ``taskq_wf_hold_expired`` broadcast
+    carrying ``abandoned_by="operator"`` (the pointer-only payload —
+    the row is the truth)."""
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=_wait_body, name="abandon_witness_flow"
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    (hold,) = await client.list(run=flow_id)
+    knocks: list[str] = []
+    listen_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+    await listen_conn.add_listener(
+        HOLD_EXPIRED_CHANNEL, lambda *a: knocks.append(str(a[3]) if len(a) > 3 else str(a))
+    )
+    result = await client.abandon(hold.hold_id, reason="the operator's stop", principal="op-7")
+    assert result.status == "delivered", result
+    await asyncio.sleep(0.2)
+    await listen_conn.close()
+    assert knocks, "the abandon's broadcast never fired"
+    knock = json.loads(knocks[0])
+    assert knock["abandoned_by"] == "operator", knock
+    assert knock["hold_id"] == hold.hold_id
+    assert knock["flow_id"] == str(flow_id)
+    audit = await wf_conn.fetchrow(
+        f'SELECT action, target_type, target_id, reason, detail FROM "{wf_schema}".admin_audit '
+        "WHERE action = 'hitl.abandon' ORDER BY id DESC LIMIT 1"
+    )
+    assert audit is not None, "an abandon without an audit row reds"
+    assert audit["target_type"] == "hold"
+    assert audit["target_id"] == hold.hold_id
+    assert audit["reason"] == "the operator's stop"
+    detail = json.loads(audit["detail"]) if isinstance(audit["detail"], str) else audit["detail"]
+    assert detail["run_id"] == str(flow_id)
+    assert detail["signal"] == "Approval"
+
+
+async def test_sweep_broadcast_names_the_timeout_door(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+) -> None:
+    """The sweep's broadcast carries ``abandoned_by="timeout"`` — the
+    typed consumer reads the timeout face off the event alone; the
+    operator door's broadcast reads ``"operator"``. No behavior change
+    for the timeout door: the marker only NAMES the door that was always
+    the sweep's."""
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=_wait_body, name="timeout_broadcast_flow"
+    )
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
+    knocks: list[str] = []
+    listen_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+    await listen_conn.add_listener(
+        HOLD_EXPIRED_CHANNEL, lambda *a: knocks.append(str(a[3]) if len(a) > 3 else str(a))
+    )
+    abandoned = await sweep_expired_signals(wf_pool, schema=wf_schema)
+    assert abandoned == 1
+    await asyncio.sleep(0.2)
+    await listen_conn.close()
+    assert knocks, "the sweep's broadcast never fired"
+    knock = json.loads(knocks[0])
+    assert knock["abandoned_by"] == "timeout", knock

@@ -484,6 +484,10 @@ async def test_deep_research_expiry_fail_close(
     assert isinstance(result, dict)
     assert result["status"] == "finished_with_what_you_have", result
     assert len(result["notes"]) == 3, result  # the free passes stand; nothing invented
+    # the sweep's typed event names the TIMEOUT door (the operator
+    # abandon's event reads "operator" — the same member, the door
+    # carried).
+    assert expired.abandoned_by == "timeout", expired
 
 
 async def _expired_for(listener: HitlListener, run_id: str) -> Any:
@@ -492,6 +496,43 @@ async def _expired_for(listener: HitlListener, run_id: str) -> Any:
         if event.event == "hold_expired" and event.run_id == run_id:
             return event
     return None
+
+
+async def test_operator_abandon_delivers_hold_expired_with_the_operator_door(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The operator door's typed broadcast: ``HitlClient.abandon`` fires
+    the ``HoldExpired`` event carrying ``abandoned_by="operator"`` — the
+    same event the sweep sends with ``"timeout"`` (the event announces
+    the DEFINED abandoned state, whichever door wrote it; the wait's
+    outcome is the ``Expired`` member carrying the same door)."""
+    from taskq.workflows.api._hitl import HitlClient as _Client
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> str:
+        outcome = await ctx.wait_signal(Approval, timeout_s=120.0)
+        assert isinstance(outcome, Approval)
+        return "answered"
+
+    app = WorkflowApp()
+
+    @app.workflow("pubsub_abandon_flow")
+    def pubsub_abandon_flow() -> Promise[object]:
+        return build(step(hold_body, Ingest(doc_id="d1"), key="review"))
+
+    listener = HitlListener(wf_pool, wf_schema)
+    async with listener:
+        runner = FlowRunner(app.get("pubsub_abandon_flow"), wf_pool, wf_schema)
+        flow_id = (await runner.create_flow()).flow_id
+        await runner.drive(flow_id, until="held")
+        client = _Client(wf_pool, schema=wf_schema)
+        (hold,) = await client.list(run=flow_id)
+        result = await client.abandon(hold.hold_id, reason="the operator's stop", principal="op-7")
+        assert result.status == "delivered", result
+        expired = await asyncio.wait_for(_expired_for(listener, str(flow_id)), timeout=5.0)
+        assert expired is not None and expired.hold_id == hold.hold_id, (
+            "the abandon door's HoldExpired never delivered"
+        )
+        assert expired.abandoned_by == "operator", expired
 
 
 # ── the expiry-as-value-P5: the expiry inside a loop's hold — the escalation leg ────────

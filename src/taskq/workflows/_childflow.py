@@ -271,10 +271,14 @@ class ChildHandle[G: BaseModel]:
                     return ChildCancelled(flow_id=str(self.flow_id))
 
                     # the Expired member, once per abandoned row per attempt (the face
-            # marker).
+            # marker). the door marker rides the read: the sweep's rows read
+            # 'timeout', the operator abandon's payload marker reads
+            # 'operator' (the same member either way — the fail-close).
             abandoned = await conn.fetchrow(
                 render_sql(
-                    "SELECT id, hold_epoch FROM {schema}.wf_signals "
+                    "SELECT id, hold_epoch, "
+                    "COALESCE(payload->>'abandoned_by', 'timeout') AS abandoned_by "
+                    "FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
                     "AND status = 'abandoned' ORDER BY hold_epoch DESC LIMIT 1",
                     site.wsql.schema,
@@ -307,6 +311,7 @@ class ChildHandle[G: BaseModel]:
                         signal=signal_name,
                         node_key=site.node_key,
                         hold_id=str(abandoned["id"]),
+                        abandoned_by=str(abandoned["abandoned_by"]),  # pyright: ignore[reportArgumentType]  # Why: the row's COALESCE vocabulary is the writer's own closed pair ('timeout'/'operator') — the member's Literal re-validates it.
                     )
 
                     # this join already registered (the resume's re-execution before

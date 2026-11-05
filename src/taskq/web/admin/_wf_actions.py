@@ -1,6 +1,7 @@
 """The workflow-run explorer's MACHINE routes: the node panel API,
 the SSE node_state stream (the revisioned-snapshot replay), and the
-typed actions (deliver / resolve / cancel — each guarded, each audited).
+typed actions (deliver / resolve / abandon / cancel — each guarded, each
+audited).
 
 The pages live in ``workflows``; the split is the read/write concern
 boundary (the same shape the jobs page + backend routes keep).
@@ -1265,6 +1266,78 @@ def register_actions(router: APIRouter) -> None:
             reason=reason,
             principal=principal,
         )
+        return {"status": result.status, "reason": result.reason}
+
+    @router.post("/api/runs/{run_id}/abandon")
+    async def run_abandon(  # pyright: ignore[reportUnusedFunction]
+        run_id: uuid.UUID,
+        request: Request,
+        _actions: None = Depends(require_actions_enabled),
+        _csrf: None = Depends(validate_csrf),
+        pool: BoundedPool = Depends(get_admin_pool),
+        schema: str = Depends(get_schema),
+        principal: Any = Depends(get_principal),
+    ) -> dict[str, Any]:
+        """Abandon a hold by id (the OPERATOR DOOR; the audit row): the
+        wait fails closed on its next drive — the body sees the
+        ``Expired`` member carrying ``abandoned_by="operator"``.
+
+        The resolve route's guards WITHOUT the payload gate: an abandon
+        is a stop-wait, never a verdict — there is no decision to
+        validate, so no typed-gate pass and no mounted-definitions
+        requirement. Timer holds are refused (the clock is their only
+        resolver — the client's own refusal, audited there); the audit
+        row rides the client's own winning tx under THIS route's
+        principal — the route never double-audits."""
+        body = await _form_body(request)
+        hold_id = body.get("hold_id")
+        reason = body.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            raise HTTPException(status_code=400, detail="reason must be a string")
+        if not isinstance(hold_id, str):
+            raise HTTPException(
+                status_code=400,
+                detail="the abandon needs {'hold_id': str, 'reason'?: str}",
+            )
+        from taskq.workflows.api._hitl import (
+            HitlClient,
+            _as_hold_id,  # pyright: ignore[reportPrivateUsage]  # Why: the id's canonical form is the hold module's own normalizer — the refusal's audit pointer carries the form the operator's queries match.
+        )
+
+        # The id's shape is the door's own check (the resolve route's
+        # arm): a malformed hold id is an audited 400 (the caller's
+        # typo), never a 500 from the canonicalizer's parse escaping the
+        # action.
+        try:
+            canonical_hold_id = str(_as_hold_id(hold_id))
+        except ValueError:
+            from taskq.web.admin._audit import record_admin_action
+
+            async with pool.acquire() as conn:
+                await record_admin_action(
+                    conn,
+                    schema=schema,
+                    principal=principal,
+                    action="hitl.abandon",
+                    target_type="hold",
+                    target_id=hold_id,
+                    reason=reason,
+                    detail={
+                        "refused": "the hold id is not a valid id",
+                        "node": "unknown",
+                        "stage": "admin-payload-gate",
+                        "run_id": str(run_id),
+                    },
+                )
+            raise HTTPException(status_code=400, detail="the hold id is not a valid id") from None
+
+        client = HitlClient(pool.pool, schema=schema)
+        hold = await client.get(canonical_hold_id)
+        if hold is None or hold.run_id != str(run_id):
+            raise HTTPException(status_code=404, detail="Hold not found on this run")
+        # the abandon (the audit row rides the client's own tx — the
+        # principal is THIS route's, never a second row from here).
+        result = await client.abandon(canonical_hold_id, reason=reason, principal=principal)
         return {"status": result.status, "reason": result.reason}
 
     @router.post("/api/runs/{run_id}/deliver")

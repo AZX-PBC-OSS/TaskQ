@@ -149,18 +149,23 @@ class HoldResolved(BaseModel):
 
 
 class HoldExpired(BaseModel):
-    """A hold's deadline passed the DB clock and the sweep abandoned it
-    — the wait's outcome is the CLOSED UNION's ``Expired`` MEMBER, not
-    an exception: the body MATCHES ``case Expired():`` (the fail-close
-    arm the checker forces; a body that wants the FAILURE raises
-    ``SignalTimeoutError`` ITSELF off the member — the machinery never
-    raises)."""
+    """A hold landed in the DEFINED ``abandoned`` state — whichever door
+    wrote it: the sweep (the deadline passed the DB clock) or the
+    operator's abandon (``HitlClient.abandon``). ``abandoned_by`` names
+    the door (``"timeout"`` — the sweep's broadcast; ``"operator"`` —
+    the abandon door's). The wait's outcome is the CLOSED UNION's
+    ``Expired`` MEMBER, not an exception: the body MATCHES ``case
+    Expired():`` (the fail-close arm the checker forces; a body that
+    wants the FAILURE raises ``SignalTimeoutError`` — or, for the
+    operator door, ``SignalAbandonedError`` — ITSELF off the member,
+    which carries the same door; the machinery never raises)."""
 
     event: Literal["hold_expired"] = "hold_expired"
     hold_id: str
     run_id: str
     signal: str
     node_key: str
+    abandoned_by: Literal["timeout", "operator"] = "timeout"
 
 
 class Backfilled(BaseModel):
@@ -388,10 +393,15 @@ class HitlListener(_BroadcastListener[HoldEvent]):
                 verdict_kind=verdict_kind if isinstance(verdict_kind, str) else None,
             )
         if channel == HOLD_EXPIRED_CHANNEL:
+            # the door marker: the sweep's broadcast names 'timeout', the
+            # abandon door's 'operator'; a foreign/legacy payload without
+            # the marker reads as the sweep's (the default).
+            is_operator = doc.get("abandoned_by") == "operator"
             return HoldExpired(
                 hold_id=hold_id,
                 run_id=run_id,
                 signal=str(doc.get("signal", "")),
                 node_key=str(doc.get("node_key", "")),
+                abandoned_by="operator" if is_operator else "timeout",
             )
         return None

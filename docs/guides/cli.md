@@ -1328,6 +1328,7 @@ The workflow-run surface: **one question, one command** — each verb answers ex
 | What is this run waiting on? | `taskq flows holds <run_id>` |
 | Deliver a typed signal (by run + node)? | `taskq flows signal <run_id> <node> '<json>' --app myapp.workflows:app` |
 | Reply to a hold BY ID? | `taskq flows resolve <hold_id> '<json>' --app myapp.workflows:app` |
+| Abandon a hold BY ID (the wait fails closed — the body sees `Expired`)? | `taskq flows abandon <hold_id> [--reason TEXT]` |
 | Stop the run? | `taskq flows cancel <run_id> [--reason TEXT]` |
 | Re-run a failed node (the manual resume)? | `taskq flows retry <run_id> <node> [--reason TEXT]` |
 
