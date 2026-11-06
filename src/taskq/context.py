@@ -119,6 +119,7 @@ class JobContext[P: BaseModel]:
     _tx_unwind_task: asyncio.Task[object] | None = None
     _actor_body_task: asyncio.Task[object] | None = None
     _actor_body_finished_at: float | None = None
+    _actor_body_outcome: tuple[object, BaseException | None] | None = None
     _tx_rollback_collision_window: bool = False
 
     @property
@@ -224,15 +225,38 @@ class JobContext[P: BaseModel]:
         if self._actor_body_finished_at is None or when < self._actor_body_finished_at:
             object.__setattr__(self, "_actor_body_finished_at", when)
 
-    def _reset_actor_body_finished_at(self) -> None:
-        """Clear the body finish stamp. Called by the start_to_close
-        enforcement before arming a fresh deadline, never by actor code:
-        the stamp is per-attempt state, and a previous attempt's finish
-        (or an unenforced sync body's) must not answer this attempt's
-        expiry check. ``object.__setattr__`` because the dataclass is
-        frozen; exactly as the other stamps do.
+    def _record_actor_body_outcome(self, value: object, exc: BaseException | None) -> None:
+        """Record the actor body's own outcome: the returned value, or the
+        exception the body raised (the sync thread's ``SystemExit``
+        already carried, so the loop is never asked to re-raise the pair
+        bare). Called by the sync dispatch's thread body — the one writer
+        — alongside its finish stamp (the outcome first), never by actor
+        code.
+
+        The deadline's rescue reads this record when the deadline's
+        cancel landed on a body task whose thread had already finished:
+        the task's own ``result()`` is a CancelledError in that state,
+        and the thread's recorded outcome is the only truthful answer.
+        The JobContext is constructed per claim (per attempt), and the
+        enforcement resets the record with the finish stamp before
+        arming, so no attempt can read a prior attempt's outcome.
+        ``object.__setattr__`` because the dataclass is frozen; the
+        record is consumer state that arrives after construction, exactly
+        as the stamps and handles do.
+        """
+        object.__setattr__(self, "_actor_body_outcome", (value, exc))
+
+    def _reset_actor_body_attempt_record(self) -> None:
+        """Clear the body's per-attempt record (the finish stamp and the
+        outcome). Called by the start_to_close enforcement before arming
+        a fresh deadline, never by actor code: the JobContext is
+        constructed per claim (per attempt), and the reset makes the
+        guarantee explicit even so — no attempt can read a prior
+        attempt's finish or outcome. ``object.__setattr__`` because the
+        dataclass is frozen; exactly as the other stamps do.
         """
         object.__setattr__(self, "_actor_body_finished_at", None)
+        object.__setattr__(self, "_actor_body_outcome", None)
 
     def _set_tx_rollback_collision_window(self) -> None:
         """Stamp the tx path's rollback-collision window as OPEN. Called by

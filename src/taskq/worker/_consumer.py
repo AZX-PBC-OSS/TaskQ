@@ -1712,20 +1712,24 @@ class _DeadlineEnforcementCtx(Protocol):
     #: enforcement's body frame and — on the vanilla carrier — by the sync
     #: dispatch's thread body; reset per attempt before arming. Read-only
     #: on this face (a frozen dataclass's attribute) — the writers are the
-    #: two methods below.
+    #: methods below.
     @property
     def _actor_body_finished_at(self) -> float | None: ...
 
-    #: The sync carrier's executor-thread task (the handle the dispatch
-    #: stashes): when the deadline's cancel lands one loop step after the
-    #: thread finished, the body task ends cancelled while the thread task
-    #: holds the body's own outcome. None on the wf face (no sync carrier).
+    #: The body's own outcome — ``(value, exc)`` — written by the sync
+    #: dispatch's thread body before its finish stamp (the vanilla face
+    #: alone; the wf body has no sync carrier and carries None). The
+    #: rescue reads it when the deadline's cancel landed on a body task
+    #: whose thread had already finished: the task's own ``result()`` is
+    #: then a CancelledError and the record is the only truthful answer.
     @property
-    def _sync_actor_task(self) -> asyncio.Task[object] | None: ...
+    def _actor_body_outcome(self) -> tuple[object, BaseException | None] | None: ...
 
     def _record_actor_body_finished_at(self, when: float) -> None: ...
 
-    def _reset_actor_body_finished_at(self) -> None: ...
+    def _record_actor_body_outcome(self, value: object, exc: BaseException | None) -> None: ...
+
+    def _reset_actor_body_attempt_record(self) -> None: ...
 
     def _set_actor_body_task(self, task: asyncio.Task[object]) -> None: ...
 
@@ -1865,10 +1869,11 @@ async def _enforce_start_to_close(
             # the earliest-wins rule keeps it.
             ctx._record_actor_body_finished_at(loop.time())
 
-    # Per-attempt stamp hygiene: clear any previous attempt's (or an
-    # unenforced sync body's) finish before arming this attempt's
-    # deadline, so the expiry check below can never read a stale finish.
-    ctx._reset_actor_body_finished_at()
+    # Per-attempt record hygiene: clear any previous attempt's (or an
+    # unenforced sync body's) finish stamp and outcome before arming this
+    # attempt's deadline, so the expiry check below can never read a
+    # stale record.
+    ctx._reset_actor_body_attempt_record()
     body_task: asyncio.Task[object] = asyncio.ensure_future(_body())
     ctx._set_actor_body_task(body_task)  # pyright: ignore[reportPrivateUsage]  # Why: the deadline enforcement is the designated writer of the body-task handle (see the setter's contract).
 
@@ -1965,19 +1970,22 @@ async def _enforce_start_to_close(
             if body_task.cancelled():
                 # The deadline's cancel was delivered into a task whose
                 # body had already finished: the sync carrier's thread
-                # completed inside the deadline and the stall let _fire's
-                # cancel land one loop step before the coroutine's own
-                # completion. The body's own outcome is the executor
-                # thread task's (the handle the sync dispatch stashed):
-                # its result() surfaces the value, or re-raises the
-                # carrier / the body's own exception as the ordinary
-                # outcome it is. (The async carrier cannot be cancelled
-                # with an in-time stamp: only _fire cancels, and a frame
-                # that ended before the deadline already completed the
-                # task -- the cancel is a no-op then.)
-                sync_task = ctx._sync_actor_task
-                if sync_task is not None and sync_task.done():
-                    return sync_task.result()
+                # completed inside the deadline and the cancel outran the
+                # coroutine's own completion (a stall can hold the loop
+                # across the boundary). The body's own outcome is the
+                # thread's recorded one -- return its value or re-raise
+                # its exception (the carrier / its own exception) as the
+                # ordinary outcome it is. A missing record cannot happen
+                # (the thread records before its stamp; the stamp is the
+                # rescue's precondition), so the defensive arm is the
+                # truthful timeout -- never a cancelled read.
+                record = ctx._actor_body_outcome
+                if record is None:
+                    raise _StartToCloseExceededError from None
+                value, exc = record
+                if exc is not None:
+                    raise exc
+                return value
             return body_task.result()
         # The deadline won the race. The body may have finished in the
         # same loop iteration (its outcome is raced out and discarded),

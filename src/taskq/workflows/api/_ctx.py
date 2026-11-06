@@ -168,10 +168,12 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     # frame writes it here; the earliest-wins setter and the pre-arming
     # reset keep the contract identical to the vanilla ctx's.
     _actor_body_finished_at: float | None = None
-    # the sync carrier's executor-thread task — no wf carrier exists (the
-    # wf body never runs in an executor thread), so this stays None; the
-    # enforcement's protocol reads it on the vanilla face alone.
-    _sync_actor_task: asyncio.Task[object] | None = None
+    # the body's own outcome — (value, exc) — the vanilla face's sync
+    # dispatch writes it from the executor thread; the wf body has no
+    # sync carrier, so this stays None unless the enforcement's own body
+    # frame writes one (it does not: the wf rescue's cancelled arm has no
+    # writer here and falls to the truthful timeout).
+    _actor_body_outcome: tuple[object, BaseException | None] | None = None
 
     def _set_actor_body_task(self, task: asyncio.Task[object]) -> None:
         """Record the deadline-enforced body task. Called by the
@@ -209,13 +211,25 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         if self._actor_body_finished_at is None or when < self._actor_body_finished_at:
             object.__setattr__(self, "_actor_body_finished_at", when)
 
-    def _reset_actor_body_finished_at(self) -> None:
-        """Clear the body finish stamp. Called by the start_to_close
-        enforcement before arming a fresh deadline, never by body code:
-        the stamp is per-attempt state. ``object.__setattr__`` because
-        the dataclass is frozen; exactly as the other stamps do.
+    def _record_actor_body_outcome(self, value: object, exc: BaseException | None) -> None:
+        """Record the body's own outcome — (value, exc). Called by the
+        sync dispatch's thread body on the vanilla face; the wf face has
+        no sync carrier, so nothing writes it here (see the field's
+        comment), never by body code. Same contract as the vanilla
+        ``JobContext``'s: per attempt, reset with the stamp before
+        arming. ``object.__setattr__`` because the dataclass is frozen;
+        exactly as the other stamps do.
+        """
+        object.__setattr__(self, "_actor_body_outcome", (value, exc))
+
+    def _reset_actor_body_attempt_record(self) -> None:
+        """Clear the body's per-attempt record (the finish stamp and the
+        outcome). Called by the start_to_close enforcement before arming
+        a fresh deadline, never by body code. ``object.__setattr__``
+        because the dataclass is frozen; exactly as the other stamps do.
         """
         object.__setattr__(self, "_actor_body_finished_at", None)
+        object.__setattr__(self, "_actor_body_outcome", None)
 
     @property
     def map_index(self) -> int | None:
