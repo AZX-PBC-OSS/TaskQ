@@ -560,7 +560,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "_ABANDON_CAS_SQL": (
         "WHERE id = $1",
-        "keyed single hold row (the operator abandon CAS — the reply handle; "
+        "keyed single hold row (the operator abandon CAS: the reply handle; "
         "the status leg gates the transition)",
     ),
     # ── The progress channels (the progress reporting decision d): the two-channel write set
