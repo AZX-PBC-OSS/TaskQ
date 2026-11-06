@@ -147,21 +147,29 @@ async def _run_loop_until(ctx: SweepContext, done: Callable[[], bool]) -> None:
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the sweep loop directly, matching test_leader_sweep_rl_registry.py's pattern.
+    body_exc: BaseException | None = None
     try:
         for _ in range(200):
             if done():
                 break
             await asyncio.sleep(0.01)
+    except BaseException as exc:
+        body_exc = exc
+        raise
     finally:
-        # Graceful stop first (the interval is 0.05s; 5s covers a tick's
-        # work); cancel only if the grace expires.
+        # Graceful stop first (the interval is 0.05s; the 30s grace sits
+        # well above the dispatcher command timeout and far under the
+        # test timeout). The cleanup never masks the body's own error.
         shutdown.set()
         try:
-            await asyncio.wait_for(task, timeout=5.0)
+            await asyncio.wait_for(task, timeout=30.0)
         except TimeoutError:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        except BaseException:
+            if body_exc is None:
+                raise
 
 
 async def test_sweep_loop_drains_pending_reclaims_via_dispatcher_pool(

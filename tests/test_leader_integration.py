@@ -765,13 +765,27 @@ async def test_sweep_loop_transitions_deadline_exceeded_pending_job(
         leader = MaintenanceLeader(deps, worker_id, backend, clock=SystemClock())
         shutdown = asyncio.Event()
         task = asyncio.create_task(leader._sweep_loop(shutdown))
+        body_exc: BaseException | None = None
         try:
             await asyncio.sleep(0.5)
+        except BaseException as exc:
+            body_exc = exc
+            raise
         finally:
+            # Graceful stop: shutdown first so the current tick finishes
+            # (cancelling mid-tick detaches asyncpg's shielded pool
+            # release and leaks it). The 30s grace is well above the
+            # dispatcher command timeout and far under the test timeout.
             shutdown.set()
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            try:
+                await asyncio.wait_for(task, timeout=30.0)
+            except TimeoutError:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            except BaseException:
+                if body_exc is None:
+                    raise
 
         async with deps.dispatcher_pool.acquire() as conn:
             row = await conn.fetchrow(

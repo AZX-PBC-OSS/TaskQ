@@ -163,21 +163,30 @@ async def _run_loop_for_ticks(
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(_leader_sweeps._sweep_loop(ctx, shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the loop under test is the module's own.
+    body_exc: BaseException | None = None
     try:
         if until is not None:
             await asyncio.wait_for(until.wait(), timeout=ticks * _SWEEP_INTERVAL * 40)
         else:
             await asyncio.sleep(ticks * _SWEEP_INTERVAL)
+    except BaseException as exc:
+        body_exc = exc
+        raise
     finally:
-        # Grace of 5s: the interval is 0.05s, so one tick plus its DB work
-        # fits many times over, and the test timeout is 300s.
+        # Graceful stop: shutdown first so the current tick finishes;
+        # cancel only if the grace expires. The 30s grace sits well above
+        # the dispatcher command timeout (5s default) and far under the
+        # test timeout. The cleanup never masks the body's own error.
         shutdown.set()
         try:
-            await asyncio.wait_for(task, timeout=5.0)
+            await asyncio.wait_for(task, timeout=30.0)
         except TimeoutError:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        except BaseException:
+            if body_exc is None:
+                raise
 
 
 async def test_event_retention_runs_one_batch_per_tick_on_real_rows(
