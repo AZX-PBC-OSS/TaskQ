@@ -304,6 +304,39 @@ async def test_loop_supervisor_drains_on_the_survivor_path() -> None:
         await asyncio.wait_for(handles[0], timeout=3.0)
 
 
+async def test_loop_supervisor_drains_when_the_loop_itself_raises() -> None:
+    """The caller's drain runs even when the loop task ends with its own
+    exception, and the loop's error (not a drain failure) is what
+    surfaces: the body's error would take precedence over both."""
+    drain_ran = asyncio.Event()
+
+    async def _drain() -> None:
+        drain_ran.set()
+
+    async def _raising_loop(shutdown: asyncio.Event) -> object:
+        raise TimeoutError("loop's own timeout")
+
+    with pytest.raises(TimeoutError, match="loop's own timeout"):
+        async with managed_loop(_raising_loop, grace=30.0, drain=_drain):
+            await asyncio.sleep(0.001)
+    assert drain_ran.is_set(), "the caller's drain must run on the loop-error path"
+
+
+async def test_loop_supervisor_drain_failure_does_not_mask_the_loop_error() -> None:
+    """The precedence is body > loop > drain: the body succeeded, the
+    loop raised, and a failing drain must not replace the loop's error."""
+
+    async def _drain() -> None:
+        raise RuntimeError("drain failed")
+
+    async def _raising_loop(shutdown: asyncio.Event) -> object:
+        raise TimeoutError("loop's own timeout")
+
+    with pytest.raises(TimeoutError, match="loop's own timeout"):
+        async with managed_loop(_raising_loop, grace=30.0, drain=_drain):
+            await asyncio.sleep(0.001)
+
+
 async def test_event_retention_runs_one_batch_per_tick_on_real_rows(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:

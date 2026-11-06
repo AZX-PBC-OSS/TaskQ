@@ -89,6 +89,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import asyncpg
 import pytest
 
 from taskq.settings import WorkerSettings
@@ -1307,6 +1308,33 @@ async def test_guard_allows_the_real_asyncpg_release_tail() -> None:
     )
 
 
+async def test_guard_allows_a_release_completed_in_the_teardown_window() -> None:
+    """The allowlist covers the whole call-end residue: a real asyncpg
+    release that completes during a fixture's teardown, before the
+    guard's drain runs, is classified by the same predicate and allowed
+    (named in the warnings), not failed by the call-window report. The
+    same release is green whichever teardown hop completes it."""
+
+    async def body() -> None:
+        asyncio.create_task(  # noqa: RUF006  # Why: the task is the leak under test; the teardown window, then the drain, is its reaper.
+            asyncpg.pool.PoolConnectionHolder.release(object(), 5.0),
+            name="hygiene-early-release",
+        )
+
+    async def teardown_window() -> None:
+        # The release completes here (the duck holder errors it instantly,
+        # which is still a completion), before the guard's drain runs.
+        await asyncio.sleep(0.02)
+
+    item = await _drive_guarded_call(body, during_teardown_window=teardown_window)
+    sections = [
+        content for _, key, content in item.report_sections if key.startswith("leaked asyncio")
+    ]
+    assert sections and "hygiene-early-release" in sections[0], (
+        f"the early-completed release must be allowed and named: {item.report_sections}"
+    )
+
+
 async def test_guard_rejects_a_forged_asyncpg_shaped_release() -> None:
     """The allowlist is an identity, not a shape: a coroutine compiled
     under an asyncpg/pool.py filename with the same
@@ -1448,6 +1476,71 @@ async def test_guard_drains_a_task_and_the_child_it_spawns() -> None:
         await _drive_guarded_call(body)
     assert child_done.is_set(), "the drain must follow the spawned child to completion"
     assert "hygiene-spawner" in str(exc_info.value), str(exc_info.value)
+
+
+async def test_guard_leaves_an_unrelated_teardown_task_alone() -> None:
+    """The drain's ownership is causal: a call-owned leak drains (and
+    fails the test, not being a release tail) while an unrelated task
+    created by the teardown window runs untouched, because its ancestry
+    reaches none of the call-owned seeds."""
+    leak_done = asyncio.Event()
+    minted: list[asyncio.Task[None]] = []
+    teardown_tasks: list[asyncio.Task[None]] = []
+
+    async def body() -> None:
+        async def _leak() -> None:
+            await asyncio.sleep(0.01)
+            leak_done.set()
+
+        minted.append(asyncio.create_task(_leak(), name="detached-write"))
+
+    async def teardown_window() -> None:
+        async def _unrelated() -> None:
+            await asyncio.sleep(3600)
+
+        teardown_tasks.append(asyncio.create_task(_unrelated(), name="hygiene-unrelated-teardown"))
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body, during_teardown_window=teardown_window)
+    assert leak_done.is_set(), "the call-owned leak drains"
+    assert "detached-write" in str(exc_info.value), str(exc_info.value)
+    assert teardown_tasks, "the pin's premise: the teardown task exists"
+    assert not teardown_tasks[0].cancelled(), (
+        "the unrelated teardown task must not be drained or cancelled"
+    )
+    teardown_tasks[0].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await teardown_tasks[0]
+
+
+async def test_guard_drains_an_orphan_child_of_a_finished_call_task() -> None:
+    """The ownership is causal through finished parents: a call-owned
+    task pending at call end finishes during the teardown window and
+    leaves a live child; the child descends from the window's task, so
+    the drain completes it too, and the failure names the tree."""
+    children: list[asyncio.Task[None]] = []
+
+    async def _child() -> None:
+        await asyncio.sleep(3600)
+
+    async def body() -> None:
+        async def _parent() -> None:
+            await asyncio.sleep(0.01)
+            children.append(asyncio.create_task(_child(), name="hygiene-orphan-child"))
+
+        asyncio.create_task(_parent(), name="hygiene-orphan-parent")  # noqa: RUF006  # Why: the task is the leak under test; the guard's drain is its reaper.
+
+    async def teardown_window() -> None:
+        # Let the parent finish and spawn the child inside the teardown
+        # window, after the call-end snapshot.
+        await asyncio.sleep(0.05)
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body, during_teardown_window=teardown_window)
+    assert children and children[0].done(), (
+        "the drain must follow the finished parent's child to completion"
+    )
+    assert "hygiene-orphan-child" in str(exc_info.value), str(exc_info.value)
 
 
 async def test_guard_leaves_a_fixture_owned_task_alone() -> None:
