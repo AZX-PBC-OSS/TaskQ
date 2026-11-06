@@ -407,6 +407,17 @@ async def test_pin_elect_in_flight_at_stop_wins_then_is_resigned_never_assumed(
             and isinstance(resign_args[1], datetime)
             and resign_args[1].tzinfo is not None
         ), f"the resign must be fenced on the WON term (worker_id, elected_at), got {resign_args!r}"
+
+        async def _resign_landed() -> bool:
+            count = await parker.fetchval(f'SELECT count(*) FROM "{schema}".maintenance_leader')
+            return int(count) == 0
+
+        # The proxy records the call before its await completes, so the
+        # row fact (not the recorded call) is what the pin waits on.
+        await wait_for_condition(
+            _resign_landed,
+            description="the resign's delete of the won row to commit",
+        )
         row_count = await parker.fetchval(f'SELECT count(*) FROM "{schema}".maintenance_leader')
         assert row_count == 0, (
             "the won row outlived the resign: the fence did not match the "
