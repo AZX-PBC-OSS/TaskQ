@@ -1480,6 +1480,7 @@ async def test_rate_limits_page_reports_a_failed_live_peek(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
     clean_rl_registry: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When the live peek across the registry fails, the page says so - a
     warning naming the error type, and a visible degraded notice - rather
@@ -1495,7 +1496,7 @@ async def test_rate_limits_page_reports_a_failed_live_peek(
     async def _broken_peek(*_: object, **__: object) -> dict[str, object]:
         raise ConnectionResetError("pg gone")
 
-    clean_rl_registry.peek_all = _broken_peek  # type: ignore[method-assign]  # Why: the fault injection IS the registry's peek failing; a real broker cannot fail deterministically mid-request.
+    monkeypatch.setattr(clean_rl_registry, "peek_all", _broken_peek)
     app = _ops_app(module_pg_pool, module_pg_schema.schema_name)
     with structlog.testing.capture_logs() as logs:
         async with httpx.AsyncClient(
