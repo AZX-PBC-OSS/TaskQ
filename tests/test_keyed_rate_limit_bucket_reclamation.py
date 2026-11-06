@@ -37,7 +37,6 @@ What each observable pins:
 """
 
 import asyncio
-import contextlib
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta

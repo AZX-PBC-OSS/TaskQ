@@ -28,7 +28,7 @@ class ManagedLoop:
     shutdown: asyncio.Event
 
 
-@contextlib.asynccontextmanager
+@contextlib.asynccontextmanager  # pyright: ignore[reportDeprecated]  # Why: the stdlib cm factory is the test-utility shape the suite's other async CMs use.
 async def managed_loop(
     loop_fn: Callable[[asyncio.Event], Awaitable[object]],
     *,

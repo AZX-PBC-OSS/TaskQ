@@ -80,6 +80,7 @@ import asyncio
 import contextlib
 import hashlib
 import inspect
+import itertools
 import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
@@ -1176,11 +1177,16 @@ async def test_call_window_leak_report_names_test_end_residue() -> None:
 
 
 class _GuardStubItem:
-    """The minimal item the guard and the snapshot hook touch: only the
-    stash (the loop key at setup, the call-window key at call end)."""
+    """The minimal item the guard and the snapshot hook touch: the stash
+    (the loop key at setup, the call-window key at call end) and the
+    report sections (the guard's drained-leak report lands there)."""
 
     def __init__(self) -> None:
         self.stash = pytest.Stash()
+        self.report_sections: list[tuple[str, str, str]] = []
+
+    def add_report_section(self, when: str, key: str, content: str) -> None:
+        self.report_sections.append((when, key, content))
 
 
 class _GuardStubRequest:
@@ -1201,7 +1207,7 @@ _GUARD_RAW_FIXTURE = cast(
 async def _drive_guarded_call(
     during_call: Callable[[], Awaitable[None]],
     during_teardown_window: Callable[[], Awaitable[None]] | None = None,
-) -> None:
+) -> _GuardStubItem:
     """Run the REAL guard fixture and the REAL call-end snapshot hook
     through one simulated item lifecycle:
 
@@ -1212,8 +1218,11 @@ async def _drive_guarded_call(
     generator cleanly otherwise).
 
     Raises whatever the guard's teardown raises (``pytest.fail.Exception``
-    on a leak; ``StopAsyncIteration`` on a clean loop) so each pin asserts
-    the outcome itself."""
+    on a leak the drain could not clean; ``StopAsyncIteration`` on a
+    clean loop) so each pin asserts the outcome itself. Returns the stub
+    item: the drain's report sections (the drained leaks, named) are
+    readable there.
+    """
     request = _GuardStubRequest()
     item = request.node
     guard = _GUARD_RAW_FIXTURE(request)
@@ -1230,6 +1239,7 @@ async def _drive_guarded_call(
         await during_teardown_window()
     with contextlib.suppress(StopAsyncIteration):
         await guard.__anext__()  # teardown: the guard's check and verdict
+    return item
 
 
 async def test_guard_catches_residue_reaped_in_the_teardown_window() -> None:
@@ -1262,28 +1272,105 @@ async def test_guard_catches_residue_reaped_in_the_teardown_window() -> None:
     assert "pending at test end" in message
 
 
+async def test_guard_drains_a_release_tail_that_outlives_the_call() -> None:
+    """The CI leak class, contained: a test body leaves a task holding a
+    shielded slow release in flight (the asyncpg
+    PoolConnectionHolder.release shape), the call ends, and the guard's
+    quiescence drain lets the release finish naturally. The test passes;
+    the drained task is named in the report's warnings section, and no
+    pending task outlives the drive."""
+    release_done = asyncio.Event()
+    minted: list[asyncio.Task[None]] = []
+
+    async def _release_tail() -> None:
+        await asyncio.sleep(0.01)
+        release_done.set()
+
+    async def body() -> None:
+        async def _holder() -> None:
+            await asyncio.shield(_release_tail())
+
+        minted.append(asyncio.create_task(_holder(), name="hygiene-release-tail"))
+
+    await _drive_guarded_call(body)
+    assert release_done.is_set(), "the drain must let the in-flight release finish"
+
+
+async def test_guard_drains_a_task_and_the_child_it_spawns() -> None:
+    """The drain repeats for spawned tasks: an outliving task spawns a
+    child during the drain's grace, and both are completed before the
+    drive returns, so the next test on this module loop starts isolated."""
+    child_done = asyncio.Event()
+    minted: list[asyncio.Task[None]] = []
+
+    async def _child() -> None:
+        await asyncio.sleep(0.005)
+        child_done.set()
+
+    async def _spawner() -> None:
+        await asyncio.sleep(0.005)
+        await asyncio.shield(_child())
+
+    async def body() -> None:
+        minted.append(asyncio.create_task(_spawner(), name="hygiene-spawner"))
+
+    await _drive_guarded_call(body)
+    assert child_done.is_set(), "the drain must follow the spawned child to completion"
+
+
+async def test_guard_fails_a_survivor_within_the_drain_bound() -> None:
+    """A task that ignores cancellation survives the drain: the guard
+    fails the leaking test within the drain bound and names the
+    survivor. The task stays stubborn past the drain's budget but exits
+    on its own afterwards, so the module loop's teardown is not held."""
+    import time as _time
+
+    handles: list[asyncio.Task[None]] = []
+
+    async def body() -> None:
+        async def _stubborn() -> None:
+            deadline = asyncio.get_running_loop().time() + 12.0
+            while asyncio.get_running_loop().time() < deadline:
+                try:
+                    await asyncio.sleep(0.05)
+                except asyncio.CancelledError:
+                    continue
+
+        handles.append(asyncio.create_task(_stubborn(), name="hygiene-survivor"))
+
+    started = _time.monotonic()
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
+    elapsed = _time.monotonic() - started
+    assert "hygiene-survivor" in str(exc_info.value), str(exc_info.value)
+    assert elapsed < 20.0, f"the drain bound did not hold: {elapsed:.1f}s"
+    # The survivor dies on its own; await it so the module loop's
+    # teardown starts clean.
+    handles[0].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(handles[0], timeout=15.0)
+
+
 async def test_guard_catches_a_fixture_looking_task_name_smuggled_by_the_body() -> None:
     """The exemption is SET MEMBERSHIP (pending when the call phase
     started), never the task's NAME: a test body that mints a task with a
-    fixture-looking name and abandons it is named by the guard like any
-    other leak.  A name-based exemption would let a real leak sail past
-    wearing a trustworthy label."""
+    fixture-looking name and abandons it is drained and named by the
+    guard like any other leak. A name-based exemption would let a real
+    leak sail past wearing a trustworthy label: the drained-leak report
+    section must carry the smuggled task's name."""
     minted: list[asyncio.Task[object]] = []
 
     async def body() -> None:
         minted.append(asyncio.create_task(_hygiene_leak_probe_coro(), name="fixture-owned-fake"))
 
-    try:
-        with pytest.raises(pytest.fail.Exception) as exc_info:
-            await _drive_guarded_call(body)
-    finally:
-        smuggled = minted[0]
-        smuggled.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await smuggled
-    message = str(exc_info.value)
-    assert "fixture-owned-fake" in message, (
-        f"a fixture-looking name smuggled a real leak past the guard: {message}"
+    item = await _drive_guarded_call(body)
+    smuggled = minted[0]
+    assert smuggled.done(), "the drain must have completed the smuggled leak"
+    sections = [
+        content for _, key, content in item.report_sections if key.startswith("leaked asyncio")
+    ]
+    assert sections and "fixture-owned-fake" in sections[0], (
+        f"a fixture-looking name smuggled a real leak past the guard: {item.report_sections}"
     )
 
 
@@ -2286,7 +2373,7 @@ def _adjacent_set_then_cancel(path: Path) -> list[int]:
         body = getattr(node, "body", None)
         if not isinstance(body, list):
             continue
-        for first, second in zip(body, body[1:]):
+        for first, second in itertools.pairwise(body):
             first_set = (
                 isinstance(first, ast.Expr)
                 and isinstance(first.value, ast.Call)

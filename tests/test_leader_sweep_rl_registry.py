@@ -3,7 +3,6 @@ registry (ctx.rate_limit_registry) each tick, leader or not; the module
 singleton remains the fallback when no registry was supplied."""
 
 import asyncio
-import contextlib
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta

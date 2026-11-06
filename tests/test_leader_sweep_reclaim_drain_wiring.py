@@ -8,7 +8,6 @@ tick - the pending set survives the failure intact.
 """
 
 import asyncio
-import contextlib
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta

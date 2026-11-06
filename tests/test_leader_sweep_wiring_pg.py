@@ -28,10 +28,10 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.settings import WorkerSettings
-from tests._loop_control import managed_loop
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker._leader_shared import SweepContext
 from taskq.worker.deps import WorkerDeps
+from tests._loop_control import managed_loop
 
 pytestmark = pytest.mark.integration
 
@@ -168,33 +168,6 @@ async def _run_loop_for_ticks(
             await asyncio.wait_for(until.wait(), timeout=ticks * _SWEEP_INTERVAL * 40)
         else:
             await asyncio.sleep(ticks * _SWEEP_INTERVAL)
-
-
-async def _stop_like_the_helpers(
-    task: asyncio.Task[object],
-    shutdown: asyncio.Event,
-    body_exc: BaseException | None,
-    grace: float,
-) -> None:
-    """The stop shape the sweep-loop helpers use, on fake loops: shutdown
-    first, a bounded wait for the loop's own exit, the cancel fallback,
-    and the body's error taking precedence over a cleanup failure."""
-    shutdown.set()
-    try:
-        await asyncio.wait_for(task, timeout=grace)
-    except TimeoutError:
-        if not task.cancelled():
-            # Not our grace: the loop task ended with its own
-            # TimeoutError. Surface it unless the body's own error
-            # takes precedence.
-            try:
-                task.result()
-            except BaseException:
-                if body_exc is None:
-                    raise
-    except BaseException:
-        if body_exc is None:
-            raise
 
 
 async def test_loop_supervisor_drains_a_shielded_release() -> None:
