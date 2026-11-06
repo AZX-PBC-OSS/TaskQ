@@ -36,9 +36,9 @@ __all__ = ["LadderOps", "is_deterministic_authoring_failure", "is_infra_fault"]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
-#: the deadline's record stamp ````. The wf face records the same pair: the
-#: deadline is the machinery's expiry, and the record reads like the vanilla
-#: rows'.
+#: the deadline's record stamp -- the pair below. The wf face records the same
+#: pair: the deadline is the machinery's expiry, and the record reads like the
+#: vanilla rows'.
 DEADLINE_ERROR_CLASS: Final[str] = "TimeoutError"
 DEADLINE_ERROR_MESSAGE: Final[str] = "start_to_close"
 

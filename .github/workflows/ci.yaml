@@ -434,16 +434,16 @@ jobs:
     # to the same tag the family defaults to, so the lane and the family
     # can never disagree about which server they mean. These six files are
     # the timescale-MARKED family (the marker the other lanes deselect),
-    # not the universe of Timescale-container modules: other modules also
-    # reach the real engine and remain in the fast matrix (the root
-    # three-mode-lifecycle and upgrade-flip attacks, and the four web_admin
-    # hypertable files, boot their own containers). Serially, not under
+    # not the universe of Timescale-container modules: eight more also
+    # boot their own containers and remain in the fast matrix -- the root
+    # three-mode-lifecycle, standing-matrix, deploy-e2e and upgrade-flip
+    # files, and the four web_admin hypertable files. Serially, not under
     # xdist: the loadgroup would already pin each module's tests to a
     # single worker (one container per module), but the six modules'
-    # launchers would still share a runner, and their background policy
-    # jobs race across modules - compression and chunk drops landing under
-    # a neighbour's seeds - so the lane runs the family one module at a
-    # time.
+    # launchers would still share a runner, and shared-runner resource
+    # contention (CPU, disk) widens each module's own launcher races --
+    # compression and chunk drops landing under its own seeds -- so the
+    # lane runs the family one module at a time.
     #
     # The check at the bottom is the lane's contract: every test of the
     # family must RUN. skip_test_without_docker() makes a container-less

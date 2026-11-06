@@ -234,9 +234,9 @@ class JobContext[P: BaseModel]:
         their finish stamp), never by actor code.
 
         The deadline's rescue reads this record when the deadline's
-        cancel landed on a body task whose thread had already finished:
+        cancel landed on a body task whose body had already finished:
         the task's own ``result()`` is a CancelledError in that state,
-        and the thread's recorded outcome is the only truthful answer.
+        and the body's recorded outcome is the only truthful answer.
         EARLIEST-WINS (only when unset): a sync thread that finished in
         time records first, and the deadline's later cancellation of the
         async frame must not overwrite the thread's outcome. The

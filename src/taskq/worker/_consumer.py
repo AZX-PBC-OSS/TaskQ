@@ -1716,12 +1716,14 @@ class _DeadlineEnforcementCtx(Protocol):
     @property
     def _actor_body_finished_at(self) -> float | None: ...
 
-    #: The body's own outcome — ``(value, exc)`` — written by the sync
-    #: dispatch's thread body before its finish stamp (the vanilla face
-    #: alone; the wf body has no sync carrier and carries None). The
-    #: rescue reads it when the deadline's cancel landed on a body task
-    #: whose thread had already finished: the task's own ``result()`` is
-    #: then a CancelledError and the record is the only truthful answer.
+    #: The body's own outcome — ``(value, exc)`` — the sync dispatch's
+    #: thread body writes it on the vanilla face before its finish stamp,
+    #: and the enforcement's own body frame writes it on BOTH faces
+    #: before its stamp (the wf face therefore carries the async frame's
+    #: record — an async self-cancellation included). The rescue reads it
+    #: when the deadline's cancel landed on a body task whose body had
+    #: already finished: the task's own ``result()`` is then a
+    #: CancelledError and the record is the only truthful answer.
     @property
     def _actor_body_outcome(self) -> tuple[object, BaseException | None] | None: ...
 
@@ -1982,17 +1984,20 @@ async def _enforce_start_to_close(
         if body_task.done() and body_finished_at is not None and body_finished_at <= deadline_when:
             if body_task.cancelled():
                 # The deadline's cancel was delivered into a task whose
-                # body had already finished: the sync carrier's thread
-                # completed inside the deadline and the cancel outran the
-                # coroutine's own completion (a stall can hold the loop
-                # across the boundary). The body's own outcome is the
-                # thread's recorded one -- return its value or re-raise
-                # its exception (the carrier / its own exception) as the
-                # ordinary outcome it is. The record is normally present
-                # (the thread records before its stamp, and the stamp is
-                # this arm's precondition), but a recording failure or a
-                # signal can leave it absent: then the defensive arm is
-                # the truthful timeout -- never a cancelled read.
+                # body had already finished: a sync carrier's thread
+                # completed inside the deadline, or an async body raised
+                # its own CancelledError there (the self-abandon) -- and
+                # the cancel outran the coroutine's own completion (a
+                # stall can hold the loop across the boundary). The
+                # body's own outcome is the recorded one -- return its
+                # value or re-raise its exception (the carrier / its own
+                # exception, the self-abandon's CancelledError included)
+                # as the ordinary outcome it is. The record is normally
+                # present (the frame and the thread record before their
+                # stamps, and the stamp is this arm's precondition), but
+                # a recording failure or a signal can leave it absent:
+                # then the defensive arm is the truthful timeout --
+                # never a cancelled read.
                 record = ctx._actor_body_outcome
                 if record is None:
                     raise _StartToCloseExceededError from None
