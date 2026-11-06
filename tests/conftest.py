@@ -39,6 +39,7 @@ import glob
 import inspect
 import os
 import signal
+import types
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 
@@ -577,37 +578,44 @@ def pytest_runtest_call(item: pytest.Item) -> object:
 _DRAIN_BUDGET_SECONDS = 10.0
 _DRAIN_NATURAL_GRACE_SECONDS = 5.0
 
-#: The benign release-tail class is the real asyncpg pool release only,
-#: identified from the task's coroutine code object (its filename and
-#: qualname survive the coroutine's completion, unlike its frame).
-#: Everything else a test left pending at call end is a failure, drained
-#: or not: a task that outlives its test's assertions can write shared
-#: state after they ran.
-_IS_ASYNCPG_RELEASE_FILENAME = "asyncpg"
-_IS_ASYNCPG_RELEASE_QUALNAME = "PoolConnectionHolder.release"
+#: The benign release-tail class is the real asyncpg pool release only:
+#: the task's coroutine must be the installed
+#: ``asyncpg.pool.PoolConnectionHolder.release`` code object itself. The
+#: identity survives the coroutine's completion, and a compiled forgery
+#: with the same filename and qualname does not pass it. If asyncpg
+#: cannot be imported, the allowlist is empty: every drained call-end
+#: task fails (loudly, never silently allowed).
+_asyncpg_release_code: "types.CodeType | None" = None
+_asyncpg_release_code_loaded = False
+
+
+def _asyncpg_release_code_object() -> "types.CodeType | None":
+    """The installed release code object, loaded once; ``None`` when
+    asyncpg cannot be imported."""
+    global _asyncpg_release_code, _asyncpg_release_code_loaded
+    if not _asyncpg_release_code_loaded:
+        _asyncpg_release_code_loaded = True
+        try:
+            import asyncpg.pool
+
+            _asyncpg_release_code = asyncpg.pool.PoolConnectionHolder.release.__code__
+        except Exception:  # Why: any import failure empties the allowlist; the drain then fails every drained leak loudly instead of allowing it.
+            _asyncpg_release_code = None
+    return _asyncpg_release_code
 
 
 def _is_benign_release_tail(task: asyncio.Task[object]) -> bool:
     """Whether a drained call-end task is the known benign release-tail
-    class: the real asyncpg ``PoolConnectionHolder.release``, identified
-    from the coroutine's code object (which survives completion; the
-    frame does not) or, while the task is still pending, from the frame's
-    module. Everything else is the test's own failure, drained or not."""
-    coro = task.get_coro()
-    code = getattr(coro, "cr_code", None)
-    if code is not None and (
-        _IS_ASYNCPG_RELEASE_FILENAME in code.co_filename
-        and code.co_qualname.endswith(_IS_ASYNCPG_RELEASE_QUALNAME)
-    ):
-        return True
-    frame = getattr(coro, "cr_frame", None)
-    if frame is not None:
-        module = frame.f_globals.get("__name__", "")
-        if module.startswith(_IS_ASYNCPG_RELEASE_FILENAME) and getattr(
-            coro, "__qualname__", ""
-        ).endswith(_IS_ASYNCPG_RELEASE_QUALNAME):
-            return True
-    return False
+    class: the task's coroutine is the installed asyncpg
+    ``PoolConnectionHolder.release`` code object itself. The identity
+    survives the coroutine's completion, and a compiled forgery with the
+    same filename and qualname does not pass it. Without asyncpg the
+    allowlist is empty and nothing is benign."""
+    release_code = _asyncpg_release_code_object()
+    if release_code is None:
+        return False
+    code = getattr(task.get_coro(), "cr_code", None)
+    return code is release_code
 
 
 async def _drain_to_quiescence(
@@ -643,6 +651,11 @@ async def _drain_to_quiescence(
                 t.cancel()
             await asyncio.wait(pending, timeout=min(1.0, deadline - loop.time()))
         completed = {t for t in pending if t.done()}
+        for t in completed:
+            # The drain owns the tasks it completed: retrieve their
+            # outcome so asyncio never reports it unretrieved.
+            with contextlib.suppress(asyncio.CancelledError):
+                t.exception()
         drained.extend(sorted(completed, key=lambda t: t.get_name()))
         processed |= pending
         # A task that swallowed its cancellation is still pending: it

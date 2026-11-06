@@ -101,6 +101,7 @@ from taskq.testing.fixtures import (
 from tests.conftest import (
     _call_window_leak_report,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra helper under test; mirrors the conftest imports above.
     _fail_on_leaked_asyncio_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: the autouse guard fixture under test; its raw async-gen function is driven manually below (a fixture cannot be re-entered through the real request).
+    _is_benign_release_tail,  # pyright: ignore[reportPrivateUsage]  # Why: the release-tail classifier under test; mirrors the conftest imports above.
     _leaked_pending_task_report,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra helper under test; mirrors the conftest imports above.
     _module_db_name,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra naming helper under test; mirrors tests/e2e's imports of conftest helpers.
     _reset_warn_once_stamps_reset,  # pyright: ignore[reportPrivateUsage]  # Why: the warn-once stamp reset under test; see the pin below.
@@ -1278,15 +1279,42 @@ async def test_guard_catches_residue_reaped_in_the_teardown_window() -> None:
     assert "pending at test end" in message
 
 
-async def test_guard_drains_a_release_tail_that_outlives_the_call() -> None:
-    """The CI leak class, allowed by class: a test body leaves a task
-    holding a shielded slow release in flight whose coroutine is shaped
-    like the real asyncpg one (a ``PoolConnectionHolder.release``
-    compiled under an asyncpg/pool.py filename), the call ends, and the
-    guard's quiescence drain lets the release finish naturally. The test
-    passes; the drained task is named in the report's warnings section,
-    and no pending task outlives the drive."""
-    release_done = asyncio.Event()
+async def test_guard_allows_the_real_asyncpg_release_tail() -> None:
+    """The CI leak class, allowed by identity: a test body leaves the
+    installed asyncpg ``PoolConnectionHolder.release`` coroutine itself
+    pending at call end (created against a duck holder, so no pool is
+    needed and the body errors harmlessly when the drain steps it), and
+    the guard's quiescence drain completes it. The task's coroutine is
+    the installed release code object, so the classification allows it:
+    the test passes and the drained task is named in the report's
+    warnings section."""
+    import asyncpg.pool
+
+    duck_holder: Any = object()
+
+    async def body() -> None:
+        asyncio.create_task(  # noqa: RUF006  # Why: the task is the leak under test; the guard's drain is its reaper.
+            asyncpg.pool.PoolConnectionHolder.release(duck_holder, 5.0),
+            name="hygiene-release-tail",
+        )
+
+    item = await _drive_guarded_call(body)
+    sections = [
+        content for _, key, content in item.report_sections if key.startswith("leaked asyncio")
+    ]
+    assert sections and "hygiene-release-tail" in sections[0], (
+        f"the drained release tail must be named in the report: {item.report_sections}"
+    )
+
+
+async def test_guard_rejects_a_forged_asyncpg_shaped_release() -> None:
+    """The allowlist is an identity, not a shape: a coroutine compiled
+    under an asyncpg/pool.py filename with the same
+    ``PoolConnectionHolder.release`` qualname is not the installed code
+    object, so the guard fails the test (the detached-write policy) even
+    though the drain completed it. A shape heuristic would let the
+    forgery hide a late write."""
+    wrote_after_assertions = asyncio.Event()
 
     release_source = textwrap.dedent(
         """
@@ -1294,39 +1322,82 @@ async def test_guard_drains_a_release_tail_that_outlives_the_call() -> None:
 
         class PoolConnectionHolder:
             async def release(self, timeout):
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.05)
                 handler()
         """
     )
     release_module: dict[str, Any] = {}
-    exec(  # noqa: S102  # Why: the exec'd module is the pin's subject: the asyncpg-shaped code object the predicate classifies.
+    exec(  # noqa: S102  # Why: the exec'd module is the forgery the pin rejects: same filename and qualname as asyncpg's release, different code object.
         compile(release_source, "/site-packages/asyncpg/pool.py", "exec"), release_module
     )
-    release_module["handler"] = release_done.set
+    release_module["handler"] = wrote_after_assertions.set
     holder: Any = release_module["PoolConnectionHolder"]()
 
     async def body() -> None:
-        async def _holder() -> None:
-            await asyncio.shield(holder.release(5.0))
+        asyncio.create_task(  # noqa: RUF006  # Why: the task is the leak under test; the guard's drain is its reaper.
+            holder.release(5.0), name="hygiene-forged-release"
+        )
+        assert not wrote_after_assertions.is_set()
 
-        holder_task = asyncio.create_task(_holder(), name="hygiene-release-holder")
-        # The holder enters the shielded release; the test's own mid-tick
-        # cancel then detaches it, leaving the release task itself as the
-        # pending leak (the CI shape: the shield's inner task outlives the
-        # cancelled awaiter).
-        await asyncio.sleep(0.001)
-        holder_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await holder_task
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
+    assert wrote_after_assertions.is_set(), "the drain must have completed the forged task"
+    assert "hygiene-forged-release" in str(exc_info.value), str(exc_info.value)
 
-    item = await _drive_guarded_call(body)
-    assert release_done.is_set(), "the drain must let the in-flight release finish"
-    sections = [
-        content for _, key, content in item.report_sections if key.startswith("leaked asyncio")
-    ]
-    assert sections and "PoolConnectionHolder.release" in sections[0], (
-        f"the drained release tail must be named in the report: {item.report_sections}"
+
+async def test_release_tail_classifier_accepts_only_the_installed_release() -> None:
+    """The classifier's unit pins, both directions: a coroutine created
+    from the installed release code object is allowed; the compiled
+    forgery (the same filename and qualname) is not."""
+    import asyncpg.pool
+
+    real_coro = asyncpg.pool.PoolConnectionHolder.release(object(), 5.0)
+    real_task = asyncio.create_task(real_coro, name="hygiene-classifier-real")
+    try:
+        assert _is_benign_release_tail(real_task) is True
+    finally:
+        real_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, BaseException):
+            real_task.result()
+
+    forged_source = textwrap.dedent(
+        """
+        class PoolConnectionHolder:
+            async def release(self, timeout):
+                await asyncio.sleep(0.01)
+        """
     )
+    forged_module: dict[str, Any] = {}
+    exec(  # noqa: S102  # Why: the exec'd module is the forgery the classifier must reject.
+        compile(forged_source, "/site-packages/asyncpg/pool.py", "exec"), forged_module
+    )
+    forged_holder: Any = forged_module["PoolConnectionHolder"]()
+    forged_task = asyncio.create_task(forged_holder.release(5.0), name="hygiene-classifier-forged")
+    try:
+        assert _is_benign_release_tail(forged_task) is False
+    finally:
+        forged_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, BaseException):
+            forged_task.result()
+
+
+async def test_guard_fails_a_drained_leak_that_is_not_a_release_tail() -> None:
+    """The policy's negative direction at the guard level: a drained
+    call-end task that is not the installed asyncpg release fails the
+    test with its coroutine, even though the drain completed it."""
+    minted: list[asyncio.Task[None]] = []
+
+    async def body() -> None:
+        minted.append(
+            asyncio.create_task(_hygiene_leak_probe_coro(), name="hygiene-anonymous-leak")
+        )
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
+    smuggled = minted[0]
+    assert smuggled.done(), "the drain must have completed the leaked task"
+    message = str(exc_info.value)
+    assert "hygiene-anonymous-leak" in message, message
 
 
 async def test_guard_fails_a_detached_write_that_outlives_the_assertions() -> None:
