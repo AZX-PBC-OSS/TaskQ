@@ -426,21 +426,21 @@ jobs:
 
   test-timescale:
     # The optional-TimescaleDB lane (TASKQ_TIMESCALEDB_HYPERTABLES): the
-    # feature's own module, run for real. Like the slow and e2e tiers, the
+    # feature's own family, run for real. Like the slow and e2e tiers, the
     # containers are testcontainers booted by the fixtures themselves (the
-    # module's timescale_container and the shared pg_dsn pair), so this job
+    # family's timescale_container and the shared pg_dsn pair), so this job
     # needs only Docker on the runner - a service container would be dead
     # weight no test reads. TASKQ_TEST_TIMESCALEDB_IMAGE is pinned to the
-    # same tag the module defaults to, so the lane and the module can never
-    # disagree about which server they mean. Serially, not under xdist: the
-    # module boots ONE module-scoped timescale container, and each xdist
-    # worker would boot its own.
+    # same tag the family defaults to, so the lane and the family can never
+    # disagree about which server they mean. Serially, not under xdist: each
+    # module of the family boots ONE module-scoped timescale container, and
+    # each xdist worker would boot its own.
     #
     # The check at the bottom is the lane's contract: every test of the
-    # module must RUN. skip_test_without_docker() makes a container-less
+    # family must RUN. skip_test_without_docker() makes a container-less
     # run exit 0 with skips, so a green lane with skips would prove
     # nothing - the summary is parsed and any skip, deselection, or
-    # failure fails the job. Bump the floor when the module grows.
+    # failure fails the job. Bump the floor when the family grows.
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -454,7 +454,7 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Run the hypertable module (a skip here is a failure)
+      - name: Run the hypertable family (a skip here is a failure)
         env:
           TASKQ_TEST_TIMESCALEDB_IMAGE: timescale/timescaledb:2.30.1-pg18
         run: |
@@ -538,10 +538,14 @@ jobs:
     # family's single-run law); the SQL surface keeps its matrix via the
     # tier's remaining 38 x 4 legs. Lane selection: the test, slow-suite,
     # coverage, extras, cross, and system-e2e lanes deselect the family
-    # with the literal "not load_sensitive" filter; timescale and e2e
-    # deselect de facto (file-/directory-scoped selections). This lane -
-    # now collecting the system-e2e tier via --system-e2e - is the one
-    # place the family runs.
+    # with the literal "not load_sensitive" filter; e2e deselects de facto
+    # (directory-scoped selection), and the Timescale family's own
+    # load-sensitive member (the retention re-archive race,
+    # tests/test_attack_rt_retention_integration.py) runs in the
+    # file-scoped test-timescale lane instead, so the selection here adds
+    # "and not timescale" and every marked test runs exactly once. This
+    # lane - now collecting the system-e2e tier via --system-e2e - is the
+    # one place the rest of the family runs.
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -562,7 +566,7 @@ jobs:
       - uses: ./.github/actions/setup-uv-env
 
       - name: Run the load-sensitive suite serially
-        run: uv run --no-sync pytest --system-e2e -m "load_sensitive" --timeout=900
+        run: uv run --no-sync pytest --system-e2e -m "load_sensitive and not timescale" --timeout=900
 
   coverage:
     # The coverage lane is the single longest CI job (the whole suite, one
