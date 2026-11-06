@@ -1823,8 +1823,15 @@ async def _enforce_start_to_close(
         return await run_actor(job, ctx)
 
     loop = asyncio.get_running_loop()
+    arm_time = loop.time()
+    # The deadline's due time on the loop's own monotonic clock — the line
+    # the body's finish stamp is judged against.
+    deadline_when = arm_time + timeout
+
+    body_finished_at: float | None = None
 
     async def _body() -> object:
+        nonlocal body_finished_at
         try:
             return await run_actor(job, ctx)
         except SystemExit as exc:
@@ -1836,6 +1843,11 @@ async def _enforce_start_to_close(
             # boundaries). _dispatch_exception unwraps the carrier, so the
             # row records the actor's own SystemExit.
             raise _ActorSystemExitAttemptError(exc) from exc
+        finally:
+            # The body's real completion time, stamped as its frame ends —
+            # before the task records its outcome, so any later reader of
+            # a done body_task knows whether the body made its deadline.
+            body_finished_at = loop.time()
 
     body_task: asyncio.Task[object] = asyncio.ensure_future(_body())
     ctx._set_actor_body_task(body_task)  # pyright: ignore[reportPrivateUsage]  # Why: the deadline enforcement is the designated writer of the body-task handle (see the setter's contract).
@@ -1907,6 +1919,21 @@ async def _enforce_start_to_close(
             register_tracked_actor_handle(body_task)
 
     if expired:
+        # The body may have finished BEFORE the deadline the enforcement
+        # armed: the body task's done-callback is itself queued, so the
+        # wait's wakeup is two loop hops behind the body's completion, and
+        # a loop stall in between (a blocking callback, GC, a GIL hold)
+        # lets the due _fire latch expired over an already-surfaced
+        # outcome. Judge the body by its own finish stamp, not by when the
+        # continuation happened to resume: a finish at or before
+        # deadline_when made its deadline, and the attempt is the body's
+        # own -- result() returns its value or re-raises its exception
+        # (the carrier, its own TimeoutError included) as the ordinary
+        # outcome it is. A finish AFTER the deadline -- a cancellation-
+        # absorbing return, a late unwind -- stamps past deadline_when and
+        # stays a timeout below.
+        if body_task.done() and body_finished_at is not None and body_finished_at <= deadline_when:
+            return body_task.result()
         # The deadline won the race. The body may have finished in the
         # same loop iteration (its outcome is raced out and discarded),
         # may have finished inside the tx path's bound unwind wait (the

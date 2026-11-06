@@ -34,6 +34,7 @@ the observed disposition and the attempt ledger's wholeness.
 
 import asyncio
 import contextlib
+import time
 import warnings
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -41,6 +42,7 @@ from dataclasses import replace as _dc_replace
 from datetime import UTC, datetime, timedelta
 
 import asyncpg
+import orjson
 import pytest
 from pydantic import BaseModel
 
@@ -527,6 +529,66 @@ async def test_body_cannot_absorb_the_deadline(transactional: bool) -> None:
     assert outcome != "succeeded", "the deadline was absorbed and the attempt succeeded"
     assert outcome == "scheduled", outcome
     assert not backend.mark_succeeded_calls
+
+
+@pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
+async def test_body_that_finished_inside_the_deadline_is_not_a_timeout(
+    transactional: bool,
+) -> None:
+    """A body that finished BEFORE the deadline is the attempt's own
+    outcome, even when the enforcement's continuation resumes late. The
+    body task's done-callback is itself queued, so the wait's wakeup is
+    two loop hops behind the body's completion; a callback stalling the
+    loop in between lets the due ``_fire`` latch ``expired`` over a body
+    that had already surfaced its result -- which the ``if expired:``
+    branch then discarded as a timeout, retrying a completed attempt and
+    duplicating its side effects. The rescue reads the body's own finish
+    stamp: a finish at or before the armed deadline is the body's own
+    outcome -- the value returned, its exception the ordinary failure it
+    is. A finish after the deadline (the absorbing body above) stays a
+    timeout."""
+    backend = FakeBackend()
+    loop = asyncio.get_running_loop()
+    body_result: dict[str, object] | None = None
+
+    async def body(job: JobRow, ctx: JobContext[BaseModel]) -> object:
+        nonlocal body_result
+        body_result = {"ok": True}
+        return body_result
+
+    # The stall: it must fall INSIDE the body's own loop batch -- after the
+    # body's step, before the body task's queued done-callback releases the
+    # wait -- and hold the loop past the 150ms limit, so the due ``_fire``
+    # latches over an already-surfaced outcome. The two paths differ by one
+    # task hop between arming and the body's batch (the tx path reaches the
+    # enforcement through the shielded tx task), so the stall's due date is
+    # shifted one batch accordingly. The ordering is forced by the
+    # call_soon/call_later mechanics, not timed -- the deterministic
+    # stand-in for the runner's GC / GIL / co-tenancy stalls that make the
+    # enforcement's continuation late.
+    if transactional:
+        loop.call_soon(lambda: loop.call_later(0, time.sleep, 0.16))
+    else:
+        loop.call_later(0, time.sleep, 0.16)
+
+    outcome = await consume_one_job(
+        as_backend(backend),
+        _job(_LIMIT),
+        _WORKER_ID,
+        run_actor=body,
+        actor_config=default_actor_config(),
+        payload_type=EmptyPayload,
+        clock=FakeClock(_NOW),
+        transaction_conn=_FakeConnection() if transactional else None,  # pyright: ignore[reportArgumentType]
+    )
+
+    assert outcome == "succeeded", outcome
+    assert len(backend.mark_succeeded_calls) == 1, backend.mark_succeeded_calls
+    assert orjson.loads(backend.mark_succeeded_calls[0][3]) == {"ok": True}, (
+        backend.mark_succeeded_calls
+    )
+    assert not backend.mark_failed_or_retry_calls, backend.mark_failed_or_retry_calls
+    assert body_result == {"ok": True}
 
 
 @pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
