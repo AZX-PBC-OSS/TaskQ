@@ -843,6 +843,7 @@ filterwarnings = [
 markers = [
     "slow: marks tests as slow (skip with -m 'not slow')",
     "integration: marks tests requiring testcontainers",
+    "timescale: marks tests requiring a real TimescaleDB container (the serial test-timescale lane; excluded from the xdist matrix)",
     "redis: marks tests requiring the [redis] extra and a Redis container",
     "examples: marks tests for the example app (excluded from default CI run)",
     "docs_examples: executes docs code fences against the real package (requires TASKQ_DOCS_EXAMPLES=1 and Docker; see tests/test_docs_examples.py)",

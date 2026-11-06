@@ -53,7 +53,7 @@ from taskq.settings import WorkerSettings
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from taskq.timescale import enable_hypertables
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timescale]
 
 _PG_IMAGE = "postgres:18"
 _TIMESCALE_IMAGE_DEFAULT = "timescale/timescaledb:2.30.1-pg18"

@@ -46,7 +46,7 @@ from taskq.timescale import (
 )
 from taskq.worker.leader import archive_expiry_sweep, prune_terminal_jobs
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timescale]
 
 #: Chunk interval the short test retentions clamp to (retention/4 clamped
 #: to a 1-day floor): every test leg below asserts against it.

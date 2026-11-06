@@ -42,7 +42,7 @@ from taskq.testing.pg import create_worker
 from taskq.worker._leader_shared import _JOB_ATTEMPTS_COLUMNS
 from taskq.worker.leader import prune_terminal_jobs
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timescale]
 
 _LOCK_LEASE = timedelta(seconds=30)
 

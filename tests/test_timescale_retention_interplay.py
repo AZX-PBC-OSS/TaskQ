@@ -100,7 +100,7 @@ from taskq.testing._shared_containers import creator_labels, skip_test_without_d
 from taskq.timescale import enable_hypertables
 from taskq.worker.leader import archive_expiry_sweep, prune_terminal_jobs
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timescale]
 
 #: Chunk interval the short test retentions clamp to (retention/4 clamped to
 #: the 1-day floor): every aged seed below lands a full chunk interval clear

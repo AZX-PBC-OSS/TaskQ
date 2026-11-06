@@ -300,7 +300,7 @@ jobs:
         # faulthandler timer cannot see and would dump on every run.
         # Dump-only on purpose: a worker that exits on the dump would turn
         # pytest-timeout's graceful per-test failure into a lost worker.
-        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive" -o faulthandler_timeout=300
+        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
 
       # THE ADVERSARIAL PROBES' GATE (the constitution's law: a regression
       # test outside your gate is not a defense). The probes are
@@ -394,7 +394,7 @@ jobs:
       - name: Run the extra's own tests
         # The fastapi leg installs no redis, so the tests tagged for both
         # extras run in the redis leg (which installs fastapi) only.
-        run: uv run --no-sync pytest -n 2 -m "(${{ matrix.extra == 'fastapi' && 'fastapi and not redis' || matrix.extra }}) and not load_sensitive"
+        run: uv run --no-sync pytest -n 2 -m "(${{ matrix.extra == 'fastapi' && 'fastapi and not redis' || matrix.extra }}) and not load_sensitive and not timescale"
 
   test-cross:
     # Common extra PAIRS in one process: both families' tests run together
@@ -422,7 +422,7 @@ jobs:
         with:
           node-version: "22"
       - name: Run both families together
-        run: uv run --no-sync pytest -n 2 -m "(${{ matrix.select }}) and not load_sensitive"
+        run: uv run --no-sync pytest -n 2 -m "(${{ matrix.select }}) and not load_sensitive and not timescale"
 
   test-timescale:
     # The optional-TimescaleDB lane (TASKQ_TIMESCALEDB_HYPERTABLES): the
@@ -460,14 +460,14 @@ jobs:
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/timescale-pytest.txt"
-          uv run --no-sync pytest tests/test_timescaledb_hypertables.py -rs | tee "$out"
+          uv run --no-sync pytest tests/test_timescaledb_hypertables.py tests/test_timescale_retention_interplay.py tests/test_attack_rt_retention_integration.py tests/test_attempt_due_at.py tests/test_insights.py tests/test_archive_page_idx_migration_attacks.py -rs | tee "$out"
           uv run --no-sync python - "$out" <<'PY'
           import re
           import sys
 
           summary = open(sys.argv[1], encoding="utf-8").read().strip().splitlines()[-1]
           passed = int(re.search(r"(\d+) passed", summary).group(1))
-          assert passed >= 11, f"the module's 11 tests did not all pass: {summary}"
+          assert passed >= 138, f"the Timescale family's 138 tests did not all pass: {summary}"
           for bad in ("skipped", "deselected", "failed", "error"):
               assert bad not in summary, f"the lane must be skip-free: {summary}"
           PY
@@ -513,7 +513,7 @@ jobs:
       - uses: ./.github/actions/setup-uv-env
 
       - name: Run the slow suite
-        run: uv run --no-sync pytest -n 2 -m "slow and not load_sensitive"
+        run: uv run --no-sync pytest -n 2 -m "slow and not load_sensitive and not timescale"
 
   load-sensitive:
     # The wall-clock/timing guards (watchdog lag sampling, terminal-write
@@ -653,7 +653,7 @@ jobs:
         # matrix's lane (its step comment holds the full rationale; this
         # lane matches the same mark filter, so no 2700s slow-tier trial
         # can trip the timer).
-        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive" --cov=taskq --cov-report=term-missing --cov-fail-under=90 -o faulthandler_timeout=300
+        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive and not timescale" --cov=taskq --cov-report=term-missing --cov-fail-under=90 -o faulthandler_timeout=300
 
   e2e:
     # Containerized e2e tier: workers built from the packaged wheel run

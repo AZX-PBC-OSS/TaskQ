@@ -61,7 +61,7 @@ from taskq.web.admin.jobs import (  # pyright: ignore[reportPrivateUsage]  # Why
 
 # ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's own throwaway schema identifiers (built from new_base62, validated by the migration runner's _IDENT_RE) or renders the admin builders' own SQL; all values are $n-bound.
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timescale]
 
 _MIGRATION_FILENAME = "01.00.21_01_pre_archive_page_keyset_index.sql"
 _INDEX = "jobs_archive_page_idx"

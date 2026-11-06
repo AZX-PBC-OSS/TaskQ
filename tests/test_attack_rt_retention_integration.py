@@ -70,7 +70,7 @@ from .test_attack_prune_ghost import assert_master_invariant
 from .test_leader_prune import _apply, _seed_terminal_job, _seed_terminal_jobs_bulk
 from .test_timescaledb_hypertables import _RefusingConn, _schedule_policies
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timescale]
 
 # The fold scenario's clocks. Prune retention 6h makes both ghost stamps
 # (30h and 54h old) aged candidates; the two stamps are 30h apart, which
@@ -838,6 +838,21 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
                     fin,
                     fin + _FOLD_ARCHIVE_RETENTION,
                 )
+        # The fixtures pause the compression policy before seeding, but a
+        # job the launcher already claimed can still compress a chunk in
+        # the setup window. The plan under test is the rowstore one;
+        # restore that premise instead of depending on the race.
+        compressed = await conn.fetch(
+            "SELECT chunk_schema, chunk_name FROM timescaledb_information.chunks "
+            "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
+            "AND is_compressed",
+            ts_schema,
+        )
+        for c in compressed:
+            await conn.execute(
+                f'SELECT decompress_chunk(\'"{c["chunk_schema"]}"."{c["chunk_name"]}"\')'
+            )
+
         n_chunks = await conn.fetchval(
             "SELECT count(*) FROM timescaledb_information.chunks "
             "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive'",
