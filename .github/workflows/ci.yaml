@@ -341,8 +341,8 @@ jobs:
           rc=0
           uv run --no-sync pytest tests/probes_*.py tests/progress_numbers_run.py --timeout=900 -q 2>&1 | tee "$RUNNER_TEMP/probes.log" || rc=$?
           pg_ctl -D "$pgroot/data" stop -m fast >/dev/null || true
-          passed="$(grep -oE '[0-9]+ passed' "$RUNNER_TEMP/probes.log" | grep -oE '[0-9]+' | head -1)"
-          skipped="$(grep -oE '[0-9]+ skipped' "$RUNNER_TEMP/probes.log" | grep -oE '[0-9]+' | head -1)"
+          passed="$(grep -oE '[0-9]+ passed' "$RUNNER_TEMP/probes.log" | grep -oE '[0-9]+' | head -1 || true)"
+          skipped="$(grep -oE '[0-9]+ skipped' "$RUNNER_TEMP/probes.log" | grep -oE '[0-9]+' | head -1 || true)"
           echo "probes green: ${passed:-0}, skipped: ${skipped:-0}"
           if [ "$rc" -ne 0 ]; then
             echo "::error::the probes lane ran red (rc=$rc) — a probe failed"
