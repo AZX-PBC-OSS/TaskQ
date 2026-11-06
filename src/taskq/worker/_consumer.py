@@ -1850,7 +1850,7 @@ async def _enforce_start_to_close(
 
     async def _body() -> object:
         try:
-            return await run_actor(job, ctx)
+            value = await run_actor(job, ctx)
         except SystemExit as exc:
             # This coroutine is a task body now: Task.__step re-raises
             # exactly (KeyboardInterrupt, SystemExit) bare after
@@ -1859,14 +1859,25 @@ async def _enforce_start_to_close(
             # _run_sync_actor_tracked._thread_body apply at their task
             # boundaries). _dispatch_exception unwraps the carrier, so the
             # row records the actor's own SystemExit.
-            raise _ActorSystemExitAttemptError(exc) from exc
+            carrier = _ActorSystemExitAttemptError(exc)
+            ctx._record_actor_body_outcome(None, carrier)
+            raise carrier from exc
+        except BaseException as exc:
+            # The frame's own outcome, recorded raw: the body's own
+            # CancelledError (the abandon signal) and every other
+            # BaseException included, so the rescue's cancelled arm can
+            # re-raise exactly what the body raised instead of guessing
+            # from the task's cancelled state.
+            ctx._record_actor_body_outcome(None, exc)
+            raise
+        else:
+            ctx._record_actor_body_outcome(value, None)
+            return value
         finally:
             # The async carrier's finish stamp, taken as the coroutine's
-            # frame ends — before the task records its outcome. This is
-            # when the coroutine RESUMED, which under a loop stall is
-            # later than a wrapped body actually finished: the sync
-            # dispatch's thread body stamped the real finish earlier, and
-            # the earliest-wins rule keeps it.
+            # frame ends — before the task records its outcome, and AFTER
+            # the frame's outcome record (the thread's earlier record
+            # wins; see the setter).
             ctx._record_actor_body_finished_at(loop.time())
 
     # Per-attempt record hygiene: clear any previous attempt's (or an

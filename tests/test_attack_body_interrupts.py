@@ -991,8 +991,12 @@ async def test_body_stamped_in_time_without_a_record_is_a_truthful_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The rescue's defensive arm: an in-time finish stamp with NO
-    outcome record on the ctx (a recording failure or a signal left it
-    absent) while the deadline's cancel lands on the body task. The
+    outcome record on the ctx -- the ctx's outcome recorder is disabled
+    for the attempt, the recording failure or signal the arm exists for
+    (an async body's own self-cancellation WRITES its record and is the
+    self-cancellation test's subject; this pin is the state where no
+    record exists at all) -- while the deadline's cancel lands on the
+    body task. The
     attempt is the truthful timeout -- the ``_StartToCloseExceededError``
     marker's own disposition: one failure/retry write carrying
     ``error_class TimeoutError`` / ``error_message start_to_close``, the
@@ -1012,9 +1016,17 @@ async def test_body_stamped_in_time_without_a_record_is_a_truthful_timeout(
     backend = FakeBackend()
     loop = asyncio.get_running_loop()
 
+    # The recording failure, simulated at the face the writers use: every
+    # outcome write is dropped for the attempt (monkeypatched on the ctx
+    # class, restored by the fixture). The frame's cancel-delivered write
+    # lands on the no-op and the record stays absent.
+    def _no_record(self: JobContext[BaseModel], value: object, exc: BaseException | None) -> None:
+        return None
+
+    monkeypatch.setattr(JobContext, "_record_actor_body_outcome", _no_record)
+
     async def body(job: JobRow, ctx: JobContext[BaseModel]) -> object:
-        # The in-time finish stamp ONLY -- no outcome record: the
-        # defensive arm's exact state.
+        # The in-time finish stamp ONLY -- no outcome record anywhere.
         ctx._record_actor_body_finished_at(loop.time())
         await asyncio.sleep(30)
 
@@ -1032,6 +1044,63 @@ async def test_body_stamped_in_time_without_a_record_is_a_truthful_timeout(
         timeout_metric_calls
     )
     assert any(entry.get("event") == "job_timeout" for entry in logs), logs
+
+
+@pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
+async def test_body_self_cancellation_inside_the_deadline_is_the_abandon_write(
+    transactional: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An async body raising its OWN ``asyncio.CancelledError`` (the
+    abandon signal) before the deadline, while a stall lets the deadline's
+    ``_fire`` win the wakeup race: the frame's outcome record -- the raw
+    CancelledError, written before its in-time finish stamp -- is the
+    rescue's answer, so the attempt takes the normal cancellation
+    disposition: the cancel write, no failure/timeout write, no
+    ``job_timeout`` log or metric. Without the frame's record this exact
+    state degraded to the defensive arm's start_to_close timeout: a
+    self-abandoned attempt re-pended under the timeout policy."""
+    import structlog
+
+    import taskq.worker._handlers as handlers_mod
+
+    timeout_metric_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        handlers_mod,
+        "record_job_timeout",
+        lambda actor, *, kind, count=1: timeout_metric_calls.append({"actor": actor, "kind": kind}),
+    )
+    backend = FakeBackend()
+    loop = asyncio.get_running_loop()
+
+    async def body(job: JobRow, ctx: JobContext[BaseModel]) -> object:
+        raise asyncio.CancelledError
+
+    # The stall: the same shape as the async stall test -- the body task
+    # completes at ~+0.0005, the wait's wakeup is two loop hops behind,
+    # and a stall crossing the deadline lets ``_fire`` latch first.
+    if transactional:
+        loop.call_soon(lambda: loop.call_later(0, time.sleep, 0.16))
+    else:
+        loop.call_later(0, time.sleep, 0.16)
+
+    with (
+        structlog.testing.capture_logs() as logs,
+        _DeadlineFireProbe(loop, _LIMIT) as probe,
+    ):
+        outcome = await _consume(body, _job(_LIMIT), transactional=transactional, backend=backend)
+
+    assert outcome is None, outcome  # the CancelledError surfaces; _consume suppresses it
+    assert len(backend.mark_cancelled_calls) == 1, backend.mark_cancelled_calls
+    assert not backend.mark_failed_or_retry_calls, backend.mark_failed_or_retry_calls
+    assert not backend.mark_succeeded_calls, backend.mark_succeeded_calls
+    assert not timeout_metric_calls, timeout_metric_calls
+    assert not any(entry.get("event") == "job_timeout" for entry in logs), logs
+    assert probe.fires == 1, (
+        "the stall must cross the start_to_close deadline exactly once (the proxy"
+        " must see the enforcement's own _fire run) or this pin no longer reaches"
+        " its subject"
+    )
 
 
 @pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])

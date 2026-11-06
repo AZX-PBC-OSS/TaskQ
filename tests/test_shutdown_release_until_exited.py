@@ -265,10 +265,25 @@ async def test_a_cancelled_sync_actor_await_detaches_but_the_thread_is_tracked()
         return {"done": True}
 
     class _Ctx:
+        """Minimal ctx double carrying the stash contract the helper uses
+        (plus the deadline-rescue record face its thread body now writes:
+        the finish stamp and the outcome, kept earliest-wins like the real
+        face)."""
+
         _sync_actor_task: asyncio.Task[object] | None = None
+        _actor_body_finished_at: float | None = None
+        _actor_body_outcome: tuple[object, BaseException | None] | None = None
 
         def _set_sync_actor_task(self, task: asyncio.Task[object]) -> None:
             self._sync_actor_task = task
+
+        def _record_actor_body_finished_at(self, when: float) -> None:
+            if self._actor_body_finished_at is None or when < self._actor_body_finished_at:
+                self._actor_body_finished_at = when
+
+        def _record_actor_body_outcome(self, value: object, exc: BaseException | None) -> None:
+            if self._actor_body_outcome is None:
+                self._actor_body_outcome = (value, exc)
 
     ctx = _Ctx()
 
@@ -834,12 +849,25 @@ async def test_a_running_sync_actor_is_registered_until_its_thread_returns() -> 
         return {"done": True}
 
     class _Ctx:
-        """Minimal ctx double carrying the stash contract the helper uses."""
+        """Minimal ctx double carrying the stash contract the helper uses
+        (plus the deadline-rescue record face its thread body now writes:
+        the finish stamp and the outcome, kept earliest-wins like the real
+        face)."""
 
         _sync_actor_task: asyncio.Task[object] | None = None
+        _actor_body_finished_at: float | None = None
+        _actor_body_outcome: tuple[object, BaseException | None] | None = None
 
         def _set_sync_actor_task(self, task: asyncio.Task[object]) -> None:
             self._sync_actor_task = task
+
+        def _record_actor_body_finished_at(self, when: float) -> None:
+            if self._actor_body_finished_at is None or when < self._actor_body_finished_at:
+                self._actor_body_finished_at = when
+
+        def _record_actor_body_outcome(self, value: object, exc: BaseException | None) -> None:
+            if self._actor_body_outcome is None:
+                self._actor_body_outcome = (value, exc)
 
     ctx = _Ctx()
     runner = asyncio.ensure_future(_run_sync_actor_tracked(body, {}, ctx))  # type: ignore[arg-type]  # Why: the minimal double satisfies the setter contract; the body takes no kwargs.

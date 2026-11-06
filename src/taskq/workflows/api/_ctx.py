@@ -217,10 +217,13 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         no sync carrier, so nothing writes it here (see the field's
         comment), never by body code. Same contract as the vanilla
         ``JobContext``'s: per attempt, reset with the stamp before
-        arming. ``object.__setattr__`` because the dataclass is frozen;
-        exactly as the other stamps do.
+        arming, earliest-wins (only when unset — the enforcement's own
+        frame writes after any thread's record, never over it).
+        ``object.__setattr__`` because the dataclass is frozen; exactly
+        as the other stamps do.
         """
-        object.__setattr__(self, "_actor_body_outcome", (value, exc))
+        if self._actor_body_outcome is None:
+            object.__setattr__(self, "_actor_body_outcome", (value, exc))
 
     def _reset_actor_body_attempt_record(self) -> None:
         """Clear the body's per-attempt record (the finish stamp and the

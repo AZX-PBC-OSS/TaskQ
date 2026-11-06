@@ -229,22 +229,26 @@ class JobContext[P: BaseModel]:
         """Record the actor body's own outcome: the returned value, or the
         exception the body raised (the sync thread's ``SystemExit``
         already carried, so the loop is never asked to re-raise the pair
-        bare). Called by the sync dispatch's thread body — the one writer
-        — alongside its finish stamp (the outcome first), never by actor
-        code.
+        bare). Called by the sync dispatch's thread body and by the
+        enforcement's own body frame (both write their outcome before
+        their finish stamp), never by actor code.
 
         The deadline's rescue reads this record when the deadline's
         cancel landed on a body task whose thread had already finished:
         the task's own ``result()`` is a CancelledError in that state,
         and the thread's recorded outcome is the only truthful answer.
-        The JobContext is constructed per claim (per attempt), and the
+        EARLIEST-WINS (only when unset): a sync thread that finished in
+        time records first, and the deadline's later cancellation of the
+        async frame must not overwrite the thread's outcome. The
+        JobContext is constructed per claim (per attempt), and the
         enforcement resets the record with the finish stamp before
         arming, so no attempt can read a prior attempt's outcome.
         ``object.__setattr__`` because the dataclass is frozen; the
         record is consumer state that arrives after construction, exactly
         as the stamps and handles do.
         """
-        object.__setattr__(self, "_actor_body_outcome", (value, exc))
+        if self._actor_body_outcome is None:
+            object.__setattr__(self, "_actor_body_outcome", (value, exc))
 
     def _reset_actor_body_attempt_record(self) -> None:
         """Clear the body's per-attempt record (the finish stamp and the
