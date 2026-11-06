@@ -15,19 +15,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextvars import Context, ContextVar
 from dataclasses import dataclass
 
 GRACE_SECONDS = 30.0
 
-#: The task that registered a done callback, carried into the callback's
-#: execution so a task the callback creates descends from it. Callbacks
-#: run without a current task; without this the factory would record no
-#: parent for a callback-spawned child.
-_callback_owner: ContextVar[asyncio.Task[object] | None] = ContextVar(  # type: ignore[misc]  # Why: the contextvar's default is None; the declared value type is the owning Task.
-    "tq_callback_owner", default=None
-)
+#: The call-phase owner: the root test task, stamped on the task's own
+#: context at creation and inherited by every task created from a
+#: call-owned context (task creation, done callbacks, plain futures all
+#: copy the creating context). The conftest leak guard's drain reads it
+#: to scope discovery to the call-owned tree.
+_call_owner: ContextVar[asyncio.Task[object] | None] = ContextVar("tq_call_owner", default=None)
 
 
 @dataclass
@@ -38,80 +38,43 @@ class ManagedLoop:
     shutdown: asyncio.Event
 
 
-class _ParentLinkTask(asyncio.Task[object]):
-    """A Task that records its creator and propagates callback ownership.
-
-    ``_tq_parent`` is the task that created this one, or the task whose
-    done callback created it. The conftest leak guard's drain walks the
-    links to scope child discovery to the call-owned tree."""
-
-    def __init__(
-        self,
-        coro: asyncio.Future[object] | Awaitable[object],
-        *,
-        loop: asyncio.AbstractEventLoop | None = None,
-        name: str | None = None,
-        context: Context | None = None,
-    ) -> None:
-        super().__init__(coro, loop=loop, name=name, context=context)
-        owner: asyncio.Task[object] | None
-        try:
-            owner = asyncio.current_task()
-        except RuntimeError:
-            owner = None
-        if owner is None:
-            owner = _callback_owner.get()
-        self._tq_parent = owner  # type: ignore[attr-defined]  # Why: Task exposes no parent link; the drain's ownership needs the creator chain and this is the one place every task creation passes through.
-
-    def add_done_callback(
-        self,
-        callback: Callable[[asyncio.Task[object]], object],
-        *,
-        context: Context | None = None,
-    ) -> None:
-        try:
-            registering: asyncio.Task[object] | None = asyncio.current_task()
-        except RuntimeError:
-            registering = None
-        if registering is None:
-            registering = _callback_owner.get()
-        if registering is None:
-            # No owning task anywhere (the loop's own machinery): the
-            # callback runs unwrapped.
-            super().add_done_callback(callback, context=context)
-            return
-
-        def _owned(fut: asyncio.Task[object]) -> None:
-            token = _callback_owner.set(registering)
-            try:
-                callback(fut)
-            finally:
-                _callback_owner.reset(token)
-
-        super().add_done_callback(_owned, context=context)
-
-
-def install_parent_link_factory(loop: asyncio.AbstractEventLoop) -> None:
-    """Install, once per loop, the parent-link task factory. The conftest
-    leak guard's drain walks the links to scope child discovery to the
-    call-owned tree; a task created outside a running task and outside a
-    call-owned callback records no parent."""
-    if getattr(loop, "_tq_parent_link_installed", False):
-        return
-    loop.set_task_factory(_parent_link_factory)
-    loop._tq_parent_link_installed = True  # type: ignore[attr-defined]  # Why: the idempotence marker lives on the loop; the module loops are plain asyncio loops.
-
-
 def _parent_link_factory(
     loop: asyncio.AbstractEventLoop,
     coro: asyncio.Future[object] | Awaitable[object],
     *,
     name: str | None = None,
     context: Context | None = None,
-) -> _ParentLinkTask:
-    """The task factory the supervisor list's loops run under: every task
-    gets the parent link (see ``_ParentLinkTask``)."""
-    return _ParentLinkTask(coro, loop=loop, name=name, context=context)
+) -> asyncio.Task[object]:
+    """The task factory the converted drivers' loops run under: every task
+    carries the call-phase owner in its context. A task created from a
+    call-owned context inherits that owner; a task created outside any
+    task whose coroutine is the test's own (the test task pytest-asyncio
+    runs at the call) roots a new ownership tree at itself."""
+    task_context = context if context is not None else contextvars.copy_context()
+    task = asyncio.Task(coro, loop=loop, name=name, context=task_context)
+    inherited = task_context.get(_call_owner)
+    if inherited is not None:
+        task.get_context().run(_call_owner.set, inherited)
+    else:
+        co_name = getattr(getattr(coro, "cr_code", None), "co_name", "")
+        if co_name.startswith("test"):
+            task.get_context().run(_call_owner.set, task)
+    return task
+
+
+def contextvars_copy() -> Context:
+    import contextvars
+
+    return contextvars.copy_context()
+
+
+def install_parent_link_factory(loop: asyncio.AbstractEventLoop) -> None:
+    """Install, once per loop, the ownership task factory (see
+    :func:`_parent_link_factory`)."""
+    if getattr(loop, "_tq_parent_link_installed", False):
+        return
+    loop.set_task_factory(_parent_link_factory)
+    loop._tq_parent_link_installed = True  # type: ignore[attr-defined]  # Why: the idempotence marker lives on the loop; the module loops are plain asyncio loops.
 
 
 @contextlib.asynccontextmanager  # pyright: ignore[reportDeprecated]  # Why: the stdlib cm factory is the test-utility shape the suite's other async CMs use.

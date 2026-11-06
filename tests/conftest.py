@@ -125,6 +125,9 @@ from taskq.testing.settings import (
 )
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.health import HealthServer
+from tests._loop_control import (
+    _call_owner,  # pyright: ignore[reportPrivateUsage]  # Why: the ownership stamp the drain reads lives with the task factory that writes it.
+)
 
 # Fixture registration: pytest sees fixtures imported into conftest (the
 # web_admin/_fixtures.py pattern — pytest 9.1.1 drops nested-conftest
@@ -637,39 +640,24 @@ async def _drain_to_quiescence(
     """
     deadline = loop.time() + budget
     # The ownership seeds: the call-end window's tasks, done or pending.
-    # Their descendants (through the creator links the loop's task factory
-    # records) are call-owned too, even when the parent finished before
-    # the guard ran. A task whose ancestry reaches none of the seeds is
-    # not the test's and is never drained.
-    owned = set(tasks)
-    pending = {t for t in owned if not t.done()}
-    processed: set[asyncio.Task[object]] = set(owned)
+    # A seed's context carries the call owner (the root test task the
+    # loop's task factory stamped); every pending task whose context
+    # carries one of those owners is call-owned too, including an orphan
+    # whose parent finished before the guard ran, and a task created by a
+    # done callback (the callback runs in the registering task's context
+    # copy). A task whose context has none of the owners is not the
+    # test's and is never drained.
+    roots = {t.get_context().get(_call_owner) for t in tasks} - {None}
+    pending = {t for t in tasks if not t.done()} | {
+        t
+        for t in asyncio.all_tasks(loop)
+        if t not in tasks
+        and not t.done()
+        and t is not asyncio.current_task()
+        and t.get_context().get(_call_owner) in roots
+    }
+    processed: set[asyncio.Task[object]] = set(tasks)
     drained: list[asyncio.Task[object]] = []
-
-    def _descends_from_owned(t: asyncio.Task[object]) -> bool:
-        parent = getattr(t, "_tq_parent", None)
-        hops = 0
-        while parent is not None and hops < 1000:
-            if parent in owned:
-                return True
-            parent = getattr(parent, "_tq_parent", None)
-            hops += 1
-        return False
-
-    def _owned_pending() -> set[asyncio.Task[object]]:
-        return {
-            t
-            for t in asyncio.all_tasks(loop)
-            if t not in processed
-            and not t.done()
-            and t is not asyncio.current_task()
-            and _descends_from_owned(t)
-        }
-
-    # The drain's working set: the seeds' own pending tasks plus the
-    # pending tasks descended from them (a parent may have finished
-    # before the guard ran, leaving an orphan child behind).
-    pending = {t for t in owned if not t.done()} | _owned_pending()
 
     natural_grace = True
     while pending and loop.time() < deadline:
@@ -690,12 +678,18 @@ async def _drain_to_quiescence(
                 t.exception()
         drained.extend(sorted(completed, key=lambda t: t.get_name()))
         processed |= pending
-        owned |= pending
         # A task that swallowed its cancellation is still pending: it
-        # stays in the drain. A pending task descended from an owned one
-        # joins it; everything else (a fixture teardown's own task) is
-        # not the test's and is left alone.
-        pending = {t for t in pending if not t.done()} | _owned_pending()
+        # stays in the drain. A pending task carrying a call owner joins
+        # it; everything else (a fixture teardown's own task) is not the
+        # test's and is left alone.
+        pending = {t for t in pending if not t.done()} | {
+            t
+            for t in asyncio.all_tasks(loop)
+            if t not in processed
+            and not t.done()
+            and t is not asyncio.current_task()
+            and t.get_context().get(_call_owner) in roots
+        }
     survivors = sorted(pending, key=lambda t: t.get_name())
     drained = sorted(set(drained) - set(survivors), key=lambda t: t.get_name())
     return drained, survivors
@@ -747,7 +741,7 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
         yield
         return
     request.node.stash[_GUARD_LOOP_KEY] = loop
-    from tests._loop_control import install_parent_link_factory
+    from tests._loop_control import install_parent_link_factory  # the ownership factory
 
     install_parent_link_factory(loop)
     before = asyncio.all_tasks(loop)

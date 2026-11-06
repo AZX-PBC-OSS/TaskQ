@@ -1245,7 +1245,16 @@ async def _drive_guarded_call(
     with contextlib.suppress(StopIteration):
         hook.send(None)  # the call phase ends: the call-end snapshot lands
     if during_teardown_window is not None:
-        await during_teardown_window()
+        # A fixture teardown's finalizer task runs in the context
+        # pytest-asyncio captured at the fixture's setup: unrooted (no
+        # call owner). The callback runs in an explicit fresh context so
+        # its tasks are unrooted too, matching the real machinery.
+        import contextvars as _cv
+
+        await asyncio.wait_for(
+            asyncio.create_task(during_teardown_window(), context=_cv.Context()),
+            timeout=30.0,
+        )
     with contextlib.suppress(StopAsyncIteration):
         await guard.__anext__()  # teardown: the guard's check and verdict
     return item
