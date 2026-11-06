@@ -1887,11 +1887,13 @@ async def _enforce_start_to_close(
         deadline_latch.set_result(None)
 
     # The timer's due time on the loop's own monotonic clock — the line the
-    # body's finish stamp is judged against. Taken at the call_later site:
-    # the deadline is the arming moment plus the timeout, not the function
-    # entry's.
-    deadline_when = loop.time() + timeout
+    # body's finish stamp is judged against. Read off the handle itself:
+    # the deadline is the arming moment plus the timeout, and the handle's
+    # `when()` is that exact instant — a second clock read here would sit
+    # microseconds early and push the inclusive boundary off by the read
+    # gap.
     deadline_handle = loop.call_later(timeout, _fire)
+    deadline_when = deadline_handle.when()
     try:
         await asyncio.wait(
             {body_task, deadline_latch},
@@ -1975,10 +1977,11 @@ async def _enforce_start_to_close(
                 # across the boundary). The body's own outcome is the
                 # thread's recorded one -- return its value or re-raise
                 # its exception (the carrier / its own exception) as the
-                # ordinary outcome it is. A missing record cannot happen
-                # (the thread records before its stamp; the stamp is the
-                # rescue's precondition), so the defensive arm is the
-                # truthful timeout -- never a cancelled read.
+                # ordinary outcome it is. The record is normally present
+                # (the thread records before its stamp, and the stamp is
+                # this arm's precondition), but a recording failure or a
+                # signal can leave it absent: then the defensive arm is
+                # the truthful timeout -- never a cancelled read.
                 record = ctx._actor_body_outcome
                 if record is None:
                     raise _StartToCloseExceededError from None
