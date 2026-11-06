@@ -38,15 +38,17 @@ async def managed_loop(
 ) -> AsyncIterator[ManagedLoop]:
     """Start ``loop_fn(shutdown)`` as a task and stop it on exit.
 
-    On exit the shutdown event is set; the loop gets *grace* seconds to
-    finish its current tick and exit on its own. Only if the grace
-    expires does the wait cancel the task; that cancellation is the
-    supervisor's own and is not an error. The body's primary exception
-    (including a TimeoutError the loop task raised itself) wins over any
-    cleanup failure: a cleanup error is surfaced only when the body
-    raised nothing. *drain*, an optional awaitable for a pool the test
-    owns, runs after the stop; with a body exception it is bounded and
-    suppressed so the primary error is not masked.
+    On exit the shutdown event is set and the loop gets *grace* seconds
+    to finish its current tick and exit on its own. Only if the grace
+    expires is the task cancelled, and then a hard short bound waits for
+    the cancellation to land: a loop that swallows it is reported as a
+    survivor (the caller's drain, or the guard's, contains it). The
+    body's primary exception (including a TimeoutError the loop task
+    raised itself) wins over any cleanup failure: a cleanup error is
+    surfaced only when the body raised nothing. The supervisor does not
+    retrieve a detached shielded release; the caller-supplied *drain*
+    (for a pool the test owns) runs after the stop and is bounded and
+    suppressed when the body failed, so the primary error is not masked.
     """
     shutdown = asyncio.Event()
     task = asyncio.create_task(loop_fn(shutdown), name=name)
@@ -58,21 +60,28 @@ async def managed_loop(
         raise
     finally:
         shutdown.set()
-        try:
-            await asyncio.wait_for(task, timeout=grace)
-        except TimeoutError:
+        done, _pending_after_grace = await asyncio.wait({task}, timeout=grace)
+        if done:
             if not task.cancelled():
-                # Not our grace: the loop task ended with its own
-                # TimeoutError. Surface it unless the body's own error
-                # takes precedence.
+                # The loop ended on its own; its exception (a TimeoutError
+                # it raised itself included) is surfaced unless the body's
+                # error takes precedence.
                 try:
                     task.result()
                 except BaseException:
                     if body_exc is None:
                         raise
-        except BaseException:
-            if body_exc is None:
-                raise
+        else:
+            # The grace expired: cancel, then a hard short bound. A loop
+            # that swallows the cancellation is reported as a survivor;
+            # the guard's drain contains it.
+            task.cancel()
+            _, still = await asyncio.wait({task}, timeout=2.0)
+            if still and body_exc is None:
+                raise RuntimeError(
+                    f"the supervised loop {task.get_name()!r} did not finish "
+                    "within its grace and ignored its cancellation"
+                )
         if drain is not None:
             if body_exc is None:
                 await asyncio.wait_for(drain(), timeout=grace)

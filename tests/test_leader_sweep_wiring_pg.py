@@ -16,7 +16,7 @@ the loop's own control flow, not a statement.
 
 import asyncio
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, timedelta
 
 import asyncpg
@@ -245,6 +245,32 @@ async def test_loop_supervisor_preserves_the_body_error(
     expected_type = errors[body_error] if expected_match == "body" else errors[loop_error]
     with pytest.raises(expected_type, match=expected_match):
         await _the_attempt()
+
+
+async def test_loop_supervisor_reports_a_survivor_of_the_fallback() -> None:
+    """The two-phase stop's bound: a loop that swallows its cancellation
+    outlives the cancel, and the supervisor reports it (RuntimeError)
+    when the body raised nothing, instead of letting the test timeout be
+    the only backstop. The loop stays stubborn only past the fallback's
+    bound, then exits, so the module loop's teardown is not held."""
+    handles: list[asyncio.Task[object]] = []
+
+    async def _swallowing_loop(shutdown: asyncio.Event) -> object:
+        deadline = asyncio.get_running_loop().time() + 2.5
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                continue
+        return None
+
+    with pytest.raises(RuntimeError, match="ignored its cancellation"):
+        async with managed_loop(_swallowing_loop, grace=0.05) as handle:
+            handles.append(handle.task)
+            await asyncio.sleep(0.001)
+    handles[0].cancel()
+    with suppress(asyncio.CancelledError):
+        await asyncio.wait_for(handles[0], timeout=3.0)
 
 
 async def test_event_retention_runs_one_batch_per_tick_on_real_rows(

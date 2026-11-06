@@ -1207,15 +1207,18 @@ _GUARD_RAW_FIXTURE = cast(
 async def _drive_guarded_call(
     during_call: Callable[[], Awaitable[None]],
     during_teardown_window: Callable[[], Awaitable[None]] | None = None,
+    during_setup: Callable[[], Awaitable[None]] | None = None,
 ) -> _GuardStubItem:
     """Run the REAL guard fixture and the REAL call-end snapshot hook
     through one simulated item lifecycle:
 
-    guard setup (baseline) → call-start snapshot → *during_call* (the
-    test body) → call-end snapshot → *during_teardown_window* (the OTHER
-    fixtures' teardowns, which run the loop and can reap residue) →
-    guard teardown (raises the guard's failure on a leak, ends the async
-    generator cleanly otherwise).
+    guard setup (baseline) → *during_setup* (a function fixture's task,
+    minted after the guard's baseline and before the call) → call-start
+    snapshot → *during_call* (the test body) → call-end snapshot →
+    *during_teardown_window* (the OTHER fixtures' teardowns, which run
+    the loop and can reap residue) → guard teardown (raises the guard's
+    failure on a leak the drain could not clean, ends the async generator
+    cleanly otherwise).
 
     Raises whatever the guard's teardown raises (``pytest.fail.Exception``
     on a leak the drain could not clean; ``StopAsyncIteration`` on a
@@ -1227,6 +1230,8 @@ async def _drive_guarded_call(
     item = request.node
     guard = _GUARD_RAW_FIXTURE(request)
     await guard.__anext__()  # setup: stash the loop, snapshot the baseline
+    if during_setup is not None:
+        await during_setup()
     hook = cast(
         "Generator[object, None, object]",
         pytest_runtest_call(cast(pytest.Item, item)),
@@ -1273,12 +1278,13 @@ async def test_guard_catches_residue_reaped_in_the_teardown_window() -> None:
 
 
 async def test_guard_drains_a_release_tail_that_outlives_the_call() -> None:
-    """The CI leak class, contained: a test body leaves a task holding a
-    shielded slow release in flight (the asyncpg
-    PoolConnectionHolder.release shape), the call ends, and the guard's
-    quiescence drain lets the release finish naturally. The test passes;
-    the drained task is named in the report's warnings section, and no
-    pending task outlives the drive."""
+    """The CI leak class, allowed by name: a test body leaves a task
+    holding a shielded slow release in flight (the asyncpg
+    PoolConnectionHolder.release shape, marked with the ``release-tail:``
+    name prefix), the call ends, and the guard's quiescence drain lets
+    the release finish naturally. The test passes; the drained task is
+    named in the report's warnings section, and no pending task outlives
+    the drive."""
     release_done = asyncio.Event()
     minted: list[asyncio.Task[None]] = []
 
@@ -1290,16 +1296,48 @@ async def test_guard_drains_a_release_tail_that_outlives_the_call() -> None:
         async def _holder() -> None:
             await asyncio.shield(_release_tail())
 
-        minted.append(asyncio.create_task(_holder(), name="hygiene-release-tail"))
+        minted.append(asyncio.create_task(_holder(), name="release-tail:hygiene-pool-release"))
 
-    await _drive_guarded_call(body)
+    item = await _drive_guarded_call(body)
     assert release_done.is_set(), "the drain must let the in-flight release finish"
+    sections = [
+        content for _, key, content in item.report_sections if key.startswith("leaked asyncio")
+    ]
+    assert sections and "release-tail:hygiene-pool-release" in sections[0], (
+        f"the drained release tail must be named in the report: {item.report_sections}"
+    )
+
+
+async def test_guard_fails_a_detached_write_that_outlives_the_assertions() -> None:
+    """The drain is not a pass for every leak: a task that writes shared
+    state AFTER the test's assertions ran is the assertion-before-write
+    class, and the guard fails the test even though the drain completed
+    the task. A blanket drain-and-pass would hide exactly the late write
+    the assertions did not see."""
+    wrote_after_assertions = asyncio.Event()
+    minted: list[asyncio.Task[None]] = []
+
+    async def body() -> None:
+        async def _late_write() -> None:
+            await asyncio.sleep(0.05)
+            wrote_after_assertions.set()
+
+        minted.append(asyncio.create_task(_late_write(), name="detached-write"))
+        # The pre-write assertion: the state the test saw. The write lands
+        # after it, during the guard's drain.
+        assert not wrote_after_assertions.is_set()
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
+    assert wrote_after_assertions.is_set(), "the drain must have completed the late write"
+    assert "detached-write" in str(exc_info.value), str(exc_info.value)
 
 
 async def test_guard_drains_a_task_and_the_child_it_spawns() -> None:
-    """The drain repeats for spawned tasks: an outliving task spawns a
-    child during the drain's grace, and both are completed before the
-    drive returns, so the next test on this module loop starts isolated."""
+    """The drain follows the spawned tree and the failure names it: an
+    outliving task spawns a child during the drain's grace; both are
+    completed, and because neither is a release tail the guard fails the
+    leaking test and names the task it minted."""
     child_done = asyncio.Event()
     minted: list[asyncio.Task[None]] = []
 
@@ -1314,8 +1352,39 @@ async def test_guard_drains_a_task_and_the_child_it_spawns() -> None:
     async def body() -> None:
         minted.append(asyncio.create_task(_spawner(), name="hygiene-spawner"))
 
-    await _drive_guarded_call(body)
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
     assert child_done.is_set(), "the drain must follow the spawned child to completion"
+    assert "hygiene-spawner" in str(exc_info.value), str(exc_info.value)
+
+
+async def test_guard_leaves_a_fixture_owned_task_alone() -> None:
+    """A task a function fixture started (after the guard's setup, before
+    the call) is in the call-start snapshot and the drain's ownership
+    excludes it: the guard neither drains nor cancels it, and the test
+    passes."""
+    fixture_tasks: list[asyncio.Task[None]] = []
+
+    async def _fixture_worker() -> None:
+        await asyncio.sleep(3600)
+
+    async def during_setup() -> None:
+        fixture_tasks.append(asyncio.create_task(_fixture_worker(), name="hygiene-fixture-owned"))
+
+    async def body() -> None:
+        await asyncio.sleep(0.001)
+
+    item = await _drive_guarded_call(body, during_setup=during_setup)
+    assert fixture_tasks, "the pin's premise: the fixture task exists"
+    assert not fixture_tasks[0].cancelled(), "the guard must not cancel a fixture's task"
+    assert not fixture_tasks[0].done()
+    sections = [
+        content for _, key, content in item.report_sections if key.startswith("leaked asyncio")
+    ]
+    assert not sections, f"the fixture task must not be named as a leak: {sections}"
+    fixture_tasks[0].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await fixture_tasks[0]
 
 
 async def test_guard_fails_a_survivor_within_the_drain_bound() -> None:
@@ -1363,14 +1432,13 @@ async def test_guard_catches_a_fixture_looking_task_name_smuggled_by_the_body() 
     async def body() -> None:
         minted.append(asyncio.create_task(_hygiene_leak_probe_coro(), name="fixture-owned-fake"))
 
-    item = await _drive_guarded_call(body)
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
     smuggled = minted[0]
     assert smuggled.done(), "the drain must have completed the smuggled leak"
-    sections = [
-        content for _, key, content in item.report_sections if key.startswith("leaked asyncio")
-    ]
-    assert sections and "fixture-owned-fake" in sections[0], (
-        f"a fixture-looking name smuggled a real leak past the guard: {item.report_sections}"
+    message = str(exc_info.value)
+    assert "fixture-owned-fake" in message, (
+        f"a fixture-looking name smuggled a real leak past the guard: {message}"
     )
 
 

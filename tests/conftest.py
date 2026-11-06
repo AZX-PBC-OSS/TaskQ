@@ -530,6 +530,12 @@ _GUARD_LOOP_KEY: pytest.StashKey[asyncio.AbstractEventLoop] = pytest.StashKey()
 #: test-end residue snapshot (see ``_call_window_leak_report``).
 _GUARD_CALL_WINDOW_KEY: pytest.StashKey[list[asyncio.Task[object]]] = pytest.StashKey()
 
+#: Everything pending when the call phase started: the guard's baseline
+#: plus the function fixtures' tasks. The drain's ownership set is the
+#: call phase's own tasks (this snapshot minus the baseline), so a
+#: function fixture's task is never drained or cancelled by the guard.
+_GUARD_CALL_START_KEY: pytest.StashKey[set[asyncio.Task[object]]] = pytest.StashKey()
+
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item: pytest.Item) -> object:
@@ -550,6 +556,7 @@ def pytest_runtest_call(item: pytest.Item) -> object:
         result = yield
         return result
     pending_at_call_start = asyncio.all_tasks(loop)
+    item.stash[_GUARD_CALL_START_KEY] = pending_at_call_start
     try:
         result = yield
     finally:
@@ -565,9 +572,32 @@ def pytest_runtest_call(item: pytest.Item) -> object:
 
 #: The central drain's bounds: the whole drain is bounded by the budget
 #: (under the 300s per-test timeout); the natural-completion grace inside
-#: it lets healthy finishing work finish without a cancel.
+#: it sits at the dispatcher command timeout's 5s default, so a healthy
+#: release finishes naturally instead of being cancelled and detached.
 _DRAIN_BUDGET_SECONDS = 10.0
-_DRAIN_NATURAL_GRACE_SECONDS = 2.0
+_DRAIN_NATURAL_GRACE_SECONDS = 5.0
+
+#: A drained call-end task is allowed as a benign release tail when its
+#: task name carries the synthetic marker, or when the coroutine is the
+#: real asyncpg pool release. Everything else a test left pending at call
+#: end is a failure, drained or not: a task that outlives its test's
+#: assertions can write shared state after they ran.
+_RELEASE_TAIL_NAME_PREFIX = "release-tail:"
+
+
+def _is_benign_release_tail(task: asyncio.Task[object]) -> bool:
+    """Whether a drained call-end task is the known benign release-tail
+    class: the real asyncpg ``PoolConnectionHolder.release`` (identified
+    by the coroutine's module and qualname), or a task the test marked
+    with the synthetic ``release-tail:`` name prefix. Everything else is
+    the test's own failure, drained or not."""
+    if task.get_name().startswith(_RELEASE_TAIL_NAME_PREFIX):
+        return True
+    coro = task.get_coro()
+    frame = getattr(coro, "cr_frame", None)
+    module = frame.f_globals.get("__name__", "") if frame else ""
+    qualname = getattr(coro, "__qualname__", "")
+    return module.startswith("asyncpg.") and qualname.endswith("PoolConnectionHolder.release")
 
 
 async def _drain_to_quiescence(
@@ -576,19 +606,21 @@ async def _drain_to_quiescence(
     *,
     before: set[asyncio.Task[object]],
     budget: float = _DRAIN_BUDGET_SECONDS,
-) -> list[asyncio.Task[object]]:
+) -> tuple[list[asyncio.Task[object]], list[asyncio.Task[object]]]:
     """Drain a leaked task tree to quiescence, bounded by *budget*.
 
     First a natural-completion grace (no cancel: healthy finishing work,
     like an in-flight pool release, is not interrupted), then
     cancel-and-await, repeating for tasks the drained ones spawned, until
-    nothing is pending or the budget expires. Returns the survivors
-    (still pending at the end): the guard fails only for those; everything
-    the drain completed is cleaned, not a failure.
+    nothing is pending or the budget expires. Returns ``(drained,
+    survivors)``: the drained completed and are the caller's to classify
+    (the release tails are benign, the rest are the test's failure); the
+    survivors failed the bound and always fail the test.
     """
     deadline = loop.time() + budget
     pending = {t for t in tasks if not t.done()}
     processed: set[asyncio.Task[object]] = set(tasks)
+    drained: list[asyncio.Task[object]] = []
     natural_grace = True
     while pending and loop.time() < deadline:
         if natural_grace:
@@ -600,6 +632,8 @@ async def _drain_to_quiescence(
             for t in pending:
                 t.cancel()
             await asyncio.wait(pending, timeout=min(1.0, deadline - loop.time()))
+        completed = {t for t in pending if t.done()}
+        drained.extend(sorted(completed, key=lambda t: t.get_name()))
         processed |= pending
         # A task that swallowed its cancellation is still pending: it
         # stays in the drain. So do the tasks the drained ones spawned.
@@ -613,7 +647,9 @@ async def _drain_to_quiescence(
             and t is not asyncio.current_task()
         }
         pending = still | spawned
-    return sorted(pending, key=lambda t: t.get_name())
+    survivors = sorted(pending, key=lambda t: t.get_name())
+    drained = sorted(set(drained) - set(survivors), key=lambda t: t.get_name())
+    return drained, survivors
 
 
 @pytest.fixture(autouse=True)
@@ -631,14 +667,18 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
     doctrine (``_stop_loop`` in test_leader_sweeps_coverage.py, the
     leader_task finally blocks in test_otel_integration.py).
 
-    Before failing, the guard drains what it can: the test-minted pending
-    tasks get a natural-completion grace (a pool release tail in flight
-    finishes instead of being cancelled), then cancel-and-await, repeated
-    for tasks the drained ones spawned, bounded by
-    ``_DRAIN_BUDGET_SECONDS``. A leak the drain completed is named in the
-    report's warnings section and does not fail the test; only tasks that
-    survive the bound do. The drain is the class-wide containment: a
-    missed task cannot outlive its test and poison the next one.
+    Before failing, the guard drains the call phase's own pending tasks:
+    a natural-completion grace (a pool release tail in flight finishes
+    instead of being cancelled), then cancel-and-await, repeated for
+    tasks the drained ones spawned, bounded by
+    ``_DRAIN_BUDGET_SECONDS``. A drained leak is allowed only when it is
+    the benign release-tail class (the asyncpg pool release, or a task
+    the test marked ``release-tail:``); it is named in the report's
+    warnings section. Any other task the test left pending at call end
+    fails the test even when the drain completed it: a task that outlives
+    the assertions can write shared state after they ran. Tasks that
+    survive the bound fail too. The drain is the class-wide containment:
+    a missed task cannot outlive its test and poison the next one.
 
     Baseline-snapshot diff, not an absolute check: tasks that were already
     pending when the test started (a module-scoped fixture's long-lived
@@ -670,27 +710,53 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
         current = asyncio.current_task()
         if current is not None:
             after.discard(current)
-        # The central quiescence drain: the test-minted pending tasks get
-        # a natural-completion grace, then cancel-and-await, repeated for
-        # spawned tasks, bounded. The drained leaks are named in the
-        # report's warnings section and are not a failure; the guard
-        # fails only for survivors.
-        pending_now = {t for t in after - before if not t.done()}
-        survivor_report: str | None = None
-        if pending_now:
-            survivors = await _drain_to_quiescence(loop, pending_now, before=before)
+        # The central quiescence drain. Ownership is the call phase's own
+        # tasks: minted during the call (the call-start snapshot minus the
+        # guard's baseline) and still pending at the guard's teardown. A
+        # task created after the call (a fixture teardown's) is not the
+        # test's and is never drained or failed here.
+        call_start = request.node.stash.get(_GUARD_CALL_START_KEY, set())
+        window_pending = {
+            t
+            for t in request.node.stash.get(_GUARD_CALL_WINDOW_KEY, [])
+            if not t.done() and t not in call_start
+        }
+        drain_failed_report: str | None = None
+        drained_warning: str | None = None
+        if window_pending:
+            drained, survivors = await _drain_to_quiescence(
+                loop, window_pending, before=call_start | before
+            )
+            if drained:
+                benign = [t for t in drained if _is_benign_release_tail(t)]
+                not_benign = [t for t in drained if not _is_benign_release_tail(t)]
+                if benign:
+                    drained_warning = "\n".join(
+                        f"  - task {t.get_name()!r} drained (release tail); coroutine: {t.get_coro()!r}"
+                        for t in benign
+                    )
+                if not_benign:
+                    drain_failed_report = (
+                        "test asserted before a task it left pending finished; "
+                        "the drain completed it and the write outlived the "
+                        "assertions:\n"
+                        + "\n".join(
+                            f"  - task {t.get_name()!r} drained; coroutine: {t.get_coro()!r}"
+                            for t in not_benign
+                        )
+                    )
             if survivors:
-                survivor_report = _leaked_pending_task_report(set(), set(survivors))
-            else:
-                request.node.add_report_section(
-                    "warnings",
-                    "leaked asyncio tasks (drained at teardown)",
-                    "\n".join(
-                        f"  - task {t.get_name()!r} drained; coroutine: {t.get_coro()!r}"
-                        for t in sorted(pending_now, key=lambda t: t.get_name())
-                    ),
+                names = _leaked_pending_task_report(set(), set(survivors)) or ""
+                drain_failed_report = (
+                    (drain_failed_report + "\n" if drain_failed_report else "")
+                    + "the drain gave up on task(s) that ignored the bound:\n"
+                    + names
                 )
-        report = survivor_report
+        if drained_warning is not None:
+            request.node.add_report_section(
+                "warnings", "leaked asyncio tasks (drained)", drained_warning
+            )
+        report = drain_failed_report
         # The test-end residue: tasks minted during the call phase and
         # still pending when the test's body finished. A task the drain
         # completed is cleaned (it was in the live pending set above and
@@ -702,7 +768,7 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
             [
                 t
                 for t in request.node.stash.get(_GUARD_CALL_WINDOW_KEY, [])
-                if t.done() and t not in pending_now
+                if t.done() and t not in window_pending
             ]
         )
         if window_report is not None:
