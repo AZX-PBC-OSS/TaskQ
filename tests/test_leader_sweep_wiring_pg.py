@@ -156,7 +156,9 @@ async def _run_loop_for_ticks(
     ticks: int,
     until: "asyncio.Event | None" = None,
 ) -> None:
-    """Run the real _sweep_loop for ~*ticks* cadence intervals, then stop."""
+    """Run the real _sweep_loop for ~*ticks* cadence intervals, then stop
+    it gracefully: shutdown first so the current tick finishes, cancel
+    only if the grace expires."""
     from taskq.worker import _leader_sweeps
 
     shutdown = asyncio.Event()
@@ -167,10 +169,15 @@ async def _run_loop_for_ticks(
         else:
             await asyncio.sleep(ticks * _SWEEP_INTERVAL)
     finally:
+        # Grace of 5s: the interval is 0.05s, so one tick plus its DB work
+        # fits many times over, and the test timeout is 300s.
         shutdown.set()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 async def test_event_retention_runs_one_batch_per_tick_on_real_rows(

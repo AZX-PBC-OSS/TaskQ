@@ -96,14 +96,21 @@ async def _run_one_tick(ctx: SweepContext, done: Callable[[], bool]) -> None:
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the sweep loop directly, matching precedent in test_keyed_reservation_hardening.py
-    for _ in range(200):
-        if done():
-            break
-        await asyncio.sleep(0.01)
-    shutdown.set()
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    try:
+        for _ in range(200):
+            if done():
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        # Graceful stop first (the interval is 0.05s; 5s covers a tick's
+        # work); cancel only if the grace expires.
+        shutdown.set()
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 async def test_non_leader_worker_sweeps_own_registry() -> None:

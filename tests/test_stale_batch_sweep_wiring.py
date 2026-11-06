@@ -156,7 +156,9 @@ async def _drive_sweep_loop(
     seconds: float,
     stop_on: Callable[[], bool] | None = None,
 ) -> None:
-    """Run ``_sweep_loop`` for up to *seconds* (or until *stop_on*), then stop it."""
+    """Run ``_sweep_loop`` for up to *seconds* (or until *stop_on*), then
+    stop it gracefully: shutdown first so the current tick finishes,
+    cancel only if the grace expires."""
     import taskq.worker._leader_sweeps as sweeps_mod
 
     shutdown = asyncio.Event()
@@ -168,10 +170,15 @@ async def _drive_sweep_loop(
                 break
             await asyncio.sleep(0.01)
     finally:
+        # Graceful stop first (the interval is 0.05s; 5s covers a tick's
+        # work); cancel only if the grace expires.
         shutdown.set()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 @contextlib.contextmanager

@@ -408,10 +408,16 @@ async def test_sweep_loop_drains_pending_rate_limit_reclaims(
                 break
             await asyncio.sleep(0.01)
     finally:
+        # Graceful stop first (the interval is 0.05s; 5s covers a tick's
+        # DB work); cancel only if the grace expires, so a cancel landing
+        # mid-tick cannot leave the pool's release task pending.
         shutdown.set()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     deletes = _rate_limit_delete_statements(pool)
     assert deletes, (

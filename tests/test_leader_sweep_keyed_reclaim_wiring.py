@@ -168,10 +168,15 @@ async def _run_loop_until(ctx: SweepContext, done: Callable[[], bool]) -> None:
                 break
             await asyncio.sleep(0.01)
     finally:
+        # Graceful stop first (the interval is 0.05s; 5s covers a tick's
+        # work); cancel only if the grace expires.
         shutdown.set()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 async def test_sweep_loop_drives_keyed_row_reclaim_with_configured_horizon() -> None:
