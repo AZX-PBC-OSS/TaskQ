@@ -621,6 +621,18 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
         if window_report is not None:
             report = report + "\n" + window_report if report is not None else window_report
         if report is not None:
+            # Contain the leak before failing: cancel the named tasks and
+            # await them (bounded), so a missed task cannot outlive its
+            # test and write shared state into the next one on this
+            # module loop. The failure below still names the original
+            # leak; the drain's own outcome is not the test's failure.
+            # The call-window report's tasks may already be reaped (done):
+            # only the still-pending ones have anything to drain.
+            leaked_tasks = [t for t in after - before if not t.done()]
+            if leaked_tasks:
+                for t in leaked_tasks:
+                    t.cancel()
+                await asyncio.wait(leaked_tasks, timeout=10.0)
             pytest.fail(
                 "test left asyncio task(s) still pending on the module event loop - "
                 "a live loop keeps writing shared state into later tests. "

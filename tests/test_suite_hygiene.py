@@ -2209,3 +2209,136 @@ def test_taskq_patch_guard_catches_the_string_form() -> None:
     assert _taskq_patch_offenders(object_form, {"ops": "taskq.web.admin.ops"}, set()), (
         "(c) the object form over an unregistered attribute must still be an offender"
     )
+
+
+# ── Long-running loop drivers go through the lifecycle supervisor ─────────
+# The leak class CI caught twice: a test cancels a long-running loop
+# mid-tick, detaching asyncpg's shielded PoolConnectionHolder.release onto
+# the module loop. tests/_loop_control.managed_loop owns the start and the
+# graceful stop for the modules on the supervisor list (the sweep-family
+# drivers converted to it). The list grows as the remaining real-PG
+# drivers convert (test_leader_integration.py, test_leader_chaos.py, the
+# fleet and heartbeat integration modules); their leaked tasks are
+# contained meanwhile by the conftest leak guard's teardown drain. The
+# deliberate mid-tick cancel driver in test_leader_sweeps_coverage.py is
+# the documented abrupt exemption: it cancels on purpose, over fakes, with
+# no pool to leak, and stays off the list.
+
+_LOOP_SUPERVISOR_MODULES = frozenset(
+    {
+        "test_leader_sweep_wiring_pg.py",
+        "test_leader_sweep_reclaim_drain_wiring.py",
+        "test_leader_sweep_rl_registry.py",
+        "test_leader_sweep_keyed_reclaim_wiring.py",
+        "test_leader_sweep_event_retention_wiring.py",
+        "test_keyed_rate_limit_bucket_reclamation.py",
+        "test_stale_batch_sweep_wiring.py",
+    }
+)
+
+_REGISTERED_LOOPS = frozenset(
+    {
+        "_sweep_loop",
+        "_scheduled_wake_loop",
+        "_cron_loop",
+        "_watchdog_loop",
+        "_election_loop",
+        "_prune_loop",
+        "heartbeat_loop",
+        "_health_check_loop",
+        "notify_listener_loop",
+    }
+)
+
+
+def _registered_loop_starts(path: Path) -> list[int]:
+    """Line numbers of ``create_task`` calls that start a registered
+    long-running loop (a named loop function, or a leader's ``run``)."""
+    tree = ast.parse(path.read_text())
+    starts = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = getattr(node.func, "id", "") or getattr(node.func, "attr", "")
+        if callee != "create_task" or not node.args:
+            continue
+        parts = set(re.split(r"[\s().,\[\]]", ast.unparse(node)))
+        if parts & _REGISTERED_LOOPS:
+            starts.append(node.lineno)
+            continue
+        target = node.args[0]
+        if (
+            isinstance(target, ast.Call)
+            and isinstance(target.func, ast.Attribute)
+            and target.func.attr == "run"
+            and "leader" in ast.unparse(target).lower()
+        ):
+            starts.append(node.lineno)
+    return starts
+
+
+def _adjacent_set_then_cancel(path: Path) -> list[int]:
+    """Line numbers of the legacy stop shape: a ``.set()`` call statement
+    immediately followed by a ``.cancel()`` call statement."""
+    tree = ast.parse(path.read_text())
+    lines = []
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):
+            continue
+        for first, second in zip(body, body[1:]):
+            first_set = (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Call)
+                and isinstance(first.value.func, ast.Attribute)
+                and first.value.func.attr == "set"
+            )
+            second_cancel = (
+                isinstance(second, ast.Expr)
+                and isinstance(second.value, ast.Call)
+                and isinstance(second.value.func, ast.Attribute)
+                and second.value.func.attr == "cancel"
+            )
+            if first_set and second_cancel:
+                lines.append(second.lineno)
+    return lines
+
+
+def test_long_running_loops_start_through_the_supervisor() -> None:
+    """Every registered long-running loop start in a supervisor-module
+    goes through tests/_loop_control.managed_loop, so no test there
+    hand-rolls a task whose cancel can detach asyncpg's shielded release."""
+    offenders = []
+    for path in _test_files():
+        if path.name not in _LOOP_SUPERVISOR_MODULES:
+            continue
+        for line in _registered_loop_starts(path):
+            offenders.append(f"{path.relative_to(_TESTS_DIR)}:{line}")
+    assert not offenders, (
+        "Registered long-running loop(s) started outside "
+        "tests/_loop_control.managed_loop:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nStart them through managed_loop so the graceful stop, the "
+        "grace bound, and the primary-exception preservation are owned in "
+        "one place."
+    )
+
+
+def test_no_legacy_stop_shape_in_supervisor_modules() -> None:
+    """No supervisor-module may hand-roll the legacy stop shape (a
+    ``shutdown.set()`` immediately followed by a ``task.cancel()``): the
+    adjacency is the mid-tick cancel that detaches asyncpg's shielded
+    release. The supervisor's stop waits for the loop's own exit first."""
+    offenders = []
+    for path in _test_files():
+        if path.name not in _LOOP_SUPERVISOR_MODULES:
+            continue
+        for line in _adjacent_set_then_cancel(path):
+            offenders.append(f"{path.relative_to(_TESTS_DIR)}:{line}")
+    assert not offenders, (
+        "Legacy stop shape (shutdown.set() immediately followed by "
+        "task.cancel()) in:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nStop the loop through tests/_loop_control.managed_loop: "
+        "shutdown first, a bounded grace, cancel only as a fallback."
+    )

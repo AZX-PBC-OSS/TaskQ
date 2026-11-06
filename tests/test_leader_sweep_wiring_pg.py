@@ -15,7 +15,6 @@ the loop's own control flow, not a statement.
 """
 
 import asyncio
-import contextlib
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, timedelta
@@ -29,6 +28,7 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.settings import WorkerSettings
+from tests._loop_control import managed_loop
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker._leader_shared import SweepContext
 from taskq.worker.deps import WorkerDeps
@@ -156,37 +156,122 @@ async def _run_loop_for_ticks(
     ticks: int,
     until: "asyncio.Event | None" = None,
 ) -> None:
-    """Run the real _sweep_loop for ~*ticks* cadence intervals, then stop
-    it gracefully: shutdown first so the current tick finishes, cancel
-    only if the grace expires."""
+    """Run the real _sweep_loop for ~*ticks* cadence intervals under the
+    lifecycle supervisor, which stops it gracefully on exit."""
     from taskq.worker import _leader_sweeps
+    from tests._loop_control import managed_loop
 
-    shutdown = asyncio.Event()
-    task = asyncio.create_task(_leader_sweeps._sweep_loop(ctx, shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the loop under test is the module's own.
-    body_exc: BaseException | None = None
-    try:
+    async with managed_loop(
+        lambda shutdown: _leader_sweeps._sweep_loop(ctx, shutdown), name="sweep-loop"
+    ):
         if until is not None:
             await asyncio.wait_for(until.wait(), timeout=ticks * _SWEEP_INTERVAL * 40)
         else:
             await asyncio.sleep(ticks * _SWEEP_INTERVAL)
-    except BaseException as exc:
-        body_exc = exc
-        raise
-    finally:
-        # Graceful stop: shutdown first so the current tick finishes;
-        # cancel only if the grace expires. The 30s grace sits well above
-        # the dispatcher command timeout (5s default) and far under the
-        # test timeout. The cleanup never masks the body's own error.
-        shutdown.set()
-        try:
-            await asyncio.wait_for(task, timeout=30.0)
-        except TimeoutError:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        except BaseException:
-            if body_exc is None:
-                raise
+
+
+async def _stop_like_the_helpers(
+    task: asyncio.Task[object],
+    shutdown: asyncio.Event,
+    body_exc: BaseException | None,
+    grace: float,
+) -> None:
+    """The stop shape the sweep-loop helpers use, on fake loops: shutdown
+    first, a bounded wait for the loop's own exit, the cancel fallback,
+    and the body's error taking precedence over a cleanup failure."""
+    shutdown.set()
+    try:
+        await asyncio.wait_for(task, timeout=grace)
+    except TimeoutError:
+        if not task.cancelled():
+            # Not our grace: the loop task ended with its own
+            # TimeoutError. Surface it unless the body's own error
+            # takes precedence.
+            try:
+                task.result()
+            except BaseException:
+                if body_exc is None:
+                    raise
+    except BaseException:
+        if body_exc is None:
+            raise
+
+
+async def test_loop_supervisor_drains_a_shielded_release() -> None:
+    """The supervisor's stop, pinned on fake loops: a shutdown-respecting
+    loop finishes inside the grace and its shielded slow release is
+    awaited to completion; a loop that ignores shutdown hits the grace
+    fallback, and the detached shielded release still runs to completion,
+    leaving no pending task at the end."""
+    release_one = asyncio.Event()
+
+    async def _release_one() -> None:
+        await asyncio.sleep(0.01)
+        release_one.set()
+
+    async def _loop_respecting_shutdown(shutdown: asyncio.Event) -> None:
+        while not shutdown.is_set():
+            await asyncio.shield(_release_one())
+            await asyncio.sleep(0.001)
+
+    async with managed_loop(_loop_respecting_shutdown, name="respecting") as handle:
+        await asyncio.sleep(0.001)
+    assert release_one.is_set(), "the graceful stop awaits the in-flight shielded release"
+    assert handle.task.done() and not handle.task.cancelled()
+
+    release_two = asyncio.Event()
+    release_tasks: set[asyncio.Task[None]] = set()
+
+    async def _release_two() -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        release_tasks.add(task)
+        await asyncio.sleep(0.01)
+        release_two.set()
+
+    async def _loop_ignoring_shutdown(shutdown: asyncio.Event) -> None:
+        while True:
+            await asyncio.shield(_release_two())
+            await asyncio.sleep(0.001)
+
+    async with managed_loop(_loop_ignoring_shutdown, name="ignoring", grace=0.05) as handle:
+        await asyncio.sleep(0.001)
+    assert handle.task.cancelled(), "the fallback must cancel a loop that ignores shutdown"
+    pending = [t for t in release_tasks if not t.done()]
+    await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=1.0)
+    assert release_two.is_set(), "the detached shielded release completes despite the cancel"
+
+
+@pytest.mark.parametrize(
+    ("body_error", "loop_error", "expected_match"),
+    [
+        ("RuntimeError", "TimeoutError", "body"),
+        ("TimeoutError", "TimeoutError", "body"),
+        ("none", "TimeoutError", "loop"),
+        ("RuntimeError", "RuntimeError", "body"),
+        ("none", "RuntimeError", "loop"),
+    ],
+)
+async def test_loop_supervisor_preserves_the_body_error(
+    body_error: str, loop_error: str, expected_match: str
+) -> None:
+    """The supervisor's error precedence, row by row: a body error
+    survives a cleanup failure of either kind, and a cleanup failure is
+    surfaced when the body raised nothing. The grace expiry (the task
+    cancelled by the wait itself) is the stop's own to suppress."""
+    errors = {"RuntimeError": RuntimeError, "TimeoutError": TimeoutError}
+
+    async def _loop_body(shutdown: asyncio.Event) -> object:
+        raise errors[loop_error]("loop")
+
+    async def _the_attempt() -> None:
+        async with managed_loop(_loop_body, grace=30.0):
+            if body_error != "none":
+                raise errors[body_error]("body")
+
+    expected_type = errors[body_error] if expected_match == "body" else errors[loop_error]
+    with pytest.raises(expected_type, match=expected_match):
+        await _the_attempt()
 
 
 async def test_event_retention_runs_one_batch_per_tick_on_real_rows(

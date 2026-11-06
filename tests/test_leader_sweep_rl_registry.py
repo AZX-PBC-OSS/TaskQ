@@ -93,32 +93,13 @@ def _seed_idle_keyed_entry(reg: RateLimitRegistry) -> None:
 
 async def _run_one_tick(ctx: SweepContext, done: Callable[[], bool]) -> None:
     import taskq.worker._leader_sweeps as sweeps_mod
+    from tests._loop_control import managed_loop
 
-    shutdown = asyncio.Event()
-    task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the sweep loop directly, matching precedent in test_keyed_reservation_hardening.py
-    body_exc: BaseException | None = None
-    try:
+    async with managed_loop(lambda shutdown: sweeps_mod._sweep_loop(ctx, shutdown)):
         for _ in range(200):
             if done():
                 break
             await asyncio.sleep(0.01)
-    except BaseException as exc:
-        body_exc = exc
-        raise
-    finally:
-        # Graceful stop first (the interval is 0.05s; the 30s grace sits
-        # well above the dispatcher command timeout and far under the
-        # test timeout). The cleanup never masks the body's own error.
-        shutdown.set()
-        try:
-            await asyncio.wait_for(task, timeout=30.0)
-        except TimeoutError:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        except BaseException:
-            if body_exc is None:
-                raise
 
 
 async def test_non_leader_worker_sweeps_own_registry() -> None:
