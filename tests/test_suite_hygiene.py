@@ -78,6 +78,7 @@ production never constructs. See the section comment there.
 import ast
 import asyncio
 import contextlib
+import gc
 import hashlib
 import inspect
 import itertools
@@ -1313,7 +1314,11 @@ async def test_guard_allows_a_release_completed_in_the_teardown_window() -> None
     release that completes during a fixture's teardown, before the
     guard's drain runs, is classified by the same predicate and allowed
     (named in the warnings), not failed by the call-window report. The
-    same release is green whichever teardown hop completes it."""
+    same release is green whichever teardown hop completes it. The
+    duck holder errors the release, so its outcome is retrieved by the
+    guard: the loop's exception handler must see no unretrieved-task
+    report."""
+    loop_exception_reports: list[dict[str, Any]] = []
 
     async def body() -> None:
         asyncio.create_task(  # noqa: RUF006  # Why: the task is the leak under test; the teardown window, then the drain, is its reaper.
@@ -1326,13 +1331,77 @@ async def test_guard_allows_a_release_completed_in_the_teardown_window() -> None
         # which is still a completion), before the guard's drain runs.
         await asyncio.sleep(0.02)
 
-    item = await _drive_guarded_call(body, during_teardown_window=teardown_window)
-    sections = [
-        content for _, key, content in item.report_sections if key.startswith("leaked asyncio")
-    ]
-    assert sections and "hygiene-early-release" in sections[0], (
-        f"the early-completed release must be allowed and named: {item.report_sections}"
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda loop, context: loop_exception_reports.append(dict(context)))
+    item: object = None
+    try:
+        item = await _drive_guarded_call(body, during_teardown_window=teardown_window)
+        sections = [
+            content
+            for _, key, content in item.report_sections  # type: ignore[attr-defined]  # Why: the drive returns the stub item the guard reported through.
+            if key.startswith("leaked asyncio")
+        ]
+        assert sections and "hygiene-early-release" in sections[0], (
+            f"the early-completed release must be allowed and named: {item.report_sections}"  # type: ignore[attr-defined]
+        )
+        # The duck holder errored the release: the guard's retrieval owns
+        # the outcome. Drop the references and collect: the loop's
+        # exception handler must see no unretrieved-task report.
+        del item
+        gc.collect()
+        unretrieved = [
+            entry
+            for entry in loop_exception_reports
+            if "exception was never retrieved" in entry.get("message", "")
+        ]
+        assert not unretrieved, (
+            f"the guard must retrieve the completed residue's outcome: {unretrieved}"
+        )
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+
+async def test_guard_drains_a_child_created_by_a_done_callback() -> None:
+    """Callback-created descendants are call-owned: a call-owned parent
+    pending at call end registers a done callback that creates a child;
+    the parent finishes during the teardown window, and the callback
+    runs without a current task. The factory carries the registering
+    task into the callback, so the child descends from the parent and
+    the drain completes it; the failure names the tree. Without the
+    callback ownership the child's parent link is empty and the child
+    survives into later tests."""
+    children: list[asyncio.Task[None]] = []
+
+    async def _child() -> None:
+        await asyncio.sleep(3600)
+
+    async def body() -> None:
+        async def _parent() -> None:
+            # The callback registers on a call-owned TASK (whose
+            # add_done_callback carries the registering task into the
+            # callback's execution); the inner task completes during the
+            # teardown window, so the callback runs there, without a
+            # current task, after the call-end snapshot.
+            inner = asyncio.create_task(asyncio.sleep(0.01), name="hygiene-cb-inner")
+            inner.add_done_callback(
+                lambda _fut: children.append(asyncio.create_task(_child(), name="hygiene-cb-child"))
+            )
+            await asyncio.sleep(0.05)
+
+        asyncio.create_task(_parent(), name="hygiene-cb-parent")  # noqa: RUF006  # Why: the task is the leak under test; the guard's drain is its reaper.
+
+    async def teardown_window() -> None:
+        # The parent finishes and its callback spawns the child during
+        # the teardown window, after the call-end snapshot.
+        await asyncio.sleep(0.05)
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body, during_teardown_window=teardown_window)
+    assert children and children[0].done(), (
+        "the drain must follow a child created by a done callback"
     )
+    assert "hygiene-cb-child" in str(exc_info.value), str(exc_info.value)
 
 
 async def test_guard_rejects_a_forged_asyncpg_shaped_release() -> None:

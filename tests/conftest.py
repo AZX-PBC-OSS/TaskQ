@@ -789,6 +789,12 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
             for t in request.node.stash.get(_GUARD_CALL_WINDOW_KEY, [])
             if t.done() and t not in pending_at_check and t not in call_start
         ]
+        for t in done_residue:
+            # The guard owns the residue: retrieve the outcome of every
+            # completed task (early or drained), so a release that errored
+            # on its holder is not reported as an unretrieved exception.
+            with contextlib.suppress(asyncio.CancelledError):
+                t.exception()
         benign = [t for t in done_residue if _is_benign_release_tail(t)]
         early_failed = [t for t in done_residue if not _is_benign_release_tail(t)]
         if window_residue:
