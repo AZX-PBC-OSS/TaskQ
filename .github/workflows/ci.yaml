@@ -318,6 +318,15 @@ jobs:
       - name: Run the adversarial probes (explicit paths, serial, zero-skip)
         run: |
           set -euo pipefail
+          if ! command -v initdb >/dev/null 2>&1; then
+            pgbindir="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | head -1 || true)"
+            if [ -z "$pgbindir" ]; then
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq postgresql
+              pgbindir="$(ls -d /usr/lib/postgresql/*/bin | head -1)"
+            fi
+            export PATH="$pgbindir:$PATH"
+          fi
           pgroot="$RUNNER_TEMP/probe-pg"
           rm -rf "$pgroot"; mkdir -p "$pgroot"
           printf 'postgres\n' > "$pgroot/pwfile"
