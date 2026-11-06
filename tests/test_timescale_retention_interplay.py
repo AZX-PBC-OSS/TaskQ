@@ -242,7 +242,18 @@ async def _force_policies_now(conn: asyncpg.Connection, schema: str) -> None:
         schema,
     )
     for r in rows:
-        await conn.execute("CALL run_job($1)", r["job_id"])
+        # The Timescale launcher can hold the job row while it schedules;
+        # a manual run landing in that window deadlocks and PG kills one
+        # side. The job is safe to re-run (the policy's own work is
+        # idempotent), so retry the transient.
+        for attempt in range(3):
+            try:
+                await conn.execute("CALL run_job($1)", r["job_id"])
+                break
+            except asyncpg.exceptions.DeadlockDetectedError:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.05)
 
 
 async def _wait_for(
