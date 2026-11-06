@@ -577,27 +577,37 @@ def pytest_runtest_call(item: pytest.Item) -> object:
 _DRAIN_BUDGET_SECONDS = 10.0
 _DRAIN_NATURAL_GRACE_SECONDS = 5.0
 
-#: A drained call-end task is allowed as a benign release tail when its
-#: task name carries the synthetic marker, or when the coroutine is the
-#: real asyncpg pool release. Everything else a test left pending at call
-#: end is a failure, drained or not: a task that outlives its test's
-#: assertions can write shared state after they ran.
-_RELEASE_TAIL_NAME_PREFIX = "release-tail:"
+#: The benign release-tail class is the real asyncpg pool release only,
+#: identified from the task's coroutine code object (its filename and
+#: qualname survive the coroutine's completion, unlike its frame).
+#: Everything else a test left pending at call end is a failure, drained
+#: or not: a task that outlives its test's assertions can write shared
+#: state after they ran.
+_IS_ASYNCPG_RELEASE_FILENAME = "asyncpg"
+_IS_ASYNCPG_RELEASE_QUALNAME = "PoolConnectionHolder.release"
 
 
 def _is_benign_release_tail(task: asyncio.Task[object]) -> bool:
     """Whether a drained call-end task is the known benign release-tail
-    class: the real asyncpg ``PoolConnectionHolder.release`` (identified
-    by the coroutine's module and qualname), or a task the test marked
-    with the synthetic ``release-tail:`` name prefix. Everything else is
-    the test's own failure, drained or not."""
-    if task.get_name().startswith(_RELEASE_TAIL_NAME_PREFIX):
-        return True
+    class: the real asyncpg ``PoolConnectionHolder.release``, identified
+    from the coroutine's code object (which survives completion; the
+    frame does not) or, while the task is still pending, from the frame's
+    module. Everything else is the test's own failure, drained or not."""
     coro = task.get_coro()
+    code = getattr(coro, "cr_code", None)
+    if code is not None and (
+        _IS_ASYNCPG_RELEASE_FILENAME in code.co_filename
+        and code.co_qualname.endswith(_IS_ASYNCPG_RELEASE_QUALNAME)
+    ):
+        return True
     frame = getattr(coro, "cr_frame", None)
-    module = frame.f_globals.get("__name__", "") if frame else ""
-    qualname = getattr(coro, "__qualname__", "")
-    return module.startswith("asyncpg.") and qualname.endswith("PoolConnectionHolder.release")
+    if frame is not None:
+        module = frame.f_globals.get("__name__", "")
+        if module.startswith(_IS_ASYNCPG_RELEASE_FILENAME) and getattr(
+            coro, "__qualname__", ""
+        ).endswith(_IS_ASYNCPG_RELEASE_QUALNAME):
+            return True
+    return False
 
 
 async def _drain_to_quiescence(

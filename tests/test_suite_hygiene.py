@@ -83,10 +83,11 @@ import inspect
 import itertools
 import os
 import re
+import textwrap
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -1278,32 +1279,52 @@ async def test_guard_catches_residue_reaped_in_the_teardown_window() -> None:
 
 
 async def test_guard_drains_a_release_tail_that_outlives_the_call() -> None:
-    """The CI leak class, allowed by name: a test body leaves a task
-    holding a shielded slow release in flight (the asyncpg
-    PoolConnectionHolder.release shape, marked with the ``release-tail:``
-    name prefix), the call ends, and the guard's quiescence drain lets
-    the release finish naturally. The test passes; the drained task is
-    named in the report's warnings section, and no pending task outlives
-    the drive."""
+    """The CI leak class, allowed by class: a test body leaves a task
+    holding a shielded slow release in flight whose coroutine is shaped
+    like the real asyncpg one (a ``PoolConnectionHolder.release``
+    compiled under an asyncpg/pool.py filename), the call ends, and the
+    guard's quiescence drain lets the release finish naturally. The test
+    passes; the drained task is named in the report's warnings section,
+    and no pending task outlives the drive."""
     release_done = asyncio.Event()
-    minted: list[asyncio.Task[None]] = []
 
-    async def _release_tail() -> None:
-        await asyncio.sleep(0.01)
-        release_done.set()
+    release_source = textwrap.dedent(
+        """
+        import asyncio
+
+        class PoolConnectionHolder:
+            async def release(self, timeout):
+                await asyncio.sleep(0.01)
+                handler()
+        """
+    )
+    release_module: dict[str, Any] = {}
+    exec(  # noqa: S102  # Why: the exec'd module is the pin's subject: the asyncpg-shaped code object the predicate classifies.
+        compile(release_source, "/site-packages/asyncpg/pool.py", "exec"), release_module
+    )
+    release_module["handler"] = release_done.set
+    holder: Any = release_module["PoolConnectionHolder"]()
 
     async def body() -> None:
         async def _holder() -> None:
-            await asyncio.shield(_release_tail())
+            await asyncio.shield(holder.release(5.0))
 
-        minted.append(asyncio.create_task(_holder(), name="release-tail:hygiene-pool-release"))
+        holder_task = asyncio.create_task(_holder(), name="hygiene-release-holder")
+        # The holder enters the shielded release; the test's own mid-tick
+        # cancel then detaches it, leaving the release task itself as the
+        # pending leak (the CI shape: the shield's inner task outlives the
+        # cancelled awaiter).
+        await asyncio.sleep(0.001)
+        holder_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await holder_task
 
     item = await _drive_guarded_call(body)
     assert release_done.is_set(), "the drain must let the in-flight release finish"
     sections = [
         content for _, key, content in item.report_sections if key.startswith("leaked asyncio")
     ]
-    assert sections and "release-tail:hygiene-pool-release" in sections[0], (
+    assert sections and "PoolConnectionHolder.release" in sections[0], (
         f"the drained release tail must be named in the report: {item.report_sections}"
     )
 

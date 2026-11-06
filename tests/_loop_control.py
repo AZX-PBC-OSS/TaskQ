@@ -60,6 +60,7 @@ async def managed_loop(
         raise
     finally:
         shutdown.set()
+        survivor = False
         done, _pending_after_grace = await asyncio.wait({task}, timeout=grace)
         if done:
             if not task.cancelled():
@@ -77,14 +78,18 @@ async def managed_loop(
             # the guard's drain contains it.
             task.cancel()
             _, still = await asyncio.wait({task}, timeout=2.0)
-            if still and body_exc is None:
-                raise RuntimeError(
-                    f"the supervised loop {task.get_name()!r} did not finish "
-                    "within its grace and ignored its cancellation"
-                )
+            survivor = bool(still)
+        # The caller's drain runs on every path: the fallback is the path
+        # that detached a shielded release, so it must not be skipped
+        # when a survivor is about to be reported.
         if drain is not None:
             if body_exc is None:
                 await asyncio.wait_for(drain(), timeout=grace)
             else:
                 with contextlib.suppress(BaseException):
                     await asyncio.wait_for(drain(), timeout=grace)
+        if survivor and body_exc is None:
+            raise RuntimeError(
+                f"the supervised loop {task.get_name()!r} did not finish "
+                "within its grace and ignored its cancellation"
+            )

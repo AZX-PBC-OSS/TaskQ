@@ -273,6 +273,37 @@ async def test_loop_supervisor_reports_a_survivor_of_the_fallback() -> None:
         await asyncio.wait_for(handles[0], timeout=3.0)
 
 
+async def test_loop_supervisor_drains_on_the_survivor_path() -> None:
+    """The caller's drain runs even when the fallback reports a survivor:
+    the fallback is the path that detached a shielded release, so the
+    drain must not be skipped exactly there. The loop swallows its
+    cancellation past the stop, the supervisor reports the survivor, and
+    the drain's bounded close still ran."""
+    drain_ran = asyncio.Event()
+    handles: list[asyncio.Task[object]] = []
+
+    async def _drain() -> None:
+        drain_ran.set()
+
+    async def _swallowing_loop(shutdown: asyncio.Event) -> object:
+        deadline = asyncio.get_running_loop().time() + 2.5
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                continue
+        return None
+
+    with pytest.raises(RuntimeError, match="ignored its cancellation"):
+        async with managed_loop(_swallowing_loop, grace=0.05, drain=_drain) as handle:
+            handles.append(handle.task)
+            await asyncio.sleep(0.001)
+    assert drain_ran.is_set(), "the caller's drain must run on the survivor path"
+    handles[0].cancel()
+    with suppress(asyncio.CancelledError):
+        await asyncio.wait_for(handles[0], timeout=3.0)
+
+
 async def test_event_retention_runs_one_batch_per_tick_on_real_rows(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
