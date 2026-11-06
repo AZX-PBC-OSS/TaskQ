@@ -63,6 +63,15 @@ _NOW = datetime(2025, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
 _LIMIT = timedelta(milliseconds=150)
 
+# The carrier tests' start_to_close is armed only to engage the
+# enforcement's task boundary (`if timeout is None` bypasses it entirely);
+# the carrier conversion is their subject, not the deadline. The tight
+# deadline is the dedicated deadline tests' subject, and a starved runner
+# must not make these tests measure scheduling latency: a limit the
+# runner's own delay can reach wins the FIRST_COMPLETED race against an
+# already-finished body and discards its outcome.
+_CARRIER_LIMIT = timedelta(seconds=30)
+
 
 class _FakeConnection:
     """Minimal asyncpg.Connection stand-in with a transaction() context manager."""
@@ -601,7 +610,9 @@ async def test_body_systemexit_stays_an_attempt_outcome(transactional: bool) -> 
     async def body(job: JobRow, ctx: JobContext[BaseModel]) -> object:
         raise SystemExit(3)
 
-    outcome = await _consume(body, _job(_LIMIT), transactional=transactional, backend=backend)
+    outcome = await _consume(
+        body, _job(_CARRIER_LIMIT), transactional=transactional, backend=backend
+    )
 
     assert outcome == "scheduled", outcome
     write = backend.mark_failed_or_retry_calls[0]
@@ -624,7 +635,9 @@ async def test_body_baseexception_subclass_is_an_attempt_outcome(transactional: 
     async def body(job: JobRow, ctx: JobContext[BaseModel]) -> object:
         raise ActorBoom("boom")
 
-    outcome = await _consume(body, _job(_LIMIT), transactional=transactional, backend=backend)
+    outcome = await _consume(
+        body, _job(_CARRIER_LIMIT), transactional=transactional, backend=backend
+    )
 
     assert outcome == "scheduled", outcome
     write = backend.mark_failed_or_retry_calls[0]
@@ -973,7 +986,10 @@ async def test_body_caused_interface_error_outside_the_deadline_window_stays_int
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The honest-InterfaceError case: a body whose own conn op raises a
-    genuine ``InterfaceError`` while the deadline (150ms) is nowhere near.
+    genuine ``InterfaceError`` while the deadline (``_CARRIER_LIMIT``) is
+    nowhere near -- armed only to engage the enforcement's task boundary,
+    unreachable by construction, since the claim under test is that the
+    deadline is not involved.
     The collision re-label keys on the deadline window alone -- it must
     never launder a body-caused ``InterfaceError`` into a deadline hit:
     the row stays ``InterfaceError``, no ``job_timeout`` log, no timeouts
@@ -1000,7 +1016,7 @@ async def test_body_caused_interface_error_outside_the_deadline_window_stays_int
     with structlog.testing.capture_logs() as logs:
         outcome = await consume_one_job(
             as_backend(backend),
-            _job(timedelta(milliseconds=150)),
+            _job(_CARRIER_LIMIT),
             _WORKER_ID,
             run_actor=body,
             actor_config=default_actor_config(),
