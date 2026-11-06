@@ -60,6 +60,9 @@ from taskq.worker._consumer import (  # pyright: ignore[reportPrivateUsage]  # W
     consume_one_job,
 )
 from taskq.worker._watchdog import live_tracked_actor_handles
+from taskq.worker.dispatch import (
+    _run_sync_actor_tracked,  # pyright: ignore[reportPrivateUsage]  # Why: the sync-carrier pin reaches the executor-thread boundary the worker loop builds for a sync actor (dispatch's is_sync branch); the consumer harness's run_actor wraps it exactly so.
+)
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
@@ -192,6 +195,47 @@ async def _consume(
             transaction_conn=_FakeConnection() if transactional else None,  # pyright: ignore[reportArgumentType]
         )
     return outcome
+
+
+class _DeadlineFireProbe:
+    """A count-don't-answer recording proxy around the loop's
+    ``call_later``: every timer delegates to the real one untouched, and
+    the start_to_close deadline's callback (its delay is exactly the
+    limit) is additionally counted AT FIRE TIME. The count is the stall
+    tests' honesty guard: if a loop-hop shift ever moves the stall off
+    the deadline, the deadline never fires, the count stays 0, and the
+    test's assert fails loudly instead of passing vacuously over an
+    outcome the stall no longer reaches. (The loop is pytest-asyncio's
+    module-scoped one; the shadowing attribute is restored on exit to
+    the same bound method, so co-resident tests see identical
+    behaviour.)"""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, limit: timedelta) -> None:
+        self.fires = 0
+        self._loop = loop
+        self._limit = limit
+        self._real: Callable[..., object] = loop.call_later
+
+    def __enter__(self) -> "_DeadlineFireProbe":
+        probe = self
+
+        def recording_call_later(
+            delay: float, callback: Callable[..., object], *args: object
+        ) -> object:
+            if delay == probe._limit.total_seconds():
+
+                def counted() -> object:
+                    probe.fires += 1
+                    return callback(*args)
+
+                return probe._real(delay, counted, *args)
+            return probe._real(delay, callback, *args)
+
+        self._loop.call_later = recording_call_later  # pyright: ignore[reportAttributeAccessIssue]  # Why: the recording proxy shadows the loop's bound method for the test's duration and restores it on exit; the loop object carries no __slots__ and the shadow is the count-don't-answer seam.
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._loop.call_later = self._real  # pyright: ignore[reportAttributeAccessIssue]  # Why: restore the original bound method (see __enter__).
 
 
 # ── Attack 1: the deadline x the body's own transaction ───────────────
@@ -571,16 +615,17 @@ async def test_body_that_finished_inside_the_deadline_is_not_a_timeout(
     else:
         loop.call_later(0, time.sleep, 0.16)
 
-    outcome = await consume_one_job(
-        as_backend(backend),
-        _job(_LIMIT),
-        _WORKER_ID,
-        run_actor=body,
-        actor_config=default_actor_config(),
-        payload_type=EmptyPayload,
-        clock=FakeClock(_NOW),
-        transaction_conn=_FakeConnection() if transactional else None,  # pyright: ignore[reportArgumentType]
-    )
+    with _DeadlineFireProbe(loop, _LIMIT) as probe:
+        outcome = await consume_one_job(
+            as_backend(backend),
+            _job(_LIMIT),
+            _WORKER_ID,
+            run_actor=body,
+            actor_config=default_actor_config(),
+            payload_type=EmptyPayload,
+            clock=FakeClock(_NOW),
+            transaction_conn=_FakeConnection() if transactional else None,  # pyright: ignore[reportArgumentType]
+        )
 
     assert outcome == "succeeded", outcome
     assert len(backend.mark_succeeded_calls) == 1, backend.mark_succeeded_calls
@@ -589,6 +634,91 @@ async def test_body_that_finished_inside_the_deadline_is_not_a_timeout(
     )
     assert not backend.mark_failed_or_retry_calls, backend.mark_failed_or_retry_calls
     assert body_result == {"ok": True}
+    assert probe.fires >= 1, (
+        "the stall must cross the start_to_close deadline (the proxy must see the"
+        " deadline callback fire) or this pin no longer reaches its subject"
+    )
+
+
+@pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
+async def test_sync_body_that_finished_inside_the_deadline_is_not_a_timeout(
+    transactional: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sync carrier of the same contract: a plain ``def`` body runs
+    in the executor thread and finishes INSIDE the deadline, but the
+    enforcement's coroutine resumes late -- the dispatch's ``await
+    asyncio.shield(thread_task)`` resumes only when the loop next runs,
+    and a stall in between is the runner's latency, not the body's. The
+    async arm's own stamp (``_body``'s finally) marks that late resume;
+    the thread's real finish is stamped by ``_thread_body`` itself
+    (``loop.time()`` is a clock read, safe from the thread) and the
+    ctx's earliest-wins rule keeps it, so the rescue sees a finish inside
+    the deadline and the attempt is the thread's own outcome: succeeded,
+    one success write, no failure write, no ``job_timeout`` log or
+    metric."""
+    import structlog
+
+    import taskq.worker._handlers as handlers_mod
+
+    timeout_metric_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        handlers_mod,
+        "record_job_timeout",
+        lambda actor, *, kind, count=1: timeout_metric_calls.append({"actor": actor, "kind": kind}),
+    )
+    backend = FakeBackend()
+    loop = asyncio.get_running_loop()
+    body_ran = False
+
+    def body() -> object:
+        nonlocal body_ran
+        body_ran = True
+        time.sleep(0.05)
+        return {"ok": True}
+
+    loop_for_stall = asyncio.get_running_loop()
+
+    def stall() -> None:
+        time.sleep(0.5)
+
+    async def run_actor(job: JobRow, ctx: JobContext[BaseModel]) -> object:
+        del job
+        # The real sync carrier: the executor-thread boundary the worker
+        # loop builds for a sync actor (dispatch's is_sync branch).
+        tracked = asyncio.create_task(_run_sync_actor_tracked(body, {}, ctx))
+        # The stall, scheduled one loop hop AFTER the thread task's first
+        # step submitted the executor work: the thread runs ~0.05s (inside
+        # the 150ms deadline) while the loop is blocked until ~+0.5s. The
+        # ordering is forced by the hop structure, not timed -- and it is
+        # arm-independent: scheduling the stall from the test body after a
+        # fixed hop count mis-times the tx arm, whose thread submits one
+        # batch deeper than the autonomous arm's.
+        loop_for_stall.call_soon(loop_for_stall.call_soon, stall)
+        return await tracked
+
+    with (
+        structlog.testing.capture_logs() as logs,
+        _DeadlineFireProbe(loop, _LIMIT) as probe,
+    ):
+        consumer = asyncio.create_task(
+            _consume(run_actor, _job(_LIMIT), transactional=transactional, backend=backend)
+        )
+        outcome = await consumer
+
+    assert outcome == "succeeded", outcome
+    assert len(backend.mark_succeeded_calls) == 1, backend.mark_succeeded_calls
+    assert orjson.loads(backend.mark_succeeded_calls[0][3]) == {"ok": True}, (
+        backend.mark_succeeded_calls
+    )
+    assert not backend.mark_failed_or_retry_calls, backend.mark_failed_or_retry_calls
+    assert not timeout_metric_calls, timeout_metric_calls
+    assert not any(entry.get("event") == "job_timeout" for entry in logs), logs
+    assert body_ran
+    assert probe.fires >= 1, (
+        "the stall must cross the start_to_close deadline (the proxy must see the"
+        " deadline callback fire) or this pin no longer reaches its subject"
+    )
 
 
 @pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])

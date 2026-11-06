@@ -162,6 +162,16 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     # collide with, no capture boundary, no reader here — the enforcement's
     # protocol split keeps that write off this face.
     _actor_body_task: asyncio.Task[object] | None = None
+    # the body's real finish time on the loop's monotonic clock, the
+    # enforcement's per-attempt rescue stamp. The wf body has no sync
+    # carrier (no executor thread), so only the enforcement's own body
+    # frame writes it here; the earliest-wins setter and the pre-arming
+    # reset keep the contract identical to the vanilla ctx's.
+    _actor_body_finished_at: float | None = None
+    # the sync carrier's executor-thread task — no wf carrier exists (the
+    # wf body never runs in an executor thread), so this stays None; the
+    # enforcement's protocol reads it on the vanilla face alone.
+    _sync_actor_task: asyncio.Task[object] | None = None
 
     def _set_actor_body_task(self, task: asyncio.Task[object]) -> None:
         """Record the deadline-enforced body task. Called by the
@@ -179,6 +189,33 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         handles do.
         """
         object.__setattr__(self, "_actor_body_task", task)
+
+    def _record_actor_body_finished_at(self, when: float) -> None:
+        """Record the body's real finish time on the loop's monotonic
+        clock, keeping the EARLIEST stamp. Called by the start_to_close
+        enforcement when its body task's frame ends (the same designated
+        writer the vanilla ``JobContext`` documents — the sync dispatch's
+        thread-side stamp has no wf carrier), never by body code.
+
+        The deadline's rescue judges the body by when it finished, not by
+        when the enforcement's continuation happened to resume. There is
+        no second writer on this face, but the contract is the
+        enforcement's one machinery, so the method pair is identical.
+        Per attempt: the enforcement resets it before arming.
+        ``object.__setattr__`` because the dataclass is frozen; the stamp
+        is enforcement state that arrives after construction, exactly as
+        the task handle does.
+        """
+        if self._actor_body_finished_at is None or when < self._actor_body_finished_at:
+            object.__setattr__(self, "_actor_body_finished_at", when)
+
+    def _reset_actor_body_finished_at(self) -> None:
+        """Clear the body finish stamp. Called by the start_to_close
+        enforcement before arming a fresh deadline, never by body code:
+        the stamp is per-attempt state. ``object.__setattr__`` because
+        the dataclass is frozen; exactly as the other stamps do.
+        """
+        object.__setattr__(self, "_actor_body_finished_at", None)
 
     @property
     def map_index(self) -> int | None:

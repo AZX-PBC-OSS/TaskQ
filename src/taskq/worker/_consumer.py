@@ -1707,6 +1707,26 @@ class _DeadlineEnforcementCtx(Protocol):
     three holes, the unwind budget, the hostile-finally shape
     inherited)."""
 
+    #: The body's real finish time on the loop's monotonic clock (the
+    #: rescue's line for "did the body make its deadline"), written by the
+    #: enforcement's body frame and — on the vanilla carrier — by the sync
+    #: dispatch's thread body; reset per attempt before arming. Read-only
+    #: on this face (a frozen dataclass's attribute) — the writers are the
+    #: two methods below.
+    @property
+    def _actor_body_finished_at(self) -> float | None: ...
+
+    #: The sync carrier's executor-thread task (the handle the dispatch
+    #: stashes): when the deadline's cancel lands one loop step after the
+    #: thread finished, the body task ends cancelled while the thread task
+    #: holds the body's own outcome. None on the wf face (no sync carrier).
+    @property
+    def _sync_actor_task(self) -> asyncio.Task[object] | None: ...
+
+    def _record_actor_body_finished_at(self, when: float) -> None: ...
+
+    def _reset_actor_body_finished_at(self) -> None: ...
+
     def _set_actor_body_task(self, task: asyncio.Task[object]) -> None: ...
 
 
@@ -1823,15 +1843,8 @@ async def _enforce_start_to_close(
         return await run_actor(job, ctx)
 
     loop = asyncio.get_running_loop()
-    arm_time = loop.time()
-    # The deadline's due time on the loop's own monotonic clock — the line
-    # the body's finish stamp is judged against.
-    deadline_when = arm_time + timeout
-
-    body_finished_at: float | None = None
 
     async def _body() -> object:
-        nonlocal body_finished_at
         try:
             return await run_actor(job, ctx)
         except SystemExit as exc:
@@ -1844,11 +1857,18 @@ async def _enforce_start_to_close(
             # row records the actor's own SystemExit.
             raise _ActorSystemExitAttemptError(exc) from exc
         finally:
-            # The body's real completion time, stamped as its frame ends —
-            # before the task records its outcome, so any later reader of
-            # a done body_task knows whether the body made its deadline.
-            body_finished_at = loop.time()
+            # The async carrier's finish stamp, taken as the coroutine's
+            # frame ends — before the task records its outcome. This is
+            # when the coroutine RESUMED, which under a loop stall is
+            # later than a wrapped body actually finished: the sync
+            # dispatch's thread body stamped the real finish earlier, and
+            # the earliest-wins rule keeps it.
+            ctx._record_actor_body_finished_at(loop.time())
 
+    # Per-attempt stamp hygiene: clear any previous attempt's (or an
+    # unenforced sync body's) finish before arming this attempt's
+    # deadline, so the expiry check below can never read a stale finish.
+    ctx._reset_actor_body_finished_at()
     body_task: asyncio.Task[object] = asyncio.ensure_future(_body())
     ctx._set_actor_body_task(body_task)  # pyright: ignore[reportPrivateUsage]  # Why: the deadline enforcement is the designated writer of the body-task handle (see the setter's contract).
 
@@ -1861,6 +1881,11 @@ async def _enforce_start_to_close(
         body_task.cancel()
         deadline_latch.set_result(None)
 
+    # The timer's due time on the loop's own monotonic clock — the line the
+    # body's finish stamp is judged against. Taken at the call_later site:
+    # the deadline is the arming moment plus the timeout, not the function
+    # entry's.
+    deadline_when = loop.time() + timeout
     deadline_handle = loop.call_later(timeout, _fire)
     try:
         await asyncio.wait(
@@ -1931,8 +1956,28 @@ async def _enforce_start_to_close(
         # (the carrier, its own TimeoutError included) as the ordinary
         # outcome it is. A finish AFTER the deadline -- a cancellation-
         # absorbing return, a late unwind -- stamps past deadline_when and
-        # stays a timeout below.
+        # stays a timeout below. The stamp is the ctx's (earliest wins):
+        # for a sync actor the executor thread's own finally stamped the
+        # real finish, which the coroutine's resume -- this continuation --
+        # can trail by the whole stall.
+        body_finished_at = ctx._actor_body_finished_at
         if body_task.done() and body_finished_at is not None and body_finished_at <= deadline_when:
+            if body_task.cancelled():
+                # The deadline's cancel was delivered into a task whose
+                # body had already finished: the sync carrier's thread
+                # completed inside the deadline and the stall let _fire's
+                # cancel land one loop step before the coroutine's own
+                # completion. The body's own outcome is the executor
+                # thread task's (the handle the sync dispatch stashed):
+                # its result() surfaces the value, or re-raises the
+                # carrier / the body's own exception as the ordinary
+                # outcome it is. (The async carrier cannot be cancelled
+                # with an in-time stamp: only _fire cancels, and a frame
+                # that ended before the deadline already completed the
+                # task -- the cancel is a no-op then.)
+                sync_task = ctx._sync_actor_task
+                if sync_task is not None and sync_task.done():
+                    return sync_task.result()
             return body_task.result()
         # The deadline won the race. The body may have finished in the
         # same loop iteration (its outcome is raced out and discarded),

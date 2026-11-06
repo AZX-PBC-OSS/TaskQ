@@ -118,6 +118,7 @@ class JobContext[P: BaseModel]:
     _sync_actor_task: asyncio.Task[object] | None = None
     _tx_unwind_task: asyncio.Task[object] | None = None
     _actor_body_task: asyncio.Task[object] | None = None
+    _actor_body_finished_at: float | None = None
     _tx_rollback_collision_window: bool = False
 
     @property
@@ -200,6 +201,38 @@ class JobContext[P: BaseModel]:
         after construction, exactly as the other two handles do.
         """
         object.__setattr__(self, "_actor_body_task", task)
+
+    def _record_actor_body_finished_at(self, when: float) -> None:
+        """Record the actor body's real finish time on the event loop's
+        own monotonic clock, keeping the EARLIEST stamp. Called by the
+        start_to_close enforcement (when its body task's frame ends) and
+        by the sync dispatch (inside the executor thread's body, whose
+        finish the loop observes late), never by actor code.
+
+        The deadline's rescue must judge the body by when it FINISHED,
+        not by when the enforcement's continuation happened to resume: a
+        loop stall (a blocking callback, GC, a GIL hold) between the
+        body's completion and the resume is the runner's latency, not the
+        body's. The sync actor's thread can finish long before any loop
+        task observes it, so the stamp is carried here — the earliest
+        writer wins — and the enforcement reads it at the expiry check.
+        Per attempt: the enforcement resets it before arming.
+        ``object.__setattr__`` because the dataclass is frozen; the stamp
+        is consumer state that arrives after construction, exactly as the
+        task handles do.
+        """
+        if self._actor_body_finished_at is None or when < self._actor_body_finished_at:
+            object.__setattr__(self, "_actor_body_finished_at", when)
+
+    def _reset_actor_body_finished_at(self) -> None:
+        """Clear the body finish stamp. Called by the start_to_close
+        enforcement before arming a fresh deadline, never by actor code:
+        the stamp is per-attempt state, and a previous attempt's finish
+        (or an unenforced sync body's) must not answer this attempt's
+        expiry check. ``object.__setattr__`` because the dataclass is
+        frozen; exactly as the other stamps do.
+        """
+        object.__setattr__(self, "_actor_body_finished_at", None)
 
     def _set_tx_rollback_collision_window(self) -> None:
         """Stamp the tx path's rollback-collision window as OPEN. Called by

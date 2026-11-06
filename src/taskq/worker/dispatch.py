@@ -160,6 +160,8 @@ async def _run_sync_actor_tracked(
     unchanged, #399's contract.
     """
 
+    loop = asyncio.get_running_loop()
+
     def _thread_body() -> object:
         try:
             return fn(**actor_kwargs)
@@ -167,6 +169,17 @@ async def _run_sync_actor_tracked(
             raise
         except SystemExit as exc:
             raise _ActorSystemExitAttemptError(exc) from exc
+        finally:
+            # The thread's real finish time, stamped as the body's frame
+            # ends -- return, carrier, or BaseException alike. The loop
+            # observes the thread's completion arbitrarily late (the
+            # shielded await resumes only when the loop next runs, and a
+            # stall in between is the runner's latency, not the body's),
+            # so the start_to_close rescue's finish stamp must come from
+            # here. loop.time() is a clock read, safe from the thread;
+            # the earliest-wins rule keeps this stamp over the later one
+            # the enforcement's own body frame takes.
+            ctx._record_actor_body_finished_at(loop.time())
 
     thread_task: asyncio.Task[object] = asyncio.ensure_future(asyncio.to_thread(_thread_body))
     ctx._set_sync_actor_task(thread_task)
