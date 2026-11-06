@@ -166,37 +166,26 @@ async def _run_sync_actor_tracked(
         try:
             value = fn(**actor_kwargs)
         except SystemExit as exc:
-            # (The conversion comment above the thread task applies: the
-            # carrier keeps a raw SystemExit from crossing the task
-            # boundary bare.) The outcome is recorded BEFORE the finish
-            # stamp, and the record holds the CARRIER: the rescue
-            # re-raises exactly what this thread raised, never the raw
-            # pair.
+            # The record holds the carrier, so the rescue never re-raises
+            # the raw pair into a task.
             carrier = _ActorSystemExitAttemptError(exc)
             ctx._record_actor_body_outcome(None, carrier)
             raise carrier from exc
         except BaseException as exc:
-            # KeyboardInterrupt stays raw (interpreter intent, never an
-            # actor outcome); every other BaseException propagates raw
-            # too (#399). The record holds the raw exception: the rescue
-            # re-raises exactly what the thread raised.
+            # KeyboardInterrupt and other BaseException stay raw (#399);
+            # the record holds what the thread raised.
             ctx._record_actor_body_outcome(None, exc)
             raise
         else:
             ctx._record_actor_body_outcome(value, None)
             return value
         finally:
-            # The thread's real finish time, stamped as the body's frame
-            # ends -- AFTER the outcome record on every path, so the
-            # rescue reading a record alongside an in-time stamp always
-            # finds one. The loop observes the thread's completion
-            # arbitrarily late (the shielded await resumes only when the
-            # loop next runs, and a stall in between is the runner's
-            # latency, not the body's), so the start_to_close rescue's
-            # finish stamp must come from here. loop.time() is a clock
-            # read, safe from the thread; the earliest-wins rule keeps
-            # this stamp over the later one the enforcement's own body
-            # frame takes.
+            # The thread's real finish time, stamped after the outcome
+            # record on every path. The loop observes the thread's
+            # completion late (the shielded await resumes only when the
+            # loop next runs), so the rescue's stamp must come from here.
+            # loop.time() is safe from the thread; earliest-wins keeps it
+            # over the enforcement's later stamp.
             ctx._record_actor_body_finished_at(loop.time())
 
     thread_task: asyncio.Task[object] = asyncio.ensure_future(asyncio.to_thread(_thread_body))

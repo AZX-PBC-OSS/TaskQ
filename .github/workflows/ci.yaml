@@ -426,30 +426,26 @@ jobs:
 
   test-timescale:
     # The optional-TimescaleDB lane (TASKQ_TIMESCALEDB_HYPERTABLES): the
-    # marked family's own lane, run for real. Like the slow and e2e tiers,
-    # the containers are testcontainers booted by the fixtures themselves
-    # (the family's timescale_container and the shared pg_dsn pair), so
-    # this job needs only Docker on the runner - a service container would
-    # be dead weight no test reads. TASKQ_TEST_TIMESCALEDB_IMAGE is pinned
-    # to the same tag the family defaults to, so the lane and the family
-    # can never disagree about which server they mean. These six files are
-    # the timescale-MARKED family (the marker the other lanes deselect),
-    # not the universe of Timescale-container modules: eight more also
-    # boot their own containers and remain in the fast matrix -- the root
+    # marked family's six files, run for real. The containers are
+    # testcontainers booted by the fixtures themselves (the family's
+    # timescale_container and the shared pg_dsn pair), so this job needs
+    # only Docker on the runner. TASKQ_TEST_TIMESCALEDB_IMAGE is pinned
+    # to the same tag the family defaults to. These six files are the
+    # timescale-marked family (the marker the other lanes deselect), not
+    # every Timescale-container module: eight more boot their
+    # own containers and remain in the fast matrix (the root
     # three-mode-lifecycle, standing-matrix, deploy-e2e and upgrade-flip
-    # files, and the four web_admin hypertable files. Serially, not under
-    # xdist: the loadgroup would already pin each module's tests to a
-    # single worker (one container per module), but the six modules'
-    # launchers would still share a runner, and shared-runner resource
-    # contention (CPU, disk) widens each module's own launcher races --
-    # compression and chunk drops landing under its own seeds -- so the
-    # lane runs the family one module at a time.
+    # files, and the four web_admin hypertable files). Serially, not
+    # under xdist: the loadgroup already pins each module's tests to one
+    # worker, but the six launchers would still share a runner, and
+    # shared-runner contention widens each module's own launcher races,
+    # so the lane runs them one module at a time.
     #
     # The check at the bottom is the lane's contract: every test of the
     # family must RUN. skip_test_without_docker() makes a container-less
-    # run exit 0 with skips, so a green lane with skips would prove
-    # nothing - the summary is parsed and any skip, deselection, or
-    # failure fails the job. Bump the floor when the family grows.
+    # run exit 0 with skips, so a green lane with skips proves nothing:
+    # the summary is parsed and any skip, deselection, or failure fails
+    # the job. Bump the floor when the family grows.
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -547,14 +543,13 @@ jobs:
     # family's single-run law); the SQL surface keeps its matrix via the
     # tier's remaining 38 x 4 legs. Lane selection: the test, slow-suite,
     # coverage, extras, cross, and system-e2e lanes deselect the family
-    # with the literal "not load_sensitive" filter; e2e deselects de facto
-    # (directory-scoped selection), and the Timescale family's own
-    # load-sensitive member (the retention re-archive race,
-    # tests/test_attack_rt_retention_integration.py) runs in the
-    # file-scoped test-timescale lane instead, so the selection here adds
-    # "and not timescale" and every marked test runs exactly once. This
-    # lane - now collecting the system-e2e tier via --system-e2e - is the
-    # one place the rest of the family runs.
+    # with the literal "not load_sensitive" filter; e2e deselects de
+    # facto by directory scope, and the Timescale family's load-sensitive
+    # member (tests/test_attack_rt_retention_integration.py) runs in the
+    # file-scoped test-timescale lane, so the selection here adds "and
+    # not timescale" and every marked test runs once. This lane, which
+    # also collects the system-e2e tier via --system-e2e, is the one
+    # place the rest of the family runs.
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:

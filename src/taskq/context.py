@@ -205,59 +205,40 @@ class JobContext[P: BaseModel]:
 
     def _record_actor_body_finished_at(self, when: float) -> None:
         """Record the actor body's real finish time on the event loop's
-        own monotonic clock, keeping the EARLIEST stamp. Called by the
-        start_to_close enforcement (when its body task's frame ends) and
-        by the sync dispatch (inside the executor thread's body, whose
-        finish the loop observes late), never by actor code.
-
-        The deadline's rescue must judge the body by when it FINISHED,
-        not by when the enforcement's continuation happened to resume: a
-        loop stall (a blocking callback, GC, a GIL hold) between the
-        body's completion and the resume is the runner's latency, not the
-        body's. The sync actor's thread can finish long before any loop
-        task observes it, so the stamp is carried here — the earliest
-        writer wins — and the enforcement reads it at the expiry check.
-        Per attempt: the enforcement resets it before arming.
-        ``object.__setattr__`` because the dataclass is frozen; the stamp
-        is consumer state that arrives after construction, exactly as the
-        task handles do.
+        monotonic clock, keeping the earliest stamp. The start_to_close
+        enforcement and the sync dispatch's executor thread are the
+        writers, never actor code. The rescue must judge the body by when
+        it finished, not by when the enforcement's continuation resumed:
+        a loop stall between the two is the runner's latency. The
+        enforcement resets the stamp before arming.
+        ``object.__setattr__`` because the dataclass is frozen.
         """
         if self._actor_body_finished_at is None or when < self._actor_body_finished_at:
             object.__setattr__(self, "_actor_body_finished_at", when)
 
     def _record_actor_body_outcome(self, value: object, exc: BaseException | None) -> None:
         """Record the actor body's own outcome: the returned value, or the
-        exception the body raised (the sync thread's ``SystemExit``
-        already carried, so the loop is never asked to re-raise the pair
-        bare). Called by the sync dispatch's thread body and by the
-        enforcement's own body frame (both write their outcome before
-        their finish stamp), never by actor code.
-
-        The deadline's rescue reads this record when the deadline's
-        cancel landed on a body task whose body had already finished:
-        the task's own ``result()`` is a CancelledError in that state,
-        and the body's recorded outcome is the only truthful answer.
-        EARLIEST-WINS (only when unset): a sync thread that finished in
-        time records first, and the deadline's later cancellation of the
-        async frame must not overwrite the thread's outcome. The
-        JobContext is constructed per claim (per attempt), and the
-        enforcement resets the record with the finish stamp before
-        arming, so no attempt can read a prior attempt's outcome.
-        ``object.__setattr__`` because the dataclass is frozen; the
-        record is consumer state that arrives after construction, exactly
-        as the stamps and handles do.
+        exception it raised, with the sync thread's ``SystemExit`` already
+        carried. The sync dispatch's thread body and the enforcement's
+        body frame are the writers; both record before their finish
+        stamp, never actor code. The rescue reads this record when the
+        deadline's cancel landed on a body task that had already
+        finished, where the task's own ``result()`` is a CancelledError.
+        Earliest-wins (only when unset), so the thread's in-time record
+        survives the deadline's later cancellation of the async frame.
+        The context is per attempt and the enforcement resets the record
+        with the stamp before arming. ``object.__setattr__`` because the
+        dataclass is frozen.
         """
         if self._actor_body_outcome is None:
             object.__setattr__(self, "_actor_body_outcome", (value, exc))
 
     def _reset_actor_body_attempt_record(self) -> None:
-        """Clear the body's per-attempt record (the finish stamp and the
-        outcome). Called by the start_to_close enforcement before arming
-        a fresh deadline, never by actor code: the JobContext is
-        constructed per claim (per attempt), and the reset makes the
-        guarantee explicit even so — no attempt can read a prior
-        attempt's finish or outcome. ``object.__setattr__`` because the
-        dataclass is frozen; exactly as the other stamps do.
+        """Clear the body's finish stamp and outcome record. Called by
+        the start_to_close enforcement before arming a fresh deadline,
+        never by actor code. The context is per attempt; the reset makes
+        that guarantee explicit. ``object.__setattr__`` because the
+        dataclass is frozen.
         """
         object.__setattr__(self, "_actor_body_finished_at", None)
         object.__setattr__(self, "_actor_body_outcome", None)

@@ -68,13 +68,10 @@ _NOW = datetime(2025, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
 _LIMIT = timedelta(milliseconds=150)
 
-# The carrier tests' start_to_close is armed only to engage the
-# enforcement's task boundary (`if timeout is None` bypasses it entirely);
-# the carrier conversion is their subject, not the deadline. The tight
-# deadline is the dedicated deadline tests' subject, and a starved runner
-# must not make these tests measure scheduling latency: a limit the
-# runner's own delay can reach wins the FIRST_COMPLETED race against an
-# already-finished body and discards its outcome.
+# The carrier tests arm a start_to_close only to reach the enforcement's
+# task boundary (`if timeout is None` skips it). Their subject is the
+# carrier conversion, not the deadline, so the limit is far beyond any
+# scheduling delay. The deadline tests keep the tight _LIMIT.
 _CARRIER_LIMIT = timedelta(seconds=30)
 
 
@@ -198,22 +195,14 @@ async def _consume(
 
 
 class _DeadlineFireProbe:
-    """A count-don't-answer recording proxy around the loop's
-    ``call_later``: every timer delegates to the real one untouched
-    (``*args`` and ``**kwargs`` forwarded), and the start_to_close
-    deadline's callback — the enforcement's own ``_fire`` closure,
-    identified by its qualname — is additionally counted AT FIRE TIME
-    and its timer handle's due time captured at schedule time (the armed
-    deadline on the loop's own clock — the exact ``<=`` line the rescue
-    judges body stamps against, readable by the test's body after
-    arming).
-    The count is the stall tests' honesty guard: if a loop-hop shift
-    ever moves the stall off the deadline, the deadline never fires, the
-    count stays 0, and the test's assert fails loudly instead of passing
-    vacuously over an outcome the stall no longer reaches. (The loop is
-    pytest-asyncio's module-scoped one; the shadowing attribute is
-    restored on exit to the same bound method, so co-resident tests see
-    identical behaviour.)"""
+    """A recording proxy around the loop's ``call_later``. Every timer is
+    delegated to the real one with all arguments. A timer whose delay is
+    the limit and whose callback is the enforcement's ``_fire`` (matched
+    by qualname) is counted at fire time, and its handle's due time is
+    stored on ``deadline_when``. The count keeps the stall tests honest:
+    if a hop shift moves the stall off the deadline, the count stays 0
+    and the assert fails instead of the test passing vacuously. The
+    shadowed attribute is restored on exit."""
 
     def __init__(self, loop: asyncio.AbstractEventLoop, limit: timedelta) -> None:
         self.fires = 0
@@ -589,18 +578,16 @@ async def test_body_cannot_absorb_the_deadline(transactional: bool) -> None:
 async def test_body_that_finished_inside_the_deadline_is_not_a_timeout(
     transactional: bool,
 ) -> None:
-    """A body that finished BEFORE the deadline is the attempt's own
+    """A body that finished before the deadline is the attempt's own
     outcome, even when the enforcement's continuation resumes late. The
-    body task's done-callback is itself queued, so the wait's wakeup is
-    two loop hops behind the body's completion; a callback stalling the
-    loop in between lets the due ``_fire`` latch ``expired`` over a body
-    that had already surfaced its result -- which the ``if expired:``
-    branch then discarded as a timeout, retrying a completed attempt and
-    duplicating its side effects. The rescue reads the body's own finish
-    stamp: a finish at or before the armed deadline is the body's own
-    outcome -- the value returned, its exception the ordinary failure it
-    is. A finish after the deadline (the absorbing body above) stays a
-    timeout."""
+    body task's done-callback is queued, so the wait's wakeup trails the
+    body's completion by two loop hops; a callback stalling the loop in
+    between lets the due ``_fire`` latch ``expired`` over a body that had
+    already surfaced its result, which the ``if expired:`` branch then
+    discarded as a timeout. The rescue reads the body's finish stamp: a
+    finish at or before the armed deadline returns the value or re-raises
+    its exception as the ordinary failure. A finish after the deadline
+    (the absorbing body above) stays a timeout."""
     backend = FakeBackend()
     loop = asyncio.get_running_loop()
     body_result: dict[str, object] | None = None
@@ -610,16 +597,13 @@ async def test_body_that_finished_inside_the_deadline_is_not_a_timeout(
         body_result = {"ok": True}
         return body_result
 
-    # The stall: it must fall INSIDE the body's own loop batch -- after the
-    # body's step, before the body task's queued done-callback releases the
-    # wait -- and hold the loop past the 150ms limit, so the due ``_fire``
-    # latches over an already-surfaced outcome. The two paths differ by one
-    # task hop between arming and the body's batch (the tx path reaches the
-    # enforcement through the shielded tx task), so the stall's due date is
-    # shifted one batch accordingly. The ordering is forced by the
-    # call_soon/call_later mechanics, not timed -- the deterministic
-    # stand-in for the runner's GC / GIL / co-tenancy stalls that make the
-    # enforcement's continuation late.
+    # The stall must run inside the body's own loop batch, after the
+    # body's step and before the done-callback releases the wait, and
+    # hold the loop past the 150ms limit so _fire latches over the
+    # finished body. The tx path reaches the enforcement through the
+    # shielded tx task, one hop later, so its stall is scheduled one
+    # batch later. The ordering is forced by call_soon/call_later, not
+    # timed.
     if transactional:
         loop.call_soon(lambda: loop.call_later(0, time.sleep, 0.16))
     else:
@@ -656,21 +640,18 @@ async def test_sync_body_that_finished_inside_the_deadline_is_not_a_timeout(
     transactional: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The sync carrier of the same contract: a plain ``def`` body runs
-    in the executor thread and finishes INSIDE the deadline, but the
-    enforcement's coroutine resumes late -- the dispatch's ``await
-    asyncio.shield(thread_task)`` resumes only when the loop next runs,
-    and a stall in between is the runner's latency, not the body's. The
-    async arm's own stamp (``_body``'s finally) marks that late resume;
-    the thread's real finish is stamped by ``_thread_body`` itself
-    (``loop.time()`` is a clock read, safe from the thread) and the
-    ctx's earliest-wins rule keeps it, so the rescue sees a finish inside
-    the deadline and the attempt is the thread's own recorded outcome:
-    succeeded, one success write, no failure write, no ``job_timeout``
-    log or metric. The stall schedules from the ctx hook the dispatch
-    calls the moment the thread task is stashed -- production's own hop
-    count; ``run_actor`` is the production shape (a direct await, no
-    extra task)."""
+    """The sync carrier of the same contract. A plain ``def`` body runs
+    in the executor thread and finishes inside the deadline, but the
+    enforcement's coroutine resumes late: the dispatch's ``await
+    asyncio.shield(thread_task)`` resumes only when the loop next runs.
+    The thread stamps its real finish itself (``loop.time()`` is safe
+    from the thread) and earliest-wins keeps it over the late resume, so
+    the rescue sees an in-time finish and the attempt is the thread's
+    recorded outcome: succeeded, one success write, no failure write, no
+    ``job_timeout`` log or metric. The stall schedules from the ctx hook
+    the dispatch calls when it stashes the thread task, which is
+    production's hop count; ``run_actor`` is the production shape (a
+    direct await, no extra task)."""
     import structlog
 
     import taskq.worker._handlers as handlers_mod
@@ -691,11 +672,11 @@ async def test_sync_body_that_finished_inside_the_deadline_is_not_a_timeout(
         time.sleep(0.05)
         return {"ok": True}
 
-    # The stall: scheduled right after the dispatch stashes the thread
-    # task (the hook's own call), it holds the loop longer than the
-    # 150ms limit -- the thread runs ~0.05s (inside the deadline) while
-    # the enforcement's continuation stays starved until ~+0.5s. The
-    # ordering is forced by the hop structure, not timed.
+    # Scheduled right after the dispatch stashes the thread task, the
+    # stall holds the loop past the 150ms limit: the thread runs 0.05s
+    # (inside the deadline) while the enforcement stays starved until
+    # about +0.5s. The ordering is forced by the hop structure, not
+    # timed.
     real_set_sync = JobContext._set_sync_actor_task
 
     def _stall_once_thread_task_is_stashed(
@@ -708,9 +689,7 @@ async def test_sync_body_that_finished_inside_the_deadline_is_not_a_timeout(
 
     async def run_actor(job: JobRow, ctx: JobContext[BaseModel]) -> object:
         del job
-        # The real sync carrier, called directly as production calls it
-        # (the worker loop's run_actor_with_di): no extra task, no extra
-        # hop.
+        # Called directly as production calls it (run_actor_with_di).
         return await _run_sync_actor_tracked(body, {}, ctx)
 
     with (
@@ -742,22 +721,17 @@ async def test_deadline_cancel_landing_on_a_recorded_in_time_body_is_its_outcome
     transactional: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The inclusive boundary of the rescue: the body's outcome exists on
-    the ctx (the sync thread's record -- the outcome first, then the
-    finish stamp, both inside the deadline) while the deadline's cancel
-    is delivered INTO the body task: ``_fire``'s cancel outruns the
-    coroutine's own completion. The attempt must be the body's own
-    recorded outcome -- the value returned, the row succeeded, no failure
-    write, no cancel write, no ``job_timeout`` log or metric, and no
-    CancelledError escaping the consumer -- never a terminalised
-    cancellation. The thread-side racing that produces this state in
-    production (the thread's completion callback losing the loop to
-    ``_fire``) is sub-microsecond wall-clock and not deterministically
-    inducible through the real consumer's executor handoff, so the
-    predicate is pinned at the consumer boundary with the ctx record
-    written exactly as ``_thread_body`` writes it; the thread's own
-    recording behaviour is pinned by the sync carrier test above and by
-    ``_thread_body`` itself."""
+    """The rescue's cancelled arm at the inclusive boundary: the ctx holds
+    the body's record (outcome first, then the finish stamp, both inside
+    the deadline) while _fire's cancel is delivered into the body task.
+    The attempt must be the recorded outcome: the value returned, the row
+    succeeded, no failure write, no cancel write, no ``job_timeout`` log
+    or metric, and no CancelledError escaping the consumer. Production
+    reaches this state through a sub-microsecond race between the
+    thread's completion callback and _fire, which cannot be induced
+    deterministically through the executor handoff, so the record is
+    written here exactly as ``_thread_body`` writes it. The thread's own
+    recording is covered by the sync test and by ``_thread_body``."""
     import structlog
 
     import taskq.worker._handlers as handlers_mod
@@ -772,10 +746,9 @@ async def test_deadline_cancel_landing_on_a_recorded_in_time_body_is_its_outcome
     loop = asyncio.get_running_loop()
 
     async def body(job: JobRow, ctx: JobContext[BaseModel]) -> object:
-        # The sync thread's record, written as ``_thread_body`` writes
-        # it: the outcome first, then the finish stamp, both inside the
-        # deadline. The body then blocks past the deadline so ``_fire``'s
-        # cancel is delivered INTO this task -- the boundary state.
+        # The record exactly as ``_thread_body`` writes it: outcome first,
+        # then the finish stamp, both inside the deadline. The body then
+        # blocks past the deadline so _fire's cancel lands on this task.
         ctx._record_actor_body_outcome({"ok": True}, None)
         ctx._record_actor_body_finished_at(loop.time())
         await asyncio.sleep(30)
@@ -799,14 +772,13 @@ async def test_sync_body_systemexit_inside_the_deadline_is_the_actors_outcome(
     transactional: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The sync carrier's EXCEPTION outcome survives the rescue: a sync
-    body raising ``SystemExit(3)`` inside the deadline -- the thread
-    records the carrier and its in-time finish, the stall lets the
-    deadline's cancel land on the body task -- and the attempt is the
-    actor's own: one failure/retry write carrying ``error_class
-    SystemExit``, no success write, no cancel write, no ``job_timeout``
-    log or metric (the record's carrier exists so the rescue never
-    re-raises the raw pair into a task)."""
+    """A sync body raising ``SystemExit(3)`` inside the deadline: the
+    thread records the carrier and its in-time finish, the stall lets the
+    deadline's cancel land on the body task, and the rescue re-raises the
+    recorded carrier. The row carries ``error_class SystemExit`` on one
+    failure/retry write, with no success write, no cancel write, and no
+    ``job_timeout`` log or metric. The carrier exists so the rescue never
+    re-raises the raw pair into a task."""
     import structlog
 
     import taskq.worker._handlers as handlers_mod
@@ -865,13 +837,13 @@ async def test_sync_body_own_timeout_inside_the_deadline_is_the_actors_outcome(
     transactional: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The #791 conflation, sync carrier + rescue: a sync body raising its
-    OWN ``TimeoutError`` inside the deadline -- the thread records it and
-    its in-time finish, the stall lets the deadline's cancel land on the
-    body task -- and the rescue re-raises the recorded exception: the row
-    records the body's own class and message (the ordinary failure it
-    is), never the ``start_to_close`` marker's, and no ``job_timeout``
-    log or metric."""
+    """A sync body raising its OWN ``TimeoutError`` inside the deadline
+    (the #791 conflation, through the rescue): the thread records the
+    exception and its in-time finish, the stall lets the deadline's
+    cancel land on the body task, and the rescue re-raises the recorded
+    exception. The row carries the body's own class and message, not the
+    ``start_to_close`` marker's, with no ``job_timeout`` log or
+    metric."""
     import structlog
 
     import taskq.worker._handlers as handlers_mod
@@ -931,15 +903,13 @@ async def test_body_stamped_exactly_at_the_deadline_is_its_own_outcome(
     transactional: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The rescue's line is INCLUSIVE (``<=``): a body whose finish stamp
-    is EXACTLY the armed deadline made its deadline. The probe captures
-    the ``_fire`` handle's due time (the armed deadline on the loop's own
-    clock, delegated count-don't-answer); the body stamps exactly that
-    value with its outcome on the ctx, then blocks past the deadline so
-    ``_fire``'s cancel lands on the body task. The attempt is the body's
-    own recorded outcome -- succeeded, no failure write, no cancel write,
-    no ``job_timeout`` log or metric. A ``<`` regression turns this
-    exact-equality finish into a timeout and reds the test."""
+    """The rescue's line is inclusive (``<=``): a body whose finish stamp
+    equals the armed deadline made its deadline. The probe captures the
+    ``_fire`` handle's due time; the body stamps exactly that value with
+    its outcome on the ctx, then blocks past the deadline so ``_fire``'s
+    cancel lands on the body task. The attempt is the recorded outcome:
+    succeeded, no failure write, no cancel write, no ``job_timeout`` log
+    or metric. A ``<`` regression reds this test."""
     import structlog
 
     import taskq.worker._handlers as handlers_mod
@@ -957,8 +927,8 @@ async def test_body_stamped_exactly_at_the_deadline_is_its_own_outcome(
         assert probe.deadline_when is not None, (
             "the enforcement must have armed the deadline before the body ran"
         )
-        # The sync thread's record, exactly as ``_thread_body`` writes
-        # it -- the finish stamp EXACTLY the armed deadline.
+        # The record exactly as ``_thread_body`` writes it, with the
+        # finish stamp exactly the armed deadline.
         ctx._record_actor_body_outcome({"ok": True}, None)
         ctx._record_actor_body_finished_at(probe.deadline_when)
         await asyncio.sleep(30)
@@ -990,19 +960,16 @@ async def test_body_stamped_in_time_without_a_record_is_a_truthful_timeout(
     transactional: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The rescue's defensive arm: an in-time finish stamp with NO
-    outcome record on the ctx -- the ctx's outcome recorder is disabled
-    for the attempt, the recording failure or signal the arm exists for
-    (an async body's own self-cancellation WRITES its record and is the
-    self-cancellation test's subject; this pin is the state where no
-    record exists at all) -- while the deadline's cancel lands on the
-    body task. The
-    attempt is the truthful timeout -- the ``_StartToCloseExceededError``
-    marker's own disposition: one failure/retry write carrying
-    ``error_class TimeoutError`` / ``error_message start_to_close``, the
+    """The rescue's defensive arm: an in-time finish stamp with no
+    outcome record, while the deadline's cancel lands on the body task.
+    The recorder is disabled for the attempt (an async body's own
+    self-cancellation writes its record and is the previous test's
+    subject; this pin is the state where no record exists at all). The
+    attempt is the truthful timeout, the ``_StartToCloseExceededError``
+    marker's own disposition: one failure/retry write with ``error_class
+    TimeoutError`` and ``error_message start_to_close``, the
     ``job_timeout`` log line and metric present, no success write, no
-    cancel write, and no CancelledError escaping the consumer (never a
-    cancelled read of the body task)."""
+    cancel write, and no CancelledError escaping the consumer."""
     import structlog
 
     import taskq.worker._handlers as handlers_mod
@@ -1016,10 +983,10 @@ async def test_body_stamped_in_time_without_a_record_is_a_truthful_timeout(
     backend = FakeBackend()
     loop = asyncio.get_running_loop()
 
-    # The recording failure, simulated at the face the writers use: every
+    # The recording failure, simulated at the face the writers use: the
     # outcome write is dropped for the attempt (monkeypatched on the ctx
-    # class, restored by the fixture). The frame's cancel-delivered write
-    # lands on the no-op and the record stays absent.
+    # class, restored by the fixture), so the frame's cancel-delivered
+    # write lands on the no-op and the record stays absent.
     def _no_record(self: JobContext[BaseModel], value: object, exc: BaseException | None) -> None:
         return None
 
@@ -1051,15 +1018,14 @@ async def test_body_self_cancellation_inside_the_deadline_is_the_abandon_write(
     transactional: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An async body raising its OWN ``asyncio.CancelledError`` (the
-    abandon signal) before the deadline, while a stall lets the deadline's
-    ``_fire`` win the wakeup race: the frame's outcome record -- the raw
-    CancelledError, written before its in-time finish stamp -- is the
+    """An async body raising its own ``asyncio.CancelledError`` (the
+    abandon signal) before the deadline, while a stall lets the
+    deadline's ``_fire`` win the wakeup race: the frame's record (the raw
+    CancelledError, written before its in-time finish stamp) is the
     rescue's answer, so the attempt takes the normal cancellation
-    disposition: the cancel write, no failure/timeout write, no
-    ``job_timeout`` log or metric. Without the frame's record this exact
-    state degraded to the defensive arm's start_to_close timeout: a
-    self-abandoned attempt re-pended under the timeout policy."""
+    disposition. Without the frame's record this state degraded to the
+    defensive arm's start_to_close timeout, re-pending a self-abandoned
+    attempt under the timeout policy."""
     import structlog
 
     import taskq.worker._handlers as handlers_mod
@@ -1076,9 +1042,9 @@ async def test_body_self_cancellation_inside_the_deadline_is_the_abandon_write(
     async def body(job: JobRow, ctx: JobContext[BaseModel]) -> object:
         raise asyncio.CancelledError
 
-    # The stall: the same shape as the async stall test -- the body task
-    # completes at ~+0.0005, the wait's wakeup is two loop hops behind,
-    # and a stall crossing the deadline lets ``_fire`` latch first.
+    # The same stall shape as the async stall test: the body task
+    # completes at once, the wait's wakeup is two loop hops behind, and a
+    # stall crossing the deadline lets ``_fire`` latch first.
     if transactional:
         loop.call_soon(lambda: loop.call_later(0, time.sleep, 0.16))
     else:
