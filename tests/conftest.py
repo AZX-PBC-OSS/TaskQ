@@ -39,6 +39,7 @@ import glob
 import inspect
 import os
 import signal
+import time
 import types
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
@@ -125,8 +126,9 @@ from taskq.testing.settings import (
 )
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.health import HealthServer
-from tests._loop_control import (
-    _call_owner,  # pyright: ignore[reportPrivateUsage]  # Why: the ownership stamp the drain reads lives with the task factory that writes it.
+from tests import _lifecycle_pytest
+from tests._lifecycle import (
+    _call_owner,  # pyright: ignore[reportPrivateUsage]  # Why: the ownership stamp the drain reads lives with the registry's factory.
 )
 
 # Fixture registration: pytest sees fixtures imported into conftest (the
@@ -161,6 +163,8 @@ from tests.web_admin._fixtures import (
     structlog_capture,
     stub_pool,
 )
+
+pytest_plugins = ["tests._lifecycle_pytest"]
 
 # The worker-start signal baseline for _host_signal_dispositions_restored
 # (below); snapshotted on the fixture's first run in each xdist worker. A
@@ -540,6 +544,15 @@ _GUARD_CALL_WINDOW_KEY: pytest.StashKey[list[asyncio.Task[object]]] = pytest.Sta
 #: function fixture's task is never drained or cancelled by the guard.
 _GUARD_CALL_START_KEY: pytest.StashKey[set[asyncio.Task[object]]] = pytest.StashKey()
 
+#: The quarantine's lease count at the guard's setup; the call-window
+#: hook refines it to the call's start, and the teardown check fails
+#: closed on the unowned work minted inside the call window only.
+_GUARD_QUARANTINE_KEY: pytest.StashKey[int] = pytest.StashKey()
+
+#: The call phase's end, as monotonic time; quarantine leases created
+#: after it are teardown machinery, not the test's leak.
+_GUARD_CALL_END_KEY: pytest.StashKey[float] = pytest.StashKey()
+
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item: pytest.Item) -> object:
@@ -561,6 +574,10 @@ def pytest_runtest_call(item: pytest.Item) -> object:
         return result
     pending_at_call_start = asyncio.all_tasks(loop)
     item.stash[_GUARD_CALL_START_KEY] = pending_at_call_start
+    # The quarantine's lease count at call start: the fail-closed check
+    # covers unowned work minted inside the call window only; teardown
+    # machinery that runs after the call is not this test's leak.
+    item.stash[_GUARD_QUARANTINE_KEY] = _lifecycle_pytest.quarantine_count()
     try:
         result = yield
     finally:
@@ -571,6 +588,7 @@ def pytest_runtest_call(item: pytest.Item) -> object:
             # are filtered); fixture-owned tasks pending since setup are
             # in both sets and exempt - their owner reaps them.
             item.stash[_GUARD_CALL_WINDOW_KEY] = list(pending_at_call_end - pending_at_call_start)
+            item.stash[_GUARD_CALL_END_KEY] = time.monotonic()
     return result
 
 
@@ -741,9 +759,10 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
         yield
         return
     request.node.stash[_GUARD_LOOP_KEY] = loop
-    from tests._loop_control import install_parent_link_factory  # the ownership factory
+    from tests._lifecycle import install_lease_factory
 
-    install_parent_link_factory(loop)
+    install_lease_factory(loop)
+    request.node.stash[_GUARD_QUARANTINE_KEY] = _lifecycle_pytest.quarantine_count()
     before = asyncio.all_tasks(loop)
     try:
         yield
@@ -824,6 +843,19 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
                 "warnings", "leaked asyncio tasks (drained)", drained_warning
             )
         report = drain_failed_report
+        # The lifecycle registry's teardown protocol over the scopes this
+        # item's contexts registered: the shell drain above is passed in
+        # as the core's domain stop, so there is one drain, not two
+        # architectures. The report names survivors, teardown abortions,
+        # exceptions the test never saw, and unowned creations.
+        lifecycle_report = await _lifecycle_pytest.close_item_scopes(
+            request.node,
+            drain=lambda pending: _drain_to_quiescence(loop, pending, before=call_start | before),
+            quarantine_since=request.node.stash.get(_GUARD_QUARANTINE_KEY, 0),
+            quarantine_until=request.node.stash.get(_GUARD_CALL_END_KEY, None),
+        )
+        if lifecycle_report is not None:
+            report = lifecycle_report if report is None else report + "\n" + lifecycle_report
         # The test-end residue: tasks minted during the call phase and
         # still pending when the test's body finished. A task the drain
         # completed is cleaned (it was in the live pending set above and

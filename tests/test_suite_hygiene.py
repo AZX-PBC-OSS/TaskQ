@@ -1591,6 +1591,32 @@ async def test_guard_leaves_an_unrelated_teardown_task_alone() -> None:
         await teardown_tasks[0]
 
 
+async def test_guard_fails_closed_on_an_unowned_pending_task() -> None:
+    """A task created on the controlled loop outside every lifecycle
+    scope (a fresh context, so no scope is ambient) fails the test
+    closed: the registry cannot attribute it, so the drain must not
+    wave it through. The failure names it unowned."""
+    created: list[asyncio.Task[None]] = []
+
+    async def _unowned() -> None:
+        await asyncio.sleep(3600)
+
+    async def body() -> None:
+        import contextvars as _cv
+
+        task = asyncio.get_running_loop().create_task(
+            _unowned(), context=_cv.Context(), name="hygiene-unowned"
+        )
+        created.append(task)
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
+    assert "unowned" in str(exc_info.value), str(exc_info.value)
+    created[0].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await created[0]
+
+
 async def test_guard_drains_an_orphan_child_of_a_finished_call_task() -> None:
     """The ownership is causal through finished parents: a call-owned
     task pending at call end finishes during the teardown window and
