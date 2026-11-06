@@ -558,6 +558,11 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single hold row (the resolve CAS — the reply handle)",
     ),
+    "_ABANDON_CAS_SQL": (
+        "WHERE id = $1",
+        "keyed single hold row (the operator abandon CAS — the reply handle; "
+        "the status leg gates the transition)",
+    ),
     # ── The progress channels (the progress reporting decision d): the two-channel write set
     # is nodes x channels — the node is the one row the attempt claims.
     "PROGRESS_STATE_UPSERT_SQL": (
