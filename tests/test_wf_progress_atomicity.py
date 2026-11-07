@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from typing import Any
 
 import asyncpg
@@ -169,28 +170,35 @@ async def _hold_progress_row(
     channel: str,
     ready: asyncio.Event,
     release: asyncio.Event,
+    xid_out: list[str],
 ) -> None:
     """Hold a real row lock on the upsert's target row from a second
-    connection: the flush's durable statement blocks on it for real."""
+    connection: the flush's durable statement blocks on it for real.
+    The holder's own transaction id is published before ready, so the
+    block detection matches THIS blocker and nothing else."""
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute(
             f'SELECT 1 FROM "{schema}".wf_node_progress WHERE node_id=$1 AND channel=$2 FOR UPDATE',
             node_id,
             channel,
         )
+        xid_out.append(str(await conn.fetchval("SELECT pg_current_xact_id()::text::bigint")))
         ready.set()
         await release.wait()
 
 
-async def _wait_for_block(pool: asyncpg.Pool, deadline_s: float = 10.0) -> None:
-    """Deterministic block detection: the flush's upsert is waiting for
-    the held row's transaction to release it (a row-lock wait shows as
-    an ungranted transactionid lock)."""
+async def _wait_for_block(pool: asyncpg.Pool, xid: str, deadline_s: float = 10.0) -> None:
+    """Deterministic block detection scoped to THIS blocker: the flush's
+    upsert is waiting for exactly the holder's transaction to release
+    it (an ungranted transactionid lock on the holder's own xid)."""
     async with pool.acquire() as conn:
         deadline = asyncio.get_running_loop().time() + deadline_s
         while asyncio.get_running_loop().time() < deadline:
             waiting = await conn.fetchval(
-                "SELECT count(*) FROM pg_locks WHERE NOT granted AND locktype = 'transactionid'"
+                "SELECT count(*) FROM pg_locks "
+                "WHERE NOT granted AND locktype = 'transactionid' "
+                "AND transactionid::text = $1",
+                xid,
             )
             if waiting:
                 return
@@ -249,15 +257,16 @@ async def test_flush_rolls_back_the_stream_append_when_the_state_upsert_blocks(
         emitter, wf_conn, wf_schema, node_id
     )
     ready, release = asyncio.Event(), asyncio.Event()
+    xid_out: list[str] = []
     blocker = asyncio.create_task(
-        _hold_progress_row(wf_pool, wf_schema, node_id, "progress", ready, release)
+        _hold_progress_row(wf_pool, wf_schema, node_id, "progress", ready, release, xid_out)
     )
     await asyncio.wait_for(ready.wait(), timeout=5.0)
     try:
         await emitter.emit(40, "interrupted", None)
         flush_task = emitter._flush_task
         assert flush_task is not None, "the cadence flush was not armed"
-        await _wait_for_block(wf_pool)
+        await _wait_for_block(wf_pool, xid_out[0])
         flush_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await flush_task
@@ -297,15 +306,16 @@ async def test_flush_rolls_back_state_and_append_when_the_counters_block(
         emitter, wf_conn, wf_schema, node_id
     )
     ready, release = asyncio.Event(), asyncio.Event()
+    xid_out: list[str] = []
     blocker = asyncio.create_task(
-        _hold_progress_row(wf_pool, wf_schema, node_id, STREAM_CHANNEL, ready, release)
+        _hold_progress_row(wf_pool, wf_schema, node_id, STREAM_CHANNEL, ready, release, xid_out)
     )
     await asyncio.wait_for(ready.wait(), timeout=5.0)
     try:
         await emitter.emit(60, "interrupted", None)
         flush_task = emitter._flush_task
         assert flush_task is not None, "the cadence flush was not armed"
-        await _wait_for_block(wf_pool)
+        await _wait_for_block(wf_pool, xid_out[0])
         flush_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await flush_task
@@ -337,6 +347,70 @@ async def test_flush_rolls_back_state_and_append_when_the_counters_block(
         await _reap_quietly(emitter)
 
 
+async def test_flush_rolls_back_the_drop_count_with_its_group(
+    wf_pool: asyncpg.Pool, wf_sql: Any, wf_conn: asyncpg.Connection, wf_schema: str
+) -> None:
+    """The emitter's in-memory counters move with the durable commit: a
+    ring trim rolled back by the transaction leaves dropped_total at
+    the prior value (the counter and the persistence agree), and the
+    next successful flush's trim lands on both sides of the invariant
+    (the persisted drop counter equals the emitter's total)."""
+    flow_id = await seed_flow(wf_conn, wf_schema)
+    node_id = await seed_running_node(wf_conn, wf_schema, flow_id)
+    emitter = ProgressEmitter(
+        wf_pool, wf_sql, flow_id=flow_id, node_id=node_id, cadence_s=0, ring_bound=1
+    )
+    prior_occ, prior_dropped, prior_seq = await _seed_prior_state(
+        emitter, wf_conn, wf_schema, node_id
+    )
+    prior_dropped_total = emitter.dropped_total
+    ready, release = asyncio.Event(), asyncio.Event()
+    xid_out: list[str] = []
+    blocker = asyncio.create_task(
+        _hold_progress_row(wf_pool, wf_schema, node_id, "progress", ready, release, xid_out)
+    )
+    await asyncio.wait_for(ready.wait(), timeout=5.0)
+    try:
+        await emitter.emit(50, "trimmed", None)
+        flush_task = emitter._flush_task
+        assert flush_task is not None, "the cadence flush was not armed"
+        await _wait_for_block(wf_pool, xid_out[0])
+        flush_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await flush_task
+        assert await _stream_count(wf_conn, wf_schema, node_id) == 1, (
+            "the trimmed append committed without its durable group"
+        )
+        row = await _progress_row(wf_conn, wf_schema, node_id, "progress")
+        assert row is not None
+        assert (
+            int(row["occurrences"]),
+            int(row["dropped"]),
+            int(row["last_seq"]),
+        ) == (prior_occ, prior_dropped, prior_seq)
+        assert emitter.dropped_total == prior_dropped_total, (
+            "the in-memory drop total moved without its durable group: the "
+            "counter and the persistence disagree"
+        )
+    finally:
+        release.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await blocker
+    # The invariant across the rollback then a success: the next
+    # flush's trim lands on the record and on the emitter's total
+    # equally.
+    await emitter.emit(70, "after", None)
+    assert emitter._flush_task is not None
+    await asyncio.wait_for(emitter._flush_task, timeout=10.0)
+    counters = await _progress_row(wf_conn, wf_schema, node_id, STREAM_CHANNEL)
+    assert counters is not None
+    assert int(counters["dropped"]) == emitter.dropped_total, (
+        "the shipped invariant broke: the persisted drop counter does not equal the emitter's total"
+    )
+    row = await _progress_row(wf_conn, wf_schema, node_id, "progress")
+    assert row is not None and int(row["occurrences"]) == prior_occ + 1
+
+
 async def test_project_auto_event_rolls_back_the_append_when_the_counters_block(
     wf_pool: asyncpg.Pool, wf_sql: Any, wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
@@ -357,8 +431,9 @@ async def test_project_auto_event_rolls_back_the_append_when_the_counters_block(
     counters = await _progress_row(wf_conn, wf_schema, node_id, STREAM_CHANNEL)
     assert counters is not None and int(counters["occurrences"]) == 1
     ready, release = asyncio.Event(), asyncio.Event()
+    xid_out: list[str] = []
     blocker = asyncio.create_task(
-        _hold_progress_row(wf_pool, wf_schema, node_id, STREAM_CHANNEL, ready, release)
+        _hold_progress_row(wf_pool, wf_schema, node_id, STREAM_CHANNEL, ready, release, xid_out)
     )
     await asyncio.wait_for(ready.wait(), timeout=5.0)
     projection = asyncio.create_task(
@@ -372,7 +447,7 @@ async def test_project_auto_event_rolls_back_the_append_when_the_counters_block(
         )
     )
     try:
-        await _wait_for_block(wf_pool)
+        await _wait_for_block(wf_pool, xid_out[0])
         projection.cancel()
         with pytest.raises(asyncio.CancelledError):
             await projection
@@ -394,13 +469,17 @@ async def test_project_auto_event_rolls_back_the_append_when_the_counters_block(
 
 async def test_flush_knocks_only_after_the_durable_commit() -> None:
     """The knock is the pointer, not the record: it must not start
-    before the durable group's commit. A cancellation during the knock
-    loses only the pointer; the durable state is already coherent."""
+    before the durable group's commit, and the emitter's stream-append
+    counter moves with the commit, not with the knock. A cancellation
+    during the knock loses only the pointer; the durable state and the
+    counter are already coherent. The pin drives the cadence task emit
+    armed, never a second racing flush task."""
     knock_gate = asyncio.Event()
     knock_started = asyncio.Event()
     emitter, journal = _fake_emitter(knock_gate, knock_started)
     await emitter.emit(40, "knock me", None)
-    flush_task = asyncio.create_task(emitter._flush_once())
+    flush_task = emitter._flush_task
+    assert flush_task is not None, "the cadence flush was not armed"
     try:
         await asyncio.wait_for(knock_started.wait(), timeout=10.0)
         assert journal.knocks_started == 1, "the flush never reached the knock"
@@ -416,7 +495,10 @@ async def test_flush_knocks_only_after_the_durable_commit() -> None:
             "the durable record must stand when only the knock is cancelled"
         )
         assert journal.knocks_done == 0, "the cancelled knock did not complete"
-        assert emitter.appended == 0, "the interrupted flush's own counter is best-effort"
+        assert emitter.appended == 1, (
+            "the durable group committed: the stream-append counter agrees "
+            "with it even when the knock is cancelled"
+        )
     finally:
         if not flush_task.done():
             flush_task.cancel()
@@ -438,15 +520,23 @@ async def test_flush_and_final_close_commit_one_coherent_record(
     different."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     node_id = await seed_running_node(wf_conn, wf_schema, flow_id)
-    knocks: list[str] = []
+    knocks: list[int] = []
 
     _four_knocks = asyncio.Event()
     listener_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
 
     def _on_knock(_conn: object, _pid: int, _channel: str, payload: str) -> None:
-        knocks.append(payload)
-        if len(knocks) >= 4:
-            _four_knocks.set()
+        # Strict attribution: parse the pointer and keep only THIS
+        # test's schema, flow, and node; integer seqs, never raw JSON.
+        record = json.loads(payload)
+        if (
+            record.get("schema") == wf_schema
+            and record.get("flow_id") == str(flow_id)
+            and record.get("node_id") == str(node_id)
+        ):
+            knocks.append(int(record["seq"]))
+            if len(knocks) >= 4:
+                _four_knocks.set()
 
     await listener_conn.add_listener(PROGRESS_NOTIFY_CHANNEL, _on_knock)
     emitter = ProgressEmitter(
@@ -488,13 +578,21 @@ async def test_flush_and_final_close_commit_one_coherent_record(
         assert await _stream_count(wf_conn, wf_schema, node_id) == 2
         counters = await _progress_row(wf_conn, wf_schema, node_id, STREAM_CHANNEL)
         assert counters is not None and int(counters["occurrences"]) == 4
+        assert emitter.appended == emitter.flushes == 4, (
+            "one stream-append counter increment per committed flush, never two"
+        )
 
         try:
             await asyncio.wait_for(_four_knocks.wait(), timeout=10.0)
         except TimeoutError:
             raise AssertionError(f"DEBUG knocks={knocks}") from None
         assert len(knocks) == 4, f"one knock per flush expected, got {knocks}"
-        assert knocks[-1] == max(knocks)
+        assert knocks == sorted(knocks), "the pointers arrive in seq order"
+        final_row = await _progress_row(wf_conn, wf_schema, node_id, "progress")
+        assert final_row is not None
+        assert knocks[-1] == int(final_row["last_seq"]), (
+            "the last pointer is the final row's last_seq"
+        )
     finally:
         await listener_conn.remove_listener(PROGRESS_NOTIFY_CHANNEL, _on_knock)
         await listener_conn.close()

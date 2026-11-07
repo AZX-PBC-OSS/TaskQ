@@ -265,9 +265,11 @@ class ProgressEmitter:
         self._cadence_s = cadence_s
         self._schema_decl = schema_decl
         self._enabled = enabled
-        # the body's emission calls; the state writes; the stream appends; the
-        # ring's drop-oldest casualties; the flush failures (best-effort, never
-        # raised).
+        # the body's emission calls; the attempted non-empty flushes,
+        # including attempts a rollback discarded; the stream appends
+        # whose durable group committed; the ring's drop-oldest
+        # casualties whose group committed; the flush failures
+        # (best-effort, never raised).
         self.emitted = 0
         self.flushes = 0
         self.appended = 0
@@ -369,7 +371,6 @@ class ProgressEmitter:
                     assert row is not None  # the statement always returns its row
                     seq = int(row["seq"])
                     dropped = int(row["dropped"])
-                    self.dropped_total += dropped
                     await conn.execute(
                         self._wsql.progress_state_upsert,
                         self._node_id,
@@ -395,6 +396,12 @@ class ProgressEmitter:
                         dropped,
                         seq,
                     )
+                # The emitter's counters move AFTER the durable commit:
+                # the persistence is the truth, and a rolled-back group
+                # (a cancellation at the boundaries) must not leave the
+                # emitter's totals ahead of it.
+                self.dropped_total += dropped
+                self.appended += 1
                 # the knock AFTER the commit, on the write's own
                 # connection — the pointer only. Notification loss is a
                 # freshness loss; the durable record is already whole.
@@ -405,7 +412,6 @@ class ProgressEmitter:
                     node_id=self._node_id,
                     seq=seq,
                 )
-                self.appended += 1
         except asyncio.CancelledError:
             raise
         except Exception as exc:
