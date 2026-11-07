@@ -47,10 +47,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import signal
+import sys
 import time
 from collections.abc import AsyncGenerator
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -66,6 +68,7 @@ from tests.system_e2e._harness import (
     TERMINATION_GRACE_S,
     TIER_LOAD_STRETCH,
     WorkerProc,
+    _tee_stderr,
     graceful_stop,
     reap,
     spawn_joined_worker,
@@ -614,6 +617,32 @@ _RELEASE_FALLBACK_MARKERS = (
     "terminal-write-failed",
 )
 
+#: The console records' leading stamp (second granularity): the worker's
+#: log clock and the database's clock are the same host clock (the
+#: containers run UTC).
+_LOG_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+
+
+def _log_line_evidences(line: str, job_id: str, claim_floor: datetime) -> bool:
+    """One log line is a row's release-fallback evidence when it names a
+    fallback marker AND that row's job id AND carries a parseable
+    console stamp from the current attempt's claim instant or later.
+    The console records stamp at second granularity, so the claim's
+    floor is the claim stamp floored to the second: a same-second
+    record is accepted, an older attempt's record is seconds or minutes
+    older and rejected. Unparseable or missing timestamps are never
+    evidence (fail closed), and so is a row with no claim stamp at
+    all."""
+    if not any(marker in line for marker in _RELEASE_FALLBACK_MARKERS):
+        return False
+    if job_id not in line:
+        return False
+    stamp_match = _LOG_STAMP.match(line)
+    if stamp_match is None:
+        return False
+    stamp = datetime.strptime(stamp_match.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    return stamp >= claim_floor
+
 
 async def _assert_corpse_owns_nothing(
     conn: asyncpg.Connection,
@@ -659,7 +688,7 @@ async def _assert_corpse_owns_nothing(
             residual = await conn.fetch(
                 f"SELECT id::text AS id, actor, status::text AS status, attempt, "
                 f"locked_by_worker::text AS holder, lock_expires_at, scheduled_at, "
-                f'interrupt_count FROM "{schema}".jobs '
+                f'started_at, interrupt_count FROM "{schema}".jobs '
                 "WHERE status = 'running' AND locked_by_worker = $1::uuid",
                 worker_id,
             )
@@ -672,10 +701,12 @@ async def _assert_corpse_owns_nothing(
                         "lock expiry, so its reclaim bound cannot be derived - "
                         f"{await _corpse_ownership_report(conn, schema, worker_id)}"
                     )
-                evidenced = any(
-                    marker in line and residual_row["id"] in line
+                claim_stamp = residual_row["started_at"]
+                evidenced = claim_stamp is not None and any(
+                    _log_line_evidences(
+                        line, residual_row["id"], claim_stamp.replace(microsecond=0)
+                    )
                     for line in log_lines
-                    for marker in _RELEASE_FALLBACK_MARKERS
                 )
                 if evidenced:
                     if latest_expiry is None or residual_row["lock_expires_at"] > latest_expiry:
@@ -753,7 +784,7 @@ async def _corpse_ownership_report(conn: asyncpg.Connection, schema: str, worker
     rows = await conn.fetch(
         f"SELECT id::text AS id, actor, status::text AS status, attempt, "
         f"locked_by_worker::text AS holder, lock_expires_at, scheduled_at, "
-        f'interrupt_count FROM "{schema}".jobs '
+        f'started_at, interrupt_count FROM "{schema}".jobs '
         "WHERE status = 'running' AND locked_by_worker = $1::uuid",
         worker_id,
     )
@@ -2143,10 +2174,14 @@ async def test_corpse_ownership_wait_staged_reads(
     release write leaves running/locked rows for lease-expiry reclaim),
     and probe settlement does not settle corpse rows. The stages drive
     the helper against REAL worker log files (the same tee/sink shape
-    the harness writes): a residual row with no log, a marker naming a
-    different job id, and the exact-row evidence whose reclaim lands
-    during the wait (a stale slot row may survive the corpse; the LIVE
-    lease is the condition)."""
+    the harness writes), and the evidence rule is the current attempt's:
+    a marker record naming the row's job id with a console stamp from
+    the row's own claim instant or later. The cases: no log at all; a
+    marker naming a different job id; the SAME job id with an OLDER
+    attempt's stamp; a mixed group where one row's evidence does not
+    excuse its sibling; the exact-row evidence whose reclaim lands
+    during the wait (a stale slot row may survive the corpse - the LIVE
+    lease is the condition); and a held row with no lock expiry."""
     schema = module_pg_schema.schema_name
     corpse = str(new_uuid())
     log_path = tmp_path / "corpse-worker.log"
@@ -2157,9 +2192,11 @@ async def test_corpse_ownership_wait_staged_reads(
     )
     flow_id = await seed_flow(clean_pg_conn, schema)
     node_id = await seed_running_node(clean_pg_conn, schema, flow_id)
+    sibling_id = await seed_running_node(clean_pg_conn, schema, flow_id)
     await clean_pg_conn.execute(
         f'UPDATE "{schema}".jobs SET locked_by_worker = $1::uuid, '
-        "lock_expires_at = statement_timestamp() + interval '60s' "
+        "lock_expires_at = statement_timestamp() + interval '60s', "
+        "started_at = statement_timestamp() "
         "WHERE id = $2::uuid",
         corpse,
         node_id,
@@ -2200,18 +2237,65 @@ async def test_corpse_ownership_wait_staged_reads(
         )
     assert "no release-fallback evidence" in str(wrong_row.value), str(wrong_row.value)
 
-    # The EXACT-row evidence: the helper waits the row's derived bound
-    # while the staged reclaim lands, then passes with the stale slot
-    # row still naming the corpse (the LIVE lease is the condition).
+    # The claim stamp, from the row itself.
+    staged_row = await clean_pg_conn.fetchrow(
+        f'SELECT started_at FROM "{schema}".jobs WHERE id = $1::uuid', node_id
+    )
+    assert staged_row is not None and staged_row["started_at"] is not None
+    claim_second = staged_row["started_at"].replace(microsecond=0)
+    stale_second = claim_second - timedelta(seconds=60)
+
+    # The SAME job id with an OLDER attempt's stamp: the marker record
+    # predates the current claim, so it is not evidence for this row.
     log_path.write_text(
-        f"level=warning event=release-pg-write-failed job_id={node_id} error=boom\n"
+        f"level=warning event=release-pg-write-failed job_id={node_id} error=boom\n".replace(
+            "level=warning", stale_second.strftime("%Y-%m-%d %H:%M:%S")
+        )
+    )
+    with pytest.raises(AssertionError) as stale_attempt:
+        await _assert_corpse_owns_nothing(
+            clean_pg_conn, schema, corpse, "stale attempt", worker, bound=60.0
+        )
+    assert "no release-fallback evidence" in str(stale_attempt.value), str(stale_attempt.value)
+
+    # A MIXED group: the sibling row's evidence does not excuse this
+    # row's missing marker. The log names the node's row only, and the
+    # stamp is the stale attempt's (the sibling's own current-attempt
+    # marker is absent either way).
+    log_path.write_text(
+        stale_second.strftime("%Y-%m-%d %H:%M:%S")
+        + f" level=warning event=release-pg-write-failed job_id={node_id} error=boom\n"
+    )
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".jobs SET locked_by_worker = $1::uuid, '
+        "lock_expires_at = statement_timestamp() + interval '60s', "
+        "started_at = statement_timestamp() "
+        "WHERE id = $2::uuid",
+        corpse,
+        sibling_id,
+    )
+    with pytest.raises(AssertionError) as mixed_group:
+        await _assert_corpse_owns_nothing(
+            clean_pg_conn, schema, corpse, "mixed group", worker, bound=60.0
+        )
+    assert "no release-fallback evidence" in str(mixed_group.value), str(mixed_group.value)
+
+    # The EXACT-row evidence, current attempt, for EVERY row in the
+    # group: the helper waits while the staged reclaim clears both
+    # rows, then passes with the stale slot row still naming the corpse
+    # (the LIVE lease is the condition).
+    log_path.write_text(
+        claim_second.strftime("%Y-%m-%d %H:%M:%S")
+        + f" level=warning event=release-pg-write-failed job_id={node_id} error=boom\n"
+        + claim_second.strftime("%Y-%m-%d %H:%M:%S")
+        + f" level=warning event=shutdown-release-failed job_id={sibling_id} error=boom\n"
     )
 
     async def _staged_reclaim() -> None:
         await asyncio.sleep(1.0)
         await clean_pg_conn.execute(
-            f"UPDATE \"{schema}\".jobs SET status = 'pending' WHERE id = $1::uuid",
-            node_id,
+            f"UPDATE \"{schema}\".jobs SET status = 'pending' WHERE locked_by_worker = $1::uuid",
+            corpse,
         )
         await clean_pg_conn.execute(
             f'UPDATE "{schema}".reservation_slots '
@@ -2221,5 +2305,71 @@ async def test_corpse_ownership_wait_staged_reads(
         )
 
     reaper = asyncio.create_task(_staged_reclaim())
-    await _assert_corpse_owns_nothing(clean_pg_conn, schema, corpse, "staged reclaim", worker)
-    await reaper
+    try:
+        await _assert_corpse_owns_nothing(clean_pg_conn, schema, corpse, "staged reclaim", worker)
+    finally:
+        if not reaper.done():
+            reaper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reaper
+
+    # The held row with NO lock expiry: the reclaim bound cannot be
+    # derived, so the fail is immediate.
+    await clean_pg_conn.execute(
+        f"UPDATE \"{schema}\".jobs SET status = 'running', "
+        "locked_by_worker = $1::uuid, lock_expires_at = NULL, "
+        "started_at = statement_timestamp() WHERE id = $2::uuid",
+        corpse,
+        sibling_id,
+    )
+    with pytest.raises(AssertionError) as no_expiry:
+        await _assert_corpse_owns_nothing(
+            clean_pg_conn, schema, corpse, "no expiry", worker, bound=60.0
+        )
+    assert "holds no lock expiry" in str(no_expiry.value), str(no_expiry.value)
+
+
+def test_worker_log_drain_joins_at_graceful_stop(tmp_path: Any) -> None:
+    """The harness's tee reader is owned by the WorkerProc: after the
+    graceful stop's process wait, the reader is joined at its own EOF,
+    so the log file is final the moment the caller reads it - the last
+    stderr record is present, and no reader thread lingers past the
+    stop."""
+    import subprocess as sp
+
+    log_path = tmp_path / "short-worker.log"
+    proc = sp.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import signal, sys, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "print('early', file=sys.stderr, flush=True)\n"
+            "time.sleep(0.3)\n"
+            "print('final-line', file=sys.stderr, flush=True)\n",
+        ],
+        stdout=sp.PIPE,
+        stderr=sp.PIPE,
+    )
+    worker = WorkerProc(
+        proc=proc,
+        sock_path=str(tmp_path / "short.sock"),
+        log_path=str(log_path),
+        log_drain=_tee_stderr(proc, str(log_path)),
+    )
+    # Wait for the child's own first record: the child is up, its
+    # stream flows, and its SIGTERM is now ignored (the script's first
+    # line). Stopping before that would kill it mid-startup and prove
+    # nothing about the drain's EOF join.
+    ready_deadline = time.monotonic() + 10.0
+    while "early" not in log_path.read_text(errors="replace"):
+        if time.monotonic() > ready_deadline:
+            raise AssertionError("the probe subprocess never wrote its first record")
+        time.sleep(0.05)
+    graceful_stop(worker, timeout=10.0)
+    assert worker.log_drain is not None
+    assert not worker.log_drain.is_alive(), "the tee reader outlived the graceful stop"
+    assert "final-line" in log_path.read_text(), (
+        "the log's last stderr record is missing after the graceful stop: "
+        "the reader was not joined at its EOF"
+    )

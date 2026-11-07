@@ -41,6 +41,7 @@ the optional hypertable mode and the flag boundary:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -887,26 +888,14 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
         # deferral moved next_start, but an already-claimed policy run
         # executes anyway - forced here by pulling the compression
         # policy's next run to now, exactly the interleave the CI run
-        # hit. The compressed chunk identities are snapshotted first and
-        # the forced run must produce a NEW columnar chunk, so a setup
-        # run that already compressed every expiry chunk cannot satisfy
-        # this vacuously: the witness chunk is decompressed to rowstore
-        # before the force, guaranteeing the forced run a compressible
-        # target.
+        # hit. The witness chunk is decompressed to rowstore FIRST, the
+        # compressed-identity baseline is snapshotted AFTER that (so the
+        # witness's rowstore state is part of the baseline and its
+        # recompression is a strict NEW identity), and both are pinned:
+        # the witness is rowstore immediately before the force and
+        # columnar after it - a setup run that already compressed every
+        # expiry chunk cannot satisfy this vacuously.
         job_id, application_name = await _compression_job(conn, ts_schema)
-        baseline_runs = await conn.fetchval(
-            "SELECT total_runs FROM timescaledb_information.job_stats WHERE job_id=$1",
-            job_id,
-        )
-        baseline_names = {
-            r["chunk_name"]
-            for r in await conn.fetch(
-                "SELECT chunk_name FROM timescaledb_information.chunks "
-                "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
-                "AND is_compressed",
-                ts_schema,
-            )
-        }
         witness = await conn.fetchrow(
             "SELECT chunk_schema, chunk_name, COALESCE(is_compressed, false) AS compressed "
             "FROM timescaledb_information.chunks "
@@ -919,36 +908,68 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
             await conn.execute(
                 f"SELECT decompress_chunk('{witness['chunk_schema']}.{witness['chunk_name']}')"
             )
-        await conn.execute("SELECT alter_job($1, scheduled => true, next_start => now())", job_id)
-        # The run's completion, not its launch: total_runs advances when
-        # the run starts and last_run_status stays NULL until it
-        # finishes, so the gate requires the finished status - breaking
-        # on the count alone observed the run mid-flight and both later
-        # assertions raced its remaining compressions.
-        deadline = asyncio.get_running_loop().time() + 60.0
-        run_stats = {
-            "total_runs": baseline_runs,
-            "last_run_status": None,
+        baseline_successes = await conn.fetchval(
+            "SELECT total_successes FROM timescaledb_information.job_stats WHERE job_id=$1",
+            job_id,
+        )
+        baseline_names = {
+            r["chunk_name"]
+            for r in await conn.fetch(
+                "SELECT chunk_name FROM timescaledb_information.chunks "
+                "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
+                "AND is_compressed",
+                ts_schema,
+            )
         }
+        witness_state = await conn.fetchval(
+            "SELECT COALESCE(is_compressed, false) FROM timescaledb_information.chunks "
+            "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
+            "AND chunk_name = $2",
+            ts_schema,
+            witness["chunk_name"],
+        )
+        assert witness_state is False, (
+            "the witness chunk is columnar immediately before the forced run"
+        )
+        await conn.execute("SELECT alter_job($1, scheduled => true, next_start => now())", job_id)
+        # The gate: a NEW SUCCESSFUL completion. The job_stats keys were
+        # verified by introspection on this engine: total_successes
+        # counts the finished-successful runs and last_successful_finish
+        # carries the real finish instant, so a prior run's status (the
+        # 'Success' the setup run left behind) cannot satisfy the gate -
+        # the finish must postdate the force.
+        force_at = await conn.fetchval("SELECT statement_timestamp()")
+        deadline = asyncio.get_running_loop().time() + 60.0
+        run_stats = {"total_successes": baseline_successes, "last_successful_finish": None}
         while asyncio.get_running_loop().time() < deadline:
             run_stats = await conn.fetchrow(
-                "SELECT total_runs, last_run_status FROM timescaledb_information.job_stats "
-                "WHERE job_id=$1",
+                "SELECT total_successes, last_successful_finish "
+                "FROM timescaledb_information.job_stats WHERE job_id=$1",
                 job_id,
             )
             assert run_stats is not None, "the job's stats row vanished"
-            if (
-                run_stats["total_runs"] >= baseline_runs + 1
-                and run_stats["last_run_status"] is not None
+            if run_stats["total_successes"] >= baseline_successes + 1 and (
+                run_stats["last_successful_finish"] is not None
+                and run_stats["last_successful_finish"] >= force_at
             ):
                 break
             await asyncio.sleep(0.1)
-        assert (
-            run_stats["total_runs"] >= baseline_runs + 1
-            and run_stats["last_run_status"] is not None
-        ), "the forced policy run never finished"
-        assert run_stats["last_run_status"] == "Success", (
-            f"the forced policy run failed: {dict(run_stats)}"
+        assert run_stats["total_successes"] >= baseline_successes + 1 and (
+            run_stats["last_successful_finish"] is not None
+            and run_stats["last_successful_finish"] >= force_at
+        ), (
+            f"the forced policy run never finished successfully: "
+            f"{dict(run_stats)} vs the baseline {baseline_successes} successes"
+        )
+        witness_after = await conn.fetchval(
+            "SELECT COALESCE(is_compressed, false) FROM timescaledb_information.chunks "
+            "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
+            "AND chunk_name = $2",
+            ts_schema,
+            witness["chunk_name"],
+        )
+        assert witness_after is True, (
+            "the witness chunk did not rematerialize columnar under the forced run"
         )
         after_names = {
             r["chunk_name"]
@@ -1004,104 +1025,137 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
         # transaction holds the hypertable and its exact chunks, any
         # claimed run blocks on them, and the rowstore premise is
         # re-asserted under the lock before both plans are read. The
-        # probe compression started here cannot finish while the lock is
-        # held - that is the serialization proof - and lands the moment
-        # the transaction rolls back.
+        # serialization is proven with the probe compression's OWN
+        # backend: its pid is captured before the task, and the poll
+        # observes that exact pid in a real Lock wait for as long as
+        # the plan observation runs - no timing-only claim. The task is
+        # reaped on every path: the normal path waits for it only after
+        # the transaction has rolled back (the lock released), and any
+        # other exception cancels and reaps it, suppressing only the
+        # child's CancelledError while the outer exception propagates.
         class _PlanObservedError(Exception):
             pass
 
-        with pytest.raises(_PlanObservedError):
-            async with conn.transaction():
-                await conn.execute(f'LOCK TABLE "{ts_schema}".jobs_archive IN ACCESS SHARE MODE')
-                for chunk in await conn.fetch(
-                    "SELECT chunk_schema, chunk_name FROM timescaledb_information.chunks "
-                    "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive'",
-                    ts_schema,
-                ):
+        compress_task: asyncio.Task[object] | None = None
+        try:
+            with pytest.raises(_PlanObservedError):
+                async with conn.transaction():
                     await conn.execute(
-                        f'LOCK TABLE "{chunk["chunk_schema"]}"."{chunk["chunk_name"]}" '
-                        "IN ACCESS EXCLUSIVE MODE"
+                        f'LOCK TABLE "{ts_schema}".jobs_archive IN ACCESS SHARE MODE'
                     )
-                compressed_now = await conn.fetchval(
-                    "SELECT count(*) FROM timescaledb_information.chunks "
-                    "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
-                    "AND COALESCE(is_compressed, false)",
-                    ts_schema,
-                )
-                assert compressed_now == 0, (
-                    f"{compressed_now} chunk(s) are still columnar at the plan's "
-                    "read: the barrier failed to restore the rowstore premise"
-                )
-                oldest = await conn.fetchrow(
-                    "SELECT chunk_schema, chunk_name FROM timescaledb_information.chunks "
-                    "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
-                    "ORDER BY range_start LIMIT 1",
-                    ts_schema,
-                )
-                assert oldest is not None
-                compress_task = asyncio.create_task(
-                    compressor_conn.execute(
-                        "SELECT compress_chunk($1)",
-                        f'"{oldest["chunk_schema"]}"."{oldest["chunk_name"]}"',
+                    for chunk in await conn.fetch(
+                        "SELECT chunk_schema, chunk_name FROM timescaledb_information.chunks "
+                        "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive'",
+                        ts_schema,
+                    ):
+                        await conn.execute(
+                            f'LOCK TABLE "{chunk["chunk_schema"]}"."{chunk["chunk_name"]}" '
+                            "IN ACCESS EXCLUSIVE MODE"
+                        )
+                    compressed_now = await conn.fetchval(
+                        "SELECT count(*) FROM timescaledb_information.chunks "
+                        "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
+                        "AND COALESCE(is_compressed, false)",
+                        ts_schema,
                     )
-                )
-                await asyncio.sleep(0.5)
-                assert not compress_task.done(), (
-                    "a compression ran through the plan's locks: the plan "
-                    "observation is not atomic against a claimed run"
-                )
-                plan_rows = await conn.fetch(
-                    f"EXPLAIN (FORMAT TEXT) {_EXPIRY_CTE_SQL.format(schema=ts_schema)}", 10
-                )
-                plan = "\n".join(r[0] for r in plan_rows)
-                expired_arm = plan.split("CTE expired", 1)[1].split("CTE deleted", 1)[0]
-                # Timescale's chunk-exclusion machinery scans the compressed
-                # chunk's metadata; that is not the sweep's row scan. The bound
-                # under test is the one on the real chunks.
-                chunk_scans = [
-                    line
-                    for line in expired_arm.splitlines()
-                    if "Scan" in line and " on _hyper" in line and "_chunk_compressed" not in line
-                ]
-                assert chunk_scans, f"the expiry window names no chunk scan:\n{expired_arm}"
-                for line in chunk_scans:
-                    assert "Index Scan" in line and "_jobs_archive_expire_at_idx" in line, (
-                        f"a chunk scan in the expiry window is not index-bounded: {line}"
+                    assert compressed_now == 0, (
+                        f"{compressed_now} chunk(s) are still columnar at the plan's "
+                        "read: the barrier failed to restore the rowstore premise"
                     )
-                # Every alive chunk is present in the sweep's plan (it cannot
-                # prune them - its bound is not the partition column) and each is
-                # index-bounded above.
-                expired_chunks = {
-                    tok
-                    for line in expired_arm.splitlines()
-                    for tok in line.split()
-                    if tok.startswith("_hyper_") and tok.endswith("_chunk")
-                }
-                assert len(expired_chunks) == 3, (
-                    f"the expiry window must touch every alive chunk, index-bounded:\n{expired_arm}"
-                )
+                    oldest = await conn.fetchrow(
+                        "SELECT chunk_schema, chunk_name FROM timescaledb_information.chunks "
+                        "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
+                        "ORDER BY range_start LIMIT 1",
+                        ts_schema,
+                    )
+                    assert oldest is not None
+                    compressor_pid = await compressor_conn.fetchval("SELECT pg_backend_pid()")
+                    compress_task = asyncio.create_task(
+                        compressor_conn.execute(
+                            "SELECT compress_chunk($1)",
+                            f'"{oldest["chunk_schema"]}"."{oldest["chunk_name"]}"',
+                        )
+                    )
+                    # The real Lock wait: the compressor's own backend,
+                    # observed waiting on the held chunk lock.
+                    lock_wait_deadline = asyncio.get_running_loop().time() + 10.0
+                    waiting = 0
+                    while asyncio.get_running_loop().time() < lock_wait_deadline:
+                        waiting = await conn.fetchval(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE pid = $1 AND wait_event_type = 'Lock'",
+                            compressor_pid,
+                        )
+                        if waiting:
+                            break
+                        await asyncio.sleep(0.05)
+                    assert waiting and not compress_task.done(), (
+                        "the probe compression never entered a real lock wait: "
+                        "the plan observation is not atomic against a claimed run"
+                    )
+                    plan_rows = await conn.fetch(
+                        f"EXPLAIN (FORMAT TEXT) {_EXPIRY_CTE_SQL.format(schema=ts_schema)}", 10
+                    )
+                    plan = "\n".join(r[0] for r in plan_rows)
+                    expired_arm = plan.split("CTE expired", 1)[1].split("CTE deleted", 1)[0]
+                    # Timescale's chunk-exclusion machinery scans the compressed
+                    # chunk's metadata; that is not the sweep's row scan. The bound
+                    # under test is the one on the real chunks.
+                    chunk_scans = [
+                        line
+                        for line in expired_arm.splitlines()
+                        if "Scan" in line
+                        and " on _hyper" in line
+                        and "_chunk_compressed" not in line
+                    ]
+                    assert chunk_scans, f"the expiry window names no chunk scan:\n{expired_arm}"
+                    for line in chunk_scans:
+                        assert "Index Scan" in line and "_jobs_archive_expire_at_idx" in line, (
+                            f"a chunk scan in the expiry window is not index-bounded: {line}"
+                        )
+                    # Every alive chunk is present in the sweep's plan (it cannot
+                    # prune them - its bound is not the partition column) and each is
+                    # index-bounded above.
+                    expired_chunks = {
+                        tok
+                        for line in expired_arm.splitlines()
+                        for tok in line.split()
+                        if tok.startswith("_hyper_") and tok.endswith("_chunk")
+                    }
+                    assert len(expired_chunks) == 3, (
+                        f"the expiry window must touch every alive chunk, index-bounded:\n{expired_arm}"
+                    )
 
-                # Partition-column window: chunk pruning, for real.
-                window_rows = await conn.fetch(
-                    f"""EXPLAIN (FORMAT TEXT) SELECT count(*) FROM "{ts_schema}".jobs_archive
-                    WHERE finished_at >= $1::timestamptz AND finished_at < $2::timestamptz""",
-                    now - timedelta(hours=12),
-                    now,
-                )
-                window_plan = "\n".join(r[0] for r in window_rows)
-                chunk_tokens = {
-                    tok
-                    for line in window_plan.splitlines()
-                    for tok in line.split()
-                    if tok.startswith("_hyper_") and tok.endswith("_chunk")
-                }
-                assert chunk_tokens, f"the plan must read chunks:\n{window_plan}"
-                assert len(chunk_tokens) < n_chunks, (
-                    f"a partition-column window must prune at least one chunk "
-                    f"(read {len(chunk_tokens)} of {n_chunks}):\n{window_plan}"
-                )
-                raise _PlanObservedError
-        await compress_task  # the compression lands after the rollback: the serialization was real
+                    # Partition-column window: chunk pruning, for real.
+                    window_rows = await conn.fetch(
+                        f"""EXPLAIN (FORMAT TEXT) SELECT count(*) FROM "{ts_schema}".jobs_archive
+                        WHERE finished_at >= $1::timestamptz AND finished_at < $2::timestamptz""",
+                        now - timedelta(hours=12),
+                        now,
+                    )
+                    window_plan = "\n".join(r[0] for r in window_rows)
+                    chunk_tokens = {
+                        tok
+                        for line in window_plan.splitlines()
+                        for tok in line.split()
+                        if tok.startswith("_hyper_") and tok.endswith("_chunk")
+                    }
+                    assert chunk_tokens, f"the plan must read chunks:\n{window_plan}"
+                    assert len(chunk_tokens) < n_chunks, (
+                        f"a partition-column window must prune at least one chunk "
+                        f"(read {len(chunk_tokens)} of {n_chunks}):\n{window_plan}"
+                    )
+                    raise _PlanObservedError
+            # The normal path: the transaction has rolled back and the
+            # lock is released; the compression lands now, which closes
+            # the serialization proof.
+            assert compress_task is not None
+            await compress_task
+        finally:
+            if compress_task is not None and not compress_task.done():
+                compress_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await compress_task
 
     finally:
         await conn.close()
