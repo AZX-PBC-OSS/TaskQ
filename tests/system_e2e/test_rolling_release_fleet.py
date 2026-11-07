@@ -608,48 +608,125 @@ class CapSampler:
         )
 
 
+_RELEASE_FALLBACK_MARKERS = (
+    "release-pg-write-failed",
+    "shutdown-release-failed",
+    "terminal-write-failed",
+)
+
+
 async def _assert_corpse_owns_nothing(
     conn: asyncpg.Connection,
     schema: str,
     worker_id: str,
     label: str,
+    worker: WorkerProc | None = None,
     *,
     bound: float | None = None,
 ) -> None:
     """No queue left owned by a corpse: no running row locked by it, and
     no reservation slot (queue-cap or keyed) live-held by it.
 
-    The postcondition is eventual, not instant. A clean shutdown's
-    release writes clear the ownership and the immediate fast path
-    passes. The product also documents the fallback: a shutdown
-    release write can fail or be skipped, intentionally leaving
-    running/locked rows for lease-expiry reclaim (the shutdown
-    release's own error path), and probe settlement does not settle
-    corpse rows. The wait's bound is that fallback's own reclaim
-    arithmetic, the module's existing corpse-bound derivation: the
-    lock lease to lapse (8s), the leader lease to lapse for a survivor
-    to take the sweep (20s), one sweep tick (1s), the poll floor, the
-    re-claim cycle's lease guards, and the co-tenancy margins, all
-    stretched by the tier's load factor (_CORPSE_SLOT_BOUND). A
-    reserved slot's stale row may be reused by a survivor, so the slot
-    condition is a LIVE lease, never merely the row's existence. On the
-    bound's expiry the offending rows and slots are reported and the
-    assertion fails: the wait never masks a real leak."""
-    deadline = time.monotonic() + (bound if bound is not None else _CORPSE_SLOT_BOUND)
-    effective = bound if bound is not None else _CORPSE_SLOT_BOUND
+    The postcondition has two shapes. A clean release clears both
+    surfaces and the immediate fast path passes. The product also
+    documents a release fallback: a shutdown release write can fail or
+    be skipped, intentionally leaving running/locked rows for
+    lease-expiry reclaim (the shutdown release's own error path), and
+    probe settlement does not settle corpse rows. A running row is
+    waited out ONLY with row-specific evidence in that worker's own
+    log: a ``release-pg-write-failed``, ``shutdown-release-failed``, or
+    ``terminal-write-failed`` record naming that job id. A residual
+    running row without its evidence fails immediately - a wait here
+    would mask a release miss - and every row in a mixed group needs
+    its own evidence; one marker does not excuse siblings. The wait's
+    bounds are the module's derived corpse arithmetic: a running row's
+    own bound is its observed lock expiry plus one sweep tick and the
+    poll floor, stretched by the tier's load factor (a missing
+    lock_expires_at on a held row fails immediately); slot-only residue
+    keeps the corpse slot bound (a stale slot row may be reused by a
+    survivor, so the slot condition is a LIVE lease, never the row's
+    existence). On any bound's expiry the offending rows and slots are
+    reported and the assertion fails: the wait never masks a leak
+    without evidence."""
+    slot_deadline = time.monotonic() + (bound if bound is not None else _CORPSE_SLOT_BOUND)
+    log_lines = _worker_log_lines(worker)
+    row_deadline: float | None = None
     while True:
-        rows, slots, _stamp = await _corpse_ownership(conn, schema, worker_id)
+        rows, slots, stamp = await _corpse_ownership(conn, schema, worker_id)
         if rows == 0 and slots == 0:
             return
-        if time.monotonic() >= deadline:
+        if rows:
+            residual = await conn.fetch(
+                f"SELECT id::text AS id, actor, status::text AS status, attempt, "
+                f"locked_by_worker::text AS holder, lock_expires_at, scheduled_at, "
+                f'interrupt_count FROM "{schema}".jobs '
+                "WHERE status = 'running' AND locked_by_worker = $1::uuid",
+                worker_id,
+            )
+            unevidenced: list[dict[str, Any]] = []
+            latest_expiry: datetime | None = None
+            for residual_row in residual:
+                if residual_row["lock_expires_at"] is None:
+                    raise AssertionError(
+                        f"{label}: the running row {residual_row['id']} holds no "
+                        "lock expiry, so its reclaim bound cannot be derived - "
+                        f"{await _corpse_ownership_report(conn, schema, worker_id)}"
+                    )
+                evidenced = any(
+                    marker in line and residual_row["id"] in line
+                    for line in log_lines
+                    for marker in _RELEASE_FALLBACK_MARKERS
+                )
+                if evidenced:
+                    if latest_expiry is None or residual_row["lock_expires_at"] > latest_expiry:
+                        latest_expiry = residual_row["lock_expires_at"]
+                else:
+                    unevidenced.append(dict(residual_row))
+            if unevidenced:
+                raise AssertionError(
+                    f"{label}: {len(unevidenced)} running row(s) stayed locked by "
+                    "the worker that exited rc=0 with no release-fallback evidence "
+                    "in its log (release-pg-write-failed / shutdown-release-failed "
+                    "/ terminal-write-failed naming the job id) - a release miss "
+                    "is not waited out: "
+                    f"{await _corpse_ownership_report(conn, schema, worker_id)}"
+                )
+            if row_deadline is None:
+                assert latest_expiry is not None
+                horizon = (
+                    (latest_expiry - stamp).total_seconds() + _SWEEP_INTERVAL + _POLL_FLOOR
+                ) * TIER_LOAD_STRETCH
+                row_deadline = time.monotonic() + max(horizon, 1.0)
+            if time.monotonic() >= row_deadline:
+                raise AssertionError(
+                    f"{label}: the evidenced release-fallback row(s) did not clear "
+                    f"within their own lock-expiry-derived bound - "
+                    f"{await _corpse_ownership_report(conn, schema, worker_id)}"
+                )
+        elif time.monotonic() >= slot_deadline:
             raise AssertionError(
-                f"{label}: the departed pod's ownership did not clear within "
-                f"{effective:.0f}s (the lock lease 8s + the leader "
-                f"lease 20s + one sweep tick + the poll floor + the reclaim "
-                f"cycle, x the tier's load stretch {TIER_LOAD_STRETCH}) - "
+                f"{label}: the departed pod's slots did not clear within "
+                f"{bound if bound is not None else _CORPSE_SLOT_BOUND:.0f}s (the "
+                f"slot lease and the reclaim cycle, x the tier's load stretch "
+                f"{TIER_LOAD_STRETCH}) - "
                 f"{await _corpse_ownership_report(conn, schema, worker_id)}"
             )
         await asyncio.sleep(0.2)
+
+
+def _worker_log_lines(worker: WorkerProc | None) -> list[str]:
+    """The worker's own flushed log lines, read-only: the explicit sink
+    when one was given, else the harness's tee file next to the health
+    socket. The process has already exited (rc observed at the call
+    sites), so its stderr is closed and the file is final."""
+    if worker is None:
+        return []
+    path = worker.log_path or f"{worker.sock_path}.worker.log"
+    try:
+        with open(path, errors="replace") as log:
+            return log.read().splitlines()
+    except OSError:
+        return []
 
 
 async def _corpse_ownership(
@@ -1005,7 +1082,9 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
                     f"{_PROBE_STRETCH:.0f}x stall-band stretch) - the "
                     "fleet stalled while the pod drained"
                 )
-            await _assert_corpse_owns_nothing(conn, schema, ids[name], f"sequential {name}")
+            await _assert_corpse_owns_nothing(
+                conn, schema, ids[name], f"sequential {name}", fleet[name]
+            )
 
         # The permanent survivor drains last, after the settle below
         # proves it carried the whole release's load.
@@ -1014,7 +1093,9 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
         rc = await asyncio.to_thread(graceful_stop, fleet[survivor], timeout=_GRACE + 30.0)
         drained.add(survivor)
         assert rc == 0, f"the survivor {survivor} exited rc={rc}"
-        await _assert_corpse_owns_nothing(conn, schema, ids[survivor], f"survivor {survivor}")
+        await _assert_corpse_owns_nothing(
+            conn, schema, ids[survivor], f"survivor {survivor}", fleet[survivor]
+        )
         # The counter balances over the whole cohort, the survivor's
         # own drain included.
         counts = await assert_balanced(conn, schema, _TAG)
@@ -1124,7 +1205,9 @@ async def test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn
         )
 
         for name in _PODS[:4]:
-            await _assert_corpse_owns_nothing(conn, schema, ids[name], f"overlap {name}")
+            await _assert_corpse_owns_nothing(
+                conn, schema, ids[name], f"overlap {name}", fleet[name]
+            )
 
         # The survivor settles the whole cohort (its re-spread of the
         # departed pods' queues is what the settle measures).
@@ -1153,7 +1236,7 @@ async def test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn
         rc = await asyncio.to_thread(graceful_stop, fleet["w4"], timeout=_GRACE + 30.0)
         drained.add("w4")
         assert rc == 0, f"the survivor w4 exited rc={rc}"
-        await _assert_corpse_owns_nothing(conn, schema, ids["w4"], "survivor w4")
+        await _assert_corpse_owns_nothing(conn, schema, ids["w4"], "survivor w4", fleet["w4"])
 
         await assert_effects_balance(conn, schema, _TAG)
         # The exercise assert, anchored at the tail on the sampler's
@@ -1363,7 +1446,9 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
         graceful_secs = time.monotonic() - t_sig
         drained.add(victim)
         assert rc == 0, f"pod {victim} exited rc={rc}"
-        await _assert_corpse_owns_nothing(conn, schema, ids[victim], f"graceful {victim}")
+        await _assert_corpse_owns_nothing(
+            conn, schema, ids[victim], f"graceful {victim}", fleet[victim]
+        )
         # The grace pin, the same derived shape as the sequential
         # drains' (see that scenario for the doctrine): the seconds are
         # read on this starved test process's clock, so the comparison
@@ -1707,7 +1792,9 @@ async def test_rolling_release_grace_edge_flap_recovers_under_a_new_identity(
             rc = await asyncio.to_thread(graceful_stop, fleet[name], timeout=_GRACE + 60.0)
             drained.add(name)
             assert rc == 0, f"survivor {name} exited rc={rc}"
-            await _assert_corpse_owns_nothing(conn, schema, ids[name], f"survivor {name}")
+            await _assert_corpse_owns_nothing(
+                conn, schema, ids[name], f"survivor {name}", fleet[name]
+            )
 
         # A new pod with a new identity (kubernetes restart semantics):
         # nothing in the main path may assume the corpse returns. Two
@@ -2046,7 +2133,7 @@ async def test_cap_sampler_close_hang_guard_fallback_reaps_the_minted_cancel(
 
 
 async def test_corpse_ownership_wait_staged_reads(
-    clean_pg_conn: asyncpg.Connection, module_pg_schema: Any
+    clean_pg_conn: asyncpg.Connection, module_pg_schema: Any, tmp_path: Any
 ) -> None:
     """The corpse-wait helper's staged reads: NOT a production
     reproduction. The real-world red is CI run 42359203585's rolling
@@ -2055,12 +2142,19 @@ async def test_corpse_ownership_wait_staged_reads(
     shutdown release documents its own fallback (a failed or skipped
     release write leaves running/locked rows for lease-expiry reclaim),
     and probe settlement does not settle corpse rows. The stages drive
-    the helper against staged row states: the clean fast path, the
-    bounded timeout's evidence, and the eventual clearance once the
-    reclaim's lease lapse has passed (a stale slot row may survive the
-    corpse; the LIVE lease is the condition)."""
+    the helper against REAL worker log files (the same tee/sink shape
+    the harness writes): a residual row with no log, a marker naming a
+    different job id, and the exact-row evidence whose reclaim lands
+    during the wait (a stale slot row may survive the corpse; the LIVE
+    lease is the condition)."""
     schema = module_pg_schema.schema_name
     corpse = str(new_uuid())
+    log_path = tmp_path / "corpse-worker.log"
+    worker = WorkerProc(
+        proc=None,  # type: ignore[arg-type]  # Why: the helper reads only the worker's log surface; no process is spawned for a staged read.
+        sock_path=f"{tmp_path}/corpse.sock",
+        log_path=str(log_path),
+    )
     flow_id = await seed_flow(clean_pg_conn, schema)
     node_id = await seed_running_node(clean_pg_conn, schema, flow_id)
     await clean_pg_conn.execute(
@@ -2079,34 +2173,53 @@ async def test_corpse_ownership_wait_staged_reads(
         corpse,
     )
 
-    # The clean fast path first: a corpse with nothing staged passes at
-    # once.
-    await _assert_corpse_owns_nothing(clean_pg_conn, schema, str(new_uuid()), "the clean fast path")
+    # The clean fast path: a corpse with nothing staged passes at once.
+    await _assert_corpse_owns_nothing(
+        clean_pg_conn, schema, str(new_uuid()), "the clean fast path", worker
+    )
 
-    # Stage A: the live ownership must not pass, and the bounded
-    # timeout's report must name the evidence (the row and the slot).
-    with pytest.raises(AssertionError) as staged_failure:
+    # A residual running row with no log at all: there is no
+    # release-fallback evidence to wait on, so the release miss fails
+    # immediately - the row's own bound is never granted to a missing
+    # release.
+    with pytest.raises(AssertionError) as missing_log:
         await _assert_corpse_owns_nothing(
-            clean_pg_conn, schema, corpse, "staged live corpse", bound=2.0
+            clean_pg_conn, schema, corpse, "no log", worker, bound=60.0
         )
-    message = str(staged_failure.value)
-    assert "did not clear within 2s" in message, message
-    assert "the running rows still locked" in message, message
-    assert str(node_id) in message, message
-    assert corpse in message, message
-    assert "lease_live" in message, message
+    assert "no release-fallback evidence" in str(missing_log.value), str(missing_log.value)
+    assert "did not clear within" not in str(missing_log.value), str(missing_log.value)
 
-    # Stage B: the reclaim's staged effect - the lease lapsed, the row
-    # requeued by the sweep. The stale slot row still names the corpse;
-    # the LIVE lease is the condition, so the wait passes.
-    await clean_pg_conn.execute(
-        f"UPDATE \"{schema}\".jobs SET status = 'pending' WHERE id = $1::uuid",
-        node_id,
+    # A marker naming a DIFFERENT job id is not this row's evidence.
+    log_path.write_text(
+        "level=warning event=release-pg-write-failed "
+        "job_id=00000000-0000-0000-0000-000000000000 error=boom\n"
     )
-    await clean_pg_conn.execute(
-        f'UPDATE "{schema}".reservation_slots '
-        "SET lease_expires_at = statement_timestamp() - interval '1s' "
-        "WHERE held_by_worker_id = $1::uuid",
-        corpse,
+    with pytest.raises(AssertionError) as wrong_row:
+        await _assert_corpse_owns_nothing(
+            clean_pg_conn, schema, corpse, "wrong row", worker, bound=60.0
+        )
+    assert "no release-fallback evidence" in str(wrong_row.value), str(wrong_row.value)
+
+    # The EXACT-row evidence: the helper waits the row's derived bound
+    # while the staged reclaim lands, then passes with the stale slot
+    # row still naming the corpse (the LIVE lease is the condition).
+    log_path.write_text(
+        f"level=warning event=release-pg-write-failed job_id={node_id} error=boom\n"
     )
-    await _assert_corpse_owns_nothing(clean_pg_conn, schema, corpse, "staged reclaimed")
+
+    async def _staged_reclaim() -> None:
+        await asyncio.sleep(1.0)
+        await clean_pg_conn.execute(
+            f"UPDATE \"{schema}\".jobs SET status = 'pending' WHERE id = $1::uuid",
+            node_id,
+        )
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".reservation_slots '
+            "SET lease_expires_at = statement_timestamp() - interval '1s' "
+            "WHERE held_by_worker_id = $1::uuid",
+            corpse,
+        )
+
+    reaper = asyncio.create_task(_staged_reclaim())
+    await _assert_corpse_owns_nothing(clean_pg_conn, schema, corpse, "staged reclaim", worker)
+    await reaper
