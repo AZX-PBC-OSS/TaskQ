@@ -384,12 +384,11 @@ def graceful_stop(worker: WorkerProc, timeout: float = 60.0) -> int:
 def reap(worker: WorkerProc) -> None:
     """Teardown: make sure nothing survives the test, however the body
     ended. The log reader is joined too; a reader stuck past its bound
-    is named, but the reap still completes (cleanup never raises past
-    its own name)."""
+    is named in the output (never silently suppressed), but the reap
+    still completes."""
     proc = worker.proc
     if proc.poll() is None:
         proc.kill()
     with contextlib.suppress(subprocess.TimeoutExpired):  # reap of last resort
         proc.wait(timeout=10)
-    with contextlib.suppress(RuntimeError):
-        _join_log_drain(worker, fail_loud=True)
+    _join_log_drain(worker, fail_loud=False)

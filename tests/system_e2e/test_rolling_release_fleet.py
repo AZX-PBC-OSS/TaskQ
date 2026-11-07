@@ -47,12 +47,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import re
 import signal
 import sys
 import time
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -617,30 +616,39 @@ _RELEASE_FALLBACK_MARKERS = (
     "terminal-write-failed",
 )
 
-#: The console records' leading stamp (second granularity): the worker's
-#: log clock and the database's clock are the same host clock (the
-#: containers run UTC).
-_LOG_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+
+def _log_stamp(line: str) -> datetime | None:
+    """The console record's leading ISO stamp, parsed with
+    ``datetime.fromisoformat``: the product's TimeStamper stamps ISO UTC
+    (``2026-11-07T09:35:09.123456Z``), and the worker's log clock and
+    the database's clock are the same host clock (the containers run
+    UTC). A naive stamp, an unparseable one, or a missing one is never
+    evidence."""
+    token = line.split(" ", 1)[0]
+    try:
+        stamp = datetime.fromisoformat(token)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        return None
+    return stamp
 
 
 def _log_line_evidences(line: str, job_id: str, claim_floor: datetime) -> bool:
     """One log line is a row's release-fallback evidence when it names a
-    fallback marker AND that row's job id AND carries a parseable
-    console stamp from the current attempt's claim instant or later.
-    The console records stamp at second granularity, so the claim's
-    floor is the claim stamp floored to the second: a same-second
-    record is accepted, an older attempt's record is seconds or minutes
-    older and rejected. Unparseable or missing timestamps are never
-    evidence (fail closed), and so is a row with no claim stamp at
-    all."""
+    fallback marker AND that row's job id AND carries a parseable ISO
+    stamp from the current attempt's claim instant or later (the same
+    host clock as the database's claim stamp). An older attempt's
+    record is seconds or minutes older and rejected; an unparseable,
+    naive, or missing stamp is never evidence (fail closed), and so is
+    a row with no claim stamp at all."""
     if not any(marker in line for marker in _RELEASE_FALLBACK_MARKERS):
         return False
     if job_id not in line:
         return False
-    stamp_match = _LOG_STAMP.match(line)
-    if stamp_match is None:
+    stamp = _log_stamp(line)
+    if stamp is None:
         return False
-    stamp = datetime.strptime(stamp_match.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
     return stamp >= claim_floor
 
 
@@ -2226,9 +2234,19 @@ async def test_corpse_ownership_wait_staged_reads(
     assert "no release-fallback evidence" in str(missing_log.value), str(missing_log.value)
     assert "did not clear within" not in str(missing_log.value), str(missing_log.value)
 
+    # The claim stamp, from the row itself; the staged records use the
+    # product TimeStamper's exact ISO UTC shape.
+    staged_row = await clean_pg_conn.fetchrow(
+        f'SELECT started_at FROM "{schema}".jobs WHERE id = $1::uuid', node_id
+    )
+    assert staged_row is not None and staged_row["started_at"] is not None
+    claim_stamp = staged_row["started_at"]
+    claim_line_stamp = claim_stamp.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    stale_line_stamp = (claim_stamp - timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
     # A marker naming a DIFFERENT job id is not this row's evidence.
     log_path.write_text(
-        "level=warning event=release-pg-write-failed "
+        "2026-11-07T09:35:09.123456Z level=warning event=release-pg-write-failed "
         "job_id=00000000-0000-0000-0000-000000000000 error=boom\n"
     )
     with pytest.raises(AssertionError) as wrong_row:
@@ -2237,20 +2255,11 @@ async def test_corpse_ownership_wait_staged_reads(
         )
     assert "no release-fallback evidence" in str(wrong_row.value), str(wrong_row.value)
 
-    # The claim stamp, from the row itself.
-    staged_row = await clean_pg_conn.fetchrow(
-        f'SELECT started_at FROM "{schema}".jobs WHERE id = $1::uuid', node_id
-    )
-    assert staged_row is not None and staged_row["started_at"] is not None
-    claim_second = staged_row["started_at"].replace(microsecond=0)
-    stale_second = claim_second - timedelta(seconds=60)
-
     # The SAME job id with an OLDER attempt's stamp: the marker record
     # predates the current claim, so it is not evidence for this row.
     log_path.write_text(
-        f"level=warning event=release-pg-write-failed job_id={node_id} error=boom\n".replace(
-            "level=warning", stale_second.strftime("%Y-%m-%d %H:%M:%S")
-        )
+        f"{stale_line_stamp} level=warning event=release-pg-write-failed "
+        f"job_id={node_id} error=boom\n"
     )
     with pytest.raises(AssertionError) as stale_attempt:
         await _assert_corpse_owns_nothing(
@@ -2263,7 +2272,7 @@ async def test_corpse_ownership_wait_staged_reads(
     # stamp is the stale attempt's (the sibling's own current-attempt
     # marker is absent either way).
     log_path.write_text(
-        stale_second.strftime("%Y-%m-%d %H:%M:%S")
+        stale_line_stamp
         + f" level=warning event=release-pg-write-failed job_id={node_id} error=boom\n"
     )
     await clean_pg_conn.execute(
@@ -2285,9 +2294,9 @@ async def test_corpse_ownership_wait_staged_reads(
     # rows, then passes with the stale slot row still naming the corpse
     # (the LIVE lease is the condition).
     log_path.write_text(
-        claim_second.strftime("%Y-%m-%d %H:%M:%S")
+        claim_line_stamp
         + f" level=warning event=release-pg-write-failed job_id={node_id} error=boom\n"
-        + claim_second.strftime("%Y-%m-%d %H:%M:%S")
+        + claim_line_stamp
         + f" level=warning event=shutdown-release-failed job_id={sibling_id} error=boom\n"
     )
 

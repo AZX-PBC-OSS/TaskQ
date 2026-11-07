@@ -886,15 +886,17 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
 
         # THE NEGATIVE CONTROL (the real engine, not a faked plan): the
         # deferral moved next_start, but an already-claimed policy run
-        # executes anyway - forced here by pulling the compression
-        # policy's next run to now, exactly the interleave the CI run
-        # hit. The witness chunk is decompressed to rowstore FIRST, the
-        # compressed-identity baseline is snapshotted AFTER that (so the
-        # witness's rowstore state is part of the baseline and its
-        # recompression is a strict NEW identity), and both are pinned:
-        # the witness is rowstore immediately before the force and
-        # columnar after it - a setup run that already compressed every
-        # expiry chunk cannot satisfy this vacuously.
+        # executes anyway - the exact interleave the CI run hit. The
+        # control runs the REAL policy synchronously through the
+        # engine's own job runner: CALL run_job returns only after that
+        # policy run completes, so there is no launch-versus-finish race
+        # to gate on. The witness chunk is decompressed to rowstore
+        # FIRST, the compressed-identity baseline is snapshotted AFTER
+        # that (the witness's rowstore state is part of the baseline and
+        # its recompression is a strict NEW identity), and both are
+        # pinned: the witness is rowstore immediately before the call
+        # and columnar after it - a setup run that already compressed
+        # every expiry chunk cannot satisfy this vacuously.
         job_id, application_name = await _compression_job(conn, ts_schema)
         witness = await conn.fetchrow(
             "SELECT chunk_schema, chunk_name, COALESCE(is_compressed, false) AS compressed "
@@ -908,10 +910,6 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
             await conn.execute(
                 f"SELECT decompress_chunk('{witness['chunk_schema']}.{witness['chunk_name']}')"
             )
-        baseline_successes = await conn.fetchval(
-            "SELECT total_successes FROM timescaledb_information.job_stats WHERE job_id=$1",
-            job_id,
-        )
         baseline_names = {
             r["chunk_name"]
             for r in await conn.fetch(
@@ -929,38 +927,21 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
             witness["chunk_name"],
         )
         assert witness_state is False, (
-            "the witness chunk is columnar immediately before the forced run"
+            "the witness chunk is columnar immediately before the policy call"
         )
-        await conn.execute("SELECT alter_job($1, scheduled => true, next_start => now())", job_id)
-        # The gate: a NEW SUCCESSFUL completion. The job_stats keys were
-        # verified by introspection on this engine: total_successes
-        # counts the finished-successful runs and last_successful_finish
-        # carries the real finish instant, so a prior run's status (the
-        # 'Success' the setup run left behind) cannot satisfy the gate -
-        # the finish must postdate the force.
-        force_at = await conn.fetchval("SELECT statement_timestamp()")
-        deadline = asyncio.get_running_loop().time() + 60.0
-        run_stats = {"total_successes": baseline_successes, "last_successful_finish": None}
-        while asyncio.get_running_loop().time() < deadline:
-            run_stats = await conn.fetchrow(
-                "SELECT total_successes, last_successful_finish "
-                "FROM timescaledb_information.job_stats WHERE job_id=$1",
-                job_id,
-            )
-            assert run_stats is not None, "the job's stats row vanished"
-            if run_stats["total_successes"] >= baseline_successes + 1 and (
-                run_stats["last_successful_finish"] is not None
-                and run_stats["last_successful_finish"] >= force_at
-            ):
+        # CALL run_job executes the policy in this session and returns
+        # after it completes; a background copy still claimed would
+        # serialize on the chunks' locks, never corrupt the control.
+        for _attempt in range(3):
+            try:
+                await conn.execute("CALL run_job($1)", job_id)
                 break
-            await asyncio.sleep(0.1)
-        assert run_stats["total_successes"] >= baseline_successes + 1 and (
-            run_stats["last_successful_finish"] is not None
-            and run_stats["last_successful_finish"] >= force_at
-        ), (
-            f"the forced policy run never finished successfully: "
-            f"{dict(run_stats)} vs the baseline {baseline_successes} successes"
-        )
+            except asyncpg.exceptions.ObjectNotInPrerequisiteStateError:
+                raise
+            except Exception:
+                if _attempt == 2:
+                    raise
+                await asyncio.sleep(0.5)
         witness_after = await conn.fetchval(
             "SELECT COALESCE(is_compressed, false) FROM timescaledb_information.chunks "
             "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
@@ -969,7 +950,7 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
             witness["chunk_name"],
         )
         assert witness_after is True, (
-            "the witness chunk did not rematerialize columnar under the forced run"
+            "the witness chunk did not rematerialize columnar under the synchronous policy run"
         )
         after_names = {
             r["chunk_name"]
@@ -980,15 +961,10 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
                 ts_schema,
             )
         }
-        last_status = await conn.fetchval(
-            "SELECT last_run_status FROM timescaledb_information.job_stats WHERE job_id=$1",
-            job_id,
-        )
         assert after_names - baseline_names, (
-            f"the forced run produced no NEW columnar chunk - the negative "
-            f"control's witness did not compress: last_run_status="
-            f"{last_status!r} baseline={sorted(baseline_names)} "
-            f"after={sorted(after_names)}"
+            f"the synchronous policy run produced no NEW columnar chunk - "
+            f"the negative control's witness did not compress: "
+            f"baseline={sorted(baseline_names)} after={sorted(after_names)}"
         )
 
         # THE POLICY BARRIER: the exact compression job paused (no
@@ -1152,10 +1128,18 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
             assert compress_task is not None
             await compress_task
         finally:
-            if compress_task is not None and not compress_task.done():
-                compress_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await compress_task
+            if compress_task is not None:
+                if not compress_task.done():
+                    compress_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await compress_task
+                elif not compress_task.cancelled():
+                    # The compression's own outcome is consumed on every
+                    # path (a compress that failed before the finally
+                    # included), so no unretrieved-task diagnostic can
+                    # follow the outer exception.
+                    with contextlib.suppress(Exception):
+                        compress_task.exception()
 
     finally:
         await conn.close()
