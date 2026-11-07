@@ -2563,14 +2563,15 @@ async def test_cap_overhold_record_survives_a_failed_diagnostic_fetch(
             f"the generic sampler error replaced the cap record: {sampler.violations}"
         )
     finally:
+        primary_active = sys.exc_info()[0] is not None
         if sampler._conn is not None:
             with contextlib.suppress(Exception):
                 await sampler._conn.close()
-        await clean_pg_conn.execute(
-            f'DELETE FROM "{schema}".reservation_slots '
-            "WHERE bucket_name = $1 AND held_by_worker_id = $2::uuid",
-            "taskq:global:queue:roll_capped",
+        await _cleanup_staged_cap_slots(
+            clean_pg_conn,
+            schema,
             holder,
+            primary=primary_active,
         )
 
 
