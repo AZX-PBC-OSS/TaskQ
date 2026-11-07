@@ -113,12 +113,13 @@ class _FakeConn:
             await self._knock_gate.wait()
             self._journal.knocks_done += 1
             return "NOTIFY"
-        assert "wf_node_progress" in sql, f"unexpected statement: {sql[:120]}"
-        if args[1] == STREAM_CHANNEL:
-            self._journal.stream_counters += 1
-        else:
-            self._journal.state_upserts += 1
-        return "UPDATE 1"
+        if "wf_node_progress" in sql:
+            if args[1] == STREAM_CHANNEL:
+                self._journal.stream_counters += 1
+            else:
+                self._journal.state_upserts += 1
+            return "UPDATE 1"
+        raise AssertionError(f"unmatched statement: {sql[:120]}")
 
 
 class _FakeAcquire:
