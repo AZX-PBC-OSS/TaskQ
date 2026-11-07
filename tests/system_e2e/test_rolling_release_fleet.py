@@ -644,7 +644,7 @@ class CapSampler:
             + "\n".join(self.violations[:20])
         )
 
-    def assert_cap_receipt(self, label: str) -> None:
+    async def assert_cap_receipt(self, label: str) -> None:
         """The exercise ASSERT, anchored at the scenario tail.
 
         Requires the cap's admission receipt to have been observed at
@@ -664,13 +664,29 @@ class CapSampler:
         and it is what keeps this sampler's never-exceed checks
         non-vacuous.
         """
+        if self.cap_receipt_at is not None:
+            return
+        try:
+            conn = self._conn
+            assert conn is not None
+            jobs = await conn.fetch(
+                f"SELECT id::text AS id, status::text AS status, attempt, "
+                f"claim_epoch, locked_by_worker::text AS holder, started_at, "
+                f'lock_expires_at, scheduled_at FROM "{self._schema}".jobs '
+                "WHERE queue = 'roll_capped' ORDER BY created_at, id",
+            )
+            cap_bucket = "taskq:global:queue:roll_capped"
+            slots = await self._slot_details(cap_bucket)
+            report = f"capped jobs={jobs!r}; cap slots={slots!r}"
+        except Exception as exc:
+            report = f"failed to collect cap diagnostics: {exc!r}"
         assert self.cap_receipt_at is not None, (
             f"{label}: the queue cap's admission receipt never appeared in "
             f"{self.samples} samples across the WHOLE scenario - no live-held "
             f"slot on the cap's own bucket ever coincided with a running row "
             f"on the capped queue (peaks: {self.peak}): the capped queue's "
             f"admission machinery is dead or unregistered and the sampler's "
-            f"never-exceed pins would be vacuous"
+            f"never-exceed pins would be vacuous; {report}"
         )
 
 
@@ -1214,7 +1230,7 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
         # stay for the record - neither surface's peak is pinned, a
         # 100ms tick's max cannot promise it landed inside a running
         # window, and the CapSampler docstring carries the doctrine.
-        sampler.assert_cap_receipt("sequential drains")
+        await sampler.assert_cap_receipt("sequential drains")
         await sampler.stop_and_report("sequential drains")
         print(f"[s7] cap sampler peaks (diagnostic): {sampler.peak}")
         for label, measured, bound in measurements:
@@ -1345,7 +1361,7 @@ async def test_rolling_release_overlapping_pairs_conserve_under_concurrent_churn
         # The exercise assert, anchored at the tail on the sampler's
         # whole-scenario record of the admission receipt (state, not
         # time; see the sequential scenario's tail for the doctrine).
-        sampler.assert_cap_receipt("overlapping pairs")
+        await sampler.assert_cap_receipt("overlapping pairs")
         await sampler.stop_and_report("overlapping pairs")
         print(f"[s7] cap sampler peaks (diagnostic): {sampler.peak}")
     finally:
@@ -1687,6 +1703,39 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
         await delete_tagged(conn, schema, _TAG)
 
 
+async def _storm_limbo_report(
+    conn: asyncpg.Connection, schema: str, fleet: Mapping[str, WorkerProc]
+) -> str:
+    """Describe residual running rows and their worker's shutdown records.
+
+    This runs as diagnostic evidence only. The scenario's assertion does
+    not read or depend on the report.
+    """
+    try:
+        rows = await conn.fetch(
+            f"SELECT j.id::text AS id, j.actor, j.status::text AS status, "
+            f"j.attempt, j.claim_epoch, j.locked_by_worker::text AS holder, "
+            f"j.started_at, j.lock_expires_at, j.scheduled_at, j.interrupt_count, "
+            f"w.pid AS worker_pid, statement_timestamp() AS db_now "
+            f'FROM "{schema}".jobs j '
+            f'LEFT JOIN "{schema}".workers w ON w.id = j.locked_by_worker '
+            "WHERE j.status = 'running' ORDER BY j.id"
+        )
+        evidence: list[dict[str, object]] = []
+        for row in rows:
+            item = dict(row)
+            owner = next(
+                (worker for worker in fleet.values() if worker.proc.pid == row["worker_pid"]),
+                None,
+            )
+            related = [line for line in _worker_log_lines(owner) if str(row["id"]) in line]
+            item["related_worker_log"] = related
+            evidence.append(item)
+        return repr(evidence)
+    except Exception as exc:
+        return f"failed to collect storm-row diagnostics: {exc!r}"
+
+
 # ── Scenario 4: the storm ────────────────────────────────────────────────
 
 
@@ -1741,7 +1790,11 @@ async def test_rolling_release_fleet_wide_storm_leaves_a_clean_empty_fleet(
         limbo = await conn.fetchval(
             f"SELECT count(*)::int FROM \"{schema}\".jobs WHERE status = 'running'"
         )
-        assert limbo == 0, f"{limbo} row(s) still running with the whole fleet dead"
+        limbo_report = await _storm_limbo_report(conn, schema, fleet) if limbo else ""
+        assert limbo == 0, (
+            f"{limbo} row(s) still running with the whole fleet dead; "
+            f"row and worker evidence: {limbo_report}"
+        )
         unclaimable = await conn.fetchval(
             f'SELECT count(*)::int FROM "{schema}".jobs '
             "WHERE status NOT IN ('running') AND status::text NOT IN "
