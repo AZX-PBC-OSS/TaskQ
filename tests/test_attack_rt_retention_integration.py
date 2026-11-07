@@ -99,6 +99,42 @@ _NOW = datetime.now(UTC)
 # ── Shared seeding ───────────────────────────────────────────────────────
 
 
+async def _compression_job(conn: asyncpg.Connection, schema: str) -> tuple[int, str]:
+    """This schema's exact jobs_archive compression policy job: its id
+    and its worker's application name (the execution identity the drain
+    waits on)."""
+    row = await conn.fetchrow(
+        "SELECT job_id, application_name FROM timescaledb_information.jobs "
+        "WHERE hypertable_schema=$1 AND hypertable_name='jobs_archive' "
+        "AND proc_name='policy_compression'",
+        schema,
+    )
+    assert row is not None, "the compression policy job is not registered"
+    return int(row["job_id"]), row["application_name"]
+
+
+async def _wait_for_job_drained(
+    conn: asyncpg.Connection, application_name: str, deadline_s: float = 60.0
+) -> None:
+    """Wait out an already-claimed policy run on the real engine:
+    disabling a job stops future claims, and a claimed run finishes on
+    its own - the drain is the worker's exact execution identity gone
+    from the process table, never a sleep."""
+    deadline = asyncio.get_running_loop().time() + deadline_s
+    while asyncio.get_running_loop().time() < deadline:
+        live = await conn.fetchval(
+            "SELECT count(*) FROM pg_stat_activity WHERE application_name = $1",
+            application_name,
+        )
+        if not live:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(
+        f"the policy worker {application_name!r} never drained: its run "
+        "outlived the barrier's bound"
+    )
+
+
 async def _seed_ghost_pair(
     conn: asyncpg.Connection,
     schema: str,
@@ -838,10 +874,42 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
                     fin,
                     fin + _FOLD_ARCHIVE_RETENTION,
                 )
-        # The fixtures pause the compression policy before seeding, but a
-        # job the launcher already claimed can still compress a chunk in
-        # the setup window. The plan under test is the rowstore one;
-        # restore that premise instead of depending on the race.
+
+        # THE NEGATIVE CONTROL (the real engine, not a faked plan): the
+        # deferral moved next_start, but an already-claimed policy run
+        # executes anyway - forced here by pulling the compression
+        # policy's next run to now, exactly the interleave the CI run
+        # hit: the policy runs for real and rematerializes chunks as
+        # columnar. The assertion below holds the hazard is REAL before
+        # the barrier rejects it.
+        job_id, application_name = await _compression_job(conn, ts_schema)
+        await conn.execute("SELECT alter_job($1, scheduled => true, next_start => now())", job_id)
+        deadline = asyncio.get_running_loop().time() + 60.0
+        compressed = 0
+        while asyncio.get_running_loop().time() < deadline:
+            compressed = await conn.fetchval(
+                "SELECT count(*) FROM timescaledb_information.chunks "
+                "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
+                "AND is_compressed",
+                ts_schema,
+            )
+            if compressed:
+                break
+            await asyncio.sleep(0.1)
+        assert compressed, (
+            "the forced compression policy ran but no chunk went columnar: "
+            "the negative control lost its force"
+        )
+
+        # THE POLICY BARRIER, scoped to this schema's jobs_archive: the
+        # exact compression job disabled, then its background worker
+        # drained by its exact execution identity (the job's own
+        # application name in pg_stat_activity), so no claimed run can
+        # recompress after the decompression below. Disabling stops all
+        # future claims; the drain waits out any run the launcher had
+        # already claimed.
+        await conn.execute("SELECT alter_job($1, scheduled => false)", job_id)
+        await _wait_for_job_drained(conn, application_name)
         compressed = await conn.fetch(
             "SELECT chunk_schema, chunk_name FROM timescaledb_information.chunks "
             "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
@@ -859,6 +927,20 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
             ts_schema,
         )
         assert n_chunks == 3
+
+        # The rowstore premise, asserted at the plan's doorstep: every
+        # chunk of this hypertable is rowstore now (the barrier's
+        # restore), so the plan below cannot hide a columnar scan.
+        compressed_now = await conn.fetchval(
+            "SELECT count(*) FROM timescaledb_information.chunks "
+            "WHERE hypertable_schema = $1 AND hypertable_name = 'jobs_archive' "
+            "AND COALESCE(is_compressed, false)",
+            ts_schema,
+        )
+        assert compressed_now == 0, (
+            f"{compressed_now} chunk(s) are still columnar at the plan's "
+            "read: the barrier failed to restore the rowstore premise"
+        )
 
         plan_rows = await conn.fetch(
             f"EXPLAIN (FORMAT TEXT) {_EXPIRY_CTE_SQL.format(schema=ts_schema)}", 10
@@ -1107,4 +1189,3 @@ async def test_loud_refusal_leaves_ledger_and_prune_untouched(pg_dsn: str) -> No
     finally:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
-
