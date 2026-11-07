@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import socket
 import sys
 import time
@@ -665,7 +666,7 @@ async def test_the_panel_and_page_latency_on_a_200_child_map(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        for _ in range(10):
+        for _ in range(100):
             t0 = time.perf_counter()
             r = await client.get(f"/api/runs/{flow_id}/nodes/ingest.item")
             panel_ms.append((time.perf_counter() - t0) * 1000)
@@ -677,16 +678,29 @@ async def test_the_panel_and_page_latency_on_a_200_child_map(
             assert r.status_code == 200
     panel_ms.sort()
     page_ms.sort()
-    p95_panel = panel_ms[-1]
+    # Nearest-rank p95 over the full sample (ceil(0.95*n)-1). A maximum
+    # samples a different tail statistic (the single worst read of the
+    # set, p100); labeling it p95 misstated the contract, so the p95 is
+    # computed and the full distribution stays on the capture.
+    p95_panel = panel_ms[math.ceil(0.95 * len(panel_ms)) - 1]
+    max_panel = panel_ms[-1]
     med_page = page_ms[len(page_ms) // 2]
     print(
         f"\n[attack4] 200-child map: panel p95 {p95_panel:.1f} ms "
-        f"(band 50 ms), run-page median {med_page:.1f} ms"
+        f"(max {max_panel:.1f} ms, band 50 ms), run-page median "
+        f"{med_page:.1f} ms"
     )
     capture_dir = redlog_captures_root() / "attack4"
     capture_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     with open(capture_dir / "attack4-panel-latency-200map.json", "w") as f:
         json.dump(
-            {"children": 200, "panel_ms_sorted": panel_ms, "page_ms_sorted": page_ms}, f, indent=2
+            {
+                "children": 200,
+                "panel_reads": len(panel_ms),
+                "panel_ms_sorted": panel_ms,
+                "page_ms_sorted": page_ms,
+            },
+            f,
+            indent=2,
         )
     assert p95_panel <= 50.0, f"the panel's p95 read {p95_panel:.1f} ms — the band is 50 ms"
