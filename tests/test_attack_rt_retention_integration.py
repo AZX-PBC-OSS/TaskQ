@@ -125,7 +125,8 @@ async def _wait_for_job_drained(
     deadline = asyncio.get_running_loop().time() + deadline_s
     while asyncio.get_running_loop().time() < deadline:
         live = await conn.fetchval(
-            "SELECT count(*) FROM pg_stat_activity WHERE application_name = $1",
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE application_name = $1 AND datname = current_database()",
             application_name,
         )
         if not live:
@@ -1059,7 +1060,8 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
                     while asyncio.get_running_loop().time() < lock_wait_deadline:
                         waiting = await conn.fetchval(
                             "SELECT count(*) FROM pg_stat_activity "
-                            "WHERE pid = $1 AND wait_event_type = 'Lock'",
+                            "WHERE pid = $1 AND wait_event_type = 'Lock' "
+                            "AND datname = current_database()",
                             compressor_pid,
                         )
                         if waiting:
