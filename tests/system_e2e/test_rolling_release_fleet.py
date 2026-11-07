@@ -51,6 +51,7 @@ import logging
 import signal
 import sys
 import time
+import traceback
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -426,19 +427,30 @@ class CapSampler:
         for row in slots:
             bucket = row["bucket"]
             if bucket == "taskq:global:queue:roll_capped":
-                self._record(
-                    f"slots:{bucket}",
-                    row["held"],
-                    _QUEUE_CAP,
-                    rows=await self._slot_details(bucket) if row["held"] > _QUEUE_CAP else None,
-                )
+                over_hold = row["held"] > _QUEUE_CAP
+                details: list[dict[str, object]] | None = None
+                if over_hold:
+                    try:
+                        details = await self._slot_details(bucket)
+                    except Exception as exc:
+                        # The violation is already observed: a failed
+                        # diagnostic must never stop the cap record from
+                        # landing.
+                        details = [
+                            {"bucket": bucket, "held": row["held"], "detail_error": repr(exc)}
+                        ]
+                self._record(f"slots:{bucket}", row["held"], _QUEUE_CAP, rows=details)
             elif bucket.startswith("roll-tenant:"):
-                self._record(
-                    f"slots:{bucket}",
-                    row["held"],
-                    1,
-                    rows=await self._slot_details(bucket) if row["held"] > 1 else None,
-                )
+                over_hold = row["held"] > 1
+                details_tenant: list[dict[str, object]] | None = None
+                if over_hold:
+                    try:
+                        details_tenant = await self._slot_details(bucket)
+                    except Exception as exc:
+                        details_tenant = [
+                            {"bucket": bucket, "held": row["held"], "detail_error": repr(exc)}
+                        ]
+                self._record(f"slots:{bucket}", row["held"], 1, rows=details_tenant)
         # damped: the job surface, at the fleet's claim width. This
         # surface counts claimed rows, and a claim the cap then denies
         # stays 'running' while its denial-retry loop re-probes (up to
@@ -2446,6 +2458,122 @@ def test_worker_log_drain_joins_at_graceful_stop(tmp_path: Any) -> None:
         reap(worker)
 
 
+class _FaultedDetailsSampler(CapSampler):
+    """The declared fault injection: the diagnostic fetch fails. The
+    snapshot's own over-hold decision is unaffected (the subclass
+    changes nothing else); the pin is whether the cap record survives
+    the diagnostic's failure."""
+
+    async def _slot_details(self, bucket: str) -> list[dict[str, object]]:
+        raise RuntimeError("the diagnostic fetch exploded")
+
+
+async def _cleanup_staged_cap_slots(
+    conn: asyncpg.Connection, schema: str, holder: str, *, primary: bool
+) -> None:
+    """The staged cap slots' cleanup with precise error precedence: with
+    NO active test exception a cleanup failure raises loudly (the
+    cleanup is the test's own guarantee); with a primary failure the
+    cleanup's own failure is printed in full and the primary exception
+    is preserved - the cleanup never masks the test's real red, and a
+    green test never turns red before the guilty cleanup has run and
+    named itself. The deletion is scoped to the exact bucket and the
+    exact staged holder; the zero-leftover assertion holds on the
+    normal path."""
+    try:
+        await conn.execute(
+            f'DELETE FROM "{schema}".reservation_slots '
+            "WHERE bucket_name = $1 AND held_by_worker_id = $2::uuid",
+            "taskq:global:queue:roll_capped",
+            holder,
+        )
+        leftovers = await conn.fetchval(
+            f'SELECT count(*)::int FROM "{schema}".reservation_slots '
+            "WHERE bucket_name = $1 AND held_by_worker_id = $2::uuid",
+            "taskq:global:queue:roll_capped",
+            holder,
+        )
+        if leftovers:
+            raise AssertionError(
+                f"the staged slot rows survived their own cleanup: {leftovers} row(s) remain"
+            )
+    except Exception:
+        if primary:
+            print(
+                "the staged cap slots' cleanup failed (the primary test "
+                "failure is preserved); the cleanup's own failure:"
+            )
+            traceback.print_exc()
+        else:
+            raise
+
+
+async def test_cap_overhold_record_survives_a_failed_diagnostic_fetch(
+    clean_pg_conn: asyncpg.Connection, module_pg_schema: Any, pg_dsn: str
+) -> None:
+    """A cap violation is observed by the snapshot; a failed diagnostic
+    fetch must never swallow it. With the faulted details, the tick
+    still records the over-hold (the held count and the fetch's own
+    error both named in the violation), and the tick does not raise a
+    generic sampler error in the record's place."""
+    schema = module_pg_schema.schema_name
+    sampler = _FaultedDetailsSampler(pg_dsn, schema)
+    holder = str(new_uuid())
+    flow_id = await seed_flow(clean_pg_conn, schema)
+    job_id = await seed_running_node(clean_pg_conn, schema, flow_id)
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".queues (name, max_concurrent) VALUES ($1, $2) '
+        "ON CONFLICT (name) DO UPDATE SET max_concurrent = EXCLUDED.max_concurrent",
+        "roll_capped",
+        _QUEUE_CAP,
+    )
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".jobs SET queue = (SELECT name FROM "{schema}".queues WHERE name = $1) '
+        "WHERE id = $2::uuid",
+        "roll_capped",
+        job_id,
+    )
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".reservation_slots '
+        "(bucket_name, slot_index, job_id, held_by_worker_id, acquired_at, lease_expires_at) "
+        "VALUES ('taskq:global:queue:roll_capped', 0, $1::uuid, $2::uuid, "
+        "statement_timestamp(), statement_timestamp() + interval '60s')",
+        job_id,
+        holder,
+    )
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".reservation_slots '
+        "(bucket_name, slot_index, job_id, held_by_worker_id, acquired_at, lease_expires_at) "
+        "VALUES ('taskq:global:queue:roll_capped', 1, $1::uuid, $2::uuid, "
+        "statement_timestamp(), statement_timestamp() + interval '60s')",
+        job_id,
+        holder,
+    )
+    try:
+        await sampler._tick()  # must not raise: the violation is the record
+        overhold = next(
+            (v for v in sampler.violations if "slots:taskq:global:queue:roll_capped" in v), ""
+        )
+        assert overhold, (
+            f"the cap record was swallowed by the diagnostic's failure: {sampler.violations}"
+        )
+        assert "2 > bound 1" in overhold, overhold
+        assert "detail_error" in overhold and "the diagnostic fetch exploded" in overhold, overhold
+        assert not any(v.startswith("sampler error") for v in sampler.violations), (
+            f"the generic sampler error replaced the cap record: {sampler.violations}"
+        )
+    finally:
+        if sampler._conn is not None:
+            with contextlib.suppress(Exception):
+                await sampler._conn.close()
+        await clean_pg_conn.execute(
+            f'DELETE FROM "{schema}".reservation_slots '
+            "WHERE bucket_name = $1 AND held_by_worker_id = $2::uuid",
+            "taskq:global:queue:roll_capped",
+            holder,
+        )
+
+
 async def test_cap_sampler_tick_is_one_consistent_snapshot(
     clean_pg_conn: asyncpg.Connection, module_pg_schema: Any, pg_dsn: str
 ) -> None:
@@ -2521,6 +2649,10 @@ async def test_cap_sampler_tick_is_one_consistent_snapshot(
         )
         assert sampler.cap_receipt_at == 1
     finally:
+        # The active exception, read at finally entry BEFORE any await
+        # (the first await can clear exc_info's view of the primary):
+        # the cleanup's error behavior keys on it.
+        primary_active = sys.exc_info()[0] is not None
         if sampler._conn is not None:
             with contextlib.suppress(Exception):
                 await sampler._conn.close()
@@ -2529,16 +2661,34 @@ async def test_cap_sampler_tick_is_one_consistent_snapshot(
         # residue can turn a real scenario's first sample into a false
         # over-hold. Never a bare bucket deletion: a real scenario's
         # slots name real workers.
-        await clean_pg_conn.execute(
-            f'DELETE FROM "{schema}".reservation_slots '
-            "WHERE bucket_name = $1 AND held_by_worker_id = $2::uuid",
-            "taskq:global:queue:roll_capped",
-            holder,
-        )
-        leftovers = await clean_pg_conn.fetchval(
-            f'SELECT count(*)::int FROM "{schema}".reservation_slots '
-            "WHERE bucket_name = $1 AND held_by_worker_id = $2::uuid",
-            "taskq:global:queue:roll_capped",
-            holder,
-        )
-        assert leftovers == 0, "the staged slot rows survived their own cleanup"
+        await _cleanup_staged_cap_slots(clean_pg_conn, schema, holder, primary=primary_active)
+
+
+async def test_staged_cleanup_error_precedence(
+    clean_pg_conn: asyncpg.Connection, module_pg_schema: Any, pg_dsn: str, tmp_path: Any
+) -> None:
+    """The cleanup helper's error precedence, with the fault declared:
+    the cleanup's connection is closed before each call. With no
+    primary failure, the cleanup failure raises loudly (the green test
+    turns red only when the guilty cleanup itself failed); with a
+    primary failure, the cleanup's own failure is printed in full and
+    the primary exception is preserved (the helper returns, the caller
+    re-raises the primary)."""
+    schema = module_pg_schema.schema_name
+    holder = str(new_uuid())
+    dead_conn = await asyncpg.connect(pg_dsn)
+    await dead_conn.close()
+
+    with pytest.raises(asyncpg.exceptions.InterfaceError, match="closed"):
+        await _cleanup_staged_cap_slots(dead_conn, schema, holder, primary=False)
+
+    # The primary path: the cleanup's failure is printed (named), the
+    # helper returns, and the primary error is the caller's to raise.
+    primary = AssertionError("the primary test failure stands")
+    await _cleanup_staged_cap_slots(dead_conn, schema, holder, primary=True)
+    with pytest.raises(AssertionError, match="the primary test failure stands"):
+        raise primary
+
+    # The healthy path on the live connection: nothing staged, nothing
+    # raised.
+    await _cleanup_staged_cap_slots(clean_pg_conn, schema, holder, primary=False)
