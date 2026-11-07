@@ -426,9 +426,19 @@ class CapSampler:
         for row in slots:
             bucket = row["bucket"]
             if bucket == "taskq:global:queue:roll_capped":
-                self._record(f"slots:{bucket}", row["held"], _QUEUE_CAP)
+                self._record(
+                    f"slots:{bucket}",
+                    row["held"],
+                    _QUEUE_CAP,
+                    rows=await self._slot_details(bucket) if row["held"] > _QUEUE_CAP else None,
+                )
             elif bucket.startswith("roll-tenant:"):
-                self._record(f"slots:{bucket}", row["held"], 1)
+                self._record(
+                    f"slots:{bucket}",
+                    row["held"],
+                    1,
+                    rows=await self._slot_details(bucket) if row["held"] > 1 else None,
+                )
         # damped: the job surface, at the fleet's claim width. This
         # surface counts claimed rows, and a claim the cap then denies
         # stays 'running' while its denial-retry loop re-probes (up to
@@ -471,6 +481,30 @@ class CapSampler:
             per_worker[holder] = per_worker.get(holder, 0) + 1
         for holder, n in per_worker.items():
             self._record(f"worker:{holder}", n, 2 * _WORKER_CAP, rows)
+
+    async def _slot_details(self, bucket: str) -> list[dict[str, object]]:
+        """The over-hold's evidence: the exact bucket's slot rows in this
+        schema, with the held job's state joined (a LEFT JOIN, so a slot
+        whose job is gone names a null status - the shape a leaked test
+        slot shows). Diagnostic only: the snapshot's count already made
+        the violation decision, so this fetch cannot change it."""
+        conn = self._conn
+        assert conn is not None, "the tick's connection must exist to fetch details"
+        rows = await conn.fetch(
+            f"SELECT s.slot_index, s.job_id::text AS job_id, "
+            f"s.held_by_worker_id::text AS held_by_worker_id, s.acquired_at, "
+            f"s.lease_expires_at, "
+            f"(s.lease_expires_at >= statement_timestamp()) AS lease_live, "
+            f"j.status::text AS job_status, "
+            f"j.locked_by_worker::text AS job_holder, "
+            f"j.queue::text AS job_queue "
+            f'FROM "{self._schema}".reservation_slots s '
+            f'LEFT JOIN "{self._schema}".jobs j ON j.id = s.job_id '
+            f"WHERE s.bucket_name = $1 AND s.job_id IS NOT NULL "
+            f"ORDER BY s.slot_index",
+            bucket,
+        )
+        return [dict(r) for r in rows]
 
     def _record(
         self,
@@ -2475,11 +2509,36 @@ async def test_cap_sampler_tick_is_one_consistent_snapshot(
             holder,
         )
         await sampler._tick()
-        assert any("slots:taskq:global:queue:roll_capped" in v for v in sampler.violations), (
-            f"the over-hold tooth never tripped: {sampler.violations}"
+        overhold = next(
+            (v for v in sampler.violations if "slots:taskq:global:queue:roll_capped" in v), ""
+        )
+        assert overhold, f"the over-hold tooth never tripped: {sampler.violations}"
+        assert "'slot_index': 0" in overhold and "'slot_index': 1" in overhold, overhold
+        assert holder in overhold, overhold
+        assert "'job_status': None" in overhold, (
+            f"the joined job state must name itself (a deleted job's null "
+            f"status is the leaked-slot shape): {overhold}"
         )
         assert sampler.cap_receipt_at == 1
     finally:
         if sampler._conn is not None:
             with contextlib.suppress(Exception):
                 await sampler._conn.close()
+        # The staged slot rows are this test's own: deleted by the exact
+        # bucket AND the exact staged holder on every path, so no
+        # residue can turn a real scenario's first sample into a false
+        # over-hold. Never a bare bucket deletion: a real scenario's
+        # slots name real workers.
+        await clean_pg_conn.execute(
+            f'DELETE FROM "{schema}".reservation_slots '
+            "WHERE bucket_name = $1 AND held_by_worker_id = $2::uuid",
+            "taskq:global:queue:roll_capped",
+            holder,
+        )
+        leftovers = await clean_pg_conn.fetchval(
+            f'SELECT count(*)::int FROM "{schema}".reservation_slots '
+            "WHERE bucket_name = $1 AND held_by_worker_id = $2::uuid",
+            "taskq:global:queue:roll_capped",
+            holder,
+        )
+        assert leftovers == 0, "the staged slot rows survived their own cleanup"
