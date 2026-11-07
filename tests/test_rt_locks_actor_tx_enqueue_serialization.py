@@ -24,7 +24,7 @@ holder's transaction stays open and uncommitted:
   - pinned as today's designed observable; the defect it exposes is
   that the error storm lasts for the actor's whole runtime.
 * idempotency: the same-key INSERT blocks on the uncommitted
-  speculative token with NO bound at all - not the advisory budget, not
+  speculative token with no bound at all - not the advisory budget, not
   ``lock_timeout``, nothing - until the holder's transaction resolves.
   The RED contract: an unbounded actor body must not hold cross-actor
   enqueue serialization; the desired behavior needs either a documented
@@ -52,7 +52,7 @@ pytestmark = pytest.mark.integration
 #: Window/margin geometry for the idempotency-token twin: the window sits
 #: beyond the enqueue path's idempotency lock_timeout budget
 #: (DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS = 5 s, backend/_enqueue.py) so the
-#: designed typed refusal at the budget lands INSIDE the window; the margin
+#: designed typed refusal at the budget lands inside the window; the margin
 #: separates "the test's own wait_for ended the wait" (elapsed at the full
 #: window - the unbounded-block regression) from any earlier exit (a bound
 #: fired). Same geometry as the sweep/notify pool twin

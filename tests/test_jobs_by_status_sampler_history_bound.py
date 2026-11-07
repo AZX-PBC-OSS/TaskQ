@@ -73,7 +73,7 @@ pytestmark = pytest.mark.integration
 
 _SHALLOW_HISTORY = 10_000
 _DEEP_HISTORY = 100_000
-# The live set is FIXED across the two history depths: every visit delta the
+# The live set is fixed across the two history depths: every visit delta the
 # oracle measures is then attributable to the terminal history alone.
 _LIVE_COUNTS = {"pending": 600, "scheduled": 40, "running": 15}
 _ACTOR = "by_status_probe"

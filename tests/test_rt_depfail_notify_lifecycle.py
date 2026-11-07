@@ -125,7 +125,7 @@ async def test_spontaneous_loss_flips_connected_gauge_then_recovers() -> None:
     to 1 after the rebuild - the operator-visible signal that wakeups are
     degraded to the poll fallback, never a silent loss.
 
-    Verdict asserted: DEGRADE-AND-REPORT (gauge observable).
+    Verdict asserted: DEGRADE-and-REPORT (gauge observable).
     """
     deps = _make_mock_deps()
     backend = _make_backend()
@@ -176,7 +176,7 @@ async def test_notify_flap_second_loss_reenters_reconnect_cleanly() -> None:
     newest connection, and each recovery re-fires the wake so a subscriber
     registered across the flap is unblocked both times.
 
-    Verdict asserted: DEGRADE-AND-RECOVER (bounded flap, no crash).
+    Verdict asserted: DEGRADE-and-RECOVER (bounded flap, no crash).
     """
     deps = _make_mock_deps()
     backend = _make_backend()

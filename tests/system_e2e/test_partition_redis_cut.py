@@ -1,6 +1,6 @@
 """Partition weather III: CUT worker↔redis mid-progress-stream and mid-ratelimit.
 
-The broker cut is a toxiproxy between EVERY redis speaker (the worker's
+The broker cut is a toxiproxy between every redis speaker (the worker's
 fanout client, the SSE bridge's pubsub, the rate limiter's script
 client) and the shared Dragonfly. A cut is not a container kill: the
 connections stay ESTABLISHED and the bytes are held - the shape where
@@ -53,22 +53,22 @@ pytestmark = [pytest.mark.integration, pytest.mark.system]
 
 _TAG = "sys-partition-redis"
 
-#: The SSE bridge's stream-end bound, DERIVED against the measured
+#: The SSE bridge's stream-end bound, derived against the measured
 #: pipeline (standalone repro + this test's runs): the toxic's finite
 #: hold (3s) closes the pubsub connection, the bridge's read deadline
-#: (1s + 0.5s grace) fires, and redis-py's OWN reconnect-retry ladder
-#: (default 3 attempts) rides INSIDE the aborted read before surfacing -
+#: (1s + 0.5s grace) fires, and redis-py's own reconnect-retry ladder
+#: (default 3 attempts) rides inside the aborted read before surfacing -
 #: each retry cycle costs one full hold (3s) against the toxic that
 #: stays armed - plus the task-group teardown. Measured end-to-end
-#: 10-15s. What the bound PINS is the contract that matters: the stream
-#: ENDS - no subscription, task or SSE slot stranded on a dead broker -
+#: 10-15s. What the bound pins is the contract that matters: the stream
+#: ends - no subscription, task or SSE slot stranded on a dead broker -
 #: and the client's reconnect ladder takes over. (The 1.5s read deadline
 #: itself is soft under redis-py's retry-swallowed cancellation - noted
 #: to the report, not pinned here: the end is bounded and honest either
 #: way.)
 _STREAM_END_BUDGET_S = 20.0
 
-#: The GCRA fallback ladder, DERIVED from the pinned constants: 3 redis
+#: The gcra fallback ladder, derived from the pinned constants: 3 redis
 #: attempts, each failing at the client's 2s socket timeout, with the
 #: pinned backoffs (0.25s, 0.75s) between them, then the PG acquire.
 #: Lower bound: the two backoffs alone (1.0s) - a decision that lands
@@ -81,9 +81,9 @@ _FALLBACK_LADDER_BUDGET_S = 15.0
 #
 # httpx.ASGITransport buffers the whole body before the response returns,
 # so a stream that outlives the scenario cannot be consumed through it.
-# The capture below drives the REAL ASGI app live. "The stream ended" is
-# observed at the ASGI boundary - the response's FINAL body message
-# (``more_body`` absent/false) - and NOT by the reader task's completion:
+# The capture below drives the real ASGI app live. "The stream ended" is
+# observed at the ASGI boundary - the response's final body message
+# (``more_body`` absent/false) - and not by the reader task's completion:
 # sse-starlette's client-disconnect watcher parks on a ``http.disconnect``
 # this in-process client never sends, so the raw app() call outlives the
 # stream by design (the same strand the web_progress suite reaps). Every
@@ -188,7 +188,7 @@ async def _end_sse(reader: asyncio.Task[None], budget_s: float, what: str) -> No
     the terminal event; the generator's own broker-death error may
     propagate through the ASGI call, which IS the end). Never stranded.
 
-    asyncio.wait, not wait_for: the bridge's OWN read deadline raises
+    asyncio.wait, not wait_for: the bridge's own read deadline raises
     TimeoutError through the app call, and wait_for re-raises the inner
     task's exception - indistinguishable from the wait's own timeout.
     asyncio.wait reports completion without touching the inner
@@ -226,7 +226,7 @@ async def test_redis_cut_mid_stream_ends_bounded_and_reconnects_past_cursor(
     proxy = toxiproxy.create_proxy_sync("redis_cut", redis_host, redis_port)
     proxied_redis_url = f"redis://{proxy.url_host}:{proxy.port}/0"
 
-    # The worker's redis path IS the weather; its PG path is direct.
+    # The worker's redis path is the weather; its PG path is direct.
     worker: WorkerProc | None = None
     pg_pool: asyncpg.Pool | None = None
     router_redis: redis_async.Redis | None = None
@@ -237,7 +237,7 @@ async def test_redis_cut_mid_stream_ends_bounded_and_reconnects_past_cursor(
         handle = await sys_client.enqueue(sys_progress, SysPayload(beats=30), tags=[_TAG])
         job_id = handle.job_id
 
-        # The SSE bridge under test: the REAL router, a REAL redis pubsub
+        # The SSE bridge under test: the real router, a real redis pubsub
         # through the proxy, heartbeat cadence 1s (the read deadline's
         # base - see the budget arithmetic above).
         pg_pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
@@ -270,7 +270,7 @@ async def test_redis_cut_mid_stream_ends_bounded_and_reconnects_past_cursor(
         # through the proxy closed - broker death, on the wire.
         await proxy.hold_then_close(3000)
 
-        # The stream must END on its own within the derived budget - the
+        # The stream must end on its own within the derived budget - the
         # pinned broker-read deadline doing its job against a real death.
         await _end_sse(
             reader_1,
@@ -280,9 +280,9 @@ async def test_redis_cut_mid_stream_ends_bounded_and_reconnects_past_cursor(
         ended_at = time.monotonic()
         await _reap_new_tasks(baseline_1)
 
-        # Recovery, then the reconnect ladder: the cursor is the LAST seq
+        # Recovery, then the reconnect ladder: the cursor is the last seq
         # the dead stream delivered; the re-dialed stream must resume
-        # STRICTLY past it. This stream ends itself: the job terminalises
+        # strictly past it. This stream ends itself: the job terminalises
         # and the bridge closes with the ``done`` event.
         await proxy.clear()
         baseline_2 = _task_baseline()
@@ -307,7 +307,7 @@ async def test_redis_cut_mid_stream_ends_bounded_and_reconnects_past_cursor(
 
         # Convergence: the job terminalises (its beats ran on the worker,
         # whose PG surface the cut never touched), and the reconnected
-        # stream's last seq is the DURABLE seq - nothing the worker
+        # stream's last seq is the durable seq - nothing the worker
         # consumed was lost from the client's view.
         settle_deadline = ended_at + 60.0
         row: asyncpg.Record | None = None
@@ -360,10 +360,10 @@ async def test_gcra_fallback_engages_on_wire_cut_and_recovers(
 ) -> None:
     """CUT worker↔redis mid-ratelimit: the GCRA acquire rides the BOUNDED
     transient-retry ladder and admits via the PG fallback; with the
-    fallback unwired the SAME ladder surfaces an honest
+    fallback unwired the same ladder surfaces an honest
     dependency-unavailable error; a cleared wire admits via redis again
     - no permanent poisoning, no restart."""
-    _ = module_pg_schema  # the PG fallback writes the module schema's GCRA state
+    _ = module_pg_schema  # the PG fallback writes the module schema's gcra state
     monkeypatch.setenv("TASKQ_PG_DSN", pg_dsn)
     monkeypatch.setenv("TASKQ_SCHEMA_NAME", module_pg_schema.schema_name)
     from taskq.settings import WorkerSettings
@@ -394,7 +394,7 @@ async def test_gcra_fallback_engages_on_wire_cut_and_recovers(
         )
 
         # The cut: connects succeed, replies are held 2s then closed -
-        # each redis attempt fails at the CLIENT's own 2s socket budget.
+        # each redis attempt fails at the client's own 2s socket budget.
         await proxy.hold_then_close(2000)
 
         started = time.monotonic()
@@ -413,7 +413,7 @@ async def test_gcra_fallback_engages_on_wire_cut_and_recovers(
             f"<= {_FALLBACK_LADDER_BUDGET_S}s)"
         )
 
-        # The same cut, NO fallback wired: the ladder must END in the
+        # The same cut, no fallback wired: the ladder must end in the
         # honest dependency-unavailable error, never hang. The unwired
         # settings are built the sanctioned way (load_from_dict, the
         # shape test_attack_redis_lies uses) rather than a copied model.
@@ -425,8 +425,8 @@ async def test_gcra_fallback_engages_on_wire_cut_and_recovers(
             }
         )  # type: ignore[arg-type]  # Why: load_from_dict accepts the dict at runtime, the same boundary the lie-attack tests pin.
         started = time.monotonic()
-        # The pin is the weather FAMILY, not one member: the held-then-close
-        # cut fails each attempt either at the CLIENT's 2s socket budget
+        # The pin is the weather family, not one member: the held-then-close
+        # cut fails each attempt either at the client's 2s socket budget
         # (TimeoutError) or at the proxy's close landing mid-handshake -
         # redis-py's connect-time health check reads EOF and raises
         # ConnectionError("Connection closed by server") before the budget
@@ -443,7 +443,7 @@ async def test_gcra_fallback_engages_on_wire_cut_and_recovers(
             "wire cut instead of surfacing the dependency error"
         )
 
-        # Recovery on the SAME objects: clear the wire, redis admits again.
+        # Recovery on the same objects: clear the wire, redis admits again.
         await proxy.clear()
         recovered = await window.acquire(
             redis_client=proxied_redis, pg_pool=pg_pool, settings=worker_settings

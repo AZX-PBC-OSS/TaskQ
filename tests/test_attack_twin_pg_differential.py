@@ -19,9 +19,9 @@ from .test_rt_diff_harness import DiffSide, assert_mirror, run_differential
 
 
 async def _in_batch_repeat_pair_alias(side: DiffSide) -> None:
-    """One batch, one pair repeated by the SAME actor, plus a fresh key.
+    """One batch, one pair repeated by the same actor, plus a fresh key.
 
-    The repeated item must dedup onto the FIRST item's just-inserted row:
+    The repeated item must dedup onto the first item's just-inserted row:
     the returned handle aliases the holder's id (PG's ``ON CONFLICT``
     plus post-abort fetch), the repeated item's own id stores nothing.
     """
@@ -54,7 +54,7 @@ async def test_diff_in_batch_repeat_pair_aliases_holder_id(pg_dsn: str) -> None:
 
 
 async def _stored_holder_dedup_hit(side: DiffSide) -> None:
-    """A pair stored BEFORE the batch: the batch's repeat item dedups onto
+    """A pair stored before the batch: the batch's repeat item dedups onto
     the stored holder and returns ITS id, and nothing new is written."""
     holder = await side.enqueue("holder", idempotency_key="k", actor="actor_a")
     side.record("holder_id", side.token_of(holder.id))

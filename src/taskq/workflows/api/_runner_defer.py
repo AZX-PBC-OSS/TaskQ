@@ -1,12 +1,12 @@
-"""THE DEFERRAL DISPOSITION (the body's control-flow signals' wf face —
+"""the DEFERRAL DISPOSITION (the body's control-flow signals' wf face —
 the split of ``api/_runner`` §7b's concerns-separate law): the machinery
 that translates the vanilla surface's typed control-flow signals —
-:class:`~taskq.exceptions.Snooze` (reschedule, does NOT consume retry
+:class:`~taskq.exceptions.Snooze` (reschedule, does not consume retry
 budget) and :class:`~taskq.exceptions.RetryAfter(delay, consume_budget=)`
-(reschedule, consumes by default) — into ONE bounded finalize
+(reschedule, consumes by default) — into one bounded finalize
 disposition on the claimed node row.
 
-THE DEFECT THIS FIXES (the OCR-429 exhaustion): the signals are
+The signals are
 ``TaskQError`` subclasses, so a body raising one fell into the runner's
 body-failure catch and LADDERED — the attempt budget burned on a
 deferral that never executed, the node parked at the backoff curve and
@@ -14,13 +14,13 @@ exhausted. The vanilla consumer translated the very same signals at its
 own body seam (``worker/_consumer.py``'s ``_preserved_exc`` catch) into
 the row dispositions ``mark_snoozed`` / ``mark_retry_after_consume_{
 true,false}`` (``backend/_sql_templates.py``); the workflow runner had
-no translation. ONE machinery now: the row law lives in
+no translation. one machinery now: the row law lives in
 ``_sql_finalize.NODE_DEFER_SQL`` (the vanilla arms mirrored onto the wf
 finalize's own fence vocabulary — the claim CAS, the cancel mark, the
 budget gate), and this module owns the disposition's RESOLUTION and the
 verdicts' routes.
 
-THE NAMED DISPOSITIONS (the extension seam, stated once — the law this
+the NAMED DISPOSITIONS (the extension seam, stated once — the law this
 module exists to keep):
 
 * ``"snooze"`` — the NON-consuming deferral: the claim's attempt
@@ -35,21 +35,21 @@ module exists to keep):
   through the wf terminal door as ``MaxAttemptsExceeded`` (the vanilla's
   own class + message).
 
-THE EXTENSION SEAM: the NEXT deferral DISPOSITION (a new signal, a new
+The next deferral DISPOSITION (a new signal, a new
 non-terminal row law) adds exactly three things and touches nothing
 else —
 
 1. a member on :data:`DeferralDisposition` (the named set, never a bare
    string at a call site);
-2. ONE arm in ``NODE_DEFER_SQL`` keyed on the disposition bind (the
+2. one arm in ``NODE_DEFER_SQL`` keyed on the disposition bind (the
    row law's own CASE arms — the vanilla dispositions' shape);
-3. ONE arm in :func:`deferral_disposition` (the signal → disposition
+3. one arm in :func:`deferral_disposition` (the signal → disposition
    resolution — the catch arm's whole mapping).
 
-A new TERMINAL verdict is NOT that seam: a verdict the ROW LAW refuses
+A new TERMINAL verdict is not that seam: a verdict the ROW LAW refuses
 to apply (a death the doors own) needs the three things above for its
-disposition PLUS a per-door route in BOTH mixin methods
-(:meth:`DeferOps._defer_step` AND
+disposition PLUS a per-door route in both mixin methods
+(:meth:`DeferOps._defer_step` and
 :meth:`~taskq.workflows.api._runner_loop.LoopOps._defer_loop_step`) —
 the doors' semantics differ by law (the step's exhaustion finalizes
 through the wf terminal door; the loop's through ``_exhaust_loop``'s
@@ -60,8 +60,8 @@ own mechanics (:func:`route_defer_terminal`).
 
 The catch arms (the STEP's in ``api/_runner``, the LOOP's in
 ``api/_runner_loop``) consume signals and dispatch by the named
-disposition; neither grows a per-signal branch. The ROW LAW + THE
-LEDGER'S TRUTH are ONE shared phase (:func:`defer_row_law` — the two
+disposition; neither grows a per-signal branch. The ROW LAW + the
+LEDGER'S TRUTH are one shared phase (:func:`defer_row_law` — the two
 catch arms' common body); the TERMINAL verdicts route per SEAM — the
 step's through the wf terminal door (:meth:`DeferOps._defer_step`), the
 loop's through the loop's own doors
@@ -80,7 +80,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from taskq.backend._protocol import JobId
 from taskq.constants import (
     # The exhaustion message's single home; re-exported from this module
-    # because the LOOP's deferral route — the exhausted verdict's own
+    # because the loop's deferral route — the exhausted verdict's own
     # body-failure face — reads it beside the loop's own named-state
     # machinery (module-level public under the same name).
     BUDGET_EXHAUSTED_MESSAGE,
@@ -110,13 +110,13 @@ logger: Any = get_logger(__name__)
 #: cancel's vocabulary, never a body-failure class.
 WORKFLOW_CANCELLED_CLASS: Final[str] = "WorkflowCancelled"
 
-#: THE NAMED DEFERRAL DISPOSITIONS (the extension seam's member set —
+#: the named deferral dispositions (the extension seam's member set —
 #: see the module docstring for the law).
 DeferralDisposition = Literal["snooze", "retry_after_consuming"]
 
 
 def deferral_disposition(exc: Snooze | RetryAfter) -> DeferralDisposition:
-    """THE SIGNAL → DISPOSITION RESOLUTION (the catch arm's whole
+    """the SIGNAL → DISPOSITION RESOLUTION (the catch arm's whole
     mapping — one function, never a per-signal branch at the call site).
 
     * ``Snooze`` → ``"snooze"`` (the non-consuming deferral: the refund,
@@ -125,7 +125,7 @@ def deferral_disposition(exc: Snooze | RetryAfter) -> DeferralDisposition:
       ``True`` the consuming retry (the burn, the budget gate),
       ``False`` the vanilla's own snooze semantics.
 
-    THE EXTENSION SEAM'S THIRD LEG (the module docstring): the next
+    The next
     deferral verdict adds ITS arm here, beside the two above.
     """
     if isinstance(exc, RetryAfter) and exc.consume_budget:
@@ -160,7 +160,7 @@ class _DeferHost(Protocol):
         attempt: int,
         claim_epoch: int,
     ) -> None:
-        """THE LOOP'S OWN EXHAUSTION DOOR (the exhausted verdict's route
+        """the LOOP'S own EXHAUSTION DOOR (the exhausted verdict's route
         for the loop's deferral — the loop's named state + STRANDED-FLOW
         + the escalation ride the loop's own machinery, never a
         re-spelling)."""
@@ -180,7 +180,7 @@ async def defer_row_law(
     ledger_id: JobId | None,
     ledger_claimed_at: Any,
 ) -> str:
-    """THE ROW LAW + THE LEDGER'S TRUTH, one transaction (the terminal-atomicity law's own
+    """the ROW LAW + the LEDGER'S TRUTH, one transaction (the terminal-atomicity law's own
     shape — a split write leaves the row 'scheduled' with the ledger
     'running': the phantom the fence prevents) — the SHARED phase of both
     verdict routes (the STEP's and the LOOP's; the two mixins' own
@@ -193,7 +193,7 @@ async def defer_row_law(
     * ``"fenced"`` — the ZOMBIE's deferral: the claim fence matched
       nothing (a peer re-claimed the row at a newer attempt) and the
       attempt records 'fenced' on the ledger (never a running row
-      left forever), keyed on the claim's OWN RETURNING instant (the
+      left forever), keyed on the claim's own RETURNING instant (the
       re-mint guard — a re-minted row is the LIVE winner's, never
       ours);
     * ``"exhausted"`` / ``"cancel_fenced"`` — the row law wrote NOTHING
@@ -225,12 +225,11 @@ async def defer_row_law(
             return "fenced"
         if verdict["verdict"] == "deferred":
             if ledger_id is not None:
-                # THE DEFERRED REST: 'awaited' — the hold's own
-                # resume-not-retry status. Never 'failed': the ladder's
-                # budget read counts failures only, and the deferral never
-                # executed. (The caller proved its claim at the node row's
-                # fence — the instant's re-mint guard is the fence-by-id's
-                # own; the rest keeps the by-id-only write.)
+                # 'awaited' — the hold's own resume-not-retry status. Never
+                # 'failed': the ladder's budget read counts failures only, and
+                # the deferral never executed. (The caller proved its claim at
+                # the node row's fence — the instant's re-mint guard is the
+                # fence-by-id's own; the rest keeps the by-id-only write.)
                 await conn.execute(
                     wsql.ledger_terminal_by_id,
                     ledger_id,
@@ -261,17 +260,17 @@ async def route_defer_terminal(
     error_class: str,
     error_message: str,
 ) -> None:
-    """THE TERMINAL VERDICTS' SHARED ROUTE (the wf terminal door's own
+    """the TERMINAL VERDICTS' SHARED ROUTE (the wf terminal door's own
     mechanics — the ledger's terminal + the door + the projection ride):
-    the ONE identical shape both doors' terminal verdicts run, factored
+    the one identical shape both doors' terminal verdicts run, factored
     once (the DRY of the step's and the loop's routes — the DOORS differ,
     never the mechanics):
 
-    * THE LEDGER'S TERMINAL: the claim's OWN RETURNING id when held (the
+    * the LEDGER'S TERMINAL: the claim's own RETURNING id when held (the
       strongest keying — ``_run_tx1``'s own law), else the arbiter tuple
       (the ladder's exhaustion shape);
     * :func:`~taskq.workflows.engine.finalize_node` — the fenced
-      terminal mark, the T06 cascade and the propagation ride it;
+      terminal mark, the failed-parent cascade and the propagation ride it;
     * the auto projection (the node's terminal event, best-effort).
 
     The DOORS' SEMANTICS live at the call sites (which verdict routes
@@ -353,17 +352,17 @@ class DeferOps(_DeferHost):
         claim_epoch: int = 0,
         ledger_claimed_at: Any = None,
     ) -> str:
-        """THE STEP'S DEFERRAL VERDICT ROUTES (the catch arm's body): the
+        """The
         shared row law (``defer_row_law`` — the NODE_DEFER_SQL write + the
         ledger's truth, one transaction) applied by the STEP's own routes —
         the two TERMINAL verdicts route through the wf terminal door
         (:meth:`~taskq.workflows.engine.finalize_node` — the ledger's
-        terminal, the T06 cascade and the propagation ride it), exactly
+        terminal, the failed-parent cascade and the propagation ride it), exactly
         like the ladder's own exhaustion arm. (The LOOP body's signals
         route through ``LoopOps._defer_loop_step`` — the same row law, the
         loop's own doors.)
 
-        ``ledger_claimed_at`` is the claim's OWN RETURNING instant (the
+        ``ledger_claimed_at`` is the claim's own RETURNING instant (the
         re-mint guard's discriminator): the zombie's fence keys on it,
         so a claim the arbiter re-minted onto a LIVE winner (the refund's
         own row re-use) can never be fenced by the stale claimant.
@@ -407,14 +406,14 @@ class DeferOps(_DeferHost):
             )
             return "fenced"
 
-        # THE TERMINAL VERDICTS — the wf terminal door's own faces (the
+        # the terminal verdicts — the wf terminal door's own faces (the
         # row law wrote nothing; the door owns every death). The
-        # exhaustion's ledger row is the ATTEMPT's failed record (the
+        # exhaustion's ledger row is the attempt's failed record (the
         # vanilla max_attempts arm's own audit shape); the
         # cancel-fenced node terminalises under the cancel's vocabulary.
-        # The DOOR'S MECHANICS are the shared route's (the ledger's
-        # terminal + finalize_node + the projection — the ONE shape both
-        # doors' terminal verdicts run); the VERDICT's vocabulary is the
+        # The door's mechanics are the shared route's (the ledger's
+        # terminal + finalize_node + the projection — the one shape both
+        # doors' terminal verdicts run); the verdict's vocabulary is the
         # step's own.
         exhausted = verdict_text == "exhausted"
         outcome = "failed" if exhausted else "cancelled"
@@ -433,7 +432,7 @@ class DeferOps(_DeferHost):
             attempt=attempt,
             claim_epoch=claim_epoch,
             ledger_id=ledger_id,
-            capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the COMPILE (the workflow decorator's declaration); the host protocol's compiled is the runner's Any-typed field — the ladder's own call shape.
+            capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the compile (the workflow decorator's declaration); the host protocol's compiled is the runner's Any-typed field — the ladder's own call shape.
             project_auto=self._project_auto,
             outcome=outcome,
             error_class=error_class,
@@ -447,7 +446,7 @@ class DeferOps(_DeferHost):
             outcome=outcome,
             error_class=error_class,
         )
-        # The exhausted budget is the LADDER's own face (the budget's
+        # The exhausted budget is the ladder's own face (the budget's
         # terminal); the cancel-fenced node is the cancel's. Both labels
         # name the verdict's owner, never a body failure class.
         return "laddered" if exhausted else "cancelled"

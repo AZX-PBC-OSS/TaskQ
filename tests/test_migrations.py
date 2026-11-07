@@ -122,7 +122,7 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
     """COPY_ENQUEUE_COLUMNS (the enqueue COPY path) is COPY_FROM_COLUMNS
     minus exactly the columns the post-COPY fixup UPDATE stamps server-side
     or a DDL default covers.  Every omitted column must be safe to omit
-    from COPY: nullable or carrying a DDL default - a NOT NULL column
+    from COPY: nullable or carrying a DDL default - a not NULL column
     without a default would make the COPY insert fail outright.  Order is
     positional (the record tuples are built by hand), so it must be a
     order-preserving subsequence of COPY_FROM_COLUMNS.  ``status`` is
@@ -144,16 +144,16 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
         "claim_epoch",
         # 01.00.24's workflow columns: vanilla enqueues never set them (the
         # DDL defaults apply); the engine's own statements write them.
-        # parent_id is NOT omitted: the LIB-2 fan-out ledger's trailing
+        # parent_id is not omitted: the LIB-2 fan-out ledger's trailing
         # member rides the COPY (the enqueue contextvar stamps it; the
-        # merge's ONE parent_id — two writers, one column).
+        # merge's one parent_id — two writers, one column).
         "deps_pending",
         "map_index",
         "step_key",
         "code_version",
         # The loop-budget trio (01.00.27/01.00.31): vanilla enqueues never
         # set them either (the DDL defaults: NULL / False / NULL; only the
-        # loop driver's INIT statement writes them).
+        # loop driver's init statement writes them).
         "budget_deadline",
         "budget_paused",
         "budget_remaining_ms",
@@ -181,14 +181,14 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
 async def test_enqueue_copy_record_arity_matches_columns(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """THE ARITY PIN (the COPY record builder vs the column list it feeds).
+    """The arity pin (the COPY record builder vs the column list it feeds).
 
     The record tuples in ``_enqueue_batch_fast``'s build loop are built BY
     HAND, positionally, against ``copy_enqueue_columns`` -- nothing in the
     type system ties their lengths together. The drift is not theoretical:
     01.00.26 added budget_deadline/budget_paused/budget_remaining_ms to
     COPY_FROM_COLUMNS (hence to COPY_ENQUEUE_COLUMNS) without touching the
-    builder, and EVERY enqueue_batch_fast COPY died in asyncpg's
+    builder, and every enqueue_batch_fast COPY died in asyncpg's
     protocol.pyx copy_in with a bare "IndexError: tuple index out of
     range" -- a 39-wide record against 42 columns. The failure names
     nothing useful; the mirror-divergence pins reported it as an
@@ -491,7 +491,7 @@ async def test_queues_has_max_concurrent_column(
     assert col["is_nullable"] == "YES"
 
 
-# ── The fence-probe index migration's OPS NOTE escape hatch ────────────
+# ── The fence-probe index migration's ops NOTE escape hatch ────────────
 
 
 async def _reset_fence_probe_to_legacy_form(
@@ -555,13 +555,13 @@ async def test_fence_probe_migration_survives_the_documented_swap(
 ) -> None:
     """The OPS NOTE's escape hatch, end to end: pre-build concurrently, swap
     by name (legacy form parked under ``..._old``, two-key form installed as
-    canonical), then apply the migration. The migration's drop must NOT
+    canonical), then apply the migration. The migration's drop must not
     undo the swap: the canonical two-key form survives, valid, and the
     parked legacy form is cleaned up."""
     await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
     await _reset_fence_probe_to_legacy_form(pg_conn, settings.schema_name)
 
-    # The recipe, exactly as the migration's OPS NOTE documents it. (The
+    # The recipe, exactly as the migration's ops NOTE documents it. (The
     # index name is deliberately NOT schema-qualified: CREATE INDEX takes
     # the table's schema, and a qualified name is a syntax error.)
     await pg_conn.execute(
@@ -621,7 +621,7 @@ async def test_fence_probe_migration_rebuilds_an_include_id_canonical(
 ) -> None:
     """An operator who built the canonical name as
     ``(locked_by_worker) INCLUDE (id)`` — a plausible misreading of the
-    recipe — is NOT holding the two-key form: an INCLUDE column is payload,
+    recipe — is not holding the two-key form: an INCLUDE column is payload,
     never an Index Cond, so the fence probe still walks the whole running
     set. ``pg_attribute`` lists INCLUDE columns, so a definition check that
     reads attributes cannot tell the two forms apart — which is why the
@@ -632,7 +632,7 @@ async def test_fence_probe_migration_rebuilds_an_include_id_canonical(
     await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
     await _reset_fence_probe_to_legacy_form(pg_conn, settings.schema_name)
 
-    # The operator's mistake: the INCLUDE form under the canonical name.
+    # The operator's mistake: the include form under the canonical name.
     await pg_conn.execute(f'DROP INDEX "{settings.schema_name}".jobs_locked_by_worker_running_idx')
     await pg_conn.execute(
         f"CREATE INDEX jobs_locked_by_worker_running_idx"
@@ -660,7 +660,7 @@ async def test_fence_probe_migration_rebuilds_an_invalid_canonical_debris(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
     """An interrupted direct ``CREATE INDEX CONCURRENTLY`` under the canonical
-    name leaves INVALID debris that the trailing ``IF NOT EXISTS`` alone
+    name leaves INVALID debris that the trailing ``IF not EXISTS`` alone
     would silently keep (the runner's own drop-the-debris discipline). The
     conditional drop must not spare it: after the migration the canonical
     index must be the two-key form, valid."""
@@ -668,9 +668,9 @@ async def test_fence_probe_migration_rebuilds_an_invalid_canonical_debris(
     await _reset_fence_probe_to_legacy_form(pg_conn, settings.schema_name)
 
     # Reproduce the debris honestly: an uncommitted write transaction on
-    # another connection parks CIC's phase-2 ShareLock wait (an empty table's
+    # another connection parks cic's phase-2 ShareLock wait (an empty table's
     # read-only snapshot never engages it), statement_timeout cancels the
-    # build mid-flight, and PG keeps the INVALID index. The legacy form is
+    # build mid-flight, and PG keeps the invalid index. The legacy form is
     # dropped first: the failing build targets the canonical name itself, the
     # way an operator running the recipe against the canonical name directly
     # would.

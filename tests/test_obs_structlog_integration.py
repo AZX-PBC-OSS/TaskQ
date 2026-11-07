@@ -105,7 +105,7 @@ def _scoped_logging_configuration() -> Iterator[None]:  # pyright: ignore[report
     * ``taskq.obs._structlog._logging_configured``.
     * module-level lazy proxies that bind while
       ``cache_logger_on_first_use=True`` is in force pin their assembled
-      logger ON THE PROXY INSTANCE. The suite-wide guard's
+      logger ON the PROXY INSTANCE. The suite-wide guard's
       ``structlog.reset_defaults()`` replaces the config but cannot reach
       those proxies: they keep running the frozen production processor
       chain forever, so a later test file's ``capture_logs`` - which
@@ -503,7 +503,7 @@ async def test_stdlib_bridge_json_output() -> None:
     test_logger.handlers.clear()
 
 
-# ── Payload not logged at INFO+ ───────────────────────────────────
+# ── Payload not logged at info+ ───────────────────────────────────
 
 
 async def test_payload_not_logged_at_info(

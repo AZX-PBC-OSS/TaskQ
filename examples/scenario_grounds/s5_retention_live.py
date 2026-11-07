@@ -92,7 +92,7 @@ async def main() -> None:
     keeper_id = str(keeper.flow_id)
     say(f"The keeper run holds at its gate and stays live (run {keeper_id}).")
 
-    # The BASELINE, sampled BEFORE the worker exists: with no worker in
+    # The baseline, sampled before the worker exists: with no worker in
     # the picture nothing can prune, so a slow caller cannot lose the
     # baseline — the rows sit until the sweep's first tick past the
     # horizon. (A terminal run's history is inert; only the sweep

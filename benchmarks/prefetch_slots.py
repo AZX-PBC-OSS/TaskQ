@@ -8,7 +8,7 @@ the active-jobs count (``maxsize - qsize - active`` - the shipped
 producer, whose behavior is pinned by
 ``tests/test_producer_slot_accounting.py``).
 
-Both sides run the SAME harness - one real ``PostgresBackend``, real
+Both sides run the same harness - one real ``PostgresBackend``, real
 ``consumer_loop_stub`` consumers (real terminal writes), one shared
 slot-freed event, the claim cooldown and jitter verbatim - differing
 only in the availability expression, the A6 harness doctrine
@@ -104,8 +104,8 @@ async def build_worker(
 ) -> tuple[AsyncExitStack, WorkerDeps, PostgresBackend, asyncpg.Pool]:
     """Real WorkerDeps + PostgresBackend over one pool (the
     benchmarks/e2e_dispatch.py shape)."""
-    # TASKQ_LOG_LEVEL=WARNING: the stub consumers' per-job state-change
-    # INFO lines are console I/O both sides pay equally, but silencing
+    # TASKQ_LOG_LEVEL=warning: the stub consumers' per-job state-change
+    # info lines are console I/O both sides pay equally, but silencing
     # them keeps the measured loop tighter and the output readable.
     settings = WorkerSettings.load_from_dict(
         {"TASKQ_PG_DSN": dsn, "TASKQ_SCHEMA_NAME": schema, "TASKQ_LOG_LEVEL": "WARNING"}

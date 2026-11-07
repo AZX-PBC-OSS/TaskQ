@@ -1,4 +1,4 @@
-"""THE FLAKE DRILL: a 1000-transaction batch under the 15% flake + 5%
+"""A 1000-transaction batch under the 15% flake + 5%
 timeout profile. ALL reach typed terminal; the retry counts are
 recorded; NOTHING lost, NOTHING duplicated; the fan-out's CONCURRENCY
 is measured (real overlap, not serial). The invariants run
@@ -23,9 +23,9 @@ from examples.ledgerwatch.tests.support import (
 
 pytestmark = pytest.mark.timeout(900)
 
-#: THE ADVERSE WORLD (recorded): 15% transient flake + 5% hangs past the
-#: declared timeout + 50-300 ms jitter. The ladder budget is 8 (the
-#: product's recorded config; the invariants do not depend on it).
+#: recorded. 15% transient flake + 5% hangs past the declared timeout + 50-300
+#: ms jitter. The ladder budget is 8 (the product's recorded config; the
+#: invariants do not depend on it).
 FLEET_ENV: dict[str, str] = {"LW_PROFILE": "adverse", "LW_ENRICH_CLIENT_RETRIES": "8"}
 
 BATCH_COUNT = 1000
@@ -41,12 +41,12 @@ async def test_flake_drill_all_terminal_under_adverse_profile(
     raw = await await_terminal(pool, schema, str(claim.flow_id), timeout_s=800)
     report = CompletionReport.model_validate(raw)
 
-    # ── THE INVARIANTS (unconditional) ──────────────────────────────────
-    # 1. NOTHING LOST: the typed receipt covers every transaction, none failed.
+    # ── the invariants (unconditional) ──────────────────────────────────
+    # 1. NOTHING lost: the typed receipt covers every transaction, none failed.
     assert report.failed == [], f"transactions died: {report.failed[:10]}"
     assert report.cleared == sorted(t.txn_id for t in batch.transactions)
     assert report.total == BATCH_COUNT
-    # 2. NOTHING DUPLICATED: every id exactly once.
+    # 2. NOTHING duplicated: every id exactly once.
     assert len(report.cleared) == len(set(report.cleared))
     # 3. The fan-out's children: exactly BATCH_COUNT enrich children + BATCH_COUNT route children, all succeeded.
     enrich_jobs = await child_jobs(pool, schema, "ingest.item", flow_id=str(claim.flow_id))
@@ -56,8 +56,8 @@ async def test_flake_drill_all_terminal_under_adverse_profile(
     route_jobs = await child_jobs(pool, schema, "branch.item:%", flow_id=str(claim.flow_id))
     assert route_jobs == {"succeeded": BATCH_COUNT}, f"the route fan-out's rows lie: {route_jobs}"
 
-    # 4. THE RETRY RECEIPT, from the EXTERNAL BOUNDARY's own journal
-    # (durable, per-call): exactly ONE successful call per transaction —
+    # 4. the retry receipt, from the external boundary's own journal
+    # (durable, per-call): exactly one successful call per transaction —
     # a retry never double-succeeds — every call before it adverse, and
     # the engine's attempt ledger never shows more attempts than the
     # world made calls (the record and the world agree).
@@ -78,7 +78,7 @@ async def test_flake_drill_all_terminal_under_adverse_profile(
             f"txn {txn_id}: {calls} external calls but {ledger_n} engine attempts — the record and the world disagree"
         )
 
-    # 5. THE ADVERSE WORLD WAS REAL: the drill ran under flakes and
+    # 5. the adverse world was real: the drill ran under flakes and
     # timeouts (a green without adverse events would be a drill of
     # nothing — the profile is seeded deterministic, so this is stable).
     outcomes = j["outcomes"]
@@ -86,13 +86,12 @@ async def test_flake_drill_all_terminal_under_adverse_profile(
     assert flaky > 0, "no adverse events fired — the drill's world was not injected"
     assert outcomes.get("ok", 0) == BATCH_COUNT, "every txn must land EXACTLY one successful call"
 
-    # 6. THE CONCURRENCY IS REAL: the enrich calls overlapped (not serial).
+    # 6. the concurrency is real: the enrich calls overlapped (not serial).
     assert j["max_in_flight"] > 1, (
         f"the fan-out enriched SERIALLY (max in-flight {j['max_in_flight']}) — the concurrency claim is false"
     )
 
-    # THE RECEIPT (the report's evidence): the profile, the retry
-    # histogram, the measured overlap.
+    # the profile, the retry histogram, the measured overlap.
     from examples.ledgerwatch.config import ADVERSE_PROFILE
 
     attempt_histogram: dict[int, int] = {}

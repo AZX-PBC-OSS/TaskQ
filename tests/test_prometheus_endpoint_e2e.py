@@ -117,7 +117,7 @@ def test_served_metrics_contain_taskq_series_after_real_worker_activity(
     the exact documented quick-start state."""
     env = {
         # Scrub any ambient OTEL_*/TASKQ_* configuration: the documented
-        # quick-start sets neither, and an inherited OTEL provider env var
+        # quick-start sets neither, and an inherited otel provider env var
         # would change which wiring branch runs.
         key: value
         for key, value in os.environ.items()

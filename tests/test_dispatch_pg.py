@@ -430,7 +430,7 @@ async def test_clearing_max_concurrent_uncaps_rather_than_reverting_to_the_liter
 
     Oracle: seed a literal of 2, dispatch (2 running, capped). Clear the
     override through the real operator API, then dispatch again and
-    require every remaining job to start - the literal 2 must NOT come
+    require every remaining job to start - the literal 2 must not come
     back.
     """
     deps = jobs_app.deps
@@ -714,7 +714,7 @@ async def statement_timeout_dispatcher_pool(
 
     Two asyncpg pool mechanics shape how the 1ms budget is applied:
 
-    - A connection's FIRST execution makes the driver run its own
+    - A connection's first execution makes the driver run its own
       prepare and type-introspection round trips before the statement
       itself. A 1ms cancel landing in THOSE wedges the protocol
       mid-operation (an InternalClientError that is neither the
@@ -744,7 +744,7 @@ async def statement_timeout_dispatcher_pool(
 
     async def _warm_and_degrade(conn: _asyncpg.Connection) -> None:
         # The warm-up's prepare and type introspection must mutate nothing:
-        # a connection created MID-TEST would otherwise run a real claim
+        # a connection created mid-test would otherwise run a real claim
         # against the seeded backlog (its rows exist by then) and mark real
         # jobs running under a throwaway worker id. The transaction's
         # rollback returns anything the warm claim touched; prepared-
@@ -818,7 +818,15 @@ async def test_dispatch_duration_is_recorded_when_the_dispatch_query_fails(
     reader = setup_meter(monkeypatch)
     monkeypatch.setattr(deps, "dispatcher_pool", statement_timeout_dispatcher_pool)
 
-    with pytest.raises(_asyncpg.PostgresError):
+    # The abort reaches this test in either of its two real faces: the
+    # server's clean cancel (a PostgresError — QueryCanceledError) or the
+    # driver's own protocol wedge when the 1ms cancel lands in the
+    # statement's setup (an InternalClientError — the pool-shorting shape
+    # this pool's warm-up narrows but cannot close; the fixture's
+    # docstring). both faces are the aborted round, and the pin's subject
+    # — the duration sample the product's own except records before the
+    # re-raise — is exception-type-agnostic by construction.
+    with pytest.raises((_asyncpg.PostgresError, _asyncpg.exceptions.InternalClientError)):
         await backend.dispatch_batch(
             worker_id=worker_id,
             queues=["default"],
@@ -919,7 +927,7 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
     # Register the seeded actor so the round reaches the failing statement
     # with claimable rows: dispatch's candidates walk actor_config, so an
     # unregistered actor's pending rows make every round vacuously
-    # empty-handed - a scenario about FAILURE needs rounds that attempt
+    # empty-handed - a scenario about failure needs rounds that attempt
     # the claim and fail in it.
     configs = [ActorConfig(actor="telemetry_actor", max_concurrent=5, queue="default", metadata={})]
     async with deps.worker_pool.acquire() as conn:
@@ -956,7 +964,7 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
             # The failed rounds are the observable; waiting on a count of
             # them is what makes this deterministic rather than timed.
             # The injected failure is not in TRANSIENT_PG_ERRORS, so each
-            # failed round keeps the loud ERROR "dispatch-batch-error"
+            # failed round keeps the loud error "dispatch-batch-error"
             # record - the record an operator tailing the worker sees.
             await wait_for_condition(
                 lambda: (
@@ -1107,7 +1115,7 @@ async def test_backlog_still_dispatches_with_a_job_at_the_attempt_ceiling(
             lock_lease=_LEASE,
         )
     except Exception as exc:
-        # Why catch broadly: the defect is that ANY driver error escapes a
+        # Why catch broadly: the defect is that any driver error escapes a
         # dispatch round because one row cannot be incremented. Naming the
         # concrete exception class would pin the driver, not the behaviour.
         pytest.fail(
@@ -1285,3 +1293,82 @@ async def test_non_object_json_payload_round_trips_through_claim(
             "the dispatched row claimed normally, no terminal write landed"
         )
         assert row["error_class"] is None, "no CorruptJobDataError verdict against user content"
+
+
+class _RecordingDispatchPool:
+    """Recording proxy over the real pool (count, don't answer).
+
+    Every call delegates to the real connection untouched; the proxy
+    counts the checkouts and records the dispatch-CTE fetches (the
+    claim's SQL and its rows) — the round's shape, asserted instead of
+    trusted. Modeled on tests/test_dispatch_queue_mode_cache.py's
+    proxy of the same name."""
+
+    def __init__(self, pool: _asyncpg.Pool) -> None:
+        self._pool = pool
+        self.checkouts = 0
+        self.claim_fetches: list[tuple[str, list[_asyncpg.Record]]] = []
+
+    @contextlib.asynccontextmanager
+    async def acquire(
+        self,
+        **kwargs: object,  # Why: asyncpg.Pool.acquire's own kwargs forwarded verbatim.
+    ) -> AsyncGenerator[_asyncpg.Connection]:
+        outer = self
+        self.checkouts += 1
+        async with self._pool.acquire(**kwargs) as conn:
+
+            class _RecordingConn:
+                async def fetch(self, sql: str, *args: object) -> list[_asyncpg.Record]:
+                    rows = await conn.fetch(sql, *args)
+                    if "WITH RECURSIVE params AS (" in sql:
+                        outer.claim_fetches.append((sql, list(rows)))
+                    return rows
+
+                def __getattr__(self, name: str) -> object:
+                    return getattr(conn, name)
+
+            yield _RecordingConn()  # type: ignore[return-value]
+
+
+async def test_empty_queue_list_round_trips_empty(
+    jobs_app: JobsApp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty queue list passes through (not short-circuits): one real
+    pool checkout, one real claim statement with nothing bound, an empty
+    batch back - the producer's idle-shutdown shape.
+
+    The pool rides the recording proxy, so the round's shape is asserted,
+    not trusted: a short-circuit ``return []`` before the checkout, or a
+    round that never issues the rendered claim, reds here.
+
+    (Converted from tests/test_postgres_dispatch.py's fake arm in the
+    mock-subtraction cure: the fake pinned the bound argument; this runs
+    the real claim.)"""
+    deps = jobs_app.deps
+    backend = jobs_app.backend
+    schema = deps.settings.schema_name
+    tmpl = render(schema)
+    proxy = _RecordingDispatchPool(deps.dispatcher_pool)
+    monkeypatch.setattr(deps, "dispatcher_pool", proxy)
+
+    dispatched = await backend.dispatch_batch(
+        worker_id=new_uuid(),
+        queues=[],
+        limit=10,
+        lock_lease=_LEASE,
+    )
+    assert dispatched == []
+    assert proxy.checkouts == 1, (
+        "an empty queue list must checkout the pool exactly once - a "
+        "short-circuit return never reaches the acquire"
+    )
+    assert [sql for sql, _rows in proxy.claim_fetches] == [tmpl.dispatch_strict_fifo], (
+        "the round must issue the real claim statement - the rendered "
+        "strict-fifo dispatch CTE, which is what an empty queue list "
+        "resolves to"
+    )
+    assert all(rows == [] for _sql, rows in proxy.claim_fetches), (
+        "the claim statement must come back empty (nothing was pending)"
+    )

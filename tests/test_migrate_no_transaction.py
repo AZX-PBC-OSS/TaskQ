@@ -1,7 +1,7 @@
 """Integration tests (real Postgres) for non-transactional migrations.
 
 A migration carrying the ``-- taskq:no-transaction`` header directive is
-discovered with ``use_transaction=False`` and applied WITHOUT the
+discovered with ``use_transaction=False`` and applied without the
 per-migration transaction wrapper, making ``CREATE INDEX CONCURRENTLY`` /
 ``DROP INDEX CONCURRENTLY`` expressible. These tests pin the contract:
 
@@ -9,7 +9,7 @@ per-migration transaction wrapper, making ``CREATE INDEX CONCURRENTLY`` /
   concurrent index build succeeds - impossible inside a transaction block);
 - the default path still wraps in a transaction (CONCURRENTLY is rejected,
   and a failing mid-file statement rolls the whole file back);
-- the ledger records a non-transactional migration only AFTER its statements
+- the ledger records a non-transactional migration only after its statements
   succeed - a failure leaves the key unrecorded while partial effects
   persist, so such migrations must be idempotent and re-runnable;
 - re-running after a failure is safe;
@@ -95,7 +95,7 @@ async def _ledger_transactions(conn: asyncpg.Connection, schema: str) -> dict[st
     return {r["version"]: r["use_transaction"] for r in rows}
 
 
-# ── Non-transactional path: CONCURRENTLY works ──────────────────────────────
+# ── Non-transactional path: concurrently works ──────────────────────────────
 
 
 async def test_no_transaction_migration_runs_create_index_concurrently(
@@ -125,7 +125,7 @@ async def test_no_transaction_migration_runs_create_index_concurrently(
             "applying a migration outside a transaction must be logged"
         )
         # A concurrent build cannot run inside a transaction block - success
-        # here proves the migration ran outside one, and left a VALID index.
+        # here proves the migration ran outside one, and left a valid index.
         assert await _index_validity(conn, schema, "nt_jobs_queue_idx") is True
         ledger = await _ledger_transactions(conn, schema)
         assert ledger[m.key] is False
@@ -188,7 +188,7 @@ async def test_apply_pending_locked_applies_no_transaction_migration(
             await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
-# ── Directive parsing end-to-end (REAL discover()) ─────────────────────────
+# ── Directive parsing end-to-end (real discover()) ─────────────────────────
 
 
 async def test_discover_directive_parsing_applies_end_to_end(
@@ -200,7 +200,7 @@ async def test_discover_directive_parsing_applies_end_to_end(
     directive WITH a trailing note (the common real-world form), and the
     migration must be applied non-transactionally based on that parse alone."""
     schema = f"mig_nt_disc_{new_base62()}".lower()
-    # Resolve and copy the bundled *.sql files BEFORE patching
+    # Resolve and copy the bundled *.sql files before patching
     # resources.files - apply_pending re-discovers on every call, so the
     # patched dir must contain the full bundled set plus the synthetic file.
     real_dir = resources.files("taskq.migrations")
@@ -218,18 +218,18 @@ async def test_discover_directive_parsing_applies_end_to_end(
     conn = await asyncpg.connect(pg_dsn)
     try:
         await _drop_schema(conn, schema)
-        # Bootstrap via the REAL package dir; only then patch, so the
+        # Bootstrap via the real package dir; only then patch, so the
         # synthetic file is applied from the patched discovery below.
         await _bootstrap(conn, schema)
         # Patch the importlib.resources module the discover() implementation
-        # reads (migrate_mod.resources IS this same module object) - reached
+        # reads (migrate_mod.resources is this same module object) - reached
         # via this file's own import rather than through taskq.migrate,
         # which does not export it.
         monkeypatch.setattr(resources, "files", lambda _pkg: tmp_path)
 
         applied = await migrate_mod.apply_pending(conn, schema=schema)
 
-        # Parsed from the file - not hand-set. Asserted AFTER apply_pending
+        # Parsed from the file - not hand-set. Asserted after apply_pending
         # so a parsing regression surfaces as its DB-level symptom
         # (ActiveSQLTransactionError above) rather than a local assert.
         m = next(x for x in migrate_mod.discover() if x.filename == synth_name)
@@ -249,7 +249,7 @@ async def test_discover_directive_parsing_applies_end_to_end(
 async def test_transactional_migration_rejects_concurrently(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A migration WITHOUT the directive still runs inside a transaction, so
+    """A migration without the directive still runs inside a transaction, so
     Postgres rejects CREATE INDEX CONCURRENTLY - pinning that the default
     wrapper is intact and that the directive is what unlocks it."""
     schema = f"mig_nt_txcc_{new_base62()}".lower()
@@ -316,7 +316,7 @@ async def test_transactional_migration_rolls_back_on_failure(
 async def test_failed_no_transaction_migration_is_not_recorded_but_effects_persist(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE distinguishing failure mode: statements before the failure commit
+    """The distinguishing failure mode: statements before the failure commit
     independently (no rollback), yet the ledger records nothing - completion
     is recorded only after every statement succeeds."""
     schema = f"mig_nt_fail_{new_base62()}".lower()
@@ -409,7 +409,7 @@ async def test_interrupted_concurrent_build_remedy_drop_and_rebuild(
 ) -> None:
     """An interrupted CREATE INDEX CONCURRENTLY leaves an INVALID index. The
     documented remedy - DROP INDEX CONCURRENTLY IF EXISTS then CREATE INDEX
-    CONCURRENTLY IF NOT EXISTS in one non-transactional migration - replaces
+    CONCURRENTLY IF not EXISTS in one non-transactional migration - replaces
     it with a valid index and is then recorded."""
     schema = f"mig_nt_inv_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
@@ -419,8 +419,8 @@ async def test_interrupted_concurrent_build_remedy_drop_and_rebuild(
 
         # Stage the debris of an interrupted build: a 2M-row table makes the
         # concurrent build slow enough that a 100ms statement_timeout cancels
-        # it mid-build, leaving an INVALID index behind. On a heavily loaded
-        # runner the cancel can instead land during CIC's catalog-registration
+        # it mid-build, leaving an invalid index behind. On a heavily loaded
+        # runner the cancel can instead land during cic's catalog-registration
         # phase (no index row survives), so retry the staging a few times -
         # each attempt is independent and well under a second.
         await conn.execute(
@@ -480,8 +480,8 @@ async def test_list_invalid_indexes_reports_then_clears_staged_debris(pg_dsn: st
 
         # Same staging pattern as
         # test_interrupted_concurrent_build_remedy_drop_and_rebuild: a
-        # 2M-row table + 100ms statement_timeout cancels CIC mid-build,
-        # leaving an INVALID index (retry - the cancel can instead land
+        # 2M-row table + 100ms statement_timeout cancels cic mid-build,
+        # leaving an invalid index (retry - the cancel can instead land
         # before catalog registration on a loaded runner).
         await conn.execute(
             f'CREATE TABLE "{schema}".lii_stage AS SELECT generate_series(1, 2000000) AS id'
@@ -518,7 +518,7 @@ async def test_no_transaction_migration_rejects_transaction_control_statements(
     """BEGIN/COMMIT inside a no-transaction file would re-open an explicit
     transaction on the caller's connection - defeating CONCURRENTLY and, on
     failure, leaving the connection in an aborted transaction. The runner
-    rejects the file BEFORE executing anything."""
+    rejects the file before executing anything."""
     schema = f"mig_nt_txctl_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -690,10 +690,10 @@ async def test_apply_pending_locked_failure_self_diagnoses(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Owner requirement, startup path: a migration failing under
-    ``apply_pending_locked`` (worker/UI startup) must abort with the SAME
+    ``apply_pending_locked`` (worker/UI startup) must abort with the same
     self-diagnosis the CLI prints - which migration failed, the partial
     state it left, the INVALID indexes it found, and the single action -
-    joined into ONE greppable SystemExit line, never a raw traceback.
+    joined into one greppable SystemExit line, never a raw traceback.
 
     The failing synthetic is ``pre``-phase on purpose:
     ``apply_pending_locked`` deliberately defaults to ``phase="pre"`` (the
@@ -707,9 +707,9 @@ async def test_apply_pending_locked_failure_self_diagnoses(
         await _drop_schema(conn, schema)
         real = await _bootstrap(conn, schema)
 
-        # Stage INVALID-index debris (same statement_timeout pattern as
+        # Stage invalid-index debris (same statement_timeout pattern as
         # test_list_invalid_indexes_reports_then_clears_staged_debris): an
-        # interrupted CIC leaves an INVALID index the diagnosis must name.
+        # interrupted cic leaves an invalid index the diagnosis must name.
         await conn.execute(
             f'CREATE TABLE "{schema}".se_stage AS SELECT generate_series(1, 2000000) AS id'
         )

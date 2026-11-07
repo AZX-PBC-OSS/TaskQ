@@ -42,7 +42,7 @@ def gauge_reader(monkeypatch: pytest.MonkeyPatch) -> Iterator[InMemoryMetricRead
             callbacks=[otel_mod._observe_sse_connections],  # pyright: ignore[reportPrivateUsage]  # Why: exercising the production callback is the point of the test.
         ),
     )
-    # The rejections counter is a LAZY instrument: resolved on the CURRENT
+    # The rejections counter is a lazy instrument: resolved on the current
     # meter at call time, so the fixture must swap the module's meter
     # accessor (and clear the per-meter memo) for the isolated reader to
     # see the counts — the meter-swap contract test_obs.py pins.

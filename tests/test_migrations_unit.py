@@ -214,7 +214,7 @@ def test_discover_skips_non_sql_files(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_discover_refuses_two_files_on_one_ledger_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Two bundled files sharing version-sequence AND phase are one ledger row.
+    """Two bundled files sharing version-sequence and phase are one ledger row.
 
     The runner reads the ledger once up front, so both files count as pending,
     the first records the shared key, and the second's INSERT dies on
@@ -397,7 +397,7 @@ def test_discover_accepts_directive_mixed_case(
 def test_discover_rejects_directive_lookalike_and_warns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``-- taskq:no-transactional`` must NOT match (the token boundary stops
+    """``-- taskq:no-transactional`` must not match (the token boundary stops
     prefix drift), but it looks like a directive attempt, warn so the author
     notices instead of silently running transactional."""
     with structlog.testing.capture_logs() as captured:
@@ -486,7 +486,7 @@ def test_split_statements_handles_doubled_quote_escape() -> None:
 
 def test_split_statements_handles_e_string_backslash_escape() -> None:
     # In E'...' strings a backslash escapes the next char, so the first '
-    # here does NOT terminate the string.
+    # here does not terminate the string.
     assert migrate.split_statements("SELECT E'a\\';b';") == ["SELECT E'a\\';b'"]
 
 
@@ -608,7 +608,7 @@ def test_split_statements_dollar_quote_after_punctuation_still_parses() -> None:
 
 
 def test_split_statements_unicode_escape_string_regression() -> None:
-    """Regression pins for U&'...' literals: backslash is NOT an escape
+    """Regression pins for U&'...' literals: backslash is not an escape
     outside E'...', and '' still doubles."""
     assert migrate.split_statements("SELECT U&'d\\0061t\\+000061'; SELECT 2;") == [
         "SELECT U&'d\\0061t\\+000061'",
@@ -672,7 +672,7 @@ def test_reject_transaction_control_rejects_transaction_scoped_statements(
     statement: str,
 ) -> None:
     """``SAVEPOINT``/``RELEASE`` would fail loudly at execution outside a
-    transaction, but the guard's value is rejecting the file BEFORE anything
+    transaction, but the guard's value is rejecting the file before anything
     runs. ``SET LOCAL``/``SET TRANSACTION`` are worse: outside a transaction
     they are SILENT no-ops (server WARNING only), so the author believes e.g.
     the statement timeout was disabled for a long build when it was not."""
@@ -693,9 +693,9 @@ def test_reject_transaction_control_message_names_set_local_keyword() -> None:
 
 
 def test_reject_transaction_control_accepts_session_set_and_checkpoint() -> None:
-    # Deliberate allowlist: plain SET / SET SESSION is session-scoped, it
+    # Deliberate allowlist: plain set / set session is session-scoped, it
     # behaves identically inside and outside a transaction, so opting out
-    # changes nothing about it and it is not deceptive. CHECKPOINT is a
+    # changes nothing about it and it is not deceptive. checkpoint is a
     # cluster-level maintenance statement with no transaction semantics at
     # all. Neither pretends the runner is managing a transaction, so the
     # guard stays out of the way.
@@ -878,7 +878,7 @@ def test_render_apply_failure_lines(
     expected: list[str],
 ) -> None:
     """The renderer reproduces the CLI's three report variants verbatim and
-    swaps ONLY the action line for startup (worker/UI) failures."""
+    swaps only the action line for startup (worker/UI) failures."""
     assert migrate.render_apply_failure_lines(make(), startup=startup) == expected
 
 
@@ -924,7 +924,7 @@ def test_apply_failure_diagnosis_rejects_filename_without_use_transaction() -> N
 
 def _phase_scenario_migrations() -> tuple[Migration, Migration]:
     """discover() order for the --phase misattribution scenario: an
-    earlier-version pending :post sorts BEFORE a later-version :pre (the
+    earlier-version pending :post sorts before a later-version :pre (the
     sort key is version first), so under ``migrate up --phase pre``, where
     only the :pre applies and fails, the first-unrecorded heuristic would
     blame the wrong file."""
@@ -949,7 +949,7 @@ async def test_diagnose_apply_failure_prefers_tagged_migration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Under --phase the first unrecorded migration in discover() order is
-    NOT necessarily the one that failed. apply_pending tags the exception
+    not necessarily the one that failed. apply_pending tags the exception
     with the failing migration; the diagnosis must trust the tag over the
     heuristic."""
     earlier_pending_post, later_failing_pre = _phase_scenario_migrations()

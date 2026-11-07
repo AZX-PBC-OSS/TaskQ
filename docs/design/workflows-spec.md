@@ -1,4 +1,4 @@
-# THE TYPED-WORKFLOW LAYER — the spec, the built truth (T14)
+# THE TYPED-WORKFLOW LAYER — the spec, the built truth
 
 *This is the workflow layer's SPEC as SHIPPED: every mechanism described
 here is LANDED and pinned; every number cites a file in this repository.
@@ -18,7 +18,7 @@ What was proposed, attacked with evidence, and REFUSED:
 1. **The `split`/`Router` parallel-API proposal — DEAD.** The three
    checkers agree it cannot be typed: pyright false-reds it, ty
    false-greens it (`Promise[Unknown]`), mypy collapses `Promise[Never]`
-   (the probe corpus, T01's gate; the errata's #3). The ONE API is the
+   (the probe corpus's gate). The ONE API is the
    wiring verbs (`step`/`gather`/`map_source`/`loop`/`build`) — a second
    router vocabulary would have shipped a type hole with a nice name.
 2. **The full DAG engine (a general graph executor) — DECLINED.** The
@@ -29,7 +29,7 @@ What was proposed, attacked with evidence, and REFUSED:
    refuses to be.
 3. **Content-addressed rerun — LATER, re-raised for the
    maintainer's re-ruling.** The original deferral's premise ("no
-   canonical-hash call site") is VOID: T03's `code_version` column
+   canonical-hash call site") is VOID: the `code_version` column
    (the per-attempt record, `taskq/workflows/_version.py`) CREATED the
    call site via tors' canonical `content_hash` — the adoption map's row
    is now ADOPT. What remains is ARCHITECTURAL SEQUENCING (the rerun
@@ -95,12 +95,12 @@ counter ON the row the dispatch claim already touches.
 4. **FORK ATOMICITY** (pin 19): the terminal UPDATE + the fork's INSERTs
    in ONE transaction; a kill at any statement boundary rolls the whole
    tx; the fork-debt reconcile is a REPAIR, never the design.
-5. **THE OUTBOX DRAIN IS OWNED** (pin 20): idempotent consumer inserts
+5. **The outbox drain is owned** (pin 20): idempotent consumer inserts
    (`ON CONFLICT` on the step key); the flag flips in the insert's tx.
 6. **RESUME-NOT-RETRY**: a hold's resume consumes NO ladder attempt
    (erratum 15); the ladder burns for BODY failures only — an
    infra fault routes to the reclaim (the escape-point contract).
-7. **THE ABSORBED-FAILURE CLAUSE precedes the `failed` row** (the
+7. **The absorbed-failure clause precedes the `failed` row** (the
    derivation table): a failed node absorbed by its edge's declared policy
    derives through its PARENT'S outcome — the workflow succeeds WITH the
    failure report (the report is the point, not a consolation).
@@ -118,7 +118,7 @@ deep-research march kicks the run from a REAL schedule's fire).
 
 ## 5. The type story's division of labor
 
-* LOCAL truth: pyright 1.1.414 + ty 0.0.85 (the probe CI gate, T01 —
+* LOCAL truth: pyright 1.1.414 + ty 0.0.85 (the probe CI gate —
   both must be RED on each seeded type defect; mypy's evidence is
   recorded, not gated).
 * GLOBAL truth: `compiled.validate()` — the E1–E7/W1 rule matrix
@@ -140,7 +140,7 @@ sentinel, the typed partial); the finalize CAS is the shape guard. THE
 STATUS IS DERIVED (the derivation table): the run's verdict reconstructs from the ROWS
 — never one column's cache.
 
-**THE DIVERGENCE TRADES, AS FEATURES** (the adoption pitch, not
+**The divergences trade as features** (the adoption pitch, not
 apologies):
 
 1. **Replay = ROWS-ONLY RE-DERIVATION.** There is no orchestrator
@@ -153,14 +153,14 @@ apologies):
    contract, no SDK sandbox, no history versioning — the rows version
    themselves per attempt), and run state is one SQL query away for any
    BI tool.
-2. **THE DB-CLOCK TIMERS.** Every timer (hold deadlines, loop budgets,
+2. **The db-clock timers.** Every timer (hold deadlines, loop budgets,
    lease expiry) evaluates against PG's clock INSIDE the statement
    owning the transition (the SkewedClock pin: a +1h-skewed app clock
    cannot fire or unfire a budget). *Costs:* event-time semantics
    (inexpressible — §0's refusal 4). *Buys:* ONE totally-ordered
    crash-safe clock domain; the fleet's lived "a row `running` forever"
    pain is structurally impossible while the derivation re-derives.
-3. **THE HOLD ROW — the headline.** Five ecosystem mechanisms behind
+3. **The hold row — the headline.** Five ecosystem mechanisms behind
    ONE CAS'd, idempotent, slot-releasing row: signal-and-wait,
    suspend-resume, deferrable-open-slot, poll-until-true,
    checkpoint-interrupt (probes 2+3: the slot RELEASES
@@ -207,7 +207,7 @@ co-invariant lock lease — the settings validator's cascade floor).
   recorded here, not built.
 * **Holds as child rows** (parallel holds inside one iteration): NOT a
   feature add — a REPLACEMENT of the proven hold representation; the
-  fence matrix, the epoch identity and the T10/T19 pins re-derive.
+  fence matrix, the epoch identity and the hold/loop pins re-derive.
   Sequenced after the core hold machinery's production experience.
 * **Query-shaped bulk DLQ replay** (`retry_where` + preview): the
   workflow tables RIDE the vanilla redispatch ownership (the
@@ -238,7 +238,7 @@ and the in-tree pin that re-runs it).
 | The fan-in curve (200 → 3.0 ms, 1000 → 3.3 ms, 5000 → 11.1 ms; the refit ~1.7 µs/edge + ~2.7 ms base; the 5 ms-class comparison struck) | the scale pin (`tests/test_wf_perf_bands.py`), measured |
 | The 1000-child fan-out tx band, the join-fire latency | the perf bands pin (`tests/test_wf_perf_bands.py`) |
 | The hold/resume band (the resume consumes no attempt) | the HITL pins (`tests/test_wf_hitl_pins.py`) |
-| The streaming bands (the emit cursor) | the T20 backpressure pins (`tests/test_wf_t20_backpressure_pins.py`) |
+| The streaming bands (the emit cursor) | the backpressure pins (`tests/test_wf_emit_backpressure_pins.py`) |
 | The migration-chain proof (every bundled migration, stepwise, onto populated data) | `tests/test_migrations_populated.py` |
 | The stranger test (a fresh reader, docs-only: the demo + the API explanation + the 18 stumbles, each dispositioned) | the adoption walkthrough in this doc's history |
 | The engine's pin inventory (the tests that can fail) | the workflows guide's foot; `tests/test_wf_*.py` |

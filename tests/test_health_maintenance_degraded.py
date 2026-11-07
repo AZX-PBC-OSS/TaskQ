@@ -43,7 +43,7 @@ def _patch_caches(
 ) -> None:
     # Replace, never mutate: the real dicts are process-wide singletons and
     # in-place writes would leak into other tests. The staleness ledger is
-    # the MONOTONIC twin (maintenance_health is an elapsed-time comparison;
+    # the monotonic twin (maintenance_health is an elapsed-time comparison;
     # see tests/test_attack_clock_back_sweep_health.py for why the wall
     # ledger must not anchor it), so the success dict stamps land there.
     monkeypatch.setattr(_otel, "_sweep_success_monotonic_cache", success)

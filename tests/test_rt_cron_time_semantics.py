@@ -8,7 +8,7 @@
   strict-inequality property: it is a within-window catch-up, and it can
   only be pinned deterministically by pinning the tick's planning clock,
   so those two tests run the tick on :class:`FrozenClockConn` (a real
-  connection whose ONLY intercepted call is the tick's own
+  connection whose only intercepted call is the tick's own
   ``SELECT clock_timestamp()``; every statement still hits real PG).
 * **DST ``allof`` at a future overlap ** - America/New_York falls
   back on 2026-11-01 (02:00 EDT → 01:00 EST), so local 01:30 occurs at
@@ -26,7 +26,7 @@
   limit above the due set is not a truncation.
 * **Success-UPDATE alignment ** - three schedules with distinct
   cadences (5-min, 10-min, hourly) and distinct due slots: each fired
-  schedule's next_fire_at must equal ITS OWN slot plus ITS OWN cadence,
+  schedule's next_fire_at must equal ITS own slot plus ITS own cadence,
   exactly.  A rewrite that zipped the ids array against a misordered
   next_fires array would advance the wrong schedule and swap these
   observably distinct values.
@@ -72,11 +72,11 @@ _OVERLAP_SECOND_UTC = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)
 _OVERLAP_YEARLY = "30 1 1 11 *"
 
 # The C5 scenario's injected clock: the "now" the seeds and both ticks'
-# clocks read, an explicit control instant far from any DST transition
+# clocks read, an explicit control instant far from any dst transition
 # (Saturday mid-afternoon UTC, the day before the 2026 fall-back) and 9.5
 # hours before the fold-0 occurrence, so a schedule seeded due at
 # now - 5min is a within-window catch-up whose walk answers the overlap
-# PAIR.  The first version read the seed and both ticks' clocks from the
+# pair.  The first version read the seed and both ticks' clocks from the
 # live server clock: correct only while the wall clock remained before the
 # overlap, armed when it crossed 2026-11-01 05:30Z - the walk from a
 # post-fold seed answers 06:30Z fold-1 (or next year past the whole
@@ -144,7 +144,7 @@ class TestCatchUpRecompute:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """30 minutes missed against a 1h window: NO skip warning, the slot
+        """30 minutes missed against a 1h window: no skip warning, the slot
         fires, and next_fire_at advances EXACTLY one cadence from the fired
         slot - still in the past, so the next tick continues the catch-up
         one slot at a time."""
@@ -291,11 +291,11 @@ class TestDstAllofOverlap:
         (2026-11-01 01:30 America/New_York = 05:30Z and 06:30Z), seeded
         due at the injected scenario clock (within window):
 
-        * ``allof``: TWO jobs from ONE tick - the overdue fire immediately
+        * ``allof``: TWO jobs from one tick - the overdue fire immediately
           (pending, server-stamped) and the second occurrence at exactly
           06:30Z with status ``scheduled``; the schedule's next_fire_at is
           exactly 05:30Z and a second tick enqueues nothing more.
-        * ``skip`` twin (control): ONE job, next_fire_at exactly 05:30Z.
+        * ``skip`` twin (control): one job, next_fire_at exactly 05:30Z.
         """
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -516,7 +516,7 @@ class TestSuccessUpdateAlignment:
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
         grid = ten_min_floor(datetime.now(UTC))
-        # B is seeded ON the 10-minute grid (miss < 10min, so no wall-clock
+        # B is seeded on the 10-minute grid (miss < 10min, so no wall-clock
         # crossing between seeding and the tick can push it beyond the 1h
         # window); its hourly next fire is the hour boundary after the grid.
         cases = [

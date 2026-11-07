@@ -165,7 +165,7 @@ async def test_doctor_and_sweep_agree_at_the_exact_liveness_edge(
     module_pg_schema: Any,
 ) -> None:
     """A worker EXACTLY at the liveness edge: doctor and the sweep must give
-    the SAME verdict, and the edge must move with the window (strict ``>``).
+    the same verdict, and the edge must move with the window (strict ``>``).
 
     Bracketed around the boundary: a heartbeat stamped
     ``statement_timestamp() - interval '30 seconds'`` is at the edge the
@@ -196,15 +196,15 @@ async def test_doctor_and_sweep_agree_at_the_exact_liveness_edge(
         last_seen_sql="statement_timestamp() - interval '29 seconds'",
     )
 
-    # At the documented window: the edge row is DEAD (strict >), the inside
-    # row is ALIVE - and both surfaces name exactly the same stranded actor.
+    # At the documented window: the edge row is dead (strict >), the inside
+    # row is alive - and both surfaces name exactly the same stranded actor.
     doctor = await _doctor_unserved(clean_pg_conn, schema, _LIVENESS_WINDOW)
     sweep = await _sweep_unserved(clean_pg_conn, schema, _LIVENESS_WINDOW)
     assert doctor == sweep, f"doctor and sweep disagree at the edge:\n{doctor}\n{sweep}"
     assert doctor == {"actor_edge": (1, ("q_edge",))}, f"the 30 s edge verdict drifted: {doctor}"
 
-    # The edge MOVES with the window: one second wider resurrects the row on
-    # BOTH surfaces; one second tighter kills the inside row on BOTH.
+    # The edge moves with the window: one second wider resurrects the row on
+    # both surfaces; one second tighter kills the inside row on both.
     for window in (29, 31):
         doctor_w = await _doctor_unserved(clean_pg_conn, schema, window)
         sweep_w = await _sweep_unserved(clean_pg_conn, schema, window)
@@ -234,7 +234,7 @@ async def test_dead_by_liveness_with_live_lease_the_surfaces_disagree_by_design(
       pending work reads stranded-unserved;
     - the REMOVAL sweep has not deleted the row yet (its own window is the
       heartbeat budget, 60 s at the defaults);
-    - the RECOVERY arm does NOT rescue the running row on the liveness
+    - the RECOVERY arm does not rescue the running row on the liveness
       verdict - it reads the row's own lease columns, and a fresh
       heartbeat/valid lease means sweep 1 comes back empty: the stuck job
       follows the LEASE, not the liveness window. The documented remedy is
@@ -257,7 +257,7 @@ async def test_dead_by_liveness_with_live_lease_the_surfaces_disagree_by_design(
     await _seed_pending_job(clean_pg_conn, schema, actor="test_actor", queue="default")
 
     # The ghost's in-flight job: lease still future, heartbeat fresh - the
-    # worker died with the row mid-flight and its columns say ALIVE.
+    # worker died with the row mid-flight and its columns say alive.
     running_id = new_uuid()
     await clean_pg_conn.execute(
         f"""INSERT INTO "{schema}".jobs (
@@ -280,22 +280,22 @@ async def test_dead_by_liveness_with_live_lease_the_surfaces_disagree_by_design(
         f"the 45 s ghost must read unserved on both surfaces:\n{doctor}\n{sweep}"
     )
 
-    # Removal verdict: NOT yet - the row (and administratively, its leases)
+    # Removal verdict: not yet - the row (and administratively, its leases)
     # survives its own window.
     removed = await cleanup_stale_workers(
         clean_pg_conn, worker_id=other, staleness=timedelta(seconds=60), schema=schema
     )
     assert removed == 0, f"the 45 s row was removed before the 60 s edge: {removed}"
 
-    # Recovery verdict: sweep 1 does NOT rescue the running row on the
+    # Recovery verdict: sweep 1 does not rescue the running row on the
     # liveness finding - the lease is still future and the heartbeat arm is
-    # quiet. The stuck job waits the lease out; that IS the documented path.
+    # quiet. The stuck job waits the lease out; that is the documented path.
     reclaimed = await sweep_expired_locks(clean_pg_conn, timedelta(0), timedelta(0), schema=schema)
     assert reclaimed == 0, f"sweep 1 reclaimed a valid-lease row on a liveness verdict: {reclaimed}"
     status = await _job_status(clean_pg_conn, schema, running_id)
     assert status == "running", f"the stuck row moved without a lease expiry: {status}"
 
-    # The documented cooperative cancel against a dead worker: a REQUEST
+    # The documented cooperative cancel against a dead worker: a request
     # only (cli.md), the status stays running - the ghost can never land it.
     await clean_pg_conn.execute(
         f'UPDATE "{schema}".jobs SET cancel_phase = 1, cancel_requested_at = '  # noqa: S608  # Why: schema is identifier-validated upstream; values are bound.
@@ -305,7 +305,7 @@ async def test_dead_by_liveness_with_live_lease_the_surfaces_disagree_by_design(
     status = await _job_status(clean_pg_conn, schema, running_id)
     assert status == "running", "a cancel request against a dead worker landed itself"
 
-    # The reclaim sweep is what resolves it: past the lease AND the
+    # The reclaim sweep is what resolves it: past the lease and the
     # cancelling row's grace ladder (cancel grace + cleanup grace + 60 s,
     # the runbook's carve-out), it honours the row to ``cancelled``.
     await clean_pg_conn.execute(

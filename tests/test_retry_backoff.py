@@ -32,7 +32,7 @@ def test_global_ceiling_overrides_per_actor_cap() -> None:
         assert result <= ceiling, f"attempt={attempt}: {result} exceeds max_retry_backoff={ceiling}"
 
 
-# ── exponential, deterministic with seeded RNG ───────────────────────
+# ── exponential, deterministic with seeded rng ───────────────────────
 
 
 def test_exponential_deterministic_seeded() -> None:

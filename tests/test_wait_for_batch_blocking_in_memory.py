@@ -101,7 +101,7 @@ class TestBlockingMode:
             await original_sleep(0)
 
         with pytest.MonkeyPatch.context() as mp:
-            # Patch where the name is LOOKED UP - taskq.testing._runner's own
+            # Patch where the name is looked up - taskq.testing._runner's own
             # ``asyncio`` binding (the module whose wait_for_batch loop sleeps) -
             # not through to the global asyncio module (tests/_ns_patch.py).
             mp.setattr(runner_mod, "asyncio", module_ns_proxy(asyncio, sleep=fake_sleep))
@@ -136,7 +136,7 @@ class TestBlockingMode:
             structlog.testing.capture_logs() as logs,
             pytest.MonkeyPatch.context() as mp,
         ):
-            # Patch where the name is LOOKED UP - taskq.testing._runner's own
+            # Patch where the name is looked up - taskq.testing._runner's own
             # ``asyncio`` binding (the module whose wait_for_batch loop sleeps) -
             # not through to the global asyncio module (tests/_ns_patch.py).
             mp.setattr(runner_mod, "asyncio", module_ns_proxy(asyncio, sleep=fake_sleep))
@@ -174,7 +174,7 @@ class TestBlockingMode:
             await original_sleep(0)
 
         with pytest.MonkeyPatch.context() as mp:
-            # Patch where the name is LOOKED UP - taskq.testing._runner's own
+            # Patch where the name is looked up - taskq.testing._runner's own
             # ``asyncio`` binding (the module whose wait_for_batch loop sleeps) -
             # not through to the global asyncio module (tests/_ns_patch.py).
             mp.setattr(runner_mod, "asyncio", module_ns_proxy(asyncio, sleep=fake_sleep))

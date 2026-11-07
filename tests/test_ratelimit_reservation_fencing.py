@@ -11,7 +11,7 @@ and its ``finally`` calls ``release(slot_index, worker_id)``, which matched on
 LIVE attempt legitimately holds.  A third job then acquires it and the bucket
 runs over ``max_concurrent``.
 
-Note what does NOT discriminate here: a retry reuses the SAME job row, so the
+Note what does not discriminate here: a retry reuses the same job row, so the
 zombie and the live attempt share a ``job_id`` and a ``worker_id``.  Fencing
 on ``job_id`` would let every assertion below pass while the bug survives -
 the fence has to identify the LEASE, not the job.
@@ -59,8 +59,8 @@ async def test_zombie_release_cannot_free_a_live_slot_pg(
     # Attempt 1 acquires the only slot, then its heartbeats stall.
     zombie_lease = await res.acquire(job_id, worker_id, module_pg_pool)
 
-    # Lock + slot lease expire; sweep 4 frees the slot and the SAME job row is
-    # redispatched to the SAME worker, which acquires the slot again.
+    # Lock + slot lease expire; sweep 4 frees the slot and the same job row is
+    # redispatched to the same worker, which acquires the slot again.
     await asyncio.sleep(_SHORT_LEASE.total_seconds() * 2)
     live_lease = await res.acquire(job_id, worker_id, module_pg_pool)
     assert int(live_lease) == int(zombie_lease)

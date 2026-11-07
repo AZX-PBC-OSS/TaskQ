@@ -195,7 +195,7 @@ def _complete_batch(
 
     # Mirror of the PG NOT EXISTS guard: the completion decision reads
     # the live member set at the moment of the write, never a count the
-    # caller computed earlier. Under READ COMMITTED a count statement's
+    # caller computed earlier. Under read committed a count statement's
     # snapshot can predate a concurrent member's terminal write, so an
     # over-counted "members remain" must delay completion (the stale-
     # batch sweep is the safety net) while the attempt itself stays safe
@@ -236,7 +236,7 @@ def _list_batches(
     if filter.batch_id is not None:
         candidates = [b for b in candidates if b.id == filter.batch_id]
 
-    # Mirror of the PG keyset: (created_at, id) DESC as one total order,
+    # Mirror of the PG keyset: (created_at, id) desc as one total order,
     # with id -- UUIDv7, so time-ordered -- carrying the rows a FakeClock
     # (or PG's transaction-timestamp now()) stamps identically.
     candidates.sort(key=lambda b: (b.created_at, b.id), reverse=True)
@@ -271,12 +271,12 @@ async def _enqueue_batch_atomic(
         # coordinates: the PG atomic arm re-chunks the stream inside the
         # backend and each chunk crosses the bulk build loop, whose
         # per-item jsonb NUL guard annotates at index_base + the chunk
-        # position, i.e. STREAM-GLOBAL indices, BEFORE the chunk's
+        # position, i.e. stream-global indices, before the chunk's
         # INSERT. The mirror consumes the same chunks (same islice, same
         # chunk_size) and preflights each stamped chunk through the same
         # shared guards at the same base, so a NUL-bearing item surfaces
-        # as the SAME annotated PayloadValidationError naming the SAME
-        # caller-global index on both backends; a BARE
+        # as the same annotated PayloadValidationError naming the same
+        # caller-global index on both backends; a bare
         # ValueError(NUL_JSONB_ERROR) with no item attribution at all
         # would break that parity (the per-item single-enqueue path has no
         # index to name). Check ORDER also matches PG within a chunk
@@ -299,7 +299,7 @@ async def _enqueue_batch_atomic(
             _check_batch_jsonb(chunk, index_base=chunk_base)
             for args in chunk:
                 # The compensating rollback (``_rollback_inserted_rows``,
-                # shared with the batch arm) may only withdraw rows THIS
+                # shared with the batch arm) may only withdraw rows this
                 # call inserted. The discriminator is the insert contract
                 # documented on ``_enqueue_with_conn``: an item stored a
                 # row iff its id was absent before its enqueue and present
@@ -316,7 +316,7 @@ async def _enqueue_batch_atomic(
                 if not pre_existing and args.id in backend._jobs:
                     inserted.append((row.id, pair))
 
-        # Insert finalizer BEFORE creating the batch row so the returned
+        # Insert finalizer before creating the batch row so the returned
         # row's id can be used for finalizer_job_id (M4: idempotency
         # collision may return a different id than finalizer_args.id).
         finalizer_row: JobRow | None = None

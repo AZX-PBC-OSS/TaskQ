@@ -163,7 +163,7 @@ async def test_silent_leader_death_gaps_sweeps_for_at_most_lease_plus_heartbeat(
     The bound is derived, not aspirational: the lease must lapse on the
     server clock (nothing shortens it, the holder is dead), then the
     follower's own election cadence (one heartbeat interval) reaches the
-    lapsed row. The pin asserts BOTH halves of the contract: no early
+    lapsed row. The pin asserts both halves of the contract: no early
     takeover while the lease lives (that would be two leaders), and no
     late takeover past lease + heartbeat (that would be the dormant gap
     the fleet cannot see). The stranded row is a real running job with a
@@ -181,7 +181,7 @@ async def test_silent_leader_death_gaps_sweeps_for_at_most_lease_plus_heartbeat(
         leader1, stop1, task1 = _start_leader(fleet.pod("pod-1"))
         leader2, stop2, task2 = _start_leader(fleet.pod("pod-2"))
         try:
-            # Either pod may win the race; the pin is about the ROLE, not
+            # Either pod may win the race; the pin is about the role, not
             # the identity.
             await wait_for_condition(
                 lambda: (
@@ -204,7 +204,7 @@ async def test_silent_leader_death_gaps_sweeps_for_at_most_lease_plus_heartbeat(
             await _kill_silently(dying_leader, dying_task)
             t_kill = time.monotonic()
 
-            # Phase 1: inside the lease, NOBODY may take the row. The old
+            # Phase 1: inside the lease, nobody may take the row. The old
             # leader is gone; the row is the only authority, and it still
             # says held.
             await asyncio.sleep(_LEASE_SECS * 0.5)
@@ -221,17 +221,17 @@ async def test_silent_leader_death_gaps_sweeps_for_at_most_lease_plus_heartbeat(
             # Phase 2: the takeability flip is bounded by lease + hb. The
             # flip is what a fleet-wide monitor (or an operator's probe)
             # reads; it must not depend on any leader-side tick. The
-            # takeable state is TRANSITORY: the phase-locked healthy
+            # takeable state is transitory: the phase-locked healthy
             # follower legally re-elects within milliseconds of the flip
             # and renews the row, so a poller sampling only the row would
             # usually miss the very window it exists to prove. Either
             # signal settles the same bound: the row reads takeable, or
-            # the follower HAS taken the role - which only a takeable row
+            # the follower has taken the role - which only a takeable row
             # permits, so the flip is implied. (The frozen-follower pin
             # below keeps the row-only shape honest for a fleet whose
             # election loop is broken: there the flip must be visible
             # with no follower election running at all.) The event is
-            # tested FIRST: a ``_row_takeable(fleet) or X`` lambda
+            # tested first: a ``_row_takeable(fleet) or X`` lambda
             # short-circuits on the coroutine object's truthiness and
             # would never reach the event.
             await wait_for_condition(
@@ -383,7 +383,7 @@ async def test_renewal_racing_a_takeover_cannot_produce_two_leaders(
         assert row is not None and row["worker_id"] == a_id
 
         # ── order 2: the elect holds the row lock, the renewal blocks ──
-        # The row must be takeable for the elect to win: backdate BOTH
+        # The row must be takeable for the elect to win: backdate both
         # liveness signals past their horizons.
         await conn_a.execute(
             f'UPDATE "{schema}".maintenance_leader SET '
@@ -463,7 +463,7 @@ async def test_takeover_racing_a_mid_sweep_reclaim_lands_exactly_once(
             grace = timedelta(seconds=0)
             cap = timedelta(hours=1)
 
-            # The OLD leader's sweep, uncommitted, holding the job's row
+            # The old leader's sweep, uncommitted, holding the job's row
             # lock across the "takeover".
             tx_old = conn_old.transaction()
             await tx_old.start()
@@ -472,7 +472,7 @@ async def test_takeover_racing_a_mid_sweep_reclaim_lands_exactly_once(
             )
             assert old_rows == 1, "the old leader's sweep must reclaim the expired row"
 
-            # The NEW leader's same sweep, concurrent with the old one's
+            # The new leader's same sweep, concurrent with the old one's
             # uncommitted transaction.
             new_rows = await PostgresBackend.sweep_expired_locks(
                 conn_new, grace, grace, schema=schema, max_retry_backoff=cap
@@ -502,7 +502,7 @@ async def test_takeover_racing_a_mid_sweep_reclaim_lands_exactly_once(
             states = await fleet.fetch('SELECT status FROM "{schema}".jobs WHERE id = $1', job_id)
             assert states[0]["status"] == "pending"
 
-            # And a THIRD sweep (the successor's next tick) reclaims
+            # And a third sweep (the successor's next tick) reclaims
             # nothing: the effect is idempotent after the fact too.
             again = await PostgresBackend.sweep_expired_locks(
                 conn_new, grace, grace, schema=schema, max_retry_backoff=cap
@@ -523,7 +523,7 @@ async def test_flapping_renewal_demotes_but_never_yields_the_row_to_a_peer(
     row never becomes a peer's to take while the flapping holder can
     still reach the database.
 
-    A renewal failing transiently must NOT demote instantly (the trust
+    A renewal failing transiently must not demote instantly (the trust
     window exists so one blip does not churn leadership), must demote
     once the trust is spent (a holder that cannot renew must not keep
     the flag), and the demoted pod's own-row re-election is what keeps
@@ -713,7 +713,7 @@ async def test_demoted_leader_stops_pruning_mid_drain(pg_dsn: str) -> None:
 
         # The drain outruns any external demotion, so the demotion is
         # delivered through the seam the drain itself consults: the first
-        # gate call admits batch 1, the second IS the demotion instant,
+        # gate call admits batch 1, the second is the demotion instant,
         # and the underlying gate must then refuse everything further.
         gate_calls = {"n": 0}
 

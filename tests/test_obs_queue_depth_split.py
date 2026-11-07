@@ -19,7 +19,7 @@ import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
 from taskq.testing.otel import collect_metrics
 
-_CAP = otel_mod._MAX_QUEUE_LABEL_VALUES  # pyright: ignore[reportPrivateUsage]  # Why: the test asserts behaviour AT the cap; duplicating the constant would let it drift from the thing it guards.
+_CAP = otel_mod._MAX_QUEUE_LABEL_VALUES  # pyright: ignore[reportPrivateUsage]  # Why: the test asserts behaviour at the cap; duplicating the constant would let it drift from the thing it guards.
 
 
 @pytest.fixture
@@ -101,7 +101,7 @@ def test_depth_by_status_is_capped_like_the_depth_gauge(
     gauge_reader: InMemoryMetricReader,
 ) -> None:
     """Same partition doctrine: the largest (queue, status) PAIRS keep
-    their series, the rest collapse onto ONE `_other_` pair carrying
+    their series, the rest collapse onto one `_other_` pair carrying
     their summed depth."""
     pairs: dict[tuple[str, str], int] = {}
     for i in range(_CAP + 30):

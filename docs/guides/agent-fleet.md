@@ -8,8 +8,8 @@ redeployed mid-run (the loop may not lose its state). Those three
 "may not"s are the whole problem, and they are why the loop lives in
 rows instead of in a process.
 
-This guide walks one worked pattern end to end: the deep-research loop —
-free passes, then an approval gate, then the report — using two shipped
+The worked pattern, end to end: the deep-research loop —
+free passes, then an approval gate, then the report — in two shipped
 example files:
 
 - **`examples/deep_research.py`** — the loop itself: the gate, the

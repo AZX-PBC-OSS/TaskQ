@@ -4,7 +4,7 @@
 
 ``isolate_self``'s per-row sequence is: plain ``SELECT`` the running rows
 locked by this worker (no locks taken), then for each row an
-``UPDATE ... WHERE id = $1 AND status = 'running' AND locked_by_worker =
+``UPDATE ... WHERE id = $1 and status = 'running' and locked_by_worker =
 $2`` followed by an **unconditional** ``INSERT`` into ``job_attempts``
 (``heartbeat.py``'s ``_inner``: the UPDATE's rowcount tag is discarded).
 Sweep 1 transitions the same rows through a ``FOR UPDATE SKIP LOCKED``
@@ -21,7 +21,7 @@ the primary key - a **non-transient** constraint error that aborts
 isolate's WHOLE transaction, so Y (still running, still locked by this
 worker, never reclaimed) is never transitioned either.
 
-Contract under test: losing the race on ONE row must not collapse the
+Contract under test: losing the race on one row must not collapse the
 isolation of the OTHERS - the sweep's transition of X stands, exactly one
 attempt row exists for X, and Y is still isolated (re-pended for retry).
 The benign ordering (sweep fully first, then isolate) is pinned green:
@@ -201,9 +201,9 @@ class _GatedIsolateConn:
     the guarded UPDATE ... RETURNING that rides ``fetchrow`` (the
     standing-claim fence's source of truth) - so the test can interleave
     Sweep 1 exactly inside the race window between isolate's plain SELECT
-    (no row locks) and its first per-row transition. The gate used to sit
-    on the first ``execute``, which since the fence is the attempt INSERT -
-    AFTER the arbiter has already transitioned the row: a park there
+    (no row locks) and its first per-row transition. The gate sits
+    before the first ``execute``, which since the fence is the attempt INSERT -
+    after the arbiter has already transitioned the row: a park there
     misses the window and the sweep has nothing left to win.
     """
 

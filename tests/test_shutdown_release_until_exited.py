@@ -2,9 +2,9 @@
 exited.
 
 ``task.cancel()`` on a sync actor cancels the *await* on the executor
-thread, never the thread: the consumer's cancellation handler used to write
-``mark_interrupted(hold=timedelta(0))`` on the assumption the actor had
-unwound with the await, so the row went straight back to ``pending``:
+thread, never the thread: the consumer's cancellation handler must never
+write ``mark_interrupted(hold=timedelta(0))`` on the assumption the actor
+unwound with the await — that sends the row straight back to ``pending``:
 claimable by another worker while the thread was still mid-body. The
 transactional path had the same gap: ``tx_task.cancel()`` followed by an
 immediate re-raise released the row while the transaction task was still
@@ -134,8 +134,7 @@ class _ParkedTxConnection:
     """asyncpg.Connection stand-in whose transaction unwind can be parked.
 
     The transactional path's unwind: the ``async with transaction()``
-    exit that rolls back: is the thing the release used to race (the
-    second mechanism). Parking it lets the test hold the unwind open past
+    exit that rolls back is the second mechanism the release races. Parking it lets the test hold the unwind open past
     the cancel and observe the ordering: the release write must land only
     after ``rollback_done``.
     """
@@ -266,10 +265,25 @@ async def test_a_cancelled_sync_actor_await_detaches_but_the_thread_is_tracked()
         return {"done": True}
 
     class _Ctx:
+        """Minimal ctx double carrying the stash contract the helper uses
+        (plus the deadline-rescue record face its thread body now writes:
+        the finish stamp and the outcome, kept earliest-wins like the real
+        face)."""
+
         _sync_actor_task: asyncio.Task[object] | None = None
+        _actor_body_finished_at: float | None = None
+        _actor_body_outcome: tuple[object, BaseException | None] | None = None
 
         def _set_sync_actor_task(self, task: asyncio.Task[object]) -> None:
             self._sync_actor_task = task
+
+        def _record_actor_body_finished_at(self, when: float) -> None:
+            if self._actor_body_finished_at is None or when < self._actor_body_finished_at:
+                self._actor_body_finished_at = when
+
+        def _record_actor_body_outcome(self, value: object, exc: BaseException | None) -> None:
+            if self._actor_body_outcome is None:
+                self._actor_body_outcome = (value, exc)
 
     ctx = _Ctx()
 
@@ -649,7 +663,7 @@ async def test_infra_failed_release_write_propagates_the_cancellation_not_the_er
     raise so the cancellation propagates.
     """
     # Zero the retry backoff so the four attempts fit the unit lane; the
-    # retry MACHINERY is not under test here, only the arm's routing.
+    # retry machinery is not under test here, only the arm's routing.
     monkeypatch.setattr(
         _handlers_mod, "_TERMINAL_WRITE_BACKOFF", (timedelta(0), timedelta(0), timedelta(0))
     )
@@ -835,12 +849,25 @@ async def test_a_running_sync_actor_is_registered_until_its_thread_returns() -> 
         return {"done": True}
 
     class _Ctx:
-        """Minimal ctx double carrying the stash contract the helper uses."""
+        """Minimal ctx double carrying the stash contract the helper uses
+        (plus the deadline-rescue record face its thread body now writes:
+        the finish stamp and the outcome, kept earliest-wins like the real
+        face)."""
 
         _sync_actor_task: asyncio.Task[object] | None = None
+        _actor_body_finished_at: float | None = None
+        _actor_body_outcome: tuple[object, BaseException | None] | None = None
 
         def _set_sync_actor_task(self, task: asyncio.Task[object]) -> None:
             self._sync_actor_task = task
+
+        def _record_actor_body_finished_at(self, when: float) -> None:
+            if self._actor_body_finished_at is None or when < self._actor_body_finished_at:
+                self._actor_body_finished_at = when
+
+        def _record_actor_body_outcome(self, value: object, exc: BaseException | None) -> None:
+            if self._actor_body_outcome is None:
+                self._actor_body_outcome = (value, exc)
 
     ctx = _Ctx()
     runner = asyncio.ensure_future(_run_sync_actor_tracked(body, {}, ctx))  # type: ignore[arg-type]  # Why: the minimal double satisfies the setter contract; the body takes no kwargs.

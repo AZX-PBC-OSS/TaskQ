@@ -8,7 +8,7 @@ pinned here (the row really did carry the secret on the unguarded chain):
 
 * a raw Authorization header VALUE (``request.headers["authorization"]``,
   the most natural "return the credential" mistake): a bare scheme word
-  with NO ``Authorization:`` key beside it -- ``Bearer <opaque>``. The
+  with no ``Authorization:`` key beside it -- ``Bearer <opaque>``. The
   header-keyed bearer mask requires the ``authorization`` frame and the
   JWT mask requires dot structure, so an opaque token between them
   shipped whole.
@@ -43,7 +43,7 @@ from taskq.web.admin.auth import IdentityClaims
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
-# A realistic OPAQUE access token: no dot structure, so the JWT mask can
+# A realistic opaque access token: no dot structure, so the JWT mask can
 # never see it -- the framing is the only detection there is.
 _OPAQUE = "v9xK2mQ7wR4tY6uI1oP3aS5dF8gH0jL2zC4vB6nM"
 _B64_CREDS = "ZGVwbG95LWJvdDpWc21aN2Yza1Exd1A5eFIy"  # deploy-bot:<secret>
@@ -55,7 +55,7 @@ _JWT = (
 
 # (label, principal, secret material that must not appear in the row)
 _BYPASS_SHAPES: list[tuple[str, Any, tuple[str, ...]]] = [
-    # The raw header VALUE (no header name around it), opaque token:
+    # The raw header value (no header name around it), opaque token:
     # shipped verbatim through the unguarded chain.
     ("raw header value, bearer scheme, opaque token", f"Bearer {_OPAQUE}", (_OPAQUE,)),
     ("raw header value, bearer scheme, JWT", f"Bearer {_JWT}", (_JWT,)),
@@ -68,7 +68,7 @@ _BYPASS_SHAPES: list[tuple[str, Any, tuple[str, ...]]] = [
     ("dict principal, token scheme", {"authorization": f"Token {_OPAQUE}"}, (_OPAQUE,)),
 ]
 
-# Honest attribution the mask must NOT touch: the whole point of
+# Honest attribution the mask must not touch: the whole point of
 # redact-in-place is that these bind verbatim.
 _HONEST_SUBJECTS: list[str] = [
     "ops-admin@example.com",

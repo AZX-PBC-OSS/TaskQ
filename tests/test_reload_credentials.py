@@ -61,7 +61,7 @@ class _FakePool:
         self.close_wait = asyncio.Event()
         self.close_wait.set()  # close() completes instantly by default
         # Why an event alongside the flag: the flag is the assertion
-        # surface; the event is the WAIT surface - the reload's
+        # surface; the event is the wait surface - the reload's
         # background drain closes the pool on its own task, and a test
         # that needs "closed" can await this instead of sleeping a
         # fixed interval that races the drain under load.
@@ -102,7 +102,7 @@ class _FakeConn:
         self.terminated = False
         self.executed: list[str] = []
         # Why an event alongside the flag: the flag is the assertion
-        # surface; the event is the WAIT surface - the reload's
+        # surface; the event is the wait surface - the reload's
         # background drain closes the connection on its own task, and a
         # test that needs "closed" can await this instead of sleeping a
         # fixed interval that races the drain under load.
@@ -224,7 +224,7 @@ async def test_reload_swaps_slot_pool_and_preserves_boot_time_sizing() -> None:
 
     A provider-backed slot pool is swapped like the role pools (old
     drained in the background, replacement registered for teardown),
-    and the replacement comes from the SAME factory the boot-time pool
+    and the replacement comes from the same factory the boot-time pool
     came from - the closure captured ``max_concurrency + 1`` at build
     time, which is what keeps the pool's size stable across rotations
     (max_concurrency is boot-only; no reload path re-reads settings).
@@ -313,13 +313,13 @@ async def test_reload_skips_caller_owned_pools() -> None:
         # Caller-owned pool unchanged
         assert deps.dispatcher_pool is caller_pool
 
-    # Caller-owned pool NOT closed by TaskQ
+    # Caller-owned pool not closed by TaskQ
     assert not caller_pool.closed
 
 
 async def test_reload_continues_past_one_failed_pool_factory() -> None:
     """A factory failure for one pool (e.g. transient credential-fetch
-    error) is caught, logged, and does NOT abort the remaining resources -
+    error) is caught, logged, and does not abort the remaining resources -
     reload_credentials keeps going and reloads dispatcher/worker even
     though heartbeat's factory raised."""
     settings = _make_settings()
@@ -340,7 +340,7 @@ async def test_reload_continues_past_one_failed_pool_factory() -> None:
         leader_conn=_FakeConn(),  # type: ignore[arg-type]
     )
     async with open_worker_deps(settings, connections=conns) as deps:
-        # The slot pool joins the rebuild set - a failing SLOT factory
+        # The slot pool joins the rebuild set - a failing slot factory
         # must not abort the role pools either, so it shares the failing
         # factory here.
         deps.slot_pool = _FakePool("old-slot")  # type: ignore[assignment]
@@ -473,7 +473,7 @@ async def test_reload_swaps_redis_client() -> None:
 
     # Old Redis was drained exactly once (by the reload's background drain)…
     old_redis.aclose.assert_awaited_once()
-    # …and the LIVE client - the one in use at shutdown - was closed by
+    # …and the live client - the one in use at shutdown - was closed by
     # teardown. Before the fix, teardown closed the already-drained startup
     # client and leaked the live one.
     new_redis.aclose.assert_awaited_once()
@@ -595,7 +595,7 @@ async def test_reload_prefers_notify_reconnect_fn_over_direct_swap() -> None:
         reconnect_fn.assert_awaited_once()
         assert "notify_conn" in reloaded
         assert failed == []
-        # Direct swap NOT performed - conn untouched, no LISTEN re-issued
+        # Direct swap not performed - conn untouched, no LISTEN re-issued
         assert deps.notify_conn is old_notify
 
 
@@ -710,7 +710,7 @@ async def test_reload_terminates_pool_when_drain_times_out() -> None:
 
 
 async def test_reload_awaited_leader_close_before_watchdog_reopen() -> None:
-    """The old leader conn is closed BEFORE reload returns (bounded), so
+    """The old leader conn is closed before reload returns (bounded), so
     the advisory lock is released before the watchdog's re-election -
     avoiding a guaranteed first-attempt lock conflict."""
     settings = _make_settings()
@@ -865,7 +865,7 @@ async def test_sighup_sets_reload_event() -> None:
             orchestrator_holder=[],
         )
         # Send SIGHUP to self. The handler is registered via
-        # loop.add_signal_handler, so it runs as a callback on THIS loop -
+        # loop.add_signal_handler, so it runs as a callback on this loop -
         # awaiting the event it sets is the bounded, event-driven wait (a
         # fixed sleep here races signal delivery under load).
         os.kill(os.getpid(), _signal.SIGHUP)

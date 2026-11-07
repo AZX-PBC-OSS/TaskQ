@@ -13,7 +13,7 @@ ASGI transport — the ``tests/web_admin`` idiom) against a REAL converted
 schema and proves every surface the audit names:
 
 1. The jobs list and every filter shape (status, queue, actor, tag, text
-   search, keyset cursor pagination) — row-identical to the SAME queries
+   search, keyset cursor pagination) — row-identical to the same queries
    on a vanilla schema. Both schemas are seeded IDENTICALLY (same ids,
    same fixed timestamps — the seed plan is built once and applied to
    both) on the same TimescaleDB container, so responses are directly
@@ -22,7 +22,7 @@ schema and proves every surface the audit names:
    three-column keyset seam, and the per-actor stats aggregate (all-time
    and windowed — the window is where chunk exclusion does its work).
    The walk's NULL-finished sentinel range is PINNED as the conversion's
-   one row-shape divergence: the partition column is NOT NULL on the
+   one row-shape divergence: the partition column is not NULL on the
    hypertable, so the row the ``__NULL__`` sentinel describes cannot
    exist there (harmless to the surface — no production write makes
    one — but documented, DML-time and migrate-time).
@@ -30,7 +30,7 @@ schema and proves every surface the audit names:
    stream is PG LISTEN/NOTIFY-based (no Redis): a real NOTIFY on the
    converted schema's events channel must reach the stream. The per-job
    progress stream proves its PG-snapshot read (``_PROGRESS_SQL`` reads
-   ``jobs`` — NOT converted, but the route lives on the converted
+   ``jobs`` — not converted, but the route lives on the converted
    schema) and its Redis bridge against a real broker, plus the
    documented 503 ``redis_not_configured`` degrade without one.
 4. The metrics/count endpoints: ``/jobs/count`` (both tabs, with
@@ -51,7 +51,7 @@ schema and proves every surface the audit names:
    ``PostgresBackend`` (route census, ``@router.post`` over
    ``src/taskq/web/admin``: job cancel, job retry, schedule
    enable/disable/skip/run-now, rate-limit reset, actor deregister —
-   there are NO bulk-cancel, actor-config-edit, or queue
+   there are no bulk-cancel, actor-config-edit, or queue
    set-mode/set-max-concurrent routes to test): each action lands on
    both engines at once and the resulting rows, the audit-trail rows
    (``admin_audit``, written because the dev env enables
@@ -72,7 +72,7 @@ schema and proves every surface the audit names:
     NUL filter, an invalid status, disabled admin actions — every
     error status and body identical across engines.
 
-THE PARENTLESS-ATTEMPT WINDOW (the conversion's one honest behavioral
+the PARENTLESS-ATTEMPT WINDOW (the conversion's one honest behavioral
 change the admin surface can see): dropping
 ``job_attempts_archive``'s FK means an attempt-archive row can outlive
 its parent archive row (the two retentions chunk on different time
@@ -82,7 +82,7 @@ Pinned here, on the real converted schema, with the orphan row actually
 planted: the history walk and the stats aggregate neither break nor
 count it (the walk never reads the attempts table; the stats join is a
 LEFT JOIN FROM ``jobs_archive``), and the archived job detail page still
-renders its OWN attempts.
+renders its own attempts.
 """
 
 from __future__ import annotations
@@ -144,11 +144,11 @@ _TIMESCALE_IMAGE = (
 # same one Dragonfly (the suite's shared broker) implements.
 _REDIS_IMAGE = "redis:8.10.2"
 
-# Every seeded timestamp derives from this ONE instant, computed once at
+# Every seeded timestamp derives from this one instant, computed once at
 # module import: the differential requires both engines to seed
 # byte-identical rows, and the absolute expectations (orders, counts,
 # windows) must hold for the whole module run. What must be pinned is the
-# instant's AGE, not its absolute value — the stats windows (30d, 24h)
+# instant's age, not its absolute value — the stats windows (30d, 24h)
 # are computed from now() at request time, so a fixed authoring-time
 # instant silently slides out of them as real time advances (the time
 # bomb that detonated 2026-10-19: the 30d window stopped covering the
@@ -177,7 +177,7 @@ _CENSUS_STATUSES = [
 _TERMINAL = frozenset({"succeeded", "failed", "cancelled", "crashed", "abandoned"})
 
 
-# ── The seed plan (built ONCE, applied to BOTH engines identically) ──────
+# ── The seed plan (built once, applied to both engines identically) ──────
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,8 +256,8 @@ def _archive_rows(ids: list[uuid.UUID]) -> list[_JobRow]:
     """55 archived terminal jobs, actor ``archive_actor`` / queue ``bulk``.
 
     Mixes statuses; finished_at staggers across days for the union walk's
-    seam and the windowed stats. (NULL finished_at is deliberately NOT
-    seeded: the conversion makes the partition column NOT NULL — see
+    seam and the windowed stats. (NULL finished_at is deliberately not
+    seeded: the conversion makes the partition column not NULL — see
     ``test_null_partition_key_is_the_documented_divergence`` for the
     pinned semantics.)
     """
@@ -286,7 +286,7 @@ def _archive_rows(ids: list[uuid.UUID]) -> list[_JobRow]:
 
 
 def _build_plan() -> _SeedPlan:
-    """Build the whole fixture ONCE: the same plan seeds both engines.
+    """Build the whole fixture once: the same plan seeds both engines.
 
     The ids come from the project's own generators (UUIDv7 job ids — the
     enqueuing-clock ordering the admin keysets lean on), generated a
@@ -454,7 +454,7 @@ async def _seed_schema(conn: asyncpg.Connection, schema: str, plan: _SeedPlan) -
         ],
     )
 
-    # Events on the live census jobs: two fresh each, two AGED (31 days —
+    # Events on the live census jobs: two fresh each, two aged (31 days —
     # a separate chunk on the converted table) on two of them.
     event_rows: list[tuple[uuid.UUID, datetime, str]] = []
     for row in _census_rows(plan):
@@ -531,7 +531,7 @@ class _Lab:
     ht: _Engine
     redis_url: str
     ht_redis_app: FastAPI
-    # The mutation surface mounts the REAL PostgresBackend and a fixed
+    # The mutation surface mounts the real PostgresBackend and a fixed
     # authenticated principal (the dev no-auth principal is "anonymous" —
     # the audit trail's own tier proves that path); the read-only apps
     # above stay backend-less so their differentials stay page-pure.
@@ -541,10 +541,10 @@ class _Lab:
 
 @pytest.fixture(scope="module")
 async def lab(ts_dsn: str, redis_broker: Any) -> AsyncIterator[_Lab]:
-    """Both engines, built once: migrate BOTH schemas, convert one to
+    """Both engines, built once: migrate both schemas, convert one to
     hypertables (long retentions, policies deferred — nothing may drop a
     seeded row mid-run), seed both identically, mount the real admin app
-    on each. The dev-env trio is set HERE (not just via the autouse
+    on each. The dev-env trio is set here (not just via the autouse
     per-test fixture) because ``create_router`` loads settings at
     module-fixture time, which runs before the function-scoped autouse
     fixture would have set them.
@@ -563,7 +563,7 @@ async def lab(ts_dsn: str, redis_broker: Any) -> AsyncIterator[_Lab]:
             for schema in (van_schema, ht_schema):
                 await setup_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
                 await apply_pending(setup_conn, schema=schema)
-            # Convert ONE engine. Retentions are long enough that the
+            # Convert one engine. Retentions are long enough that the
             # seeded population is safe even if a policy ran (they are
             # also deferred 10 years — the hypertables suite's idiom).
             settings = WorkerSettings.load_from_dict(
@@ -693,32 +693,32 @@ _PREV_LINK_RE = re.compile(
 # markup is an en-dash; the match tolerates the span tag Alpine replaces).
 _SHOWING_RE = re.compile(r"Showing(?:\s|<span[^>]*>)+1\u2013(\d+) of ([\d,]+)</span> results")
 # Relative/absolute timestamps the Jinja filters render from the database
-# clock: identical across the two engines for FIXED seeded stamps, but
+# clock: identical across the two engines for fixed seeded stamps, but
 # now()-seeded stamps (worker heartbeats) can cross a humanize boundary
 # between two requests milliseconds apart. Stripped before any full-HTML
 # differential so the comparison tests structure, not wall-clock prose.
 # The number belongs to the phrase: `\bdays? ago\b` alone strips only the
-# words and LEAVES the bare digit, so "4 days ago" vs "5 days ago" (one
+# words and leaves the bare digit, so "4 days ago" vs "5 days ago" (one
 # engine's render straddled the day tick - observed on the coverage leg,
-# run 36622474331, where instrumentation slows each render to seconds)
+# where instrumentation slows each render to seconds)
 # still disagreed as "4 …" vs "5 …". Strip the quantified phrase whole,
 # past and future; the article forms ("a day ago") too.
 # The relative/absolute timestamps two requests milliseconds apart can
-# disagree on: the humanize prose AND the duration cells. Both are
+# disagree on: the humanize prose and the duration cells. Both are
 # rendered from a clock at request time — ``timestamp_cell``'s time_ago
 # filter (naturaltime) and the job table's duration cell, which renders
 # ``running_for_ms`` — "elapsed since started_at, measured against the
 # database clock at render time" (job_table.html) — through duration_fmt's
 # compact arms ("226h 42m", "3m 42s", "45.0s", "150ms"). The duration cell
-# is the missing form that re-flaked the differentials (run 36658651637:
-# "the engines disagree on served fragment with the new row: 226h 42m vs
-# 226h 41m" — the two engines' sequential fetches straddled a minute
-# tick); _VOLATILE_RE's prose forms never covered duration_fmt's output.
+# is the missing form that re-flaked the differentials (the two engines'
+# sequential fetches straddled a minute tick and disagreed on the served
+# fragment: "226h 42m vs
+# 226h 41m"); _VOLATILE_RE's prose forms never covered duration_fmt's output.
 # Stripped before any differential so the comparison tests structure, not
 # wall-clock prose. The number belongs to the unit: the phrase is
 # stripped whole. The paired forms (d h / h m / m s) are the shared
 # _humantime cascade's shapes (humanize_wait on the insights surfaces);
-# bare "13m"/"45s" are NOT stripped - no diffed surface renders them
+# bare "13m"/"45s" are not stripped - no diffed surface renders them
 # volatile, and the bare digits are too promiscuous in real prose.
 _VOLATILE_RE = re.compile(
     r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?"
@@ -750,7 +750,7 @@ class TestTheVolatileStripStripsWholePhrases:
             # duration_fmt's four arms (job_card.html): the running row's
             # live "running_for_ms" cell is measured against the database
             # clock at render time — the forms the two-engine differentials
-            # flaked on (run 36658651637).
+            # flake on at a minute-tick straddle.
             "150ms",
             "3.5s",
             "3m 42s",
@@ -821,7 +821,7 @@ def _expected_live_order(rows: list[_JobRow]) -> list[str]:
 
 
 def _expected_archived_order(rows: list[_JobRow]) -> list[str]:
-    """The archived tab's ORDER BY (finished_at DESC NULLS LAST, id DESC)
+    """The archived tab's ORDER BY (finished_at DESC NULLS last, id DESC)
     — the live ordering JobOrdering renders, NULLs absolute at the end."""
     non_null = sorted(
         (r for r in rows if r.finished_at is not None),
@@ -879,8 +879,8 @@ async def test_jobs_list_live_tab_is_row_identical_and_ordered(lab: _Lab) -> Non
 
 
 async def test_jobs_list_archived_tab_is_row_identical_on_hypertable(lab: _Lab) -> None:
-    """Archived tab: the hypertable jobs_archive serves the SAME rows in
-    the SAME order as vanilla, through the finished_at-NULLS-LAST keyset
+    """Archived tab: the hypertable jobs_archive serves the same rows in
+    the same order as vanilla, through the finished_at-NULLS-last keyset
     — the ordering whose seam the widened (id, finished_at) unique now
     underwrites."""
     van = await _html(lab.vanilla.app, "/admin/jobs?tab=archived")
@@ -892,7 +892,7 @@ async def test_jobs_list_archived_tab_is_row_identical_on_hypertable(lab: _Lab) 
     _diff("jobs archived walk", full_van, full_ht)
     assert full_ht == _expected_archived_order(lab.plan.archive)
     assert len(full_ht) == 55  # Why: the seed's exact archive population.
-    # The oldest finished_at trails the walk (the NULLS-LAST end is empty:
+    # The oldest finished_at trails the walk (the nulls-last end is empty:
     # no seeded row lacks a finished_at — see the divergence pin below).
     oldest = min(lab.plan.archive, key=lambda r: (r.finished_at, r.id))
     assert full_ht[-1] == str(oldest.id)
@@ -901,7 +901,7 @@ async def test_jobs_list_archived_tab_is_row_identical_on_hypertable(lab: _Lab) 
 async def test_jobs_list_filters_are_row_identical_on_hypertable(lab: _Lab) -> None:
     """Every filter shape: status, queue, actor, tag, text search,
     identity_key, absolute time brackets, and the relative window —
-    walked to exhaustion on BOTH engines and compared to the oracle."""
+    walked to exhaustion on both engines and compared to the oracle."""
     plan = lab.plan
     bulk_failed = next(r for r in plan.bulk if r.status == "failed")
 
@@ -924,9 +924,9 @@ async def test_jobs_list_filters_are_row_identical_on_hypertable(lab: _Lab) -> N
         ("/admin/jobs?tab=live&actor=bulk", _expected_live_order(plan.bulk), True),
         # tag overlap filter (tags && text[]).
         ("/admin/jobs?tab=live&tags=alpha", _expected_live_order(_census_rows(plan)), True),
-        # text search: a fragment of the id's RANDOM tail (UUIDv7 ids share
+        # text search: a fragment of the id's random tail (UUIDv7 ids share
         # their clock prefix, so the head would match every row) matches
-        # exactly one job (id::text ILIKE).
+        # exactly one job (id::text ilike).
         (
             f"/admin/jobs?tab=live&search={str(bulk_failed.id).split('-')[-1][:12]}",
             [str(bulk_failed.id)],
@@ -934,8 +934,8 @@ async def test_jobs_list_filters_are_row_identical_on_hypertable(lab: _Lab) -> N
         ),
         # identity_key exact filter.
         ("/admin/jobs?tab=live&identity_key=ik-running", [str(plan.census["running"])], True),
-        # absolute from/to window: the list page forms a window ONLY
-        # when BOTH bounds are present (a lone bound is ignored by
+        # absolute from/to window: the list page forms a window only
+        # when both bounds are present (a lone bound is ignored by
         # _parse_time_range — pre-existing page semantics, pinned here
         # because the differential must exercise the real shapes). The
         # windows partition the seeds: bulk inside, census before.
@@ -946,7 +946,7 @@ async def test_jobs_list_filters_are_row_identical_on_hypertable(lab: _Lab) -> N
             False,
         ),
         (
-            # The upper bound is INCLUSIVE (created_at <= time_to), so it
+            # The upper bound is inclusive (created_at <= time_to), so it
             # sits one second below _BASE — bulk[0] is created exactly at
             # _BASE and must stay out of the census window.
             f"/admin/jobs?tab=live&time_from={quote_plus((_BASE - timedelta(days=1)).isoformat())}"
@@ -955,7 +955,7 @@ async def test_jobs_list_filters_are_row_identical_on_hypertable(lab: _Lab) -> N
             False,
         ),
         # relative window: every seeded row is ~6 days old, so "24h" is
-        # the empty result on BOTH engines (the clock_timestamp() bound).
+        # the empty result on both engines (the clock_timestamp() bound).
         ("/admin/jobs?tab=live&time_range=24h", [], True),
     ]
 
@@ -964,12 +964,12 @@ async def test_jobs_list_filters_are_row_identical_on_hypertable(lab: _Lab) -> N
             van = await _walk(lab.vanilla.app, path)
             ht = await _walk(lab.ht.app, path)
         else:
-            # Page 1 only: the pagination macro (filter_qs) does NOT
+            # Page 1 only: the pagination macro (filter_qs) does not
             # carry time_from/time_to, so the walk's page turns silently
             # drop the window — a pre-existing UI quirk this differential
             # refuses to launder (the window applies to the queried page;
             # the engines agree page-by-page either way). The expectation
-            # is the window's TOP PAGE, not the whole window.
+            # is the window's top page, not the whole window.
             van = _ordered_job_ids(await _html(lab.vanilla.app, path))
             ht = _ordered_job_ids(await _html(lab.ht.app, path))
             expected = expected[:50]
@@ -1023,7 +1023,7 @@ async def test_history_union_walk_is_row_identical_and_correct(lab: _Lab) -> Non
 
     # The newest archive row leads the walk. Every seeded row carries a
     # finished_at on purpose: the walk's NULL-sentinel range is
-    # UNREACHABLE on hypertable mode (the partition column is NOT NULL),
+    # unreachable on hypertable mode (the partition column is not NULL),
     # pinned in test_null_partition_key_is_the_documented_divergence.
     newest = max(lab.plan.archive, key=lambda r: (r.finished_at, r.id))
     assert full_ht[0] == str(newest.id)
@@ -1090,14 +1090,14 @@ async def test_parentless_archive_attempts_are_documented_not_fatal(lab: _Lab) -
     impossible on vanilla PG. Pinned here, on the real converted schema:
     the parentless row CAN be planted (and cannot be, on vanilla), the
     history walk and the stats aggregate neither break nor count it, and
-    the archived job detail page still renders its OWN attempts."""
+    the archived job detail page still renders its own attempts."""
     stats_before = await _json(lab.ht.app, "/admin/api/history/stats")
     history_before = await _walk(lab.ht.app, "/admin/history")
 
-    orphan_parent = new_job_id()  # deliberately NEVER seeded as a job row
+    orphan_parent = new_job_id()  # deliberately never seeded as a job row
     conn = await asyncpg.connect(lab.dsn)
     try:
-        # Proof of the dropped FK: the same insert is IMPOSSIBLE on the
+        # Proof of the dropped FK: the same insert is impossible on the
         # vanilla engine (FK violation) and possible on the hypertable.
         with pytest.raises(asyncpg.ForeignKeyViolationError):
             await conn.execute(
@@ -1129,7 +1129,7 @@ async def test_parentless_archive_attempts_are_documented_not_fatal(lab: _Lab) -
         "a parentless attempt-archive row must not disturb the history walk"
     )
 
-    # The detail page for a REAL archived job still renders its attempts.
+    # The detail page for a real archived job still renders its attempts.
     parent = lab.plan.archive_attempt_parents[0]
     ht_detail = await _html(lab.ht.app, f"/admin/jobs/{parent}")
     van_detail = await _html(lab.vanilla.app, f"/admin/jobs/{parent}")
@@ -1147,8 +1147,8 @@ async def test_archived_detail_events_match_the_live_detail_events(lab: _Lab) ->
     """Issue #337: the detail route's archive arm rendered ``events = []``
     without reading the ledger at all, so an archived job whose
     ``job_events`` rows are intact claimed "No events recorded". Pinned
-    differentially: the SAME job's event log renders identically through
-    the live arm and the archive arm, on BOTH engines (on the converted
+    differentially: the same job's event log renders identically through
+    the live arm and the archive arm, on both engines (on the converted
     one ``job_events`` is the hypertable the archive arm must read)."""
     now = datetime.now(UTC)
 
@@ -1314,19 +1314,19 @@ async def test_null_partition_key_is_the_documented_divergence(
     lab: _Lab,
     ts_dsn: str,
 ) -> None:
-    """THE one row shape the hypertable mode cannot hold: a NULL
+    """The one row shape the hypertable mode cannot hold: a NULL
     ``finished_at`` archive row — the row the history walk's
     ``__NULL__`` sentinel cursor exists to describe.
 
-    TimescaleDB makes the partition column NOT NULL (``finished_at`` for
+    TimescaleDB makes the partition column not NULL (``finished_at`` for
     ``jobs_archive``). Pinned in both directions, against the real
     engines:
 
-    * the SAME insert vanilla PG accepts is rejected on the converted
+    * the same insert vanilla PG accepts is rejected on the converted
       schema with ``NotNullViolationError`` — the DML-time half;
     * ``enable_hypertables`` over an archive that ALREADY holds such a
       row refuses LOUDLY at migrate time with the pre-flight census
-      refusal — the row count and the remediation, BEFORE any DDL
+      refusal — the row count and the remediation, before any DDL
       (never silently dropping or silently converting, and never the
       unguarded shape: a NotNullViolationError mid-``migrate_data`` that
       stranded a half-converted schema with the archive's primary key
@@ -1359,7 +1359,7 @@ async def test_null_partition_key_is_the_documented_divergence(
         finally:
             await conn.close()
 
-    # DML-time half: the same insert, opposite outcomes, back to back.
+    # dml-time half: the same insert, opposite outcomes, back to back.
     with pytest.raises(asyncpg.NotNullViolationError, match="finished_at"):
         await _insert_null_finished(lab.ht.schema, new_job_id())
     vanilla_row = new_job_id()
@@ -1374,7 +1374,7 @@ async def test_null_partition_key_is_the_documented_divergence(
     finally:
         await conn.close()
 
-    # Migrate-time half: conversion of an archive ALREADY holding the row
+    # Migrate-time half: conversion of an archive already holding the row
     # must fail loudly, on a fresh schema on the shared container.
     schema = f"tsadm_null_{new_uuid().hex[:10]}"
     setup = await asyncpg.connect(ts_dsn)
@@ -1391,7 +1391,7 @@ async def test_null_partition_key_is_the_documented_divergence(
         )
         with pytest.raises(TimescaleDBUnavailableError, match="finished_at"):
             await enable_hypertables(setup, schema=schema, settings=settings)
-        # The refusal is loud but clean: the census fires BEFORE any DDL,
+        # The refusal is loud but clean: the census fires before any DDL,
         # so the schema stays vanilla and the row stays put (nothing
         # half-applied anywhere — the unguarded failure leaves the archive's
         # primary key dropped and job_events already converted).
@@ -1449,10 +1449,10 @@ async def _stream_until(
         "client": ("testclient", 50000),
         "server": ("testserver", 80),
     }
-    # The leak baseline: every task alive BEFORE the app task exists. The
+    # The leak baseline: every task alive before the app task exists. The
     # caller's own machinery (a repeated notifier/publisher task, the
     # session-scoped pool workers) is in it, so the drain below can never
-    # sweep a task the caller owns - only tasks the STREAM minted.
+    # sweep a task the caller owns - only tasks the stream minted.
     baseline = set(asyncio.all_tasks())
     messages: asyncio.Queue[Any] = asyncio.Queue()
     disconnected = asyncio.Event()
@@ -1512,7 +1512,7 @@ async def _drain_stream_tail(baseline: set[asyncio.Task[object]]) -> None:
     load, _listen's shield detaches the release cleanup
     (remove_listener / UNLISTEN / pool.release) inside it. A task minted
     by the test but left to the loop is the hygiene guard's definition of
-    a leak, and the guard is right: await the tail HERE, keyed to its
+    a leak, and the guard is right: await the tail here, keyed to its
     actual completion, not to a hope. The caller's own machinery (a
     repeated notifier/publisher task, the session-scoped pool workers) is
     in *baseline*, so only tasks the STREAM minted are drained.
@@ -1669,7 +1669,7 @@ async def test_progress_sse_bridge_streams_on_converted_schema(lab: _Lab) -> Non
     stop = asyncio.Event()
 
     async def _publish_repeatedly() -> None:
-        # The bridge subscribes BEFORE its snapshot read, but the test
+        # The bridge subscribes before its snapshot read, but the test
         # cannot observe when the subscription landed; repeating gives it
         # a bounded, deterministic window. Pub/sub does not buffer, so a
         # single pre-subscription publish would be silently lost.
@@ -1691,16 +1691,16 @@ async def test_progress_sse_bridge_streams_on_converted_schema(lab: _Lab) -> Non
 
     # The first frame is the PG snapshot read from `jobs` (the
     # un-converted parent of the hypertable family); the live pub/sub
-    # envelope is forwarded VERBATIM once it arrives.
+    # envelope is forwarded verbatim once it arrives.
     assert b"event: progress" in body
-    # The snapshot data is the jsonb TEXT as PG wrote it (jsonb's own
+    # The snapshot data is the jsonb text as PG wrote it (jsonb's own
     # serialization carries the space after the colon) passed through
     # _serialize_progress_state verbatim.
     assert b'"pct": 42' in body, body[:400]
     assert envelope.encode() in body, "the live envelope must be forwarded verbatim"
 
     # Terminal snapshot: snapshot frame, then done, then the stream ends
-    # BY ITSELF (no needle needed — the harness reads to natural end).
+    # by itself (no needle needed — the harness reads to natural end).
     terminal = next(r for r in lab.plan.bulk if r.status == "succeeded")
     body = await _stream_until(
         lab.ht_redis_app, f"/admin/jobs/api/job/{terminal.id}/progress/stream", b"event: done"
@@ -1817,11 +1817,11 @@ async def test_ready_probe_statement_runs_on_converted_schema(lab: _Lab) -> None
 
 
 def test_watchdog_machinery_is_schema_agnostic() -> None:
-    """The watchdog/loop-stall/transient-error machinery must issue NO
+    """The watchdog/loop-stall/transient-error machinery must issue no
     schema-interpolated SQL at all — its tally reaches the admin UI
     through ``workers.metadata``, written by the heartbeat, never by a
     direct query against the (converted) job tables. Pinned as a source
-    contract: no FROM/INTO/UPDATE/JOIN against ``{schema}`` anywhere in
+    contract: no FROM/into/UPDATE/JOIN against ``{schema}`` anywhere in
     ``_watchdog.py`` or ``_transient.py``."""
     worker_dir = Path(__import__("taskq.worker", fromlist=["__path__"]).__path__[0])
     sql_shape = re.compile(r"\b(?:FROM|INTO|UPDATE|JOIN)\b\s*[\"']?\{schema\}", re.IGNORECASE)
@@ -1867,18 +1867,18 @@ async def test_watchdog_stall_tally_renders_on_converted_schema(lab: _Lab) -> No
 # Route census (every ``@router.post`` in src/taskq/web/admin): job
 # cancel (jobs.py), job retry + schedule enable/disable/skip/run-now +
 # rate-limit reset (ops.py), actor deregister (actors.py). The admin
-# surface has NO bulk-cancel, NO actor-config-edit, and NO queue
+# surface has no bulk-cancel, no actor-config-edit, and no queue
 # set-mode/set-max-concurrent routes — there is nothing to differential
 # on those names. The rate-limit reset targets ``rate_limit_buckets``
 # (never a converted table) and needs a mounted registry — out of this
 # module's scope. The converted-schema-relevant mutation kinds are
-# proven below: each test drives the SAME action against the SAME
-# freshly-planted twin on BOTH engines through the real router + the
+# proven below: each test drives the same action against the same
+# freshly-planted twin on both engines through the real router + the
 # real ``PostgresBackend``, then diffs the resulting job row, the
 # audit-trail rows, and the re-rendered page.
 #
 # ORDER-INDEPENDENCE (pytest-randomly runs this module shuffled): every
-# test here plants its OWN twin rows and removes every residue in a
+# test here plants its own twin rows and removes every residue in a
 # ``finally`` — jobs, events, attempts, schedules, actor_config, and
 # audit rows — because the module's earlier exact-population
 # assertions (63 live rows, 115 history rows, the seed-plan walks) hold
@@ -2011,7 +2011,7 @@ async def _plant_live_jobs(lab: _Lab, specs: list[dict[str, Any]]) -> list[uuid.
 
 async def _cleanup_live_jobs(lab: _Lab, ids: list[uuid.UUID]) -> None:
     """Remove planted live jobs and everything hanging off them (events,
-    attempts) from BOTH engines — job_events carries the FK, so children
+    attempts) from both engines — job_events carries the FK, so children
     first."""
     if not ids:
         return
@@ -2221,7 +2221,7 @@ async def test_retry_action_lands_identically_on_hypertables(lab: _Lab) -> None:
 async def test_cancel_action_lands_identically_on_hypertables(lab: _Lab) -> None:
     """Operator question: does Cancel on a scheduled job terminalize the
     row the same way on hypertables, and does the cancel_request event —
-    with the operator's reason AND identity folded into its detail jsonb
+    with the operator's reason and identity folded into its detail jsonb
     — land byte-identically in the converted ``job_events`` hypertable?"""
     ids = await _plant_live_jobs(lab, _planted_job_specs()["cancellable"])
     jid = ids[0]
@@ -2242,9 +2242,9 @@ async def test_cancel_action_lands_identically_on_hypertables(lab: _Lab) -> None
 
         van = await _job_row(lab.vanilla, jid)
         ht = await _job_row(lab.ht, jid)
-        # The pending/scheduled cancel arm terminalizes DIRECTLY (status
+        # The pending/scheduled cancel arm terminalizes directly (status
         # 'cancelled' from the cancel_request statement's own arm) — it
-        # does NOT stamp cancel_requested_at, which is the RUNNING arm's
+        # does not stamp cancel_requested_at, which is the running arm's
         # in-flight marker. The db-clock stamp (finished_at) is compared
         # as not-NULL; everything else is exact.
         keys = ("status", "cancel_phase", "error_class", "error_message")
@@ -2255,7 +2255,7 @@ async def test_cancel_action_lands_identically_on_hypertables(lab: _Lab) -> None
 
         # The events: cancel_request (with reason + folded principal) and
         # the state_change — dict-equal across engines, written into the
-        # hypertable's widened-PK (id, occurred_at) shape.
+        # hypertable's widened-pk (id, occurred_at) shape.
         van_events = await _job_events_of_kind(lab.vanilla, jid, "cancel_request")
         ht_events = await _job_events_of_kind(lab.ht, jid, "cancel_request")
         _diff("cancel_request events", van_events, ht_events)
@@ -2288,14 +2288,14 @@ async def test_cancel_action_lands_identically_on_hypertables(lab: _Lab) -> None
 async def test_mutation_refusals_render_identically_on_hypertables(lab: _Lab) -> None:
     """Operator question: when the UI refuses me (retry a running job,
     cancel a terminal one, act on a job that does not exist), is the
-    refusal the SAME status and the SAME body on hypertables — and does
-    a refused action write NO audit row on either engine?"""
+    refusal the same status and the same body on hypertables — and does
+    a refused action write no audit row on either engine?"""
     specs = _planted_job_specs()
     ids = await _plant_live_jobs(lab, [*specs["running"], *specs["terminal"]])
     running, done = ids[0], ids[1]
     ghost = new_job_id()
     try:
-        # Retry a RUNNING job: the one exclusion (a live attempt must
+        # Retry a running job: the one exclusion (a live attempt must
         # not race its own terminal write) — 409, identical body.
         resp_v = await _action_post(
             lab.vanilla_actions, "/admin/jobs", f"/admin/jobs/{running}/retry"
@@ -2304,7 +2304,7 @@ async def test_mutation_refusals_render_identically_on_hypertables(lab: _Lab) ->
         assert resp_v.status_code == resp_h.status_code == 409
         _diff("retry-running refusal body", resp_v.text, resp_h.text)
 
-        # Cancel an already-terminal job: 409, identical body, and NO
+        # Cancel an already-terminal job: 409, identical body, and no
         # audit row for the refused target on either engine.
         resp_v = await _action_post(
             lab.vanilla_actions, "/admin/jobs", f"/admin/jobs/{done}/cancel"
@@ -2343,13 +2343,13 @@ async def _plant_schedule(lab: _Lab, actor: str) -> uuid.UUID:
                 VALUES ($1, $2, '*/5 * * * *', 'UTC', $3, true)""",
                 sid,
                 actor,
-                # A realistic next fire, ONE HOUR ahead of the wall clock:
-                # the skip handler recomputes forward from THIS stamp in
+                # A realistic next fire, one hour ahead of the wall clock:
+                # the skip handler recomputes forward from this stamp in
                 # bounded 1000-step cron arithmetic (a sentinel-far one
                 # overflows; a past one exhausts the budget -> 400). This
                 # stamp is the skip's starting point only — the
                 # differential never compares it, it compares the row the
-                # skip WROTE against the db clock.
+                # skip wrote against the db clock.
                 datetime.now(UTC) + timedelta(hours=1),
             )
     finally:
@@ -2419,7 +2419,7 @@ async def test_schedule_enable_disable_skip_lands_identically(lab: _Lab) -> None
         # Skip: next_fire_at is computed from the database clock (the DB
         # is the arbiter; the two POSTs cannot be compared row-exact for
         # a now()-derived stamp) — so the differential asserts the row
-        # MOVED past the real clock on BOTH engines and that each
+        # moved past the real clock on both engines and that each
         # engine's audit detail names exactly the row value it wrote.
         resp_v = await _action_post(
             lab.vanilla_actions, "/admin/schedules", f"/admin/schedules/{sid_text}/skip"
@@ -2449,25 +2449,25 @@ async def test_schedule_enable_disable_skip_lands_identically(lab: _Lab) -> None
 
 
 async def test_schedule_run_now_enqueues_identically(lab: _Lab) -> None:
-    """Operator question: does Run-now on a schedule fire the SAME job —
+    """Operator question: does Run-now on a schedule fire the same job —
     same actor, queue, payload, retry curve, and the ``cron_schedule_id``
     provenance stamp — through the converted schema, with the audit row
     naming the enqueued job id on both engines?
 
-    The two fires use the SAME schedule id on both engines (per-engine
+    The two fires use the same schedule id on both engines (per-engine
     twins would differ in id), so the process-global run-now cooldown
     (ops.py's ``_last_schedule_run`` map, keyed by schedule id, shared
     by every app in this process) is waited out between the two POSTs —
     the same defer-to-the-clock determinism the policy fixtures
     apply."""
-    # Run-now fires the PLAN's own schedule (actor 'bulk_actor'): the
+    # Run-now fires the plan's own schedule (actor 'bulk_actor'): the
     # (actor, name) unique admits one schedule per actor, so a fresh
     # twin schedule for 'bulk_actor' would collide with the seeded one.
     sid = lab.plan.schedule_id
     sid_text = str(sid)
     enqueued: list[uuid.UUID] = []
     try:
-        # Run-now resolves the actor's STORED config: seed the twin
+        # Run-now resolves the actor's stored config: seed the twin
         # actor_config row identically on both engines.
         conn = await asyncpg.connect(lab.dsn)
         try:
@@ -2504,7 +2504,7 @@ async def test_schedule_run_now_enqueues_identically(lab: _Lab) -> None:
         assert ht_row
         enqueued = [van_job_id, ht_job_id]
 
-        # The resulting rows: everything the OPERATOR set is dict-equal
+        # The resulting rows: everything the operator set is dict-equal
         # (ids and the db-clock stamps differ by construction — the
         # handler generates the job id and the server stamps the
         # clocks). The provenance metadata carries the same schedule id
@@ -2555,7 +2555,7 @@ async def test_schedule_run_now_enqueues_identically(lab: _Lab) -> None:
             assert str(jid) in html, "the run-now job must render on the live tab"
     finally:
         await _cleanup_live_jobs(lab, enqueued)
-        # NOT the plan's schedule — only the actor_config twin this test
+        # not the plan's schedule — only the actor_config twin this test
         # planted and the audit rows this fire wrote.
         await _cleanup_schedules_and_actor(lab, [], "bulk_actor")
         await _cleanup_audit(lab, target_type="schedule", target_ids=[sid_text])
@@ -2669,7 +2669,7 @@ async def test_job_detail_renders_attempts_spanning_the_parentless_window(
     page still render the FULL attempt history, honestly counted,
     without breaking?"""
     job = lab.plan.archive[5]  # inside the seeded attempts population
-    orphan = new_job_id()  # deliberately NEVER seeded as a job row
+    orphan = new_job_id()  # deliberately never seeded as a job row
     conn = await asyncpg.connect(ts_dsn)
     try:
         # Attempt 2 for the job, started 31 days before the seed base —
@@ -2686,8 +2686,8 @@ async def test_job_detail_renders_attempts_spanning_the_parentless_window(
                 _FAR_PAST + timedelta(minutes=4),
             )
         # The parentless-attempt direction, pinned both ways: vanilla
-        # REFUSES (the FK stands there), the hypertable accepts (the FK
-        # is dropped) — and the orphan row must not disturb ANY job page.
+        # refuses (the FK stands there), the hypertable accepts (the FK
+        # is dropped) — and the orphan row must not disturb any job page.
         with pytest.raises(asyncpg.ForeignKeyViolationError):
             await conn.execute(
                 f"""INSERT INTO "{lab.vanilla.schema}".job_attempts_archive
@@ -2714,11 +2714,11 @@ async def test_job_detail_renders_attempts_spanning_the_parentless_window(
         _diff("spanning-attempts detail page", _stable_html(van_html), _stable_html(ht_html))
         assert "Attempt History" in ht_html
         # Honest count: the aged attempt renders, exactly once — the
-        # page served BOTH attempts (the aged-chunk one and the
+        # page served both attempts (the aged-chunk one and the
         # fresh-chunk one).
         assert ht_html.count("FarChunkProbe") == 1
 
-        # The parentless attempt's own "job page" is a clean 404 on BOTH
+        # The parentless attempt's own "job page" is a clean 404 on both
         # engines (the parent row does not exist there either),
         # identical.
         resp_v = await _get(lab.vanilla.app, f"/admin/jobs/{orphan}")
@@ -2828,7 +2828,7 @@ async def _plant_boundary_population(
 async def test_archive_keyset_walk_is_exact_across_chunk_boundaries(lab: _Lab) -> None:
     """Operator question: with ``jobs_archive`` chunked on the very
     column the archive tab sorts and keys on, does the keyset walk cross
-    the chunk seams with NO skipped rows and NO duplicates — the
+    the chunk seams with no skipped rows and no duplicates — the
     walk-oracle, over a population whose seams are real chunks?"""
     planted = _boundary_rows()
     conn = await asyncpg.connect(lab.dsn)
@@ -2858,7 +2858,7 @@ async def test_archive_walk_carries_the_time_window_through_page_turns(lab: _Lab
     ``time_from``/``time_to`` window on page turn (the pagination
     macro's known gap) — when the window IS carried through the cursor
     URLs the server honors, does the keyset seam survive the filter
-    across chunk boundaries, with chunk exclusion eating NO in-window
+    across chunk boundaries, with chunk exclusion eating no in-window
     row? Walked to exhaustion on both engines against the Python
     oracle, plus the count endpoint with the same windows."""
     planted = _boundary_rows()
@@ -2878,7 +2878,7 @@ async def test_archive_walk_carries_the_time_window_through_page_turns(lab: _Lab
         async def _windowed_walk(
             engine: _Engine, time_from: datetime, time_to: datetime
         ) -> list[str]:
-            """Walk the archive tab carrying the window through EVERY
+            """Walk the archive tab carrying the window through every
             page turn: each turn's cursor is built from the row the
             ordering just served (the exact values the rendered Next
             link would carry, had the macro not dropped the window)."""
@@ -2915,7 +2915,7 @@ async def test_archive_walk_carries_the_time_window_through_page_turns(lab: _Lab
             # population (90 rows) runs past one full page -> a real
             # page turn with the seam inside the chunk neighbourhood.
             (datetime(2026, 9, 22, tzinfo=UTC), datetime(2026, 9, 25, tzinfo=UTC)),
-            # Ends INSIDE a chunk (a window boundary that prunes nothing
+            # Ends inside a chunk (a window boundary that prunes nothing
             # the keyset still has to serve); 15 rows, one page.
             (
                 datetime(2026, 9, 23, 12, 0, 0, tzinfo=UTC),
@@ -2933,7 +2933,7 @@ async def test_archive_walk_carries_the_time_window_through_page_turns(lab: _Lab
                 assert len(van) > 50, "the first window must force at least one page turn"
 
             # The count endpoint with the same window: chunk exclusion
-            # must not eat in-window rows — the count IS the walk's
+            # must not eat in-window rows — the count is the walk's
             # length.
             count_path = (
                 f"/admin/jobs/count?tab=archived&time_from={quote_plus(time_from.isoformat())}"

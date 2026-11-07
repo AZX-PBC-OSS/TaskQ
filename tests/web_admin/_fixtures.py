@@ -79,9 +79,26 @@ def structlog_capture() -> Generator[list[structlog.types.EventDict], None, None
         yield logs
 
 
+# ── The render tier's named page scripts ────────────────────────────────
+#
+# The render-only tests (nav structure, table headers, pagination bars,
+# styling) drive pages that legitimately query: the render fixture scripts
+# each page's own list/count statement once, centrally, with the empty-page
+# answer — a named script per page, never a blind default (the fail-closed
+# rule). A render test needing rows scripts the page's fragment with them;
+# the page's happy-path data belongs to the real-PG packs
+# (tests/test_web_admin_integration.py, tests/test_web_admin_actors.py,
+# tests/test_insights.py, tests/web_admin/test_batch_detail_pg.py).
+
+
 @pytest.fixture()
 def stub_pool() -> _StubPool:
-    """Provide a fresh _StubPool instance for each test."""
+    """Provide a fresh _StubPool instance for each test.
+
+    The pool carries the render tier's own page scripts (the stub module's
+    :data:`RENDER_ONLY_SCRIPTS`): the render-only tests' pages answer
+    empty through NAMED scripts, never blind defaults. A test scripting
+    its own rows mutates ``stub_pool.scripts``."""
     return _StubPool()
 
 

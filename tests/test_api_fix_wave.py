@@ -2,7 +2,7 @@
 
 F3 - the trigger app answered THREE success shapes (200 {"redirect",
      "job_id", "has_progress"}, 202 {"result_url", "job_id"}) and raw
-     text on some 4xxs (a bare-text 404 "unknown actor: x"). ONE success
+     text on some 4xxs (a bare-text 404 "unknown actor: x"). one success
      envelope now: 201/202 {"job_id", "url"}; every 4xx is JSON with the
      FastAPI {"detail": ...} shape; validation errors render as one
      compact line, not pydantic's multi-line dump.
@@ -197,7 +197,7 @@ def test_sse_reconnect_on_a_terminal_row_emits_done_immediately() -> None:
             is_terminal=True,
             progress_seq=5,
             progress_data="{}",
-            resolved_last_event_id=10,  # the client is AT or past the row
+            resolved_last_event_id=10,  # the client is at or past the row
             heartbeat_secs=3600,  # a keepalive would take an hour
         )
         return [event async for event in gen]

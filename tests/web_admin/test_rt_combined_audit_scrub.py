@@ -30,9 +30,9 @@ from taskq.web.admin._audit import ANONYMOUS_SUBJECT, record_admin_action_safe
 pytestmark = [pytest.mark.fastapi]
 
 # The canaries the _redact_exc suite uses the same shapes for: a bearer
-# header value, a JWT, and an AWS presigned-URL signature (the #413 AWS
-# pass masks the SIGNATURE parameter -- the credential; an AccessKeyId is
-# an identifier, deliberately out of scope, so the AWS canary carries a
+# header value, a JWT, and an aws presigned-URL signature (the #413 aws
+# pass masks the signature parameter -- the credential; an AccessKeyId is
+# an identifier, deliberately out of scope, so the aws canary carries a
 # signature value, per the contract _AWS_SIG_RE documents).
 _BEARER = "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdef1234567890"
 _JWT = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJvcGVuc3ViamVjdCI6MTIzfQ.SflKxwRJSMeKKF2QT4fwpMeJ"

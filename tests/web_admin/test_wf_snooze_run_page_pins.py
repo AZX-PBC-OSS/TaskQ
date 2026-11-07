@@ -1,12 +1,12 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE SNOOZED STEP'S ADMIN FACE — the run page answers "why is this step
+"""The snoozed step's admin face — the run page answers "why is this step
 sitting here".
 
 The wf snooze/RetryAfter disposition (``tests/test_wf_snooze_pins.py``)
 lands the node row ``scheduled`` at the delay with the deferral stamp on
 the row's metadata; the run page's usefulness bar: the operator SEES the
 snoozed state where the run's steps show — the signal that deferred it,
-the NEXT FIRE TIME, and the node's deferral count — rendered through the
+the next FIRE TIME, and the node's deferral count — rendered through the
 page's existing patterns (the status chip's cell, the SSE frame's live
 patch). A step that never deferred renders no line (the defined absent
 face), and a node that leaves the snoozed state loses the line (the
@@ -42,7 +42,7 @@ MODULE_NAME = "wf_snooze_admin_flows"
 
 FLOOR_S = 1.0
 
-#: The bodies' per-run snooze ledger (the MODULE-LEVEL bodies are the D1
+#: The bodies' per-run snooze ledger (the module-level bodies are the D1
 #: registry's own law — the re-registration compares the body map by
 #: identity, so per-fixture closures are the duplicate-refusal shape).
 #: Keyed by the node row's own id: every run mints fresh rows, so each
@@ -55,7 +55,7 @@ class Ingest(BaseModel):
 
 
 async def _snoozing(ctx: Any, params: Ingest) -> str:
-    """The page's subject: snoozes ONCE per run (keyed by the node row's
+    """The page's subject: snoozes once per run (keyed by the node row's
     own id), then succeeds."""
     key = str(ctx.job_id)
     if key not in _SNOOZED_ONCE:
@@ -128,7 +128,7 @@ async def test_run_page_renders_the_snoozed_state(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE USEFULNESS PIN: the run page's node table renders the snoozed
+    """The usefulness pin: the run page's node table renders the snoozed
     step's deferral line — the signal, the next fire time, the deferral
     count — so the operator knows WHY the step is sitting there; a step
     that never deferred renders no line."""
@@ -141,8 +141,7 @@ async def test_run_page_renders_the_snoozed_state(
         resp = await client.get(f"/workflows/{flow_id}")
     assert resp.status_code == 200
     html = resp.text
-    # THE DEFERRAL LINE: the signal + the next fire + the count, on the
-    # snoozing step's own row.
+    # the signal + the next fire + the count, on the snoozing step's own row.
     snooze_row = html.split('data-wf-node-row="snoozing"')[1].split("</tr>")[0]
     assert "data-wf-node-deferral" in snooze_row, (
         "the snoozed step's row must render the deferral line (the "
@@ -151,7 +150,7 @@ async def test_run_page_renders_the_snoozed_state(
     assert "Snooze" in snooze_row
     assert "snooze #" in snooze_row
     assert "next fire" in snooze_row
-    # THE ABSENT FACE: a step that never deferred renders no line.
+    # a step that never deferred renders no line.
     plain_row = html.split('data-wf-node-row="plain"')[1].split("</tr>")[0]
     assert "data-wf-node-deferral" not in plain_row
 
@@ -161,7 +160,7 @@ async def test_sse_frame_carries_the_deferral_label(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE LIVE PATCH'S DATA: the SSE snapshot's node entries carry the
+    """The live patch's data: the SSE snapshot's node entries carry the
     deferral label (the JS paints/clears the line from the frame — the
     label is the row's truth, never a stale decoration); the frame for a
     step that never deferred carries none."""
@@ -191,7 +190,7 @@ async def test_the_deferral_line_clears_when_the_step_moves_on(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE ROW'S TRUTH: past the delay the step re-claims and terminalizes
+    """The row's truth: past the delay the step re-claims and terminalizes
     — the deferral line is gone from the page (the label reads the row,
     and the row no longer sits)."""
     schema = module_pg_schema.schema_name
@@ -221,7 +220,7 @@ async def test_the_deferral_line_clears_when_the_step_moves_on(
 
 
 def test_the_deferral_label_bounds_a_hostile_signal_stamp() -> None:
-    """THE LABEL'S BOUND (C3 — H-C9's law at the deferral's face): the
+    """The label's bound (C3 — H-C9's law at the deferral's face): the
     stamp's ``signal`` is row-sourced free text (the jsonb boundary's
     other side) — a hostile 10KB signal renders TRUNCATED through the
     node panel's own ``_truncate_error_text`` limit, never a 10KB line
@@ -245,7 +244,7 @@ def test_the_deferral_label_bounds_a_hostile_signal_stamp() -> None:
         "the truncation is HONEST — the marker counts what the label no "
         "longer spells (the panel's own convention)"
     )
-    # THE CLEAN FACE UNCHANGED: a normal signal renders whole.
+    # a normal signal renders whole.
     clean = RunNode(
         key="solo",
         status="scheduled",
@@ -263,15 +262,15 @@ async def test_the_runs_list_exposes_a_pathologically_deferring_run(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE RUN-LEVEL VISIBILITY (C4): the runs LIST carries the deferral
+    """The run-level visibility (C4): the runs LIST carries the deferral
     state at the RUN level — a pathologically deferring run is visible
     from the inventory (the badge: the sitting nodes' count, the next
     fire, the deferral depth — the row's own aggregated truth), never
     only after opening the run; a clean run renders no badge."""
     schema = module_pg_schema.schema_name
     flow_id = await _seed_snoozed_run(module_pg_pool, schema)
-    # THE CLEAN RUN beside it: the same flow driven to terminal (the
-    # snoozing step defers once, then completes) — no badge.
+    # the clean run beside it: the same flow driven to terminal (the snoozing
+    # step defers once, then completes) — no badge.
     clean_compiled = sys.modules[MODULE_NAME].app.get("snooze_page_flow")  # type: ignore[attr-defined]
     clean_runner = FlowRunner(clean_compiled, module_pg_pool, schema)
     clean_id = str((await clean_runner.create_flow(input=Ingest(doc_id="d2"))).flow_id)
@@ -295,8 +294,8 @@ async def test_the_runs_list_exposes_a_pathologically_deferring_run(
         resp = await client.get("/workflows")
     assert resp.status_code == 200
     html = resp.text
-    # THE DEFERRING RUN'S ROW: the badge with the sitting count, the next
-    # fire, and the depth — the page's own badge patterns.
+    # the badge with the sitting count, the next fire, and the depth — the
+    # page's own badge patterns.
     deferring_row = next(
         (chunk for chunk in html.split("<tr>") if f"/workflows/{flow_id}" in chunk), ""
     )
@@ -309,7 +308,7 @@ async def test_the_runs_list_exposes_a_pathologically_deferring_run(
     )
     assert "next fire" in deferring_row
     assert "snooze #" in deferring_row
-    # THE CLEAN RUN'S ROW: no badge (the defined absent face).
+    # no badge (the defined absent face).
     clean_row = next(
         (chunk for chunk in html.split("<tr>") if f"/workflows/{clean_id}" in chunk), ""
     )
@@ -324,18 +323,18 @@ async def test_the_runs_list_survives_an_overflow_shaped_deferral_stamp(
     clean_pg_conn: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE CAST'S BOUND (the re-review's required residual — the 500): a
+    """The cast's bound (the re-review's required residual — the 500): a
     hostile deferral stamp whose ``attempt`` overflows the int4 domain
     (an 11-digit write) must not kill the WHOLE Workflows list — the
-    pre-fix regex admitted it and the ``::int`` cast 500'd every render.
+    unterminated regex admits it and the ``::int`` cast 500s every render.
     The page renders; the hostile stamp is refused the badge (the CASE
     degrades it to NULL — the badge's law keeps its discriminator, the
     degrade is honest: an unverifiable stamp never reads as a live
     deferral); the clean face beside it is unchanged."""
 
     schema = module_pg_schema.schema_name
-    # THE HOSTILE RUN: a seeded root + a node row resting 'scheduled' on
-    # an overflow-shaped deferral stamp (the reviewer's exact write).
+    # a seeded root + a node row resting 'scheduled' on an overflow-shaped
+    # deferral stamp (the exact hostile write).
     from tests._wf_fixtures import seed_flow, seed_running_node
 
     hostile_flow = await seed_flow(clean_pg_conn, schema, status="running")
@@ -347,7 +346,7 @@ async def test_the_runs_list_survives_an_overflow_shaped_deferral_stamp(
         '"attempt": 99999999999}}\'::jsonb WHERE id = $1',
         hostile_node,
     )
-    # THE CLEAN RUN beside it: the badge's face unchanged.
+    # the clean run beside it: the badge's face unchanged.
     clean_id = await _seed_snoozed_run(module_pg_pool, schema)
 
     app = _make_admin_app(module_pg_pool, schema)
@@ -360,8 +359,8 @@ async def test_the_runs_list_survives_an_overflow_shaped_deferral_stamp(
         f"(the cast's bound), got {resp.status_code}"
     )
     html = resp.text
-    # THE HOSTILE RUN'S ROW: no badge (the unverifiable stamp never reads
-    # as a live deferral — the honest degrade).
+    # no badge (the unverifiable stamp never reads as a live deferral — the
+    # honest degrade).
     hostile_row = next(
         (chunk for chunk in html.split("<tr>") if f"/workflows/{hostile_flow}" in chunk),
         "",
@@ -371,7 +370,7 @@ async def test_the_runs_list_survives_an_overflow_shaped_deferral_stamp(
         "the overflow-shaped stamp is refused the badge (the CASE degrades "
         "it to NULL — the badge's discriminator keeps its law)"
     )
-    # THE CLEAN FACE UNCHANGED: the real deferral still badges.
+    # the real deferral still badges.
     clean_row = next(
         (chunk for chunk in html.split("<tr>") if f"/workflows/{clean_id}" in chunk), ""
     )

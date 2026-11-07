@@ -98,24 +98,24 @@ _TCP_KEEPINTVL = 5
 _TCP_KEEPCNT = 3
 
 # No ``server_settings=`` on any TaskQ-built pool, deliberately. asyncpg
-# rides every ``server_settings`` entry in the STARTUP PACKET, and a pooler
+# rides every ``server_settings`` entry in the startup packet, and a pooler
 # that rejects unknown startup parameters (PgBouncer: "unsupported startup
 # parameter: jit") fails the connect: with a single TASKQ_PG_DSN pointed
 # at the pooler, every TaskQ-built boot connection dies there. A
 # ``jit = off`` guard is available server-side without the pooler hazard:
-# ``ALTER ROLE ... SET jit = off`` or ``?options=-c jit=off`` on the DSN
+# ``alter role ... set jit = off`` or ``?options=-c jit=off`` on the DSN
 # (docs/guides/ops.md §"Database performance knobs"), and a per-claim
 # ``SET LOCAL jit = off`` is structurally unavailable: the claim runs in
 # autocommit (one atomic UPDATE ... RETURNING), so there is no transaction
 # for a SET LOCAL to scope to. The measured win never needed the guard
 # anyway: the dispatch statement's estimate cascade is fixed at the source
-# (perf-evidence-dispatch.md: the depth oracle passes with JIT enabled on
+# (perf-evidence-dispatch.md: the depth oracle passes with jit enabled on
 # a plain connection), and that oracle
 # (tests/test_dispatch_backlog_depth_bound.py) keeps re-proving it. The
 # slot pool's inherited ``search_path``/``role`` (worker/_bootstrap.py) are
-# the one deliberate exception: they are session state a LOOP-scope
-# connection declared, must survive the release-time ``RESET ALL`` (which
-# startup-packet values do; a post-connect ``SET`` does not), and ride the
+# the one deliberate exception: they are session state a loop-scope
+# connection declared, must survive the release-time ``reset all`` (which
+# startup-packet values do; a post-connect ``set`` does not), and ride the
 # direct DSN only.
 
 # ── Transaction-mode pooler hygiene (TASKQ_PG_IS_POOLED) ───────────────
@@ -300,10 +300,10 @@ class WorkerDeps:
     # callback-aware reconnect (re-registers LISTEN + callbacks on the new
     # connection). None before the listener starts or after it stops.
     notify_reconnect_fn: Callable[[], Awaitable[None]] | None = None
-    # The INCREMENTAL AsyncExitStack from open_worker_deps, every
+    # The incremental AsyncExitStack from open_worker_deps, every
     # teardown registered after the deps shell opens (the dedicated-conn
     # / redis guards, the per-slot pool via _maybe_open_slot_pool, and
-    # hot-reload swaps via reload_credentials). It unwinds BEFORE the
+    # hot-reload swaps via reload_credentials). It unwinds before the
     # shell's own role pools at context exit; unwinding it directly
     # (mid-flight, bounded) detaches exactly those late registrations
     # and leaves the role pools serving. None before open_worker_deps
@@ -350,7 +350,7 @@ class WorkerDeps:
     # start or the ShutdownWatchdog observing shutdown_event, whichever
     # is first). Feeds the /ready shutdown_elapsed_seconds surface.
     shutdown_started_at: float | None = None
-    # Set by orchestrate_shutdown at shutdown START, BEFORE the DRAINING
+    # Set by orchestrate_shutdown at shutdown start, before the draining
     # phase touches any row - earlier and narrower than the worker-wide
     # shutdown_event, which does not fire until every phase has run. This
     # is the signal the leader runtime's election loop obeys: a stopping
@@ -501,7 +501,7 @@ class WorkerDeps:
 
         The invariant: the flag is never set without a term, and clearing
         (``stop_leading``) always drops both, no path can leave a half-set
-        role behind. A renewal does NOT move the pair; it replaces the term
+        role behind. A renewal does not move the pair; it replaces the term
         in place (the election loop assigns ``leader_term`` directly), which
         keeps the flag set while the term's trust window rolls forward.
         """
@@ -623,14 +623,14 @@ async def open_worker_deps(
             "rebuilt. Provide leader_conn_factory (or configure pg_dsn_direct)."
         )
 
-    # Track ownership of dedicated connections so the LIFO teardown guards
+    # Track ownership of dedicated connections so the lifo teardown guards
     # only close TaskQ-owned conns (caller-owned conns are left alone).
     owns_notify = conns.notify_conn is None  # DSN or factory → TaskQ-owned
     owns_leader = conns.leader_conn is None
 
     # Credential providers the TaskQ-owned factories were built over:
     # collected up front, deduped by identity (one provider may serve both
-    # the PG and the Redis role), and closed ONCE each, after every pool
+    # the PG and the Redis role), and closed once each, after every pool
     # and client built through them, never while a connection that
     # authenticates through the provider could still be opened. A factory
     # built some other way declares no provider (credential_provider_of
@@ -650,23 +650,23 @@ async def open_worker_deps(
         if provider is not None and not any(p is provider for p in providers):
             providers.append(provider)
 
-    # Two stacks, one LIFO sequence at teardown. ``base_stack`` owns the
-    # open-sequence ROLE POOLS (dispatcher / heartbeat / worker): their
+    # Two stacks, one lifo sequence at teardown. ``base_stack`` owns the
+    # open-sequence role pools (dispatcher / heartbeat / worker): their
     # lifecycle is the open_worker_deps context itself, so they close
     # when the context exits, never on a manual unwind of
     # ``deps._exit_stack``. ``incremental_stack`` (exposed as
-    # ``deps._exit_stack``) owns every teardown registered AFTER the
+    # ``deps._exit_stack``) owns every teardown registered after the
     # deps shell exists: the dedicated-conn / redis guards below, the
     # per-slot pool (``_maybe_open_slot_pool``), and every hot-reload
     # swap (``reload_credentials``), the detachable surface a caller
     # can unwind mid-flight (bounded, graceful-window-then-terminate)
     # without tearing down the role pools still serving in-flight
-    # dispatches. At context exit the incremental stack unwinds FIRST
-    # (it is entered last), then the base pools, exactly the LIFO
+    # dispatches. At context exit the incremental stack unwinds first
+    # (it is entered last), then the base pools, exactly the lifo
     # order the single-stack shape produced.
     incremental_stack = AsyncExitStack()
     async with AsyncExitStack() as base_stack, incremental_stack:
-        # Pushed FIRST so they unwind LAST: every pool and client below is
+        # Pushed first so they unwind last: every pool and client below is
         # built through these providers, so each provider's own resources
         # (the Entra ID providers' credential session) are released only
         # once nothing that authenticates through it can be opened again.
@@ -691,14 +691,14 @@ async def open_worker_deps(
         dispatcher_dsn_factory: PoolFactory | None = None
         heartbeat_dsn_factory: PoolFactory | None = None
         worker_dsn_factory: PoolFactory | None = None
-        # The dispatcher pool's per-query bound is DERIVED, not read
+        # The dispatcher pool's per-query bound is derived, not read
         # directly: the dispatcher path executes the statements whose
         # server-side lock_timeout budgets track the admission lock knobs
         # (token_bucket_lock_timeout_ms /
         # sliding_window_lock_timeout_ms - the re-derivation here keeps
         # asyncpg's command_timeout from silently truncating a widened
         # admission budget before the server-side refusal could fire).
-        # The admission acquires THEMSELVES run on the worker pool (the
+        # The admission acquires themselves run on the worker pool (the
         # pooled DSN, post-claim/pre-actor: dispatch.py hands claimed
         # jobs to the consumer with worker_pool=, and the consumer's
         # _acquire_for_actor_with_denial_retry rides that pool), whose
@@ -711,7 +711,7 @@ async def open_worker_deps(
         # (5000 ms budgets, 5.0 s floor) the bound is exactly the
         # configured value, so a deployment that sets nothing keeps
         # byte-identical behavior. The leader/notify dedicated
-        # connections keep the CONFIGURED value: no admission acquire
+        # connections keep the configured value: no admission acquire
         # runs on them, and the leader-loop staleness invariant is
         # defined against the configured timeout.
         dispatcher_pool_command_timeout = lock_budget_command_timeout_secs(
@@ -804,11 +804,11 @@ async def open_worker_deps(
             host=_dsn_host(pooled_dsn) if pooled_dsn else None,
         )
 
-        # WorkerDeps is built BEFORE the dedicated connections open, with
+        # WorkerDeps is built before the dedicated connections open, with
         # the conn/redis fields filled in as each open step completes:
-        # each TaskQ-owned dedicated conn registers its LIFO teardown
+        # each TaskQ-owned dedicated conn registers its lifo teardown
         # guard at the moment it is opened, the pools' push-at-open
-        # discipline, so a failure in any LATER open step (the LISTEN
+        # discipline, so a failure in any later open step (the LISTEN
         # execute, the leader factory, the redis factory) unwinds the
         # stack with the guard already registered instead of leaking the
         # session. The guards read through ``deps`` at teardown time
@@ -853,7 +853,7 @@ async def open_worker_deps(
             resolved_notify_factory = conns.notify_conn_factory
             # Why bounded: this open runs before any watchdog is armed, so
             # an unbounded factory call wedges worker startup with nothing
-            # to detect or recover it. reload_factory_timeout is the SAME
+            # to detect or recover it. reload_factory_timeout is the same
             # bound the reload path and the notify reconnect loop apply to
             # every factory call, not a second mechanism. The DSN path
             # below needs none of this: open_dedicated_conn applies
@@ -893,7 +893,7 @@ async def open_worker_deps(
         deps.notify_conn = notify_conn
         deps.notify_conn_factory = resolved_notify_factory
 
-        # LIFO teardown guard, registered at open and BEFORE the LISTEN
+        # lifo teardown guard, registered at open and before the LISTEN
         # execute: the guard is what closes this conn when the LISTEN
         # itself (or any later open step) fails. Reads through ``deps``
         # so a conn swapped in by reload_credentials is the one closed;
@@ -914,7 +914,7 @@ async def open_worker_deps(
         # bounded: the open runs before any watchdog is armed, and a
         # connection, factory-built, DSN-built, or caller-owned, can
         # complete its handshake and still black-hole on the execute.
-        # notify_listener_setup_timeout is the SAME bound the notify
+        # notify_listener_setup_timeout is the same bound the notify
         # listener applies to every LISTEN during setup and reconnect ,
         # not a second mechanism.
         channel = wake_channel(settings.schema_name)
@@ -943,7 +943,7 @@ async def open_worker_deps(
             resolved_leader_factory = conns.leader_conn_factory
             # Why bounded: this open runs before any watchdog is armed, so
             # an unbounded factory call wedges worker startup with nothing
-            # to detect or recover it. reload_factory_timeout is the SAME
+            # to detect or recover it. reload_factory_timeout is the same
             # bound the reload path, the bootstrap slot-pool open, and the
             # notify reconnect loop apply to every factory call, not a
             # second mechanism. The DSN path below needs none of this:
@@ -971,7 +971,7 @@ async def open_worker_deps(
             _leader_command_timeout = settings.dispatcher_command_timeout
 
             async def _leader_dsn_factory() -> asyncpg.Connection:
-                # command_timeout is applied HERE, not at the leader.py call
+                # command_timeout is applied here, not at the leader.py call
                 # sites: every leader connection (election conn, cron,
                 # monitor) goes through this factory on a stock deployment,
                 # so this is the only place the timeout cannot be bypassed.
@@ -1009,7 +1009,7 @@ async def open_worker_deps(
         elif conns.redis_client_factory is not None:
             # Why bounded: this open runs before any watchdog is armed, so
             # an unbounded factory call wedges worker startup with nothing
-            # to detect or recover it. reload_factory_timeout is the SAME
+            # to detect or recover it. reload_factory_timeout is the same
             # bound the notify and leader factory opens above and the
             # reload path apply to every factory call, not a second
             # mechanism. The redis_url path below needs none of this:
@@ -1043,7 +1043,7 @@ async def open_worker_deps(
 
         # Why here: TASKQ_RELOAD_INTERVAL / SIGHUP only rotate resources that
         # have a factory on deps, and the DSN fallbacks above are stored for
-        # notify/leader only, they reconnect with the SAME static DSN
+        # notify/leader only, they reconnect with the same static DSN
         # credential. A worker configured to rotate on a schedule but with no
         # credential provider wired in therefore rotates nothing while logging
         # a healthy-looking "credentials-reloaded". Say so once, at startup.
@@ -1072,7 +1072,7 @@ async def open_worker_deps(
                 ),
             )
 
-        # LIFO teardown guards for the TaskQ-owned redis client. The
+        # lifo teardown guards for the TaskQ-owned redis client. The
         # dedicated conns above already registered theirs at open time;
         # no open step can fail between the redis build and this push,
         # so the redis guards need no window of their own.
@@ -1085,7 +1085,7 @@ async def open_worker_deps(
         if owns_redis and redis_client is not None:
 
             async def _close_redis_client() -> None:
-                # Closes through ``deps.redis_client``, NOT the startup
+                # Closes through ``deps.redis_client``, not the startup
                 # instance, so a client swapped in by reload_credentials is
                 # the one closed here (reload drains the old one itself).
                 # Mirrors the notify/leader guards above: bounded close, then
@@ -1161,7 +1161,7 @@ async def _resolve_pool(
     (:func:`taskq._close.close_pool_bounded`) on ``stack`` for LIFO teardown.
 
     The user-factory call is bounded by ``settings.reload_factory_timeout``:
-    it runs before any watchdog is armed, and the SAME bound already governs
+    it runs before any watchdog is armed, and the same bound already governs
     every other pool factory call (the reload path, the bootstrap slot-pool
     open). The DSN fallback needs none of this, asyncpg's own connect
     timeout bounds ``create_pool``.
@@ -1254,11 +1254,11 @@ async def reload_credentials(
 
     New pools are registered on ``deps._exit_stack`` (the ``AsyncExitStack``
     from ``open_worker_deps``) for LIFO teardown at shutdown. Old pools are
-    closed in the background and do NOT sit on the stack.
+    closed in the background and do not sit on the stack.
 
     Each resource is reloaded independently, a factory failure for one
     (e.g. a transient credential-fetch error) is logged
-    (``credential-reload-resource-failed``) and does NOT abort the
+    (``credential-reload-resource-failed``) and does not abort the
     remaining resources or raise out of this function; that resource
     keeps its current (not-yet-expired) pool/connection until the
     next SIGHUP.
@@ -1291,7 +1291,7 @@ async def reload_credentials(
 
         # ── Pools ──────────────────────────────────────────────────
         # Each pool is reloaded independently, a factory failure for one
-        # (e.g. a transient credential-fetch error) is logged and does NOT
+        # (e.g. a transient credential-fetch error) is logged and does not
         # abort the remaining resources. Without this, a single flaky
         # provider call would silently leave later pools/conns on stale
         # credentials with no indication anything was skipped.
@@ -1311,7 +1311,7 @@ async def reload_credentials(
                 async def _close_pool(p: asyncpg.Pool = new_pool, lbl: str = label) -> None:
                     # Why default-arg binding: this closure is defined inside
                     # the pool loop, a late-bound capture of new_pool/label
-                    # would close the LAST iteration's pool N times and leak
+                    # would close the last iteration's pool N times and leak
                     # the rest.
                     await close_pool_bounded(p, lbl, CLOSE_TIMEOUT_SECS)
 
@@ -1359,7 +1359,7 @@ async def reload_credentials(
                     channel = wake_channel(deps.settings.schema_name)
                     # Why bounded: a freshly built conn can complete the
                     # factory handshake and still black-hole on the LISTEN
-                    # execute. notify_listener_setup_timeout is the SAME
+                    # execute. notify_listener_setup_timeout is the same
                     # bound the bootstrap open and the reconnect loop apply
                     # to the identical execute, not a second mechanism;
                     # exhaustion follows this path's failure style: the
@@ -1392,12 +1392,12 @@ async def reload_credentials(
         # reload costs a re-election, not a lease lapse). This is the same
         # path as a PG connection drop, so it's well-tested.
         #
-        # The old conn is closed inline (bounded) BEFORE nulling, a
+        # The old conn is closed inline (bounded) before nulling, a
         # background close would leave the re-election racing the old
         # session's teardown. On timeout the close moves to a background
         # task that terminates the conn.
         #
-        # This ALSO rebuilds MaintenanceLeader's other dedicated connections
+        # This also rebuilds MaintenanceLeader's other dedicated connections
         # (_leader_monitor_conn, _cron_conn) as a side effect: re-election
         # (triggered by leader_conn becoming None while is_leader is still
         # set) reopens both through the same leader_conn_factory before

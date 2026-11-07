@@ -297,7 +297,7 @@ class TestListJobsByTags:
         assert len(result.jobs) == 2
 
     async def test_list_jobs_filter_by_multiple_tags(self) -> None:
-        """Filter by multiple tags uses OR semantics (array overlap)."""
+        """Filter by multiple tags uses or semantics (array overlap)."""
         backend = _make_backend()
         client = _make_client(backend)
 

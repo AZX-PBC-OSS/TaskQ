@@ -214,7 +214,7 @@ def test_span_none_context_works() -> None:
 
 async def test_progress_no_buffer_wired_logs_once_then_stays_silent() -> None:
     """The first progress() call on a context with no progress buffers
-    wired (direct actor testing, a miswired context) emits ONE debug-level
+    wired (direct actor testing, a miswired context) emits one debug-level
     drop notice so the silent no-op is discoverable; every later call
     stays silent - a tight progress loop must not produce one log line
     per dropped call."""

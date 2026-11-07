@@ -18,10 +18,10 @@ in the caller-supplied key space. The pending-reclaim drain
 (``registry.py:1647``, ``drain_pending_reservation_reclaims``) is the
 DELETE path that closes exactly this gap; these tests pin its contract.
 
-The contract these tests pin: once a keyed bucket is evicted AND idle
+The contract these tests pin: once a keyed bucket is evicted and idle
 (no slot held), its ``reservation_slots`` rows are reclaimed; and a key
 that becomes active again afterwards re-materialises and acquires
-cleanly. Deliberately NOT pinned here: the actively-held case - a slot
+cleanly. Deliberately not pinned here: the actively-held case - a slot
 still held by a live job must survive eviction (pinned by
 ``tests/test_ratelimit_keyed_refs_pg.py::test_eviction_while_holder_active_does_not_over_admit``
 and, for the drain's idle-guarded DELETE specifically, by
@@ -111,7 +111,7 @@ async def test_evicted_idle_keyed_reservation_slots_are_reclaimed(
         bucket = "keyed-reclaim-probe:s1"
         assert await _slot_rows(pool, bucket) == 2, "fixture broken: ensure_slots did not run"
 
-        # Release the only slot, THEN evict: the bucket is now genuinely
+        # Release the only slot, then evict: the bucket is now genuinely
         # idle - the case no correctness argument protects.
         await reg.release_for_actor(acquired)
         evicted = reg.evict_idle_keyed_reservations(idle_for=timedelta(0))

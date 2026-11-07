@@ -1,15 +1,8 @@
-"""THE OFF-BY-ONE RULE'S EXEMPTION PINS — the docs-exemption round's fix.
+"""The off-by-one rule's exemption pins — a docs-only merge must not
+stale a live claim's verdict.
 
-THE RECORDED FINDING (today, twice): main's head-stamp lint job reds on EVERY
-merge — including #696's DOCS-ONLY merge (``LEDGER.md`` alone) — because
-the off-by-one rule's diff half (``scripts/verify_evidence_heads.py``'s
-``_source_changes_since``) exempted only ``.measurements/`` (``.github/``
-beside it) from the staleness walk. ``LEDGER.md`` and ``docs/**`` sit
-outside that set, so a documentation edit re-staled every live claim:
-red main for a docs-only change (CI runs 41133332137 + 41140297312).
-
-THE LAW'S EDGE (as the review corrected it): the claims verify the
-SOURCE + TEST tree — EXCEPT THE DOCS-DERIVED STEMS
+The claims verify the
+SOURCE + TEST tree — EXCEPT the DOCS-DERIVED STEMS
 (``_DOCS_SENSITIVE_STEM_PREFIXES``: ``mkdocs-strict*``, the
 ``docs-examples*`` and ``docs-lane*`` kinds), whose batteries READ the
 docs estate — mkdocs builds ``docs/`` strict, and the docs-example
@@ -21,14 +14,14 @@ set falls back to the NARROW one (the measurements estate +
 source + test tree cannot stalify a claim, and a path that can must
 never be exempt. The full set is therefore exactly: the measurements
 estate, ``.github/``, ``LEDGER.md``, ``docs/``, the root ``README*``
-family, the root ``*.md`` class, ``LICENSE``, ``.gitignore``. NEVER
+family, the root ``*.md`` class, ``LICENSE``, ``.gitignore``. never
 exempt: ``src/``, ``tests/``, ``pyproject.toml``, ``uv.lock``, the
 migrations, ``examples/`` (imported by the smoke tests — behavior),
 ``scripts/`` (the gates themselves), ``benchmarks/`` (the measurement
 pins read them).
 
-THE METHOD (new for this pack, the subprocess seam): the
-off-by-one rule's diff half is judged against the REPO'S OWN HEAD, and a
+The
+off-by-one rule's diff half is judged against the REPO'S own HEAD, and a
 script's ``REPO`` is its own home — so each pin builds a THROWAWAY GIT
 REPO in a tmp dir, copies the verifier into it BYTE-IDENTICAL (the copy
 judges the throwaway repo, never this checkout — the real tree is never
@@ -38,54 +31,50 @@ second commit. The git env is hermetic (no ambient global/system config
 — a machine's ``commit.gpgsign`` or hooks must never reach the pins'
 commits).
 
-The findings (each WAS the live recorded finding — the docs-only estates
-exited rc=1 before this branch's fix; the failing-first tails are the
-fix's own receipt):
+The pin families:
 
-* F-X1 — THE DOCS-ONLY MERGE STALIFIES (FIXED): a claim recorded on the
+* the DOCS-only MERGE STAYS FRESH: a claim recorded on the
   source-final base H; the commits since H carry ``LEDGER.md`` /
   ``docs/**`` / the root ``*.md`` / ``README*`` / ``LICENSE`` /
-  ``.gitignore`` / ``.github`` (one member per leg, the #696 shape
-  each) plus the measurement commit itself. THE PIN: every member's
+  ``.gitignore`` / ``.github`` (one member per leg) plus the
+  measurement commit itself. the PIN: every member's
   docs-only delta leaves the claim FRESH (rc=0) — the exemption set is
   real, member by member.
-* F-X2 — THE TEETH: the same two-step shape, but the merge's delta
+* the TEETH: the same two-step shape, but the merge's delta
   touches a BEHAVIORAL path — the claim is STALE, the verifier reds
-  with its own named verdict. THE EDGE: this passed BEFORE the fix
-  too; it must KEEP passing — the fix widens the exemption set, never
-  the teeth.
-* F-X3 — ONE LAW, TWO FACES: the failure log guard's live/history scoping
+  with its own named verdict. The teeth keep biting: the exemption
+  set is wide, never wider than the non-behavioral paths.
+* one LAW, TWO FACES: the failure log guard's live/history scoping
   (``tests/_wf_fixtures.source_changes_since``) MIRRORS the verifier's
-  diff half. The faces must carry the SAME sets — the full exclusion
+  diff half. The faces must carry the same sets — the full exclusion
   set, the NARROW set the docs-derived stems fall back to, and the
   docs-sensitive prefix tuple — a drift is one law reading two ways
   (the CI verifier greens a docs-only merge the suite's guard reds, or
   the reverse).
-* F-X4 — THE EXEMPTION'S OWN EDGE (the review round's fix, failing-first):
+* the EXEMPTION'S own EDGE:
   the DOCS-DERIVED stems — ``mkdocs-strict*`` (mkdocs builds ``docs/``
   strict), ``docs-examples*`` (the docs-example tests'
   ``tests/_docs_examples.py::DOC_ROOTS = ("docs", "README.md")``
   EXECUTE the fences) and the ``docs-lane*`` kinds — have the docs
   estate among their BATTERY'S INPUTS, so for them a docs-only merge
   IS a source change: the exemption set falls back to the NARROW one
-  and the claim goes STALE. FAILING-FIRST: the round-1 fix's verifier
-  applied the docs exemption to EVERY stem and called these fresh —
-  the reds are this fix's receipt.
-* F-X5 — THE ROUND-1 FIX'S LEG KEEPS: the SAME docs-only merge
+  and the claim goes STALE (the exemption applies to every stem
+  nowhere — the plain stems keep the full set).
+* the PLAIN STEM KEEPS: the same docs-only merge
   against a PLAIN stem (no docs-sensitive prefix) stays FRESH — the
   fallback narrows the exemption for the docs-derived stems only,
   never for the estate.
-* F-X6 — THE MIXED DIFF: ONE commit touching BOTH ``docs/`` AND
+* the MIXED DIFF: one commit touching both ``docs/`` and
   ``src/`` — the exemption cannot launder a source change behind its
   docs half: the ``src/`` change stalifies the claim even though the
   same commit's ``docs/`` half is exempt (green at base — the teeth
   already read the whole diff — pinned so the mixed shape survives).
-* F-X7 — THE ANCHORING, PINNED: the pathspec claims in the law's
-  comments are LAW, not prose — a nested ``*.md`` (``tests/receipt.md``),
+* the ANCHORING: the pathspec anchoring is
+  LAW, not prose — a nested ``*.md`` (``tests/receipt.md``),
   a nested ``README*`` (``src/taskq/README.md``) and nested ``docs/``
   subtrees (``src/taskq/docs/``, ``tests/docs/``) are all OUTSIDE the
   root-anchored exemption: each one's change alone stalifies the claim
-  (green at base, verified by the review; pinned so it survives).
+  (green at base, pinned so it survives).
 """
 
 from __future__ import annotations
@@ -94,7 +83,7 @@ import importlib.util
 import json
 import os
 import shutil
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script is the subject (the pin's own shape).
 import sys
 from pathlib import Path
 from typing import cast
@@ -125,7 +114,7 @@ def _git_env() -> dict[str, str]:
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; git resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
+    return subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; git resolves on the dev/CI path exactly as the repo's own scripts invoke it.
         ["git", *args],  # noqa: S607  # Why: as above — the fixed-argv git call.
         cwd=repo,
         capture_output=True,
@@ -199,7 +188,7 @@ def _run_verifier_copy(repo: Path) -> subprocess.CompletedProcess[str]:
     copy's ``REPO`` is its own home) and the estate passed explicitly —
     the pack's ``PYTHONPATH`` seam: the venv's taskq resolves, the
     git face resolves to the throwaway repo. The ambient
-    ``GITHUB_EVENT_PATH`` is neutralized (the F-D5 control)."""
+    ``GITHUB_EVENT_PATH`` is neutralized (the env-face control)."""
     return subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier copied byte-identical; fixed argv, no shell.
         [
             sys.executable,
@@ -216,10 +205,10 @@ def _run_verifier_copy(repo: Path) -> subprocess.CompletedProcess[str]:
 
 
 def _verifier_law_constants() -> dict[str, object]:
-    """The verifier's OWN law constants, read by loading the script as a
+    """The verifier's own law constants, read by loading the script as a
     module (constants-only top level — no side effects). The subprocess
     pins above judge the script's BEHAVIOR; this reads its DATA — the
-    law's two faces must carry the same sets (F-X3)."""
+    law's two faces must carry the same sets."""
     spec = importlib.util.spec_from_file_location("_verify_evidence_heads_under_pin", _VERIFIER)
     assert spec is not None and spec.loader is not None, "the verifier must load as a module"
     module = importlib.util.module_from_spec(spec)
@@ -240,7 +229,7 @@ def _verifier_law_constants() -> dict[str, object]:
     return constants
 
 
-# ── F-X1: the docs-only merge does not stalify (the exemption set) ───────
+# ── the docs-only merge does not stalify (the exemption set) ───────
 
 
 @pytest.mark.parametrize(
@@ -259,15 +248,13 @@ def _verifier_law_constants() -> dict[str, object]:
 def test_a_docs_only_merge_of_one_member_does_not_stalify(
     tmp_path: Path, touched: str, content: str
 ) -> None:
-    """F-X1 — member by member: the claim is recorded on the
-    source-final base H; the commits since H change ONLY the member
-    under pin plus the measurement estate (the #696 shape: the docs
+    """Member by member: the claim is recorded on the
+    source-final base H; the commits since H change only the member
+    under pin plus the measurement estate (the docs
     edit and the capture land together). Every member is a path that
     CANNOT change what the capture verifies — the source + test tree is
     content-identical — so the off-by-one rule must hold the claim
-    FRESH (rc=0). The first cut's rule exempted only ``.measurements/``:
-    each leg red here before the fix (the failing-first tails are the
-    commit's receipt)."""
+    FRESH (rc=0)."""
     repo, base = _init_repo(tmp_path)
     _stamp_estate(repo, base)
     target = repo / touched
@@ -276,14 +263,14 @@ def test_a_docs_only_merge_of_one_member_does_not_stalify(
     _commit_all(repo, f"docs-only merge: {touched} + the measurement commit")
     proc = _run_verifier_copy(repo)
     assert proc.returncode == 0 and "the head-stamp law holds" in proc.stdout, (
-        f"F-X1: the DOCS-ONLY merge of {touched} stalified the claim — a path "
+        f"The DOCS-ONLY merge of {touched} stalified the claim — a path "
         "that cannot change what the capture verifies (the source + test tree "
         "is content-identical) must not stalify a claim; the off-by-one rule's "
         "exemption set is the round's whole deliverable. The output:\n" + proc.stdout + proc.stderr
     )
 
 
-# ── F-X2: the teeth — a behavioral change still stalifies ────────────────
+# ── the teeth — a behavioral change still stalifies ────────────────
 
 
 @pytest.mark.parametrize(
@@ -311,12 +298,10 @@ def test_a_docs_only_merge_of_one_member_does_not_stalify(
 def test_a_behavioral_change_since_the_claimed_head_still_stalifies(
     tmp_path: Path, touched: str, content: str, why: str
 ) -> None:
-    """F-X2 — THE LAW'S TEETH, member by member: the same two-step
+    """The law's teeth, member by member: the same two-step
     shape, but the merge's delta touches a BEHAVIORAL path ({why}) — the
     exemption must never reach it. The claim is STALE, the verifier reds
-    with its own named verdict. This passed BEFORE the fix too; it must
-    KEEP passing — the fix widens the exemption set, never the
-    teeth."""
+    with its own named verdict."""
     repo, base = _init_repo(tmp_path)
     _stamp_estate(repo, base)
     target = repo / touched
@@ -325,25 +310,25 @@ def test_a_behavioral_change_since_the_claimed_head_still_stalifies(
     _commit_all(repo, f"a behavioral merge: {touched} + the measurement commit")
     proc = _run_verifier_copy(repo)
     assert proc.returncode == 1, (
-        f"F-X2: a {touched} change since the claimed head did NOT stalify the "
+        f"A {touched} change since the claimed head did NOT stalify the "
         f"claim ({why}) — the exemption set has grown past the law's edge: only "
         "a path that cannot change what the claims verify may be exempt. "
         "The output:\n" + proc.stdout + proc.stderr
     )
     assert "is stale — recorded on" in proc.stdout, (
-        f"F-X2: the {touched} recorded finding must be the STALE verdict (the "
+        f"The {touched} verdict must be the STALE verdict (the "
         "head-stamp law's own named words), not some other failure. "
         "The output:\n" + proc.stdout + proc.stderr
     )
 
 
-# ── F-X3: the law's two faces carry the same exclusion set ───────────────
+# ── the law's two faces carry the same exclusion set ───────────────
 
 
 def test_the_in_suite_mirror_carries_the_verifiers_exclusion_set() -> None:
-    """F-X3 — ONE LAW, TWO FACES: the failure log guard's live/history
+    """one LAW, TWO FACES: the failure log guard's live/history
     scoping (``tests/_wf_fixtures.source_changes_since``) mirrors the
-    verifier's diff half. The faces must carry the SAME sets — the full
+    verifier's diff half. The faces must carry the same sets — the full
     exclusion set, the NARROW set the docs-derived stems fall back to,
     and the docs-sensitive prefix tuple — a drift is one law reading
     two ways: a claimed head one face calls fresh the other calls stale
@@ -374,7 +359,7 @@ def test_the_in_suite_mirror_carries_the_verifiers_exclusion_set() -> None:
         )
 
 
-# ── F-X4: the docs-derived stems — the exemption's own edge ──────────────
+# ── the docs-derived stems — the exemption's own edge ──────────────
 
 
 @pytest.mark.parametrize(
@@ -388,16 +373,14 @@ def test_the_in_suite_mirror_carries_the_verifiers_exclusion_set() -> None:
 def test_a_docs_only_merge_stalifies_a_docs_derived_stem(
     tmp_path: Path, stem: str, touched: str, content: str
 ) -> None:
-    """F-X4 — THE EXEMPTION'S OWN EDGE: the docs-derived stems'
+    """The exemption's own edge: the docs-derived stems'
     batteries READ the docs estate — mkdocs builds ``docs/`` strict;
     the docs-example tests' ``DOC_ROOTS = ("docs", "README.md")``
     execute the fences — so ``docs/`` and ``README.md`` are INPUTS the
     capture's verdict was measured against. For these stems the docs
     exemption must not apply: the exclusion set falls back to the
     NARROW one and a docs-only merge goes STALE, exactly as a src/
-    merge would. FAILING-FIRST: the round-1 fix's verifier applied the
-    docs exemption to EVERY stem and called these fresh — the reds are
-    this fix's receipt."""
+    merge would."""
     repo, base = _init_repo(tmp_path)
     _stamp_estate(repo, base, stem=stem)
     target = repo / touched
@@ -406,24 +389,24 @@ def test_a_docs_only_merge_stalifies_a_docs_derived_stem(
     _commit_all(repo, f"docs-only merge: {touched} (the {stem} shape)")
     proc = _run_verifier_copy(repo)
     assert proc.returncode == 1 and "is stale — recorded on" in proc.stdout, (
-        f"F-X4: the docs-only merge of {touched} left the DOCS-DERIVED stem "
+        f"The docs-only merge of {touched} left the DOCS-DERIVED stem "
         f"{stem} FRESH — the docs estate is that battery's own input ({touched} "
         "is one of the files its verdict was measured against), so the docs "
         "exemption must not apply: the narrow set judges the stem, the claim "
         "goes stale. The output:\n" + proc.stdout + proc.stderr
     )
     assert stem in proc.stdout, (
-        f"F-X4: the recorded finding must name the stem under pin ({stem}). "
+        f"The verdict must name the stem under pin ({stem}). "
         "The output:\n" + proc.stdout + proc.stderr
     )
 
 
-# ── F-X5: the round-1 fix's leg keeps — a plain stem stays fresh ────────
+# ── a plain stem stays fresh ────────────────────────────────────────
 
 
 def test_the_same_docs_only_merge_keeps_a_plain_stem_fresh(tmp_path: Path) -> None:
-    """F-X5 — THE ROUND-1 FIX'S LEG KEEPS: the SAME docs-only merge
-    (``LEDGER.md`` + ``docs/`` together, the #696 shape) against a
+    """The same docs-only merge (``LEDGER.md`` + ``docs/`` together)
+    against a
     PLAIN stem — no docs-sensitive prefix, a battery that cannot read
     the docs estate — stays FRESH (rc=0). The per-stem fallback narrows
     the exemption for the docs-derived stems only, never for the
@@ -432,21 +415,20 @@ def test_the_same_docs_only_merge_keeps_a_plain_stem_fresh(tmp_path: Path) -> No
     _stamp_estate(repo, base, stem="plain-stem")
     (repo / "LEDGER.md").write_text("# the ledger\n\na new entry.\n")
     (repo / "docs" / "guide.md").write_text("# the guide\n\na paragraph.\n")
-    _commit_all(repo, "docs + measurements (the #696 shape)")
+    _commit_all(repo, "docs + measurements")
     proc = _run_verifier_copy(repo)
     assert proc.returncode == 0 and "the head-stamp law holds" in proc.stdout, (
-        "F-X5: the docs-derived fallback STALIFIED a PLAIN stem — the narrow "
+        "The docs-derived fallback STALIFIED a PLAIN stem — the narrow "
         "set is for the stems whose batteries read the docs estate, never "
-        "for the estate at large: the round-1 fix's green must survive the "
-        "per-stem fix. The output:\n" + proc.stdout + proc.stderr
+        "for the estate at large. The output:\n" + proc.stdout + proc.stderr
     )
 
 
-# ── F-X6: the mixed diff — one commit touching docs/ AND src/ ────────────
+# ── the mixed diff — one commit touching docs/ and src/ ────────────
 
 
 def test_a_mixed_docs_and_src_merge_still_stalifies(tmp_path: Path) -> None:
-    """F-X6 — THE MIXED DIFF: ONE commit touching BOTH ``docs/`` and
+    """The mixed diff: one commit touching both ``docs/`` and
     ``src/``. The exemption cannot launder a source change behind its
     docs half: the walk judges the WHOLE diff, the ``docs/`` half is
     exempt and the ``src/`` half rejects — the claim is STALE. (Green
@@ -459,14 +441,14 @@ def test_a_mixed_docs_and_src_merge_still_stalifies(tmp_path: Path) -> None:
     _commit_all(repo, "the mixed merge: docs/ + src/ in ONE commit")
     proc = _run_verifier_copy(repo)
     assert proc.returncode == 1 and "is stale — recorded on" in proc.stdout, (
-        "F-X6: the MIXED commit (docs/ + src/ in one) did NOT stalify the "
+        "The MIXED commit (docs/ + src/ in one) did NOT stalify the "
         "claim — the exemption must never launder a source change behind its "
         "docs half: the docs half is exempt, the src half rejects. "
         "The output:\n" + proc.stdout + proc.stderr
     )
 
 
-# ── F-X7: the anchoring, pinned — nested md/README/docs still stalify ────
+# ── the anchoring, pinned — nested md/readme/docs still stalify ────
 
 
 @pytest.mark.parametrize(
@@ -480,7 +462,7 @@ def test_a_mixed_docs_and_src_merge_still_stalifies(tmp_path: Path) -> None:
     ids=["nested-tests-md", "nested-src-readme", "nested-src-docs", "nested-tests-docs"],
 )
 def test_a_nested_md_readme_or_docs_change_still_stalifies(tmp_path: Path, touched: str) -> None:
-    """F-X7 — THE ANCHORING, PINNED: the law's pathspec claims are LAW,
+    """The anchoring, pinned: the law's pathspec claims are LAW,
     not prose — the docs exemption is ROOT-anchored (a directory
     pathspec covers its subtree from the root; ``README*`` and the
     ``glob``-magic ``*.md`` match at the root only), so a nested
@@ -497,7 +479,7 @@ def test_a_nested_md_readme_or_docs_change_still_stalifies(tmp_path: Path, touch
     _commit_all(repo, f"nested non-root change: {touched} + the measurement commit")
     proc = _run_verifier_copy(repo)
     assert proc.returncode == 1 and "is stale — recorded on" in proc.stdout, (
-        f"F-X7: a change to the NESTED path {touched} did NOT stalify the "
+        f"A change to the NESTED path {touched} did NOT stalify the "
         "claim — the docs exemption is root-anchored: a nested md/README/"
         "docs path is outside it and must stalify (the anchoring claims in "
         "the law's comments are law, not prose). The output:\n" + proc.stdout + proc.stderr

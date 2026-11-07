@@ -4,7 +4,7 @@ Two release paths hand a running row back to the fleet, and each keeps its
 own books:
 
 * ``mark_interrupted`` (the shutdown release); a NON-terminal release of
-  a started attempt: the claim's increment is NOT refunded (the attempt
+  a started attempt: the claim's increment is not refunded (the attempt
  started executing, so it is spent;, no attempt row is
   written (an interruption is not an execution outcome), one
   ``reason='interrupted'`` event records it, and ``interrupt_count`` bumps.
@@ -17,7 +17,7 @@ own books:
   ``'<job id>:<attempt>'`` - never drawn.
 
 The composition is what a rolling deploy actually produces: pod A's SIGTERM
-interrupts the job mid-flight, pod B claims the row at the NEXT attempt epoch
+interrupts the job mid-flight, pod B claims the row at the next attempt epoch
 (the interrupt leaves the spent increment standing, so the re-claim advances
 past the epoch the interrupted handler holds) and is then killed outright,
 and the leader's sweep hands it back a second time. The pins here hold the
@@ -64,7 +64,7 @@ _GRACE = timedelta(seconds=30)
 
 #: A protective curve whose attempt-1 and attempt-2 delays sit in disjoint
 #: bands even after jitter (attempt 1: [240, 360); attempt 2: [480, 720)),
-#: so a reclaim that read the WRONG attempt cannot hide inside the band.
+#: so a reclaim that read the wrong attempt cannot hide inside the band.
 _POLICY = RetryPolicy(
     backoff="exponential",
     base=timedelta(seconds=300),
@@ -127,7 +127,7 @@ async def _interrupt_reclaim_chain(
         f"the shutdown release of a cleanly-owned row must land pending; got {released!r}"
     )
 
-    # Pod B claims the row at the NEXT attempt epoch: the interrupt did not
+    # Pod B claims the row at the next attempt epoch: the interrupt did not
     # refund the increment, so the re-claim advances past the epoch the
     # interrupted (zombie) handler holds.
     second_claim = await side.dispatch("w1", ["default"], limit=5)
@@ -163,7 +163,7 @@ async def test_diff_interrupted_then_crash_reclaimed_keeps_both_paths_books(
         # jitter pinned off: the harness compares scheduled_at across
         # backends at second resolution, which cannot resolve a jitter
         # band (the exact derived-jitter parity is pinned bit-for-bit by
-        # tests/test_reclaim_backoff_policy_parity.py; the jitter-ON
+        # tests/test_reclaim_backoff_policy_parity.py; the jitter-on
         # composition is pinned per backend below).
         await _interrupt_reclaim_chain(side, jitter=0.0)
 
@@ -306,13 +306,13 @@ async def test_diff_operator_cancel_between_release_and_reclaim_keeps_the_fence(
     )
 
 
-# ── The jitter-ON composition, per backend at full precision ─────────────
+# ── The jitter-on composition, per backend at full precision ─────────────
 #
 # The harness buckets scheduled_at at second resolution and the two sides
 # draw different job ids (hence different derived jitter fractions), so the
 # exact delay cannot ride the mirror comparison. What the composition must
-# hold is per-backend exact: the reclaimed row's delay IS the twin formula's
-# value for THIS row at the re-claimed attempt; the interrupt leaves the
+# hold is per-backend exact: the reclaimed row's delay is the twin formula's
+# value for this row at the re-claimed attempt; the interrupt leaves the
 # spent increment standing, so that attempt is 2 and not 1, and the two
 # attempts' jitter bands are disjoint by construction (see _POLICY).
 

@@ -1,4 +1,4 @@
-"""The workflow schema round's structural + measured pins (T03, §16.4).
+"""The workflow schema round's structural + measured pins (the enqueue-latency band's own section, §16.4).
 
 Structural (the lock-scope family's form): the three-file single-lock-class
 split, the seam-only id generation in the DDL, the phase-obligations
@@ -39,7 +39,7 @@ _SEED_ROWS = 10_000
 
 
 def _write_measurement(name: str, payload: dict[str, object]) -> None:
-    """THE APPEND-ONLY CONVERSION: the band artifact is RUN-SCOPED (the
+    """The append-only conversion: the band artifact is RUN-SCOPED (the
     in-place rewrite is the torn-write race; the newest CITED wins)."""
     from tests._wf_fixtures import write_band_artifact
 
@@ -56,9 +56,9 @@ def _round_files() -> list[Path]:
 
 def test_round_is_split_into_single_lock_class_files() -> None:
     """The three files apply in order and each file is single-lock-class:
-    the columns file ONLY metadata-only ALTERs, the tables file ONLY CREATE
-    TABLEs, the index file ONLY CREATE INDEXes. The runner wraps each FILE
-    in one transaction, so a file's statements share ONE write-block
+    the columns file only metadata-only ALTERs, the tables file only CREATE
+    TABLEs, the index file only CREATE INDEXes. The runner wraps each FILE
+    in one transaction, so a file's statements share one write-block
     window — mixed lock classes in one file are the rejected shape (the
     lock-scope family's finding)."""
     names = [f.name for f in _round_files()]
@@ -107,9 +107,9 @@ def _statement_kinds(sql: str) -> list[str]:
 def test_columns_file_holds_only_metadata_alters() -> None:
     sql = _round_files()[0].read_text()
     kinds = _statement_kinds(sql)
-    # COMMENT ON is metadata-only (a catalog write; the columns file's
+    # comment on is metadata-only (a catalog write; the columns file's
     # documentation column comments ride the same instant lock) - allowed
-    # beside the ALTERs.
+    # beside the alters.
     assert kinds and set(kinds) <= {"ALTER TABLE", "COMMENT ON"}, kinds
     assert "ALTER TABLE" in kinds, kinds
     for body in _statement_bodies(sql):
@@ -130,21 +130,21 @@ def test_indexes_file_holds_only_create_indexes() -> None:
     sql = _round_files()[2].read_text()
     kinds = _statement_kinds(sql)
     assert set(kinds) == {"CREATE INDEX"}, kinds
-    # THE PARTIAL-INDEX DOCTRINE: the workflow-scoped indexes are partial;
-    # the measured exemption is the point (pin 2 measures it).
+    # the workflow-scoped indexes are partial; the measured exemption is the
+    # point (pin 2 measures it).
     create_ons = [b for b in _statement_bodies(sql) if b.upper().startswith("CREATE")]
     partial = [b for b in create_ons if " WHERE " in b.upper()]
     assert len(partial) >= 3, "the workflow indexes must be partial"
 
 
 def test_workflow_ddl_ids_are_seam_only() -> None:
-    """T04 pin 10's DDL half: the workflow DDL carries NO ``gen_random_uuid``
-    and NO ``uuid4`` — every id is app-side through the ``taskq._ids`` seam
+    """the dispatch-claim band pin 10's DDL half: the workflow DDL carries no ``gen_random_uuid``
+    and no ``uuid4`` — every id is app-side through the ``taskq._ids`` seam
     (uuid7, the TID251 discipline). Any hit reds."""
     for path in _round_files():
-        # The STATEMENT bodies are checked, not the comments: the header
+        # The statement bodies are checked, not the comments: the header
         # documents the ban (it names the banned spellings), the DDL must
-        # never USE them.
+        # never use them.
         for body in _statement_bodies(path.read_text()):
             assert "gen_random_uuid" not in body.lower(), (path, body[:80])
             assert "uuid4" not in body.lower(), (path, body[:80])
@@ -157,7 +157,7 @@ def test_phase_obligations_header_present() -> None:
 
 
 def test_dispatch_claim_carries_the_join_wait_exclusion() -> None:
-    """The dispatch-exclusion clause (T03's owning decision): the claim
+    """The dispatch-exclusion clause (the enqueue band's owning decision): the claim
     statement's WHERE carries ``deps_pending = 0`` at every claimable-row
     site — a semantic no-op for vanilla rows (DEFAULT 0), the thing that
     keeps a join-wait row unclaimable."""
@@ -170,7 +170,7 @@ def test_dispatch_claim_carries_the_join_wait_exclusion() -> None:
     assert "AND j.deps_pending = 0" in dispatch
 
 
-# ── Pin 3: the IMPORT pin (the §16.1 law, on the AST harness) ────────────
+# ── Pin 3: the import pin (the §16.1 law, on the AST harness) ────────────
 
 
 def test_import_law_taskq_never_imports_workflows() -> None:
@@ -201,14 +201,14 @@ def test_import_law_taskq_never_imports_workflows() -> None:
     assert '"violates": false' in out, out
 
 
-#: §16.1's BOOT SURFACES (F-R5's widening): every process entry the
+#: §16.1's boot surfaces (the widening): every process entry the
 #: package ships — the library root, the worker's boot entry (the
 #: intercept seam), the CLI, the web assembly, and the admin's workflow
-#: PAGES module. The pin's old probe checked ONLY ``taskq/__init__``, so
+#: pages module. The pin's old probe checked only ``taskq/__init__``, so
 #: the stated law and its enforcement didn't match the shipped tree:
 #: ``web/admin/_wf_rows.py`` imported the package at module scope (and
 #: ``web/admin/workflows.py`` imported _wf_rows) with every pin green.
-#: Each surface is probed in a FRESH interpreter — the runtime truth
+#: Each surface is probed in a fresh interpreter — the runtime truth
 #: (``taskq.workflows`` absent from ``sys.modules``), not a grep.
 _IMPORT_LAW_SURFACES = (
     "import taskq",
@@ -221,7 +221,7 @@ _IMPORT_LAW_SURFACES = (
 
 @pytest.mark.parametrize("surface", _IMPORT_LAW_SURFACES)
 def test_import_law_every_boot_surface_never_imports_workflows(surface: str) -> None:
-    """The §16.1 law, widened (F-R5): importing ANY boot surface must
+    """The §16.1 law, widened : importing any boot surface must
     leave ``taskq.workflows`` unloaded — a module-scope workflows import
     anywhere in the surface's transitive tree is rejected. The admin's
     page modules are the proven violator (lazy-discovery loads them only
@@ -262,7 +262,7 @@ def test_import_law_red_drill(tmp_path: Path) -> None:
     scratch = tmp_path / "fixture_mutated_init.py"
     fixture.__dict__["__file__"] = str(scratch)
     # Point the harness's source getter at the mutated text: the harness
-    # parses module source, so the scenario parses the MUTATED source and asks
+    # parses module source, so the scenario parses the mutated source and asks
     # the same question the pin asks.
     scratch.write_text(mutated)
     tree = ast.parse(mutated)
@@ -272,7 +272,7 @@ def test_import_law_red_drill(tmp_path: Path) -> None:
         if isinstance(node, ast.Import | ast.ImportFrom)
         for name in _import_discipline._imported_names(node)  # pyright: ignore[reportPrivateUsage]  # Why: the scenario reuses the harness's own parser on a synthetic tree.
     }
-    # RED: the mutated module-level import is present — the same check that
+    # red: the mutated module-level import is present — the same check that
     # stays clean (zero offenders) on the real package above.
     assert "taskq.workflows" in names
     assert not _import_discipline.couples_to_at_import_time(taskq, "taskq.workflows"), (
@@ -285,7 +285,7 @@ def test_import_law_red_drill(tmp_path: Path) -> None:
 
 
 def _pre_round_migrations() -> list[str]:
-    """Every bundled migration key BEFORE the workflow round — the pre-
+    """Every bundled migration key before the workflow round — the pre-
     workflow row shape is the shape those files build (the control side of
     pin 1's comparison)."""
     return [
@@ -321,13 +321,13 @@ async def _seed_rows(conn: asyncpg.Connection, target: str, rows: int) -> None:
 @pytest.fixture(scope="module")
 async def width_schemas(pg_dsn: str) -> AsyncIterator[dict[str, str]]:
     """The extended shape (the full bundled set, the round applied) vs the
-    pre-round control shape (every migration BEFORE the workflow round),
+    pre-round control shape (every migration before the workflow round),
     seeded identically; plus the MUTATION-PIN shape (the five columns PLUS
     deliberately-misaligned padding columns)."""
     suffix = new_base62(8, precision="random").lower()
-    extended = f"t03x_{suffix}"
-    control = f"t03c_{suffix}"
-    padded = f"t03p_{suffix}"
+    extended = f"mig_full_{suffix}"
+    control = f"mig_preround_{suffix}"
+    padded = f"mig_padded_{suffix}"
     conn = await asyncpg.connect(pg_dsn)
     try:
         for target in (extended, control, padded):
@@ -378,7 +378,7 @@ async def width_schemas(pg_dsn: str) -> AsyncIterator[dict[str, str]]:
 
 
 async def _shape_stats(conn: asyncpg.Connection, target: str, _rows: int) -> dict[str, float]:
-    # The divisor is the LIVE row count (not the seed constant): a sibling
+    # The divisor is the live row count (not the seed constant): a sibling
     # pin may have bulk-grown the table (test order shuffles), and the
     # heap-bytes/row measurement must divide the heap by the rows actually
     # in it.
@@ -396,7 +396,7 @@ async def _shape_stats(conn: asyncpg.Connection, target: str, _rows: int) -> dic
 
 
 async def test_pin_1_row_width_residual(width_schemas: dict[str, str]) -> None:
-    """THE ROW-WIDTH PIN: heap-bytes/row delta ≤ 8 AND avg-tuple delta ≤ 8
+    """The row-width pin: heap-bytes/row delta ≤ 8 and avg-tuple delta ≤ 8
     (the five NULL/0 columns must ride MAXALIGN padding — the measured
     residuals are +3.0 B tuple / 0.0 B heap; re-measured here, never
     assumed)."""
@@ -425,7 +425,7 @@ async def test_pin_1_row_width_residual(width_schemas: dict[str, str]) -> None:
 
 
 async def test_pin_1_red_drill_misaligned_padding(width_schemas: dict[str, str]) -> None:
-    """THE ROW-WIDTH PIN'S REVERT PROOF: a deliberately-misaligned padding
+    """The row-width pin's revert proof: a deliberately-misaligned padding
     fixture (three boolean columns — forced attribute headers) MUST blow
     the bound — the pin can fail. The RED output is the scenario's measurement
     file; the shipped shape above stays green."""
@@ -452,14 +452,14 @@ async def test_pin_1_red_drill_misaligned_padding(width_schemas: dict[str, str])
 
 
 async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> None:
-    """THE PARTIAL-INDEX PIN: each workflow partial index ≤ 1% of a
+    """The partial-index pin: each workflow partial index ≤ 1% of a
     same-column FULL index (the measured truth: 0.5%, 194x). The volume
     lives in a CLONE of the jobs table (LIKE ... INCLUDING ALL -- the
     migration's exact index shapes) so the 100k-row bulk never pollutes
     pin 1's row-width population (test order shuffles); the clone carries
-    the SAME partial/full shapes the migration ships."""
+    the same partial/full shapes the migration ships."""
     conn = await asyncpg.connect(width_schemas["dsn"])
-    clone = f"t03bulk_{width_schemas['extended']}"
+    clone = f"bulkclone_{width_schemas['extended']}"
     try:
         schema = width_schemas["extended"]
         await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."{clone}"')
@@ -474,13 +474,13 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
             "VALUES ($1, 'bench2', 'default', '{}', 3, 'transient')",
             [(new_uuid(),) for _ in range(100_000)],
         )
-        # The full control index: same COLUMN as the join-wait partial, no
+        # The full control index: same column as the join-wait partial, no
         # WHERE -- the 1% comparison's honest control.
         await conn.execute(
-            f'CREATE INDEX IF NOT EXISTS t03_full_control_idx ON "{schema}"."{clone}" (id)'
+            f'CREATE INDEX IF NOT EXISTS clone_full_control_idx ON "{schema}"."{clone}" (id)'
         )
         await conn.execute(f'ANALYZE "{schema}"."{clone}"')
-        # The clone's partial indexes auto-named (LIKE INCLUDING ALL) --
+        # The clone's partial indexes auto-named (like including all) --
         # resolve the cloned names from the clone's own index inventory.
         partials = await conn.fetch(
             """
@@ -504,7 +504,7 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
                 f"""
                 SELECT
                     pg_relation_size('{schema}.{idx}') AS partial,
-                    pg_relation_size('"{schema}".t03_full_control_idx') AS full
+                    pg_relation_size('"{schema}".clone_full_control_idx') AS full
                 """
             )
             assert row is not None
@@ -518,7 +518,7 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
             assert row["partial"] > 0, f"{idx} missing -- the clone did not build"
             assert ratio <= 0.01, (
                 f"{idx} is {ratio:.4%} of the same-column full index -- "
-                "the partial exemption is the doctrine"
+                "the partial exemption is the stated law"
             )
         partial_sizes["_red_drill"] = {
             "note": "the full control index against the smallest partial is the "

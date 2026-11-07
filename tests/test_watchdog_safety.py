@@ -124,7 +124,7 @@ async def test_producer_loop_forgets_liveness_registration_on_exit() -> None:
         assert "producer" in liveness.ages(), "producer must tick once per iteration"
 
         # Phase 1 of orchestrate_shutdown: stop the producer while the
-        # rest of the worker keeps draining (shutdown_event NOT set).
+        # rest of the worker keeps draining (shutdown_event not set).
         producer_stop_event.set()
         await asyncio.wait_for(task, timeout=5.0)
 
@@ -303,7 +303,7 @@ async def test_trip_flushes_metrics_before_force_exit(
 
     monkeypatch.setattr(
         mod, "os", module_ns_proxy(os, _exit=_fake_exit)
-    )  # Why: patch where _watchdog LOOKS UP os, not the global module (tests/_ns_patch.py).
+    )  # Why: patch where _watchdog looks up os, not the global module (tests/_ns_patch.py).
     monkeypatch.setattr(mod.otel_metrics, "get_meter_provider", lambda: _Provider())
 
     with pytest.raises(_ExitSentinelError):
@@ -328,7 +328,7 @@ async def test_trip_still_exits_when_meter_provider_cannot_flush(
 
     monkeypatch.setattr(
         mod, "os", module_ns_proxy(os, _exit=_fake_exit)
-    )  # Why: patch where _watchdog LOOKS UP os, not the global module (tests/_ns_patch.py).
+    )  # Why: patch where _watchdog looks up os, not the global module (tests/_ns_patch.py).
     monkeypatch.setattr(mod.otel_metrics, "get_meter_provider", lambda: object())
 
     with pytest.raises(_ExitSentinelError):
@@ -367,7 +367,7 @@ async def test_trip_flush_is_bounded_against_a_hung_exporter(
 
     monkeypatch.setattr(
         mod, "os", module_ns_proxy(os, _exit=_fake_exit)
-    )  # Why: patch where _watchdog LOOKS UP os, not the global module (tests/_ns_patch.py).
+    )  # Why: patch where _watchdog looks up os, not the global module (tests/_ns_patch.py).
 
     outcome: list[str] = []
 
@@ -427,7 +427,7 @@ async def test_lag_watchdog_flushes_metrics_before_force_exit(
 
     monkeypatch.setattr(
         mod, "os", module_ns_proxy(os, _exit=_fake_exit)
-    )  # Why: patch where _watchdog LOOKS UP os, not the global module (tests/_ns_patch.py).
+    )  # Why: patch where _watchdog looks up os, not the global module (tests/_ns_patch.py).
     monkeypatch.setattr(mod.otel_metrics, "get_meter_provider", lambda: _Provider())
     monkeypatch.setattr(
         mod.faulthandler, "dump_traceback", lambda **_kwargs: None
@@ -525,7 +525,7 @@ async def test_shutdown_duration_skipped_when_shutdown_never_started(
 
 # ── Health socket must be secured before or at bind time ─────────────────
 #
-# os.chmod(0o600) runs AFTER start_unix_server has already bound the socket
+# os.chmod(0o600) runs after start_unix_server has already bound the socket
 # with 0777 & ~umask (typically 0755). Between bind and chmod any local
 # process can connect and pull a /tasks stack dump when
 # TASKQ_HEALTH_TASKS_ENABLED=true.
@@ -551,7 +551,7 @@ async def test_health_socket_secured_when_tasks_enabled(tmp_path: Path) -> None:
     # long-temp-dir machine renders this socket path ~128 bytes, so
     # asyncio.start_unix_server fails with "AF_UNIX path too long" before the
     # permission assertion can even run. The constraint is a property of the
-    # TEST HARNESS's path, not the code under test - production
+    # test harness's path, not the code under test - production
     # TASKQ_HEALTH_SOCKET_PATH values (e.g. /run/taskq/health.sock) sit far
     # below the cap. Skipped only when the harness path itself cannot bind;
     # platforms with short tmp dirs (Linux CI) still execute the assertion.
@@ -587,12 +587,12 @@ async def test_health_socket_secured_when_tasks_enabled(tmp_path: Path) -> None:
 #
 # The setting description says it switches off all four detectors, but
 # detector 3 (sibling spawner clean-return contract) ran regardless of the
-# flag. The exception path of the spawner is deliberately NOT gated: a
+# flag. The exception path of the spawner is deliberately not gated: a
 # crashing sibling must always signal shutdown, watchdog or not. The
-# clean-return ERROR LOG is not gated either: with enforcement off, the log
+# clean-return error log is not gated either: with enforcement off, the log
 # is the only signal that the worker is running half-staffed.
 #
-# Readiness is likewise NOT gated: watchdog_enabled switches off the
+# Readiness is likewise not gated: watchdog_enabled switches off the
 # force-exit detectors, but a worker with dead loops must still report
 # NotReady; otherwise the zombie keeps taking traffic with the one
 # remaining signal suppressed.
@@ -678,7 +678,7 @@ async def test_sibling_clean_return_trips_detector3_when_watchdog_enabled() -> N
 
 
 async def test_sibling_exception_always_signals_shutdown() -> None:
-    """The exception path is NOT gated by watchdog_enabled: a crashing
+    """The exception path is not gated by watchdog_enabled: a crashing
     sibling must set shutdown_event even when the watchdog is disabled."""
     from taskq.worker._bootstrap import _make_sibling_spawner
 
@@ -768,7 +768,7 @@ async def test_compute_health_stale_loop_flips_readiness_when_enabled() -> None:
 
 
 async def test_compute_health_stale_loop_flips_readiness_when_watchdog_disabled() -> None:
-    """watchdog_enabled gates the force-exit detectors, NOT the readiness
+    """watchdog_enabled gates the force-exit detectors, not the readiness
     signal: a worker whose loops have died must report NotReady even with
     the watchdog off, or the zombie keeps taking traffic with no signal."""
     from taskq.worker.health import compute_health
@@ -789,7 +789,7 @@ async def test_compute_health_stale_loop_flips_readiness_when_watchdog_disabled(
 
 # ── ShutdownWatchdog must count from the first shutdown signal ───────────
 #
-# shutdown_event is set at the END of orchestrate_shutdown. Anchoring the
+# shutdown_event is set at the end of orchestrate_shutdown. Anchoring the
 # deadline on the event alone would give the drain a free pass: the cancel
 # and cleanup graces would not count against termination_grace_period.
 # With started_at wired, the countdown starts at the first shutdown signal.
@@ -1359,7 +1359,7 @@ async def test_shutdown_watchdog_wakes_when_shutdown_phase_changes(
     watchdog.start()
 
     # Simulate Phase 1: producer_stop_event is set, but shutdown_event
-    # is NEVER set (orchestrate_shutdown hangs)
+    # is never set (orchestrate_shutdown hangs)
     shutdown_started.set()
     await asyncio.sleep(0.3)
 
@@ -1499,9 +1499,9 @@ async def test_timeout_gap_within_budget_does_not_trip(
 # ── A fired command_timeout must not crash the leader loops ─────────────
 #
 # asyncpg surfaces a fired command_timeout in two shapes: TimeoutError
-# (client-side deadline) AND asyncpg.QueryCanceledError (server-side 57014
+# (client-side deadline) and asyncpg.QueryCanceledError (server-side 57014
 # after the driver's cancel request lands). QueryCanceledError is a
-# PostgresError, NOT a PostgresConnectionError and NOT an OSError, so the
+# PostgresError, not a PostgresConnectionError and not an OSError, so the
 # loops' conn-loss tuples miss it. Before the leader conns were bounded
 # this shape could not occur; now it can, and an uncaught one escapes into
 # the leader TaskGroup and tears the worker down mid-PG-degradation: the
@@ -1808,7 +1808,7 @@ async def test_cron_multi_statement_tick_gap_stays_within_budget(
 # into the TaskGroup (a crash with no distinct record) or, in cron's
 # blanket catch, retried forever as a zombie that ticks but does no work,
 # which detector 2 cannot see because the tick lands at the loop top. The
-# guard makes the choice explicit: a few tolerated, LOUD occurrences, then
+# guard makes the choice explicit: a few tolerated, loud occurrences, then
 # deliberately fatal.
 
 
@@ -1919,7 +1919,7 @@ async def test_scheduled_wake_backstop_tolerates_then_goes_fatal(
 # family: server-side cancels, admin shutdown, crash recovery, connection
 # saturation, transaction-rollback states, session timeouts. Every one of
 # them is "PG is having a moment; retry next tick", and every one of them
-# used to be a coin-flip away from crashing a loop that enumerated only
+# is a coin-flip away from crashing a loop that enumerates only
 # the OSError flavours. The taxonomy pin locks the classification facts
 # the set relies on (so an asyncpg re-parenting breaks it loudly), and the
 # parametrized behavioral test drives each shape through a real loop.
@@ -1934,7 +1934,7 @@ def test_transient_pg_error_taxonomy_facts() -> None:
     from taskq.worker._transient import TRANSIENT_PG_ERRORS
 
     # None of the OperatorIntervention/InsufficientResources/TransactionRollback
-    # shapes are covered by the OSError-only tuples loops used to enumerate;
+    # shapes are covered by an OSError-only enumeration;
     # that is exactly why they must be named explicitly.
     for cls in (
         asyncpg.QueryCanceledError,
@@ -1957,7 +1957,7 @@ def test_transient_pg_error_taxonomy_facts() -> None:
     assert issubclass(asyncpg.ConnectionDoesNotExistError, TRANSIENT_PG_ERRORS)
     assert issubclass(asyncpg.ConnectionFailureError, TRANSIENT_PG_ERRORS)
 
-    # Auth failures stay OUT: they must not retry silently (static DSN);
+    # Auth failures stay out: they must not retry silently (static DSN);
     # the credential-provider reopen path has its own deliberate catch.
     assert not issubclass(asyncpg.InvalidPasswordError, TRANSIENT_PG_ERRORS)
 
@@ -1990,7 +1990,7 @@ def test_pooled_transient_taxonomy_facts() -> None:
 
 
 def test_sqlstate_26000_classifies_transient_under_pooled_and_not_direct() -> None:
-    """The pooled gate: 26000/42P05 are transient ONLY when the deployment
+    """The pooled gate: 26000/42P05 are transient only when the deployment
     declares a transaction-mode pooler (TASKQ_PG_IS_POOLED)."""
     from taskq.worker._transient import is_transient_pg_error
 
@@ -2198,7 +2198,7 @@ async def test_cron_loop_treats_transient_error_as_retry_not_fatal(
 async def test_election_probe_cleanup_runs_before_guard_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """guard.unexpected must raise AFTER cleanup so the fatal iteration still
+    """guard.unexpected must raise after cleanup so the fatal iteration still
     drops the conn and clears is_leader."""
     from types import SimpleNamespace
     from typing import cast
@@ -2604,7 +2604,7 @@ async def test_transient_pg_errors_doc_describes_query_canceled_correctly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """QueryCanceledError (server-side 57014 - pg_cancel_backend, or a
-    server-side statement_timeout, NOT a fired client-side command_timeout,
+    server-side statement_timeout, not a fired client-side command_timeout,
     which raises TimeoutError instead) must be classified as transient:
     present in TRANSIENT_PG_ERRORS, and retried (not fatal) by the cron
     loop when raised. Follows the same drive-it-through-the-cron-loop

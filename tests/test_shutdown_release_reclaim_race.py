@@ -2,14 +2,14 @@
 concurrent reclaim sweep on the same row.
 
 Hypothesis under test: ``mark_interrupted``'s fence
-(``status='running' AND locked_by_worker=$worker_id AND attempt=$attempt AND
+(``status='running' and locked_by_worker=$worker_id and attempt=$attempt and
 cancel_phase=0``) and the leader's crash-reclaim sweep
 (``sweep_expired_locks``, eligible once the lease has expired) both operate
 on rows with ``status='running'``. If a departing worker's lock lease has
 already expired by the time the RELEASING phase reaches a row -- a slow
 shutdown racing a leader's reclaim tick -- both writers could believe they
 are the one entitled to release the row: the reclaim sweep would spend it as
-a crash (``ATTEMPT_REFUND_SQL`` is NOT used on the crash-reclaim retry arm;
+a crash (``ATTEMPT_REFUND_SQL`` is not used on the crash-reclaim retry arm;
 the attempt is left as claimed) while ``mark_interrupted`` would leave the
 attempt as claimed too (the interrupt arm carries no refund since: the
 attempt started executing), and if both landed the job could be written
@@ -85,8 +85,8 @@ async def test_releasing_phase_does_not_double_refund_against_a_concurrent_recla
     claimed_attempt = await _claim_like_dispatch(deps, schema, job_id, worker_id)
     assert claimed_attempt == baseline_attempt + 1
 
-    # Fire the RELEASING-phase release and the leader's crash-reclaim sweep
-    # concurrently against the SAME row: both see status='running' and an
+    # Fire the releasing-phase release and the leader's crash-reclaim sweep
+    # concurrently against the same row: both see status='running' and an
     # expired lease, and both believe they may be the one to transition it.
     interrupted_result, reclaimed_count = await asyncio.gather(
         backend.mark_interrupted(

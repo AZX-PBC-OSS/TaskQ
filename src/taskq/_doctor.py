@@ -123,44 +123,44 @@ def _unknown_env_findings(unknown_env_vars: Sequence[str]) -> list[str]:
 #: quote.  Derivation: 24h spans one full diurnal traffic cycle — the
 #: shortest window that cannot mistake a nightly lull for a fleet to
 #: shrink — while staying far inside the default 30-day prune retention,
-#: so both UNION tiers (live + archive) can answer every statement.  It
+#: so both union tiers (live + archive) can answer every statement.  It
 #: is a member of the insights layer's own closed window set
 #: (INSIGHTS_WINDOWS), not a doctor-private value the docs cannot
 #: reproduce.
 _DOCTOR_INSIGHTS_WINDOW: Final[timedelta] = INSIGHTS_WINDOWS["24h"]
 
-#: STARVED: the utilization (due depth / effective capacity) above which
+#: starved: the utilization (due depth / effective capacity) above which
 #: the imbalance family reports.  Derivation: effective capacity is the
-#: jobs ONE claim wave can absorb (sum(max_concurrent) over the actors
+#: jobs one claim wave can absorb (sum(max_concurrent) over the actors
 #: routed to the queue x live workers).  Crossing 1.0 means more due work
 #: than one wave — but any enqueue burst crosses 1.0 transiently, and the
 #: dispatcher is built to absorb exactly that.  2.0 means the queue still
-#: holds a full SECOND wave after the first drains entirely: a burst that
+#: holds a full second wave after the first drains entirely: a burst that
 #: size is a fleet too small for its arrival rate.  The number is also
 #: the lever's own granularity — one added worker (or one max_concurrent
 #: step) adds exactly one wave of capacity — so a 2x finding is one
 #: lever away from resolved.
 _IMBALANCE_UTILIZATION_HIGH: Final[float] = 2.0
 
-#: STARVED (strand arm): the oldest due job's age must exceed the
+#: starved (strand arm): the oldest due job's age must exceed the
 #: queue's own p95 wait by this factor.  Derivation: the p95 wait is
-#: computed over the SAME window the pathological depth would inflate —
+#: computed over the same window the pathological depth would inflate —
 #: a burst raises the p95 with the depth, so a factor arm is what
 #: survives that confound.  4x the tail means the row has outlived the
-#: entire observed distribution INCLUDING its tail by a full factor: 95%
+#: entire observed distribution including its tail by a full factor: 95%
 #: of the queue's recent deliveries waited less than a quarter of this
 #: row's age, which no reading of the same window calls healthy.
 _IMBALANCE_STRAND_FACTOR: Final[float] = 4.0
 
-#: STARVED (strand arm) and the family-wide persistence floor: the oldest
+#: starved (strand arm) and the family-wide persistence floor: the oldest
 #: due job's age must exceed the queue's own p95 wait by this factor.  Derivation: the p95 wait is
-#: computed over the SAME window the pathological depth would inflate —
+#: computed over the same window the pathological depth would inflate —
 #: a burst raises the p95 with the depth, so a factor arm is what
 #: survives that confound.  4x the tail means the row has outlived the
-#: entire observed distribution INCLUDING its tail by a full factor: 95%
+#: entire observed distribution including its tail by a full factor: 95%
 #: of the queue's recent deliveries waited less than a quarter of this
 #: row's age, which no reading of the same window calls healthy.
-#: The floor ALSO gates the utilization arm and the drain family's
+#: The floor also gates the utilization arm and the drain family's
 #: depth claim (measured against the imbalance read's own
 #: ``oldest_due_age_s``): a depth snapshot younger than the floor is a
 #: burst the dispatcher may absorb before the report is read — the same
@@ -173,27 +173,32 @@ _IMBALANCE_STRAND_FACTOR: Final[float] = 4.0
 #: it elapsed.)
 _IMBALANCE_STRAND_FLOOR_S: Final[float] = 60.0
 
+#: Time units for the doctor's duration labels.
+_SECS_PER_DAY: Final[int] = 86400
+_SECS_PER_HOUR: Final[int] = 3600
+_SECS_PER_MINUTE: Final[int] = 60
+
 
 def _insights_window_label(window: timedelta) -> str:
     """The window as the findings quote it ("24h"), derived from the
     timedelta so the label cannot drift from the constant it names.
     Hours win below two days — the window's own docs quote 24h, not 1d."""
     seconds = window.total_seconds()
-    if seconds >= 172800 and seconds % 86400 == 0:
-        return f"{int(seconds // 86400)}d"
-    if seconds % 3600 == 0:
-        return f"{int(seconds // 3600)}h"
+    if seconds >= 2 * _SECS_PER_DAY and seconds % _SECS_PER_DAY == 0:
+        return f"{int(seconds // _SECS_PER_DAY)}d"
+    if seconds % _SECS_PER_HOUR == 0:
+        return f"{int(seconds // _SECS_PER_HOUR)}h"
     return f"{int(seconds)}s"
 
 
 def _format_eta(seconds: float) -> str:
     """An eta in the unit the operator would say it out loud in."""
-    if seconds >= 86400:
-        return f"{seconds / 86400:.1f} days"
-    if seconds >= 3600:
-        return f"{seconds / 3600:.1f} hours"
-    if seconds >= 60:
-        return f"{seconds / 60:.0f} minutes"
+    if seconds >= _SECS_PER_DAY:
+        return f"{seconds / _SECS_PER_DAY:.1f} days"
+    if seconds >= _SECS_PER_HOUR:
+        return f"{seconds / _SECS_PER_HOUR:.1f} hours"
+    if seconds >= _SECS_PER_MINUTE:
+        return f"{seconds / _SECS_PER_MINUTE:.0f} minutes"
     return f"{seconds:.0f}s"
 
 
@@ -338,7 +343,7 @@ def _drain_findings(
 
     ``has_traffic = false`` (no terminalisations in the window) means the
     estimate is honestly NULL — "already drained" would be a lie — so a
-    no-traffic window renders NO drain finding; the widening-the-window
+    no-traffic window renders no drain finding; the widening-the-window
     advice lives in docs/guides/insights.md, and the empty queue is what
     the overprovisioning family exists to catch.
     """
@@ -391,11 +396,11 @@ def _cron_lag_findings(
     Two trigger arms:
 
     * ``runaway_trending`` — the statement's own verdict: fires >
-      cleared in BOTH the current and the prior window.  One window is a
+      cleared in both the current and the prior window.  One window is a
       burst; two consecutive is the runaway shape.
     * outstanding above the catch-up window's slot capacity.  The
       catch-up window is the same insights window, and its slot capacity
-      is the schedule's OWN demonstrated clearance — the better of the
+      is the schedule's own demonstrated clearance — the better of the
       current and the prior equal window (``max(cleared_window,
       cleared_prior)``), REQUIRED POSITIVE: what the fleet actually
       cleared in one window at its best, not a theoretical ceiling it has
@@ -452,7 +457,7 @@ def _storage_mode_findings(
     flag_on: bool,
     downgraded_policies: Sequence[str] = (),
 ) -> list[str]:
-    """The report lines for the storage-mode family, the FIRST family in
+    """The report lines for the storage-mode family, the first family in
     every doctor report: the mode the connected server was DETECTED in
     (``taskq.timescale.detect_storage_mode`` — the extension catalog, then
     ``timescaledb.license``, never the settings) plus that mode's
@@ -676,7 +681,7 @@ def _doctor_findings(
     # The operational-insight families, read from the same statements the
     # docs guide documents (taskq/insights.py): the live-shape conditions
     # the stored-config families above cannot see, because they are about
-    # TRAFFIC, not config.  Every read is a SELECT — the read-only
+    # traffic, not config.  Every read is a SELECT — the read-only
     # contract holds here exactly as it holds above.
     findings.extend(
         _imbalance_findings(imbalance_rows or [], wait_rows or [], stored_by_actor, insights_window)

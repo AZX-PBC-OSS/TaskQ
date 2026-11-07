@@ -12,10 +12,10 @@ three batch arms, the sub-job fan-out enqueuer). No parallel validation
 path exists. The judged set is the REGISTERED queue assignments (the
 fleet-wide ``actor_config`` DB truth the client reads without actor
 registration -- the split-deployment constraint: the web process
-submits, the worker consumes, actors register ONLY in the worker, so
+submits, the worker consumes, actors register only in the worker, so
 the client-side gate consults configuration/stored truth, never a
 registry). The worker-side boot gate (a configured queue nothing routes
-to) runs in the worker bootstrap ONLY, after ``sync_actor_config``'s
+to) runs in the worker bootstrap only, after ``sync_actor_config``'s
 fleet-wide read-back.
 
 Postures pinned here:
@@ -25,7 +25,7 @@ Postures pinned here:
   not evidence of stranding -- strict must not turn a database blip
   into a submit outage. A POSITIVE snapshot verdict (queue present,
   not routed) is what refuses.
-* **Default never mutates explicit intent**: strict OFF by default;
+* **Default never mutates explicit intent**: strict off by default;
   the non-strict behaviors (including the unserved-queue NOTE, the
   diagnostic strict sits above) are pinned unchanged.
 * **The escape hatch is the per-submit override**
@@ -118,10 +118,10 @@ def _configure(backend: InMemoryBackend, ref: ActorRef[Any, Any]) -> None:
 
 
 async def test_strict_submit_to_unknown_queue_raises_and_stores_nothing() -> None:
-    """THE RED: strict on, a one-character typo'd queue name raised
+    """The red: strict on, a one-character typo'd queue name raised
     NOTHING and stored the row anyway -- pending forever, no worker
     claims it, silent data non-delivery. The green: the refusal fires
-    at the submit site and the row is NOT stored.
+    at the submit site and the row is not stored.
 
     Steady-state fleet (a served route registered, the snapshot
     non-empty): the asymmetry doctrine's empty-snapshot rule disables
@@ -136,7 +136,7 @@ async def test_strict_submit_to_unknown_queue_raises_and_stores_nothing() -> Non
         await client.enqueue(ref, _Payload(), queue="emial")
     # The orphan is never written: nothing sits pending on a queue no
     # worker claims.
-    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin IS the absence of a stored row; the store is the backend's private dict.
+    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin is the absence of a stored row; the store is the backend's private dict.
 
 
 async def test_strict_error_names_the_queue_and_the_judged_set() -> None:
@@ -147,7 +147,7 @@ async def test_strict_error_names_the_queue_and_the_judged_set() -> None:
     backend = InMemoryBackend(clock=FakeClock(_NOW))
     client = JobsClient(backend, settings=_strict_settings())
     # A registered route exists (the judged set is non-empty) so the
-    # message can be pinned to NAME it.
+    # message can be pinned to name it.
     served = _make_ref(name="served", queue="email")
     _configure(backend, served)
     ref = _make_ref()
@@ -175,12 +175,12 @@ async def test_strict_registered_queue_still_enqueues() -> None:
 
 
 async def test_default_off_typo_stores_silently_with_the_note() -> None:
-    """Default never mutates explicit intent: strict OFF (the default),
+    """Default never mutates explicit intent: strict off (the default),
     the same typo'd submit still stores the row and the unserved-queue
     NOTE (the diagnostic strict sits above) still fires. No exception."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
     client = JobsClient(backend, settings=_strict_settings())
-    # The knob's DEFAULT is off; loading with strict=true above and
+    # The knob's default is off; loading with strict=true above and
     # false here would be two loads -- pin the default literally.
     default = TaskQSettings.load_from_dict({})
     assert default.queues_strict is False
@@ -285,7 +285,7 @@ async def test_batch_arm_refuses_unknown_queue() -> None:
     ref = _make_ref(queue="emial")
     with pytest.raises(UnknownQueueError):
         await client.enqueue_batch([_item(ref)])
-    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin IS the absence of a stored row.
+    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin is the absence of a stored row.
 
 
 async def test_batch_arm_registered_queue_enqueues() -> None:
@@ -312,7 +312,7 @@ async def test_streaming_arm_refuses_unknown_queue() -> None:
 
     with pytest.raises(UnknownQueueError):
         await client.enqueue_batch_streaming(_stream())
-    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin IS the absence of a stored row.
+    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin is the absence of a stored row.
 
 
 async def test_fast_arm_refuses_unknown_queue() -> None:
@@ -325,7 +325,7 @@ async def test_fast_arm_refuses_unknown_queue() -> None:
     ref = _make_ref(queue="emial")
     with pytest.raises(UnknownQueueError):
         await client.enqueue_batch_fast([_item(ref)])
-    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin IS the absence of a stored row.
+    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin is the absence of a stored row.
 
 
 async def test_sub_enqueuer_fanout_refuses_unknown_queue() -> None:
@@ -345,7 +345,7 @@ async def test_sub_enqueuer_fanout_refuses_unknown_queue() -> None:
     with pytest.raises(UnknownQueueError):
         await enqueuer.enqueue(ref, _Payload())
     # A refused child never entered the buffer either: the consumer's
-    # Snooze/RetryAfter drain re-enqueues BUFFERED args, so a refused
+    # Snooze/RetryAfter drain re-enqueues buffered args, so a refused
     # name cannot re-enter through the drain.
     assert enqueuer.drain_for_re_enqueue() == []
 
@@ -475,8 +475,8 @@ async def test_strict_fail_open_makes_no_retry_storm() -> None:
 
 
 async def test_batch_finalizer_refuses_unknown_queue_atomic() -> None:
-    """THE FINALIZER BYPASS (the adversarial review's blocking find): the
-    finalizer's args write through their OWN sites after the per-item
+    """The finalizer bypass (the adversarial review's blocking find): the
+    finalizer's args write through their own sites after the per-item
     verdict loop, which iterates items only — a finalizer routed to an
     unregistered queue stored the orphan SILENTLY (no refusal, no note)
     on every batch arm. The atomic arm's pin: refusal at the door,
@@ -490,12 +490,12 @@ async def test_batch_finalizer_refuses_unknown_queue_atomic() -> None:
         await client.enqueue_batch(
             [_item(served)], finalizer=EnqueueItem(actor_ref=finalizer, payload=_Payload())
         )
-    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin IS the absence of a stored row — the finalizer's orphan included.
+    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin is the absence of a stored row — the finalizer's orphan included.
 
 
 async def test_batch_finalizer_refuses_unknown_queue_caller_connection() -> None:
     """The caller-connection write site of enqueue_batch's finalizer (the
-    enqueue_with_conn arm) refuses through the SAME verdict — one seam
+    enqueue_with_conn arm) refuses through the same verdict — one seam
     covers both write sites, pinned drivable."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
     client = JobsClient(backend, settings=_strict_settings())
@@ -508,7 +508,7 @@ async def test_batch_finalizer_refuses_unknown_queue_caller_connection() -> None
             finalizer=EnqueueItem(actor_ref=finalizer, payload=_Payload()),
             connection=object(),  # type: ignore[arg-type]  # Why: the in-memory backend takes any connection stand-in; the pin drives the caller-connection arm.
         )
-    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin IS the absence of a stored row.
+    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin is the absence of a stored row.
 
 
 async def test_batch_finalizer_registered_queue_enqueues() -> None:
@@ -541,12 +541,12 @@ async def test_streaming_finalizer_refuses_unknown_queue_atomic() -> None:
             (item for item in [_item(served)]),
             finalizer=EnqueueItem(actor_ref=finalizer, payload=_Payload()),
         )
-    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin IS the absence of a stored row.
+    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin is the absence of a stored row.
 
 
 async def test_streaming_finalizer_refuses_unknown_queue_caller_connection() -> None:
     """The streaming arm's chunked (caller-connection) path writes the
-    finalizer FIRST, before any chunk loop refresh — the distinct seam:
+    finalizer first, before any chunk loop refresh — the distinct seam:
     the verdict warms the snapshot itself (the single-refresh budget),
     then refuses before the insert."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
@@ -560,7 +560,7 @@ async def test_streaming_finalizer_refuses_unknown_queue_caller_connection() -> 
             finalizer=EnqueueItem(actor_ref=finalizer, payload=_Payload()),
             connection=object(),  # type: ignore[arg-type]  # Why: the in-memory backend takes any connection stand-in; the pin drives the chunked caller-connection arm.
         )
-    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin IS the absence of a stored row.
+    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin is the absence of a stored row.
 
 
 # ── The row-creating bypass paths, exempt by construction ─────────────
@@ -639,7 +639,7 @@ def test_worker_boot_gate_fails_fast_on_unrouted_queue() -> None:
 
 
 def test_worker_boot_gate_message_pluralizes() -> None:
-    """One raise refuses EVERY unrouted queue, so the message reads
+    """One raise refuses every unrouted queue, so the message reads
     right at both lengths: singular 'queue ... has ... it', plural
     'queues ... have ... them'."""
     from taskq.worker._bootstrap import _fail_fast_on_unrouted_configured_queues
@@ -692,7 +692,7 @@ def test_worker_boot_gate_off_by_default() -> None:
 def test_worker_boot_gate_stored_assignment_provides_coverage() -> None:
     """The stored (operator-owned) assignment is what routes cron fires
     and re-pended rows: an actor whose stored row routes a configured
-    queue covers it EVEN when this process's registry is empty -- the
+    queue covers it even when this process's registry is empty -- the
     rolling-deploy shape (the sibling image registered the actor; its
     row persists fleet-wide) boots."""
     from taskq.worker._bootstrap import _fail_fast_on_unrouted_configured_queues
@@ -729,11 +729,11 @@ def test_worker_boot_gate_judges_nothing_on_empty_configured_set() -> None:
 
 
 async def test_empty_snapshot_never_refuses_first_deploy() -> None:
-    """THE EMPTY-SNAPSHOT RULE (the first-deploy explosion guard): a
+    """The empty-snapshot rule (the first-deploy explosion guard): a
     stored-assignment snapshot that is EMPTY — no worker has ever
     started — carries ZERO evidence of stranding, so strict DISABLES
     itself (advisory posture, the note still fires) and the job is
-    ACCEPTED. Failing-first: this exact submit raised at the base before the
+    ACCEPTED. The rejected shape: this exact submit raised at the base before the
     rule landed."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))  # fresh store: nothing registered
     client = JobsClient(backend, settings=_strict_settings())
@@ -747,10 +747,10 @@ async def test_empty_snapshot_never_refuses_first_deploy() -> None:
 
 
 async def test_env_declared_queue_passes_through_registration_lag() -> None:
-    """THE TWO-SOURCE RULE, mid-deploy pin: a queue the process's env
+    """The two-source rule, mid-deploy pin: a queue the process's env
     set declares but the snapshot lacks is a NEW queue mid-deploy (the
     worker boots later) — ALLOWED through the registration lag, the
-    advisory note still fires. Only a queue absent from BOTH sources
+    advisory note still fires. Only a queue absent from both sources
     refuses."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
     settings = WorkerSettings.load_from_dict(
@@ -791,7 +791,7 @@ async def test_snapshot_only_source_refusal_names_the_deploy_order() -> None:
 
 async def test_partial_read_heals_via_the_next_refresh() -> None:
     """A failed read DISABLES the check (the pin above); the recovery
-    half: once the store heals, the NEXT refresh (the TTL cadence —
+    half: once the store heals, the next refresh (the TTL cadence —
     invalidate() stands in for the clock here, the same seam operator
     tooling uses) re-arms the verdict. No refusal may originate from a
     deploy/migration artifact, and none persists past the heal."""
@@ -807,7 +807,7 @@ async def test_partial_read_heals_via_the_next_refresh() -> None:
     ref = _make_ref()
     _configure(flappy, ref)
     client = JobsClient(flappy, settings=_strict_settings())
-    # The migration window: the read fails, strict fails OPEN.
+    # The migration window: the read fails, strict fails open.
     handle = await client.enqueue(ref, _Payload(), queue="email")
     assert handle.row.status == "pending"
     # The store heals; the next refresh (TTL) re-arms the verdict.
@@ -821,9 +821,9 @@ async def test_partial_read_heals_via_the_next_refresh() -> None:
 
 
 def test_worker_boot_gate_flags_retired_queue_assignments_as_advisory() -> None:
-    """THE RETIREMENT HALF (no silent allowance forever): stored
+    """The retirement half (no silent allowance forever): stored
     assignments for actors this worker neither serves nor consumes —
-    retired-actor drift — surface as ONE aggregated ADVISORY at boot,
+    retired-actor drift — surface as one aggregated ADVISORY at boot,
     never a refusal (the inverse of the configured-but-unrouted gate,
     which is the refusal side)."""
     from taskq.worker._bootstrap import (
@@ -875,20 +875,20 @@ async def test_format_tier_refuses_bad_queue_names_even_with_strict_off(
     every enqueue arm builds args through ``build_enqueue_args``, whose
     charset check (the canonical ``_validate_queue_name``) runs for the
     per-call override and the actor-declared default alike. Pinned
-    through the client arm with strict OFF: the refusal is a ValueError
+    through the client arm with strict off: the refusal is a ValueError
     naming the queue, and nothing is stored."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
     client = JobsClient(backend, settings=TaskQSettings.load_from_dict({}))
     # The ref's own queue stays valid: a bad literal is refused even
     # earlier, at decoration time (actor.py's half of the same tier).
-    # This pin drives the PER-CALL OVERRIDE path — the one the QueueName
+    # This pin drives the per-call override path — the one the QueueName
     # annotation cannot see.
     ref = _make_ref(queue="email")
     with pytest.raises(ValueError) as excinfo:
         await client.enqueue(ref, _Payload(), queue=bad_name)
     message = str(excinfo.value)
     assert "queue name" in message, message
-    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin IS the absence of a stored row.
+    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: the pin is the absence of a stored row.
 
 
 async def test_format_error_names_the_queue_the_rule_and_the_shape() -> None:

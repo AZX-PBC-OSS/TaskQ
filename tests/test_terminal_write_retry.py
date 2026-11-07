@@ -207,7 +207,7 @@ async def test_write_that_keeps_failing_is_reported_after_the_budget() -> None:
     assert backend.write_calls == 4
     retries = _events(captured, "terminal-write-retry")
     assert [e["attempt"] for e in retries] == [1, 2, 3]
-    # The event records the COMPUTED wait truncated to an int:
+    # The event records the computed wait truncated to an int:
     # base * uniform(1 - _TERMINAL_WRITE_JITTER, 1 + _TERMINAL_WRITE_JITTER),
     # so the shipped band is [0.75*base, 1.25*base] and the int() truncation
     # shaves up to a millisecond off the low edge (a 0.75 draw on the 50 ms

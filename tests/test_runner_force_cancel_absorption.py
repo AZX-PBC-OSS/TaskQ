@@ -100,7 +100,7 @@ async def test_drain_leaves_callers_cancel_count_unchanged_after_absorbing_force
     # actually running, racing against run_until_drained's own await of the
     # stubborn actor (which never yields in a way that would let the
     # escalation driver run inline). It runs as a background task so the
-    # drain, awaited directly below in THIS task, can be force-cancelled.
+    # drain, awaited directly below in this task, can be force-cancelled.
     async def escalate_once_running() -> None:
         await asyncio.wait_for(stubborn_started.wait(), timeout=2.0)
         # Give run_until_drained's inline await a chance to actually park on
@@ -263,7 +263,7 @@ async def test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on
 ):
     """The absorb is per-dispatch, not one-shot: a second stubborn job
     escalated after the drain resumed dispatching must be absorbed on the
-    cancel-count baseline of ITS OWN dispatch, with the drain still
+    cancel-count baseline of ITS own dispatch, with the drain still
     continuing to the work queued behind.
 
     This is the between-jobs cell of the force-cancel contract: the second

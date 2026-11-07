@@ -15,7 +15,7 @@ import taskq.migrate
 #: the deps binding, the worker fleet and every trigger agree on the
 #: estate.
 from examples.ledgerwatch.app import (
-    app as lw_app,  # noqa: F401  # pyright: ignore[reportUnusedImport]  # Why: the import IS the estate's registration for the in-process runner doors.
+    app as lw_app,  # noqa: F401  # pyright: ignore[reportUnusedImport]  # Why: the import is the estate's registration for the in-process runner doors.
 )
 from examples.ledgerwatch.tests.support import (
     SCHEMA,

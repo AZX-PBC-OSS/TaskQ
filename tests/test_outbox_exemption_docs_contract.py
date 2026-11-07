@@ -1,5 +1,5 @@
 """Docs/docstrings must not promise the crash-reclaim outbox slice
-(``kind='state_change'`` AND ``detail->>'reason'='lock_expired'``) is
+(``kind='state_change'`` and ``detail->>'reason'='lock_expired'``) is
 "exempt from the sweep at any setting" -- it is not.
 
 ``_sweeps.py``'s ``expired_outbox`` CTE deletes those rows once

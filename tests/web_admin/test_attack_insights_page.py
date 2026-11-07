@@ -9,13 +9,13 @@ happy path is ``tests/web_admin/test_insights.py``'s subject):
 * the utilization verdict's BOUNDARY — exactly at capacity, a hair past
   it, the healthy-idle NULL shapes, and a fleet whose liveness died
   mid-window;
-* the single-checkout claim — six reads over ONE pooled connection, the
+* the single-checkout claim — six reads over one pooled connection, the
   slot held across a slow read, exhaustion answering 503 (never a
   hang), and a fetcher raising answering a LOUD failure (never a
   half-rendered page that reads as healthy);
 * the render-size bound on a 500-actor fleet (the actors page's
   ``STATS_LIMIT`` discipline is the family precedent);
-* byte-identical HTML on plain Postgres AND TimescaleDB hypertables
+* byte-identical HTML on plain Postgres and TimescaleDB hypertables
   across every declared window;
 * the HTML-escaping discipline against metacharacter-laden queue and
   actor names seeded into the database.
@@ -183,17 +183,17 @@ async def _seed_edges_fleet(conn: asyncpg.Connection, schema: str) -> None:
     """The utilization verdict's boundary shapes, one queue each.
 
     * ``edge_exact_q``  — 2 due over (cap 2 x 1 worker) = EXACTLY 1.0: the
-      documented balanced edge → NO badge.
+      documented balanced edge → no badge.
     * ``edge_over_q``   — 1001 ÷ 1000 = 1.001 → the badge, whose rounded
-      display ALSO reads "100%".
-    * ``edge_under_q``  — 999 ÷ 1000 = 0.999 → NO badge, display "100%":
+      display also reads "100%".
+    * ``edge_under_q``  — 999 ÷ 1000 = 0.999 → no badge, display "100%":
       the badge keys on the true ratio, never the rounded percent.
-    * ``edge_idle_q``   — live worker, NO actor_config, zero jobs → NULL
-      utilization over ZERO due work → NO badge (healthy-idle).
+    * ``edge_idle_q``   — live worker, no actor_config, zero jobs → NULL
+      utilization over ZERO due work → no badge (healthy-idle).
     * ``edge_orphan_q`` — actor_config only, no worker, no jobs → same
-      NULL-over-zero shape → NO badge.
-    * ``edge_zero_q``   — worker AND capacity AND zero due → utilization
-      exactly 0.0 → NO badge.
+      NULL-over-zero shape → no badge.
+    * ``edge_zero_q``   — worker and capacity and zero due → utilization
+      exactly 0.0 → no badge.
     * ``edge_stale_q``  — the worker's liveness died (last_seen 600 s
       ago, outside the 30 s window) with capacity 4 and 3 due: the
       denominator dropped to zero mid-window → the unservable badge.
@@ -424,7 +424,7 @@ async def test_utilization_exactly_at_capacity_is_the_documented_balanced_edge(
     matrix: tuple[_Mounted, _Mounted],
 ) -> None:
     """2 due ÷ capacity 2 = EXACTLY 1.0: the docs' balanced edge — the
-    row renders "100%" and NO badge.  A verdict at exactly-at-capacity
+    row renders "100%" and no badge.  A verdict at exactly-at-capacity
     would cry wolf on the balanced shape the docs define as healthy."""
     edges, _ = matrix
     html = await _html(edges)
@@ -439,7 +439,7 @@ async def test_utilization_exactly_at_capacity_is_the_documented_balanced_edge(
 async def test_the_badge_keys_on_the_true_ratio_not_the_rounded_display(
     matrix: tuple[_Mounted, _Mounted],
 ) -> None:
-    """THE float-boundary pair: 1.001 and 0.999 both display "100%", but
+    """The float-boundary pair: 1.001 and 0.999 both display "100%", but
     only the true-ratio side over the high-water mark earns the badge.
     A verdict computed on the ROUNDED display would badge both."""
     edges, _ = matrix
@@ -463,9 +463,9 @@ async def test_the_badge_keys_on_the_true_ratio_not_the_rounded_display(
 async def test_null_utilization_over_zero_due_work_is_healthy_idle_never_unservable(
     matrix: tuple[_Mounted, _Mounted],
 ) -> None:
-    """The badge must NOT fire on an empty idle queue: all three
+    """The badge must not fire on an empty idle queue: all three
     NULL-utilization shapes with ZERO due work (no worker and no config;
-    config but no worker; worker AND config but nothing due) render no
+    config but no worker; worker and config but nothing due) render no
     unservable verdict — unservable means DUE WORK nothing can serve."""
     edges, _ = matrix
     html = await _html(edges)
@@ -483,7 +483,7 @@ async def test_a_worker_dropping_out_of_liveness_turns_a_due_queue_unservable(
 ) -> None:
     """The denominator dies mid-window: the only worker's last_seen left
     the 30 s liveness window, effective capacity collapses to zero, and
-    the queue's due work is genuinely unservable RIGHT NOW — the badge
+    the queue's due work is genuinely unservable RIGHT now — the badge
     is the honest verdict.  The identical shape with a live worker is
     75% and badgeless: the liveness bound, not the badge, moved."""
     edges, _ = matrix
@@ -507,7 +507,7 @@ async def test_a_worker_dropping_out_of_liveness_turns_a_due_queue_unservable(
 async def test_six_reads_run_over_one_checkout(
     monkeypatch: pytest.MonkeyPatch, matrix: tuple[_Mounted, _Mounted]
 ) -> None:
-    """The route's claimed shape: all six section reads observe the SAME
+    """The route's claimed shape: all six section reads observe the same
     checked-out connection — one consistent-ish snapshot, one slot."""
     edges, _ = matrix
     import taskq.web.admin.insights as route_mod
@@ -540,7 +540,7 @@ async def test_a_slow_read_holds_the_slot_and_exhaustion_answers_503_not_a_hang(
     concurrent page view on a one-connection pool cannot check out — and
     the bounded pool answers THAT with 503 + Retry-After, never a hang
     and never a half page.  This pins the cost of the single checkout
-    AND its honest exhaustion answer."""
+    and its honest exhaustion answer."""
     import taskq.web.admin.insights as route_mod
 
     schema = lab.plain_twin.schema
@@ -570,10 +570,10 @@ async def test_a_slow_read_holds_the_slot_and_exhaustion_answers_503_not_a_hang(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             first = asyncio.create_task(client.get("/admin/insights"))
-            # Fire the second view only when the first is OBSERVED holding
+            # Fire the second view only when the first is observed holding
             # the slot (it has entered the slow read): a fixed 0.1s stagger
             # raced the first request's dependency setup on a loaded runner,
-            # where the second view could acquire first and hand the FIRST
+            # where the second view could acquire first and hand the first
             # view the 503. With the event, the second view always arrives
             # while ~0.4s of the slow read remains - strictly more than the
             # 0.2s acquire timeout - so the 503 is arithmetic, not a race.
@@ -594,9 +594,9 @@ async def test_a_slow_read_holds_the_slot_and_exhaustion_answers_503_not_a_hang(
 async def test_a_raising_fetcher_fails_loudly_never_a_healthy_looking_half_page(
     monkeypatch: pytest.MonkeyPatch, matrix: tuple[_Mounted, _Mounted]
 ) -> None:
-    """THE honest failure shape: a fetcher raising (a legacy schema's
+    """The honest failure shape: a fetcher raising (a legacy schema's
     archive table missing a column) must blow the request up — the
-    operator gets an error, NEVER a 200 page where five sections render
+    operator gets an error, never a 200 page where five sections render
     and the sixth silently vanished (a half-empty insights page reads as
     a healthy fleet).  The route renders only after ALL six reads
     return, so any raise aborts the whole page."""
@@ -616,7 +616,7 @@ async def test_a_legacy_schema_missing_column_500s_and_releases_the_pool_slot(
 ) -> None:
     """The concrete legacy-schema shape: the archive table is missing the
     column the wait SQL's UNION arm names.  The page must fail loudly
-    (the driver's error propagates — no partial render) AND the pool
+    (the driver's error propagates — no partial render) and the pool
     slot must come back (the checkout's context manager releases on the
     way out), so the failure costs one request, not the pool."""
     run_tag = new_uuid().hex[:10]
@@ -689,7 +689,7 @@ async def test_per_actor_tables_are_capped_with_an_honest_truncation_note(
 async def test_sections_below_the_cap_render_no_apology(
     matrix: tuple[_Mounted, _Mounted],
 ) -> None:
-    """The truncation note appears ONLY when a section was actually
+    """The truncation note appears only when a section was actually
     capped — a small fleet's page must not apologize for nothing."""
     _, twin = matrix
     html = await _html(twin)
@@ -748,7 +748,7 @@ async def test_the_mode_badge_tells_the_same_truth_as_every_other_page(
 ) -> None:
     """Every sibling page resolves the deployment's realtime mode and
     renders it (the header badge) and lets ``_base.html`` decide the
-    meta-refresh from it.  The insights page must tell the SAME story:
+    meta-refresh from it.  The insights page must tell the same story:
     a page whose badge says "polling mode" while the rest of the UI says
     real-time — and which therefore keeps meta-refreshing six archive
     UNION aggregates every poll interval on a healthy realtime
@@ -793,7 +793,7 @@ async def test_the_mode_decision_moves_the_transport_not_just_the_badge(
     """The queues page's mode split, insights edition: POLLING mode
     renders the meta refresh and no htmx poll — a page without JS
     machinery stays live (the #570 contract); REALTIME mode renders the
-    htmx poll and NO meta refresh — the six archive-UNION aggregates
+    htmx poll and no meta refresh — the six archive-UNION aggregates
     must not be re-fetched by both transports (#337's double-fetch,
     #567's complaint); and an HX-Request poll tick returns the body
     partial alone, never the whole document."""
@@ -848,7 +848,7 @@ async def test_the_mode_decision_moves_the_transport_not_just_the_badge(
         _factory._redis_health_cache.expires_at = 0.0  # pyright: ignore[reportPrivateUsage]
 
 
-# ── The poll tick's contract: the fragment IS the page's body ────────────
+# ── The poll tick's contract: the fragment is the page's body ────────────
 
 
 async def test_a_parametrised_page_poll_keeps_its_selections_and_its_transport(
@@ -859,7 +859,7 @@ async def test_a_parametrised_page_poll_keeps_its_selections_and_its_transport(
     page's poll must carry both params on every tick — a poll that reset
     to the defaults would render a lying page (an operator reading 1h
     per-actor rows while the URL said 24h queue-grouped). The tick's
-    fragment must render the SAME data the full page would (the route's
+    fragment must render the same data the full page would (the route's
     fragment branch binds the identical context), and the fragment must
     carry the poll attributes again — the outerHTML self-replacement
     idiom: the transport survives its own swap, tick after tick."""
@@ -895,7 +895,7 @@ async def test_a_parametrised_page_poll_keeps_its_selections_and_its_transport(
         assert tick.status_code == 200
         assert "<html" not in tick.text, "the poll must return the partial, not the full page"
 
-        # The fragment is the SAME data the full page would render: the
+        # The fragment is the same data the full page would render: the
         # polled window's label, the per-actor grouping's Actor column,
         # and all six sections.
         assert "trailing <strong>1h</strong>" in tick.text, (

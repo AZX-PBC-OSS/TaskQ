@@ -47,7 +47,7 @@ _QUEUE_OVERVIEW_SQL = (
 
 # Live workers per subscribed queue - the leader's queue-depth sampler
 # read (worker/_leader_sweeps.py, _QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE):
-# statement_timestamp() (STABLE) so the liveness bound stays a btree
+# statement_timestamp() (stable) so the liveness bound stays a btree
 # condition on workers_last_seen_idx, and the admin UI's own liveness
 # window, so this page, the orphan banner and the stranded-jobs detector
 # all agree on which worker counts as alive.
@@ -136,9 +136,9 @@ _QUEUE_DETAIL_SQL_CURSOR = (
     "ORDER BY scheduled_at, id LIMIT {limit}"
 )
 
-# The backward (prev) fetch: the REVERSED seam and ordering take the rows
-# NEAREST the cursor from the other side; the wrapper re-sorts into the
-# page's display (ASC) order and the caller's truncation keeps the LAST
+# The backward (prev) fetch: the reversed seam and ordering take the rows
+# nearest the cursor from the other side; the wrapper re-sorts into the
+# page's display (asc) order and the caller's truncation keeps the last
 # page-worth (the overfetch row is the one nearest the cursor).
 _QUEUE_DETAIL_SQL_CURSOR_BACKWARD = (
     "SELECT * FROM ("
@@ -194,11 +194,12 @@ def register(router: APIRouter) -> None:
             q["stranded_count"] = stranded_by_queue.get(str(q["queue"]), 0)
         realtime_mode, mode_label = realtime_ctx
         # The jobs page's partial-poll pattern, split by mode so both
-        # refresh transports never fire at once (that double-fetch was
-        # #337's complaint) and the polling contract keeps its teeth
-        # (test_web_admin_integration pins it): POLLING mode renders the
+        # refresh transports never fire at once (the double-fetch defect: both
+        # transports firing re-fetched the page) and the polling contract
+        # keeps its teeth
+        # (test_web_admin_integration pins it): polling mode renders the
         # meta refresh - the page stays live without JS - and the htmx
-        # poll is off; REALTIME mode suppresses the meta refresh and the
+        # poll is off; realtime mode suppresses the meta refresh and the
         # htmx poll is the page's only refresh. A poll tick renders the
         # table partial alone, never the whole document.
         context = {
@@ -298,8 +299,8 @@ def register(router: APIRouter) -> None:
                 )
 
         # Direction-aware truncation and flags (the jobs page's shape): a
-        # forward fetch serves its FIRST page-worth; a backward fetch (the
-        # wrapper re-sorted it into display order) serves its LAST, the
+        # forward fetch serves its first page-worth; a backward fetch (the
+        # wrapper re-sorted it into display order) serves its last, the
         # rows nearest the cursor.
         backward = cursor_dir == "prev"
         overfetched = len(rows) > _PAGE_SIZE

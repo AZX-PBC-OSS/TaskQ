@@ -1,33 +1,26 @@
-"""ATTACK PINS — the T20 emit/chain subsystem's landed findings.
+"""the emit/chain subsystem's pins.
 
-Provenance: the T20/T21 attack front's live reproductions against the
-consolidated head (``af1b8779``; pinned here at the review tree's
-``b2a1c122``). Every pin below was run RED FIRST — written as the SAFE
-behavior, executed against the real PG, the failure captured — then
-marked ``xfail(strict=True)``. The fix flips the pin to XPASS-strict
-(a red that tells you to remove the marker WITH the fix).
+Each pin's rejected shape is reproduced live against the real
+database; the assertion stands as the permanent guard.
 
-The surfaces under recorded finding: ``taskq/workflows/_emit.py`` (the emit
+The surfaces under pin: ``taskq/workflows/_emit.py`` (the emit
 tx) and ``taskq/workflows/chain.py`` (the router's record identity).
 
-THE FINDINGS (each landed live; the probe transcripts are in this pack's
-(the pinning run's record):
-
-* F-EMIT-1 — a resume that re-emits a COMMITTED page (or re-pages at a
+* a resume that re-emits a COMMITTED page (or re-pages at a
   different width) dies on a RAW ``asyncpg.UniqueViolationError``,
   laddered to terminal: the defect "your page diverges from the emitted
   history" is never typed nor named.
-* F-EMIT-2 — the ``map_index`` int16 ceiling: record #32768 dies mid-tx
+* the ``map_index`` int16 ceiling: record #32768 dies mid-tx
   on a raw ``asyncpg.DataError`` (the codec's "value out of int16
   range") and rolls its VALID page-mates back with it — the ceiling is
   nowhere a typed, named, documented refusal at the emit door.
 
-THE GUARD THAT IS NOT HERE: this front's kill-at-the-post-cursor/
+This front's kill-at-the-post-cursor/
 pre-commit-window repro (kill inside the emit tx after the cursor
 checkpoint, whole-tx rollback, the reclaim re-emitting exactly the lost
 page — zero dup, zero lost) is ALREADY PINNED by the shipped suite:
-``tests/test_wf_t20_emit_pins.py``'s
-``test_t20_emit_tx_atomic_at_every_statement_window[3]`` kills the
+``tests/test_wf_emit_tx_pins.py``'s
+``test_emit_tx_atomic_at_every_statement_window[3]`` kills the
 backend at exactly the ``emit:3`` window and drives the real reclaim +
 resume to the zero-re-emitted/zero-lost verdict. Not duplicated.
 """
@@ -126,10 +119,9 @@ async def committed_children(conn: asyncpg.Connection, schema: str, source_id: J
     )
 
 
-# ── F-EMIT-1: the page divergence is never typed nor named ───────────────
+# ── the page divergence is never typed nor named ───────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-EMIT-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-EMIT-1: a resume that …
 async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -158,8 +150,7 @@ async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
 
     raised: Exception | None = None
     try:
-        # THE DIVERGENCE: the same page re-emitted (the resume that lost
-        # its checkpoint).
+        # the same page re-emitted (the resume that lost its checkpoint).
         await emit_batch(
             wf_pool,
             wf_sql,
@@ -173,9 +164,9 @@ async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
         )
     except Exception as exc:
         raised = exc
-    assert raised is not None, "F-EMIT-1: a re-emitted committed page LANDED — a silent double-emit"
+    assert raised is not None, "A re-emitted committed page LANDED — a silent double-emit"
     assert "asyncpg" not in type(raised).__module__, (
-        f"F-EMIT-1: the page divergence escaped as the RAW driver error "
+        f"The page divergence escaped as the RAW driver error "
         f"{type(raised).__module__}.{type(raised).__name__} "
         f"({str(raised)[:120]!r}) — it must be a typed, NAMED refusal at the "
         "emit door (e.g. PageDivergedError), never a raw asyncpg error"
@@ -186,11 +177,10 @@ async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
     assert await read_cursor(wf_conn, wf_schema, source_id) == {"page": 0}
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-EMIT-1(second face)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-EMIT-1 (second face): …
 async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """The non-deterministic re-paging shape (the front's F2d): the
+    """The non-deterministic re-paging shape (the probe's finding): the
     cursor checkpoint says page 0 committed at width 3; the resumed body
     re-derives its pages DIFFERENTLY (one width-6 page). The emit must
     NAME the divergence against the emitted history — today the fresh
@@ -214,7 +204,7 @@ async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
 
     raised: Exception | None = None
     try:
-        # THE DIVERGENCE: the re-paged width-6 replay of the same records.
+        # the re-paged width-6 replay of the same records.
         await emit_batch(
             wf_pool,
             wf_sql,
@@ -229,10 +219,10 @@ async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
     except Exception as exc:
         raised = exc
     assert raised is not None, (
-        "F-EMIT-1: a re-paged divergent emit LANDED — the emitted history meant nothing"
+        "A re-paged divergent emit LANDED — the emitted history meant nothing"
     )
     assert "asyncpg" not in type(raised).__module__, (
-        f"F-EMIT-1: the re-paging divergence escaped as the RAW driver error "
+        f"The re-paging divergence escaped as the RAW driver error "
         f"{type(raised).__module__}.{type(raised).__name__} "
         f"({str(raised)[:120]!r}) — it must be a typed, NAMED refusal at the "
         "emit door, never a raw asyncpg error"
@@ -243,16 +233,15 @@ async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
     assert await read_cursor(wf_conn, wf_schema, source_id) == {"page": 0}
 
 
-# ── F-EMIT-2: the map_index int16 ceiling ────────────────────────────────
+# ── the map_index int16 ceiling ────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-EMIT-2: MapIndexExhaustedError, the typed ceiling refusal, the batch semantics poison-kills-itself]; the marker was removed per the designed flip (the confirmation).
 async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """The ceiling is real (``jobs.map_index smallint``, 01.00.23) and
     UNDOCUMENTED where an author reads. The law the door already lives
-    by (the map_index-None refusal: a ``ValueError`` BEFORE any row
+    by (the map_index-None refusal: a ``ValueError`` before any row
     exists) is exactly the shape the ceiling refusal must take — typed,
     named, naming the ceiling's number, and the number in the docs."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -261,7 +250,7 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
 
     raised: Exception | None = None
     try:
-        # A page pairing a VALID record (32767, the smallint max) with
+        # A page pairing a valid record (32767, the smallint max) with
         # the record that crosses the ceiling (32768).
         await emit_batch(
             wf_pool,
@@ -276,21 +265,21 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
         )
     except Exception as exc:
         raised = exc
-    assert raised is not None, "F-EMIT-2: map_index=32768 LANDED — the smallint ceiling is gone?!"
+    assert raised is not None, "Map_index=32768 LANDED — the smallint ceiling is gone?!"
     assert "asyncpg" not in type(raised).__module__, (
-        f"F-EMIT-2: the int16 ceiling surfaced as the RAW driver/codec error "
+        f"The int16 ceiling surfaced as the RAW driver/codec error "
         f"{type(raised).__module__}.{type(raised).__name__} "
         f"({str(raised)[:120]!r}) — it must be a typed, NAMED refusal at the "
         "emit door (the door's own ValueError idiom or a dedicated error)"
     )
     assert "32767" in str(raised), (
-        "F-EMIT-2: the ceiling refusal must NAME the ceiling (32767) — an author "
+        "The ceiling refusal must NAME the ceiling (32767) — an author "
         "reading 'map_index out of range' learns nothing"
     )
-    # THE SHIPPED BATCH SEMANTICS (MapIndexExhaustedError's own contract):
-    # the poison record kills ITSELF, NEVER ITS MATES — the valid
-    # page-mate (32767) committed FIRST (its tx landed), THEN the raise.
-    # The old whole-page-atomicity leg predates the typed fix.
+    # MapIndexExhaustedError's own contract. the poison record kills itself,
+    # never its mates — the valid page-mate (32767) committed first (its tx
+    # landed), then the raise. The old whole-page-atomicity leg predates the
+    # typed fix.
     assert await committed_children(wf_conn, wf_schema, source_id) == 1, (
         "the valid page-mate must SURVIVE the poison record — the emit's "
         "batch semantics: the valid tx commits, the poison kills itself loudly"
@@ -300,9 +289,9 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
         "starts PAST the poison record's page"
     )
 
-    # THE DOCUMENTED CEILING: the number an author can plan around, named
-    # where the emit surface is documented (the module docstrings, the
-    # EmitChild contract, or the workflows guide's map_index prose).
+    # the number an author can plan around, named where the emit surface is
+    # documented (the module docstrings, the EmitChild contract, or the
+    # workflows guide's map_index prose).
     import re
     from pathlib import Path
 
@@ -321,7 +310,7 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
         for m in re.finditer(r"32767", guide_text)
     )
     assert documented, (
-        "F-EMIT-2: the int16 ceiling (32767) is documented NOWHERE a map/chain "
+        "The int16 ceiling (32767) is documented NOWHERE a map/chain "
         "author reads — not the emit module, not the chain module, not the "
         "EmitChild contract, not the workflows guide's map_index prose"
     )

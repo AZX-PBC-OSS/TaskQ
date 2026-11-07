@@ -151,7 +151,7 @@ async def test_cancel_origin_truth_table_differential_pg_vs_memory(
     clean_jobs_app: "JobsApp",
 ) -> None:
     """Differential: the same row states through mark_failed_or_retry must
-    produce the SAME observable outcome on both backends.
+    produce the same observable outcome on both backends.
 
     Matrix (retry_delay=1s): phase 0 x schedule_to_close {past, future,
     none}; plus phase 1 and 2 carrying rows; plus the terminal-fail arm
@@ -209,13 +209,13 @@ async def test_cancel_origin_truth_table_differential_pg_vs_memory(
             scheduled_at=start,
         )
         await backend.enqueue(args)
-        worker_id = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access for SETUP, the assertions stay public
+        worker_id = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access for setup, the assertions stay public
         dispatched = await backend.dispatch_batch(
             worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=60)
         )
         assert len(dispatched) == 1
         jid = dispatched[0].id
-        # SETUP only (the house pattern): the deadline and the cancel stamp
+        # setup only (the house pattern): the deadline and the cancel stamp
         # are row states the fixtures cannot express through enqueue; every
         # assertion below stays on the public surface.
         row = backend._jobs[jid]  # type: ignore[reportPrivateUsage]
@@ -233,7 +233,7 @@ async def test_cancel_origin_truth_table_differential_pg_vs_memory(
             return ("mismatch", None)
         return _outcome(row)
 
-    # The deadline is a LOGICAL state resolved against each backend's own
+    # The deadline is a logical state resolved against each backend's own
     # clock (PG's wall clock vs the twin's FakeClock): 'past' and 'future'
     # mean the same thing on both sides, an absolute 2025 timestamp would
     # only measure the harness's clock skew.
@@ -243,10 +243,10 @@ async def test_cancel_origin_truth_table_differential_pg_vs_memory(
         (0, future, _ONE_S),  # clean row: retried
         (0, past, _ONE_S),  # clean row past deadline: DeadlineExceeded
         (0, none, _ONE_S),  # clean row, no deadline: retried
-        (1, future, _ONE_S),  # cancel in flight: fenced on BOTH
+        (1, future, _ONE_S),  # cancel in flight: fenced on both
         (1, past, _ONE_S),  # fenced even past the deadline
         (2, future, _ONE_S),  # forced interrupt: fenced
-        (1, future, None),  # terminal fail arm: NOT fenced
+        (1, future, None),  # terminal fail arm: not fenced
     ]
     for phase, stc_offset, delay in matrix:
         pg_stc = (

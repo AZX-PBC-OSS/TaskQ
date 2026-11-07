@@ -71,7 +71,7 @@ __all__ = [
     "fetch_rds_iam_token",
 ]
 
-# AWS IAM RDS auth tokens are valid for 15 minutes.
+# aws iam rds auth tokens are valid for 15 minutes.
 RDS_TOKEN_LIFETIME_SECONDS = 900
 
 
@@ -119,8 +119,8 @@ def _parse_dsn(dsn: str) -> tuple[str, int, str]:
 
     Multi-host DSNs (``postgresql://u@pg1:5432,pg2:5432/db``, the libpq
     failover form) parse like :func:`taskq.auth.enrich_pg_dsn` reads them:
-    the netloc is partitioned at the LAST ``@`` (a userinfo password may
-    itself contain ``@``), then the FIRST hostspec - the one libpq tries
+    the netloc is partitioned at the last ``@`` (a userinfo password may
+    itself contain ``@``), then the first hostspec - the one libpq tries
     first, and therefore the one a token should be signed for - provides
     the ``(hostname, port)`` the token fetch addresses. The port cast
     runs per hostspec, so the joined form never reaches urlparse's
@@ -210,7 +210,7 @@ class RdsIamProvider(PgCredentialProvider):
 
     Multi-host DSNs (``postgresql://iamuser@pg1:5432,pg2:5432/taskq``,
     the libpq failover form) are accepted: the token is signed for the
-    FIRST hostspec (the one libpq tries first) and returned as the
+    first hostspec (the one libpq tries first) and returned as the
     credential's password, which - through
     :func:`taskq.auth.enrich_pg_dsn` or the factory builders in
     :mod:`taskq.auth` - lands in the DSN's single shared userinfo
@@ -264,7 +264,7 @@ class RdsIamProvider(PgCredentialProvider):
         client = await self._resolve_client()
         # Offloaded to a thread: although generate_db_auth_token is local
         # SigV4 signing, the ambient credential chain may perform blocking
-        # STS/IMDS HTTPS refreshes, which must not stall the event loop.
+        # sts/imds HTTPS refreshes, which must not stall the event loop.
         token = await asyncio.to_thread(
             fetch_rds_iam_token,
             hostname=self._hostname,

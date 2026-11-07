@@ -1,7 +1,7 @@
 """Pins for the shutdown-ordering contract: no leadership while stopping.
 
 The shutdown-ordering invariant (leader.py's doc header, "Shutdown ordering
-contract"): a worker that is shutting down NEVER assumes the leader role,
+contract"): a worker that is shutting down never assumes the leader role,
 and a leader that begins shutting down hands the lease over EARLY, at
 shutdown START, before the job drain, so a rolling deploy never has a
 leaderless window and never sees a dying pod win or hold leadership.
@@ -18,10 +18,10 @@ beyond generous event-driven waits):
   anyway is handed straight back (fenced resign over the conn the elect
   just used), the assume path never starts, is_leader is never set;
 * the early handover: a leader's resign lands while the worker-wide
-  shutdown event is STILL CLEAR (the drain is still running), not at
+  shutdown event is still CLEAR (the drain is still running), not at
   teardown;
 * the wake seam: ``wake_election`` no-ops while stopping;
-* the quiesce: the handover demotes BEFORE the resign write issues (no
+* the quiesce: the handover demotes before the resign write issues (no
   leader-gated loop can start a new sweep mid-handover) and cancels
   nothing (an in-flight sweep's transaction completes or aborts whole on
   its own; the handover never closes or terminates a conn).
@@ -41,14 +41,16 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
+import asyncpg
 import pytest
 
 from taskq._close import CLOSE_TIMEOUT_SECS, worst_case_teardown_tail
 from taskq._ids import new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.settings import WorkerSettings
-from taskq.testing.assertions import wait_for, wait_for_condition
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker.deps import LeaderTerm, WorkerDeps
 from taskq.worker.leader import MaintenanceLeader
@@ -87,9 +89,9 @@ def _leader_teardown_wait_budget(settings: WorkerSettings) -> float:
     budget is that tail plus one tick cadence, scaled for runner
     congestion (a starved CI runner stretches every await) and floored.
     The leader task's own tail is three bounded steps - one resign
-    attempt plus two conn closes - already 3x the fixed 5s cap that
-    used to cover the whole teardown, so on congested runners
-    ``wait_for`` cancelled leaders mid-teardown and red TimeoutError;
+    attempt plus two conn closes - already 3x a fixed 5s whole-teardown
+    cap would allow: on congested runners
+    ``wait_for`` cancels leaders mid-teardown and reds TimeoutError;
     a budget that moves with the product's own constants cannot be
     undercut by them.
     """
@@ -100,9 +102,10 @@ def _leader_teardown_wait_budget(settings: WorkerSettings) -> float:
     )
 
 
-def _worker_settings() -> WorkerSettings:
+def _worker_settings(schema: str) -> WorkerSettings:
     data: dict[str, str] = {
         "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
+        "TASKQ_SCHEMA_NAME": schema,
         "TASKQ_HEARTBEAT_INTERVAL": str(_HEARTBEAT),
         # 3.0 + the tiny command timeout satisfies the cascade floor:
         # 4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0 (the lease value itself is
@@ -122,100 +125,101 @@ def _worker_settings() -> WorkerSettings:
     return WorkerSettings.load_from_dict(data, validate=False)
 
 
-class FakeConn:
-    """asyncpg.Connection stand-in with recording fetchval/execute.
+class _LeaderRecordingConn:
+    """Recording proxy over the module's real PG session - COUNT, DON'T
+    ANSWER (the house pattern of
+    tests/test_cancel_where_bounded.py::_StatementRecordingPool).
 
-    Lease statements are answered the way the real driver would: the
-    elect and the renew return the term's timestamp when the double is
-    configured to hold the row and no row at all otherwise; the resign's
-    command tag is a real DELETE count, which ``resign()`` reads.
-    """
+    The election-loop pins count the elect/renew/resign statements the
+    REAL loop issues and let the real statements answer: an elect loses
+    to a foreign live lease, a renew succeeds on the pod's own seeded
+    row."""
 
-    def __init__(
-        self,
-        *,
-        holds_row: bool = False,
-        on_fetchval: Any | None = None,
-        on_execute: Any | None = None,
-    ) -> None:
+    def __init__(self, conn: asyncpg.Connection, *, on_execute: Any | None = None) -> None:
+        self._conn = conn
+        self._on_execute = on_execute
         self.fetchval_calls: list[tuple[str, tuple[object, ...]]] = []
         self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
-        self._closed = False
         self.close_calls = 0
         self.terminated = False
-        self._holds_row = holds_row
-        self._on_fetchval = on_fetchval
-        self._on_execute = on_execute
 
     async def fetchval(self, sql: str, *args: object) -> object:
         self.fetchval_calls.append((sql, args))
-        if self._on_fetchval is not None:
-            self._on_fetchval(sql, args)
-        if sql.lstrip().upper().startswith("SELECT CLOCK_TIMESTAMP()"):
-            return datetime.now(UTC)
-        if "maintenance_leader" in sql:
-            return datetime.now(UTC) if self._holds_row else None
-        return None
+        return await self._conn.fetchval(sql, *args)
 
     async def execute(self, sql: str, *args: object) -> str:
         self.execute_calls.append((sql, args))
         if self._on_execute is not None:
             self._on_execute(sql, args)
-        if sql.lstrip().upper().startswith("DELETE FROM"):
-            return "DELETE 1"
-        return "UPDATE 1"
-
-    async def fetchrow(self, sql: str, *args: object) -> object | None:
-        return None
+        return await self._conn.execute(sql, *args)
 
     async def close(self) -> None:
         self.close_calls += 1
-        self._closed = True
+        await self._conn.close()
 
     def terminate(self) -> None:
         self.terminated = True
-        self._closed = True
+        self._conn.terminate()
 
     def is_closed(self) -> bool:
-        return self._closed
+        return self._conn.is_closed()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
 
 
-class _InFlightElectConn(FakeConn):
-    """A conn whose ELECT statement hangs until the test releases it.
-
-    Models the SIGTERM-mid-elect race: the statement is on the wire (the
-    round trip started) before the stop signal lands, and the win comes
-    back afterwards. Everything else behaves like :class:`FakeConn`.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(holds_row=False)
-        self.elect_started = asyncio.Event()
-        self.elect_gate = asyncio.Event()
-        self.won_elected_at = datetime(2025, 1, 1, tzinfo=UTC)
-
-    async def fetchval(self, sql: str, *args: object) -> object:
-        if sql.lstrip().upper().startswith(_ELECT_PREFIX) and "maintenance_leader" in sql:
-            self.elect_started.set()
-            await self.elect_gate.wait()
-            # The win comes back after the (test-arranged) stop.
-            return self.won_elected_at
-        return await super().fetchval(sql, *args)
+async def _seed_worker_row(conn: asyncpg.Connection, schema: str, worker_id: Any) -> None:
+    """A registered worker row (maintenance_leader's FK target)."""
+    await conn.execute(
+        f"""INSERT INTO "{schema}".workers (id, hostname, pid, queues)
+            VALUES ($1, 'shutdown-pin-host', 4242, ARRAY['default']::text[])""",
+        worker_id,
+    )
 
 
-def _make_deps(conn: FakeConn) -> WorkerDeps:
+async def _seed_own_lease(
+    conn: asyncpg.Connection, schema: str, worker_id: Any, elected_at: datetime
+) -> None:
+    """The pod's own live lease row: its renewals succeed against it."""
+    await _seed_worker_row(conn, schema, worker_id)
+    await conn.execute(
+        f"""INSERT INTO "{schema}".maintenance_leader
+                (singleton, worker_id, elected_at, last_seen_at, expires_at)
+            VALUES (true, $1, $2, clock_timestamp(),
+                clock_timestamp() + interval '40 seconds')""",
+        worker_id,
+        elected_at,
+    )
+
+
+async def _seed_foreign_live_lease(conn: asyncpg.Connection, schema: str) -> Any:
+    """The lease row of a foreign live leader: every elect of this pod's
+    loses against it, and its renewals succeed for nobody else."""
+    foreign = new_uuid()
+    await _seed_worker_row(conn, schema, foreign)
+    await conn.execute(
+        f"""INSERT INTO "{schema}".maintenance_leader
+                (singleton, worker_id, elected_at, last_seen_at, expires_at)
+            VALUES (true, $1, clock_timestamp(), clock_timestamp(),
+                clock_timestamp() + interval '40 seconds')""",
+        foreign,
+    )
+    return foreign
+
+
+def _make_deps(conn: Any, schema: str) -> WorkerDeps:
     deps = WorkerDeps(
-        settings=_worker_settings(),
+        settings=_worker_settings(schema),
         dispatcher_pool=cast(Any, SimpleNamespace()),
         heartbeat_pool=cast(Any, SimpleNamespace()),
         worker_pool=cast(Any, SimpleNamespace()),
         notify_conn=None,
-        leader_conn=cast(Any, conn),
+        leader_conn=conn,
     )
     return deps
 
 
-def _make_leader(deps: WorkerDeps, conn: FakeConn) -> MaintenanceLeader:
+def _make_leader(deps: WorkerDeps, conn: Any) -> MaintenanceLeader:
     worker_id = new_uuid()
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     return MaintenanceLeader(
@@ -226,19 +230,19 @@ def _make_leader(deps: WorkerDeps, conn: FakeConn) -> MaintenanceLeader:
     )
 
 
-def _elect_attempts(conn: FakeConn) -> int:
+def _elect_attempts(conn: Any) -> int:
     return sum(
         1 for sql, _ in conn.fetchval_calls if sql.lstrip().upper().startswith(_ELECT_PREFIX)
     )
 
 
-def _renew_attempts(conn: FakeConn) -> int:
+def _renew_attempts(conn: Any) -> int:
     return sum(
         1 for sql, _ in conn.fetchval_calls if sql.lstrip().upper().startswith(_RENEW_PREFIX)
     )
 
 
-def _resign_calls(conn: FakeConn) -> list[tuple[str, tuple[object, ...]]]:
+def _resign_calls(conn: Any) -> list[tuple[str, tuple[object, ...]]]:
     return [
         (sql, args)
         for sql, args in conn.execute_calls
@@ -252,19 +256,42 @@ async def _stop_task(task: asyncio.Task[Any], shutdown: asyncio.Event) -> None:
         await asyncio.wait_for(task, timeout=2.0)
 
 
+async def _pid_is_lock_waiter(parker: asyncpg.Connection, pid: int) -> bool:
+    """Whether session *pid* is parked on a lock wait right now.
+
+    Probed through a DIFFERENT session (the parker's): the elect's own
+    connection is busy mid-statement, no second statement can ride it.
+    The exact pid is the scope - the probe cannot satisfy itself on a
+    sibling's waiter because it names one session - and the datname
+    scope is the guard's rule for every pg_stat_activity read (the
+    shared container hosts every worker's database)."""
+    row = await parker.fetchrow(
+        "SELECT wait_event_type FROM pg_stat_activity "
+        "WHERE pid = $1 AND wait_event_type = 'Lock' "
+        "AND datname = current_database()",
+        pid,
+    )
+    return row is not None
+
+
 # ── Pin 1: the park ─────────────────────────────────────────────────────
 
 
-async def test_pin_a_stopping_worker_never_attempts_the_election_again() -> None:
+async def test_pin_a_stopping_worker_never_attempts_the_election_again(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """Once the stop signal is observed, the elect attempt count stays 0.
 
     The loop attempts on its cadence up to the stop; after it, N would-be
     ticks and several broadcast wakes produce ZERO further attempts: the
     loop is parked attempt-free for the rest of the shutdown, and the
     wake handler's refusal (pin 4) has no attempt to wake into anyway.
-    """
-    conn = FakeConn()  # every elect loses: the loop attempts once per tick
-    deps = _make_deps(conn)
+    The elect runs for real and loses to a foreign live lease."""
+    schema = module_pg_schema.schema_name
+    conn = _LeaderRecordingConn(clean_pg_conn)
+    await _seed_foreign_live_lease(clean_pg_conn, schema)
+    deps = _make_deps(conn, schema)
     leader = _make_leader(deps, conn)
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._election_loop(shutdown))
@@ -306,38 +333,95 @@ async def test_pin_a_stopping_worker_never_attempts_the_election_again() -> None
 # ── Pin 2: the mid-elect race ───────────────────────────────────────────
 
 
-async def test_pin_elect_in_flight_at_stop_wins_then_is_resigned_never_assumed() -> None:
+async def test_pin_elect_in_flight_at_stop_wins_then_is_resigned_never_assumed(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """SIGTERM mid-elect: the win is handed straight back, nothing assumes.
 
-    The elect statement was on the wire when the stop signal landed and
-    won anyway. The lease must never be held across the drain: the won
-    row is resigned immediately (fenced on the won term, over the conn
-    the elect just used, while the worker-wide shutdown event is still
-    clear), the assume path never runs - no monitor/cron conn opens, no
+    The elect statement is genuinely parked mid-round-trip when the stop
+    signal lands: a second session's UNCOMMITTED insert on the singleton
+    row holds the unique index entry, so the production elect conflicts
+    on it and waits on that transaction (pg_stat_activity: a Lock waiter)
+    - exactly the in-flight point the race names, parked by the server,
+    not by a scripted gate. The parker rolls back, the elect wins with
+    the server's own term, and the win arrives after the stop. The lease
+    must never be held across the drain: the won row is resigned
+    immediately (fenced on the won term, over the conn the elect just
+    used, while the worker-wide shutdown event is still clear), the
+    assume path never runs - no monitor/cron conn opens, no
     courtesy-lock probe issues, ``lead()`` never sets the flag, so no
     leader-gated sweep can start - and the row is available to the
     successor from that instant.
     """
-    conn = _InFlightElectConn()
-    deps = _make_deps(conn)
+    schema = module_pg_schema.schema_name
+    conn = _LeaderRecordingConn(clean_pg_conn)
+    deps = _make_deps(conn, schema)
     leader = _make_leader(deps, conn)
+
+    # The elect's insert carries an FK on workers; the parker's row does
+    # too. Both rows exist (committed) before either statement runs.
+    await _seed_worker_row(clean_pg_conn, schema, leader._worker_id)
+    parker_worker = new_uuid()
+    await _seed_worker_row(clean_pg_conn, schema, parker_worker)
+    # The elect's session pid, captured before the loop drives the conn.
+    elect_pid = await clean_pg_conn.fetchval("SELECT pg_backend_pid()")
+
+    parker = await asyncpg.connect(module_pg_schema.pg_dsn)
     shutdown = asyncio.Event()
-    task = asyncio.create_task(leader._election_loop(shutdown))
+    task: asyncio.Task[None] | None = None
     try:
-        # The elect is now IN FLIGHT. Land the stop while it hangs.
-        await wait_for(conn.elect_started, description="the elect statement to go in flight")
+        # The park: the second session's uncommitted insert occupies the
+        # singleton's unique index entry.
+        await parker.execute("BEGIN")
+        await parker.execute(
+            f"""INSERT INTO "{schema}".maintenance_leader
+                    (singleton, worker_id, elected_at, last_seen_at, expires_at)
+                VALUES (true, $1, clock_timestamp(), clock_timestamp(),
+                    clock_timestamp() + interval '40 seconds')""",
+            parker_worker,
+        )
+        task = asyncio.create_task(leader._election_loop(shutdown))
+        await wait_for_condition(
+            lambda: _elect_attempts(conn) >= 1,
+            description="the election loop's first elect attempt",
+        )
+        await wait_for_condition(
+            lambda: _pid_is_lock_waiter(parker, elect_pid),
+            description="the production elect to park on the parker's uncommitted singleton row",
+        )
+
+        # Land the stop while the elect hangs, then release the parker:
+        # the win comes back after the stop.
         assert _resign_calls(conn) == [], "test premise: no resign before the win"
         deps.shutdown_start_event.set()
-        conn.elect_gate.set()  # the win comes back after the stop
+        await parker.execute("ROLLBACK")
 
         await wait_for_condition(
             lambda: len(_resign_calls(conn)) == 1,
             description="the immediate fenced resign of the won row",
         )
         _resign_sql, resign_args = _resign_calls(conn)[0]
-        assert resign_args == (leader._worker_id, conn.won_elected_at), (
-            "the resign must be fenced on the WON term (worker_id, elected_at), "
-            f"got {resign_args!r}"
+        assert (
+            resign_args[0] == leader._worker_id
+            and isinstance(resign_args[1], datetime)
+            and resign_args[1].tzinfo is not None
+        ), f"the resign must be fenced on the WON term (worker_id, elected_at), got {resign_args!r}"
+
+        async def _resign_landed() -> bool:
+            count = await parker.fetchval(f'SELECT count(*) FROM "{schema}".maintenance_leader')
+            return int(count) == 0
+
+        # The proxy records the call before its await completes, so the
+        # row fact (not the recorded call) is what the pin waits on.
+        await wait_for_condition(
+            _resign_landed,
+            description="the resign's delete of the won row to commit",
+        )
+        row_count = await parker.fetchval(f'SELECT count(*) FROM "{schema}".maintenance_leader')
+        assert row_count == 0, (
+            "the won row outlived the resign: the fence did not match the "
+            "server's real won term, a dying pod holds leadership"
         )
         assert not deps.is_leader.is_set(), (
             "is_leader was set for a lease the pod is handing straight back: "
@@ -358,31 +442,46 @@ async def test_pin_elect_in_flight_at_stop_wins_then_is_resigned_never_assumed()
         assert conn.close_calls == 0 and not conn.terminated, (
             "the hand-back closed or terminated the conn it rode on"
         )
+        assert _elect_attempts(conn) == 1, (
+            "the loop re-attempted the election after the stop-race resign: "
+            "the park must hold for the rest of the shutdown"
+        )
     finally:
-        await _stop_task(task, shutdown)
+        if task is not None:
+            await _stop_task(task, shutdown)
+        with contextlib.suppress(Exception):
+            await parker.execute("ROLLBACK")
+        with contextlib.suppress(Exception):
+            await parker.close()
 
 
 # ── Pin 3: the early handover ───────────────────────────────────────────
 
 
-async def test_pin_leader_resigns_at_stop_start_not_after_the_drain() -> None:
-    """A leader that begins shutting down resigns BEFORE shutdown completes.
+async def test_pin_leader_resigns_at_stop_start_not_after_the_drain(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """A leader that begins shutting down resigns before shutdown completes.
 
     The pod is leading (flag, term, fence all live). The stop signal
     lands mid-renew-cadence. The resign must issue while the worker-wide
-    shutdown event is STILL CLEAR - the drain runs after it - and the
+    shutdown event is still CLEAR - the drain runs after it - and the
     pod must already be demoted and parked when it does. Today's shape
     resigned in run()'s teardown, after the whole drain: this pin fails
     under that ordering, the resign never comes while the event is clear.
+    The renewals run for real against the pod's own seeded lease row.
     """
-    conn = FakeConn(holds_row=True)  # renewals succeed: the pod is leading
-    deps = _make_deps(conn)
+    schema = module_pg_schema.schema_name
+    conn = _LeaderRecordingConn(clean_pg_conn)
+    deps = _make_deps(conn, schema)
     leader = _make_leader(deps, conn)
     loop = asyncio.get_running_loop()
     term = LeaderTerm(
         elected_at=datetime.now(UTC),
         trusted_until=loop.time() + _LEADER_LEASE - 1.0,
     )
+    await _seed_own_lease(clean_pg_conn, schema, leader._worker_id, term.elected_at)
     deps.lead(term)
     leader._resign_fence = term
     assert deps.leading(), "test premise: the pod is leading"
@@ -427,15 +526,17 @@ async def test_pin_leader_resigns_at_stop_start_not_after_the_drain() -> None:
 # ── Pin 4: the wake handler no-ops while stopping ───────────────────────
 
 
-async def test_pin_wake_handler_noops_while_stopping() -> None:
+async def test_pin_wake_handler_noops_while_stopping(
+    clean_pg_conn: asyncpg.Connection,
+) -> None:
     """``wake_election`` arms the wake only on a worker that is not stopping.
 
     The resign broadcast (the leadership-channel wake that triggers
     immediate election attempts) lands here on every peer, this pod
     included while it stops: the handler must refuse it outright.
     """
-    conn = FakeConn()
-    deps = _make_deps(conn)
+    conn = _LeaderRecordingConn(clean_pg_conn)
+    deps = _make_deps(conn, "taskq")
     leader = _make_leader(deps, conn)
 
     # Control: with no stop in progress the wake arms.
@@ -454,34 +555,37 @@ async def test_pin_wake_handler_noops_while_stopping() -> None:
 # ── Pin 5: the in-flight quiesce at the resign ──────────────────────────
 
 
-async def test_pin_handover_demotes_before_the_resign_write_and_cancels_nothing() -> None:
+async def test_pin_handover_demotes_before_the_resign_write_and_cancels_nothing(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """At the resign write, the flag is already down and nothing is cancelled.
 
     A sweep in flight when the stop lands must quiesce cleanly: the
-    handover demotes BEFORE the resign write issues, so no leader-gated
+    handover demotes before the resign write issues, so no leader-gated
     loop can pass its gate and start a new sweep mid-handover, and the
     handover itself neither closes nor terminates any conn - an
     in-flight sweep transaction finishes or aborts whole on its own
     (Postgres transaction semantics), never half-applied.
     """
-    conn = FakeConn(holds_row=True)
-    deps = _make_deps(conn)
-    leader = _make_leader(deps, conn)
-    loop = asyncio.get_running_loop()
-    term = LeaderTerm(
-        elected_at=datetime.now(UTC),
-        trusted_until=loop.time() + _LEADER_LEASE - 1.0,
-    )
-    deps.lead(term)
-    leader._resign_fence = term
-
+    schema = module_pg_schema.schema_name
     leading_at_resign: list[bool] = []
 
     def _on_execute(sql: str, args: tuple[object, ...]) -> None:
         if sql.lstrip().upper().startswith("DELETE FROM") and "maintenance_leader" in sql:
             leading_at_resign.append(deps.leading())
 
-    conn._on_execute = _on_execute
+    conn = _LeaderRecordingConn(clean_pg_conn, on_execute=_on_execute)
+    deps = _make_deps(conn, schema)
+    leader = _make_leader(deps, conn)
+    loop = asyncio.get_running_loop()
+    term = LeaderTerm(
+        elected_at=datetime.now(UTC),
+        trusted_until=loop.time() + _LEADER_LEASE - 1.0,
+    )
+    await _seed_own_lease(clean_pg_conn, schema, leader._worker_id, term.elected_at)
+    deps.lead(term)
+    leader._resign_fence = term
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._election_loop(shutdown))
@@ -506,21 +610,24 @@ async def test_pin_handover_demotes_before_the_resign_write_and_cancels_nothing(
 # ── Pin 7: the failed-resign retry is paced, never a hot spin ───────────
 
 
-async def test_pin_a_failed_resign_retries_on_the_tick_cadence_not_hot() -> None:
+async def test_pin_a_failed_resign_retries_on_the_tick_cadence_not_hot(pg_dsn: str) -> None:
     """A resign that cannot reach the database retries paced, attempt-free.
 
     The park's retry loop keeps the fence alive until the resign lands.
     With no conn left to ride (the failure path already dropped them),
-    the resign fails without touching the network - so nothing else in
-    the retry iteration awaits, and an unpaced retry would spin the event
-    loop hot for the whole drain. The retry must wait out the tick
-    cadence between attempts. The ratio does the work: 0.2s holds ~20
-    tick cadences but tens of thousands of hot-loop iterations, a margin
-    no plausible CI load crosses.
+    the resign fails without touching the network - the conn is the real
+    state that names: a live connection the drop already CLOSED, whose
+    ``resign()`` short-circuits on ``is_closed()`` before any wire is
+    touched - so nothing else in the retry iteration awaits, and an
+    unpaced retry would spin the event loop hot for the whole drain. The
+    retry must wait out the tick cadence between attempts. The ratio
+    does the work: 0.2s holds ~20 tick cadences but tens of thousands of
+    hot-loop iterations, a margin no plausible CI load crosses.
     """
-    conn = FakeConn()
-    conn._closed = True  # no live conn anywhere: every resign fails without I/O
-    deps = _make_deps(conn)
+    real_conn = await asyncpg.connect(pg_dsn)
+    await real_conn.close()
+    conn = _LeaderRecordingConn(real_conn)
+    deps = _make_deps(conn, "taskq")
     leader = _make_leader(deps, conn)
     loop = asyncio.get_running_loop()
     term = LeaderTerm(
@@ -575,7 +682,7 @@ async def test_pin_orchestrator_sets_the_stop_signal_before_the_drain_write(
     from taskq.worker.shutdown import ShutdownPhase, orchestrate_shutdown
 
     deps = WorkerDeps(
-        settings=_worker_settings(),
+        settings=_worker_settings("taskq"),
         dispatcher_pool=cast(Any, MagicMock()),
         heartbeat_pool=cast(Any, MagicMock()),
         worker_pool=cast(Any, MagicMock()),
@@ -616,7 +723,7 @@ async def test_pin_row_gone_before_the_drain_write_and_successor_elects_during_i
 ) -> None:
     """The early handover against the real database.
 
-    The lease row stops being the stopping pod's BEFORE the DRAINING
+    The lease row stops being the stopping pod's before the DRAINING
     phase's write completes, and a successor elects and wins while the
     drain is still held open: the handover is early, and the drain
     window is the successor's to take.
@@ -651,7 +758,7 @@ async def test_pin_row_gone_before_the_drain_write_and_successor_elects_during_i
             )
 
     async def slow_drain(deps: WorkerDeps, worker_id: UUID) -> int:
-        # Runs INSIDE the DRAINING phase, in place of the drain's own
+        # Runs inside the draining phase, in place of the drain's own
         # write. The resign must land while the drain is still running:
         # a bounded wait for the row to stop being the stopping pod's.
         # Under the old ordering (resign at run()'s teardown, after the
@@ -700,7 +807,7 @@ async def test_pin_row_gone_before_the_drain_write_and_successor_elects_during_i
             )
         )
         # The successor elects while the stopping pod's drain is still
-        # held open inside DRAINING.
+        # held open inside draining.
         await wait_for_condition(
             lambda: drain_holding.is_set(),
             description="the drain to reach its hold (the row check passed)",

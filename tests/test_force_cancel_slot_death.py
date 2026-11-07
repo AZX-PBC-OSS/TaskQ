@@ -12,7 +12,7 @@ never serves another row: the worker strands ``max_concurrency`` claimed rows
 and its dispatch capacity is zero for the process's lifetime.
 
 The pinned contract here is the loop's survival: after a phase-2 forced
-cancel of a mid-flight job, the SAME loop must pick up the next pending row,
+cancel of a mid-flight job, the same loop must pick up the next pending row,
 and the registry bookkeeping (the active-jobs entry the producer's
 availability subtracts) must come back to zero. The forced cancel is fired
 exactly as the cancel ladder's phase-2 arm fires it: the registered entry's
@@ -172,7 +172,7 @@ async def test_phase2_force_cancel_kills_the_job_not_the_slot() -> None:
         entry = deps.active_jobs.get(first_job.id)
         assert entry is not None
         # The phase-2 forced cancel, verbatim cancel.py's escalation arm:
-        # stamp FORCED, then cancel the registered task.
+        # stamp forced, then cancel the registered task.
         entry.cancel_phase = CancelPhase.FORCED
         entry.task.cancel()
 
@@ -203,9 +203,9 @@ async def test_phase2_force_cancel_kills_the_job_not_the_slot() -> None:
 # ── The router's discriminator under a same-batch shutdown cancel ────────
 #
 # The loop routes the CancelledError out of the child by who was cancelled:
-# its own cancellation or ANY shutdown signal re-raises; only a child-ALONE
+# its own cancellation or any shutdown signal re-raises; only a child-alone
 # cancellation is absorbed as the job's outcome. The dangerous interleaving
-# is a shutdown's cancel and a phase-2 arm's cancel delivered in ONE
+# is a shutdown's cancel and a phase-2 arm's cancel delivered in one
 # event-loop batch: if the router read only the child's cancellation, the
 # shutdown would be eaten as a job outcome, the loop would keep serving
 # through teardown, and the worker would hang until a hard kill. These two
@@ -312,7 +312,7 @@ async def test_shutdown_cancel_and_phase2_cancel_in_one_batch_re_raises() -> Non
     """The highest-stakes interleaving: the shutdown orchestrator cancels the
     consumer loop task in the same event-loop batch that a phase-2 arm
     cancels the child. Both cancels are pending when the loop resumes at its
-    ``await dispatch_task``. The discriminator must route on the loop's OWN
+    ``await dispatch_task``. The discriminator must route on the loop's own
     cancellation (and the shutdown phase) and RE-RAISE: the loop dies with
     the worker. A router that read only the child's cancellation would
     absorb this as a job outcome and keep serving through teardown - the
@@ -336,7 +336,7 @@ async def test_shutdown_cancel_and_phase2_cancel_in_one_batch_re_raises() -> Non
     finally:
         await handles.scopes.__aexit__(None, None, None)
 
-    # The shutdown cancel won: the loop died by cancellation, it did NOT
+    # The shutdown cancel won: the loop died by cancellation, it did not
     # absorb the batch as a job outcome and keep serving.
     assert isinstance(results[0], asyncio.CancelledError), (
         "a shutdown cancel delivered in the same batch as a phase-2 child "
@@ -356,9 +356,9 @@ async def test_shutdown_cancel_and_phase2_cancel_in_one_batch_re_raises() -> Non
 
 
 async def test_shutdown_phase_child_cancel_with_loop_alive_re_raises() -> None:
-    """The shutdown orchestrator's FORCING arm cancels ONLY the registered
+    """The shutdown orchestrator's FORCING arm cancels only the registered
     attempt task - never the loop task itself. The loop therefore sees a
-    CancelledError out of the child with its OWN cancel count at zero: the
+    CancelledError out of the child with its own cancel count at zero: the
     exact shape of an absorbable child-only cancel. The router must catch
     the shutdown through the PHASE flag and re-raise. A router that keyed
     only on ``cancelling()`` would absorb a shutdown-driven child cancel as
@@ -366,8 +366,8 @@ async def test_shutdown_phase_child_cancel_with_loop_alive_re_raises() -> None:
     runs = _ActorRuns()
     handles, entry, _backend = await _start_hung_first_job(runs)
     try:
-        # The FORCING arm verbatim: stamp the phase, cancel the registered
-        # task. The loop task itself is NOT cancelled - the orchestrator has
+        # The forcing arm verbatim: stamp the phase, cancel the registered
+        # task. The loop task itself is not cancelled - the orchestrator has
         # no handle to it, the registry entry is all it holds.
         handles.deps.shutdown_phase = ShutdownPhase.FORCING
         entry.cancel_phase = CancelPhase.FORCED
@@ -393,16 +393,16 @@ async def test_shutdown_phase_child_cancel_with_loop_alive_re_raises() -> None:
 
 
 async def test_own_teardown_cancel_of_the_loop_re_raises() -> None:
-    """The third route into the router: the loop task's OWN cancellation with
+    """The third route into the router: the loop task's own cancellation with
     no shutdown flag set - a TaskGroup teardown cancelling its siblings after
     one failed. Cancelling the loop while it awaits the child delivers the
-    cancel INTO the child first (Task.cancel cancels the awaited future), so
+    cancel into the child first (Task.cancel cancels the awaited future), so
     the loop sees a CancelledError out of the child with every shutdown flag
     clear: the exact shape of an absorbable child-only cancel. The router
     must key on its own ``cancelling()`` count and re-raise. A router that
     absorbed here would keep serving rows inside a TaskGroup that is already
     unwinding - the absorb would also leave the count elevated, misrouting
-    the NEXT child-only operator cancel into a loop death."""
+    the next child-only operator cancel into a loop death."""
     runs = _ActorRuns()
     handles, entry, _backend = await _start_hung_first_job(runs)
     try:

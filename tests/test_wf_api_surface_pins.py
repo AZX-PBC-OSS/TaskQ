@@ -1,4 +1,4 @@
-"""T09 — THE API-SURFACE PINS: the decorator's composition contract
+"""The api-surface pins: the decorator's composition contract
 (F3 — no second, invisible actor population), the channel/gate
 declaration doors, and the Mermaid emission's shape vocabulary (the
 golden's grammar).
@@ -41,19 +41,19 @@ async def _body(ctx: StepContext, params: Ingest) -> Report:
     return Report(ref=params.doc_id)  # pragma: no cover - the runner drives real bodies
 
 
-# ── the F3 composition: the workflow actor is VISIBLE to the estate ────
+# ── the F3 composition: the workflow actor is visible to the estate ────
 
 
 def test_actor_projects_the_estate_carrier() -> None:
     """Pin 9's composition assertion (the registry-omits variant reds):
     the workflow actor projects the ``ActorConfig``-compatible carrier —
     the same shape the config sync + the guards + ``TASKQ_QUEUES_STRICT``
-    consume, IN THE REAL PROJECTION'S ONE VOCABULARY (the — the
+    consume, IN the REAL PROJECTION'S one VOCABULARY (the — the
     ``ActorConfig`` field set, the ``workflow_actor`` metadata mark; the
-    pre-fix carrier's workflow-namespaced actor name and the
+    the workflow-namespaced actor name and the
     ``ActorRef``-shaped max_attempts/retry_kind fields were a second,
     divergent scheme). The capacity terms declared ride the row; the
-    reservations do NOT (no field — the ensure-slots pass owns their
+    reservations do not (no field — the ensure-slots pass owns their
     materialization) and ``max_pending`` is off the wf surface (the —
     the row seeds it UNSET)."""
     app = WorkflowApp()
@@ -79,9 +79,9 @@ def test_actor_preserves_the_function_identity() -> None:
     decorate = app.actor()
     handle = decorate(_body)
     assert handle.name == "_body"
-    assert handle.__name__ == "_body"  # type: ignore[attr-defined]  # Why: the fall-through IS the pin (the callable-preserving decorator).
+    assert handle.__name__ == "_body"  # type: ignore[attr-defined]  # Why: the fall-through is the pin (the callable-preserving decorator).
     assert "workflow actor handle" in handle.__doc__  # type: ignore[attr-defined]
-    # The DIRECT call (the unit-test form) runs the body.
+    # The direct call (the unit-test form) runs the body.
     report = asyncio_run(handle(None, Ingest(doc_id="d1")))
     assert isinstance(report, Report)
 
@@ -135,7 +135,7 @@ def test_non_promise_build_return_refused() -> None:
 
 
 def test_channel_gate_binding_doors() -> None:
-    """The channel's gates: a gate binds at least ONE payload model
+    """The channel's gates: a gate binds at least one payload model
     (the empty binding refused); the registry is keyed by the bound
     gate's own name; a second gate with the same model REPLACES (the
     channel is the workflow definition's lifetime)."""
@@ -143,7 +143,7 @@ def test_channel_gate_binding_doors() -> None:
     with pytest.raises(TypeError, match="at least one payload model"):
         channel.gate()
     approval = channel.gate(Approval)
-    assert channel._gates["Approval"] is approval  # pyright: ignore[reportPrivateUsage]  # Why: the registry IS the door's backing map — the pin reads it.
+    assert channel._gates["Approval"] is approval  # pyright: ignore[reportPrivateUsage]  # Why: the registry is the door's backing map — the pin reads it.
     escalate = channel.gate(Escalate)
     assert channel._gates["Escalate"] is escalate  # pyright: ignore[reportPrivateUsage]
     _ = approval, escalate
@@ -156,7 +156,7 @@ def test_gate_declaration_rides_the_compile() -> None:
     from taskq.workflows import gather
 
     async def gated(ctx: StepContext, params: Ingest) -> object:
-        # E14's law: the declared gate's body WAITS on it (a declared
+        # E14's law: the declared gate's body waits on it (a declared
         # seat with no waiter is the build refusal).
         return await ctx.wait_signal(
             (Approval, Escalate), timeout_s=30.0
@@ -195,7 +195,7 @@ def test_mermaid_shape_vocabulary() -> None:
         return {"n": 1}  # pragma: no cover - the runner drives real bodies
 
     async def hold_body(ctx: StepContext, params: Ingest) -> object:
-        # E14's law: the declared gate's body WAITS on it.
+        # E14's law: the declared gate's body waits on it.
         return await ctx.wait_signal((Approval,), timeout_s=None)  # pragma: no cover
 
     app = WorkflowApp()
@@ -222,11 +222,48 @@ def test_mermaid_shape_vocabulary() -> None:
     assert (
         'plain(["plain' in text
     )  # the map source's stadium (it forks children — the arms-render fix)
-    assert "⇢ map:" in text  # the map's item body ON the label
+    assert "⇢ map:" in text  # the map's item body on the label
     assert 'gather[["gather"]]' in text  # the gather join
     assert 'plain.join{{"plain.join"}}' in text  # the collapsed map join
-    assert "hold([(" in text  # the HOLD node
+    assert "hold([(" in text  # the hold node
     assert "⏳" in text and "Approval" in text  # the gate's policy rides it
+
+
+def test_mermaid_gate_timeout_renders_the_normalized_seconds() -> None:
+    """The hold node's timeout policy renders the duration law's own
+    form: the normalized seconds float. A ``timedelta`` declaration and
+    a bare-number declaration render the identical policy text —
+    Python's ``timedelta`` repr never leaks into the diagram."""
+    from datetime import timedelta
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> object:
+        # E14's law: the declared gate's body waits on it.
+        return await ctx.wait_signal((Approval,), timeout_s=None)  # pragma: no cover
+
+    def _emission(timeout_s: object) -> str:
+        app = WorkflowApp()
+
+        @app.workflow("timedelta-hold")
+        def timedelta_hold() -> Promise[object]:
+            gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=timeout_s)
+            return build(
+                step(
+                    hold_body,
+                    Ingest(doc_id="d"),
+                    key="hold",
+                    gates=(gate,),
+                )
+            )
+
+        return app.get("timedelta-hold").mermaid()
+
+    assert "⏳Approval/30.0s" in _emission(timedelta(seconds=30))
+    assert "⏳Approval/30.0s" in _emission(30.0)  # the dual form renders identically
+    assert "⏳Approval/90.0s" in _emission(
+        timedelta(minutes=1, seconds=30)
+    )  # 90s, the normalized form
+    assert "0:01:30" not in _emission(timedelta(minutes=1, seconds=30))  # no repr leak
+    assert "⏳Approval/∞" in _emission(None)  # the undeclared-timeout face
 
 
 def test_mermaid_label_and_shape_edges() -> None:
@@ -239,7 +276,7 @@ def test_mermaid_label_and_shape_edges() -> None:
     assert _label_of(Report) == "Report"  # the class path shortens
     assert _label_of("list[Report]") == "list[Report]"  # the string spelling passes through
     assert _shape("step", False) == ("[", "]")
-    assert _shape("step", True) == ("([(", ")])")  # the HOLD shape
+    assert _shape("step", True) == ("([(", ")])")  # the hold shape
     assert _shape("map_source", False) == ("([", "])")
     assert _shape("map_join", False) == ("{{", "}}")
     assert _shape("gather", False) == ("[[", "]]")

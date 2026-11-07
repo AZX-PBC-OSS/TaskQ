@@ -3,7 +3,7 @@
 Models the notify health-check reconnect loop verbatim:
   - detection on the per-worker health-check tick (notify_health_check_interval)
   - first reconnect attempt IMMEDIATELY after detection (no delay)
-  - on failure: sleep(delay); delay = min(delay * 2, 30.0)   <-- NO jitter
+  - on failure: sleep(delay); delay = min(delay * 2, 30.0)   <-- no jitter
 
 Three scenarios over a 100-worker fleet, PG down 47s then up:
   a) aligned phases  (fleet deployed together - the common k8s case)

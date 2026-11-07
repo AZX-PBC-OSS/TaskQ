@@ -60,7 +60,7 @@ async def test_count_active_jobs_scheduled() -> None:
 
 
 async def test_count_active_jobs_terminal_excluded() -> None:
-    """Terminal jobs (succeeded, failed, etc.) are NOT counted."""
+    """Terminal jobs (succeeded, failed, etc.) are not counted."""
     from datetime import timedelta
 
     backend = InMemoryBackend(FakeClock(_CLOCK_START))

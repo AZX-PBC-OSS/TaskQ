@@ -21,7 +21,7 @@ structlog share directly:
 
 Artifacts: benchmarks/results/loglevel-cpu-delta.{json,md}. The claim
 the numbers serve: at ``warning`` the per-job happy-path lines are gone
-BEFORE the serialization cost (one frozenset lookup per event at the
+before the serialization cost (one frozenset lookup per event at the
 filter, then the line is dropped), the anomaly stream still emits, and
 the job_events ledger is untouched - the CPU delta is the honest
 reduction of the audit's 23%.
@@ -57,7 +57,7 @@ from pydantic import BaseModel  # noqa: E402
 
 from taskq import actor  # noqa: E402
 from taskq._ids import (  # noqa: E402
-    new_job_id,  # Why: scratch benchmark rows, PK locality is not the variable under test.
+    new_job_id,  # Why: scratch benchmark rows, pk locality is not the variable under test.
 )
 
 
@@ -70,7 +70,7 @@ async def hot_noop_0(
     payload: HotPayload,
 ) -> (
     None
-):  # Why: the payload IS the job's work shape; a noop body isolates the framework's per-job cost.
+):  # Why: the payload is the job's work shape; a noop body isolates the framework's per-job cost.
     return
 
 

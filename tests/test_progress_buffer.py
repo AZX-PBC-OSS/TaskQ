@@ -110,7 +110,7 @@ async def test_ctx_progress_seq_sequence_and_flush_drains_delta() -> None:
     assert buf.dirty is False
 
 
-# ── ProgressTooLarge raised; buffer NOT updated ───────────────────
+# ── ProgressTooLarge raised; buffer not updated ───────────────────
 
 
 async def test_ctx_progress_too_large_does_not_update_buffer() -> None:
@@ -351,7 +351,7 @@ async def test_seq_and_state_after_flush_attempt_returns_base_seq_when_clean() -
 async def test_seq_and_state_after_flush_attempt_falls_back_when_dirty() -> None:
     """When the buffer is still dirty (flush failed silently), _seq_and_state_after_flush_attempt
     keeps base_seq + pending_seq_delta as the head so the pending
-    delta is NOT lost in the terminal write, and consumes one past it for
+    delta is not lost in the terminal write, and consumes one past it for
     the terminal event's own seq."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, pending_seq_delta=3, dirty=True)
     buf.pending_state = {"step": 8}
@@ -386,7 +386,7 @@ async def test_seq_and_state_after_flush_attempt_dirty_zero_delta() -> None:
 
 async def test_terminal_seq_and_state_clean_buffer_returns_base_seq() -> None:
     """When the buffer is clean (post-flush, base_seq=5, pending_seq_delta=0),
-    _terminal_seq_and_state returns (6, state) - NOT (0, {}).
+    _terminal_seq_and_state returns (6, state) - not (0, {}).
     The head stays at 5 (the retired flush value) and the state-change
     write consumes 6, clobbering nothing: the write's absolute SET must
     never fall back to 0 for a clean buffer."""

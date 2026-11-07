@@ -21,7 +21,7 @@ Timeline (virtual seconds):
                         per-worker 30s sweeps must reclaim everything else.
 
 Worker-faithful mechanics replicated here:
-  - sweep cadence 30s, calling BOTH ``evict_idle_keyed_reservations`` and
+  - sweep cadence 30s, calling both ``evict_idle_keyed_reservations`` and
     ``evict_idle_keyed_rate_limits`` with the production 1-hour idle threshold;
   - opportunistic eviction on the acquire path when a cap would be exceeded
     (registry-gated to once per 30s - the gate under test).
@@ -59,7 +59,7 @@ from taskq.settings import WorkerSettings
 def _registry_module() -> object:
     """Return the real ``taskq.ratelimit.registry`` MODULE object.
 
-    ``import taskq.ratelimit.registry as m`` does NOT give the module: the
+    ``import taskq.ratelimit.registry as m`` does not give the module: the
     package's ``__init__`` re-exports the module-level ``registry``
     singleton under the same name, and attribute access shadows the
     submodule binding. Patching attributes on the singleton (as an earlier
@@ -168,7 +168,7 @@ async def _run_soak(
     # Instrument (benchmark-side only): count the O(n) eviction scans that the
     # opportunistic (cap-pressure) path actually executes, by wrapping the
     # eviction methods on the instance. The per-worker sweep below calls the
-    # captured originals directly, so the counters see ONLY opportunistic
+    # captured originals directly, so the counters see only opportunistic
     # scans - the gate lets through at most one per 30s if it holds.
     counters = {"res": 0, "rl": 0}
     orig_sweep_res = reg.evict_idle_keyed_reservations
@@ -324,7 +324,7 @@ async def _run_soak(
     final_res = len(reg._keyed_reservation_last_used)
     final_rl = len(reg._keyed_rate_limit_last_used)
 
-    # Scan-cost trend: median cost while at cap (phase 1, size ~ CAP) vs the
+    # Scan-cost trend: median cost while at cap (phase 1, size ~ cap) vs the
     # final reclaimed stretch (size ~ POOL_SIZE).
     at_cap = [s.scan_ms_rl for s in samples if s.tracked_rl >= CAP * 0.95 and s.tracked_rl <= CAP]
     steady = [s.scan_ms_rl for s in samples if s.t >= 7500.0]
@@ -390,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
 
     clock = VirtualClock()
     # Benchmark-side virtual-time patch: every stamp/cutoff/gate inside the
-    # registry module now reads the compressed clock. Patch the MODULE (via
+    # registry module now reads the compressed clock. Patch the module (via
     # sys.modules - see _registry_module), not the name-shadowed singleton.
     _registry_module().monotonic = clock  # type: ignore[assignment]
 

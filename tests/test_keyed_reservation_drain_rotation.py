@@ -124,7 +124,7 @@ async def _materialize(
     pool: asyncpg.Pool,
     settings: WorkerSettings,
 ) -> str:
-    """Register a keyed bucket and create its rows WITHOUT acquiring a slot."""
+    """Register a keyed bucket and create its rows without acquiring a slot."""
     return await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]  # Why: materializing a keyed bucket without acquiring, matching test_keyed_reservation_self_heal.py's pattern.
         ref, payload=_SessionPayload(session_id="s1"), pg_pool=pool, settings=settings
     )

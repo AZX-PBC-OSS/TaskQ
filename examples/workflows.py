@@ -1,4 +1,4 @@
-"""The demo app's workflow example (T16): the doc-ingest pipeline LIVE —
+"""The demo app's workflow example: the doc-ingest pipeline LIVE —
 the same abstract graph the docs example teaches (docs/examples/doc-ingest.md),
 wired behind HTTP with the admin's run explorer attached.
 
@@ -56,7 +56,7 @@ from taskq.workflows.api import GateDecl
 from taskq.workflows.chain import DONE, Chain, Route, Step
 from taskq.workflows.ledger import RunClaim
 
-#: The demo's batch: one doc is ARMED to fail its first enrichment
+#: The demo's batch: one doc is armed to fail its first enrichment
 #: attempt (the failing child + collect's demonstration; the retry takes
 #: the success path — the operator watched the fix land, or the ladder
 #: healed it).
@@ -98,7 +98,7 @@ class PublishReport(BaseModel):
 
 
 async def ingest_body(ctx: Any, params: IngestBatch | None = None) -> list[str]:
-    """The run's OWN input is the truth: the trigger's
+    """The run's own input is the truth: the trigger's
     `create_flow(input=…)` IS consumed (the body reads `ctx.input` —
     never accepted-and-ignored); the wiring's declared batch is the
     default (a bare `create_flow()` still runs the demo corpus)."""
@@ -107,9 +107,8 @@ async def ingest_body(ctx: Any, params: IngestBatch | None = None) -> list[str]:
 
 
 async def enrich_item(ctx: Any, doc_id: str, deps: EnrichClient) -> Summary | Unreadable:
-    # THE FAILING CHILD (property 1): armed on the FIRST attempt only —
-    # the ladder re-runs it ALONE (the siblings and the succeeded items
-    # never re-run).
+    # property 1. armed on the first attempt only — the ladder re-runs it alone
+    # (the siblings and the succeeded items never re-run).
     if doc_id == "doc-doomed" and ctx.attempt < 2:
         raise RuntimeError("the demo's armed transient failure (doc-doomed)")
     text = deps.fetch(doc_id)
@@ -120,7 +119,7 @@ async def enrich_item(ctx: Any, doc_id: str, deps: EnrichClient) -> Summary | Un
 
 def _readable(items: list[Summary | Unreadable]) -> list[str]:
     """The per-node exhaustiveness idiom (match + assert_never — the
-    portable guard BOTH checkers reject a missing arm through): BOTH
+    portable guard both checkers reject a missing arm through): both
     arms surface (the router's and the classifier's shape)."""
     out: list[str] = []
     for item in items:
@@ -144,7 +143,7 @@ def _summary_doc(item: Summary | Unreadable) -> str | None:
         case Summary():
             return item.doc_id
         case Unreadable():
-            return None  # no text was readable — the ROUTER's verdict names it
+            return None  # no text was readable — the router's verdict names it
         case _ as it:
             from typing import assert_never
 
@@ -173,7 +172,7 @@ async def _dead_step_body(ctx: Any, item: Any) -> DeadOutcome:
 
 
 async def _screen_source_body(ctx: Any) -> None:
-    """The chain source's paged generator: ONE yield = ONE page's emit
+    """The chain source's paged generator: one yield = one page's emit
     tx (the children + the edges + the cursor checkpoint). The demo's
     page: every doc id, one record each (the corpus is the module's own
     constant — the source body reads the CLOSURE, not a params arg)."""
@@ -183,16 +182,15 @@ async def _screen_source_body(ctx: Any) -> None:
         child = chain_start(
             SCREEN_CHAIN, doc_id, map_index=abs(hash(doc_id)) % 32000, trace_id=doc_id
         )
-        # THE CURSOR IS THE BODY'S OWN BOOKKEEPING: the emit's tx
-        # checkpoints it (the resume continues from the last COMMITTED
-        # page — the crash-recovery contract).
+        # the emit's tx checkpoints it (the resume continues from the last
+        # committed page — the crash-recovery contract).
         await ctx.emit_batch([child], cursor={"page": 0, "doc": doc_id})
 
 
 class EnrichClient:
-    """THE DEMO'S ONE REAL DEP (the DI capability's demo face): the
+    """The
     enrich queue's client — the dependency the enrichment bodies need,
-    declared as a type and bound ONE instance at the app's door. The
+    declared as a type and bound one instance at the app's door. The
     bodies never import it, never reach through ``ctx`` or a module
     global: the body's signature DECLARES it (``(ctx, doc_id, deps)``)
     and the runner hands the app's bound instance in."""
@@ -202,18 +200,18 @@ class EnrichClient:
 
     def fetch(self, doc_id: str) -> str | None:
         """The enrich leg's lookup (the corpus read the module global
-        used to own — now behind the client, injectable, mockable)."""
+        not the app's — the client owns it, injectable, mockable)."""
         return self._corpus.get(doc_id)
 
 
 wf_app = WorkflowApp(deps=EnrichClient(_DOC_SOURCE))
 
-# ── DEMO LEG 4 — THE CONDITIONAL ROUTER (T20's chain, live) ─────────────
+# ── demo leg 4 — the conditional router (the chain, live) ─────────────
 #
-# The chain declared ONCE; each step's body returns its typed OUTCOME and
-# the Route sends the record to the next step (or DONE). The
-# doc-ingest's conditional: a SCREEN step sorts each document — the
-# READABLE ones enrich, the unreadable ones dead-letter, the total route
+# The chain declared once; each step's body returns its typed outcome and
+# the Route sends the record to the next step (or done). The
+# doc-ingest's conditional: a screen step sorts each document — the
+# readable ones enrich, the unreadable ones dead-letter, the total route
 # is the fence (an outcome with no arm is the loud RouterNotTotal).
 
 
@@ -261,7 +259,7 @@ SCREEN_CHAIN = Chain(
 
 
 async def summarize_body(ctx: Any, enriched: list[Summary | Unreadable]) -> list[str]:
-    """The summaries' keys — the readable arm ONLY (a summary exists
+    """The summaries' keys — the readable arm only (a summary exists
     only where the text was readable)."""
     return [k for it in enriched if (k := _summary_doc(it)) is not None]
 
@@ -273,17 +271,16 @@ async def extract_entities_body(ctx: Any, enriched: list[Summary | Unreadable]) 
 
 
 async def classify_body(ctx: Any, enriched: list[Summary | Unreadable]) -> list[str]:
-    """The classifier labels EVERY document — both arms surface (the
-    publish's AND-join reads them)."""
+    """The classifier labels every document — both arms surface (the
+    publish's and-join reads them)."""
     return _readable(enriched)
 
 
 async def review_iteration(ctx: StepContext, carry: int) -> Done[str] | Refine[int]:
-    # THE HOLD INSIDE THE LOOP (property 2): the typed review pauses the
-    # budget; a reject refines with the note; the walls are named. THE
-    # EXPIRY IS A VALUE (T26): the demo's timeout is a WEEK — a body
-    # that wants the failure raises SignalTimeoutError off the Expired
-    # member itself; this one treats the expiry as a stop.
+    # property 2. the typed review pauses the budget; a reject refines with the
+    # note; the walls are named. the expiry is A value: the demo's timeout is a
+    # week — a body that wants the failure raises SignalTimeoutError off the
+    # Expired member itself; this one treats the expiry as a stop.
     outcome = await ctx.wait_signal(
         (ReviewDecision,), timeout_s=7 * 24 * 3600.0, reason="editorial review (the demo)"
     )
@@ -307,9 +304,9 @@ async def publish_body(
     the truth, never a hardcoded `[]`): `dead_lettered` names the
     Unreadable arm; `failed` is the batch's residual (a doc that
     neither published nor dead-lettered); `published` is the barrier's
-    fan-in DEDUPED to identities (the gather fans in BOTH enrichers —
-    each covered the corpus — so a document publishes ONCE), gated by
-    the classifier's label (the AND-join's publish rule)."""
+    fan-in DEDUPED to identities (the gather fans in both enrichers —
+    each covered the corpus — so a document publishes once), gated by
+    the classifier's label (the and-join's publish rule)."""
     published = sorted(set(ready) & set(labels))
     dead_lettered = sorted(it.doc_id for it in enriched if isinstance(it, Unreadable))
     raw = ctx.input
@@ -360,8 +357,8 @@ REVIEW_GATE = GateDecl(
 
 @wf_app.workflow("doc_ingest")
 def doc_ingest() -> Promise[object]:
-    # THE SPLIT PLACEMENT: the map's children inherit the SOURCE's actor —
-    # the enrich queue's actor rides the ingest step (one actor, one queue).
+    # the map's children inherit the source's actor — the enrich queue's actor
+    # rides the ingest step (one actor, one queue).
     ingested = step(
         ingest_body,
         IngestBatch(doc_ids=list(DEMO_DOCS)),
@@ -370,9 +367,9 @@ def doc_ingest() -> Promise[object]:
         queue="demo-enrich",
     )
     # The item ladder's knob, named where the ladder lives (each child
-    # re-runs ALONE up to this bound — doc-doomed's attempt walks 1 → 2
+    # re-runs alone up to this bound — doc-doomed's attempt walks 1 → 2
     # against it, the siblings never re-run).
-    # the join key is DERIVED (ingest.join — the engine's fork addresses
+    # the join key is derived (ingest.join — the engine's fork addresses
     # the map join by the source's own key); the map's children ride the
     # demo-enrich cohort.
     enriched = map_source(ingested, enrich_item, queue="demo-enrich", max_attempts=3)
@@ -399,11 +396,10 @@ def doc_ingest() -> Promise[object]:
         max_iterations=3,
         budget_s=3600.0,
         on_exhausted="escalate",
-        # THE TYPED DOOR'S COMPILE VISIBILITY (T16's gates= addition):
         # the mid-loop hold is resolvable by the admin's resolve door.
         gates=(REVIEW_GATE,),
     )
-    # The publish consumes the collect TOO (its fourth parent): the
+    # The publish consumes the collect too (its fourth parent): the
     # report derives from the map join's items — the envelope is the
     # truth.
     published = step(
@@ -421,7 +417,7 @@ def doc_ingest() -> Promise[object]:
 
 async def trigger_run(pool: asyncpg.Pool, schema: str, run_key: str | None = None) -> RunClaim:
     """The demo's trigger: one run of the demo graph (the run key makes
-    the trigger idempotent when given). THE CLAIM SURFACE HONEST: the
+    the trigger idempotent when given). the CLAIM SURFACE HONEST: the
     TYPED claim returns — the claim's ``kind`` states the demo's
     202-vs-409 distinction (``created``/``existing-running`` → 202;
     ``existing-terminal`` → the REFUSED-TO-REUSE 409, the prior run's id
@@ -431,7 +427,7 @@ async def trigger_run(pool: asyncpg.Pool, schema: str, run_key: str | None = Non
 
 
 async def trigger_router_run(pool: asyncpg.Pool, schema: str, run_key: str | None = None) -> str:
-    """LEG 4's trigger: one doc_screen_router run (the T20 chain's
+    """LEG 4's trigger: one doc_screen_router run (the router chain's
     conditional routing LIVE; the run key makes the trigger idempotent
     when given). The route the README points at: `POST
     /workflows/doc_screen_router/run`."""
@@ -440,12 +436,12 @@ async def trigger_router_run(pool: asyncpg.Pool, schema: str, run_key: str | Non
     return str(claim.flow_id)
 
 
-#: The drive loop's OWN logger (module-level: both the pass and the loop
+#: The drive loop's own logger (module-level: both the pass and the loop
 #: log through one name).
 log = structlog.get_logger("examples.workflow_drive_loop")
 
 #: The dedup set behind the loop's loud-once discipline (the foreign
-#: names, the per-run error signatures, the max_ticks notices). BOUNDED:
+#: names, the per-run error signatures, the max_ticks notices). bounded:
 #: a demo that outgrows 256 distinct signatures has a different problem.
 _LOUD_ONCE: set[str] = set()
 
@@ -454,11 +450,11 @@ async def _drive_pending(pool: asyncpg.Pool, schema: str) -> None:
     """One drive pass over the pending runs (the demo's in-process
     driver; a worker process would drive the same rows).
 
-    THE ROWS-ARE-TRUTH LAW (the poison-loop cure): the pass derives from
-    THIS app's registry — each run's runner is built from the run's OWN
+    The pass derives from
+    THIS app's registry — each run's runner is built from the run's own
     stamped workflow name, a foreign workflow's run (any other app's run
-    sharing the schema) is tolerated LOUDLY-ONCE and skipped (its step
-    keys resolve against ITS registry, never ours), and ONE run's
+    sharing the schema) is tolerated LOUDLY-once and skipped (its step
+    keys resolve against ITS registry, never ours), and one run's
     failure is THAT run's story: the pass continues to the runs behind
     it (the claim sequence's ORDER — a poison run at the head starves
     nothing), and the error is DEDUPED (logged once per signature), not
@@ -474,11 +470,11 @@ async def _drive_pending(pool: asyncpg.Pool, schema: str) -> None:
         try:
             compiled = wf_app.get(name)
         except KeyError:
-            # THE FOREIGN RUN: shared schema, not this app's workflow —
-            # skip loudly ONCE PER RUN (the dedup key is the RUN, not the
-            # workflow name: a second foreign run on a different workflow
-            # still gets its own named skip — the operator sees EVERY
-            # refused run's story, never a silent one).
+            # shared schema, not this app's workflow — skip loudly once per run
+            # (the dedup key is the run, not the workflow name: a second
+            # foreign run on a different workflow still gets its own named skip
+            # — the operator sees every refused run's story, never a silent
+            # one).
             run_skip_sig = f"foreign:{run_sig}"
             if run_skip_sig not in _LOUD_ONCE:
                 _LOUD_ONCE.add(run_skip_sig)
@@ -495,12 +491,11 @@ async def _drive_pending(pool: asyncpg.Pool, schema: str) -> None:
         try:
             outcome = await runner.drive(row["id"], until="held", max_ticks=200)
         except asyncio.CancelledError:
-            raise  # THE CANCEL IS NEVER SWALLOWED (the shutdown discipline)
+            raise  # the cancel is never swallowed (the shutdown discipline)
         except Exception as exc:
-            # THE PER-RUN ISOLATION: a run's failure is THAT run's story
-            # — the loop continues, the runs behind it still get their
-            # pass; the error is DEDUPED (once per run + error class +
-            # message), not a 0.5 s spam.
+            # a run's failure is that run's story — the loop continues, the
+            # runs behind it still get their pass; the error is deduped (once
+            # per run + error class + message), not a 0.5 s spam.
             sig = f"{run_sig}:{type(exc).__name__}:{exc}"
             if sig not in _LOUD_ONCE:
                 _LOUD_ONCE.add(sig)
@@ -532,6 +527,6 @@ async def drive_loop(pool: asyncpg.Pool, schema: str) -> AsyncIterator[None]:
             raise
         except Exception:
             # The demo's loop must survive a bad tick; the rows are the
-            # truth and the next pass re-drives — but it says so LOUDLY.
+            # truth and the next pass re-drives — but it says so loudly.
             log.exception("workflow-drive-pass-failed")
         await asyncio.sleep(0.5)

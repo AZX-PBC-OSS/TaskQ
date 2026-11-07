@@ -2,17 +2,17 @@
 
 The claim under attack (``tests/test_cron_skipped_slots.py`` pins the happy
 shape) is that ``taskq.cron.skipped_slots`` and ``taskq.cron.slots_behind``
-count EVERY dropped cron slot exactly once: no double-count across
+count every dropped cron slot exactly once: no double-count across
 rollbacks and leader failovers, no silent loss on the suppression paths,
 and a gauge that decays but never lies. This file builds the census path
 by path and pins the operator-visible count for each:
 
-1. committed catch-up skip — counted once, AFTER the commit gate delivers
+1. committed catch-up skip — counted once, after the commit gate delivers
    (the crash window between the tick's last statement and the emission
    is the gate's; a crash there loses the count, the at-most-once bound);
 2. a ROLLED-BACK tick (commit never happened) — reports NOTHING, the owed
    slots are re-attempted, and the committed re-attempt counts them
-   exactly ONCE (never doubled); a stale nonce from the rolled-back arm
+   exactly once (never doubled); a stale nonce from the rolled-back arm
    cannot re-emit;
 3. leader failover mid-tick — the old leader's rollback reports nothing,
    the new leader's committed re-fire counts once;
@@ -26,7 +26,7 @@ by path and pins the operator-visible count for each:
 Then the gauge's decay honesty: merge-not-replace across a tick that
 observes only DUE schedules, the DELETED-schedule strand (the one
 unbounded-strand path), and the 101st actor's collapse onto ``_other_``
-on BOTH instruments.
+on both instruments.
 
 Then the fire-units math: a mid-lag period change, a DST fold and a DST
 gap, and the exactness of the catch-up cutoff boundary.
@@ -86,9 +86,9 @@ def metric_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
     The skip counter resolves through :func:`taskq.obs._otel._lazy_counter`
     at call time, so patching ``get_meter`` is enough. The lag gauge is a
     module-level observable gauge bound at import time; the test re-registers
-    the SAME production callback on a test-scoped meter over a fresh cache.
+    the same production callback on a test-scoped meter over a fresh cache.
     Duplicated here (rather than imported) so the fixture parameters of this
-    module's tests bind their OWN definition, not an imported name.
+    module's tests bind their own definition, not an imported name.
     """
     from opentelemetry.sdk.metrics import MeterProvider
 
@@ -219,11 +219,11 @@ async def test_the_committed_skip_counts_once_behind_the_commit_gate(
     ``tick_cron`` has executed every statement of the tick (the success
     UPDATE that durably advances ``next_fire_at`` past the owed slots is
     in the connection's write log) yet the counter and the gauge have
-    BOTH not moved: the emission is armed behind the commit gate, not
+    both not moved: the emission is armed behind the commit gate, not
     inline. Delivery — the server's NOTIFY riding the COMMIT — is what
     counts the drop. A process that dies in that window (after the
     server committed, before the dispatch ran) loses the count while the
-    committed advance stands: the counter is AT-MOST-ONCE per drop, and
+    committed advance stands: the counter is AT-MOST-once per drop, and
     this pin is where that bound lives. (The metrics plane is
     process-local Prometheus state anyway: a dead process exports
     nothing further.)
@@ -267,9 +267,9 @@ async def test_a_rolled_back_tick_reports_nothing_and_the_reattempt_counts_once(
     Tick 1 plans the fire, executes the success UPDATE, arms the
     emission — and the COMMIT never happens (the transaction rolls back:
     a transient PG error, the leader's deadline, anything). The owed
-    slots were NOT dropped by that tick — ``next_fire_at`` rolled back
+    slots were not dropped by that tick — ``next_fire_at`` rolled back
     with everything else — so the counter must say nothing. The
-    re-attempted tick then commits and counts the drops ONCE: a census
+    re-attempted tick then commits and counts the drops once: a census
     that summed both attempts would report 6 dropped slots for a
     schedule that lost exactly 3.
     """
@@ -383,7 +383,7 @@ async def test_a_budget_deferred_suppression_counts_only_once_it_commits(
     schedule behind it defers (its ``skipped_slots`` were already
     computed in planning) and the suppression UPDATE durably advances it
     past the owed slots. The COMMIT fails. Nothing is counted: the
-    rolled-back suppression did NOT durably advance anything — the owed
+    rolled-back suppression did not durably advance anything — the owed
     slots are re-attempted.
 
     Tick 2: with budget to fund both factories, the consumer fires (2
@@ -473,8 +473,8 @@ async def test_a_committed_budget_deferral_counts_its_skips_from_the_suppression
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The census row for the committed deferral, on the gated path, with
-    the suppression as the ONLY possible source of the count: the
-    deferred schedule NEVER fires — its owed slots are dropped purely by
+    the suppression as the only possible source of the count: the
+    deferred schedule never fires — its owed slots are dropped purely by
     the committed suppression UPDATE advancing ``next_fire_at`` past
     them. If the suppression stopped carrying its ``skipped_slots``, the
     drops would vanish from the metrics plane (the one silent-loss hole
@@ -607,7 +607,7 @@ async def test_the_gauge_merge_keeps_an_absent_actors_depth(
     assert _gauge_depths(metric_reader) == {"absent_next_actor": 3}
 
     # Now the fleet rotates: a different actor is due and fires clean;
-    # the behind schedule is NOT in the due set.
+    # the behind schedule is not in the due set.
     clean_conn = _FakeCronConn(
         schedule_rows=[
             _make_schedule_row(actor="other_actor", next_fire_at=_NOW),
@@ -671,7 +671,7 @@ async def test_the_101st_actors_drops_collapse_onto_other_on_both_instruments(
     """The cap's honesty, both instruments: past 100 distinct actor
     names the drop COUNT collapses onto ``_other_`` summed (honest — the
     operator still sees every dropped slot), and the depth gauge
-    collapses onto ``_other_`` LAST-OBSERVATION-WINS (the one dishonest
+    collapses onto ``_other_`` last-OBSERVATION-WINS (the one dishonest
     corner: several overflow actors' depths take turns on one series).
     Pinned as shipped, so a change to either behavior is a decision."""
     monkeypatch.setattr(otel_mod, "_cron_actor_label_values", set())
@@ -687,7 +687,7 @@ async def test_the_101st_actors_drops_collapse_onto_other_on_both_instruments(
         )
         await _tick(conn, settings, backend)
 
-    # Two overflow actors with DIFFERENT depths: 3, then 6.
+    # Two overflow actors with different depths: 3, then 6.
     for overdue_minutes, _depth in ((10, 3), (25, 6)):
         conn = _FakeCronConn(
             schedule_rows=[
@@ -728,7 +728,7 @@ async def test_a_mid_lag_period_change_counts_in_current_expression_units(
     exactly the knob the runbook names). The skip walk has only the
     CURRENT row: it counts the occurrences the CURRENT expression would
     have had between the owed slot and the recomputed fire. Owed 30
-    minutes back, recomputed to 10:10: four */10 slots dropped — NOT the
+    minutes back, recomputed to 10:10: four */10 slots dropped — not the
     seven the historical */5 grid would have owed. The count is defined
     by the row the tick can see; historical-period slots are not
     replayable from it. Pinned so the semantics are a decision, not an
@@ -757,7 +757,7 @@ async def test_a_mid_lag_period_change_counts_in_current_expression_units(
     assert _gauge_depths(metric_reader) == {"widened_actor": 4}
     # The advance itself uses the new expression too: the recomputed
     # fire (10:10) is what the immediate fire delivers; the advance
-    # lands on the NEXT slot after it: 10:20 on the new grid.
+    # lands on the next slot after it: 10:20 on the new grid.
     assert _first_success_next_fire(conn) == datetime(2025, 1, 1, 10, 20, tzinfo=UTC)
 
 
@@ -769,11 +769,11 @@ async def test_a_dst_fold_counts_wall_fire_units_and_the_repeated_hour_is_one_sl
     EST): an hourly-at-:30 schedule owed 00:30 EDT, leader alive at 01:30
     EST. The UTC span owed→recomputed is three hours, but the count is
     TWO fire units — 00:30 and the fold-0 01:30 — because under ``skip``
-    the repeated hour plays ONCE: the fold-1 replay of 01:30 is not a
+    the repeated hour plays once: the fold-1 replay of 01:30 is not a
     dropped slot, and the count must not inflate by the fold. The
     runaway predicate compares fire units against the period, so a fold
     may never mint a phantom drop."""
-    fold_now = datetime(2025, 11, 2, 6, 30, 0, tzinfo=UTC)  # 01:30 EST
+    fold_now = datetime(2025, 11, 2, 6, 30, 0, tzinfo=UTC)  # 01:30 est
     # The fake conn reads its planning clock from the shared _NOW.
     monkeypatch.setattr(cron_loop_tests, "_NOW", fold_now)
 
@@ -783,7 +783,7 @@ async def test_a_dst_fold_counts_wall_fire_units_and_the_repeated_hour_is_one_sl
                 actor="fold_actor",
                 cron_expr="30 * * * *",
                 timezone="America/New_York",
-                next_fire_at=datetime(2025, 11, 2, 4, 30, 0, tzinfo=UTC),  # 00:30 EDT
+                next_fire_at=datetime(2025, 11, 2, 4, 30, 0, tzinfo=UTC),  # 00:30 edt
                 schedule_id=new_uuid(),
             )
         ],
@@ -804,8 +804,8 @@ async def test_a_dst_fold_counts_wall_fire_units_and_the_repeated_hour_is_one_sl
     assert counter_value(metric_reader, _SKIP_COUNTER) == 2
     assert _gauge_depths(metric_reader) == {"fold_actor": 2}
     # The advance lands strictly past the fold: the recomputed fire is
-    # 02:30 EST (delivered by the immediate fire), the next owed slot is
-    # 03:30 EST - the first slot entirely beyond the repeated hour.
+    # 02:30 est (delivered by the immediate fire), the next owed slot is
+    # 03:30 est - the first slot entirely beyond the repeated hour.
     assert _first_success_next_fire(conn) == datetime(2025, 11, 2, 8, 30, 0, tzinfo=UTC)
 
 
@@ -820,7 +820,7 @@ async def test_a_dst_gap_collapses_nonexistent_wall_slots_into_real_ones(
     then the gap-resolved 03:00, 03:15, 03:30) — never a phantom count
     of slots no clock ever held. The 'hour missing' side of the fold
     changes no unit."""
-    gap_now = datetime(2025, 3, 9, 7, 30, 0, tzinfo=UTC)  # 03:30 EDT
+    gap_now = datetime(2025, 3, 9, 7, 30, 0, tzinfo=UTC)  # 03:30 edt
     monkeypatch.setattr(cron_loop_tests, "_NOW", gap_now)
 
     conn = _FakeCronConn(
@@ -829,7 +829,7 @@ async def test_a_dst_gap_collapses_nonexistent_wall_slots_into_real_ones(
                 actor="gap_actor",
                 cron_expr="*/15 * * * *",
                 timezone="America/New_York",
-                next_fire_at=datetime(2025, 3, 9, 6, 45, 0, tzinfo=UTC),  # 01:45 EST
+                next_fire_at=datetime(2025, 3, 9, 6, 45, 0, tzinfo=UTC),  # 01:45 est
                 schedule_id=new_uuid(),
             )
         ],
@@ -843,8 +843,8 @@ async def test_a_dst_gap_collapses_nonexistent_wall_slots_into_real_ones(
     assert fired == 1
     assert counter_value(metric_reader, _SKIP_COUNTER) == 4
     assert _gauge_depths(metric_reader) == {"gap_actor": 4}
-    # Recomputed fire 03:45 EDT delivered by the immediate fire; the
-    # advance lands on 04:00 EDT.
+    # Recomputed fire 03:45 edt delivered by the immediate fire; the
+    # advance lands on 04:00 edt.
     assert _first_success_next_fire(conn) == datetime(2025, 3, 9, 8, 0, 0, tzinfo=UTC)
 
 
@@ -903,7 +903,7 @@ async def test_the_catch_up_cutoff_boundary_is_exact(
 async def test_mutation_pin_re_queueing_dropped_history_stays_red(
     metric_reader: InMemoryMetricReader,
 ) -> None:
-    """THE runaway mutation pin.
+    """The runaway mutation pin.
 
     The hazard the skip design exists to prevent is not the drop itself,
     it is the well-meaning 'fix': someone makes the tick replay the
@@ -913,7 +913,7 @@ async def test_mutation_pin_re_queueing_dropped_history_stays_red(
     the queue. This pin holds the contract that change violates, on
     every surface it would have to touch:
 
-    * exactly ONE job is enqueued per fire attempt (no per-missed-slot
+    * exactly one job is enqueued per fire attempt (no per-missed-slot
       fan-out),
     * no enqueued job is backdated into the dropped history (its
       ``scheduled_at`` is never before the catch-up cutoff),

@@ -208,7 +208,7 @@ class TestCancelWherePostgres:
         clean_jobs_app: JobsApp,
     ) -> None:
         """EPQ regression: a job claimed while cancel_where executes must
-        NOT be overwritten to terminal 'cancelled'."""
+        not be overwritten to terminal 'cancelled'."""
         backend = clean_jobs_app.backend
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name
@@ -457,7 +457,7 @@ class TestDeadlockRetry:
 
         # The batch transaction also carries statement_timeout capture /
         # restore executes around the driving fetchrow; the injected
-        # deadlock must land on the batch's EVENT INSERT (after the
+        # deadlock must land on the batch's event INSERT (after the
         # fetchrow succeeded and the handler began), not on those, so
         # gate on the statement's shape rather than its call ordinal.
         event_inserts = [0]

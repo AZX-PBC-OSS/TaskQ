@@ -125,7 +125,7 @@ async def test_streaming_chunked_arm_refuses_to_append_to_a_complete_batch(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """PUBLIC SURFACE, NO RACE: enqueue_batch (atomic arm) completes, then
+    """PUBLIC SURFACE, no RACE: enqueue_batch (atomic arm) completes, then
     enqueue_batch_streaming reuses the batch_id. The chunked arm must not
     commit pending members under a terminal batch row."""
     stack, _deps, backend = await _open_pg_backend_on_schema(
@@ -328,16 +328,16 @@ async def test_in_memory_bulk_arm_refuses_to_append_to_a_complete_batch() -> Non
 
 
 # ---------------------------------------------------------------------------
-# Guard parity: the SINGLE-member write paths.
+# Guard parity: the single-member write paths.
 #
 # The bulk arms' guard rides `_lock_batch_membership` (PG) / the bulk
 # preflight (in-memory). The sub-job enqueuer's no-connection fallback and
-# the in-memory buffer flush write members through the backend's SINGLE
+# the in-memory buffer flush write members through the backend's single
 # enqueue instead, and their client-level `get_batch` preflights are
 # check-then-act with real await boundaries between the check and each
 # write: a batch row that goes terminal mid-call (a concurrent threshold
-# abort arbitrating on another connection) must be refused at the WRITE
-# SITE, the same typed refusal, or the corruption this file pins comes
+# abort arbitrating on another connection) must be refused at the write
+# site, the same typed refusal, or the corruption this file pins comes
 # back through the race window the bulk arms already close.
 # ---------------------------------------------------------------------------
 
@@ -487,7 +487,7 @@ async def test_in_memory_single_member_write_refuses_a_terminal_batch() -> None:
 
 
 async def test_flush_buffer_surfaces_terminal_batch_members_through_the_flush_contract() -> None:
-    """The buffer flush's refusal speaks the flush arm's OWN contract: a
+    """The buffer flush's refusal speaks the flush arm's own contract: a
     per-item failure collected into SubEnqueueError, never a wholesale
     raise. A wholesale raise (a) breaks the documented failure surface
     (``SubEnqueueError`` carries the lost sub-jobs so callers can detect

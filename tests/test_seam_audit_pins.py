@@ -159,7 +159,7 @@ async def test_drain_handback_keeps_the_cancel_fence_in_both_statement_shapes() 
     next holder claims and runs the body again before any ladder arm can
     terminalise it, a double execution of a job the operator asked to
     stop. The fence is the ``cancel_phase = 0`` conjunct, and it must hold
-    in BOTH statement shapes the helper issues: the empty-registry
+    in both statement shapes the helper issues: the empty-registry
     single-parameter shape (the common drained-worker case) and the
     exclusion shape that binds the held ids. A regression that drops the
     conjunct from either shape re-opens the double-run.
@@ -217,7 +217,7 @@ async def _run_one_tick(deps: WorkerDeps, controller: object) -> None:
     """Run heartbeat_loop until its first tick settles, then stop it.
 
     Synchronises on the tick-duration histogram's record hook, which fires
-    on BOTH the success and the failure arm of the tick, so the wait is
+    on both the success and the failure arm of the tick, so the wait is
     deterministic however the tick ends.
     """
     import taskq.worker.heartbeat as hb_mod
@@ -253,7 +253,7 @@ async def _run_one_tick(deps: WorkerDeps, controller: object) -> None:
 async def test_an_acquire_failed_tick_still_drains_the_pending_abandons() -> None:
     """A tick that never got a connection must still drain the abandon queue.
 
-    ``run_post_tx`` is the ONLY delivery point for an abandon queued by the
+    ``run_post_tx`` is the only delivery point for an abandon queued by the
     same-tick fast path: the entry sits in ``_pending_abandons`` with the
     in-process ABANDON_PENDING sentinel, which matches no ladder arm in
     ``run_in_tx``. The drain runs in the tick's ``finally`` with a FULL
@@ -297,7 +297,7 @@ async def test_a_failing_post_tx_drain_does_not_displace_the_tick_failure() -> N
     # "heartbeat-tick-failure", the unexpected arm
     # "heartbeat-tick-unexpected-error". The drain's displacement would
     # reclassify the tick (a RuntimeError is not transient), so the event
-    # NAME is the assertion, not just the counter.
+    # name is the assertion, not just the counter.
     import structlog.testing
 
     with structlog.testing.capture_logs() as logs:
@@ -346,7 +346,7 @@ async def test_the_abandon_drain_renews_detector2_liveness_per_entry() -> None:
     """Every drain entry renews the heartbeat liveness stamp between round
     trips.
 
-    A bulk cancel makes every active job's escalation due inside ONE tick:
+    A bulk cancel makes every active job's escalation due inside one tick:
     the drain's mark_abandoned + deregister cost a round trip each, and a
     multi-entry drain can outlast the staleness budget. Detector 2 reads
     the 'heartbeat' stamp and force-exits the worker mid-drain when it

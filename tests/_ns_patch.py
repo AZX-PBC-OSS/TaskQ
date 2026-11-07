@@ -1,4 +1,4 @@
-"""Module-namespace patching: aim a fake at the module that LOOKS IT UP.
+"""Module-namespace patching: aim a fake at the module that LOOKS IT up.
 
 ``monkeypatch.setattr(run_mod.asyncio, "sleep", fake)`` reads as if it
 scoped the fake to ``run_mod``, but ``run_mod.asyncio`` IS the global
@@ -12,7 +12,7 @@ not a deterministic red (the asyncio.sleep patching incident).
 
 The fix is to patch the name where it is looked up. A module that does
 ``import asyncio`` and calls ``asyncio.sleep(...)`` resolves the name
-``asyncio`` in its OWN module globals at call time - so rebinding THAT
+``asyncio`` in its own module globals at call time - so rebinding THAT
 binding to a proxy (everything delegates to the real module, the faked
 names are shadowed) confines the fake to the code under test and leaves
 the global module untouched for every other namespace.
@@ -40,7 +40,7 @@ class _ModuleNSProxy:
         object.__setattr__(self, "_overrides", overrides)
 
     def __getattr__(self, name: str) -> Any:
-        # Only reached for names NOT found normally (i.e. not in
+        # Only reached for names not found normally (i.e. not in
         # __slots__/overrides), so the override table itself is safe to
         # touch here.
         overrides: dict[str, Any] = object.__getattribute__(self, "_overrides")
@@ -59,7 +59,7 @@ def module_ns_proxy(real: types.ModuleType, /, **overrides: Any) -> Any:
 
     Pass it to ``monkeypatch.setattr(owner, "asyncio", module_ns_proxy(
     asyncio, sleep=fake))`` where ``owner`` is the module whose code
-    resolves the name - NOT to the stdlib module itself. See the module
+    resolves the name - not to the stdlib module itself. See the module
     docstring for why the through-to-the-global spelling is a leak.
     """
     return _ModuleNSProxy(real, **overrides)

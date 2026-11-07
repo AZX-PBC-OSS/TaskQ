@@ -19,7 +19,7 @@ import json
 import os
 import shutil
 import signal
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject.
+import subprocess  # Why: the verifier's verdict is its exit code — the script is the subject.
 import sys
 import tempfile
 import time
@@ -40,7 +40,7 @@ def _git_env() -> dict[str, str]:
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; git resolves on PATH exactly as the repo's own scripts invoke it.
+    return subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; git resolves on path exactly as the repo's own scripts invoke it.
         ["git", *args],  # noqa: S607  # Why: as above.
         cwd=repo,
         capture_output=True,

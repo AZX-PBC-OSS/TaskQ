@@ -6,7 +6,7 @@ canonical source can be asserted in CI.  ``redis-py``'s ``register_script()``
 consumes these directly, the bytes are sent verbatim to Redis.
 
 Time domain: every script derives ``now`` from ``redis.call('TIME')``, it
-is NEVER passed as ARGV.  The admission state these scripts measure is
+is never passed as ARGV.  The admission state these scripts measure is
 shared by the whole fleet, so the clock that stamps and measures it must be
 shared too: a caller-supplied now lets one node's clock skew shift every
 window boundary and TAT it writes (over-admission up to skew/window across
@@ -41,7 +41,7 @@ before and after the acquire, used for compare-and-set refunds.
 
 ARGV contract for the token-bucket refund script:
 
-* ``ARGV[1]`` = refund_amount (float, tokens to add back, NOT decision.remaining)
+* ``ARGV[1]`` = refund_amount (float, tokens to add back, not decision.remaining)
 * ``ARGV[2]`` = capacity     (float, bucket cap; prevents over-refund)
 * ``ARGV[3]`` = refill_per_second (float, mirrors the acquire script's
   elapsed-refill step so a refund does not lose accrued refill)

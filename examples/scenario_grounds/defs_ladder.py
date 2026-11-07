@@ -12,7 +12,7 @@ from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
 app = WorkflowApp()
 
 #: The body's own failure counter (armed by the scenario's fresh run:
-#: every run of THIS module fails twice, then succeeds).
+#: every run of this module fails twice, then succeeds).
 ATTEMPTS_SO_FAR = {"count": 0}
 
 

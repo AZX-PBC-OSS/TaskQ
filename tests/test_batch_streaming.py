@@ -145,7 +145,7 @@ class TestStreamingWithPolicy:
         assert batch_row.finalizer_job_id is not None
         assert batch_row.expected_size == 20
 
-        # Finalizer job must NOT have batch_id metadata.
+        # Finalizer job must not have batch_id metadata.
         assert handle.finalizer_handle is not None
         fin_row = await backend.get(handle.finalizer_handle.job_id)
         assert fin_row is not None
@@ -234,7 +234,7 @@ async def test_no_conn_chunk_failure_commits_prefix_on_pg(
     module_pg_pool: asyncpg.Pool,
 ) -> None:
     """The same pin against real Postgres: the no-connection path commits
-    each chunk in its OWN pool transaction, so the committed prefix
+    each chunk in its own pool transaction, so the committed prefix
     survives the failing chunk's refusal - the durability claim the
     in-memory mirror cannot prove by itself."""
     from taskq.client._jobs import JobsClient as _JobsClient

@@ -1,6 +1,6 @@
-"""THE QUEUE'S RATE LIMIT ON THE WORKFLOW PATH (the DI lane's blocker
-#2 fix): a workflow row's claim honors the SAME queue rate limits the
-vanilla actors honor — ONE mechanism, not a second one.
+"""The queue's rate limit on the workflow path (the DI lane's blocker
+#2 fix): a workflow row's claim honors the same queue rate limits the
+vanilla actors honor — one mechanism, not a second one.
 
 The vanilla path's queue rate limit: a queue whose ``max_concurrent``
 column is set rides a fleet-wide queue-cap reservation
@@ -8,7 +8,7 @@ column is set rides a fleet-wide queue-cap reservation
 ``_effective_reservations`` and acquired post-claim by the consumer's
 pre-flight (``acquire_for_actor`` — the admission authority); a denial
 snoozes the row (budget-free) and the deny is observable (the
-``taskq.ratelimit.denials`` counter). The WORKFLOW path had NO such
+``taskq.ratelimit.denials`` counter). The WORKFLOW path had no such
 acquire: every claimed flow row executed unconditionally — a
 rate-limited queue's flow BURST past the cap its vanilla siblings
 honored.
@@ -16,22 +16,22 @@ honored.
 The fix pins (the intercept's gate — ``taskq.worker.run.
 _flow_rate_limit_gate`` — and the door's slot release):
 
-* THE DENY — the cap's slots held, the gate denies, the counter bumps
+* the DENY — the cap's slots held, the gate denies, the counter bumps
   (``postgres`` backend label): the deny is observable;
-* THE CADENCE — one slot, sequential acquire-release-acquire: the
-  second acquire succeeds ONLY after the first release (never a burst);
-* THE NO-CAPS FAST PATH — no registry, no cap: the gate passes
+* the CADENCE — one slot, sequential acquire-release-acquire: the
+  second acquire succeeds only after the first release (never a burst);
+* the no-CAPS FAST PATH — no registry, no cap: the gate passes
   everything through (the vanilla shape, zero per-job cost);
-* THE FAIL-CLOSED DEPENDENCY ARM — a store outage is the limiter's own
+* the FAIL-CLOSED DEPENDENCY ARM — a store outage is the limiter's own
   denial shape (the snooze, budget-free), never a job outcome;
-* THE DOOR'S SLOT LAW — a HELD outcome releases too (the wait is not
+* the DOOR'S SLOT LAW — a HELD outcome releases too (the wait is not
   occupancy): the flow step that holds on a human gate gives the
   queue's capacity back while it waits, and the wake's re-execution
   re-acquires cleanly.
 
 The reservations are PG-BACKED (the production shape — the boot's
 ``sync_slots`` materializes the slot rows, the acquire's lease/reclaim
-read them), on the module's OWN schema; each pin's OWN queue (the
+read them), on the module's own schema; each pin's own queue (the
 bucket namespace is the PG table — a pin's held slot must never leak
 into the next pin's acquire).
 """
@@ -137,9 +137,9 @@ async def _capped_registry(
         schema=schema,
     )
     registry.register_queue_cap_reservation(reservation)
-    # THE BOOT'S OWN SYNC (the fleet's shape): the slot rows materialize
-    # at worker startup — the acquire has no ensure-slots retry, so the
-    # pin performs the boot's sync before the gate runs.
+    # the slot rows materialize at worker startup — the acquire has no
+    # ensure-slots retry, so the pin performs the boot's sync before the gate
+    # runs.
     await sync_slots([reservation], pool, schema=schema)
     return registry
 
@@ -188,7 +188,7 @@ class _NoEnqueuer:
 async def test_the_deny_is_observable_and_names_the_bucket(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE DENY: the cap's ONE slot held, the gate denies with the
+    """The deny: the cap's one slot held, the gate denies with the
     queue-cap bucket's name, and the denial counter bumps (the
     observable). No claim, no attempt, no budget: the row parks."""
     pin_queue = _queue("deny")
@@ -200,7 +200,7 @@ async def test_the_deny_is_observable_and_names_the_bucket(
         reservations=[cap],
         job_id=new_job_id(),
         worker_id=CAPABLE_WORKER,
-        pg_pool=wf_pool,  # the SAME table the gate's acquire reads (PG-backed, the production shape)
+        pg_pool=wf_pool,  # the same table the gate's acquire reads (PG-backed, the production shape)
     )
     assert holder  # the fixture held the slot
 
@@ -221,7 +221,7 @@ async def test_the_deny_is_observable_and_names_the_bucket(
 
 
 async def test_the_cadence_one_slot_never_bursts(wf_schema: str, wf_pool: asyncpg.Pool) -> None:
-    """THE CADENCE: one slot; acquire → (deny) → release → acquire. The
+    """The cadence: one slot; acquire → (deny) → release → acquire. The
     release RE-OPENS the gate — a flow on a rate-limited queue fires at
     the limit's cadence, never a burst."""
     clock = FakeClock(_START)
@@ -285,14 +285,14 @@ async def test_the_dependency_failure_is_fail_closed(wf_schema: str, wf_pool: as
     assert gate.denied is None and gate.acquired == []
 
 
-# ── the door's slot law: a HELD outcome releases ─────────────────────────
+# ── the door's slot law: a held outcome releases ─────────────────────────
 
 
 @pytest.mark.integration
 async def test_the_door_releases_the_slot_while_the_flow_holds(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SLOT LAW (the holds'): the flow step that holds on a human
+    """The slot law (the holds'): the flow step that holds on a human
     gate gives the queue's capacity back — the slot is re-acquirable
     while the run waits — and the wake's re-execution acquires again
     cleanly."""
@@ -357,7 +357,7 @@ async def test_the_door_releases_the_slot_while_the_flow_holds(
         flow_slot=(gate.acquired, gate.registry),
     )
     assert execution == "held"
-    # THE SLOT IS FREE WHILE THE FLOW WAITS: the wait is not occupancy.
+    # the wait is not occupancy.
     next_job = _flow_job("hold", JobId(flow_id), JobId(node["id"]), payload)
     next_gate = await _flow_rate_limit_gate(
         registry, clock, next_job, CAPABLE_WORKER, _deps(wf_pool, wf_schema), job_log=JOB_LOG
@@ -366,8 +366,8 @@ async def test_the_door_releases_the_slot_while_the_flow_holds(
     assert next_gate.registry is not None
     await next_gate.registry.release_for_actor(next_gate.acquired)
 
-    # THE WAKE: deliver through the HITL door, re-execute — the
-    # re-execution acquires cleanly and terminalizes.
+    # deliver through the hitl door, re-execute — the re-execution acquires
+    # cleanly and terminalizes.
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(JobId(flow_id))
     assert holds

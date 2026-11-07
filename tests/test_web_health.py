@@ -181,7 +181,7 @@ async def test_ready_503_when_draining() -> None:
 
 
 async def test_ready_503_when_pg_ping_fails() -> None:
-    """Readiness 503 when PG ping fails. Body has ready=false; pg_ping_ok is NOT on wire."""
+    """Readiness 503 when PG ping fails. Body has ready=false; pg_ping_ok is not on wire."""
     deps = _make_deps(
         dispatcher_pool=_StubPool(error=asyncpg.PostgresConnectionError("connection refused")),
     )
@@ -194,7 +194,7 @@ async def test_ready_503_when_pg_ping_fails() -> None:
     assert response.status_code == 503
     body = response.json()  # pyright: ignore[reportUnknownVariableType] # Why: response.json() return type is Any; pyright reports unknown.
     assert body["ready"] is False
-    # pg_ping_ok is internal - must NOT appear on the wire
+    # pg_ping_ok is internal - must not appear on the wire
     assert "pg_ping_ok" not in body
     # fields must all be present
     assert "ready" in body

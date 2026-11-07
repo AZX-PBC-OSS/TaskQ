@@ -2,7 +2,7 @@
 
 ``top_ids`` cuts a round's admitted id set on ``ORDER BY pending_rank,
 priority DESC, scheduled_at, id`` (``src/taskq/backend/_dispatch_sql.py``).
-``pending_rank`` is ``ROW_NUMBER() OVER (PARTITION BY actor ORDER BY ...)``,
+``pending_rank`` is ``ROW_NUMBER() over (PARTITION BY actor ORDER BY ...)``,
 so every actor's oldest pending job carries ``pending_rank = 1`` regardless
 of how many actors are competing. Once the fleet holds more actors with
 pending work than the round's ``limit``, the tiebreak among all those

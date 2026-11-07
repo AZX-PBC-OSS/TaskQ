@@ -1,6 +1,6 @@
-"""THE CHAOS SUITE — the flake + crash drills REPEATED (5 iterations),
+"""the CHAOS SUITE — the flake + crash drills REPEATED (5 iterations),
 the variance HONEST: every iteration's receipt lands; the invariant is
-unconditional EVERY time (all typed terminals, nothing lost, nothing
+unconditional every time (all typed terminals, nothing lost, nothing
 duplicated), under a SIGKILL at a different point each iteration."""
 
 from __future__ import annotations
@@ -41,8 +41,8 @@ async def test_chaos_flake_and_kill(
     assert len(flow_ids) == 1
     flow_id = flow_ids[0]
 
-    # THE CRASH: a worker dies KILL_DELAY into the run (the fan-out is
-    # live by then); the replacement worker finishes the story.
+    # a worker dies KILL_DELAY into the run (the fan-out is live by then); the
+    # replacement worker finishes the story.
     worker = await workers.spawn_ready(pool, tag=f"chaos-{iteration}-a", max_concurrency=8)
     await asyncio_sleep(KILL_DELAY_STEPS_S[iteration % len(KILL_DELAY_STEPS_S)])
     killed = worker.alive()
@@ -53,7 +53,7 @@ async def test_chaos_flake_and_kill(
     status = await await_terminal(pool, schema, flow_id, timeout_s=240)
     wall_s = time.monotonic() - started
 
-    # THE INVARIANT, UNCONDITIONAL — every iteration, no exceptions:
+    # the invariant, unconditional — every iteration, no exceptions:
     assert status == "succeeded", f"iteration {iteration}: the run terminal-failed: {status}"
 
     runner = FlowRunner(SHELF_APP.get("docshelf_batch"), pool, schema)

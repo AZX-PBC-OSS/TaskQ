@@ -2,7 +2,7 @@
 
 An audit hardening pass over ``tests/test_sweep_sql_render_cache.py``'s
 byte-equality pins.  A memoised render is correct only if the cache key
-covers EVERY input the render consumes; these pins attack the four ways
+covers every input the render consumes; these pins attack the four ways
 that fails, plus the race and the init-time render the commit also
 touched:
 
@@ -18,7 +18,7 @@ touched:
   reds here.
 * BYPASS: an invalid schema must raise even when the cache is warm for
   the same template, a failed validation must cache nothing, and the
-  check must live INSIDE the memoised function (a rejecting regex still
+  check must live inside the memoised function (a rejecting regex still
   rejects a fresh schema).  The event-TTL base helper's validation is
   pinned separately -- it was the unpinned one (stripping it left the
   original 46 pins green).
@@ -75,7 +75,7 @@ TEMPLATES_AND_FIELDS_PLAIN: list[tuple[str, str, frozenset[str]]] = [
     ("_SWEEP_3_SQL", _SWEEP_3_SQL, frozenset({"schema"})),
     ("_SWEEP_4_SQL", _SWEEP_4_SQL, frozenset({"schema"})),
     ("_SWEEP_RESULT_TTL_SQL", _SWEEP_RESULT_TTL_SQL, frozenset({"schema"})),
-    # The guarded statement's UNGUARDED base (the rolling-deploy
+    # The guarded statement's unguarded base (the rolling-deploy
     # tolerance's fallback template — the same (template, schema) key
     # shape, the same single field).
     (
@@ -110,7 +110,7 @@ def test_template_format_field_census(name: str, template: str, fields: frozense
     caller-supplied input is the schema (in the key); the only other
     field anywhere is ``outbox_multiplier``, a module constant folded
     into the event-TTL helper.  A template edited to consume a new
-    caller value reds here BEFORE the cache can serve the first
+    caller value reds here before the cache can serve the first
     caller's value to everyone.
     """
     consumed = {field for _, field, _, _ in _FORMATTER.parse(template) if field is not None}
@@ -126,7 +126,7 @@ def test_render_serves_each_schema_its_own_bytes(
     The worst-case cache bug is aliasing -- the key missing an input
     that varies per call, so caller B gets caller A's statement.  With
     the key proven complete (census above), the observable form is
-    pinned here on a cache warmed by BOTH schemas in interleaved order.
+    pinned here on a cache warmed by both schemas in interleaved order.
     """
     a, b = "tq_tenant_a", "tq_tenant_b"
     direct_a: str
@@ -172,6 +172,7 @@ class _NullTransaction:
 
 class _RecordingConn:
     """Duck-typed ConnLike recording every SQL text it is handed.
+        fail-closed-exempt: the render-cache ATTACK injection: a poisoned render seam (a statement shape no honest caller issues)
 
     ``fetch`` answers the statement_timeout probe (a mapping row) and
     returns no sweep rows; ``execute`` returns a zero-change tag, so
@@ -185,6 +186,11 @@ class _RecordingConn:
         return _NullTransaction()
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, str]]:
+        if "pg_extension" in sql:
+            # The availability gate's pre-check: not the sweep's rendered
+            # SQL — answered (no extension) and left out of the recording
+            # this fake's subject owns.
+            return []
         if "current_setting" not in sql:
             self.sqls.append(sql)
         if "current_setting" in sql:
@@ -212,7 +218,7 @@ PUBLIC_SWEEPS = [
 async def test_public_sweep_renders_the_calling_schema_on_a_warm_cache(
     sweep_name: str, sweep_fn: object
 ) -> None:
-    """Each public sweep call hands the conn SQL naming ITS OWN schema.
+    """Each public sweep call hands the conn SQL naming ITS own schema.
 
     Called back-to-back with two schemas, the second on a cache the
     first warmed: a cross-schema serve anywhere between the call site
@@ -304,7 +310,7 @@ def test_validation_lives_inside_the_memoised_function(
 
     # require_schema() (taskq.constants) owns the validation now; it reads
     # _IDENT_RE from the constants module at call time, so the rejecting
-    # regex must be patched THERE, not on _sweeps.
+    # regex must be patched there, not on _sweeps.
     monkeypatch.setattr(constants, "_IDENT_RE", _RejectAll())
     with pytest.raises(ValueError, match="invalid schema identifier"):
         _render_sweep_sql(_SWEEP_3_SQL, "tq_fresh_schema")

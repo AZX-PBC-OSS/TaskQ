@@ -1,4 +1,4 @@
-"""THE EXECUTION MACHINERY'S DIRECT TESTS (F2-1): the Python half of the
+"""The execution machinery's direct tests (f2-1): the Python half of the
 production-execution fix — the door (:func:`~taskq.workflows.
 _worker_execution.execute_flow_job`), the fleet-claimed step
 (:meth:`FlowRunner.run_fleet_claimed_step`), the boot projection
@@ -12,7 +12,7 @@ The SQL fence's pin (the claim's capability leg) lives in
 Python: the resolution errors x the shapes, the parking path, the
 cancel-absorption arm, the per-workflow projection isolation, the
 epoch threading's fence (the wrong epoch fences the terminal out), and
-THE LOOP SURVIVES (a transient from the door must never kill the
+the LOOP SURVIVES (a transient from the door must never kill the
 consumer loop — the F2-2 red, kept dead by the pin).
 """
 
@@ -61,6 +61,7 @@ from taskq.workflows._worker_execution import (
     execute_flow_job,
     iter_imported_apps,
     project_workflow_actor_configs,
+    reset_app_registry_for_tests,
     workflow_execution_capable,
 )
 from tests._di_scopes import bootstrap_scopes, make_scopes
@@ -129,7 +130,7 @@ def test_projection_projects_the_healthy_cohorts() -> None:
 
 def test_projection_the_split_placement_cohorts() -> None:
     """The split placement's two cohorts: the source node's pair and the
-    chain's gpu-named pair, ONE row each, both projected."""
+    chain's gpu-named pair, one row each, both projected."""
 
     class ScreenOutcome(enum.Enum):
         CLEAN = "clean"
@@ -155,10 +156,9 @@ def test_projection_the_split_placement_cohorts() -> None:
 
     @app.workflow("wf-exec-split")
     def _workflow() -> Promise[object]:
-        # THE WIRING'S ARITY (E10's own promise): the source body's one
-        # param rides ONE wired data arg — a body param with no wired
-        # source is the build refusal (the projection skips the workflow
-        # loudly, its cohorts unprojected).
+        # E10's own promise. the source body's one param rides one wired data
+        # arg — a body param with no wired source is the build refusal (the
+        # projection skips the workflow loudly, its cohorts unprojected).
         src = chain_source(chain, _exec_body, ExecIngest(doc_id="d1"), key="doc_source")
         return build(src)
 
@@ -169,7 +169,7 @@ def test_projection_the_split_placement_cohorts() -> None:
 
 
 def test_projection_broken_build_fn_skips_loudly_the_healthy_boots() -> None:
-    """F2-3's pin: ONE broken build fn in ANY imported app must not
+    """F2-3's pin: one broken build fn in any imported app must not
     refuse the worker's whole boot — the broken workflow skips LOUDLY
     (the ERROR line names the app, the workflow, the remedy) and the
     healthy app's cohorts project unchanged."""
@@ -189,14 +189,13 @@ def test_projection_broken_build_fn_skips_loudly_the_healthy_boots() -> None:
             return_value=[broken, healthy],
         ),
     ):
-        configs = project_workflow_actor_configs()  # must NOT raise
+        configs = project_workflow_actor_configs()  # must not raise
     by_actor = {c.actor: c for c in configs}
     assert "wf" in by_actor, (
         f"the healthy app's cohorts must project beside the broken app; got {by_actor}"
     )
-    # THE LOUD LOG: the skip is an ERROR-line event naming the app, the
-    # workflow, the remedy (a silent skip would be the invisible cohort
-    # by another door).
+    # the skip is an error-line event naming the app, the workflow, the remedy
+    # (a silent skip would be the invisible cohort by another door).
     skips = [e for e in logs if e.get("event") == "workflow-projection-skipped"]
     assert skips, "the skip is LOUD: an ERROR line names the broken workflow"
     assert any(e.get("workflow") == "wf-exec-broken" for e in skips)
@@ -215,7 +214,7 @@ def test_projection_the_workflows_own_conflict_skips_the_workflow_loudly() -> No
         return build(b)
 
     healthy = _exec_app("wf-exec-beside-the-conflict")
-    configs = _project_with([conflicting, healthy])  # must NOT raise
+    configs = _project_with([conflicting, healthy])  # must not raise
     by_actor = {c.actor: c for c in configs}
     assert "wf" in by_actor, f"the healthy workflow must still project; got {by_actor}"
 
@@ -252,15 +251,28 @@ def test_the_app_registry_observes_without_pinning() -> None:
     gc.collect()
     assert ref() is None, "the registry must not pin the app (a WeakSet, not a list)"
 
-    live_app = WorkflowApp()
-    with patch("taskq.workflows._worker_execution._apps", weakref.WeakSet([live_app])):
-        assert workflow_execution_capable() is True, (
-            "at least one imported app = the process can resolve bodies"
-        )
-    with patch("taskq.workflows._worker_execution._apps", weakref.WeakSet()):
-        assert workflow_execution_capable() is False, (
-            "no imported app = not capable (the fence's data leg never lies)"
-        )
+    # the marker answers from the live apps' runnable workflows — an app that
+    # declares none is imported and still not capable; a runnable workflow
+    # projects the capability; the reset clears both.
+    empty_app = WorkflowApp()
+    assert workflow_execution_capable() is False, (
+        "an imported app with no runnable workflow is not capability"
+    )
+
+    async def _capability_body(ctx: Any) -> dict[str, str]:
+        return {}
+
+    @empty_app.workflow("capability-probe")
+    def capability_probe() -> Promise[object]:
+        return build(step(_capability_body, key="probe"))
+
+    assert workflow_execution_capable() is True, (
+        "the mounted app's runnable workflow projects the capability"
+    )
+    reset_app_registry_for_tests()
+    assert workflow_execution_capable() is False, (
+        "no imported app = not capable (the fence's data leg never lies)"
+    )
 
 
 # ── 2. the door: the resolution errors x the shapes + the fences ────────
@@ -275,7 +287,7 @@ def _job_row(
     payload_override: dict[str, object] | None = None,
 ) -> JobRow:
     """A claimed workflow row's dispatch read-model (the decode's own
-    shape: NO step_key — the door's bounded read is the identity's
+    shape: no step_key — the door's bounded read is the identity's
     source). ``payload_override`` is the row's real payload (the
     wiring's wf_args ride it) — the door's arg resolution reads the
     JobRow's payload, which is the decode's verbatim copy."""
@@ -335,9 +347,9 @@ async def _seed_flow_with_step(
 async def test_the_door_executes_the_fleet_claimed_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: Any
 ) -> None:
-    """THE DOOR'S GREEN (the machinery's own receipt): a claimed row
+    """The door's green (the machinery's own receipt): a claimed row
     resolves its body from the registered definition (D1), executes it
-    ONCE, and the finalize lands — the row terminal-succeeds, the ledger
+    once, and the finalize lands — the row terminal-succeeds, the ledger
     says 'succeeded'."""
     del wf_conn
     app = _exec_app("wf-exec-door-green")
@@ -349,8 +361,7 @@ async def test_the_door_executes_the_fleet_claimed_row(
         flow_id,
     )
     assert node is not None
-    # THE FLEET CLAIM: running, attempt 1, epoch 1 (dispatch_batch's own
-    # shape).
+    # running, attempt 1, epoch 1 (dispatch_batch's own shape).
     await wf_pool.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'running', attempt = 1, "  # noqa: S608  # Why: the schema identifier is the fixture's own (validated against _IDENT_RE); asyncpg cannot bind identifiers as parameters.,
         "claim_epoch = 1, locked_by_worker = $2, "
@@ -367,7 +378,7 @@ async def test_the_door_executes_the_fleet_claimed_row(
         job=_job_row(
             JobId(node["id"]),
             metadata={"flow_id": str(flow_id)},
-            # THE ROW'S OWN PAYLOAD (the wiring's wf_args ride it — the
+            # the row's own payload (the wiring's wf_args ride it — the
             # dispatch decode carries it verbatim; the door's arg
             # resolution reads it).
             payload_override=json.loads(node["payload"])
@@ -396,7 +407,7 @@ async def test_the_door_executes_the_fleet_claimed_row(
 async def test_the_door_fence_the_wrong_epoch_never_lands(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: Any
 ) -> None:
-    """THE EPOCH THREADING's receipt: a terminal write fenced on an epoch
+    """The epoch threading's receipt: a terminal write fenced on an epoch
     the row does not carry (a STALE read — the row was re-claimed between
     this worker's dispatch read and its finalize) updates NOTHING: the
     row stays running, the ledger records 'fenced' — the epoch parameter
@@ -425,7 +436,7 @@ async def test_the_door_fence_the_wrong_epoch_never_lands(
         job=_job_row(
             JobId(node["id"]),
             metadata={"flow_id": str(flow_id)},
-            claim_epoch=6,  # STALE: the row moved on (re-claimed) under us
+            claim_epoch=6,  # stale: the row moved on (re-claimed) under us
             payload_override=json.loads(node["payload"])
             if isinstance(node["payload"], str)
             else node["payload"],
@@ -433,7 +444,7 @@ async def test_the_door_fence_the_wrong_epoch_never_lands(
     )
     assert (
         execution.outcome == "succeeded"
-    )  # the tail's label (the record's echo — the ROW is the truth)
+    )  # the tail's label (the record's echo — the row is the truth)
     row = await wf_pool.fetchrow(
         f'SELECT status, attempt, claim_epoch FROM "{wf_schema}".jobs WHERE id = $1',  # noqa: S608  # Why: the schema identifier is the fixture's own (validated against _IDENT_RE); asyncpg cannot bind identifiers as parameters.
         node["id"],
@@ -455,11 +466,11 @@ async def test_the_door_resolution_errors(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: Any
 ) -> None:
     """The resolution errors x the shapes: every unresolvable shape
-    raises the SAME typed error (the parking's shape) — no flow_id in
+    raises the same typed error (the parking's shape) — no flow_id in
     the metadata; the row gone; the root stamping no workflow name; the
     stamped name never compiled here; the step key foreign to the
     registered definition."""
-    # (a) no flow_id in the metadata. (wf_conn stays LIVE: the later
+    # (a) no flow_id in the metadata. (wf_conn stays live: the later
     # shapes seed rows through it.)
     with pytest.raises(WorkflowBodyUnresolvableError, match="no flow_id"):
         await execute_flow_job(
@@ -497,7 +508,7 @@ async def test_the_door_resolution_errors(
             job=_job_row(node_id, metadata={"flow_id": str(flow_id)}),
         )
     # (e) the step key is foreign to the registered definition.
-    _exec_app("wf-exec-known")  # compiles + registers ONLY the 'only' step
+    _exec_app("wf-exec-known")  # compiles + registers only the 'only' step
     flow_id, node_id = await _seed_flow_with_step(
         wf_conn, wf_schema, workflow="wf-exec-known", step_key="foreign-step"
     )
@@ -525,7 +536,7 @@ def _seam_stub(execute: Any) -> types.ModuleType:
 
 
 async def test_the_intercept_absorbs_the_childs_cancellation() -> None:
-    """THE CANCEL-ABSORPTION ARM: the child cancelled alone (an operator
+    """The cancel-absorption arm: the child cancelled alone (an operator
     cancel's escalation, the loop alive) — the helper ABSORBS it (returns
     'cancelled'), never raises; the registry entry is gone."""
     from taskq.worker.cancel import ActiveJobRegistry
@@ -569,7 +580,7 @@ async def test_the_intercept_absorbs_the_childs_cancellation() -> None:
     await asyncio.sleep(0)  # let the cancelled child finish unwinding
 
 
-# ── 4. THE LOOP SURVIVES (F2-2's pin) ───────────────────────────────────
+# ── 4. the loop survives (F2-2's pin) ───────────────────────────────────
 
 
 async def _run_loop_over(
@@ -578,7 +589,7 @@ async def _run_loop_over(
     door: Any,
 ) -> tuple[Any, list[JobRow], list[tuple[object, dict[str, object] | None]]]:
     """Drive the REAL di_consumer_loop over *jobs* with the door stubbed
-    to *door* (the seam patched); the FIRST plain row (no flow_id) is
+    to *door* (the seam patched); the first plain row (no flow_id) is
     the loop's survival witness — its dispatch is the proof the loop
     moved on. Returns (deps, the witness's dispatch calls, the snooze
     writes)."""
@@ -669,8 +680,8 @@ def _flow_then_plain() -> tuple[JobRow, JobRow]:
 
 def test_the_loop_survives_a_transient_from_the_door() -> None:
     """F2-2's pin: the door raising a TRANSIENT (a pool/asyncpg error)
-    must NOT kill the consumer loop — the loop absorbs (the vanilla leg's
-    own shape: counted, the claim resolved), moves on, and the NEXT job
+    must not kill the consumer loop — the loop absorbs (the vanilla leg's
+    own shape: counted, the claim resolved), moves on, and the next job
     processes (the witness dispatch fires)."""
 
     async def _raising_door(**kwargs: object) -> FlowExecution:
@@ -688,7 +699,7 @@ def test_the_loop_survives_a_transient_from_the_door() -> None:
 
 
 def test_the_loop_survives_and_parks_the_unresolvable_row() -> None:
-    """The parking path, AT THE LOOP: an unresolvable row snoozes
+    """The parking path, AT the LOOP: an unresolvable row snoozes
     budget-free with the released_reason stamp (the stranded-jobs
     detector's witness) and the loop moves on to the next job."""
 

@@ -14,7 +14,6 @@ pending-reclaim drain.
 """
 
 import asyncio
-import contextlib
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -28,17 +27,30 @@ from taskq.worker.deps import WorkerDeps
 
 
 class _FakeConn:
+    """The deps' connection shell (close/is_closed only).
+
+    FAIL CLOSED (tests/test_suite_hygiene.py's rule): no statement may
+    flow through this double — the loop's statement-bearing paths are
+    either intercepted by the backend/registry doubles above or converted
+    to the real fixture (tests/test_leader_sweep_wiring_pg.py). A
+    statement reaching this class is a wiring drift; the raise names it.
+    """
+
     async def execute(self, sql: str, *args: object) -> str:
-        return "DELETE 0"
+        raise AssertionError(
+            f"no statement may reach the wiring pack's conn shell: {sql!r} - "
+            "the statement-bearing paths converted to "
+            "tests/test_leader_sweep_wiring_pg.py"
+        )
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
-        return []
+        raise AssertionError(f"no statement may reach the wiring pack's conn shell: {sql!r}")
 
     async def fetchval(self, sql: str, *args: object) -> object:
-        return None
+        raise AssertionError(f"no statement may reach the wiring pack's conn shell: {sql!r}")
 
     async def fetchrow(self, sql: str, *args: object) -> object | None:
-        return None
+        raise AssertionError(f"no statement may reach the wiring pack's conn shell: {sql!r}")
 
     async def close(self) -> None:
         pass
@@ -131,26 +143,20 @@ def _ctx(deps: WorkerDeps, backend: _RetentionBackend) -> SweepContext:
 
 async def _run_loop_until(ctx: SweepContext, done: Callable[[], bool]) -> None:
     import taskq.worker._leader_sweeps as sweeps_mod
+    from tests._loop_control import managed_loop
 
-    shutdown = asyncio.Event()
-    task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the sweep loop directly, matching test_leader_sweep_reclaim_drain_wiring.py's pattern.
-    try:
+    async with managed_loop(lambda shutdown: sweeps_mod._sweep_loop(ctx, shutdown)):
         for _ in range(200):
             if done():
                 break
             await asyncio.sleep(0.01)
-    finally:
-        shutdown.set()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
 
 
 async def test_sweep_loop_drives_event_retention_with_configured_window() -> None:
     """One leader tick invokes the retention sweep once, on the dispatcher
     pool, with the operator's configured window and batch size - the
     wiring that turns ``sweep_expired_events`` into the retention
-    drain (one committed batch per tick, deliberately NOT a
+    drain (one committed batch per tick, deliberately not a
     ``_drain_bounded`` drain)."""
     deps = _deps(event_retention_period="3d")
     backend = _RetentionBackend()

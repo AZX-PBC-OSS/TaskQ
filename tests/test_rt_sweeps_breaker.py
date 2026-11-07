@@ -15,8 +15,8 @@ which nothing pins:
 
 * a REAL server-side cancellation (a 50 ms statement_timeout aborting a
   pg_sleep, on a real connection) counts - and the reduced size is what
-  the NEXT call actually runs with, with the gauge reporting it;
-* a non-timeout error does NOT count (the breaker must not latch on
+  the next call actually runs with, with the gauge reporting it;
+* a non-timeout error does not count (the breaker must not latch on
   ordinary sweep failures - those belong to the caller's retry policy);
 * a client-side ``TimeoutError`` counts;
 * an explicit ``batch_size`` override bypasses the latched tier for that
@@ -115,7 +115,7 @@ async def test_real_server_cancellation_reduces_the_next_call_and_feeds_the_gaug
     module_pg_schema: ModulePgSchema,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """Three real 57014 aborts latch the breaker; the NEXT call runs at
+    """Three real 57014 aborts latch the breaker; the next call runs at
     the reduced tier and the gauge reports it.
 
     The gauge must report the size the call actually used - the reduced
@@ -234,7 +234,7 @@ async def test_explicit_batch_size_override_bypasses_the_tier_for_that_call(
     """An explicit batch_size overrides the latched tier for one call.
 
     The override is the operator's manual escape hatch from a latched
-    breaker; it must reach BOTH the sweep (the run's size argument) and
+    breaker; it must reach both the sweep (the run's size argument) and
     the gauge (which reports reality - the override - not the tier).
     """
     schema = module_pg_schema.schema_name

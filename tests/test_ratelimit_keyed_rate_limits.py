@@ -202,7 +202,7 @@ async def test_keyed_rate_limit_ref_backend_memory_materializes_memory_token_buc
     """A ``KeyedRateLimitRef`` with ``backend="memory"`` materializes a
     ``TokenBucket`` whose ``backend`` property is ``"memory"``, not silently
     ``"redis"`` - and the bucket can be acquired without a ``redis_client``,
-    proving it did NOT try to hit Redis."""
+    proving it did not try to hit Redis."""
     reg = RateLimitRegistry()
     ref = KeyedRateLimitRef.typed(
         _DefaultPayload,
@@ -372,7 +372,7 @@ async def test_different_keys_isolate_budgets() -> None:
 
 
 async def test_same_key_shares_budget_across_actors() -> None:
-    """Two separate acquire_for_actor calls for the SAME key (simulating two
+    """Two separate acquire_for_actor calls for the same key (simulating two
     different actors/call sites with different job_id/worker_id) draw from the
     same underlying bucket - the first call exhausts the budget and the second
     is denied, proving both calls shared one per-key bucket.
@@ -481,7 +481,7 @@ async def test_resolve_keyed_ref_empty_key_error_does_not_embed_payload(as_dict:
 
 
 async def test_resolve_keyed_ref_pg_publish_failure_is_best_effort() -> None:
-    """A failing PG publish on materialization does NOT fail the
+    """A failing PG publish on materialization does not fail the
     acquisition - the ``rate_limit_buckets`` row is observability metadata
     (admin UI discovery), not a correctness precondition. Contrast with
     ``ensure_slots`` for keyed reservations, whose failure unwinds the
@@ -734,7 +734,7 @@ async def test_opportunistic_eviction_reclaims_idle_capacity_on_cap_hit(
         ref, payload=_DefaultPayload(tenant_id="k3"), settings=settings
     )  # pyright: ignore[reportPrivateUsage]
 
-    # 4. Materialise a NEW key - would exceed the cap, but opportunistic
+    # 4. Materialise a new key - would exceed the cap, but opportunistic
     #    eviction reclaims the 2 stale entries first.
     name = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
         ref, payload=_DefaultPayload(tenant_id="k4"), settings=settings
@@ -1036,12 +1036,12 @@ async def test_composition_log_events_are_json_serializable_with_keyed_refs() ->
     assert denied_events[0]["rate_limits"] == ["KeyedRateLimitRef(api-per-tenant)"]
 
 
-# ── acquire_for_actor: AND-composition with keyed rate limits ──
+# ── acquire_for_actor: and-composition with keyed rate limits ──
 
 
 async def test_acquire_for_actor_composes_static_and_keyed_rate_limits() -> None:
     """A static name and a KeyedRateLimitRef in the same rate_limits list are
-    both acquired - AND-composition holds for mixed static/keyed lists.
+    both acquired - and-composition holds for mixed static/keyed lists.
 
     The dynamic bucket is pre-registered here with a FakeClock so that
     resolution reuses it via the existing idempotent-register path (register()
@@ -1148,7 +1148,7 @@ async def test_keyed_rate_limit_cap_does_not_deny_static_colliding_reuse() -> No
         TokenBucket(name="api-per-tenant:t1", capacity=10, refill_per_second=1.0, backend="memory")
     )
 
-    # Must NOT raise ReservationUnavailable despite the full cap.
+    # Must not raise ReservationUnavailable despite the full cap.
     name = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
         ref, payload=_DefaultPayload(tenant_id="t1"), settings=settings
     )
@@ -1161,7 +1161,7 @@ async def test_keyed_rate_limit_cap_does_not_deny_static_colliding_reuse() -> No
 
 
 async def test_colliding_concrete_names_same_config_share_bucket() -> None:
-    """Two refs whose concrete names collide resolve to the SAME registered
+    """Two refs whose concrete names collide resolve to the same registered
     bucket when their configs are identical - pins the documented collision
     behavior for the rate-limit twin."""
     reg = RateLimitRegistry()
@@ -1206,7 +1206,7 @@ async def test_statically_preregistered_entry_is_never_keyed_evicted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A statically pre-registered bucket whose name happens to match a
-    keyed ref's concrete name is reused as-is and NOT stamped into the
+    keyed ref's concrete name is reused as-is and not stamped into the
     keyed tracking dict - the idle-eviction sweep must never evict a
     user's static entry just because a keyed ref resolved to it."""
     from importlib import import_module
@@ -1315,7 +1315,7 @@ async def test_evict_idle_keyed_rate_limits_returns_zero_when_nothing_stale(
 async def test_drained_memory_fixed_quota_bucket_survives_idle_eviction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: evicting a drained memory fixed-quota keyed bucket must NOT
+    """Regression: evicting a drained memory fixed-quota keyed bucket must not
     reset its quota.
 
     Token state for ``backend="memory"`` lives on the bucket instance, so
@@ -1404,7 +1404,7 @@ async def test_full_memory_fixed_quota_bucket_is_still_idle_evicted(
     )
 
     monkeypatch.setattr(registry_mod, "monotonic", lambda: 1000.0)
-    # Materialize (register + stamp tracking) WITHOUT acquiring - quota full.
+    # Materialize (register + stamp tracking) without acquiring - quota full.
     await reg._resolve_rate_limit_name(
         ref, payload=_DefaultPayload(tenant_id="acme"), settings=None
     )  # pyright: ignore[reportPrivateUsage]
@@ -1420,7 +1420,7 @@ async def test_refilling_memory_bucket_is_still_idle_evicted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A memory bucket with refill_per_second > 0 self-heals after eviction
-    (its state converges back toward full on its own), so it is NOT exempt -
+    (its state converges back toward full on its own), so it is not exempt -
     the eviction feature itself is preserved."""
     from importlib import import_module
 
@@ -1462,7 +1462,7 @@ async def test_redis_backend_fixed_quota_bucket_is_still_idle_evicted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Redis-backed buckets keep state in Redis (24h TTL for fixed quota),
-    not on the instance - registry eviction loses nothing, so they are NOT
+    not on the instance - registry eviction loses nothing, so they are not
     exempt. Pins that the exemption is memory-only and does not disable the
     cardinality bound for the default backend."""
     from importlib import import_module
@@ -1518,7 +1518,7 @@ async def test_concurrent_keyed_bucket_acquisition_atomicity(redis_url: str) -> 
     """50 concurrent acquisitions against a per-key Redis bucket with
     capacity=20, refill_per_second=0 - exactly 20 succeed and 30 are denied,
     proving the Lua script's atomicity holds when multiple concurrent callers
-    race for the SAME derived per-key bucket, not just a statically-declared one.
+    race for the same derived per-key bucket, not just a statically-declared one.
 
     Follows the acquire/assert idiom from test_ratelimit_token_bucket_redis.py's
     100-burst test, adapted for concurrent asyncio.gather.
@@ -1721,7 +1721,7 @@ async def test_resolve_typed_ref_wrong_model_type_re_validates() -> None:
 
 
 async def test_resolve_typed_ref_same_model_type_zero_cost_passthrough() -> None:
-    """A BaseModel payload of the SAME type as ref.payload_type is passed
+    """A BaseModel payload of the same type as ref.payload_type is passed
     directly to key_fn without re-validation - the exact same object (identity
     check)."""
     reg = RateLimitRegistry()

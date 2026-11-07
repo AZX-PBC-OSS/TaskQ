@@ -25,7 +25,7 @@ Two windows:
   window.
 
 The container idiom is the killable one (function-scoped, ownership
-labels, never the session-shared broker) with ONE campaign addition: the
+labels, never the session-shared broker) with one campaign addition: the
 host port is PINNED (``free_host_port``), because only an explicitly
 published port is part of the container's declared config and is
 restored verbatim across ``docker kill`` / ``docker start`` - a
@@ -210,9 +210,9 @@ async def test_sigkill_broker_mid_ratelimit_acquire_fails_closed_then_recovers(
         # The dirty death: SIGKILL the broker mid-stream of acquires.
         await asyncio.to_thread(_docker_kill, kill9_redis.get_container_id())
 
-        # KILLED-broker acquire with the fallback wired: the immediate
+        # killed-broker acquire with the fallback wired: the immediate
         # ConnectionError (not the timeout case) weathers the bounded
-        # transient retries, then lands on the PG decision - a DECISION,
+        # transient retries, then lands on the PG decision - a decision,
         # never an exception, never an unbacked admission.
         t0 = time.monotonic()
         fallback = await tb.acquire(
@@ -244,9 +244,9 @@ async def test_sigkill_broker_mid_ratelimit_acquire_fails_closed_then_recovers(
                 settings=closed_settings,
             )
 
-        # Recovery: the broker restarts on the SAME pinned port; the next
+        # Recovery: the broker restarts on the same pinned port; the next
         # acquire is answered by redis again (redis-py reconnects on the
-        # next command; the stale script SHA re-loads through NOSCRIPT).
+        # next command; the stale script SHA re-loads through noscript).
         await asyncio.to_thread(_docker_start, kill9_redis.get_container_id())
         await _wait_redis_answers(url, _BROKER_RESTART_PROBE_CAP_S)
         deadline = time.monotonic() + _BROKER_RESTART_PROBE_CAP_S
@@ -291,7 +291,7 @@ async def test_sigkill_broker_mid_progress_stream_loses_only_the_fanout(
         handle = await sys_client.enqueue(kill9_progress, Kill9Payload(beats=_BEATS), tags=[_TAG])
         await psub.subscribe(progress_channel(schema, handle.job_id))
 
-        # Observed readiness: the kill lands once the fanout is PROVEN
+        # Observed readiness: the kill lands once the fanout is proven
         # alive (>= 1 message received), never on a guessed delay.
         async def _first_message() -> bool:
             msg = await psub.get_message(timeout=0.2)
@@ -340,14 +340,14 @@ async def test_sigkill_broker_mid_progress_stream_loses_only_the_fanout(
         assert worker.proc.poll() is None, "the worker died with the broker"
         await psub.unsubscribe(progress_channel(schema, handle.job_id))
 
-        # Recovery: the broker restarts on the pinned port; the SAME
+        # Recovery: the broker restarts on the pinned port; the same
         # worker's fanout resumes for the next job.
         await asyncio.to_thread(_docker_start, kill9_redis.get_container_id())
         await _wait_redis_answers(url, _BROKER_RESTART_PROBE_CAP_S)
 
-        # The OLD subscriber's socket died with the kill (a pubsub
+        # The old subscriber's socket died with the kill (a pubsub
         # connection does not transparently re-subscribe after a severed
-        # transport), so the recovery proof rides a FRESH connection - the
+        # transport), so the recovery proof rides a fresh connection - the
         # same fresh-connect path any recovered consumer takes.
         with contextlib.suppress(Exception):
             await psub.aclose()

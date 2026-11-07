@@ -75,7 +75,7 @@ class ProviderRegistry(Protocol):
     # parameters (PEP 695 + runtime_checkable limitation under pyright).
     # The signature is erased from the published shape
     # ``get[T](type_: type[T]) -> ProviderEntry[T]`` to ``type[object] /
-    # ProviderEntry[object]``. This is the sanctioned DI erasure boundary.
+    # ProviderEntry[object]``. This is the sanctioned di erasure boundary.
     def get(self, type_: type[object]) -> ProviderEntry[object]:
         """Return the registered ProviderEntry for type_.
 
@@ -96,8 +96,8 @@ class ScopeContainer(Protocol):
     """One scope-lifetime container; owns its cache and its teardown list.
 
     The container is responsible for ALL factory invocation, caching,
-    and teardown registration. The solver engine NEVER calls a factory
-    directly and NEVER registers a teardown, every resolution goes
+    and teardown registration. The solver engine never calls a factory
+    directly and never registers a teardown, every resolution goes
     through ``get_or_create``.
     """
 

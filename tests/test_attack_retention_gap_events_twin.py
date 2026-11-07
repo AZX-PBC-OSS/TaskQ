@@ -10,7 +10,7 @@ the loss was silent on both sides. These pins fix the replacement contract
 on the in-memory twin (the same gate code the PG transports run):
 
 * a resumed cursor strictly below the watermark ends the stream with
-  ``EventRetentionGapError`` BEFORE anything is delivered (no partial
+  ``EventRetentionGapError`` before anything is delivered (no partial
   delivery, no skip to live);
 * a caught-up cursor (at or above the watermark) never raises;
 * a fresh watcher (``after_id=0``) is a new tail and never raises;
@@ -76,7 +76,7 @@ async def _make_crashed_job_with_reclaim_event(backend: InMemoryBackend) -> JobI
     assert count == 1
     # The reclaim's retry policy re-pends a retryable failure (to_state
     # 'pending', the job row non-terminal). The cascade construct needs a
-    # TERMINAL row - the prune never touches a live one - so settle the
+    # terminal row - the prune never touches a live one - so settle the
     # job into 'crashed' the way an exhausted-reclaim fleet's rows sit,
     # finished_at stamped, the reclaim event already in the log.
     crashed = _replace(
@@ -209,9 +209,9 @@ class TestResultUnavailableReasonBoundary:
         """The expired-branch message asserts only what the row proves:
         the result's TTL elapsed at the stamp instant and no result is
         stored (swept after expiry, or the actor stored none). It must
-        NOT claim the retention sweep removed anything - the completion
+        not claim the retention sweep removed anything - the completion
         write stamps ``result_expires_at`` even when the actor stored
-        none and the sweep's ``AND result IS NOT NULL`` guard never
+        none and the sweep's ``and result IS not NULL`` guard never
         touches that row, so a past stamp cannot distinguish swept from
         never-stored. (This fixture row IS that corner: ``result=None``
         with a past stamp.)"""
@@ -284,7 +284,7 @@ class TestRetentionGapFailVisible:
         assert backend._events_pruned_through == events[1].event_id  # pyright: ignore[reportPrivateUsage]
 
         # The backend poll is silent (it cannot know what a cursor means);
-        # the STREAM is where the loss becomes loud.
+        # the stream is where the loss becomes loud.
         assert await backend.poll_reclaim_events(cursor) == []
 
         tq2 = _inject_poll_only_tq(backend)
@@ -317,7 +317,7 @@ class TestRetentionGapFailVisible:
         assert backend._events_pruned_through == watermark  # pyright: ignore[reportPrivateUsage]
 
         tq = _inject_poll_only_tq(backend, poll_timeout=0.05)
-        # Resuming AT the watermark: the gate must pass. Nothing new
+        # Resuming at the watermark: the gate must pass. Nothing new
         # arrives, so collecting one event can only time out - a
         # TimeoutError is the pass, EventRetentionGapError the fail.
         with pytest.raises(TimeoutError):

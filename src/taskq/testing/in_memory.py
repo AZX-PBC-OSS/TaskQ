@@ -22,7 +22,7 @@ Parity map
 Every Backend protocol method models PostgresBackend's CURRENT observable
 behavior, verified by differential tests (the seeded-scenario shape of
 ``tests/test_batch_cap_refusals_parity.py``), not by this docstring. The
-archive tier's read semantics are the #314 class: ``get`` and
+archive tier's read semantics are the archive-fallback class: ``get`` and
 ``get_attempts`` fall back to the archive storage on a hot miss exactly
 as PG probes ``jobs_archive`` / ``job_attempts_archive``, the prune
 simulation drops the archived jobs' events the way PG's cascade does,
@@ -303,8 +303,8 @@ class InMemoryBackend:
         # The claim cursor's knob, carried like the knobs above: the
         # dispatch twin reads it per round (0 disables the cursor - the
         # naive shape). The default mirrors WorkerSettings'
-        # claim_cursor_reset_seconds' OPT-IN default (0 = disabled, the
-        # A/B-measured posture), NOT the mechanism's 60s cadence constant
+        # claim_cursor_reset_seconds' opt-in default (0 = disabled, the
+        # A/B-measured posture), not the mechanism's 60s cadence constant
         # (backend/_claim_cursor.py CLAIM_CURSOR_RESET_SECONDS) - the
         # posture and the cadence are deliberately different numbers.
         self._claim_cursor_reset_seconds: float = 0.0
@@ -354,7 +354,7 @@ class InMemoryBackend:
         # PG stamps claiming actors with the statement's wall time, which
         # is strictly increasing across rounds; a frozen FakeClock cannot
         # supply that, so the twin stamps with a per-backend tick
-        # incremented once per CLAIMING dispatch round. Same-round winners
+        # incremented once per claiming dispatch round. Same-round winners
         # share one tick and fall through to scheduled_at/id, exactly the
         # tie shape PG's single statement_timestamp() produces, and an
         # actor never claimed has no entry, mirroring NULL (sorts first).
@@ -487,7 +487,7 @@ class InMemoryBackend:
                 worker_id=worker_id,
                 metadata={},
                 # Mirror of PG's due_at stamp (01.00.20_04): the caller
-                # passes the PRE-write row's scheduled_at - the same
+                # passes the pre-write row's scheduled_at - the same
                 # claim-time due time PG's terminal write reads off the
                 # row (or, on a reschedule arm, off its same-snapshot
                 # pre-read).
@@ -659,7 +659,7 @@ class InMemoryBackend:
                 and job_id not in excluded
                 and self._slot_table is not None
             ):
-                # The count is SLOT rows renewed, the twin of PG's
+                # The count is slot rows renewed, the twin of PG's
                 # UPDATE_RESERVATION_LEASES_SQL_TEMPLATE rowcount: dispatch
                 # never creates a reservation_slots row (the reservation
                 # registry's acquisition does), so a worker holding plain
@@ -909,7 +909,7 @@ class InMemoryBackend:
                 status="cancelled",
                 finished_at=now,
                 # Twin of cancel_pending_scheduled: the before-start origin
-                # marker goes on the ROW only, the state_change event
+                # marker goes on the row only, the state_change event
                 # detail keeps its {from_state, to_state} shape on both
                 # backends (the differential suite pins it exactly).
                 error_class=CANCEL_ORIGIN_PENDING,
@@ -1045,7 +1045,7 @@ class InMemoryBackend:
 
     async def count_pending_children_by_queue(self, parent_id: JobId) -> dict[str, int]:
         """The parent's pending children, exact and grouped by queue (the
-        backpressure read's FAN-OUT half), the in-memory twin of
+        backpressure read's FAN-out half), the in-memory twin of
         ``sql.count_pending_children_by_queue``.
 
         ``parent_id`` is a plain column, no FK: a purged or never-existed
@@ -1113,7 +1113,7 @@ class InMemoryBackend:
     async def run_until_drained(self, *, cancel_polling: bool = False) -> None:
         await _run_until_drained(self, cancel_polling=cancel_polling)
 
-    # ── Schedule CRUD ──────────────────────────────────────────────────
+    # ── Schedule crud ──────────────────────────────────────────────────
 
     async def create_schedule(self, args: ScheduleCreateArgs) -> ScheduleRecord:
         for rec in self._schedules.values():

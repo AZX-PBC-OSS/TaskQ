@@ -69,9 +69,9 @@ __all__ = [
 # ``_filter_sql.py`` + ``_cursor.py``), and the admin pages add more, so a
 # client or UI whose filters vary crosses the 100-entry cap and thrashes
 # the cache, a measured 90-96% steady-state miss rate, with the eviction
-# churn measuring SLOWER than ``statement_cache_size=0`` (1.27 vs
+# churn measuring slower than ``statement_cache_size=0`` (1.27 vs
 # 0.77 ms/call; ``benchmarks/ab_stmt_cache.py``). Every miss re-pays the
-# Parse/Describe round trips: +10-40 ms/call at managed-PG RTT. The write
+# Parse/Describe round trips: +10-40 ms/call at managed-PG rtt. The write
 # hot loop (dispatch, enqueue, terminal updates, sweeps) is textually
 # stable and unaffected.
 #
@@ -218,13 +218,13 @@ def lock_budget_pairs(
 
 
 #: Bound on the pool-release path the retry guard's checkout owns: the
-#: release-time ``reset()`` (``pg_advisory_unlock_all(); CLOSE ALL;
-#: UNLISTEN *; RESET ALL;``) plus, on the max-queries/generation paths,
-#: a graceful close. asyncpg's acquire-context release passes NO timeout
+#: release-time ``reset()`` (``pg_advisory_unlock_all(); close all;
+#: unlisten *; reset all;``) plus, on the max-queries/generation paths,
+#: a graceful close. asyncpg's acquire-context release passes no timeout
 #: (the holder falls back to the *acquire* timeout, which is ``None``
 #: whenever acquire was unbounded), so a server that dies silently,
-#: no FATAL, no FIN: a frozen/black-holed endpoint, parks that reset
-#: forever, wedging the caller's task AND ``pool.close()`` (the
+#: no fatal, no fin: a frozen/black-holed endpoint, parks that reset
+#: forever, wedging the caller's task and ``pool.close()`` (the
 #: hang). Five seconds matches the repo-wide teardown bound
 #: (``taskq._close.CLOSE_TIMEOUT_SECS``): the reset is sub-millisecond
 #: on a live server, so the bound only ever fires against a dead one,
@@ -325,7 +325,7 @@ async def _bounded_checkout(
         pool.acquire(timeout=acquire_timeout) if acquire_timeout is not None else pool.acquire()
     )
     if isinstance(acquired, Awaitable):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the stubs type asyncpg's acquire() as always-awaitable (PoolAcquireContext), so a real pool only ever takes this arm; the else arm exists because test doubles model only the context-manager half of acquire()'s documented dual surface (see below).
-        # asyncpg's acquire() is documented as BOTH awaitable and an
+        # asyncpg's acquire() is documented as both awaitable and an
         # async context manager; the await form is the one that lets
         # the release below carry its own timeout: the context
         # manager's __aexit__ releases with no timeout, so the holder
@@ -417,17 +417,17 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
     the invitation that error creates: a caller that retries it generates
     a fresh id (a new enqueue call does), and THAT row lands: the actual
     job-runs-twice route, and why idempotency keys remain the dedup
-    channel for the retry the caller chooses. The marker is set AFTER the
+    channel for the retry the caller chooses. The marker is set after the
     write's acknowledgement, not before the write is issued, on purpose:
     the dead-on-acquire case this wrapper exists for can strike the write
     statement itself (the plain enqueue arm's INSERT is its first
     statement), and a locally-poisoned protocol rejects that statement
-    BEFORE anything reaches the server, unmarked, so the retry runs and
+    before anything reaches the server, unmarked, so the retry runs and
     nothing can conflict. Marking before the write would refuse that
     retry and regress the wrapper's whole purpose; the only marking point
     that is correct for both orderings is the acknowledgement.
 
-    What the retry does NOT have to gate: a release-time failure after the
+    What the retry does not have to gate: a release-time failure after the
     op's body finished. The guard's checkout bounds the release and never
     raises it (asyncpg terminates the connection either way), so the op's
     result stands: a caller whose enqueue committed gets its row, not an
@@ -452,10 +452,10 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
             # op would re-issue it with the same identity: against the
             # enqueue table's primary key that is a UniqueViolationError
             # for work that succeeded, and the error invites the caller's
-            # fresh-id retry that DOES run the job twice. The
+            # fresh-id retry that does run the job twice. The
             # driver error for a committed write is ambiguous, but never
             # that invitation; idempotency keys remain the caller's dedup
-            # channel for the retry THEY choose to issue.
+            # channel for the retry they choose to issue.
             raise
         from taskq.obs import get_logger
 
@@ -487,12 +487,12 @@ type RedisFactory = Callable[[], Awaitable[redis_async.Redis]]  # type: ignore[t
 # A connection built by a bare factory is opaque: anything applied to it
 # after connect, a ``set_type_codec`` registration, a prepared-statement
 # warmup, lives in the driver's per-connection state, which exposes no
-# read-back, so a SECOND connection the worker builds for the same role
+# read-back, so a second connection the worker builds for the same role
 # cannot replay it. The per-slot transaction pool is exactly such a
-# second connection family: it shadows the LOOP-registered
+# second connection family: it shadows the loop-registered
 # ``asyncpg.Connection`` once ``max_concurrency > 1``
 # (``taskq.worker._bootstrap._maybe_open_slot_pool``). A registration
-# whose hook is DECLARED on the factory, though, is replayable: the
+# whose hook is declared on the factory, though, is replayable: the
 # worker reads the hook off the registration and installs it as the
 # slot pool's ``init``, so the codec the application registered decodes
 # identically at every concurrency. ``with_connection_init`` is the
@@ -535,7 +535,7 @@ def with_connection_init(
     means no usable connection, matching asyncpg's own hook contract.
     """
 
-    # Why no return annotation: DI registers factories like this one and
+    # Why no return annotation: di registers factories like this one and
     # resolves type hints at registration time (``_collect_dep_edges``),
     # and this module keeps asyncpg under TYPE_CHECKING, a runtime-
     # evaluated ``-> asyncpg.Connection`` would raise NameError there.
@@ -548,7 +548,7 @@ def with_connection_init(
         except BaseException:
             # Why deferred: this module is import-light by design (no
             # taskq runtime imports above), and the failure path is cold.
-            # Why bounded: a hook failure during DI bootstrap must not
+            # Why bounded: a hook failure during di bootstrap must not
             # leak the connection, and a dead PG must not turn that
             # cleanup into a wedge. The helper never raises, so the
             # hook's own error is always the one that propagates.

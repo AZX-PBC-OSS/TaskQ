@@ -4,7 +4,7 @@ Extracted from ``taskq._di.scope`` so that ``taskq.exceptions`` can import
 :class:`Scope` without triggering ``taskq._di.__init__`` (which loads
 ``taskq._di.scopes`` → ``taskq.context`` → circular import).
 
-This module MUST NOT import from any other ``taskq`` submodule.
+This module MUST not import from any other ``taskq`` submodule.
 """
 
 from enum import IntEnum

@@ -1,13 +1,13 @@
-"""T21 — THE FACES + THE FENCE PINS: the SSE replay, the aggregation, the
+"""The progress faces + the fence pins: the SSE replay, the aggregation, the
 progress-lie fence, the gauge's cardinality.
 
-The provenance: the PoC's PROOF 1/2/5/6 — the chain, the fan-out
+The obligations: the chain, the fan-out
 aggregation, the lie/crash dragons, the bounds — ported onto the BUILT
 surfaces. Each pin's REJECTED VARIANT is named and — where observable —
 exercised with the red captured to ``.measurements/t21-pin-reds.json``.
 
-THE FENCE (DH4/DH7, the law of the display): the node's STATUS derives
-from the LEDGER; the progress renders INSIDE the terminal state, never
+FENCE (DH4/DH7, the law of the display): the node's STATUS derives
+from the LEDGER; the progress renders inside the terminal state, never
 over it — a body that reports pct=99 and FAILS shows FAILED with pct=99
 inside, never 99%-running. The progress is ADVISORY.
 """
@@ -85,7 +85,7 @@ async def _map_flow(
 
     runner = FlowRunner(app.get(name), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # ONE tick: the source runs + forks the children; the children stay
+    # one tick: the source runs + forks the children; the children stay
     # pending (the caller drives them in its own rhythm).
     await runner.tick(flow_id)
     source = await wf_pool.fetchval(
@@ -96,7 +96,7 @@ async def _map_flow(
     return flow_id, runner, JobId(source)
 
 
-# ── THE CHAIN'S RECONNECT (PROOF 1 + P6b) ────────────────────────────────
+# ── the chain's reconnect (proof 1 + P6b) ────────────────────────────────
 
 
 async def test_reconnect_reconstructs_the_display_full_and_partial(
@@ -110,7 +110,7 @@ async def test_reconnect_reconstructs_the_display_full_and_partial(
     from the re-sync."""
     n = 12
     flow_id, runner, source = await _map_flow(
-        wf_schema, wf_pool, children=n, name="t21_reconnect_flow"
+        wf_schema, wf_pool, children=n, name="progress_reconnect_flow"
     )
     _ = source
     await runner.drive(flow_id)
@@ -138,7 +138,7 @@ async def test_reconnect_reconstructs_the_display_full_and_partial(
     state_rows = [dict(r) for r in await wf_conn.fetch(wf_sql.progress_state_read_run, flow_id)]
     state_by_node = {str(s["node_id"]): s for s in state_rows if s["channel"] == "progress"}
 
-    # FULL: the replay from the beginning alone reconstructs.
+    # full: the replay from the beginning alone reconstructs.
     full = await progress_sse_face(wf_pool, wf_sql, flow_id=flow_id, last_event_id=0)
     assert full.mode == "full"
     display = rebuild_display(ledger_rows, [], full.events)
@@ -150,9 +150,8 @@ async def test_reconnect_reconstructs_the_display_full_and_partial(
         assert d["pct"] == s["pct"], f"child {i}: the fold lost its progress"
         assert d["message"] == s["message"]
 
-    # THE MID-MAP DISCONNECT: the cursor at the median seq — the
-    # reconnect (the state backfill + the tail) converges to the SAME
-    # display.
+    # the cursor at the median seq — the reconnect (the state backfill + the
+    # tail) converges to the same display.
     cursor = int(full.events[len(full.events) // 2]["seq"])
     tail = await progress_sse_face(wf_pool, wf_sql, flow_id=flow_id, last_event_id=cursor)
     display2 = rebuild_display(ledger_rows, state_rows, tail.events)
@@ -162,9 +161,9 @@ async def test_reconnect_reconstructs_the_display_full_and_partial(
         assert d["status"] == "succeeded"
         assert d["pct"] == state_by_node[nid]["pct"]
 
-    # THE PRUNE (DH6): the ring prunes past the cursor — the face MUST
-    # name the partial mode + serve the state re-sync (never a silent
-    # empty-success), and the display converges from the re-sync alone.
+    # the ring prunes past the cursor — the face must name the partial mode +
+    # serve the state re-sync (never a silent empty-success), and the display
+    # converges from the re-sync alone.
     await wf_conn.execute(
         f"""DELETE FROM "{wf_schema}".wf_node_stream
             WHERE flow_id = $1::uuid AND seq <= $2::bigint + 5""",
@@ -202,10 +201,10 @@ async def test_silent_gap_variant_is_structurally_impossible(
     from tests.test_wf_progress_persistence import _append
 
     seqs = [await _append(wf_conn, wf_sql, node, flow, payload={"pct": i}) for i in range(5)]
-    # the consumer's cursor INSIDE the window (the second event's seq) → full
+    # the consumer's cursor inside the window (the second event's seq) → full
     face = await progress_sse_face(wf_pool, wf_sql, node_id=node, last_event_id=seqs[1][0])
     assert face.mode == "full"
-    # the pruned-past cursor → partial, NAMED (the silent gap cannot exist)
+    # the pruned-past cursor → partial, named (the silent gap cannot exist)
     await wf_conn.execute(
         f'DELETE FROM "{wf_schema}".wf_node_stream WHERE node_id = $1 AND seq <= $2',
         node,
@@ -221,7 +220,7 @@ async def test_silent_gap_variant_is_structurally_impossible(
     )
 
 
-# ── THE PROGRESS-LIE FENCE (DH4) + THE CRASH WINDOW (DH7) ────────────────
+# ── the progress-lie fence (DH4) + the crash window (DH7) ────────────────
 
 
 async def test_display_shows_failure_with_pct_inside_the_liar_reds(
@@ -232,8 +231,8 @@ async def test_display_shows_failure_with_pct_inside_the_liar_reds(
     progress_redlog: RedLog,
 ) -> None:
     """DH4 on the BUILT display: a body reports pct=99 'almost done' then
-    FAILS → the explorer shows FAILED with pct=99 rendered INSIDE it —
-    never 99%-running. THE LIAR RED (the counterfactual display deriving
+    FAILS → the explorer shows FAILED with pct=99 rendered inside it —
+    never 99%-running. the LIAR RED (the counterfactual display deriving
     the state from the progress events) shows running/99 on the dead node
     — observed, kept failing on purpose."""
     app = WorkflowApp()
@@ -242,11 +241,11 @@ async def test_display_shows_failure_with_pct_inside_the_liar_reds(
         await ctx.progress(99, "almost done", None)
         raise ValueError("the body failed at 99%")
 
-    @app.workflow("t21_liar_display")
-    def t21_liar_display() -> Promise[object]:
+    @app.workflow("progress_liar_display")
+    def progress_liar_display() -> Promise[object]:
         return build(step(liar, Ingest(doc_id="d1"), key="liar", max_attempts=1))
 
-    runner = FlowRunner(app.get("t21_liar_display"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_liar_display"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
@@ -274,9 +273,9 @@ async def test_display_shows_failure_with_pct_inside_the_liar_reds(
     assert d["pct"] == 99 and d["message"] == "almost done", (
         "the last progress must render INSIDE the terminal state (advisory)"
     )
-    # THE LIAR RED: the counterfactual — the state derived from the
-    # emissions naively (an emission means alive; the terminal only read
-    # when no progress exists) — shows the lie.
+    # the counterfactual — the state derived from the emissions naively (an
+    # emission means alive; the terminal only read when no progress exists) —
+    # shows the lie.
     liar_display: dict[str, Any] = {"status": None, "pct": None}
     for e in sorted(events, key=lambda e: int(e["seq"])):
         p = _loads(e["payload"]) or {}
@@ -304,7 +303,7 @@ async def test_crash_window_freshness_only_loss_then_the_terminal_heals(
     unflushed emissions die with it — emulated by a cancelled flush task;
     the PoC's real SIGKILL'd worker proved the same shape). The display
     goes STALE — pct frozen at 99 while the LEDGER still says running —
-    then the terminal heals it. THE INVARIANT: the display's STATE is
+    then the terminal heals it. the INVARIANT: the display's STATE is
     ledger-derived at every sample; freshness is the only thing the crash
     can lose."""
     flow = await seed_flow(wf_conn, wf_schema)
@@ -323,7 +322,7 @@ async def test_crash_window_freshness_only_loss_then_the_terminal_heals(
     assert stale["status"] == "running", "the LEDGER owns the state"
     assert stale["pct"] == 99
 
-    # ...the next attempt emits 100 and DIES before the flush (the kill
+    # ...the next attempt emits 100 and dies before the flush (the kill
     # window — the buffer's emissions unflushed, the task cancelled as the
     # SIGKILL cancels the process).
     dying = ProgressEmitter(wf_pool, wf_sql, flow_id=flow, node_id=node)
@@ -332,14 +331,13 @@ async def test_crash_window_freshness_only_loss_then_the_terminal_heals(
     dying._flush_task.cancel()  # pyright: ignore[reportPrivateUsage]  # the kill
 
     window = await sample_display()
-    # THE WINDOW: the display is STALE — pct frozen at 99 — and the STATE
-    # is still the LEDGER's (running), never anything the dead emitter
-    # claimed.
+    # the display is stale — pct frozen at 99 — and the state is still the
+    # ledger's (running), never anything the dead emitter claimed.
     assert window["pct"] == 99, "the unflushed emission leaked past the kill"
     assert window["status"] == "running", "the state stopped being ledger-derived"
 
-    # THE HEAL: the terminal lands (the reclaim re-ran the body; the
-    # finalize owns the terminal) — the display heals from the LEDGER.
+    # the terminal lands (the reclaim re-ran the body; the finalize owns the
+    # terminal) — the display heals from the ledger.
     from taskq.workflows.engine import finalize_node
 
     worker_id, attempt, epoch = await claim_view(wf_conn, wf_schema, node)
@@ -360,7 +358,7 @@ async def test_crash_window_freshness_only_loss_then_the_terminal_heals(
     assert healed["pct"] == 99, "the stale pct renders INSIDE the healed state (advisory)"
 
 
-# ── THE AGGREGATION (DH8) + THE GAUGE (DH5) ──────────────────────────────
+# ── the aggregation (DH8) + the gauge (DH5) ──────────────────────────────
 
 
 async def test_midflight_read_side_aggregate_writes_nothing(
@@ -377,9 +375,9 @@ async def test_midflight_read_side_aggregate_writes_nothing(
 
     n = 12
     flow_id, runner, source = await _map_flow(
-        wf_schema, wf_pool, children=n, aggregate=risk_mean, name="t21_agg_flow"
+        wf_schema, wf_pool, children=n, aggregate=risk_mean, name="progress_agg_flow"
     )
-    # run HALF the children (the mid-flight world: the PoC's 125/200)
+    # run half the children (the mid-flight world: the PoC's 125/200)
     rows = await runner._claimable(flow_id)  # pyright: ignore[reportPrivateUsage]
     assert rows, "the fork's children are claimable"
     for row in rows[: len(rows) // 2]:
@@ -415,7 +413,7 @@ async def test_midflight_read_side_aggregate_writes_nothing(
     assert before["wf_join_fire"] == 0, "a join node exists for progress — the blocking mistake"
     assert read.fn_ms < 50, f"the fn's read-time cost exploded: {read.fn_ms}ms"
 
-    # the EXPLICIT fn's door (the read-side caller's own): it overrides
+    # the explicit fn's door (the read-side caller's own): it overrides
     # the declared fn — the same rows, the caller's question
     raw = await read_map_aggregate(wf_pool, wf_sql, flow_id, source, fn=lambda rows: len(rows))
     assert raw.value == done
@@ -435,12 +433,14 @@ async def test_gauge_cardinality_stays_workflow_dimensioned(
 
     n = 12
     flow_id, runner, _source = await _map_flow(
-        wf_schema, wf_pool, children=n, name="t21_gauge_flow"
+        wf_schema, wf_pool, children=n, name="progress_gauge_flow"
     )
     _ = flow_id
     await runner.drive(flow_id)
     rows = await wf_conn.fetch(_QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=wf_schema))
-    this_flow = {(r["workflow"], r["state"]) for r in rows if r["workflow"] == "t21_gauge_flow"}
+    this_flow = {
+        (r["workflow"], r["state"]) for r in rows if r["workflow"] == "progress_gauge_flow"
+    }
     counterfactual = n  # the per-child-label variant's series count
     progress_redlog.red(
         "gauge_cardinality_stays_workflow_dimensioned",
@@ -481,14 +481,14 @@ async def test_sunk_join_for_progress_warns_at_validate(
     async def item(ctx: StepContext, value: int) -> int:
         return value
 
-    @app.workflow("t21_w2_flow")
+    @app.workflow("progress_w2_flow")
     def w2_flow() -> Promise[object]:
         source = step(fetch, Ingest(doc_id="d1"), key="fetch")
         items = map_source(source, item)
         sink(items)  # the display-only reader, declared
         return build(source)
 
-    compiled = app.get("t21_w2_flow")
+    compiled = app.get("progress_w2_flow")
     diagnostics = validate_compiled(compiled)
     w2 = [d for d in diagnostics if d.rule == "W2-join-for-progress"]
     assert w2, "the sunk join did not warn"
@@ -496,17 +496,17 @@ async def test_sunk_join_for_progress_warns_at_validate(
     _ = wf_pool, wf_schema
 
 
-# ── THE HTTP FACE (the SSE route — the thin mapping) ─────────────────────
+# ── the HTTP face (the SSE route — the thin mapping) ─────────────────────
 
 
 @pytest.mark.integration
 async def test_http_face_streams_display_then_progress(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """THE HTTP FACE: the route is REGISTERED on the admin router (the
+    """The HTTP face: the route is REGISTERED on the admin router (the
     thin mapping — the import law's lazy import), and the WIRE SHAPE is
     the generator's, pinned here on the real pool: the ``display`` frame
-    FIRST (ledger-derived), the ``progress`` frames in seq order with
+    first (ledger-derived), the ``progress`` frames in seq order with
     ``id:`` the seq (the browser EventSource reconnect contract)."""
     app = WorkflowApp()
 
@@ -515,15 +515,15 @@ async def test_http_face_streams_display_then_progress(
         await ctx.progress(100, "part two", None)
         return {"ok": True}
 
-    @app.workflow("t21_http_flow")
-    def t21_http_flow() -> Promise[object]:
+    @app.workflow("progress_http_flow")
+    def progress_http_flow() -> Promise[object]:
         return build(step(work, Ingest(doc_id="d1"), key="work"))
 
-    runner = FlowRunner(app.get("t21_http_flow"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_http_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
-    # THE ROUTE IS REGISTERED (the thin mapping's existence — the admin
+    # the route is registered (the thin mapping's existence — the admin
     # router carries the stream; the mapping is lazy per the import law).
     from fastapi import FastAPI
 
@@ -541,7 +541,7 @@ async def test_http_face_streams_display_then_progress(
     )
     _ = fast_app
 
-    # THE WIRE SHAPE: the generator's frames — the connect shape's law.
+    # the generator's frames — the connect shape's law.
     from taskq.workflows._progress_read import progress_stream_generator
 
     stop = asyncio.Event()

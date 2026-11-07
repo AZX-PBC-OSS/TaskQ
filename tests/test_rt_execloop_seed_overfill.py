@@ -5,7 +5,7 @@ must fail loudly (raise) or be bounded - never park ``_main``'s bootstrap
 forever on a full ``local_queue`` with zero consumers started.
 
 Hypothesis (verified against the current tree): ``_main`` seeds the queue
-with ``for job in _local_queue_seed: await local_queue.put(job)`` BEFORE the
+with ``for job in _local_queue_seed: await local_queue.put(job)`` before the
 consumer TaskGroup exists (src/taskq/worker/_bootstrap.py:1225-1231), and
 ``local_queue`` is ``asyncio.Queue(maxsize=settings.max_concurrency)`` - so
 an oversized seed blocks on ``put`` forever, silently, with no validation
@@ -128,7 +128,7 @@ def _fake_main_harness(
     """
     backend: Backend = as_backend(FakeBackend())
     deps = _stub_deps(settings)
-    # The REAL shutdown_event _main creates is only available once
+    # The real shutdown_event _main creates is only available once
     # install_signal_handlers runs (before the TaskGroup opens); the fake
     # siblings park on it via this holder, exactly like the reference
     # harness in tests/test_worker_main.py.
@@ -233,7 +233,7 @@ async def test_oversized_seed_fails_loudly_or_is_bounded() -> None:
     """Seed length > max_concurrency must not park bootstrap forever.
 
     Today the second ``await local_queue.put(job)`` parks forever - the
-    consumers that could drain the queue are created only AFTER the seed
+    consumers that could drain the queue are created only after the seed
     loop - so _main hangs silently (no validation, no log)."""
     settings = _settings()
     job_a = make_job_row(status="running")
@@ -249,7 +249,7 @@ async def test_oversized_seed_fails_loudly_or_is_bounded() -> None:
             with contextlib.suppress(asyncio.CancelledError):
                 await task  # let the cancelled bootstrap unwind before asserting
         except Exception as exc:
-            # A LOUD raise is the accepted fix shape ("fails loudly"); the
+            # A loud raise is the accepted fix shape ("fails loudly"); the
             # fitted-seed control in this file proves the harness itself
             # completes, so a raise here is the seed validation, not noise.
             outcome = f"raised {type(exc).__name__}"

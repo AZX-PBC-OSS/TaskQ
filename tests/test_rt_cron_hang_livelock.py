@@ -25,7 +25,7 @@ trip it.
 
 Attack 2 is the reproduction. A SYNC factory is a first-class
 ``resolve_payload`` shape (``cron.py`` calls ``factory()`` directly on the
-event loop), and a sync factory that blocks freezes the loop INSIDE the
+event loop), and a sync factory that blocks freezes the loop inside the
 tick's open transaction: the 5 s ``wait_for`` never starts (the call never
 becomes a coroutine) and the leader's ``asyncio.timeout`` callback cannot
 run (the loop is frozen). The tick - holding the cron advisory lock taken
@@ -71,12 +71,12 @@ from .test_rt_cron_harness import (
     server_hour_floor,
 )
 
-# load_sensitive (PR #695's ruling): every pin here runs the wedged-tick
+# load_sensitive (pr #695's ruling): every pin here runs the wedged-tick
 # scenario against real PG under deadline windows — the shipped 5s defaults
 # or a hand-tuned pair — and six pins assert elapsed wall against _BOUND_S
 # (_T_S + 2.5s), ~1.5x headroom: receipt-class under xdist co-tenancy. The
 # serial load-sensitive lane is where those bounds measure the machinery
-# and not the packing. THE TEETH ARE PRESERVED: the elapsed-vs-bound
+# and not the packing. the teeth are preserved: the elapsed-vs-bound
 # asserts stay exactly as written — they distinguish "cut by the
 # machinery's deadline" from "cut by the test's own net" and still red on
 # a real livelock in the serial lane — and every wait_for(_BOUND_S) hull
@@ -90,14 +90,14 @@ pytestmark = [pytest.mark.integration, pytest.mark.load_sensitive]
 _ACTOR = "rt_hang_actor"
 
 #: T - the machinery's whole-tick deadline: the leader's
-#: ``asyncio.timeout(dispatcher_command_timeout)`` (default 5.0 s) AND
+#: ``asyncio.timeout(dispatcher_command_timeout)`` (default 5.0 s) and
 #: ``resolve_payload``'s per-factory ``wait_for`` (hardcoded 5.0 s). The
 #: attack calibrates against T alone; the factory's hang is never a
 #: multiple of anything the test derives from itself.
 _T_S = 5.0
 
 #: The contract bound: the tick must end (return or raise) within T plus
-#: generous slack for BEGIN, the lock probe, the due/actor reads, cancel
+#: generous slack for begin, the lock probe, the due/actor reads, cancel
 #: delivery and the ROLLBACK round trip - a healthy deadline trip observes
 #: ~5.05 s locally, so 2.5 s of slack absorbs any runner load.
 _BOUND_S = _T_S + 2.5
@@ -111,7 +111,7 @@ _SYNC_BLOCK_S = 3 * _T_S
 #: Attack 2's test-side safety net: strictly above every expected end (the
 #: red path ends when the factory's own block ends, ~15.2 s; a bounded tick
 #: ends near T) and below the file's runtime budget. It is a net for
-#: unforeseen hangs, not the deadline under attack - that one is the REAL
+#: unforeseen hangs, not the deadline under attack - that one is the real
 #: ``asyncio.timeout`` inside the leader-shaped nesting.
 _SAFETY_NET_S = _SYNC_BLOCK_S + 10.0
 
@@ -527,14 +527,14 @@ class TestDefaultTimeoutsCollideIntoWholeTickRollback:
     ``cron_loop.py``'s per-row ``except Exception as exc:`` (the only
     guard around ``_plan_fire``) cannot honor even in principle:
     ``asyncio.CancelledError`` - what the outer ``asyncio.timeout``
-    delivers - is a ``BaseException`` in Python >= 3.8, so it is NOT
+    delivers - is a ``BaseException`` in Python >= 3.8, so it is not
     caught there. When the outer deadline wins the race, the cancellation
     propagates straight past the per-row handler, aborts ``tick_cron``
     entirely, and the transaction rolls back: the hung schedule gets no
     named strike (contradicting docs/guides/cron.md's "increments
-    consecutive_failures" claim) AND the healthy peer schedule planned in
+    consecutive_failures" claim) and the healthy peer schedule planned in
     the same batch loses its committed, already-computed advance -
-    ``next_fire_at`` stays at the old due timestamp for BOTH schedules.
+    ``next_fire_at`` stays at the old due timestamp for both schedules.
     Because ``next_fire_at`` never advances, the identical batch is
     selected again on the very next tick: an unbounded livelock that
     produces zero strike telemetry, not the bounded per-factory failure
@@ -561,7 +561,7 @@ class TestDefaultTimeoutsCollideIntoWholeTickRollback:
         hung beside it.
         """
         schema = module_pg_schema.schema_name
-        # The shipped defaults: NOT overridden away from each other. This
+        # The shipped defaults: not overridden away from each other. This
         # is the exact collision the issue's docstring warning
         # (taskq/cron.py's _await_factory_bounded) describes and that no
         # cross-field validator or default change enforces.
@@ -722,7 +722,7 @@ class TestHungFactoryBatchCannotLivelockTheTick:
     """A batch full of simultaneously-due hung factories must not overrun
     the whole-tick deadline in aggregate.
 
-    The per-factory deadline bounds ONE factory's wait. A tick's batch can
+    The per-factory deadline bounds one factory's wait. A tick's batch can
     hold up to ``cron_tick_limit`` (default 100) due schedules, and the
     planning loop awaits each factory in turn - so the BATCH's aggregate
     factory wait is what the leader's whole-tick ``asyncio.timeout``
@@ -747,7 +747,7 @@ class TestHungFactoryBatchCannotLivelockTheTick:
     ) -> None:
         """20 due schedules on one hung factory plus one healthy static
         peer: the leader-shaped tick must RETURN inside its own deadline
-        (not be cut by it), the ONE schedule whose factory consumed the
+        (not be cut by it), the one schedule whose factory consumed the
         funded budget must carry a committed strike naming its factory
         (the path to auto-disable), the 19 the budget could not fund must
         be DEFERRED: no strike, no error text, next_fire_at advanced a
@@ -941,7 +941,7 @@ class TestSlowSuccessfulMonopolizer:
                 # A loaded runner can stretch one tick past the leader's
                 # own deadline; the real leader retries next cadence and
                 # so does this loop. The invariants below are asserted
-                # per OBSERVED row state, not per tick outcome.
+                # per observed row state, not per tick outcome.
                 pass
             await asyncio.sleep(1.0)  # the leader loop's cadence
 

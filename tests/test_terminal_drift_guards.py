@@ -5,7 +5,7 @@ Three template-drift guards (``mark_retry``, ``mark_retry_after``,
 ``mark_interrupted``) had no pin — only ``mark_snoozed``'s did
 (tests/test_postgres_terminal_writes.py). The drift is seeded the same
 way: the fused statement's ``outcome_branch`` literal is renamed out of
-step with its Python reader, and the reader must fail loudly AFTER the
+step with its Python reader, and the reader must fail loudly after the
 write has landed (a drifted arm is template drift; the row's state is
 real, only the caller's report is impossible to name).
 
@@ -171,10 +171,10 @@ async def test_mark_snoozed_unknown_branch_literal_is_refused_by_the_parser(
     clean_jobs_app: JobsApp,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A branch literal NO reader case names (a wholesale arm rename) must
+    """A branch literal no reader case names (a wholesale arm rename) must
     still fail loudly: the fused statement's ``outcome_branch`` column is
     untrusted input, and ``parse_outcome_branch`` refuses a value outside
-    the closed union BEFORE any caller match runs — so a future arm can
+    the closed union before any caller match runs — so a future arm can
     never silently no-op an operator's deferral."""
     from dataclasses import replace as dc_replace
 

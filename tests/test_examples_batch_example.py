@@ -1,6 +1,6 @@
 """The batch example must teach the docs' finalizer law, not fight it.
 
-``docs/guides/jobs-clients.md`` ("Finalizer is NOT stamped with
+``docs/guides/jobs-clients.md`` ("Finalizer is not stamped with
 ``batch_id``") is explicit: the finalizer job's metadata does not include
 ``batch_id`` — if it were, ``wait_for_batch`` would count the finalizer as
 its own child and it would wait for itself: a deadlock. On the in-actor
@@ -37,7 +37,7 @@ class _CapturingJobs:
 
 def test_batch_example_finalizer_is_not_stamped_with_batch_id() -> None:
     """The finalizer job's metadata carries no ``batch_id`` — the docs'
-    deadlock law (jobs-clients.md, "Finalizer is NOT stamped with
+    deadlock law (jobs-clients.md, "Finalizer is not stamped with
     batch_id")."""
     jobs = _CapturingJobs()
     ctx = MagicMock()

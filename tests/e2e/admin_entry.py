@@ -1,6 +1,6 @@
 """Admin UI subprocess entrypoint for the admin e2e test.
 
-Spawned ONLY by ``tests/e2e/test_admin_ui.py`` as a host subprocess
+Spawned only by ``tests/e2e/test_admin_ui.py`` as a host subprocess
 (``sys.executable tests/e2e/admin_entry.py``); never imported by pytest.
 Mirrors ``taskq.cli._ui_serve`` (cli.py:412-594) reduced to the minimal
 read-path wiring: one asyncpg pool, the admin router mounted at ``/admin``
@@ -23,7 +23,7 @@ Auth choice: ``auth_dependency=token_auth(token)`` is passed explicitly, so
 ``TASKQ_ADMIN_UI_REQUIRE_AUTH``) never fires, and every admin route requires
 ``Authorization: Bearer <token>`` (``auth/token.py:19-34``). When
 ``TASKQ_E2E_REDIS_URL`` is absent the UI degrades to polling mode, which the
-asserted read endpoints do not depend on. Migrations are NOT run here: the
+asserted read endpoints do not depend on. Migrations are not run here: the
 e2e conftest migrates the module schema before any test starts.
 """
 

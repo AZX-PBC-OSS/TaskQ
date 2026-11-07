@@ -14,7 +14,7 @@ a mismatch. Two enforcement layers carry that contract:
    their introduction-commit blobs (30983de1, aca69ff6, e6b8a933).
 
 3. The upgrade arm reproduces the PROD ledger's real shape — a database
-   that applied the released ``01.00.05_01`` rewrite AND the original
+   that applied the released ``01.00.05_01`` rewrite and the original
    ``01.00.19_01``/``01.00.13_03``/``01.00.14_01`` — and proves it
    upgrades to head with zero drift refusals, with the #464 fence-probe
    rebuild arriving as the ``01.00.21_02`` carrier.
@@ -32,7 +32,7 @@ from taskq.settings import TaskQSettings
 
 ORIGINALS_DIR = Path(__file__).parent / "migration_originals"
 
-#: Restored post-ship-edit files that shipped ONLY to source pins. Their
+#: Restored post-ship-edit files that shipped only to source pins. Their
 #: bytes are pinned here against a future edit; the released files are the
 #: manifest guard's jurisdiction.
 RESTORED_SOURCE_PINNED_FILES: list[str] = [
@@ -78,7 +78,7 @@ class TestShippedFilesAreImmutable:
 @pytest.mark.integration
 class TestUpgradeFromTheProdLedger:
     """The prod repro, at its REAL shape: the released 01.00.05_01 rewrite
-    AND the originals of the three restored files, in one ledger."""
+    and the originals of the three restored files, in one ledger."""
 
     async def _point_ledger_at_what_prod_ran(
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
@@ -107,7 +107,7 @@ class TestUpgradeFromTheProdLedger:
 
         # The prod failure was exactly this call raising: the guard reads
         # every applied checksum against the bundled file and refuses all
-        # of it on a mismatch. On the pre-fix tree the rewritten files'
+        # of it on a mismatch. Under a naive edit the rewritten files'
         # checksums no longer match the originals' — this raise is the
         # deploy blocker, reproduced.
         applied = await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)

@@ -173,7 +173,7 @@ async def test_on_success_fires_on_success_path() -> None:
 
 
 async def test_on_success_not_called_on_failure() -> None:
-    """on_success is NOT invoked when the actor raises and retries are
+    """on_success is not invoked when the actor raises and retries are
     exhausted."""
     calls: list[tuple[object, object]] = []
 
@@ -206,7 +206,7 @@ async def test_on_success_not_called_on_failure() -> None:
 
 
 async def test_on_success_not_called_on_snooze() -> None:
-    """on_success is NOT invoked when the actor raises Snooze."""
+    """on_success is not invoked when the actor raises Snooze."""
     from taskq.exceptions import Snooze
 
     calls: list[tuple[object, object]] = []

@@ -214,7 +214,7 @@ async def enqueue_and_dispatch_pg(
     Twin of :func:`enqueue_and_dispatch_memory` for the PG side of an
     equivalence test. The claim goes through ``dispatch_batch`` rather
     than a hand-written fixture row because the events diet made the two
-    paths observably different: a claim deliberately writes NO
+    paths observably different: a claim deliberately writes no
     ``job_events`` row (``backend/_dispatch.py``), so a fixture that
     inserts one leaves the PG event stream one row ahead of everything
     the memory twin can produce and breaks the cross-backend comparison.

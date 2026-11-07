@@ -75,10 +75,10 @@ async def run_import(
 ) -> LedgerReceipt:
     """One import run: create → listen → drive → decode the receipt."""
     store.configure(dsn)
-    # THE SELF-MIGRATION (a fresh Postgres runs the README verbatim): the
-    # run door applies TaskQ's own migrations before the engine's tables
-    # are read — the demo's ledger DDL below never creates them (the same
-    # door site_audit's run_audit and flows_demo's run_demo open).
+    # a fresh Postgres runs the readme verbatim. the run door applies TaskQ's
+    # own migrations before the engine's tables are read — the demo's ledger
+    # DDL below never creates them (the same door site_audit's run_audit and
+    # flows_demo's run_demo open).
     conn = await asyncpg.connect(dsn)
     try:
         await apply_pending(conn, schema=SCHEMA)

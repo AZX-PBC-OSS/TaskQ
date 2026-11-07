@@ -144,7 +144,7 @@ _HELD_SLOTS_SQL = (
 # line-oriented renderer (console/KV), corrupting log parsing and alerting ,
 # so a URL-controlled field is escaped before it reaches an event, never
 # passed through verbatim. \n/\r/\t keep their letter escapes for
-# readability; every other C0 control and DEL renders as its hex escape.
+# readability; every other C0 control and del renders as its hex escape.
 _LOG_CONTROL_ESCAPES: dict[int, str] = {
     **{c: f"\\x{c:02x}" for c in range(0x20)},
     0x7F: "\\x7f",
@@ -176,7 +176,7 @@ async def _fetch_redis_rl_state(
     * Sliding window log: ``taskq:{schema}:sw:{name}``    (ZCARD for count)
     * Sliding window GCRA: ``taskq:{schema}:sw_gcra:{name}`` (GET for TAT)
 
-    All reads run in ONE Redis pipeline, a single round trip for every
+    All reads run in one Redis pipeline, a single round trip for every
     bucket. The name set is unbounded by construction (the page unions the
     in-process registry with every ``rate_limit_buckets`` PG row, and keyed
     buckets accumulate there forever), so one awaited call per name made
@@ -199,7 +199,7 @@ async def _fetch_redis_rl_state(
         return None
     if not names:
         return {}
-    # The kind check runs while the pipeline is built, OUTSIDE the
+    # The kind check runs while the pipeline is built, outside the
     # degrade-to-None guard: queuing the commands is client-side (the
     # first Redis call is pipe.execute() inside the guard), so an unknown
     # kind fails loudly before any round trip.
@@ -299,7 +299,7 @@ def register(router: APIRouter) -> None:
 
         async with pool.acquire() as conn:
             try:
-                # ONE transaction for the mutation AND its audit row: a
+                # one transaction for the mutation and its audit row: a
                 # schedule that flips enabled while its audit insert fails
                 # (or the reverse) is exactly the unattributable-state
                 # defect the audit trail exists to prevent. The 404 raises
@@ -374,7 +374,7 @@ def register(router: APIRouter) -> None:
         skip_sql = _SCHEDULE_SKIP_SQL.format(schema=schema)
 
         async with pool.acquire() as conn:
-            # ONE transaction around the read-modify-write and its audit
+            # one transaction around the read-modify-write and its audit
             # row: the skip is two statements against the same row, and
             # both plus the audit row commit together.
             try:
@@ -390,7 +390,7 @@ def register(router: APIRouter) -> None:
                     # provide this column, and a defaulting read is exactly what
                     # made the cron loop silently skip for 'allof' schedules
                     # whatever they stored (7d7e01c). The coercion mirrors
-                    # cron_loop's: the column is CHECK-constrained to the three
+                    # cron_loop's: the column is check-constrained to the three
                     # strategies, this only guards a hand-edited row.
                     dst_strategy_raw: str = row["dst_strategy"]
                     dst_strategy: DstStrategy = (
@@ -462,7 +462,7 @@ def register(router: APIRouter) -> None:
         # Evict entries whose cooldown window has fully elapsed before the
         # check below. This map exists solely to enforce the per-schedule
         # cooldown, so an entry older than the window can never influence
-        # any later decision: pruning it cannot lose a LIVE entry (every
+        # any later decision: pruning it cannot lose a live entry (every
         # entry still inside its window is kept), while schedule rows are
         # created and deleted through this very UI and each row's run-now
         # click would otherwise leave a permanent UUID-keyed residue in
@@ -558,7 +558,7 @@ def register(router: APIRouter) -> None:
             if policy is not None and getattr(policy, "singleton", False):
                 # The flag the jobs_singleton_uniq partial index and the
                 # singleton preflights key on: without it this row is
-                # invisible to the singleton contract in BOTH directions
+                # invisible to the singleton contract in both directions
                 # (it can run concurrently with other jobs of the actor,
                 # and no later singleton enqueue sees it as a blocker).
                 metadata["singleton"] = True
@@ -585,12 +585,12 @@ def register(router: APIRouter) -> None:
                     else defaults.jitter
                 ),
                 scheduled_at=None,  # Why: "run now" is immediate, the server stamps and decides, immune to app↔DB clock skew.
-                # The operator's STORED max_pending cap bounds run-now like
+                # The operator's stored max_pending cap bounds run-now like
                 # every other fire of a schedule: the cron tick resolves
                 # _resolve_max_pending(stored, registry literal) and the
                 # client path resolves the same rule through the capacity
                 # cache, while the single-enqueue path this call reaches
-                # enforces only the CARRIED value, so a NULL here would
+                # enforces only the carried value, so a NULL here would
                 # silently exempt run-now from a drain the operator set.
                 # A non-NULL stored cap is authoritative over the registry
                 # literal on those paths (it tightens or loosens it), so
@@ -611,8 +611,8 @@ def register(router: APIRouter) -> None:
         try:
             await backend.enqueue(args)
         except SingletonCollisionError:
-            # BEFORE the BackpressureError arm: SingletonCollisionError is
-            # its SUBCLASS, so the catch-all answered a live singleton job
+            # before the BackpressureError arm: SingletonCollisionError is
+            # its subclass, so the catch-all answered a live singleton job
             # with "actor X at max_pending cap" -- a factually wrong reason
             # shown to the operator deciding what to do next. The fire
             # refused nothing was written; name the real reason.
@@ -739,7 +739,7 @@ def register(router: APIRouter) -> None:
                     "kind": kind,
                     "backend": backend,
                     "config_summary": config_summary,
-                    # U5: the reset route can only serve primitives THIS
+                    # U5: the reset route can only serve primitives this
                     # process's registry knows; a rendered Reset for a
                     # registry-absent bucket is a dead button (it 404s).
                     "in_registry": True,
@@ -767,9 +767,9 @@ def register(router: APIRouter) -> None:
 
         # Keyed buckets materialized after worker startup are published to
         # PG by the acquisition path; in a standalone admin process they
-        # exist ONLY as pg_state rows (the in-process registry never
+        # exist only as pg_state rows (the in-process registry never
         # dispatches jobs). Include them in the live-Redis fetch so their
-        # per-key state (tokens / GCRA TAT) is visible too.
+        # per-key state (tokens / gcra tat) is visible too.
         redis_known = {name for name, _kind in redis_names}
         for pg_name, pg_row in pg_state.items():
             if pg_name in redis_known:
@@ -926,8 +926,8 @@ def register(router: APIRouter) -> None:
             }
         )
 
-        # The redis outage family the #421 fallback pins exactly, mirrored
-        # here because the reset path has NO PG fallback to absorb them
+        # The redis outage family the redis-outage fallback family pins exactly, mirrored
+        # here because the reset path has no PG fallback to absorb them
         # (deliberately: the PG rows for a redis-backed bucket are a
         # worker-published read model, so a PG-side "reset" cannot reset
         # the admission state and would lie to the operator). redis is an
@@ -984,8 +984,8 @@ def register(router: APIRouter) -> None:
                 headers={"Retry-After": "2"},
             ) from None
         except reset_outage_family as exc:
-            # The store CANNOT SERVE the reset (a replica promoted
-            # mid-flight answers READONLY, a maxmemory breach answers OOM,
+            # The store cannot serve the reset (a replica promoted
+            # mid-flight answers readonly, a maxmemory breach answers OOM,
             # the #421 outage classes; plus the connection/timeout shapes
             # the same fallback absorbs on the acquire path). No fallback
             # exists here (see the family's comment above), so the honest
@@ -1009,7 +1009,7 @@ def register(router: APIRouter) -> None:
                 headers={"Retry-After": "2"},
             ) from None
         except KeyError as exc:
-            # A keyed bucket a worker published to PG exists ONLY as a PG
+            # A keyed bucket a worker published to PG exists only as a PG
             # row in a standalone admin process, the registry has no
             # primitive for it, so a reset is impossible here. The page
             # still renders the reset button for such rows; answer it with
@@ -1063,7 +1063,7 @@ def register(router: APIRouter) -> None:
         configured_reservations: list[dict[str, object]] = []
         # Filter by the admin's own schema before displaying or syncing ,
         # the process-global registry may carry reservations declared for
-        # OTHER schemas (same reason worker/_bootstrap.py filters): syncing
+        # other schemas (same reason worker/_bootstrap.py filters): syncing
         # a foreign-schema reservation here would insert/delete rows in the
         # local schema's reservation_slots table for a name it does not own.
         reservation_primitives = [
@@ -1106,7 +1106,7 @@ def register(router: APIRouter) -> None:
                     # The same bound every other backend wait on the admin
                     # UI takes (admin_acquire_timeout): the sync costs one
                     # connection acquire plus a transaction of statements
-                    # PER reservation, so a wedged store must time out into
+                    # per reservation, so a wedged store must time out into
                     # the degraded page, not park the request.
                     timeout=settings.admin_acquire_timeout,
                 )

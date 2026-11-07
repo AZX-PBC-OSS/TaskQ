@@ -23,8 +23,8 @@ taskq.backend._sweeps / taskq.worker.cron_loop:
    for the once-a-day prune/archive/expiry candidate CTEs in
    taskq.worker._leader_shared (their VOLATILE clock_timestamp()
    selection bounds survived the first audit pass as a documented
-   follow-up): the drained steady state AND the eligible backlog, the
-   ad-hoc statement AND the server-prepared form a long-lived
+   follow-up): the drained steady state and the eligible backlog, the
+   ad-hoc statement and the server-prepared form a long-lived
    connection runs after five same-statement executions (PREPARE x6 -
    the plancache's generic-plan consideration threshold), plus a
    source-shape drift-guard for the two-clock split (selection bound
@@ -151,7 +151,7 @@ def _assert_index_cond(plan: str, index: str, cond_substring: str) -> None:
     that degrades to a post-scan Filter walks the table (or a whole
     partial index's population) per tick instead of stopping at the
     boundary. The cond may be combined with other conds in one line
-    (e.g. sweep 2's ``(stc IS NOT NULL) AND (stc < bound)``), so this
+    (e.g. sweep 2's ``(stc IS not NULL) and (stc < bound)``), so this
     accepts any Index Cond line containing the bound."""
     assert index in plan, f"expected {index} in plan:\n{plan}"
     cond_lines = [line for line in plan.splitlines() if "Index Cond:" in line]
@@ -200,7 +200,7 @@ async def test_audit_migration_is_transactional_and_reapplies_cleanly(pg_dsn: st
 
         # The ledger must record the transactional apply: this file
         # deliberately uses plain CREATE INDEX inside the per-file
-        # transaction (the no-transaction CONCURRENTLY form deadlocks
+        # transaction (the no-transaction concurrently form deadlocks
         # with apply_pending_locked's advisory-lock serialization -
         # see the migration header), and tests/test_migrations_unit.py
         # pins that every bundled migration stays transactional.
@@ -532,7 +532,7 @@ async def audit_schema(pg_dsn: str) -> Any:
             columns=["id", "actor", "name", "cron_expr", "enabled", "next_fire_at"],
             records=cron,
         )
-        # A stale worker with attempt history: the RI probe pin target.
+        # A stale worker with attempt history: the ri probe pin target.
         # The NULL-worker attempt bulk exists so the probe's index path
         # beats a seq scan at plan time (a 200-row table would seq-scan
         # and the pin would assert nothing about the index).
@@ -617,7 +617,7 @@ async def test_sweep_1_snap_is_index_bounded(audit_schema: Any, pg_dsn: str) -> 
 async def test_sweep_1_heartbeat_arm_is_index_bounded(audit_schema: Any, pg_dsn: str) -> None:
     """Sweep 1's heartbeat arm (the per-job ``heartbeat_timeout``
     disjunct) must seek jobs_running_heartbeat_deadline_idx - partial on
-    ``status='running' AND heartbeat_timeout IS NOT NULL`` - with
+    ``status='running' and heartbeat_timeout IS not NULL`` - with
     ``last_heartbeat_at < statement_timestamp()`` as an Index Cond.
 
     The row-exact deadline (``last_heartbeat_at + heartbeat_timeout``)
@@ -627,7 +627,7 @@ async def test_sweep_1_heartbeat_arm_is_index_bounded(audit_schema: Any, pg_dsn:
     stated explicitly to give the partial index its range bound, and the
     ORDER BY last_heartbeat_at pins the scan to that index's key order
     (the ORDER-BY-pins-the-scan rule the sibling sweeps follow). Without
-    the index the OR's second arm degrades every sweep tick to a filter
+    the index the or's second arm degrades every sweep tick to a filter
     over the whole running set - the exact whole-table-walk class this
     audit family exists to prevent."""
     schema, _ = audit_schema
@@ -709,7 +709,7 @@ async def test_sweep_4_window_is_index_bounded(audit_schema: Any, pg_dsn: str) -
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
-        # Held slots with FUTURE leases: the steady-state shape (nothing
+        # Held slots with future leases: the steady-state shape (nothing
         # eligible yet) every sibling plan pin seeds to. 5k rows across
         # buckets so the planner's index choice matches a deployed fleet,
         # not an empty table's seq-scan default.
@@ -993,25 +993,25 @@ async def test_cleanup_stale_workers_bound_is_index_qualified(
 # ── 3. prune/archive selection-bound plan pins ──────────────────────
 #
 # The once-a-day prune/archive/expiry candidate CTEs in
-# taskq.worker._leader_shared kept VOLATILE clock_timestamp() selection
+# taskq.worker._leader_shared kept volatile clock_timestamp() selection
 # bounds after the sweep rewrite - bounded (LIMIT-stopped, ORDER-BY-
 # pinned) but paying a post-scan Filter over the partial index's whole
-# population per batch, because the planner refuses a VOLATILE
+# population per batch, because the planner refuses a volatile
 # expression as a btree index condition. Measured on this corpus shape
 # (70k terminal rows, PG 18, EXPLAIN ANALYZE, BUFFERS): the archive
 # candidate scan Filter-walked all 70,000 jobs_finished_at_idx entries
-# (1,757 buffers, ~11 ms) in the drained steady state where the STABLE
+# (1,757 buffers, ~11 ms) in the drained steady state where the stable
 # statement_timestamp() bound is an Index Cond that terminates at the
 # range boundary (2 buffers, ~0.05 ms); the expiry CTE's steady state
 # walked all 30,000 jobs_archive entries (2,039 buffers, ~6.7 ms vs
 # 2 buffers / 0.03 ms), and its server-prepared form (a long-lived
-# connection past five same-statement executions) flips to a GENERIC
+# connection past five same-statement executions) flips to a generic
 # plan that walks the whole population under a Filter.
 
 _BATCH = DEFAULT_PRUNE_BATCH_SIZE
 _RETENTION = DEFAULT_PRUNE_RETENTION
 _ARCHIVE_RETENTION = timedelta(days=365)
-# Warm-up executions for the PREPARE pins run against the drained
+# Warm-up executions for the prepare pins run against the drained
 # population so they archive/expire nothing; the EXPLAIN then faces the
 # backlog population (a different status) without executing.
 _DRAINED_STATUS = "succeeded"
@@ -1020,7 +1020,7 @@ _PREPARE_WARMUPS = 5
 
 
 def _assert_index_cond_line(plan: str, index: str, *cond_substrings: str) -> None:
-    """The plan must carry ONE Index Cond line containing every
+    """The plan must carry one Index Cond line containing every
     *cond_substrings* - the property that makes a selection bound
     index-served (the scan terminates at the range boundary or the
     LIMIT) instead of a post-scan Filter over the population. Accepts
@@ -1036,7 +1036,7 @@ def _assert_index_cond_line(plan: str, index: str, *cond_substrings: str) -> Non
 
 
 def _assert_bound_is_not_a_post_scan_filter(plan: str, bound_substring: str) -> None:
-    """The selection bound must not ALSO (or instead) appear as a
+    """The selection bound must not also (or instead) appear as a
     post-scan Filter: the Filter form is the measured defect - the scan
     visits every row of the table or partial-index population and
     evaluates the comparison per row. Status/actor equality conds stay
@@ -1213,7 +1213,7 @@ async def prune_audit_schema(pg_dsn: str) -> Any:
         )
         # jobs gets VACUUM (ANALYZE), matching the audit_schema discipline
         # above: a production jobs table is constantly vacuumed, so the
-        # planner's stats AND the visibility map are the cost model these
+        # planner's stats and the visibility map are the cost model these
         # pins are evaluated at. Bare ANALYZE updates the stats but leaves
         # the COPY-loaded pages' visibility bits unset, which forces every
         # candidate plan into heap-fetching scans and misprices the
@@ -1354,7 +1354,7 @@ async def test_archive_write_statement_moves_by_bound_ids_drained_and_backlog(
     EvalPlanQual fence lives in that arm's scan quals, so a plan that
     stopped seeking the bound ids there would lock rows the candidate
     window never selected (and lose the fence). It must be pkey-driven
-    (id = ANY, no population walk inside the CTE locked section) and
+    (id = any, no population walk inside the CTE locked section) and
     must still carry the finished_at age re-check - a job re-terminalized
     between the candidate window and this statement (status terminal
     again, finished_at zero seconds old) drops out at the lock instead
@@ -1487,7 +1487,7 @@ async def test_archive_candidate_actor_prepared_statement_bound_stays_stable(
     prune_audit_schema: Any, pg_dsn: str
 ) -> None:
     """PREPARE x6 for the per-actor candidate window, pinning what the
-    bound must guarantee on EVERY plan form the server can pick for it.
+    bound must guarantee on every plan form the server can pick for it.
 
     Measured on this corpus: past the threshold the server can flip a
     prepared statement to a GENERIC plan (the actor equality makes the
@@ -1704,7 +1704,7 @@ async def move_drain_schema(pg_dsn: str) -> Any:
         await conn.execute("SET synchronous_commit = on")
 
         # The actor's own already-moved backlog: same status filter and
-        # same actor as the drain target, but sitting on the NEW queue,
+        # same actor as the drain target, but sitting on the new queue,
         # exactly the population a queue-blind actor index walks past.
         moved = [
             (new_uuid(), _MQ_ACTOR, _MQ_NEW_QUEUE, '{"v": 1}', "pending", 3, "transient")
@@ -1765,13 +1765,13 @@ async def test_move_queue_drain_batch_bounds_cost_on_actor_and_queue_together(
     next ``batch_size`` rows still carrying the source queue. Every batch
     must cost the same regardless of how many of the actor's rows earlier
     batches already moved onto the target queue, so the plan has to fix
-    BOTH ``actor`` and ``queue`` in an Index Cond rather than leaving one
+    both ``actor`` and ``queue`` in an Index Cond rather than leaving one
     of them as a post-scan Filter.
 
     With only single-column partial indexes (actor, id) and (queue, id),
     whichever one the planner picks leaves the other predicate as a Filter
     that walks the already-moved population, so each batch pays for every
-    row previously moved and total drain time grows quadratically in the
+    row moved earlier and total drain time grows quadratically in the
     backlog size. On a large backlog that turns a routine operator action
     into a per-batch statement timeout.
     """
@@ -1832,7 +1832,7 @@ async def test_move_queue_drain_batch_bounds_cost_on_actor_and_queue_together(
 
 _EV_RETENTION = timedelta(days=30)
 _EV_BATCH = 100
-# Ordinary (deletable-kind) events, all NEWER than the retention age: the
+# Ordinary (deletable-kind) events, all newer than the retention age: the
 # drained steady-state shape every sibling plan pin seeds to.
 _EV_LIVE_ORDINARY = 40_000
 # Events spread over many jobs, as a fleet's are.

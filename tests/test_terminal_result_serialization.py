@@ -159,7 +159,7 @@ async def test_plain_dict_result_serializes_exactly_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A plain dict (direct ``Backend.mark_succeeded`` callers) still works:
-    exactly one serialization OF THE RESULT inside the terminal, exact size
+    exactly one serialization OF the RESULT inside the terminal, exact size
     (the event-detail dump is unrelated and filtered out)."""
     counter = _CountingDumps()
     monkeypatch.setattr("taskq._json.dumps", counter)
@@ -556,7 +556,7 @@ class TestResultBytesAgainstPostgres:
         assert row["result_size_bytes"] == len(data)
 
     async def test_size_identical_to_plain_dict_call(self, clean_jobs_app: JobsApp) -> None:
-        """result_bytes and plain-dict calls store the SAME result_size_bytes
+        """result_bytes and plain-dict calls store the same result_size_bytes
         for the same content - semantics fully preserved."""
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend

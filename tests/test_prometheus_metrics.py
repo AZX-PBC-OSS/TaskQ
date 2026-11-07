@@ -83,7 +83,7 @@ def env() -> Generator[_PromEnv, None, None]:  # pyright: ignore[reportReturnTyp
 # - Counters get _total suffix
 # - UpDownCounters get no _total suffix (they can decrease)
 # - Histograms with unit="s" get _seconds suffix (bridge appends unit name)
-# - Histograms whose name already ends in a unit word do NOT get a double suffix
+# - Histograms whose name already ends in a unit word do not get a double suffix
 
 _NAME_MAP: list[tuple[str, str, str]] = [
     # (otel instrument name, prometheus rendering, kind). The kind is what
@@ -211,7 +211,7 @@ _NAME_MAP: list[tuple[str, str, str]] = [
         "taskq_worker_loop_stall_attributions_total",
         "counter",
     ),
-    # The MVCC-horizon hygiene gauges (obs/_claim_health.py): the claim
+    # The mvcc-horizon hygiene gauges (obs/_claim_health.py): the claim
     # query's latency percentiles and rate, and the degradation ratio the
     # TaskQClaimLatencyDegraded alert keys on.
     ("taskq.claim.latency_p50_seconds", "taskq_claim_latency_p50_seconds", "gauge"),
@@ -219,9 +219,9 @@ _NAME_MAP: list[tuple[str, str, str]] = [
     ("taskq.claim.latency_p99_seconds", "taskq_claim_latency_p99_seconds", "gauge"),
     ("taskq.claim.claims_per_second", "taskq_claim_claims_per_second", "gauge"),
     ("taskq.claim.degradation_ratio", "taskq_claim_degradation_ratio", "gauge"),
-    # T08's workflow-progress rollup gauge (obs/_otel.py's observable
+    # the typed node view's workflow-progress rollup gauge (obs/_otel.py's observable
     # gauge; the maintenance leader samples it). The name already ends in
-    # the counter suffix "total" but the instrument is a GAUGE: the bridge
+    # the counter suffix "total" but the instrument is a gauge: the bridge
     # renders the bare name, and rules.yaml's TaskQWorkflowBlockedStuck
     # cites exactly that series (the registered-instrument pin in
     # test_rt_worker_rule_files builds its allowed set from this map — a
@@ -290,7 +290,7 @@ def _populate_all_instruments(meter: Any) -> None:
     meter.create_observable_gauge(
         "taskq.queue.depth", unit="1", callbacks=[lambda _: [Observation(5, {"queue": "q"})]]
     )
-    # The MVCC-horizon hygiene gauges (obs/_claim_health.py): unit="s"
+    # The mvcc-horizon hygiene gauges (obs/_claim_health.py): unit="s"
     # for the latency percentiles (their names already end in the unit
     # word), unit="1" for the rate and the ratio.
     for _name in (
@@ -515,7 +515,7 @@ def test_docs_rule_citation_matches_rules_yaml() -> None:
     guides' "(22 rules: ...)" citation and its enumerated summary stale and
     nothing went red. This closes that asymmetry from the DOCS side: the
     claimed count and the length of the comma-separated enumeration in
-    BOTH guides must equal the file's actual rule count, so any change to
+    both guides must equal the file's actual rule count, so any change to
     rules.yaml that is not mirrored into the docs' citation fails here.
     """
     actual = len(yaml.safe_load(_RULES_YAML.read_text())["groups"][0]["rules"])
@@ -597,7 +597,7 @@ def test_metric_name_mapping(env: _PromEnv) -> None:
         assert prom_name in text, f"Expected Prometheus name {prom_name!r} not found in scrape"
 
 
-# ── all metric names present with TYPE and HELP ─────────
+# ── all metric names present with type and help ─────────
 
 
 def test_all_metric_names_present(env: _PromEnv) -> None:
@@ -685,7 +685,7 @@ def test_cardinality_scrape_under_50ms(env: _PromEnv) -> None:
     assert elapsed_ms < 500, f"Scrape took {elapsed_ms:.1f}ms, expected < 500ms"
 
 
-# ── PromQL name cross-check: rules.yaml bucket names match bridge output ─────
+# ── Promql name cross-check: rules.yaml bucket names match bridge output ─────
 
 
 def test_rules_yaml_histogram_bucket_names_match_bridge(env: _PromEnv) -> None:
@@ -722,7 +722,7 @@ def _extract_and_operand_metric_names(expr: str) -> list[str]:
 
     left, sep, right = expr.partition(" and ")
     assert sep, f"expected an unqualified ' and ' in expr: {expr!r}"
-    # Each side looks like: deriv(NAME{...}[15m]) > 0   or   NAME > 300
+    # Each side looks like: deriv(name{...}[15m]) > 0   or   name > 300
     names = []
     for side in (left, right):
         m = re.search(r"([A-Za-z_:][A-Za-z0-9_:]*)\s*(?:\{|[<>=!]|$)", side.strip())
@@ -829,7 +829,7 @@ def _eval_scheduled_backlog_growing_expr(
     for i in range(n):
         age_ok = oldest_due_age_seconds[i] > age_threshold_seconds
         j = i - offset_steps
-        # PromQL offset: no sample at/ before series start -> operand
+        # Promql offset: no sample at/ before series start -> operand
         # missing -> that arm produces no result for this timestamp.
         growing = j >= 0 and scheduled_count[i] > scheduled_count[j]
         # changes(count[5m]) == 0: every sample in the (t-5m, t] window

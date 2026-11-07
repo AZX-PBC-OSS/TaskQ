@@ -1,14 +1,13 @@
-"""T27's pins — THE TYPED ROUTE AT THE GRAPH LEVEL (``route(promise, arms)``).
+"""The typed route's pins at the graph level (``route(promise, arms.)``)
 
-THE RECORDED FINDING (the reviewer's, lived on the routing-proof corpus): the
+The defect the graph-level route exists for: the
 chain's route works but the chain is graph-INVISIBLE (no join-back, the
 items untyped, one placement per chain, the enum middleman), and the graph
-DSL's ``skip=``-predicates are STRINGLY — the live recorded finding: a "video"
-tag skipped BOTH arms and the run terminalized SUCCEEDED having routed
+DSL's ``skip=``-predicates are STRINGLY — a "video"
+tag skipped both arms and the run terminalized SUCCEEDED having routed
 NOTHING (the exact silent drop ``RouterNotTotal`` exists to prevent).
 
-THE FIX (T27 — the ticket is ``dag-research/tickets/T27-typed-route.md``):
-the union MEMBERS key a route dict at the graph level —
+The graph-level face: the union MEMBERS key a route dict —
 
     route(source_promise, {ImageItem: RouteArm(body=process_image, queue="gpu"),
                            AudioItem: RouteArm(body=process_audio, queue="io")})
@@ -22,7 +21,7 @@ keys, named), the validator's E15-route-totality (the checker-independent
 re-proof from the compiled graph), and the runtime ``RouterNotTotal`` (the
 no-match element dies loudly — the skip-silent shape is DEAD).
 
-Failing-first: every pin below ran against the base head ``d0491207`` BEFORE
+Every pin below holds a behavior that was broken before its fix,
 the surface existed (the lazy imports raise ``ImportError`` — the red
 receipt: ``.measurements/t27-typed-route-reds.txt``); the greens are the
 built code's evidence. Captured: ``.measurements/t27-*.txt``.
@@ -43,7 +42,7 @@ from taskq.workflows import Promise, StepContext
 if TYPE_CHECKING:
     from taskq.workflows import WorkflowApp
 
-# ── the demo's union (the images/audio shape: the reviewer's scenario) ──
+# ── the demo's union (the images/audio shape) ─────────────────────────
 
 
 class ImageItem(BaseModel):
@@ -66,8 +65,8 @@ class AudioResult(BaseModel):
     transcript: str
 
 
-#: THE GHOST (the reviewer's "video" tag): a third element type outside the
-#: declared union — the runtime door's subject.
+#: a third element type outside the declared union — the runtime door's
+#: subject.
 class VideoItem(BaseModel):
     doc_id: str
 
@@ -87,29 +86,27 @@ async def media_source(ctx: StepContext) -> list[ImageItem | AudioItem]:
 
 
 async def process_image(ctx: object, item: ImageItem) -> ImageResult:
-    """THE IMAGE ARM — the narrowed arm (the param declares its model;
+    """The image arm — the narrowed arm (the param declares its model;
     the decode's target IS this annotation — R3)."""
     return ImageResult(doc_id=item.doc_id, ocr=f"ocr:{item.doc_id}")
 
 
 async def process_audio(ctx: object, item: AudioItem) -> AudioResult:
-    """THE AUDIO ARM — the other narrowed arm."""
+    """The audio arm — the other narrowed arm."""
     return AudioResult(doc_id=item.doc_id, transcript=f"tr:{item.doc_id}")
 
 
 async def lying_media_source(ctx: StepContext) -> list[ImageItem | AudioItem]:
-    """THE BODY THAT LIED (the reviewer's live recorded finding, inverted): the
+    """The body that lied: the
     declared union is ImageItem | AudioItem but a "video" element rides
-    the list — at the pre-fix heads this element skipped BOTH arms (the
-    stringly skip face) and the run terminalized SUCCEEDED having routed
-    NOTHING. The cast IS the scenario (the runtime door exists for the body
+    the list — under a stringly skip face this element skips both arms
+    and the run terminalizes SUCCEEDED having routed NOTHING. The cast
+    IS the scenario (the runtime door exists for the body
     that lies about its type — the checker cannot see a cast)."""
     ghost: object = VideoItem(doc_id="vid-999")
     return [
         ImageItem(doc_id="d1", uri="s3://b/d1.png"),
-        cast(
-            "ImageItem | AudioItem", ghost
-        ),  # the "video" tag — the live recorded finding's element
+        cast("ImageItem | AudioItem", ghost),  # the "video" tag — the ghost element
         AudioItem(doc_id="d2", uri="s3://b/d2.wav"),
     ]
 
@@ -119,9 +116,9 @@ def wire_the_scenario(
     name: str,
     source_body: Callable[..., Awaitable[object]],
 ) -> None:
-    """Wire the reviewer's exact scenario on *app*: the source step → the
+    """Wire the scenario on *app*: the source step → the
     typed route (the two placements) → the typed-sum join (the terminal).
-    The lazy imports ARE the failing-first door: at the base head they raise
+    The lazy imports ARE the door: at the base head they raise
     ``ImportError`` and every pin xfails."""
     from taskq.workflows import RouteArm, build, route, step
 
@@ -152,7 +149,7 @@ def test_r1_a_non_total_route_refuses_at_the_wiring() -> None:
     @app.workflow("r1_not_total")
     def r1_not_total() -> Promise[object]:
         src = step(media_source, key="media")
-        return build(route(src, {ImageItem: RouteArm(body=process_image)}))  # AudioItem DROPPED
+        return build(route(src, {ImageItem: RouteArm(body=process_image)}))  # AudioItem dropped
 
     with pytest.raises(WorkflowBuildError, match="AudioItem"):
         app.get("r1_not_total")
@@ -190,7 +187,7 @@ def test_r1_an_unknown_arm_key_refuses_at_the_wiring() -> None:
 
 
 def test_r1_e15_route_totality_reds_the_validator() -> None:
-    """THE VALIDATOR'S OWN DOOR (the checker-independent fence): E15 —
+    """The validator's own door (the checker-independent fence): E15 —
     the next free rule id — re-proves the route's totality from the
     COMPILED graph (public, mutable data — E3's precedent: the rule owns
     the shape injected into it). Both directions reject: a MISSING
@@ -213,22 +210,22 @@ def test_r1_e15_route_totality_reds_the_validator() -> None:
     class Foreign(BaseModel):
         x: int = 0
 
-    # The probe seam: compile WITHOUT the registration door (the
-    # validator's pins' subject IS the invalid graph).
+    # The probe seam: compile without the registration door (the
+    # validator's pins' subject is the invalid graph).
     compiled = app._compile("r1_e15_probe")
 
-    # Leg 1 — the MISSING member (AudioItem dropped from the injected graph).
+    # Leg 1 — the missing member (AudioItem dropped from the injected graph).
     media_node = compiled.nodes["media"]
     media_node.map_arms = {
         f"{ImageItem.__module__}.{ImageItem.__qualname__}": RouteArm(body=process_image),
     }
-    # validate_compiled's raise is the AGGREGATED report (the rule name
+    # validate_compiled's raise is the aggregated report (the rule name
     # rides the message); the individual diagnostic's rule is E15.
     with pytest.raises(WorkflowValidationError) as missing_info:
         validate_compiled(compiled)
     assert "E15-route-totality" in str(missing_info.value), str(missing_info.value)
 
-    # Leg 2 — the UNKNOWN member (a Foreign key injected).
+    # Leg 2 — the unknown member (a Foreign key injected).
     media_node.map_arms = {
         f"{ImageItem.__module__}.{ImageItem.__qualname__}": RouteArm(body=process_image),
         f"{AudioItem.__module__}.{AudioItem.__qualname__}": RouteArm(body=process_audio),
@@ -249,10 +246,10 @@ async def test_r1_the_video_element_dies_loud_at_runtime(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE LIVE RECORDED FINDING INVERTED: the same "video" scenario — a
+    """The live recorded finding inverted: the same "video" scenario — a
     third-type element where the route expects the declared union — now
     DIES LOUDLY: the source row terminal-FAILED with
-    ``error_class='RouterNotTotal'``, NO child routed (the skip-silent
+    ``error_class='RouterNotTotal'``, no child routed (the skip-silent
     shape is dead), and the run FAILED — never succeeded-having-routed-
     nothing."""
     from taskq.workflows import FlowRunner, RouteArm, WorkflowApp, build, route, step
@@ -273,7 +270,7 @@ async def test_r1_the_video_element_dies_loud_at_runtime(
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
-    source_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture — the assert IS the runtime shape check.
+    source_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture — the assert is the runtime shape check.
         f'SELECT status, error_class, error_message FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'media'",
         flow_id,
@@ -291,7 +288,7 @@ async def test_r1_the_video_element_dies_loud_at_runtime(
     assert not children, (
         f"the ghost routed {[str(r['step_key']) for r in children]} — a silent drop survived"
     )
-    # The run FAILED — never succeeded-having-routed-nothing.
+    # The run failed — never succeeded-having-routed-nothing.
     root = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same fixture walk.
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
     )
@@ -310,7 +307,7 @@ async def test_r2_the_routed_results_join_addressable(
 ) -> None:
     """R2: the child rows ARE graph nodes — every routed child feeds the
     derived ``<src>.join`` (BY CONSTRUCTION), the join fires with the
-    arms' returns packed (THE TYPED SUM), and the flow's ``result()``
+    arms' returns packed (the TYPED SUM), and the flow's ``result()``
     carries it."""
     from taskq.workflows import FlowRunner, WorkflowApp
 
@@ -321,7 +318,7 @@ async def test_r2_the_routed_results_join_addressable(
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
 
-    # THE JOIN ROW FIRED with the typed sum packed (the arms' returns).
+    # the JOIN row fired with the typed sum packed (the arms' returns).
     join_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture.
         f'SELECT status, result FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'media.join'",
@@ -337,7 +334,7 @@ async def test_r2_the_routed_results_join_addressable(
     audios = [r for r in result if isinstance(r, dict) and "transcript" in r]
     assert len(images) == 2, result
     assert len(audios) == 2, result
-    # The typed sum: the arms' OWN returns, self-discriminating.
+    # The typed sum: the arms' own returns, self-discriminating.
     assert {str(r["doc_id"]) for r in images} == {"d1", "d3"}, images
     assert {str(r["doc_id"]) for r in audios} == {"d2", "d4"}, audios
 
@@ -373,15 +370,15 @@ async def test_r3_the_arm_bodies_receive_their_declared_models(
         flow_id,
     )
     assert len(rows) == 4, [dict(r) for r in rows]
-    # The arms' OWN returns are on the rows (attribute access worked —
-    # the element arrived AS the declared model in BOTH arms).
+    # The arms' own returns are on the rows (attribute access worked —
+    # the element arrived as the declared model in both arms).
     for r in rows:
         assert r["status"] == "succeeded", dict(r)
         assert "ocr" in str(r["result"]) or "transcript" in str(r["result"]), dict(r)
 
 
 def test_r3_a_duck_typed_arm_param_refuses_at_build() -> None:
-    """THE DUCK-SHAPED HOLE (E5's own recorded finding shape, at the route's
+    """The duck-shaped hole (E5's shape, at the route's
     arms): an arm body whose param is a plain dict (or unannotated/Any)
     consumes the element UNVALIDATED — the route is the typed boundary
     and the duck arm is the hole it exists to close. E15 refuses at
@@ -405,7 +402,7 @@ def test_r3_a_duck_typed_arm_param_refuses_at_build() -> None:
 
     with pytest.raises(WorkflowValidationError) as exc_info:
         app.get("r3_duck_arm")
-    # validate_compiled's raise is the AGGREGATED report — the rule NAME
+    # validate_compiled's raise is the aggregated report — the rule name
     # rides the message (the diagnostic's rule is E15).
     assert "E15-route-totality" in str(exc_info.value), str(exc_info.value)
     assert "duck_arm" in str(exc_info.value), str(exc_info.value)
@@ -470,12 +467,12 @@ async def test_r4_the_child_rows_stamp_their_arms_placement(
     assert len(rows) == 4, [dict(r) for r in rows]
     image_tag = f"{ImageItem.__module__}.{ImageItem.__qualname__}"
     audio_tag = f"{AudioItem.__module__}.{AudioItem.__qualname__}"
-    # THE ROWS ASSERT IT: the gpu queue carries exactly the image arm's
-    # rows (elements 0 and 2), the io queue exactly the audio arm's
-    # (elements 1 and 3); each row's step_key NAMES its arm and its
-    # map_index is the element's index (the arbiter's discriminator).
+    # the gpu queue carries exactly the image arm's rows (elements 0 and 2),
+    # the io queue exactly the audio arm's (elements 1 and 3); each row's
+    # step_key names its arm and its map_index is the element's index (the
+    # arbiter's discriminator).
     image_rows = sorted(
-        int(r["map_index"])  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the object-typed fixture's Record members — the int() IS the runtime shape check.
+        int(r["map_index"])  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the object-typed fixture's Record members — the int() is the runtime shape check.
         for r in rows
         if str(r["step_key"]) == f"media.item:{image_tag}"  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the same walk.
     )
@@ -494,7 +491,7 @@ async def test_r4_the_child_rows_stamp_their_arms_placement(
     ]
 
 
-# ── the e2e: the reviewer's exact scenario ───────────────────────────────
+# ── the e2e: the exact scenario ───────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -504,7 +501,7 @@ async def test_e2e_the_reviewers_scenario(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE WHOLE SCENARIO, LIVED: the images/audio map → the typed route
+    """The whole scenario, lived: the images/audio map → the typed route
     (the union's members as keys) → the two placements (gpu/io) → the
     typed-sum join → the downstream consumer's summary ON result(). The
     rows are the receipt."""
@@ -541,15 +538,14 @@ async def test_e2e_the_reviewers_scenario(
 
     result = await runner.result(flow_id)
     assert result == {"images": 2, "audios": 2}, result
-    # THE ROWS ARE THE RECEIPT: two arms' children on their own queues,
-    # every row succeeded.
+    # two arms' children on their own queues, every row succeeded.
     rows = await wf_conn.fetch(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture.
         f'SELECT step_key, queue, status FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key LIKE 'media.item%'",
         flow_id,
     )
     assert len(rows) == 4, [dict(r) for r in rows]
-    assert {str(r["queue"]) for r in rows if "ImageItem" in str(r["step_key"])} == {"gpu"}, [  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the object-typed fixture's Record members — the str() IS the runtime shape check.
+    assert {str(r["queue"]) for r in rows if "ImageItem" in str(r["step_key"])} == {"gpu"}, [  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the object-typed fixture's Record members — the str() is the runtime shape check.
         dict(r) for r in rows
     ]
     assert {str(r["queue"]) for r in rows if "AudioItem" in str(r["step_key"])} == {"io"}, [  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the same walk.
@@ -558,13 +554,13 @@ async def test_e2e_the_reviewers_scenario(
     assert all(r["status"] == "succeeded" for r in rows), [dict(r) for r in rows]  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the same walk.
 
 
-# ── the map face: map_source's dict form IS the same machinery ──────────
+# ── the map face: map_source's dict form is the same machinery ──────────
 
 
 def test_map_source_dict_form_is_the_same_machinery() -> None:
     """``map_source(src, {A: fn_a, B: fn_b})`` — the per-element case
-    spelled at the map face (the reviewer's (b)) — lowers through the
-    SAME route attachment: the compiled source carries ``map_arms`` and
+    spelled at the map face — lowers through the
+    same route attachment: the compiled source carries ``map_arms`` and
     the same ``.join`` node."""
     from taskq.workflows import RouteArm, WorkflowApp, build, map_source, step
 
@@ -594,12 +590,12 @@ def test_map_source_dict_form_is_the_same_machinery() -> None:
     assert "media.join" in compiled.nodes
 
 
-# ── THE WORKED EXAMPLE (the maintainer's use case): the document sync ───
+# ── the worked example (the maintainer's use case): the document sync ───
 #
-#    ingest → the mime detection (the element's TYPE is the mime's tag)
-#    → the typed route (the per-arm placement) → THE FAN-IN AT THE CHUNK
-#    STEP (the sync barrier) → the enrich. The example:
-#    ``examples/doc_mime_route.py`` — the bodies used VERBATIM.
+#    ingest → the mime detection (the element's type is the mime's tag)
+#    → the typed route (the per-arm placement) → the fan-in at the chunk
+#    step (the sync barrier) → the enrich. The example:
+#    ``examples/doc_mime_route.py`` — the bodies used verbatim.
 
 
 def _demo():
@@ -617,8 +613,8 @@ async def test_mime_route_e2e_the_mixed_corpus(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE MAINTAINER'S SCENARIO, LIVED: the mixed corpus (2 text docs +
-    2 image docs + ONE unsupported mime) → the typed route → the text
+    """The maintainer's scenario, lived: the mixed corpus (2 text docs +
+    2 image docs + one unsupported mime) → the typed route → the text
     children on the cpu queue, the OCR children on the gpu queue, the
     unsupported doc in the dead-letter arm (the envelope recorded — the
     flow LIVES) → the chunk barrier's typed sum → the enrich's report ON
@@ -635,8 +631,8 @@ async def test_mime_route_e2e_the_mixed_corpus(
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key LIKE 'docs.item%'",
         flow_id,
     )
-    # THE PLACEMENTS, ON THE ROWS: the text arms' children on cpu, the
-    # OCR's on gpu, the dead-letter on the route's default.
+    # the text arms' children on cpu, the ocr's on gpu, the dead-letter on the
+    # route's default.
     by_arm: dict[str, set[str]] = {}
     for r in rows:
         key = str(r["step_key"])
@@ -655,8 +651,8 @@ async def test_mime_route_e2e_the_mixed_corpus(
     assert by_arm.get("dead") == {"default"}, by_arm
     assert len(rows) == 5, [dict(r) for r in rows]
     assert all(r["status"] == "succeeded" for r in rows), [dict(r) for r in rows]
-    # THE TYPED SUM + THE REPORT: the enrich's result names the indexed
-    # chunk sets AND the dead letter (never silently dropped).
+    # the enrich's result names the indexed chunk sets and the dead letter
+    # (never silently dropped).
     report = await runner.result(flow_id)
     assert report == {
         "indexed": 12,  # the 4 extracted docs x the chunker's seam
@@ -671,12 +667,12 @@ async def test_barrier_chunk_fires_once_after_the_last_element(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE BARRIER'S SYNC (the maintainer's amendment): the staggered
+    """The barrier's sync (the maintainer's amendment): the staggered
     arms — the text extraction fast, the OCR slow — the chunk fires
-    EXACTLY ONCE, AFTER THE LAST element's text has landed. The event
-    order asserted FROM THE ROWS: every route child's finished_at ≤ the
+    EXACTLY once, after the last element's text has landed. The event
+    order asserted FROM the ROWS: every route child's finished_at ≤ the
     chunk's started_at (the join's all-members semantics released the
-    barrier), and the chunk's own row carries ONE terminal with the FULL
+    barrier), and the chunk's own row carries one terminal with the FULL
     batch."""
     from taskq.workflows import FlowRunner
 
@@ -692,19 +688,19 @@ async def test_barrier_chunk_fires_once_after_the_last_element(
         flow_id,
     )
     chunks = [r for r in rows if str(r["step_key"]) == "chunk"]
-    # EXACTLY ONE chunk row, terminal-succeeded exactly once.
+    # exactly one chunk row, terminal-succeeded exactly once.
     assert len(chunks) == 1, [dict(r) for r in chunks]
     assert chunks[0]["status"] == "succeeded", dict(chunks[0])
     assert chunks[0]["finished_at"] is not None, dict(chunks[0])
-    # The FULL batch rode the join (the typed sum decoded at the
+    # The full batch rode the join (the typed sum decoded at the
     # boundary — the chunk's own row records the consumption).
     assert "doc-1" in str(chunks[0]["result"]) and "doc-4" in str(chunks[0]["result"]), dict(
         chunks[0]
     )
-    # THE EVENT ORDER, FROM THE LEDGER (each claim is a row): the chunk's
-    # claim exists EXACTLY ONCE and starts AFTER the LAST child's
-    # terminal (the join's all-members semantics released the barrier —
-    # the OCR's stall cannot make the chunk fire early or twice).
+    # each claim is a row. the chunk's claim exists exactly once and starts
+    # after the last child's terminal (the join's all-members semantics
+    # released the barrier — the ocr's stall cannot make the chunk fire early
+    # or twice).
     ledger = await wf_conn.fetch(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
         f'SELECT step_key, status, created_at, updated_at FROM "{wf_schema}".wf_step_ledger '
         "WHERE flow_id = $1 AND (step_key LIKE 'docs.item%' OR step_key = 'chunk') "
@@ -722,7 +718,7 @@ async def test_barrier_chunk_fires_once_after_the_last_element(
         f"({chunk_claims[0]['created_at']} < {last_child_terminal}) — the "
         "barrier leaked: the join fired early"
     )
-    # THE EXACTLY-ONCE FIRE: the join's fire ledger carries ONE row.
+    # the join's fire ledger carries one row.
     join_id = await wf_conn.fetchval(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
         f'SELECT id FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'docs.join'",
@@ -741,8 +737,8 @@ async def test_barrier_fail_closed_the_chunk_never_fires(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE BARRIER'S FAILURE FACE (fail_closed — the route's default):
-    one arm's element fails → the join fails CLOSED → the chunk NEVER
+    """The barrier's failure face (fail_closed — the route's default):
+    one arm's element fails → the join fails CLOSED → the chunk never
     fires (no finished_at, the blocked join naming the failed parent)
     and the run FAILS — the partial result never silently masquerades as
     the whole."""
@@ -780,8 +776,8 @@ async def test_barrier_fail_closed_the_chunk_never_fires(
         flow_id,
     )
     assert chunk_row is not None
-    # THE CHUNK NEVER FIRED: not terminal — the failed-parent's join
-    # blocked it (the envelope surfaces the reason on the join's row).
+    # not terminal — the failed-parent's join blocked it (the envelope surfaces
+    # the reason on the join's row).
     assert chunk_row["finished_at"] is None, dict(chunk_row)
     join_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
         f'SELECT status, metadata FROM "{wf_schema}".jobs '
@@ -790,11 +786,11 @@ async def test_barrier_fail_closed_the_chunk_never_fires(
     )
     assert join_row is not None
     metadata = _loads_metadata(join_row["metadata"])
-    # The envelope: the blocking reason AND the failed parent's id, both
-    # ON THE ROW (never inferred).
+    # The envelope: the blocking reason and the failed parent's id, both
+    # on the row (never inferred).
     assert metadata.get("blocking_reason") == "failed_parent", metadata
     assert "failed_parent" in metadata, metadata
-    # THE RUN FAILED — never succeeded-partial.
+    # the run failed — never succeeded-partial.
     root = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
     )
@@ -808,10 +804,10 @@ async def test_barrier_maybe_the_chunk_fires_on_the_survivors(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE BARRIER'S OTHER FACE (the maybe policy — the partial-success
+    """The barrier's other face (the maybe policy — the partial-success
     law's fan-in face): the route's on_failure='maybe' absorbs the
-    failing arm's elements — the chunk fires ONCE on the survivors (the
-    2 text docs), the envelope names the absorbed children ON THE RECORD
+    failing arm's elements — the chunk fires once on the survivors (the
+    2 text docs), the envelope names the absorbed children ON the RECORD
     (the join's failures array carries the policy that ran), the flow
     lives."""
     from taskq.workflows import FlowRunner, RouteArm, WorkflowApp, build, route, step
@@ -861,13 +857,13 @@ async def test_barrier_maybe_the_chunk_fires_on_the_survivors(
         ],
     )
     assert chunk_row["finished_at"] is not None, dict(chunk_row)
-    # THE SURVIVORS: the chunk consumed the 2 text docs (the absorbed
-    # image elements are NOT in the sum — the envelope carries them).
+    # the chunk consumed the 2 text docs (the absorbed image elements are not
+    # in the sum — the envelope carries them).
     result = str(chunk_row["result"])
     assert "doc-1" in result and "doc-3" in result, dict(chunk_row)
     assert "doc-2" not in result and "doc-4" not in result, dict(chunk_row)
-    # THE ENVELOPE ON THE RECORD: the join's failures array names BOTH
-    # absorbed children with the policy that ran.
+    # the join's failures array names both absorbed children with the policy
+    # that ran.
     join_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
         f'SELECT status, metadata FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'docs.join'",
@@ -881,7 +877,7 @@ async def test_barrier_maybe_the_chunk_fires_on_the_survivors(
     failures = metadata.get("failures") or []
     assert isinstance(failures, list) and len(failures) == 2, metadata
     assert all(f.get("policy") == "maybe" for f in failures if isinstance(f, dict)), metadata
-    # THE FLOW LIVES (the partial-success law's fan-in face).
+    # the flow lives (the partial-success law's fan-in face).
     root = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
     )

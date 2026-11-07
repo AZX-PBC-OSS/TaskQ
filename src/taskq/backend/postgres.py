@@ -26,7 +26,6 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from taskq._advisory import DEADLINE_ERRORS
 from taskq._json import dumps_str
 from taskq.backend._batch_sql import (
     BatchSql,
@@ -122,7 +121,6 @@ from taskq.backend._reads import (
 from taskq.backend._records import parse_rowcount
 from taskq.backend._schedules import (
     ScheduleSql,
-    schedule_record_from_record,
 )
 from taskq.backend._schedules import (
     create_schedule as _create_schedule,
@@ -151,6 +149,7 @@ from taskq.backend._sweeps import (
     _SWEEP_IDLE_KEYED_SLOTS_SQL,
     _SWEEP_RESULT_TTL_SQL,
     SweepBatchSizer,
+    _batch_failure_arms,  # pyright: ignore[reportPrivateUsage]  # Why: the sizer-accounting arms are the shared batch machinery's; restating them here is the drift the cure removes.
     sweep_deadline_exceeded,
     sweep_expired_events,
     sweep_expired_locks,
@@ -245,11 +244,11 @@ def _cancel_notify_channels(schema: str, worker_id: UUID) -> list[str]:
 
 
 #: The client-side bound on the cancel paths' NOTIFY transport executes
-#: (``write_cancel_request`` and ``cancel_where``). The NOTIFY rides AFTER
-#: the owning write has committed — the row IS the request, the heartbeat
+#: (``write_cancel_request`` and ``cancel_where``). The NOTIFY rides after
+#: the owning write has committed — the row is the request, the heartbeat
 #: poll remains authoritative for signal delivery, and both call sites'
 #: swallow-and-warn already declare that a transport failure must not
-#: surface to the caller. A transport that never ANSWERS (a silently-dead
+#: surface to the caller. A transport that never answers (a silently-dead
 #: socket: packets accepted, never delivered — seen in the system-e2e
 #: leg) is the one failure shape that swallow never saw: the
 #: execute hung forever and held the operator's own call past its every
@@ -309,7 +308,7 @@ class PostgresBackend:
     #: The workflow healing arms' admission marker — the ``_SweepSpec``
     #: tick table's hasattr gate probes it (``gated_on``). The arms live
     #: in ``taskq.workflows._sweep`` (the import law keeps them out
-    #: of this package's module scope); their admission is THIS class's
+    #: of this package's module scope); their admission is this class's
     #: own capability declaration, the same seam every maintenance sweep
     #: uses (each capability its own marker — the arms never borrow
     #: another sweep's method name, so a backend declares exactly the
@@ -518,7 +517,7 @@ class PostgresBackend:
         )
         # The knob is re-read per round (the oversample plumbing pattern):
         # a settings change applies without rebuilding the backend, and 0
-        # (the documented OFF switch) hands the round no cursor at all -
+        # (the documented off switch) hands the round no cursor at all -
         # the plain renders run and the cursor neither bounds nor
         # advances.
         claim_cursor: ClaimCursor | None = self._claim_cursor
@@ -682,8 +681,8 @@ class PostgresBackend:
         # jobs (the spiral pinned by
         # tests/test_rt_locks_terminal_write_pool_starvation.py). The
         # routing's plausible original motive, a shielded cancel-path
-        # write outliving the worker pool's LIFO close (deps.py opens
-        # heartbeat_pool BEFORE worker_pool, so teardown closes
+        # write outliving the worker pool's lifo close (deps.py opens
+        # heartbeat_pool before worker_pool, so teardown closes
         # worker_pool first), is superseded by the bounded acquire
         # threaded above: a closing or closed pool is exactly the
         # wedged-checkout case the bound converts from a hang into the
@@ -858,7 +857,7 @@ class PostgresBackend:
         poll and fail visible (:class:`~taskq.exceptions.EventRetentionGapError`)
         when the consumer's persisted cursor sits strictly behind it.
 
-        Deliberately NOT on the ``Backend`` protocol, exactly like
+        Deliberately not on the ``Backend`` protocol, exactly like
         :meth:`check_reclaim_visibility_delay_risk`: it is the
         trailing-watermark consumer's capability, not a core job operation,
         so a monitoring loop or transport consuming it getattr-probes (as
@@ -967,7 +966,7 @@ class PostgresBackend:
                     # The cancel flag is already committed, the transaction
                     # block above has exited by the time the NOTIFY fires ,
                     # so a NOTIFY failure must not surface to the caller as
-                    # a failed cancel: the request IS recorded. Same
+                    # a failed cancel: the request is recorded. Same
                     # swallow-and-warn as cancel_where below; the heartbeat
                     # poll remains authoritative for signal delivery.
                     logger.warning(
@@ -1128,11 +1127,13 @@ class PostgresBackend:
         # conversion for SET LOCAL statement_timeout's integer parameter,
         # not a defensive coercion.
         timeout_ms = int(self._deps.settings.event_writer_statement_timeout_ms)
-        try:
+        # The sizer-accounting half of the shared batch machinery, with
+        # the backend sweeps' own failure policy: a non-deadline error
+        # propagates uncounted (the breaker's control signal is a
+        # cancelled batch, not any failure - the deliberate divergence
+        # from the prune family, see _batch_failure_arms).
+        with _batch_failure_arms(sweep_name, sizer, count_unexpected=False):
             count = await run(size, timeout_ms)
-        except DEADLINE_ERRORS:
-            sizer.on_timeout()
-            raise
         sizer.on_success()
         return count
 
@@ -1381,11 +1382,7 @@ class PostgresBackend:
         event = asyncio.Event()
         return _SubscriberContext(event, self._leader_wake_subscribers, self._leader_wake_lock)
 
-    # ── Schedule CRUD ────────────────────────────────────────────────────
-
-    @staticmethod
-    def _schedule_record_from_record(rec: "asyncpg.Record") -> ScheduleRecord:
-        return schedule_record_from_record(rec)
+    # ── Schedule crud ────────────────────────────────────────────────────
 
     async def create_schedule(self, args: ScheduleCreateArgs) -> ScheduleRecord:
         return await _create_schedule(self._worker_pool, self._schedule_sql, args)
@@ -1517,7 +1514,7 @@ class PostgresBackend:
         """Arbitrate the batch's completion; return whether the caller owes
         the batch one post-commit completion re-arbitration.
 
-        The reissue is owed ONLY on the transactional-caller shape: the
+        The reissue is owed only on the transactional-caller shape: the
         attempt gated out at the tail-shape probe while riding
         *connection*'s still-open transaction, so the caller's own
         terminal write is uncommitted and no attempt inside that

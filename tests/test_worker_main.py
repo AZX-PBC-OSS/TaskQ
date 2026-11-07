@@ -1,7 +1,7 @@
 """Unit tests for worker_main, _main, register_worker, and deregister_worker.
 
 Wiring shape - all siblings called with correct args.
-Single orchestrator entry point - _main MUST NOT call orchestrate_shutdown.
+Single orchestrator entry point - _main MUST not call orchestrate_shutdown.
 Exit code retrieval from orchestrator_holder.
 Signal handler installation order.
 Failure isolation - ExceptionGroup propagation.
@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
+import structlog.testing
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend, JobRow
@@ -410,7 +411,7 @@ async def test_wiring_shape_backend_instance_identity(settings: WorkerSettings) 
 
 
 async def test_main_does_not_call_orchestrate_shutdown(settings: WorkerSettings) -> None:
-    """_main MUST NOT call orchestrate_shutdown directly."""
+    """_main MUST not call orchestrate_shutdown directly."""
     with ExitStack() as stack:
         stack.enter_context(_use_test_harness(settings))
         mock_orch = stack.enter_context(patch("taskq.worker.shutdown.orchestrate_shutdown"))
@@ -450,7 +451,7 @@ async def test_exit_code_zero_when_holder_empty(settings: WorkerSettings) -> Non
             h.install_count += 1
             h.captured_backends.append(backend)
             h.captured_holder.append(holder)
-            sh_ev.set()  # signal shutdown but do NOT append to holder
+            sh_ev.set()  # signal shutdown but do not append to holder
 
         h.install_fn = _install_no_holder  # type: ignore[assignment]
         result = await _main(settings)
@@ -571,10 +572,9 @@ async def test_register_worker_metadata_carries_binding_concurrency(
         f"sizes local_queue and bounds every dispatch; wrote {metadata}"
     )
     assert "notify_enabled" in metadata
-    # THE EXECUTION CAPABILITY STAMP (the dispatch fence's data leg): the
-    # metadata carries `workflow_execution` — the VALUE read (`::boolean`),
-    # never a key-existence probe: the key is stamped on EVERY worker's
-    # row, the value is the capability.
+    # the metadata carries `workflow_execution` — the value read (`::boolean`),
+    # never a key-existence probe: the key is stamped on every worker's row,
+    # the value is the capability.
     assert metadata["workflow_execution"] is False
 
 
@@ -583,7 +583,7 @@ async def test_register_worker_metadata_carries_workflow_execution_stamp(
 ) -> None:
     """The capable boot's stamp: `workflow_execution=True` rides the
     workers row's metadata — the claim fence's execution leg reads it as
-    data (one pkey probe per round), so a flow row is claimable ONLY by a
+    data (one pkey probe per round), so a flow row is claimable only by a
     worker whose boot ran the F3 projection (the definitions imported)."""
     mock_conn = AsyncMock()
     mock_pool = MagicMock()
@@ -638,7 +638,7 @@ async def test_deregister_worker_called_on_happy_path(settings: WorkerSettings) 
 async def test_deregister_worker_called_after_sibling_raises(
     settings: WorkerSettings,
 ) -> None:
-    """deregister_worker STILL called when a sibling raises."""
+    """deregister_worker still called when a sibling raises."""
     with _use_test_harness(settings, set_shutdown=False) as h:
         h.heartbeat_exc = RuntimeError("boom")
 
@@ -670,27 +670,37 @@ async def test_deregister_worker_delete_shape(settings: WorkerSettings) -> None:
 
 
 async def test_deregister_worker_returns_on_timeout(settings: WorkerSettings) -> None:
-    """deregister_worker logs warning and returns cleanly on timeout."""
+    """deregister_worker logs warning and returns False (unconfirmed) on
+    timeout - the row's fate stays unknown, the backstop decides."""
     mock_pool = MagicMock()
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(side_effect=TimeoutError("pool exhausted"))
     cm.__aexit__ = AsyncMock()
     mock_pool.acquire.return_value = cm
 
-    # Should not raise.
-    await deregister_worker(mock_pool, settings, new_uuid())
+    with structlog.testing.capture_logs() as captured:
+        outcome = await deregister_worker(mock_pool, settings, new_uuid())
+    assert outcome is False, "a swallowed transient failure must report unconfirmed, not None/True"
+    warnings = [e for e in captured if e["event"] == "deregister_worker_failed"]
+    assert len(warnings) == 1, f"the timeout warning did not fire exactly once: {captured!r}"
 
 
 async def test_deregister_worker_returns_on_oserror(settings: WorkerSettings) -> None:
-    """deregister_worker logs warning and returns cleanly on OSError."""
+    """deregister_worker logs warning and returns False (unconfirmed) on
+    a connection loss - never raising into shutdown."""
     mock_pool = MagicMock()
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(side_effect=OSError("connection lost"))
     cm.__aexit__ = AsyncMock()
     mock_pool.acquire.return_value = cm
 
-    # Should not raise.
-    await deregister_worker(mock_pool, settings, new_uuid())
+    with structlog.testing.capture_logs() as captured:
+        outcome = await deregister_worker(mock_pool, settings, new_uuid())
+    assert outcome is False, "a swallowed connection loss must report unconfirmed"
+    warnings = [e for e in captured if e["event"] == "deregister_worker_failed"]
+    assert len(warnings) == 1, (
+        f"the connection-loss warning did not fire exactly once: {captured!r}"
+    )
 
 
 # ── deregister outcome contract: the finally gate and the backstop retry ──
@@ -771,7 +781,7 @@ async def test_clean_shutdown_deregisters_once_confirmed_and_clears_flag(
 ) -> None:
     """Full clean boot-then-shutdown: the row is deleted exactly once.
 
-    The finally's own deregister is the ONLY attempt on the clean path:
+    The finally's own deregister is the only attempt on the clean path:
     it reports the DELETE confirmed (``DELETE 1`` -> ``True``), the flag
     clears in the finally, and the deps-teardown backstop must not fire
     at all. A mutation that lets the backstop fire on top of a confirmed
@@ -797,7 +807,7 @@ async def test_transient_failed_deregister_is_retried_by_the_backstop(
     """A transient-failed finally-deregister leaves the delete to the backstop.
 
     The finally's deregister hits a transient failure; the real
-    deregister_worker swallows it internally and reports ``False`` WITHOUT
+    deregister_worker swallows it internally and reports ``False`` without
     raising (the dominant failure class would otherwise clear the flag in
     the finally and strand the row until the staleness sweep). The flag
     stays set, so the deps-teardown backstop genuinely retries the DELETE
@@ -869,7 +879,7 @@ async def test_cleanup_failure_does_not_mask_shutdown_outcome(
 ) -> None:
     """deregister_worker raising in the cleanup never masks the exit code.
 
-    The fake raises on EVERY attempt (it bypasses the real
+    The fake raises on every attempt (it bypasses the real
     deregister_worker's internal transient swallow), so this pins the
     whole log-and-suppress chain: the TaskGroup's finally suppresses the
     first raise, the flag stays set, and the deps-teardown backstop
@@ -1144,7 +1154,7 @@ async def test_watchdogs_disarmed_only_after_taskgroup_drains(
 
 @contextlib.asynccontextmanager
 async def _patch_orchestrate_for_drain(work_seconds: float = 0.0):
-    """Patch orchestrate_shutdown in BOTH namespaces.
+    """Patch orchestrate_shutdown in both namespaces.
 
     drain.py and shutdown.py each import orchestrate_shutdown at module
     level, so both references must be patched for the drain monitor's
@@ -1223,7 +1233,7 @@ async def test_until_idle_exit_code_4_on_timeout(settings: WorkerSettings) -> No
 
 
 async def test_without_until_idle_no_drain_monitor(settings: WorkerSettings) -> None:
-    """_main without until_idle does NOT spawn the drain monitor."""
+    """_main without until_idle does not spawn the drain monitor."""
     with _use_test_harness(settings, set_shutdown=True):
         result = await _main(settings)
     assert result == 0
@@ -1235,8 +1245,8 @@ def test_worker_main_leaves_the_host_signal_disposition_alone(
     """In-process ``worker_main`` must not mutate the host's SIGTERM
     disposition.
 
-    Why this pin exists: ``worker_main`` used to end with
-    ``signal.signal(SIGTERM, SIG_IGN)`` - correct for the entrypoints that
+    Why this pin exists: ``worker_main`` must end with a HANDLED
+    SIGTERM disposition - an ignored one is correct only for the entrypoints that
     ``sys.exit`` immediately, poison for every other caller. An ignored
     disposition is inherited by every process the host forks from then on
     (exec preserves "ignored", unlike handlers), and the proven failure is

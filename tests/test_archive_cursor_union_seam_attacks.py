@@ -2,8 +2,8 @@
 cursor shape (the campaign's product change, src/taskq/web/admin/jobs.py's
 ``_build_paginated_sql`` + backend/_cursor.py's ``null_tail`` flag).
 
-The UNION split exists for PLAN shape (the OR-wrapped predicate defeated
-index-condition extraction), but it CHANGED THE ROW SET the page walk
+The UNION split exists for PLAN shape (the or-wrapped predicate defeated
+index-condition extraction), but it CHANGED the ROW SET the page walk
 serves: one statement became two ordered branches appended and re-sorted.
 The behavioral pin in test_scan_budget.py walks the campaign's own seed;
 this module attacks the seams that seed cannot produce:
@@ -16,18 +16,18 @@ this module attacks the seams that seed cannot produce:
   that must resume inside the same tie;
 * NULL finished_at rows MIXED into a page's span — the values branch
   running dry mid-page with the NULL branch supplying the rest, the two
-  branches' concatenation reconstructing the exact NULLS LAST total order;
+  branches' concatenation reconstructing the exact NULLS last total order;
 * an ALL-NULL population (branch one empty — the walk lives entirely in
-  the NULL-seam single-statement shape) and a NO-NULL population (branch
+  the NULL-seam single-statement shape) and a no-NULL population (branch
   two empty);
 * the BACKWARD (``cursor_dir=prev``) walk across the same seams — the
   UNION is forward-only, but the operator-facing prev page must be
-  row-exact too, including a seam INSIDE the NULL range (a NULL
+  row-exact too, including a seam inside the NULL range (a NULL
   cursor_at) where the backward predicate grows its
-  ``OR finished_at IS NOT NULL`` arm.
+  ``or finished_at IS not NULL`` arm.
 
 Every construction is compared ROW-EXACT against a reference
-``ORDER BY finished_at DESC NULLS LAST, id DESC`` over the same
+``ORDER BY finished_at DESC NULLS last, id DESC`` over the same
 population: a duplicate, a drop, or a gap anywhere is a failure — the
 history walk is operator-facing and a seam defect silently corrupts what
 an operator believes the archive contains.
@@ -71,7 +71,7 @@ _TERMINAL = sorted({"succeeded", "failed", "cancelled", "crashed", "abandoned"})
 
 # The exact cursor-width constants the page walk runs with: the boundary
 # attacks size their tie groups from these, so a future change to either
-# constant re-lands the boundary attacks at the NEW boundary instead of
+# constant re-lands the boundary attacks at the new boundary instead of
 # silently testing nothing.
 FETCH = _PAGE_SIZE + 1
 
@@ -209,7 +209,7 @@ async def _walk_backward_from(
     """The operator's backward walk from *start*: prev pages until the
     walk runs dry, each page shown in forward order. The shown rows are
     the admin's own display truncation (:func:`_display_slice` with
-    ``forward=False`` -- the LAST _PAGE_SIZE rows of the re-sorted fetch,
+    ``forward=False`` -- the last _PAGE_SIZE rows of the re-sorted fetch,
     the #568 direction-aware slice), so the harness attacks the shipped
     truncation, not a hand-copied one. Returns the ids in FORWARD
     (display) order -- for a seam-correct shape this is exactly the
@@ -253,11 +253,11 @@ async def test_identical_finished_at_tie_spans_page_boundary(
     seam_conn: asyncpg.Connection, seam_schema: str
 ) -> None:
     """One finished_at value shared by 3 pages' worth of rows: the tie
-    group spans pages 1→2→3, every seam INSIDE it. The branch-one keyset
+    group spans pages 1→2→3, every seam inside it. The branch-one keyset
     seek must resume the tie exactly at (F, cursor_id) — no tie row
     dropped or served twice at any seam."""
     base = datetime.now(UTC) - timedelta(days=10)
-    tie = [base] * (3 * _PAGE_SIZE + 7)  # deliberately NOT a page multiple
+    tie = [base] * (3 * _PAGE_SIZE + 7)  # deliberately not a page multiple
     await seam_conn.execute(f'TRUNCATE TABLE "{seam_schema}".jobs_archive CASCADE')
     await _seed(seam_conn, seam_schema, tie)
     walked, page_sizes = await _walk_forward(seam_conn, seam_schema)
@@ -290,10 +290,10 @@ async def test_tie_widths_landing_exactly_on_fetch_and_page_boundaries(
 async def test_null_rows_enter_a_page_mid_span(
     seam_conn: asyncpg.Connection, seam_schema: str
 ) -> None:
-    """The values range runs dry INSIDE a fetched page: 1.5 pages of
+    """The values range runs dry inside a fetched page: 1.5 pages of
     valued rows then NULL rows, so a cursor page's answer is branch-one's
     last value rows CONCATENATED with branch-two's NULL rows. The two
-    branches must reconstruct the exact NULLS LAST order at the handoff —
+    branches must reconstruct the exact NULLS last order at the handoff —
     the handoff page is where a branch shape drops or duplicates rows."""
     base = datetime.now(UTC) - timedelta(days=10)
     valued = _PAGE_SIZE + 20
@@ -380,9 +380,9 @@ async def test_all_null_population_lives_in_the_null_seam_shape(
     assert len(page_sizes) >= 3, f"the all-NULL walk must span pages: {page_sizes}"
     _assert_row_exact(walked, reference, "all-NULL walk")
 
-    # And the union shape must NOT be in play for a NULL seam: the page
+    # And the union shape must not be in play for a NULL seam: the page
     # statement past a NULL cursor is the single-statement seam, not the
-    # two-branch UNION (branch one would be a dead scan).
+    # two-branch union (branch one would be a dead scan).
     sql, _ = _page_sql(seam_schema, ("", str(reference[0])))
     assert "UNION ALL" not in sql.upper(), (
         "a NULL-seam cursor page rendered the two-branch UNION — branch one "
@@ -407,8 +407,8 @@ async def test_no_null_population_keeps_branch_two_empty(
 async def test_tie_seam_crossing_between_value_and_null_ranges(
     seam_conn: asyncpg.Connection, seam_schema: str
 ) -> None:
-    """A tie group of IDENTICAL finished_at whose LAST member is followed
-    immediately by the NULL range: the seam page holds the tie's tail AND
+    """A tie group of IDENTICAL finished_at whose last member is followed
+    immediately by the NULL range: the seam page holds the tie's tail and
     NULL rows together, then the next page lives entirely in the NULL
     range with a NULL cursor_at. The two consecutive seams — value→value
     tie, then value→NULL — are crossed back to back."""
@@ -430,7 +430,7 @@ async def test_backward_walk_row_exact_within_one_page(
     """The prev-direction walk is row-exact when no page truncates: from
     a VALUE cursor with fewer than a fetch of rows before it, and from a
     NULL-seam cursor (cursor_at empty — the backward predicate's
-    ``OR finished_at IS NOT NULL`` arm must reach the valued rows)."""
+    ``or finished_at IS not NULL`` arm must reach the valued rows)."""
     base = datetime.now(UTC) - timedelta(days=10)
     rows = [base - timedelta(days=i % 9, seconds=i) for i in range(2 * _PAGE_SIZE)]
     rows += [None] * _PAGE_SIZE
@@ -438,7 +438,7 @@ async def test_backward_walk_row_exact_within_one_page(
     await _seed(seam_conn, seam_schema, rows)
     reference = await _reference_ids(seam_conn, seam_schema)
 
-    # Backward from a VALUE cursor 30 rows deep: one prev page, under the
+    # Backward from a value cursor 30 rows deep: one prev page, under the
     # truncation boundary, must be exactly reference[:30].
     deep = reference[30]
     value_cursor = await seam_conn.fetchrow(
@@ -450,10 +450,10 @@ async def test_backward_walk_row_exact_within_one_page(
     _assert_row_exact(walked, reference[:30], "backward-from-value-cursor walk")
 
     # Backward from a NULL-seam cursor (the walk's first NULL row): the
-    # prev pages must rebuild the whole valued prefix — the OR arm's job.
+    # prev pages must rebuild the whole valued prefix — the or arm's job.
     # Small population: 40 valued + 10 NULL, so the 40 rows before the
     # seam cursor fit one fetch — this isolates the backward NULL-seam
-    # PREDICATE from the multi-page truncation seam the next test walks.
+    # predicate from the multi-page truncation seam the next test walks.
     small = [base - timedelta(days=i % 9, seconds=i) for i in range(40)]
     small += [None] * 10
     await seam_conn.execute(f'TRUNCATE TABLE "{seam_schema}".jobs_archive CASCADE')
@@ -478,7 +478,7 @@ async def test_backward_walk_row_exact_across_multiple_pages(
 
     This is the pin for the prev-page display truncation: the backward
     fetch returns _FETCH_SIZE rows nearest the cursor re-sorted into
-    forward display order, so the page is its LAST _PAGE_SIZE rows (the
+    forward display order, so the page is its last _PAGE_SIZE rows (the
     row nearest the cursor is the overfetch marker's neighbor, not the
     head). The direction-blind rows[:_PAGE_SIZE] slice stranded exactly
     one row per full prev-page turn (backward from reference[95] served

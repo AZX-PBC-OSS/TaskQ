@@ -3,7 +3,7 @@ the round's own (actor, queue) pairs.
 
 The ``rr_keys`` recursive CTE (``src/taskq/backend/_dispatch_sql.py``)
 walks pending ``(actor, queue, fairness_key)`` cohorts to enumerate the
-round-robin fairness keys; scoped by ``queue = ANY($1)`` to the round's
+round-robin fairness keys; scoped by ``queue = any($1)`` to the round's
 own queues, so its per-round work tracks only what the round polls. The
 per-(actor, queue) and due-time filtering happens in the candidates
 lateral's inner probe (``_ROUND_ROBIN_CANDIDATES_LATERAL``), downstream
@@ -50,7 +50,7 @@ _LIMIT_N = 50
 _OVERSAMPLE = 2
 _LOCK_LEASE = timedelta(seconds=30)
 
-# The round's OWN cohort: small and fixed across both seeds.
+# The round's own cohort: small and fixed across both seeds.
 _ACTOR = "cohort_scope_probe"
 _QUEUE = "cohort_scope_q"
 _OWN_FAIRNESS_KEY = "own_cohort"
@@ -100,7 +100,7 @@ async def _seed(conn: asyncpg.Connection, schema: str, unrelated_cohort_count: i
     The round's own (actor, queue, fairness_key) cohort stays fixed at
     _OWN_ROW_COUNT due rows throughout. Each unrelated cohort lives on
     its own queue (never polled by this round) with a single
-    future-scheduled (not-yet-due) row, so it is excluded by BOTH the
+    future-scheduled (not-yet-due) row, so it is excluded by both the
     round's (actor, queue) filter and the due-time bound - the only
     thing that can still see it is rr_keys's global, unfiltered
     enumeration over every pending row table-wide.
@@ -233,14 +233,14 @@ async def test_round_robin_dispatch_row_work_is_cohort_scoped(
 # ── The assignment-marker accounting contract ──────────────────────────
 #
 # A re-pended row whose ``started_at`` is still NULL is a real shape: an
-# operator retry of a job that was terminalized BEFORE it was ever claimed
+# operator retry of a job that was terminalized before it was ever claimed
 # (a deliberate hand-back that was never started). The routing marker is
-# ``assignment_routed``; ``started_at IS NULL`` answers only "was
+# ``assignment_routed``; ``started_at is NULL`` answers only "was
 # claimed", so a probe or enumeration keyed on the proxy mis-files this
 # row under its stale queue label: the label-routed arm then enumerates
 # the stale label as a cohort key, and the claimable-rows probe reports
 # the stale label as routable while going blind to the row's true routing
-# (its actor's CURRENT assignment).
+# (its actor's current assignment).
 
 _MARKER_ACTOR = "marker_actor"
 _MARKER_ASSIGNED_QUEUE = "marker_assigned_q"
@@ -261,7 +261,7 @@ async def _seed_divergent_repend_row(
     *with_label_routed_row* adds one ordinary producer-placed due row on
     the actor's assigned queue, so the actor is visible to the
     label-routed capacity path and the cohort walk's content is actually
-    consumed by the round (an actor with ONLY the divergent row never
+    consumed by the round (an actor with only the divergent row never
     reaches the label-routed enumeration's consumers under either
     predicate regime, which hides the accounting drift from the plan).
     """

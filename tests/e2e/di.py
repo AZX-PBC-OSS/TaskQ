@@ -50,7 +50,7 @@ def build_registry() -> ProviderRegistry:
     """Build and return the e2e DI registry.
 
     Called by ``worker_entry`` and passed to ``worker_main(di_registry=...)``.
-    Do NOT call ``validate()`` here - the worker does that during bootstrap.
+    Do not call ``validate()`` here - the worker does that during bootstrap.
     Registering ``asyncpg.Pool`` overrides the worker's default pool
     registration (see ``taskq.worker._bootstrap``).
     """

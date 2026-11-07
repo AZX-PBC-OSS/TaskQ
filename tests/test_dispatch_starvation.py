@@ -316,7 +316,7 @@ async def test_actor_config_gate_registered() -> None:
 
 @pytest.mark.asyncio
 async def test_actor_config_gate_unregistered() -> None:
-    """Spec Test 12: unregistered actors do NOT dispatch when actor_config is populated."""
+    """Spec Test 12: unregistered actors do not dispatch when actor_config is populated."""
     backend = _make_backend()
     wid = new_uuid()
     # Register one actor so _actor_configs_meta is non-empty → gate activates

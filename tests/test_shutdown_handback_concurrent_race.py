@@ -87,8 +87,8 @@ async def test_concurrent_handback_calls_refund_exactly_once(
     assert claimed.attempt == baseline_attempt + 1, "claim setup should have incremented attempt"
     assert claimed.status == "running"
 
-    # Fire two handback calls concurrently for the SAME worker_id: a true
-    # race, not the sequenced DRAINING-then-producer-exit ordering the
+    # Fire two handback calls concurrently for the same worker_id: a true
+    # race, not the sequenced draining-then-producer-exit ordering the
     # doctrine comment describes.
     results = await asyncio.gather(
         drain_local_queue_to_pending(deps, worker_id),

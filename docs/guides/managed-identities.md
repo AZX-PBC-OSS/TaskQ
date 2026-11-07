@@ -339,8 +339,8 @@ This matters because Postgres authenticates at connect time only. A
 credential resolved once and reused as a fixed string keeps working on
 already-open sessions while **new** connections fail auth - so a pool
 built that way is healthy at deploy and then, roughly one token lifetime
-later, degrades as idle connections are recycled. That was TaskQ's
-behaviour before this changed; it no longer is.
+later, degrades as idle connections are recycled. TaskQ's credential
+refresh exists so no pool is built that way.
 
 Two things per-connection refresh cannot do, for which the
 **credential hot-reload** below is still the answer:

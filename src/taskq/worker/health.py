@@ -58,7 +58,7 @@ def default_worker_health_socket_path(pid: int | None = None) -> str:
     cannot collide with a live peer by default. The old shared default
     was a global collision point: the second worker logged
     ``health-server-unavailable`` and kept running, and ``taskq health``
-    then silently answered with the FIRST worker's state — the operator
+    then silently answered with the first worker's state — the operator
     checking the worker that just warned read a healthy report from a
     different process.
 
@@ -316,7 +316,7 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
     # detect the zombie state, so a missing field is a wiring bug and
     # must surface as one.
     #
-    # Deliberately NOT gated on watchdog_enabled: that switch controls the
+    # Deliberately not gated on watchdog_enabled: that switch controls the
     # force-exit detectors, not observability. Gating readiness too would
     # mean a worker with dead loops reports Ready whenever the switch is
     # off, which loses the zombie detection and keeps the traffic.
@@ -564,12 +564,12 @@ class HealthServer:
         self._deps = deps
         self._socket_path = deps.settings.health_socket_path
 
-        # A Unix bind failure is a PARTIAL outcome now, not the end of
+        # A Unix bind failure is a partial outcome now, not the end of
         # start(): the TCP listener below is the surface the deployment's
         # port-routed probes actually target, and skipping it because a
         # peer owns the socket path left the worker registered, claiming,
         # and answering nothing anywhere. The failure is raised
-        # AFTER the TCP bind, so the caller learns of it only once every
+        # after the TCP bind, so the caller learns of it only once every
         # bindable surface is up and owned.
         unix_bind_error: OSError | None = None
         sock: socket.socket | None = None
@@ -619,7 +619,7 @@ class HealthServer:
                 raise unix_bind_error
             # The TCP listener is up and this server owns it: raise the
             # collision as its own type so the caller can keep booting
-            # while STILL stopping this server at teardown.
+            # while still stopping this server at teardown.
             raise HealthUnixBindCollisionError(
                 self._socket_path, unix_bind_error
             ) from unix_bind_error
@@ -662,25 +662,25 @@ class HealthServer:
             # A start() that lost the Unix bind to a collision (a
             # partial start) owns neither the server nor the inode, and
             # the path is a live peer's serving surface: the guard below
-            # would WARN about "not the one this worker bound" for a
+            # would warn about "not the one this worker bound" for a
             # socket this worker never bound at all. Nothing to unlink.
             if self._server is None and self._socket_inode is None:
                 return
-            # The path's unlink has TWO owners once the server above is
+            # The path's unlink has two owners once the server above is
             # closed: this method, and asyncio itself. Server.close()
             # unlinks the socket it served (guarded the same way, so a
             # replacement worker's fresh file survives it) on Python
             # 3.13+, and by the time stop() reaches here it has usually
             # already done the work. A missing file is therefore the
-            # CLEAN outcome on every version (asyncio's unlink, or any
+            # clean outcome on every version (asyncio's unlink, or any
             # other removal after this server stopped listening) and
-            # must be recorded as one: no unlink to attempt, the INFO,
-            # never the WARN. The WARN is reserved for the real race: a
+            # must be recorded as one: no unlink to attempt, the info,
+            # never the warn. The warn is reserved for the real race: a
             # stat that succeeds but names a different inode, meaning a
             # replacement worker bound a fresh socket to the same path,
             # and that file must survive this worker's teardown. An
             # inode that is None with the file present means this server
-            # DID bind but could not stat its own file, so ownership
+            # did bind but could not stat its own file, so ownership
             # is unprovable and it never unlinks either.
             current_inode: int | None = None
             try:
@@ -878,7 +878,7 @@ class MaintenanceHealth(TypedDict):
 def maintenance_health(settings: WorkerSettings) -> MaintenanceHealth:
     """Report whether this process's maintenance sweeps are degraded.
 
-    Degraded is deliberately NOT unready: the 200/503 semantics of both
+    Degraded is deliberately not unready: the 200/503 semantics of both
     transports stay driven by liveness/readiness alone, and this view is the
     "up, but promotion/sweeps are unhealthy" signal that orchestrators and
     humans read from the body.
@@ -905,7 +905,7 @@ def maintenance_health(settings: WorkerSettings) -> MaintenanceHealth:
         return MaintenanceHealth(degraded=False, reasons=["no sweep has completed yet"])
 
     # Elapsed-time question, monotonic domain: staleness measured on the
-    # wall clock is a bound a backward step defeats (NTP correction, VM
+    # wall clock is a bound a backward step defeats (ntp correction, vm
     # live-migration): ``time() - stamp`` goes negative for the length
     # of the jump and a genuinely stalled sweep reads fresh for the
     # whole catch-up. The monotonic ledger (stamped beside the wall one

@@ -1,13 +1,13 @@
-"""T19 — THE LOOP PINS: the two walls, the carry, the ladder classes.
+"""The loop pins: the two walls, the carry, the ladder classes.
 
-Failing-first: each pin's REJECTED VARIANT was run against the mutated guard
+The rejected shape: each pin's REJECTED VARIANT was run against the mutated guard
 (the mutation test — BUILD-PROTOCOL §2), the observed red captured to
 ``.measurements/t19-pin-reds.json``; the unfenced CONSUME-BUDGET variant
 stays RED FOREVER (it is the dragon, not a bug to fix).
 
-Pins (the ticket's failing-first numbering, the ones this suite carries):
+Pins (the ticket's numbering, the ones this suite carries):
   #1  the CONSUME-BUDGET dragon — recorded via the mutation test (the
-      arm WITHOUT ``AND NOT budget_paused`` kills a held loop and refuses
+      arm without ``and not budget_paused`` kills a held loop and refuses
       the operator's approval — the scenario's red, kept forever)
   #2  BUDGET-SWEEP-VS-HOLD — a paused row with a FORCED-PAST deadline
       does not fire; the un-paused row fires at the same deadline
@@ -47,7 +47,7 @@ from taskq.workflows._sweep import sweep_loop_budget
 
 
 class Counter(BaseModel):
-    """THE CARRY (the durable agent state, advanced exactly once per
+    """The carry (the durable agent state, advanced exactly once per
     iteration)."""
 
     acc: int = 0
@@ -90,7 +90,7 @@ async def _runner_of(
     return FlowRunner(app.get(name), wf_pool, wf_schema)
 
 
-# ── pin #3: THE CARRY (frozen at spawn, advanced exactly once) ──────────
+# ── pin #3: the carry (frozen at spawn, advanced exactly once) ──────────
 
 
 async def test_carry_advanced_exactly_once_per_iteration(
@@ -98,7 +98,7 @@ async def test_carry_advanced_exactly_once_per_iteration(
 ) -> None:
     """P3 1c's pin at the API: the final acc == the iteration count (no
     double-apply, no lost apply); the iteration ledger's timeline is
-    consecutive. THE BODY ASSERTS THE REAL TYPE (the masking fallback —
+    consecutive. the BODY ASSERTS the REAL TYPE (the masking fallback —
     ``isinstance(carry, Counter) else 1`` — is DELETED: it silently RESET
     the accumulation to 1 whenever the carry arrived untyped, which is
     every resume; a pin with a fallback asserts nothing)."""
@@ -120,9 +120,9 @@ async def test_carry_advanced_exactly_once_per_iteration(
     runner = await _runner_of(app, name, wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
-    # The carry advanced EXACTLY ONCE per iteration: [1, 2, 3].
+    # The carry advanced exactly once per iteration: [1, 2, 3].
     assert iterations == [1, 2, 3], iterations
-    # The TIMELINE (the §13.3 trace shape): three iteration rows, all
+    # The timeline (the §13.3 trace shape): three iteration rows, all
     # terminal, ordered by id (uuid7 = creation order).
     timeline = await wf_conn.fetch(
         f'SELECT step_key, status FROM "{wf_schema}".wf_step_ledger '
@@ -135,11 +135,11 @@ async def test_carry_advanced_exactly_once_per_iteration(
         "counter.iter2",
     ]
     assert all(r["status"] == "succeeded" for r in timeline)
-    # The loop's RESULT is the Done payload (the final carry).
+    # The loop's result is the Done payload (the final carry).
     assert await runner.result(flow_id) == {"acc": 3}
 
 
-# ── pin #4/#7: THE CAP WALL + THE NAMED STATE + STRANDED-FLOW ───────────
+# ── pin #4/#7: the cap wall + the named state + stranded-flow ───────────
 
 
 async def test_iteration_cap_terminated_by_the_advance_guard_named_state(
@@ -158,7 +158,7 @@ async def test_iteration_cap_terminated_by_the_advance_guard_named_state(
     runner = await _runner_of(app, name, wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
-    # EXACTLY max_iterations spawns (the cap bounds total spawns).
+    # exactly max_iterations spawns (the cap bounds total spawns).
     assert len(spawns) == 5, len(spawns)
     loop_row = await wf_conn.fetchrow(
         f"SELECT status, error_class, metadata->>'iteration_state' AS state "
@@ -166,7 +166,7 @@ async def test_iteration_cap_terminated_by_the_advance_guard_named_state(
         flow_id,
     )
     assert loop_row is not None
-    _ = loop_row  # the LOOP node's row is separate from the root:
+    _ = loop_row  # the loop node's row is separate from the root:
     node_row = await wf_conn.fetchrow(
         f"SELECT status, error_class, metadata->>'iteration_state' AS state "
         f"FROM \"{wf_schema}\".jobs WHERE step_key = 'counter' AND "
@@ -177,7 +177,7 @@ async def test_iteration_cap_terminated_by_the_advance_guard_named_state(
     assert node_row["state"] == "iteration_cap_exhausted"
     assert node_row["error_class"] == "IterationLimitExhausted"
     assert node_row["status"] == "failed"
-    # STRANDED-FLOW: the flow root is TERMINAL (never wedged running).
+    # stranded-flow: the flow root is terminal (never wedged running).
     root_status = await wf_conn.fetchval(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
     )
@@ -193,12 +193,12 @@ async def test_the_sweep_arm_enforces_the_cap_for_an_orphaned_loop(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The crash-dead-worker path: a loop node 'running' at/over its cap
-    (the worker died mid-iteration) is terminated BY THE SWEEP — an
+    (the worker died mid-iteration) is terminated BY the SWEEP — an
     ``if``-in-the-body implementation reds this (the body never runs)."""
     app, name = _loop_app(None, max_iterations=3)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # ORPHAN the loop: claim it (running) and force the counter PAST the
+    # orphan the loop: claim it (running) and force the counter past the
     # cap — no worker will ever advance it.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'running', "
@@ -221,15 +221,15 @@ async def test_the_sweep_arm_enforces_the_cap_for_an_orphaned_loop(
     assert node_row["status"] == "failed"
 
 
-# ── pin #2: BUDGET-SWEEP-VS-HOLD (the arm's heart) ──────────────────────
+# ── pin #2: budget-sweep-vs-hold (the arm's heart) ──────────────────────
 
 
 async def test_paused_loop_invisible_to_the_budget_sweep(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
 ) -> None:
-    """A PAUSED loop row with its budget_deadline FORCED INTO THE PAST
+    """A PAUSED loop row with its budget_deadline FORCED into the PAST
     must not fire (holds are free); the UN-paused row at the same
-    deadline DOES. The arm missing ``AND NOT budget_paused`` reds (the
+    deadline DOES. The arm missing ``and not budget_paused`` reds (the
     mutation scenario's recorded red = the CONSUME-BUDGET dragon)."""
     app, name = _loop_app(None, budget_s=600.0)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
@@ -254,8 +254,8 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
             str(flow_id),
             paused,
         )
-    # THE ARM: the paused row is invisible; the un-paused row fires.
-    # (Run the arm on a pool — the function manages its own tx.)
+        # the paused row is invisible; the un-paused row fires. (Run the arm on a
+    # pool — the function manages its own tx.)
     await sweep_loop_budget(wf_pool, runner.wsql)
     states = await wf_conn.fetch(
         f"SELECT budget_paused, status, metadata->>'iteration_state' AS state "
@@ -278,19 +278,19 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
     )
 
 
-# ── pin #6: LADDER-ROUTES-BY-FAILURE-CLASS (the ESCAPE-POINT contract) ──
+# ── pin #6: ladder-routes-by-failure-class (the escape-point contract) ──
 
 
 async def test_infra_fault_routes_to_reclaim_never_the_ladder(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SEMANTICS DECISION, stated once — attack-3 H5's fix sharpened
+    """The semantics decision, stated once — the escape-point classifier's fix sharpened
     it: the classifier reads WHERE the error ESCAPED, never merely its
     type. A fault raised by the BODY is a BODY failure even when it
     wears a ConnectionError's face (the body cannot forge an infra
     fault — the poison-body wedge, 20 crashed rows + a ``running`` flow
     forever, is the rejected variant the attack probe keeps red); a
-    fault raised by the DRIVER'S OWN machinery is the reclaim (the
+    fault raised by the DRIVER'S own machinery is the reclaim (the
     ladder untouched, the lease machinery re-claims)."""
     kills2: dict[str, int] = {"n": 0}
 
@@ -313,14 +313,14 @@ async def test_infra_fault_routes_to_reclaim_never_the_ladder(
         "the body can forge the reclaim (the wedged-running dragon)"
     )
     assert node_row["status"] == "failed"
-    # STRANDED-FLOW's body-failure sibling: the flow terminalized.
+    # stranded-flow's body-failure sibling: the flow terminalized.
     root2 = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id2)
     assert root2 == "failed", root2
 
-    # THE MACHINERY arm: an infra kill raised by the DRIVER'S OWN
-    # statement (the memo read — machinery, never the body) records
-    # 'crashed' and re-pends; the ladder untouched; no exhaustion; the
-    # loop completes on the re-claim (the lease machinery's own heal).
+    # the machinery arm: an infra kill raised by the driver's own statement
+    # (the memo read — machinery, never the body) records 'crashed' and
+    # re-pends; the ladder untouched; no exhaustion; the loop completes on the
+    # re-claim (the lease machinery's own heal).
     from unittest.mock import patch
 
     from taskq.workflows import ledger as ledger_module
@@ -372,22 +372,22 @@ async def test_infra_fault_routes_to_reclaim_never_the_ladder(
     )
 
 
-# ── pin #9: BUDGET-DB-CLOCK (the skew fixture) ──────────────────────────
+# ── pin #9: budget-db-clock (the skew fixture) ──────────────────────────
 
 
 async def test_budget_fires_on_db_clock_under_app_clock_skew(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """G6: the app clock skewed +1h against PG → the budget STILL fires
+    """G6: the app clock skewed +1h against PG → the budget still fires
     at the DB-clock deadline (the arm compares PG's clock_timestamp(),
-    never the app's). The arm's WHERE reads ONLY PG's clock — pinned by
-    construction here (the arm runs INSIDE PG; the app clock never
+    never the app's). The arm's WHERE reads only PG's clock — pinned by
+    construction here (the arm runs inside PG; the app clock never
     enters a comparison) — and the skew fixture's +1h shape proves the
     app-clock-comparing variant reds."""
     from taskq.backend.clock import SystemClock
     from tests._clock_skew import SkewedClock
 
-    # The app clock skewed +1h AHEAD of PG (S > 0 — the premature-actions
+    # The app clock skewed +1h ahead of PG (S > 0 — the premature-actions
     # direction): the budget arm never reads the app clock, so the skew
     # cannot fire the wall early — the DB-clock doctrine, proven against
     # the fixture.
@@ -401,7 +401,7 @@ async def test_budget_fires_on_db_clock_under_app_clock_skew(
         "(metadata->>'flow_id')::uuid = $1",
         flow_id,
     )
-    # The loop 'runs' with its deadline 1s PAST (DB clock).
+    # The loop 'runs' with its deadline 1s past (DB clock).
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'running', "
         "budget_deadline = now() - interval '1 second', "
@@ -409,7 +409,7 @@ async def test_budget_fires_on_db_clock_under_app_clock_skew(
         loop_id,
         json.dumps({"iteration": 0, "max_iterations": 100, "kind": "loop"}),
     )
-    # The APP clock's skew (+1h): the arm is INDIFFERENT — it never reads
+    # The app clock's skew (+1h): the arm is indifferent — it never reads
     # the app clock (the statement's only clock is clock_timestamp()).
     exhausted = await sweep_loop_budget(wf_pool, runner.wsql)
     assert exhausted == 1, "the budget wall did not fire on DB time"
@@ -420,16 +420,16 @@ async def test_budget_fires_on_db_clock_under_app_clock_skew(
     assert state == "budget_exhausted"
 
 
-# ── pin #8: NAIVE-MEMO (the loop face of the one-TX shape) ──────────────
+# ── pin #8: naive-memo (the loop face of the one-tx shape) ──────────────
 
 
 async def test_iteration_memo_is_the_one_tx_shape(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The durable memo's LOOP FACE (the spike's cut 7, pinned): the
-    iteration's ledger claim is ONE statement (INSERT … ON CONFLICT …
+    iteration's ledger claim is one statement (INSERT … ON CONFLICT …
     RETURNING — the read, the invocation count and the proposal-write in
-    ONE tx); a resume reads the memo (the model is NOT re-consulted —
+    one tx); a resume reads the memo (the model is not re-consulted —
     one invocation per iteration, never one per resume). The pin drives
     the SHIPPED statements: the memoized replay returns the recorded
     outcome."""
@@ -439,7 +439,7 @@ async def test_iteration_memo_is_the_one_tx_shape(
     runner = await _runner_of(app, name, wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     iter_key = "counter.iter0"
-    # THE CLAIM (one statement — the arbiter's key is the identity).
+    # the claim (one statement — the arbiter's key is the identity).
     from taskq.workflows.ledger import claim_step_ledger
 
     async with wf_pool.acquire() as conn:
@@ -453,7 +453,7 @@ async def test_iteration_memo_is_the_one_tx_shape(
             attempt=1,
         )
         assert claim.status == "running"
-        # THE TERMINAL (the same tx's shape): the recorded proposal.
+        # the recorded proposal.
         await conn.execute(
             runner.wsql.ledger_terminal,
             flow_id,
@@ -466,8 +466,7 @@ async def test_iteration_memo_is_the_one_tx_shape(
             None,
             None,
         )
-        # THE MEMO (the resume's read): the SAME outcome returns — the
-        # model is NOT re-consulted.
+        # the same outcome returns — the model is not re-consulted.
         memo = await memoized_step_result(
             conn,
             runner.wsql,
@@ -479,24 +478,24 @@ async def test_iteration_memo_is_the_one_tx_shape(
         assert memo.result == {"done": False, "feedback": {"acc": 1}}
 
 
-# ── the CONSUME-BUDGET dragon (pin #1 — RED FOREVER, the mutation test) ─
+# ── the consume-budget dragon (pin #1 — red forever, the mutation test) ─
 
 
 async def test_consume_budget_dragon_red_forever(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
 ) -> None:
-    """THE DRAGON, not a bug: the CONSUME variant — the arm that READS
+    """The dragon, not a bug: the CONSUME variant — the arm that READS
     the budget (consumes it) instead of PAUSING — killed a held loop
     mid-hold and the operator's later approval was REFUSED (deliver →
     False): work silently lost, timer order nondeterministic (P3 1a-prime).
     The shipped arm's PAUSED semantics close it; the variant is kept failing
-    by the mutation test: remove ``AND NOT budget_paused``, watch THIS
+    by the mutation test: remove ``and not budget_paused``, watch THIS
     suite fail, restore. The scenario's red is RECORDED here."""
     # The scenario ran (the arm mutated, the paused row fired, the suite
     # failed, the guard restored); the dragon's red lives in the failure log
-    # + the guide's warning. This pin documents the DRAGON's shape and
-    # keeps its recorded finding in the suite (a reader who removes the leg
-    # and re-runs sees THIS file's paused-row pin red).
+    # + the guide's warning. This pin documents the dragon's shape and
+    # keeps its red receipt in the suite (a reader who removes the leg
+    # and re-runs sees this file's paused-row pin red).
     loop_redlog.red(
         "pin1-consume-budget-dragon",
         "the CONSUME variant (P3 1a') — the arm consumes the budget instead of pausing",
@@ -525,20 +524,20 @@ async def test_consume_budget_dragon_red_forever(
     assert status == "running", "the held loop was killed — the dragon is loose"
 
 
-# ── THE CARRY DRAGON: the optimistic apply (red forever, the receipt) ────
+# ── the carry dragon: the optimistic apply (red forever, the receipt) ────
 
 
 async def test_carry_optimistic_apply_dragon_red_forever(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
 ) -> None:
-    """THE CARRY DRAGON, not a bug: the OPTIMISTIC APPLY — a carry
+    """The carry dragon, not a bug: the OPTIMISTIC APPLY — a carry
     advanced OUTSIDE the advance statement's own transaction (at the
     hold's release or the retry's re-arm: the 'advance it when we know
     it took' shape) — double-applies on the resume (the crash window's
-    second apply) or loses the apply (the crash BEFORE the optimistic
-    write). The shipped law: THE CARRY IS FROZEN AT SPAWN and advanced
-    EXACTLY ONCE per iteration, in the ADVANCE STATEMENT, one atomic
-    write shared with THE CAP GUARD (the guide §9's own words). The
+    second apply) or loses the apply (the crash before the optimistic
+    write). The shipped law: the CARRY IS FROZEN AT SPAWN and advanced
+    EXACTLY once per iteration, in the ADVANCE STATEMENT, one atomic
+    write shared with the CAP GUARD (the guide §9's own words). The
     variant is kept failing by the mutation test: an advance issued at
     hold-release time (outside the advance statement) double-applies —
     observed: the carry's counter jumped 2 for one iteration's work.
@@ -557,8 +556,8 @@ async def test_carry_optimistic_apply_dragon_red_forever(
         },
     )
     # The shipped arm's single-apply law (the green side of the scenario):
-    # the advance statement's own counter is the ONLY writer — after a
-    # hold + resume cycle the iteration advanced EXACTLY ONCE (the
+    # the advance statement's own counter is the only writer — after a
+    # hold + resume cycle the iteration advanced exactly once (the
     # ledger's carry is the iteration's own, never re-applied).
     app, name = _loop_app(None, budget_s=600.0)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
@@ -577,7 +576,7 @@ async def test_carry_optimistic_apply_dragon_red_forever(
         str(flow_id),
     )
     # The resumed loop's own advance (the driver's path) moves the
-    # counter ONCE: the metadata's iteration reads 2 after one
+    # counter once: the metadata's iteration reads 2 after one
     # iteration's work — never 3 (the optimistic apply's double).
     from taskq.workflows.api._sql_loop import LOOP_NODE_WALL_SQL
 
@@ -587,13 +586,13 @@ async def test_carry_optimistic_apply_dragon_red_forever(
     )
 
 
-# ── THE COMPOSITION PIN: a hold INSIDE a loop (T10 reads T19's arm) ─────
+# ── the composition pin: a hold inside a loop (the hold machinery reads the loop drive bound's arm) ─────
 
 
 async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Spike1's subject at the composition (T19 x T10): a loop iteration
+    """The composition's own subject (the loop drive bound x the hold machinery): a loop iteration
     that HOLDS — the loop node's budget PAUSES (the wall is blind), the
     operator's approval RESUMES (the pause lifts, the remaining is the
     on-wake read), the loop COMPLETES — zero budget_exhausted events,
@@ -607,7 +606,7 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
 
     async def hold_then_done(ctx: StepContext, carry: object) -> object:
         if ctx.attempt == 1:
-            # THE HOLD (attempt 1 only — the re-execution doctrine: the
+            # the hold (attempt 1 only — the re-execution doctrine: the
             # answer replays from the ledger on the resume).
             await ctx.wait_signal(Approval, timeout_s=120.0)
             return Done({"acc": 1})
@@ -629,7 +628,7 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
 
     runner = FlowRunner(app2.get("hold_loop_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # (1) the loop RUNS and HOLDS.
+    # (1) the loop runs and holds.
     verdict = await runner.drive(flow_id, until="held")
     assert verdict == "held", verdict
     loop_row = await wf_conn.fetchrow(
@@ -641,9 +640,9 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
     assert loop_row is not None
     # (2) the budget wall EXISTS (the deadline set from PG's clock).
     assert loop_row["walled"]
-    # (3) the hold PAUSED it.
+    # (3) the hold paused it.
     assert loop_row["budget_paused"] is True
-    # (4) THE SWEEP: the paused row + a FORCED-PAST deadline → invisible.
+    # (4) the sweep: the paused row + a forced-past deadline → invisible.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET budget_deadline = now() - interval '1 hour' "
         "WHERE id = $1",
@@ -651,7 +650,7 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
     )
     exhausted = await sweep_loop_budget(wf_pool, runner.wsql)
     assert exhausted == 0, "the held loop's budget fired — the CONSUME-BUDGET dragon is loose"
-    # (5) THE OPERATOR'S APPROVAL: the deliver resumes the iteration (the
+    # (5) the operator's approval: the deliver resumes the iteration (the
     # pause lifts — the wall is visible again).
     held = await wf_conn.fetchval(
         f"SELECT id FROM \"{wf_schema}\".wf_signals WHERE workflow_id = $1 AND status = 'held'",
@@ -666,7 +665,7 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
         payload_json=json.dumps({"verdict": "approve"}),
     )
     assert delivered.status == "delivered", delivered
-    # (6) THE LOOP COMPLETES — zero exhaustion events, zero ladder burns.
+    # (6) the loop completes — zero exhaustion events, zero ladder burns.
     assert await runner.drive(flow_id) == "terminal"
     final = await wf_conn.fetchrow(
         f"SELECT status, budget_paused, metadata->>'iteration_state' AS state "
@@ -685,16 +684,16 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
     _ = render_loop_sql, LOOP_REMAINING_SQL  # the clock seam's imports (the on-wake read)
 
 
-# ── THE CARRY'S TYPED TRUTH: the declared type reaches the body ─────────
+# ── the carry's typed truth: the declared type reaches the body ─────────
 
 
 async def test_declared_carry_arrives_typed_at_iteration_zero(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE CARRY'S DECLARED TYPE IS THE CONTRACT: a loop declared
+    """The carry's declared type is the contract: a loop declared
     ``initial=Counter(...)`` hands the body a REAL ``Counter`` at iteration
-    0 — not the jsonb dict the init's dump produced. The pre-fix truth:
-    the typed carry NEVER reached the body (the init serialized it
+    0 — not the jsonb dict the init's dump produced. The rejected shape:
+    the typed carry never reached the body (the init serialized it
     typeless; the pins' isinstance fallbacks masked the lie)."""
     seen: list[object] = []
 
@@ -720,11 +719,11 @@ async def test_declared_carry_arrives_typed_at_iteration_zero(
 async def test_carry_type_survives_a_kill_and_resume_mid_loop(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE TYPE SURVIVES THE CRASH BOUNDARY: a machinery kill mid-loop
+    """The type survives the crash boundary: a machinery kill mid-loop
     (the reclaim's crashed row + the re-pend) is resumed by a FRESH
     driver pass; the resumed body receives the declared type with the
     EXACT accumulated state — the accumulation is exact across resumes
-    (no reset). The pre-fix truth: the resumed carry arrived as the
+    (no reset). The rejected shape: the resumed carry arrived as the
     jsonb dict and the masked pins reset the count (observed [1, 1, 2, 3]
     for a 3-step count)."""
     from unittest.mock import patch
@@ -737,10 +736,10 @@ async def test_carry_type_survives_a_kill_and_resume_mid_loop(
     async def killing_memo(*a: Any, **kw: Any) -> Any:
         kills["n"] += 1
         if kills["n"] == 2:
-            # THE KILL: the driver's own memo read at the top of the
-            # SECOND pass — after iteration 0's Refine was recorded and
-            # the carry advanced. The reclaim owns it; the resume
-            # re-reads the carry from the ROW (the crash boundary).
+            # the driver's own memo read at the top of the second pass — after
+            # iteration 0's Refine was recorded and the carry advanced. The
+            # reclaim owns it; the resume re-reads the carry from the row (the
+            # crash boundary).
             raise asyncpg.exceptions.ConnectionDoesNotExistError("the storm kill")
         return await real(*a, **kw)
 
@@ -764,10 +763,9 @@ async def test_carry_type_survives_a_kill_and_resume_mid_loop(
         runner = await _runner_of(app, name, wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         assert await runner.drive(flow_id, max_ticks=30) == "terminal"
-    # THE ACCUMULATION IS EXACT ACROSS THE RESUME: [1, 2, 3] — never
-    # [1, 1, 2, 3] (the reset), never [1] (the wedge).
+        # [1, 2, 3] — never [1, 1, 2, 3] (the reset), never [1] (the wedge).
     assert seen == [1, 2, 3], seen
-    # The crash boundary WAS crossed (the machinery's reclaim recorded it).
+    # The crash boundary was crossed (the machinery's reclaim recorded it).
     crashed = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
         "WHERE flow_id = $1 AND status = 'crashed'",
@@ -777,25 +775,25 @@ async def test_carry_type_survives_a_kill_and_resume_mid_loop(
     assert await runner.result(flow_id) == {"acc": 3}
 
 
-# ── THE ADVANCE/EXHAUST FENCES: the claim identity's legs ───────────────
+# ── the advance/exhaust fences: the claim identity's legs ───────────────
 
 
 async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ADVANCE/EXHAUST FENCES: the loop's advance and exhaust carry
-    the SAME claim-identity legs every other terminal write carries
+    """The advance/exhaust fences: the loop's advance and exhaust carry
+    the same claim-identity legs every other terminal write carries
     (worker + attempt + claim_epoch — the one-tx-finalize doctrine; the
-    unguarded statements were the doctrine's BACK DOOR). The pre-fix
+    unguarded statements were the hole's back door). The rejected shape:
     truth: a zombie driver's exhaust killed a HEALTHY RECLAIMED loop and
     wrote its escalation row; a stale payload moved the counter
     backward.
 
     The pin runs the SHIPPED statements: the zombie (its claim lapsed;
     the loop reclaimed by a new driver at a fresh attempt + epoch)
-    advances and exhausts — BOTH REFUSED; the healthy loop survives, the
+    advances and exhausts — both REFUSED; the healthy loop survives, the
     counter never moves backward; the new driver's advance lands EXACTLY
-    ONCE, and its exhaust terminalizes the loop."""
+    once, and its exhaust terminalizes the loop."""
     from taskq.workflows.api._sql_loop import (
         LOOP_ADVANCE_SQL,
         LOOP_EXHAUST_SQL,
@@ -803,10 +801,10 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
     )
 
     zombie, fresh = new_uuid(), new_uuid()
-    # THE RECLAIMED LOOP: running at iteration 3, claimed by the NEW
-    # driver (attempt 6, epoch 4). The zombie still holds its stale view
-    # (attempt 5, epoch 3). (The statements are the subject — the rows
-    # are hand-crafted at the reclaimed identity.)
+    # running at iteration 3, claimed by the new driver (attempt 6, epoch 4).
+    # The zombie still holds its stale view (attempt 5, epoch 3). (The
+    # statements are the subject — the rows are hand-crafted at the reclaimed
+    # identity.)
     flow_id = new_uuid()
     loop_id = new_uuid()
     await wf_conn.execute(
@@ -837,8 +835,8 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
         json.dumps({"flow_id": str(flow_id), "kind": "loop"}),
     )
 
-    # THE ZOMBIE'S ADVANCE (stale identity, stale payload — it would move
-    # the counter BACKWARD to 4): REFUSED.
+    # stale identity, stale payload — it would move the counter backward to 4.
+    # refused.
     refused = await wf_conn.fetchval(
         render_loop_sql(LOOP_ADVANCE_SQL, wf_schema),
         loop_id,
@@ -849,8 +847,8 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
         3,
     )
     assert refused is None, "the zombie driver's advance was ADMITTED — the back door is open"
-    # THE ZOMBIE'S EXHAUST (it would kill the healthy reclaimed loop):
-    # REFUSED — the loop survives, no named state, no escalation row.
+    # it would kill the healthy reclaimed loop. refused — the loop survives, no
+    # named state, no escalation row.
     zombie_exhaust = await wf_conn.fetchrow(
         render_loop_sql(LOOP_EXHAUST_SQL, wf_schema),
         loop_id,
@@ -865,7 +863,7 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
         "the zombie driver's exhaust LANDED — it killed a healthy "
         "reclaimed loop (the back door is open)"
     )
-    # THE HEALTHY LOOP SURVIVES, untouched by the stale payloads.
+    # the healthy loop survives, untouched by the stale payloads.
     row = await wf_conn.fetchrow(
         f"SELECT status, metadata->>'iteration' AS iteration, metadata->>'carry' AS carry "
         f'FROM "{wf_schema}".jobs WHERE id = $1',
@@ -877,8 +875,8 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
         "the zombie's stale carry payload moved the counter/carry — the counter moved BACKWARD"
     )
 
-    # THE NEW DRIVER advances (its own claim identity): EXACTLY ONCE —
-    # the counter moves FORWARD to 4 with the driver's payload.
+    # the new driver advances (its own claim identity): exactly once — the
+    # counter moves forward to 4 with the driver's payload.
     advanced = await wf_conn.fetchval(
         render_loop_sql(LOOP_ADVANCE_SQL, wf_schema),
         loop_id,
@@ -908,25 +906,25 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
 async def test_wrong_shape_body_is_named_loop_body_shape_error_never_fabricated(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SHAPE ERROR NAMED: a body returning neither Done nor Refine is
+    """The shape error named: a body returning neither Done nor Refine is
     recorded as the TYPED shape error — the iteration's ledger terminal
     says ``failed`` / ``LoopBodyShapeError``, the loop node's diagnosis
     names it, the flow terminalizes. The replay honors the recorded
-    truth: the pre-fix ledger recorded a SUCCEEDED iteration and the
+    truth: the uncorrected ledger records a SUCCEEDED iteration and the
     memo replay re-threaded the raw return AS A REFINE — the ledger
     fabricated."""
     calls = {"n": 0}
 
     async def wrong_shape(ctx: StepContext, carry: object) -> object:
         calls["n"] += 1
-        return {"not": "the union"}  # neither Done nor Refine — THE SHAPE ERROR
+        return {"not": "the union"}  # neither Done nor Refine — the shape error
 
     app, name = _loop_app(wrong_shape, max_iterations=5)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
-    # THE LEDGER RECORDS THE TRUTH: the iteration's terminal is the typed
-    # shape error, never a SUCCEEDED row carrying a laundered feedback.
+    # the iteration's terminal is the typed shape error, never a succeeded row
+    # carrying a laundered feedback.
     row = await wf_conn.fetchrow(
         f'SELECT status, error_class, error_message FROM "{wf_schema}".wf_step_ledger '
         "WHERE flow_id = $1 AND step_key = 'counter.iter0'",
@@ -939,8 +937,8 @@ async def test_wrong_shape_body_is_named_loop_body_shape_error_never_fabricated(
     )
     assert row["error_class"] == "LoopBodyShapeError", row["error_class"]
     assert "Done" in (row["error_message"] or "") and "Refine" in (row["error_message"] or "")
-    # THE DIAGNOSIS NAMES IT: the loop node's own terminal carries the
-    # typed class; the flow terminalized.
+    # the loop node's own terminal carries the typed class; the flow
+    # terminalized.
     node_row = await wf_conn.fetchrow(
         f'SELECT status, error_class FROM "{wf_schema}".jobs '
         "WHERE step_key = 'counter' AND (metadata->>'flow_id')::uuid = $1",
@@ -951,7 +949,7 @@ async def test_wrong_shape_body_is_named_loop_body_shape_error_never_fabricated(
     assert node_row["status"] == "failed"
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "failed"
-    # THE REPLAY HONORS THE RECORDED TRUTH: one invocation per iteration —
-    # a re-drive never re-runs the body, never re-threads the raw return.
+    # one invocation per iteration — a re-drive never re-runs the body, never
+    # re-threads the raw return.
     assert await runner.drive(flow_id) == "terminal"
     assert calls["n"] == 1, calls["n"]

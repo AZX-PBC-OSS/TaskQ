@@ -19,7 +19,7 @@ The loop only checks the deadline BETWEEN polls::
 (src/taskq/client/_handle.py:253-265). A ``backend.get`` that never
 returns - a wedged pool acquire (asyncpg's default acquire timeout is
 None), a black-holed connection on a backend without command_timeout, a
-hung custom backend - holds the loop INSIDE the fetch while the caller's
+hung custom backend - holds the loop inside the fetch while the caller's
 deadline expires unenforced. ``wait(timeout=0.3)`` then blocks forever:
 the documented TimeoutError never fires, violating both the docstring
 and the bounded-wait rule. The client-tier PG pool carries
@@ -167,7 +167,7 @@ async def test_wait_deadline_is_enforced_when_a_fetch_hangs_mid_poll() -> None:
 
     # timeout=1.5 spans three poll cycles (interval 0.5 s): gets and
     # return promptly at t=0 / t=0.5, get wedges at t=1.0 - a full second
-    # BEFORE the deadline - so the deadline can only be honored by enforcing
+    # before the deadline - so the deadline can only be honored by enforcing
     # it against the in-flight fetch.
     task = asyncio.create_task(handle.wait(timeout=1.5))
     _done, pending = await asyncio.wait({task}, timeout=3.5)

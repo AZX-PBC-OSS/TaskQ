@@ -6,7 +6,7 @@ NOTHING signaled at enqueue time. The chosen fix (the perf-law choice:
 a naive per-enqueue ``queues`` probe measured +10.1% per enqueue --
 one extra round trip on the hot path -- so the signal rides the
 client-side ``ActorCapacityCache`` snapshot instead): the cache now
-also snapshots ``actor_config``'s queue assignments on the SAME
+also snapshots ``actor_config``'s queue assignments on the same
 refresh cadence (one small whole-table read per TTL beside the
 max_pending read, never per enqueue), and every enqueue arm consults
 the snapshot with zero I/O, warning once per queue per TTL when no
@@ -192,7 +192,7 @@ def _drifted(inner: InMemoryBackend) -> InMemoryBackend:
     drifted.__dict__.update(inner.__dict__)
 
     async def bad_queues() -> dict[str, str]:
-        return "not a dict"  # type: ignore[return-value]  # Why: the contract drift IS the case under test.
+        return "not a dict"  # type: ignore[return-value]  # Why: the contract drift is the case under test.
 
     drifted.get_actor_queues = bad_queues  # type: ignore[method-assign]
     return drifted
@@ -232,7 +232,7 @@ async def test_no_read_amplification_on_the_hot_path(
     log_events: list[structlog.types.EventDict],
 ) -> None:
     """The perf-law pin: the note costs ZERO backend round trips at
-    enqueue time. The second enqueue inside the TTL window performs NO
+    enqueue time. The second enqueue inside the TTL window performs no
     backend read at all (the snapshot from the first enqueue serves
     both), and the note itself is a pure snapshot lookup."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))

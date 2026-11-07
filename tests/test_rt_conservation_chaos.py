@@ -19,7 +19,7 @@ The scenarios, composed:
    re-claim of a row the archiver just moved would resurrect it (double
    existence) or strand its ledger;
 2. slot death (a phase-2 forced cancel kills the job, not the slot's
-   consumer loop) DURING a cap-refusal storm on the SAME actor: the death
+   consumer loop) DURING a cap-refusal storm on the same actor: the death
    frees a refusaled cap slot; the storm's next attempt must take it, and
    the consumer loop must keep serving;
 3. leader handover DURING a cancel request: the requesting worker is
@@ -275,7 +275,7 @@ async def _move_to_archive(conn: asyncpg.Connection, schema: str, job_id: object
 async def _conservation_violations(conn: asyncpg.Connection, schema: str, tag: str) -> list[str]:
     """The conservation counter, as a list of named violations.
 
-    For every seeded job (tag-scoped), across BOTH the live table and the
+    For every seeded job (tag-scoped), across both the live table and the
     archive: exactly one row total (double existence is a resurrected job;
     zero is a dropped one); an archived row is terminal (the archiver moved
     a live row otherwise); a terminal row has finished_at; no row is
@@ -399,7 +399,7 @@ async def _settle_terminal(
     )
 
 
-# ── Scenario 1: the reclaim sweep DURING the archive prune ──────────────
+# ── Scenario 1: the reclaim sweep during the archive prune ──────────────
 
 
 @pytest.mark.parametrize("trial", range(3))
@@ -509,7 +509,7 @@ async def test_reclaim_during_archive_prune_conserves_every_row(
         )
 
         # The composition actually fired both directions: rows were
-        # archived AND rows were reclaimed, else the pin is vacuous.
+        # archived and rows were reclaimed, else the pin is vacuous.
         archived = await conn.fetchval(
             f'SELECT count(*)::int FROM "{schema}".jobs_archive WHERE tags @> ARRAY[$1::text]',
             tag,
@@ -601,7 +601,7 @@ async def test_conservation_predicate_has_teeth(
         await conn.close()
 
 
-# ── Scenario 2: slot death DURING a cap-refusal storm ───────────────────
+# ── Scenario 2: slot death during a cap-refusal storm ───────────────────
 
 
 @pytest.mark.parametrize("trial", range(2))
@@ -611,7 +611,7 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
     trial: int,
 ) -> None:
     """Phase-2 forced cancels (slot death) land while the producer is
-    refusing enqueues of the SAME actor at its max_pending cap. The refusal
+    refusing enqueues of the same actor at its max_pending cap. The refusal
     storm must observe each freed slot (its next attempt is admitted), the
     consumer loop must survive the phase-2 kills and keep serving (the
     #420 property), and the counter must balance: enqueue attempts ==
@@ -630,7 +630,34 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
 
     worker_task = asyncio.create_task(_runner(), name=f"consv-s2-{trial}")
     try:
-        await asyncio.sleep(2.0)  # bootstrap: sync_actor_config persists max_pending=2
+        # Bootstrap is a row fact, not a wait: the producer-side enqueue
+        # admission reads the stored actor_config row, so the storm's
+        # premise (the cap enforced at max_pending=2) exists only once the
+        # row does. The wait observes the worker task: a bootstrap that
+        # died is a named failure (the exception it raised), never a
+        # silent poll timeout — the row fact can only come from this
+        # worker's own bootstrap.
+        bootstrap_deadline = time.monotonic() + 30.0
+        stored: int | None = None
+        while time.monotonic() < bootstrap_deadline:
+            if worker_task.done():
+                exc = None if worker_task.cancelled() else worker_task.exception()
+                pytest.fail(
+                    f"the s2 worker died during bootstrap (exc={exc!r}): "
+                    "the cap premise's row fact can only come from its "
+                    "own bootstrap"
+                )
+            stored = await conn.fetchval(
+                f"SELECT max_pending FROM \"{schema}\".actor_config WHERE actor = 'consv_slow'"
+            )
+            if stored == 2:
+                break
+            await asyncio.sleep(0.05)
+        assert stored == 2, (
+            f"the worker's bootstrap never persisted max_pending=2 (the "
+            f"last poll read {stored!r}): the storm's cap premise is not "
+            "in force"
+        )
 
         stack, _deps, backend = await _open_pg_backend_on_schema(pg_dsn, schema)
         try:
@@ -639,7 +666,7 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
                 await client.enqueue(consv_slow, ConsvPayload(), tags=[tag])
 
             running: int | None = None
-            deadline = time.monotonic() + 10.0
+            deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
                 running = await conn.fetchval(
                     f'SELECT count(*)::int FROM "{schema}".jobs '
@@ -663,14 +690,14 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
                 try:
                     while not stop_chaos.is_set():
                         result = await kconn.fetchval(
+                            f"WITH killed AS ("
                             f'UPDATE "{schema}".jobs SET cancel_phase = 2, '
                             "cancel_requested_at = clock_timestamp() "
                             "WHERE tags @> ARRAY[$1::text] AND status = 'running' "
-                            "RETURNING 1",
+                            "RETURNING 1) SELECT count(*)::int FROM killed",
                             tag,
                         )
-                        if result is not None:
-                            kills += 1
+                        kills += result or 0
                         await asyncio.sleep(1.0)
                 finally:
                     await kconn.close()
@@ -680,9 +707,21 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
 
             admitted = 0
             refused = 0
-            for _attempt_no in range(80):
+            # The composition runs to its own shape: four storm admissions
+            # and two slot deaths (the abandoned rows the deaths land as),
+            # bounded by a wall deadline no loaded tick outlives. Ending on
+            # admissions alone could close the window before the second
+            # death — the composition's pacing, not the product's cap.
+            storm_deadline = time.monotonic() + 60.0
+            while time.monotonic() < storm_deadline:
                 if admitted >= 4:
-                    break
+                    abandoned_now = await conn.fetchval(
+                        f'SELECT count(*)::int FROM "{schema}".jobs '
+                        "WHERE tags @> ARRAY[$1::text] AND status = 'abandoned'",
+                        tag,
+                    )
+                    if (abandoned_now or 0) >= 2:
+                        break
                 try:
                     await client.enqueue(consv_slow, ConsvPayload(), tags=[tag])
                     admitted += 1
@@ -705,7 +744,7 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
             assert kills >= 2, f"the canceller only killed {kills} slots"
 
             # The consumer loop survived the phase-2 kills (the #420
-            # property): a job enqueued and completed AFTER the last slot
+            # property): a job enqueued and completed after the last slot
             # death runs to success on the same worker.
             await client.enqueue(consv_fast, ConsvPayload(), tags=[tag])
 
@@ -749,7 +788,7 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
         await conn.close()
 
 
-# ── Scenario 3: leader handover DURING a cancel request ─────────────────
+# ── Scenario 3: leader handover during a cancel request ─────────────────
 
 
 def _spawn_consv_worker(
@@ -930,7 +969,7 @@ async def test_cancel_request_survives_leader_handover(
         await conn.close()
 
 
-# ── Scenario 4: a paused Dragonfly DURING the progress fanout ───────────
+# ── Scenario 4: a paused Dragonfly during the progress fanout ───────────
 
 
 @pytest.mark.parametrize("trial", range(2))
@@ -985,7 +1024,7 @@ async def test_paused_redis_during_progress_fanout_poll_backfills(
             client = JobsClient(backend)
 
             # Enqueue first (the id is needed to subscribe), subscribe on a
-            # healthy broker, THEN pause: every publish of this job's
+            # healthy broker, then pause: every publish of this job's
             # fanout is now attempted inside the pause window (each
             # publish's 1s bounded round trip expires inside the 15s pause
             # and drops).
@@ -1107,7 +1146,7 @@ async def test_sigkill_between_terminal_write_and_fanout_leaves_no_half_state(
     """The worker dies by SIGKILL the instant the terminal DB write
     commits (the harness patches mark_succeeded to kill after the await),
     before the terminal state-change publish and the result fanout. The
-    committed row must be terminal-AND-WHOLE: succeeded with the result
+    committed row must be terminal-and-WHOLE: succeeded with the result
     present, finished_at set, error fields clean, the attempt ledger row
     written, the event trail written, and the poll-state surface (the SQL
     the progress endpoint serves) answering with the terminal state the
@@ -1162,7 +1201,7 @@ async def test_sigkill_between_terminal_write_and_fanout_leaves_no_half_state(
             assert row is not None and row["status"] == "succeeded", (
                 f"the terminal write never committed before the kill: {row}"
             )
-            # Terminal-AND-WHOLE: result present, no error fields, the
+            # Terminal-and-whole: result present, no error fields, the
             # finished stamp, the ledger row, the event trail.
             assert row["result"] is not None, (
                 "succeeded with a NULL result: the terminal write was half"

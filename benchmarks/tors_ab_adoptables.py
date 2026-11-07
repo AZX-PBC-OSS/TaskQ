@@ -22,7 +22,7 @@ Mapped call sites (all measured here):
   ``hexdigest()[:16]``; B: ``tors.sha256_digest`` + hex slicing, and the
   direct ``tors.sha256_hex`` spelling).
 - ``cli.py`` ``_format_event_detail``'s whitespace collapse (A:
-  ``" ".join(s.split())``; B: ``tors.strip_controls`` — NOT semantically
+  ``" ".join(s.split())``; B: ``tors.strip_controls`` — not semantically
   identical, measured only to size the SKIP) and the admin's
   ``_truncate_traceback`` hard cut (A: slice + suffix; B:
   ``tors.truncate_ellipsis`` — different marker contract, same SKIP).
@@ -51,7 +51,7 @@ from tors_harness import (  # pyright: ignore[reportMissingImports]  # Why: the 
 )
 
 from taskq import (
-    _ids,  # pyright: ignore[reportPrivateUsage]  # Why: the private helper IS the path new_base62 serves; the bench measures it in place.
+    _ids,  # pyright: ignore[reportPrivateUsage]  # Why: the private helper is the path new_base62 serves; the bench measures it in place.
 )
 
 META = {
@@ -166,7 +166,7 @@ def check_byte_len_64k() -> bool:
 
 
 def check_b62() -> bool:
-    # Draw-independent CSPRNG streams: only alphabet membership + length
+    # Draw-independent csprng streams: only alphabet membership + length
     # can pin; the uniformity contracts are each side's own tests.
     a = _ids._random_base62(8)  # pyright: ignore[reportPrivateUsage]
     b = tors.random_b62(8)
@@ -184,7 +184,7 @@ def check_sha() -> bool:
 
 
 def check_controls() -> bool:
-    # Only the shared contract (no C0/DEL survives) is comparable; the two
+    # Only the shared contract (no C0/del survives) is comparable; the two
     # spellings disagree on non-control whitespace by design — the note
     # field carries the semantics divergence, this check is tors-only.
     return "\x00" not in tors.strip_controls(DETAIL_LINE) and "\x1f" not in tors.strip_controls(
@@ -265,7 +265,7 @@ def main() -> None:
             batch=500,
             check=check_sha,
         ),
-        # ── SKIP-sized text helpers, measured for the record ───────────
+        # ── skip-sized text helpers, measured for the record ───────────
         ab(
             "detail-ws-collapse  split-join vs strip_controls",
             a_ws_collapse,

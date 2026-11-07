@@ -1,11 +1,11 @@
 """Sweep telemetry must be emitted on the TIMEOUT path, not only on success.
 
 The original invisibility: the scheduled-wake sweep's duration histogram
-and row counter were recorded only AFTER the awaited call returned, so the
+and row counter were recorded only after the awaited call returned, so the
 deadline that aborted the sweep also aborted the code that would have
-recorded it - a livelocking sweep emitted NO samples at all, not zero.
+recorded it - a livelocking sweep emitted no samples at all, not zero.
 The pins here: duration always (including the failure path), a timeout
-counter on the deadline family, and NO row sample when the call timed out
+counter on the deadline family, and no row sample when the call timed out
 (rows stay unbound - a 0-row sample would be indistinguishable from a
 healthy empty sweep). The success path stays fully instrumented.
 """
@@ -196,7 +196,7 @@ async def test_timeout_path_records_duration_and_timeout_without_row_sample(
 ) -> None:
     """The assertion the original invisibility escaped: a sweep call cut
     short by the iteration deadline still records a duration sample and a
-    sweep_timeouts increment - and records NO row sample."""
+    sweep_timeouts increment - and records no row sample."""
     backend = _StalledBackend(stall_secs=0.5)
     leader = _make_wake_leader(backend, command_timeout=0.05, dispatcher_pool=None)
     await _drive_one_iteration(leader, backend, sweep_metric_reader)
@@ -258,7 +258,7 @@ async def test_success_path_records_rows_and_success_stamp_without_timeout(
 # The three gauge samplers the leader runs (queue depth, backlog
 # detection, reservation slots) feed gauges an operator alerts on. When
 # a sampler's query fails, the gauge it feeds does not go missing - it
-# keeps reporting the LAST value it was fed. A frozen depth gauge and a
+# keeps reporting the last value it was fed. A frozen depth gauge and a
 # healthy flat backlog are the same picture, so a metrics-only operator
 # (the normal case; logs and metrics are usually different systems, and
 # alert rules read metrics) cannot tell that the sampler died. These
@@ -445,14 +445,14 @@ async def test_failing_gauge_sampler_publishes_no_success_stamp(
     )
 
 
-# ── the per-actor backlog read's OWN failure arms ──────────────
+# ── the per-actor backlog read's own failure arms ──────────────
 #
-# Unlike the loops above, the per-actor backlog read is ISOLATED inside the
+# Unlike the loops above, the per-actor backlog read is isolated inside the
 # backlog tick: its failure must not cost the tick the fleet-wide samples,
 # so it can never reach the tick-level handler that counts under
 # "backlog_detection". Its two failure arms (the fetch raising, and rows
-# coming back with a shape the cache rebuild cannot read) used to log a
-# bare WARN and move on, and the fetch arm's empty fallback CLEARS the
+# coming back with a shape the cache rebuild cannot read) must not log a
+# bare warn and move on, and the fetch arm's empty fallback never clears the
 # per-actor series, which resolves TaskQQueueDepthHigh (its operand is the
 # oldest-pending age) at the exact moment the incident it alerts on is
 # killing the read, with no metric naming the loss. Both arms must count on
@@ -464,11 +464,27 @@ class _BacklogTickConn:
     """Connection stand-in for the backlog tick: fleet-wide reads answer,
     and the per-actor backlog read does whatever the test needs.
 
+    fail-closed-exempt: the per-actor backlog read's two metric arms, each
+    a shape no honest session can produce deterministically. (a) The raise
+    arm (actor_exc): a statement timeout (QueryCanceledError) that kills
+    ONLY the pairs-walk statement while the same tick's fleet reads on the
+    SAME connection succeed - one session carries one statement_timeout
+    GUC, so the timeout cannot be scoped to one statement of the tick, and
+    pg_cancel_backend cannot be aimed deterministically. (b) The malformed
+    rows (actor_rows): rows missing columns the pairs-walk's own SELECT
+    projects (actor, queue, depth, oldest_age) - an honest driver's row
+    shape IS the statement's column list, so a depth-less or age-less row
+    exists only while that SELECT and the cache rebuild have drifted. Both
+    arms exist to pin the isolation + atomicity of the read's failure
+    handling; the sweep's real SQL semantics are
+    tests/test_postgres_sweeps.py's.
+
     Dispatches on the statement's own shape the way the real tick issues
-    them: the by-status UNION, the two fleet fetchvals, the per-actor
-    running GROUP BY, and the per-actor backlog GROUP BY (the pair walk,
-    the widest-shaped statement in the tick, and the first to hit the
-    statement timeout under the incident load it exists to expose).
+    them: the by-status UNION, the three fleet fetchvals, the retrying
+    GROUP BY, the per-actor running GROUP BY, and the per-actor backlog
+    pairs walk (the widest-shaped statement in the tick, and the first to
+    hit the statement timeout under the incident load it exists to
+    expose). Every fall-through raises naming the statement.
     """
 
     def __init__(
@@ -490,16 +506,27 @@ class _BacklogTickConn:
                 raise self._actor_exc
             assert self._actor_rows is not None  # Why: an answering conn is built with rows.
             return self._actor_rows
-        self.fleet_calls += 1
+        if "min(max_attempts - attempt)" in norm:  # the retry-ladder read
+            self.fleet_calls += 1
+            return []
         if "group by actor" in norm:  # running-by-actor read
+            self.fleet_calls += 1
             return [{"actor": "resize_image", "running": 2, "oldest_age": 41.5}]
-        return [{"status": "scheduled", "count": 12}, {"status": "pending", "count": 3}]
+        if "union all" in norm and "count(*) as count" in norm:  # by-status
+            self.fleet_calls += 1
+            return [{"status": "scheduled", "count": 12}, {"status": "pending", "count": 3}]
+        raise AssertionError(f"unmatched statement: {sql}")
 
     async def fetchval(self, sql: str, *args: object) -> object:
+        norm = " ".join(sql.lower().split())
         self.fleet_calls += 1
-        if "lock_expires_at" in " ".join(sql.lower().split()):
+        if "lock_expires_at" in norm:  # the running-lease-expired count
             return 87
-        return 87.5
+        if "min(scheduled_at)" in norm:  # the oldest-due age
+            return 87.5
+        if "max(scheduled_at)" in norm:  # the scheduled horizon
+            return 0.0
+        raise AssertionError(f"unmatched statement: {sql}")
 
     async def execute(self, sql: str, *args: object) -> str:
         return "OK"
@@ -572,7 +599,7 @@ async def test_actor_backlog_read_failure_counts_and_clears_only_its_own_gauges(
     sweep_metric_reader: InMemoryMetricReader,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE pin: the per-actor backlog read fails while every fleet
+    """The pin: the per-actor backlog read fails while every fleet
     read in the same tick succeeds.
 
     What the failure must produce, all at once: the per-actor series go
@@ -631,7 +658,7 @@ async def test_actor_backlog_read_failure_counts_and_clears_only_its_own_gauges(
         # The half-valid row: depth reads fine, oldest_age is malformed.
         # As call arguments the comprehensions ran update (a fresh depth
         # cache) and then raised in comprehension, landing the fresh
-        # depth beside a FROZEN age cache, the alert's operand, a mixed
+        # depth beside a frozen age cache, the alert's operand, a mixed
         # state; built as locals first, the
         # failure is atomic (neither cache is written).
         (
@@ -649,7 +676,7 @@ async def test_actor_backlog_malformed_row_counts_atomically_on_the_metric_plane
     """The read's OTHER failure arm: rows came back, but their shape is not
     what the cache rebuild reads (a KeyError inside the rebuild).
 
-    The rebuild never runs -- BOTH caches stay at their last values
+    The rebuild never runs -- both caches stay at their last values
     together, never a fresh one beside a frozen one (the frozen half would
     be exactly the TaskQQueueDepthHigh operand) -- and that arm must reach
     the metric plane too, because a gauge frozen at a stale reading is no
@@ -669,7 +696,7 @@ async def test_actor_backlog_malformed_row_counts_atomically_on_the_metric_plane
         "values with nothing an alert rule can read"
     )
     assert _timeout_value(sweep_metric_reader, "backlog_detection") == 0
-    # The atomic-failure shape itself: the rebuild raised before EITHER
+    # The atomic-failure shape itself: the rebuild raised before either
     # update ran, so no per-actor update fires while the fleet samples of
     # the same ticks keep landing: a mixed fresh-depth/frozen-age state
     # can never occur.

@@ -6,7 +6,7 @@ writes rows to the `taskq` schema, cleaning up after itself.
 
 Parts
   1  BATCH POISONING   - one NUL payload in enqueue_batch / _enqueue_batch_fast
-  2  NOTIFY FAN-OUT    - cancel_where-style pg_notify burst (payload size, timing)
+  2  NOTIFY FAN-out    - cancel_where-style pg_notify burst (payload size, timing)
   3  PROGRESS ORPHANS  - buffer lifecycle on flush/self-heal/leak-window
   4  CANCELLATION      - double-cancel during asyncio.shield -> unretrieved exc
 """
@@ -151,7 +151,7 @@ async def part1_batch_poisoning(pool: asyncpg.Pool) -> None:
     )
 
     # dispatch_batch atomicity: claim is a single CTE - poison a payload of a
-    # PENDING row and confirm the claim either claims or not - never partially.
+    # pending row and confirm the claim either claims or not - never partially.
     say(
         "1g  dispatch CTE atomicity: single UPDATE..RETURNING - no partial-claim path exists (code: _dispatch_sql.py:166-182)"
     )
@@ -277,7 +277,7 @@ async def part3_progress_orphans(pool: asyncpg.Pool) -> None:
         f"3a  flush while job 'running': DB seq={seq} state={state}; buffer entries in dict: {len(buffers)} (kept, by design)"
     )
 
-    # consumer dies WITHOUT terminal write (row still 'running', worker still owner)
+    # consumer dies without terminal write (row still 'running', worker still owner)
     # -> orphaned dirty buffer? simulate a new progress write then consumer crash
     buf.pending_seq_delta += 2
     buf.pending_state["step"] = 3
@@ -384,7 +384,7 @@ async def part4_cancellation() -> None:
         except asyncio.CancelledError:
             # second cancel lands here (e.g. shutdown escalation during the
             # mark_cancelled shield at consumer.py:532) -> the shielded task
-            # is left running DETACHED; its later failure is never retrieved
+            # is left running detached; its later failure is never retrieved
             await asyncio.shield(failing_write())
 
     v = asyncio.create_task(victim())

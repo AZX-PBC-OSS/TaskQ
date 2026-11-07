@@ -11,13 +11,13 @@ This module runs its own function-scoped PostgresContainer
 (``chaos_pg``): the shared session PG (``e2e_pg``) must never be
 stopped, so the outage is confined to infrastructure this module owns.
 
-The autouse ``clean_e2e_state`` fixture needs NO module-local override:
+The autouse ``clean_e2e_state`` fixture needs no module-local override:
 the test requests none of ``e2e_client`` / ``e2e_pg_pool`` /
 ``e2e_schema`` / ``e2e_worker``, so the conftest guard early-yields
 without touching shared module state.
 
 Why the design is deterministic: the test waits for the isolated
-worker's container to reach ``exited`` BEFORE restarting Postgres, so
+worker's container to reach ``exited`` before restarting Postgres, so
 the old worker can never heartbeat or sweep again - there is no
 sweep-vs-heartbeat reclaim race. The job's 10 s lock lease expires
 during the ~22 s outage, but no consumer can observe that until PG
@@ -51,7 +51,7 @@ Timing budget (worst case):
   + the sibling-drain tail: isolate_self sets shutdown_event, every loop
       observes it and returns, the in-flight actor's terminal write to the
       dead PG fails fast, and the bounded teardown closes (~5 s each) run
-      last. NOT bounded by TASKQ_TERMINATION_GRACE_PERIOD: that setting is
+      last. not bounded by TASKQ_TERMINATION_GRACE_PERIOD: that setting is
       validated in settings.py but no runtime path enforces it, so the
       drain is only as prompt as the slowest loop.
   ~= 20 s to container exit in practice (120 s poll budget).
@@ -119,7 +119,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]
 # the whole time, and nothing could attribute the 180 s to a phase. The
 # worst case is bounded and narrow: leadership handover (up to ~72 s) +
 # reclaim + re-dispatch (~13 s) + the actor's 30 s sleep puts the
-# starved worst case AT ~180 s - the old wall guessed exactly the bound
+# starved worst case at ~180 s - the old wall guessed exactly the bound
 # it sat on, and the red tail (1/5 contended repeats locally, run
 # 35748283472 in CI) is what crossing it looks like. The wait is now
 # split into one poll per observable recovery event, each with its own
@@ -227,7 +227,7 @@ def chaos_pg(e2e_network: Network) -> Iterator[ChaosPg]:
     stop/start, so the in-network DSN survives the outage untouched.
 
     The HOST port is pinned explicitly with ``with_bind_ports``. Docker
-    does NOT preserve a *Docker-assigned* ephemeral host port across
+    does not preserve a *Docker-assigned* ephemeral host port across
     stop/start - it allocates a fresh one on start (observed: 34252 →
     34253) - which would silently invalidate ``host_dsn`` mid-test and
     strand the test-side pool, TaskQ client, and schema teardown on a
@@ -348,7 +348,7 @@ def _worker_env(
     """Standard e2e worker env (mirrors the conftest's e2e_schema knobs)
     pointed at the chaos PG, schema, and Dragonfly logical DB.
 
-    TASKQ_MAX_HEARTBEAT_FAILURES is NOT elevated: the default of 3 with
+    TASKQ_MAX_HEARTBEAT_FAILURES is not elevated: the default of 3 with
     the 0.5 s heartbeat interval drives isolate_self ~2 s after PG loss.
     """
     return {
@@ -365,7 +365,7 @@ def _worker_env(
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
         # The tiny command timeout keeps the cascade floor satisfied for
         # this lease: max(0.5, 0.1) + (3 + 1) * (0.5 + 0.1) = 2.9 (the
-        # default max_heartbeat_failures of 3 means FOUR failed cycles;
+        # default max_heartbeat_failures of 3 means four failed cycles;
         # see the TASKQ_MAX_HEARTBEAT_FAILURES note above).
         "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         # 10 s, deliberately wider than the fleet's 3.0: this test's purpose
@@ -373,7 +373,7 @@ def _worker_env(
         # tightness. long_running_job stays in flight for 30 s, and the
         # lease is renewed only on each 0.5 s heartbeat tick, so the lease
         # doubles as the loop-stall budget - at 3.0 s any transient stall
-        # (full-tier Docker load) reclaimed the LIVE attempt mid-run and
+        # (full-tier Docker load) reclaimed the live attempt mid-run and
         # produced a third ``started`` effect. 10 s keeps the reclaim path
         # the test asserts on (the lease expires during the ~22 s outage)
         # while making a mid-run stall-reclaim need a >10 s stall. See the
@@ -561,7 +561,7 @@ async def test_pg_restart_isolates_worker_and_recovers_on_replacement(
     ) as replacement_worker:
         clock.mark("replacement worker ready (fresh heartbeat in DB)")
 
-        # The failure-context dump for BOTH phase waits below: what the
+        # The failure-context dump for both phase waits below: what the
         # poll loops last observed plus both workers' own logs, so a budget
         # expiry is attributable (reclaim never happened / attempt starved
         # mid-run / replacement re-isolated) without a manual reproduction.
@@ -595,10 +595,10 @@ async def test_pg_restart_isolates_worker_and_recovers_on_replacement(
         # reclaims the expired lock, records attempt 1 as crashed, and
         # re-pends with the deterministic [4, 6] s hand-back delay; the job
         # re-dispatches and the actor runs. The observable completion event
-        # is the SECOND 'started' effect: the actor only executes after a
-        # claim, so its presence IS the first successful claim. This phase
+        # is the second 'started' effect: the actor only executes after a
+        # claim, so its presence is the first successful claim. This phase
         # waits only for that event, on its own derived budget (_RECLAIM_
-        # TIMEOUT) - a claim that never lands fails HERE, naming the phase,
+        # timeout) - a claim that never lands fails here, naming the phase,
         # instead of expiring an undifferentiated wall later.
         async def _replacement_claimed() -> bool:
             started = await fetch_effects(chaos_pool, schema, run_id, kind="started")
@@ -628,7 +628,7 @@ async def test_pg_restart_isolates_worker_and_recovers_on_replacement(
         # The claim is observed; what remains is the actor's bounded work
         # (the 30 s sleep) and the terminal write, on the derived
         # _TERMINAL_TIMEOUT. The wait-timeout report carries the last
-        # observed row (status AND attempt) plus the context dump.
+        # observed row (status and attempt) plus the context dump.
         await wait_terminal_with_diagnostics(
             handle,
             timeout=_TERMINAL_TIMEOUT,

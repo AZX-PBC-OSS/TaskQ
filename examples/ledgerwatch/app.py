@@ -8,7 +8,7 @@ Three graphs:
     review run opens; clearable -> auto-clear) -> report.
 
 ``txn_review``
-    ONE transaction's human approval: the HITL hold (``wait_signal``
+    one transaction's human approval: the HITL hold (``wait_signal``
     with a timeout); the resolved arm returns the typed verdict; the
     Expired arm escalates to the compliance queue (durable, idempotent).
 
@@ -17,7 +17,7 @@ Three graphs:
     body ENFORCES the schedule, never trusts the wake) -> the pass ->
     the typed report.
 
-WHY THE REVIEW IS ITS OWN RUN (an adoption shape, recorded with the
+WHY the REVIEW IS ITS own RUN (an adoption shape, recorded with the
 evidence that forced it): a hold's identity is
 ``(workflow_id, node_key, signal_name, hold_epoch)`` — map SIBLINGS of
 one step share ``node_key``, so two HIGH-risk transactions holding
@@ -27,7 +27,7 @@ filed as friction F2). The per-transaction review run gives every hold
 its own node key — the concurrent-holds promise holds — and the review
 run's id is the address the operator's console resolves.
 
-THE DEPS SEAM: one ``LedgerWatchDeps`` instance bound at the app's
+One ``LedgerWatchDeps`` instance bound at the app's
 door; bodies opt in by declaring the parameter. No module globals, no
 reaching through ``ctx``.
 """
@@ -89,14 +89,14 @@ from taskq.workflows import (
 # ── the app registry (the wiring's cross-references) ────────────────────
 
 #: The compiled faces by role (build_app records them; a body that
-#: triggers ANOTHER workflow's run resolves the compiled face here —
+#: triggers another workflow's run resolves the compiled face here —
 #: the same app, the same definitions' registry).
 _APPS: dict[str, WorkflowApp] = {}
 
 
 @dataclass(frozen=True, slots=True)
 class LedgerWatchDeps:
-    """The ONE deps instance the app binds (the DI capability's door).
+    """The one deps instance the app binds (the DI capability's door).
 
     The pool is handed out LAZILY (:class:`LazyPool`): the deps
     instance is constructed at import time (the worker's boot
@@ -130,7 +130,7 @@ def build_app(
     profile: DynamicsProfile | None = None,
     pools: LazyPool | None = None,
 ) -> WorkflowApp:
-    """The app factory: the deps bound ONCE at the door, all three
+    """The app factory: the deps bound once at the door, all three
     graphs wired."""
     app = WorkflowApp(
         deps=LedgerWatchDeps(
@@ -141,7 +141,7 @@ def build_app(
             pools=pools or LazyPool(dsn),
         )
     )
-    # The compiled faces, bound BEFORE any body can reach them.
+    # The compiled faces, bound before any body can reach them.
     _APPS["review"] = app
     _wire_ledger_watch(app)
     _wire_txn_review(app)
@@ -162,7 +162,7 @@ class IngestProgress(BaseModel):
 async def ingest_body(
     ctx: StepContext, params: Batch, deps: LedgerWatchDeps
 ) -> list[TransactionRecord]:
-    """The run's OWN input is the truth (the caller's input is never
+    """The run's own input is the truth (the caller's input is never
     accepted-and-ignored): the wiring's declared batch is the default
     the trigger's ``create_flow(input=…)`` overrides. The delivery is
     recorded at the app's own table (the at-least-once feed's dedup
@@ -184,7 +184,7 @@ async def enrich_item(
     """Per-transaction enrichment — the map's item child. The EXTERNAL
     call rides the mock API (the adverse world lives there).
 
-    THE CLIENT'S OWN RETRY POLICY (recorded — finding F3): the
+    CLIENT'S own RETRY POLICY (recorded — finding F3): the
     framework's map-item ladder caps at 3 attempts regardless of the
     wired ``max_attempts`` (the row carries the value; the ladder does
     not honor it — the always-fail probe's evidence is in the finding
@@ -192,13 +192,13 @@ async def enrich_item(
     here, in the body: every retry is its own journalled call, and the
     engine's ladder stays for what ladders are for (crashes, reclaims).
 
-    THE CALL IS NOT SUBSTEP-LEDGERED (a measured adoption decision):
+    CALL IS not SUBSTEP-LEDGERED (a measured adoption decision)
     the substep's replay-dedup taxed the fan-out EIGHT-fold (A/B on a
     300-child batch: max in-flight 32 -> 4, 10.1 s -> 27.1 s — the
     ledger claim serializes concurrent map children; finding F4), and
     the enrichment call tolerates the at-least-once boundary (the
     verdict is a pure function of the transaction; a body re-run after
-    a crash re-calls the API and lands the SAME verdict). A substep
+    a crash re-calls the API and lands the same verdict). A substep
     stays for the calls that canNOT tolerate a re-run."""
     await ctx.progress(None, f"enriching {txn.txn_id}", None)
     last = deps.settings.enrich_client_retries - 1
@@ -230,9 +230,9 @@ async def branch_body(
 async def queue_for_review(
     ctx: StepContext, txn: HighRiskTxn, deps: LedgerWatchDeps
 ) -> PendingReviewTxn:
-    """THE HIGH-RISK ARM: open ONE review run for the transaction
+    """Open one review run for the transaction
     (idempotent by the run key — the feed's re-delivery and this body's
-    own re-execution land on the SAME run). The hold lives THERE; this
+    own re-execution land on the same run). The hold lives THERE; this
     pipeline continues."""
     batch = Batch.model_validate(ctx.input) if ctx.input is not None else None
     runner = FlowRunner(_APPS["review"].get("txn_review"), await deps.pool(), deps.schema)
@@ -252,7 +252,7 @@ async def queue_for_review(
 
 
 async def auto_clear(ctx: StepContext, txn: ClearableTxn) -> ClearedTxn:
-    """THE CLEAR ARM: below the threshold, the machine's word is final."""
+    """Below the threshold, the machine's word is final."""
     _ = ctx
     return ClearedTxn(kind="cleared", txn_id=txn.txn_id)
 
@@ -282,10 +282,10 @@ async def report_body(
 
 
 async def review_body(ctx: StepContext, req: ReviewRequest, deps: LedgerWatchDeps) -> ReviewVerdict:
-    """THE HITL FACE: the typed wait with a timeout. The resolved arm
+    """The typed wait with a timeout. The resolved arm
     returns the verdict; the Expired arm escalates to the compliance
-    queue (the fail-close the typed union forces) — ONE durable row,
-    ever (ON CONFLICT no-op under any re-execution). The run's OWN
+    queue (the fail-close the typed union forces) — one durable row,
+    ever (ON CONFLICT no-op under any re-execution). The run's own
     input is the truth (the wiring's declared request is the default)."""
     raw = ctx.input if ctx.input is not None else req
     req = ReviewRequest.model_validate(raw)
@@ -313,7 +313,7 @@ async def review_body(ctx: StepContext, req: ReviewRequest, deps: LedgerWatchDep
 
 
 async def _arm_timer(ctx: StepContext, deps: LedgerWatchDeps) -> str:
-    """The schedule, memoized ONCE by the step ledger: the timer's
+    """The schedule, memoized once by the step ledger: the timer's
     deadline is the ARM time + the delay — a resume replays this value
     (never re-arms), so the schedule cannot drift under retries."""
     now = await deps.store.db_now()
@@ -350,7 +350,7 @@ async def _run_recon_pass(deps: LedgerWatchDeps) -> tuple[str, ReconReport, obje
 
 
 async def recon_body(ctx: StepContext, deps: LedgerWatchDeps) -> ReconReport:
-    """THE DURABLE TIMER: the hold's DB-clock deadline IS the tick.
+    """The hold's DB-clock deadline IS the tick.
 
     The wake's face is the typed union: ``Expired`` = the timer fired
     (the normal face — nobody delivers this hold), a delivered
@@ -390,10 +390,9 @@ async def recon_body(ctx: StepContext, deps: LedgerWatchDeps) -> ReconReport:
 def _wire_ledger_watch(app: WorkflowApp) -> None:
     @app.workflow("ledger_watch")
     def ledger_watch() -> Promise[object]:
-        # THE SPLIT PLACEMENT (one actor, one queue): the ingest step
-        # carries the ENRICH cohort (the map's children inherit the
-        # source's actor); the branch, the arms and the report ride the
-        # cpu cohort.
+        # one actor, one queue. the ingest step carries the enrich cohort (the
+        # map's children inherit the source's actor); the branch, the arms and
+        # the report ride the cpu cohort.
         ingested = step(
             ingest_body,
             Batch(batch_id="unwired", transactions=[]),
@@ -463,7 +462,7 @@ def _recon_gate():
     )
 
 
-#: THE app (the worker entry and the triggers import this): the env's
+#: the app (the worker entry and the triggers import this): the env's
 #: settings + the env's dynamics profile, recorded at the door.
 app = build_app(
     dsn=os.environ.get("TASKQ_PG_DSN", "postgresql://taskq:taskq@localhost:5432/taskq"),

@@ -1,14 +1,14 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 """ATTACK tests around the prune ghost pins (branch fix/prune-archive-ghost-row).
 
-The deterministic injection pins (test_leader_prune.py) fix ONE
+The deterministic injection pins (test_leader_prune.py) fix one
 interleaving each. These attacks hunt AROUND them:
 
 * Gather-shaped races - many trials of real concurrent retries,
   re-terminalizations (old-stamp, zero-age, and half-age shapes) and a
   second concurrent prune, across batch sizes and statement timeouts.
   The master invariant is asserted on every trial: every seeded job is
-  ALWAYS exactly one of live (jobs) or archived (jobs_archive), an
+  always exactly one of live (jobs) or archived (jobs_archive), an
   archived row is terminal with a truthful finished_at, and its
   archived_at - finished_at age is at least the retention the write
   statement's lock-time re-check claims to verify (a zero-age archive
@@ -77,7 +77,7 @@ async def assert_master_invariant(
     retention: timedelta = _RETENTION,
     seeded: set[uuid.UUID] | None = None,
 ) -> None:
-    """Every job is ALWAYS exactly one of live or archived; an archived
+    """Every job is always exactly one of live or archived; an archived
     row is terminal with a truthful terminal version and an age at least
     the retention the lock-time re-check verifies; no seeded job is lost."""
     live = await conn.fetch(f"SELECT * FROM {schema}.jobs")
@@ -136,12 +136,12 @@ async def _racer(
                 if row is not None:
                     landed += 1
             elif shape == "reterm_old":
-                # Retry then re-terminalize at the OLD stamp: the row
+                # Retry then re-terminalize at the old stamp: the row
                 # stays a valid, genuinely-aged candidate.
                 await conn.execute(reterm_old, "succeeded", _OLD, jid)
                 landed += 2
             elif shape == "reterm_zero_age":
-                # Retry then re-fail NOW: terminal again but zero seconds
+                # Retry then re-fail now: terminal again but zero seconds
                 # old - the shape the age re-check must keep out.
                 await conn.fetchrow(retry_sql, jid)
                 await conn.execute(reterm_zero_age, "succeeded", jid)
@@ -270,7 +270,7 @@ async def test_gather_race_never_loses_a_job(
 async def test_retry_committed_before_the_candidate_snapshot_is_untouched(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """A retry that commits BEFORE the prune's candidate window makes the
+    """A retry that commits before the prune's candidate window makes the
     row live-pending: the window must not select it, nothing about the
     row may move."""
     await _apply(pg_conn, settings)
@@ -390,7 +390,7 @@ async def test_archive_carries_the_true_terminal_version(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
     """Jobs archived with varying claim counts (attempt) and fully
-    populated fields must surface in jobs_archive with EVERY mirrored
+    populated fields must surface in jobs_archive with every mirrored
     column equal to the live row's last terminal version - the archive
     is the row's truthful history, not a reconstruction."""
     await _apply(pg_conn, settings)

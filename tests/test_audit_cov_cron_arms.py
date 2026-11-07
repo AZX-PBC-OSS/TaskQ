@@ -1,6 +1,6 @@
 """Audit-coverage pins: the cron tick's attribution and telemetry arms.
 
-Every test here was written failing-first against a specific uncovered line
+Every test here was written against a specific uncovered line
 (the audit-cov census, branch feat/audit-coverage); each documents the
 arm it closes, and each was mutation-proven (flipping the target line
 makes the test fail).

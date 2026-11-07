@@ -126,9 +126,9 @@ async def test_list_jobs_order_by_scheduled_at_asc_matches_default() -> None:
 def test_job_filter_accepts_a_cursor_with_every_ordering() -> None:
     """A cursor is valid with every ordering, not just the default.
 
-    The boundary used to reject the combination outright because the two
+    A boundary that rejects the combination outright fails because the two
     DESC orderings tie-broke on ``id`` in the opposite direction to their
-    primary column, which no keyset comparison can express. Now that each
+    primary column, which no keyset comparison can express. Each
     ordering runs ``id`` with its primary column and carries its own
     cursor shape, the refusal has nothing left to protect against -
     ``test_backend_equivalence`` pages every ordering end to end on both

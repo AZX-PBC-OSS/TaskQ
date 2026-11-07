@@ -10,7 +10,7 @@ cannot be reused for host-spawned workers: its ``from e2e.actors import
 ``test_workgroup.py`` points at ``tests.e2e.host_actors:ACTORS``.
 
 DI constraint: the CLI worker path (cli.py ``worker``) calls
-``worker_main`` WITHOUT a ``di_registry``, so the bootstrap's default
+``worker_main`` without a ``di_registry``, so the bootstrap's default
 registry is used. It registers the worker's own pool as the LOOP-scope
 ``asyncpg.Pool`` provider (worker/_bootstrap.py), which covers every actor
 that injects only ``pool``. Actors needing custom providers

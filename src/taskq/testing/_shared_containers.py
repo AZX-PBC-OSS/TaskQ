@@ -1,21 +1,21 @@
-"""Shared test-container machinery: ONE Postgres + ONE Dragonfly per pytest invocation.
+"""Shared test-container machinery: one Postgres + one Dragonfly per pytest invocation.
 
-Under pytest-xdist every worker process gets its own fixture ``session``, a
-``-n 4`` run with the old per-worker session containers booted **four Postgres
+Under pytest-xdist every worker process gets its own fixture ``session``; a
+``-n 4`` run with per-worker session containers boots **four Postgres
 plus four Dragonfly containers**, all hammering the same Docker daemon. That
 contention is the measured cause of heavy PG tests (property-sweep equivalence,
 state-transition equivalence, Postgres sweeps, sliding-window rate limits)
-tripping internal timeouts intermittently: they passed in isolation and failed
+tripping internal timeouts intermittently: they pass in isolation and fail
 under ``-n 4``. The tuning is inherited from the implementation this design was
 ported from, measured there: one tuned container instead of four contending ones,
 and per-worker forced ``DROP DATABASE`` checkpoints that went from 2-14s each
 (worst 14.46s) to 0.05s.
 
-Blast-radius trade-off, stated next to that tuning rationale: ONE shared
+Blast-radius trade-off, stated next to that tuning rationale: one shared
 container concentrates the failure signature of an out-of-band ``docker rm``
 or daemon crash onto every worker at once, an instrumented kill of the shared
 pair errored ~84 tests across every PG module, vs ~1/4 of the run per worker
-under the old per-worker topology. That concentration is inherent to sharing
+when each worker boots its own pair. That concentration is inherent to sharing
 and accepted for the contention win above; the ``[TaskQ]`` decision logs below
 (``pair-started`` / ``pair-reused`` / ``pair-fresh-started`` / ``pair-stopped``
 / ``swept``) exist so such an event is diagnosable from the run's output.
@@ -23,7 +23,7 @@ and accepted for the contention win above; the ``[TaskQ]`` decision logs below
 How the sharing works: the first session fixture to take a file lock (under the
 per-invocation state dir, :func:`invocation_state_dir`, shared by every xdist
 worker of the invocation and visible to no other invocation, of this repo or
-any other) starts BOTH containers and publishes connection info to a JSON state
+any other) starts both containers and publishes connection info to a JSON state
 file; every other session fixture (in any worker of the invocation) reuses it.
 References are tracked as HOLDER PIDS in a per-invocation registry, not as a
 bare counter, so the pair comes down when the last LIVE holder of the
@@ -62,7 +62,7 @@ from taskq._json import loads as _json_loads
 # container when the *registering* process exits, and the creator worker can
 # finish before other workers, Ryuk would reap the shared containers mid-run.
 # Lifecycle is explicit instead (holder registry + docker rm by the last live
-# reference to release). This also disables Ryuk for this process's OTHER testcontainers
+# reference to release). This also disables Ryuk for this process's other testcontainers
 # (disposable chaos containers), which is why those are labeled with
 # ``creator_labels()`` too: a crashed run's leftovers must stay sweepable.
 os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
@@ -74,16 +74,16 @@ os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 CREATOR_PID_LABEL = "taskq.test.creator-pid"
 CONTROLLER_PID_LABEL = "taskq.test.controller-pid"
 
-# The owner-label convention is GENERIC, and no project is named in it: any project on
+# The owner-label convention is generic, and no project is named in it: any project on
 # this shared Docker daemon may label its test containers with any key ending in
 # ``.test.creator-pid`` / ``.test.controller-pid``, and every checkout's sweep honors
-# ANY key of that shape — a stale sweep here never kills another checkout's live run.
+# any key of that shape — a stale sweep here never kills another checkout's live run.
 # See the sweep rules below.
 OWNER_PID_LABEL_RE = re.compile(r".*\.test\.(creator|controller)-pid$")
 
 
 def creator_labels() -> dict[str, str]:
-    """This process's pid AND its parent's (the xdist controller when workers spawn the
+    """This process's pid and its parent's (the xdist controller when workers spawn the
     containers, the invoking shell under ``-n0``): the creating xdist WORKER can
     legitimately exit before sibling workers finish, so one pid is not enough to prove
     the owning run is alive.
@@ -127,10 +127,10 @@ def labeled_pids(labels: Mapping[str, str]) -> list[int]:
 
 # The shared pair's Postgres image. Overridable via ``TASKQ_TEST_PG_IMAGE`` so
 # CI's version-matrix legs (and a developer verifying the window locally) can
-# point the SAME suite at another major: the supported-PG-window claim in
-# README/docs is proven by running this harness against postgres:15/16/17, not
+# point the same suite at another major: the supported-PG-window claim in
+# readme/docs is proven by running this harness against postgres:15/16/17, not
 # asserted. Must stay a full ``name:tag`` ref and keep the ``-alpine`` tag
-# family: the sweep-prefix list below is derived from THIS value, so an
+# family: the sweep-prefix list below is derived from this value, so an
 # overridden image is sweepable exactly when the default is.
 _PG_IMAGE_DEFAULT = "postgres:18-alpine"
 _PG_IMAGE = os.environ.get("TASKQ_TEST_PG_IMAGE", _PG_IMAGE_DEFAULT)
@@ -139,14 +139,14 @@ _PG_PASSWORD = "taskq"  # noqa: S105 # Why: throwaway test-container credential;
 _PG_DBNAME = "taskq"
 # Server settings for the throwaway shared test cluster.
 #
-# ``max_connections=1000``: ONE container now serves EVERY xdist worker, ``-n auto``
+# ``max_connections=1000``: one container now serves every xdist worker, ``-n auto``
 # on a 32-core machine opens 32 x ~22 connections = ~700 against it, well past
 # PostgreSQL's default of 100.
 #
 # The durability/checkpoint settings come from the measured failure mode that made the
 # old per-worker sessions flaky under ``-n 4``: TaskQ's fixtures force a cluster-wide
-# checkpoint on every module teardown (``DROP DATABASE ... WITH (FORCE)``) and every
-# per-test reset (``DROP SCHEMA ... CASCADE``), and on a shared cluster every worker's
+# checkpoint on every module teardown (``drop database ... with (force)``) and every
+# per-test reset (``drop SCHEMA ... CASCADE``), and on a shared cluster every worker's
 # forced checkpoint queues behind every other worker's. With default settings that
 # checkpoint has to fsync the whole dirty buffer pool; the numbers are inherited
 # from the implementation this design was ported from, measured there at 4 workers:
@@ -165,33 +165,33 @@ _PG_COMMAND = (
     " -c checkpoint_timeout=3600"
 )
 
-# Dragonfly is a drop-in Redis replacement (RESP wire protocol, EVALSHA, FLUSHDB, all
+# Dragonfly is a drop-in Redis replacement (resp wire protocol, evalsha, flushdb, all
 # verified); pinned by tag for reproducibility.
 DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.0"
 
-# Dragonfly sizes its memory requirement as proactor_threads x 0.25GiB and EXITS at
-# startup if host RAM doesn't cover it ("There are N threads, so X GiB are required.
+# Dragonfly sizes its memory requirement as proactor_threads x 0.25GiB and exits at
+# startup if host ram doesn't cover it ("There are N threads, so X GiB are required.
 # Exiting..."). On high-core hosts (32-core WSL2 dev boxes) that demand (8GiB) exceeds
-# what the Docker VM offers, the container dies before readiness, and testcontainers
+# what the Docker vm offers, the container dies before readiness, and testcontainers
 # hangs until the pytest timeout. Pin 2 threads / 512MiB: functional chaos/ratelimit
-# tests need neither cores nor RAM, and the pins make startup deterministic regardless
+# tests need neither cores nor ram, and the pins make startup deterministic regardless
 # of host size.
 DRAGONFLY_RESOURCE_FLAGS = "--proactor_threads 2 --maxmemory 512mb"
 
 # Logical DBs available for per-module / per-test allocation (Dragonfly caps --dbnum
-# at 1024; DB 0 is reserved for ad-hoc use). The budget is per PAIR, and the pair is
+# at 1024; DB 0 is reserved for ad-hoc use). The budget is per pair, and the pair is
 # per invocation, so it sizes one invocation's consumers, one DB each across all of
 # its workers, see ``next_redis_logical_db``.
 REDIS_DB_POOL_SIZE = 1024
 
-# Only containers running these EXACT images are sweep candidates: the shared pair and
-# TaskQ's disposable chaos containers all use them. The PG entries are the CONFIGURED
-# image (``_PG_IMAGE``, ``TASKQ_TEST_PG_IMAGE``-overridable) AND the default, so a
+# Only containers running these exact images are sweep candidates: the shared pair and
+# TaskQ's disposable chaos containers all use them. The PG entries are the configured
+# image (``_PG_IMAGE``, ``TASKQ_TEST_PG_IMAGE``-overridable) and the default, so a
 # version-matrix leg's containers are swept by the same rule as the default's — and a
 # flip between the override and the default (the seam's stated developer workflow, a
 # version-matrix leg on a dev box) can never strand the other one's crashed-run
 # leftovers: the prefix check precedes the ``SWEEP_AGE_LIMIT`` backstop, so an image
-# outside this list is an ETERNAL leak, not a delayed sweep. Under the default env the
+# outside this list is an eternal leak, not a delayed sweep. Under the default env the
 # two PG entries coincide. Deliberately not a bare
 # ``postgres`` repository prefix, the docker-compose dev stack runs versioned
 # ``postgres:18.x`` tags (same repository, different tag), and a repository-wide
@@ -200,7 +200,7 @@ REDIS_DB_POOL_SIZE = 1024
 #
 # ``taskq-e2e-worker`` (tagged ``taskq-e2e-worker-r<pid>:sha-<hash>`` by
 # containerspec, pid-owned repository names, so each session's teardown
-# removes exactly its own image) is in by IMAGE PREFIX rather than via a
+# removes exactly its own image) is in by image prefix rather than via a
 # generic ``taskq.test-managed`` label honored
 # by the sweep: the name is a repo-owned constant, so this one entry makes every e2e
 # worker-container creation site (a dozen across tests/e2e, and any future one) a
@@ -248,13 +248,13 @@ def should_sweep_stale_container(
        unrelated live process; the age backstop is what stops such a phantom shielding
        a leftover forever.
     4. Ownership label present (ours or any project's, ``OWNER_PID_LABEL_RE``) →
-       sweep iff EVERY labeled pid is dead. Two pids because the creating xdist worker
+       sweep iff every labeled pid is dead. Two pids because the creating xdist worker
        can legitimately exit first (see ``creator_labels``). The labels alone carry the
        cross-invocation guarantee, by construction: a pair belongs to exactly one
        invocation (:func:`invocation_state_dir`, no other invocation can even find its
        state file), and while that invocation is alive, the creating worker or the
        xdist controller (under ``-n0``, the pytest process itself) is alive too. All
-       labeled pids dead therefore means no live invocation of ANY repo is using the
+       labeled pids dead therefore means no live invocation of any repo is using the
        container, the foreign label shapes are honored for exactly that reason. A
        liveness-blind sweep killing concurrently running sessions' containers was the
        ~98x ConnectionRefusedError flake class in the implementation this design was
@@ -397,7 +397,7 @@ def skip_test_without_docker() -> None:
     """Skip the current test with an explanatory reason when the Docker
     daemon is unreachable.
 
-    Every container-dependent fixture calls this FIRST, so a machine without
+    Every container-dependent fixture calls this first, so a machine without
     a running daemon sees SKIPPED tests with instructions, never fixture
     ERRORS, the same skip-with-reason discipline the suite already applies
     to missing extras and platform limits. A Docker-less agent can still run
@@ -459,7 +459,7 @@ def _remove_stale_networks(client: _DockerClientLike, now: datetime) -> int:
 
 
 def cleanup_stale_testcontainers() -> None:
-    """Remove stale testcontainers AND stale e2e networks from crashed runs
+    """Remove stale testcontainers and stale e2e networks from crashed runs
     before starting fresh ones.
 
     The keep/remove decisions live in :func:`should_sweep_stale_container`
@@ -522,9 +522,9 @@ def start_shared_services() -> SharedServices:
     pg.start()
     redis = (
         RedisContainer(image=DRAGONFLY_IMAGE)
-        # --dbnum 1024 so every consumer (module or test function, across ALL workers)
+        # --dbnum 1024 so every consumer (module or test function, across all workers)
         # gets its own logical DB, the 16-DB default would force sharing, and sharing
-        # lets one consumer's FLUSHDB wipe another's mid-run state.
+        # lets one consumer's flushdb wipe another's mid-run state.
         .with_command(f"--dbnum {REDIS_DB_POOL_SIZE} {DRAGONFLY_RESOURCE_FLAGS}")
         .with_kwargs(labels=owner_labels)
     )
@@ -600,7 +600,7 @@ def invocation_state_dir(factory: _TempPathFactoryLike) -> Path:
      level below the invocation dir, while a serial run's basetemp IS the
      invocation dir (``pytest-N``); pytest allocates a fresh numbered dir per
      invocation and never reuses one. So the parent of a worker basetemp, or a
-     serial basetemp itself, is a directory exactly ONE invocation owns: the
+     serial basetemp itself, is a directory exactly one invocation owns: the
      pair's state files and holder registry live there, and no other invocation
     , of this repo or any other, can find them. A custom ``--basetemp`` that
      names the same path for two runs opts into that sharing explicitly, the
@@ -653,20 +653,20 @@ def _read_int(path: Path) -> int:
 # ============================================================================================
 #
 # Why a registry at all, when the containers already carry pid labels: the labels
-# prove the OWNING invocation is alive (the creating worker and the xdist controller
-# it recorded, see ``creator_labels``), but not HOW MANY session fixtures of that
+# prove the owning invocation is alive (the creating worker and the xdist controller
+# it recorded, see ``creator_labels``), but not how many session fixtures of that
 # invocation still hold the pair. The creating worker can exit before its siblings
-# finish, and the pair must come down exactly when the LAST holder of the invocation
+# finish, and the pair must come down exactly when the last holder of the invocation
 # releases, not when the creator exits, and not while any sibling still runs. So
-# every acquire records ITS OWN pid against the container ids it holds, dead holders
+# every acquire records its own pid against the container ids it holds, dead holders
 # are pruned on every access (a killed worker neither wedges the pair up forever nor
 # tears it down under a survivor), and the release that leaves no live holder owns
 # the teardown.
 #
 # The registry lives under the invocation's state dir (see ``invocation_state_dir``)
-# because that is exactly its visibility requirement: only the workers of ONE
+# because that is exactly its visibility requirement: only the workers of one
 # invocation can reach that invocation's state file, so only they can ever hold
-# references to its pair. Pid recycling can only ever KEEP a container (fail-safe);
+# references to its pair. Pid recycling can only ever keep a container (fail-safe);
 # ``SWEEP_AGE_LIMIT`` bounds that leak.
 
 _HOLDERS_FILENAME = "holders.json"
@@ -675,7 +675,7 @@ _HOLDERS_LOCK_FILENAME = "holders.lock"
 
 @contextmanager
 def _holder_registry(state_dir: Path) -> Generator[Path, None, None]:
-    """The invocation's registry file, under its own lock. Always taken INSIDE the
+    """The invocation's registry file, under its own lock. Always taken inside the
     pair lock where both are held, so the two never deadlock against each other."""
     from filelock import FileLock
 
@@ -733,7 +733,7 @@ def release_container_holders(
     container_ids: Iterable[str], *, state_dir: Path, pid: int | None = None
 ) -> bool:
     """Retire one reference held by *pid* on each of *container_ids* in *state_dir*'s
-    registry; return whether NO live holder remains on any of them, i.e. whether
+    registry; return whether no live holder remains on any of them, i.e. whether
     this release is the last one and the caller owns the teardown."""
     holder = os.getpid() if pid is None else pid
     ids = list(container_ids)
@@ -792,7 +792,7 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
     every xdist worker of the invocation shares it, and no other invocation of any
     repo can find it); later callers, in any worker of the invocation, reuse it.
     Each acquire registers its own pid as a holder of the pair's containers and each
-    release retires it; the pair is torn down by the release that leaves NO live
+    release retires it; the pair is torn down by the release that leaves no live
     holder. A recorded pair that no live process holds and whose labeled owners are
     all dead (every trace of the invocation that owned this state dir is gone) is
     removed and re-created rather than reused, and stale containers from crashed runs
@@ -831,9 +831,9 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
                     release_container_holders(recorded, state_dir=state_dir)
                     fresh_start_reason = "recorded-containers-not-running"
                 elif already_held or services_have_live_owner(candidate):
-                    # Either liveness signal keeps the pair: a live HOLDER (a sibling
+                    # Either liveness signal keeps the pair: a live holder (a sibling
                     # worker of this invocation is using it right now, whether or not
-                    # it started it) or a live labeled OWNER (the registry file was
+                    # it started it) or a live labeled owner (the registry file was
                     # wiped, or the pair was started between the two writes). Only
                     # when both say "nobody" is the pair a dead run's leftover and
                     # safe to replace. The claim above is this acquire's own reference.
@@ -870,7 +870,7 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
                 (info.pg_container_id, info.redis_container_id), state_dir=state_dir
             ):
                 stop_shared_services(info)
-                # Only OUR pair's record: a fresh start by another worker may have
+                # Only our pair's record: a fresh start by another worker may have
                 # already replaced the file, and unlinking that would strand its pair.
                 if _recorded_pair_is(info_path, info):
                     info_path.unlink(missing_ok=True)
@@ -881,11 +881,11 @@ def next_redis_logical_db(state_dir: Path) -> int:
     """The next globally-unique logical DB index on the shared Dragonfly.
 
     Old topology note: with per-worker containers, a per-process counter was enough ,
-    each worker's DBs lived in its own Dragonfly. On the ONE shared Dragonfly two
-    workers' local counters would hand the SAME DB to different consumers, and one
+    each worker's DBs lived in its own Dragonfly. On the one shared Dragonfly two
+    workers' local counters would hand the same DB to different consumers, and one
     consumer's FLUSHDB would wipe another's mid-run state. Allocation therefore draws
     from one file-backed counter under the pair's lock, so every consumer (module or
-    test function) across EVERY worker is unique. The counter is reset when a fresh
+    test function) across every worker is unique. The counter is reset when a fresh
     pair starts (the DBs die with the container) and never wraps around, exhaustion
     raises loudly instead of silently sharing.
     """

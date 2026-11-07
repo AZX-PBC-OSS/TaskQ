@@ -14,24 +14,24 @@ TaskQ's shipped statement-cache tuning (``statement_cache_size=512``,
 
 * **ADD COLUMN (the safe migration) rides through.** Cached plans over the
   old column set stay valid (fast defaults, no plan invalidation), and an
-  old-shape INSERT that omits the new NOT NULL DEFAULT column reads the
+  old-shape INSERT that omits the new not NULL DEFAULT column reads the
   default back invisibly. No error of any class reaches the worker.
 * **A result-type change (``ALTER COLUMN TYPE``, a ``DROP COLUMN`` under
   ``SELECT *``) surfaces as ``InvalidCachedStatementError`` (SQLSTATE
-  0A000) from statements running INSIDE a transaction**, where asyncpg
+  0A000) from statements running inside a transaction**, where asyncpg
   cannot retry invisibly. Outside a transaction the driver retries once
   and clears the pool-wide statement cache, so autocommit statements never
   see it. The next tick re-prepares against the new schema and succeeds
   with no pool recycle: this family is infrastructure, retryable.
 * **A DROP/RENAME of a column old code still names re-prepares into
-  ``UndefinedColumnError`` (42703) on EVERY subsequent execution, forever.**
+  ``UndefinedColumnError`` (42703) on every subsequent execution, forever.**
   The SQL text itself is now wrong, not the cache. That is the
   expansion-then-contract contract being violated, and it must stay loud
   and fatal, never classified transient (a transient classification would
   livelock a fleet whose SQL can never succeed again).
 * **The migration's own lock queue freezes the fleet.** An ``ALTER TABLE``
   queues ACCESS EXCLUSIVE behind any open job transaction, and once
-  queued, EVERY later statement on that table queues behind the DDL - the
+  queued, every later statement on that table queues behind the DDL - the
   whole fleet freezes behind one migration waiting on one job. TaskQ's
   runner bounds the wait (``DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT``, 30s) so
   the freeze window is bounded and the DDL gives up (55P03) instead of
@@ -105,13 +105,13 @@ async def _drop_schema(pg_dsn: str, schema: str) -> None:
         await conn.close()
 
 
-# ── attack 2 + 3: ADD COLUMN, the safe migration ────────────────────────
+# ── attack 2 + 3: add column, the safe migration ────────────────────────
 
 
 async def test_add_column_not_null_default_rides_through_running_pool(
     pg_dsn: str,
 ) -> None:
-    """PIN: an ADD COLUMN ... NOT NULL DEFAULT, applied while a pool with
+    """PIN: an ADD COLUMN ... not NULL DEFAULT, applied while a pool with
     fully cached statements keeps running, is invisible to every old
     statement: cached SELECTs, in-transaction statements, and old-shape
     INSERTs that omit the new column (PG's fast default fills it, no
@@ -144,7 +144,7 @@ async def test_add_column_not_null_default_rides_through_running_pool(
         await pool.execute(f"SELECT id, status FROM {jobs} WHERE queue = $1", _QUEUE)
 
         # The old-shape INSERT rides through and the fast default is
-        # INVISIBLE to it: the row reads back carrying the column's
+        # invisible to it: the row reads back carrying the column's
         # default without the INSERT ever naming the column.
         row = await pool.fetchrow(
             f"""INSERT INTO {jobs}
@@ -160,7 +160,7 @@ async def test_add_column_not_null_default_rides_through_running_pool(
             f"got {row and row['attack_probe']!r}"
         )
 
-        # A statement that starts and runs INSIDE a transaction, the shape
+        # A statement that starts and runs inside a transaction, the shape
         # the per-slot pool and the terminal write use, rides through too.
         async with (
             pool.acquire() as conn,
@@ -229,7 +229,7 @@ async def test_result_type_change_in_txn_surfaces_transient_then_heals(
             "budget and crash-loop every worker instead of retrying next tick"
         )
 
-        # The heal: the NEXT tick, same pool, no recycle. asyncpg cleared
+        # The heal: the next tick, same pool, no recycle. asyncpg cleared
         # the pool-wide statement cache when the error surfaced; a fresh
         # prepare against the new schema just works.
         await pool.execute(f"SELECT * FROM {jobs} WHERE queue = $1", _QUEUE)
@@ -253,7 +253,7 @@ async def test_drop_referenced_column_is_loud_and_never_transient(
     is the expansion-then-contract contract being violated (the post
     phase applied while old pods still serve), and it must stay LOUD:
     42703 is never transient, it feeds the unexpected-error budget and
-    kills the worker deliberately. What must NOT break: unrelated
+    kills the worker deliberately. What must not break: unrelated
     statements on the same pool keep working, the pool is not poisoned."""
     schema = await _migrated_schema(pg_dsn, "atk_drop")
     pool = await asyncpg.create_pool(pg_dsn, **_worker_pool())  # pyright: ignore[reportCallIssue]
@@ -418,8 +418,8 @@ async def test_migration_lock_queue_freeze_is_bounded_by_lock_timeout(
 
         hot = asyncio.create_task(_hot_traffic())
         try:
-            # Unbounded DDL: the freeze window IS the job's lock hold. The
-            # queued ACCESS EXCLUSIVE parks every later SELECT behind it.
+            # Unbounded DDL: the freeze window is the job's lock hold. The
+            # queued access exclusive parks every later SELECT behind it.
             job = asyncio.create_task(_job_transaction(4.0))
             await asyncio.sleep(0.5)
             t0 = time.monotonic()

@@ -109,7 +109,7 @@ async def create_schedule(
 ) -> ScheduleRecord:
     """Insert a row into ``cron_schedules`` and return it.
 
-    Does NOT suppress ``UniqueViolationError``, callers handle it
+    Does not suppress ``UniqueViolationError``, callers handle it
     (the ``(actor, name)`` UNIQUE constraint).  ``next_fire_at`` is provided by the
     caller (computed client-side via ``compute_next_fire_after``).
 

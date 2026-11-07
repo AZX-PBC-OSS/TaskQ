@@ -48,7 +48,7 @@ def test_register_value_resolution() -> None:
     assert entry.factory_shape == FactoryShape.VALUE
 
 
-# ── PROCESS-scope register_value(Clock,...) preserves object identity ──
+# ── process-scope register_value(Clock,...) preserves object identity ──
 
 
 def test_clock_process_scope_object_identity() -> None:
@@ -134,7 +134,7 @@ def test_has_provider() -> None:
     assert registry.has_provider(_AsyncGraphClient) is False
 
 
-# ── ACM class registration: no warning, lifecycle set ─────────────────────────
+# ── acm class registration: no warning, lifecycle set ─────────────────────────
 
 
 class _ContextManagerClass:
@@ -155,7 +155,7 @@ def test_register_class_aenter_no_warning_lifecycle_set() -> None:
     assert entry.lifecycle == ProviderLifecycle.AsyncContextManager
 
 
-# ── SyncCloseable WARNING fires at registration ────────────────────────
+# ── SyncCloseable warning fires at registration ────────────────────────
 
 
 class _SyncCloseableClass:
@@ -174,7 +174,7 @@ def test_sync_closeable_warning_at_registration() -> None:
     assert entry.lifecycle == ProviderLifecycle.SyncCloseable
 
 
-# ── sync-ACM WARNING fires at registration ────────────────────
+# ── sync-acm warning fires at registration ────────────────────
 
 
 class _SyncContextManagerClass:
@@ -261,7 +261,7 @@ def test_factory_shape_detection(factory: object, expected_shape: FactoryShape) 
     assert registry.get(unique_type).factory_shape == expected_shape
 
 
-# ── sync-generator factory WARNING fires at registration ─────────────────
+# ── sync-generator factory warning fires at registration ─────────────────
 
 
 def test_sync_generator_warning_at_registration() -> None:
@@ -503,10 +503,10 @@ def test_shadow_derived_cycle_verdict_does_not_depend_on_entry_point() -> None:
     """Two providers in a dependency cycle, one of which also reaches a
     shadowed type: the walk must answer the same for either entry point.
 
-    Entering the walk at the non-shadow member used to answer False for
-    its partner (the cycle's back-edge truncated the walk before the
-    shadow dependency was visible) and cached that artifact, so a later
-    query at the clean entry point returned the poisoned memo.
+    Entering the walk at the non-shadow member must answer the same for
+    its partner (a walk truncated by the cycle's back-edge before the
+    shadow dependency is visible must not cache that artifact, or a later
+    query at the clean entry point returns the poisoned memo).
     """
     registry = ProviderRegistry()
     registry.register_value(_SlotConnection, Scope.LOOP, _SlotConnection())

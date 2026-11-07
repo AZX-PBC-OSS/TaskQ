@@ -14,7 +14,7 @@ first instance are invisible to items collected under the second).
 Fix: the web_admin fixtures live in :mod:`tests.web_admin._fixtures` and are
 registered from ``tests/conftest.py`` (loaded for every test regardless of
 argument order), so resolution no longer depends on conftest adjacency. The
-guards here pin BOTH orderings, plus a probe of pytest's own fixture
+guards here pin both orderings, plus a probe of pytest's own fixture
 resolution under interleaving that avoids the upstream bug's trigger (a
 nested conftest) and therefore runs unconditionally.
 """
@@ -27,7 +27,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The exact mixed argument list from the issue's verified repro: a web_admin
-#: file, a root-level file, then a SECOND web_admin file. The revisited
+#: file, a root-level file, then a second web_admin file. The revisited
 #: directory (``tests/web_admin``) is what triggers the upstream node-identity
 #: mismatch; every web_admin test in the last file errored before the fix.
 _INTERLEAVED_ARGS = (
@@ -46,7 +46,7 @@ _CONTROL_ARGS = (
 
 def _run_pytest(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run this interpreter's pytest on *args* from *cwd*."""
-    return subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the subprocess IS the system under test.
+    return subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the subprocess is the system under test.
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *args],
         cwd=cwd,
         env=os.environ.copy(),
@@ -85,7 +85,7 @@ def test_web_admin_fixtures_root_file_first_control() -> None:
     _assert_no_fixture_errors(_run_pytest(_REPO_ROOT, *_CONTROL_ARGS))
 
 
-# The upstream bug is specific to fixtures defined in a NESTED conftest.py:
+# The upstream bug is specific to fixtures defined in a nested conftest.py:
 # re-collection of the revisited directory builds a second ``Directory`` node
 # and fixture registration matches by node identity, so the nested conftest's
 # registrations vanish. Fixtures that do not ride a re-collected Directory
@@ -97,7 +97,7 @@ def test_web_admin_fixtures_root_file_first_control() -> None:
 # nested-conftest variant of this scenario can be added to probe the upstream
 # fix itself.
 def test_pytest_interleaved_arguments_resolve_fixtures(tmp_path: Path) -> None:
-    """Pin order-independent fixture resolution WITHOUT a nested conftest.
+    """Pin order-independent fixture resolution without a nested conftest.
 
     Mirrors the upstream issue's layout minus the nested conftest: the root
     ``conftest.py`` defines a fixture and each nested test file defines its

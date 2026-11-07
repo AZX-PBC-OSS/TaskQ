@@ -1,4 +1,4 @@
-"""The T08 status + progress pins: the derivation table's rows (each
+"""The state-totality status + progress pins: the derivation table's rows (each
 mutation-checked — flipping any two rows' precedence must red), the
 rows-only reconstruction (the kill-everything shape), the gauge's
 cardinality law (never per-node labels; the `_other_` collapse), the
@@ -8,7 +8,7 @@ and one-run-one-trace under concurrency.
 
 Driven against a live Postgres through the REAL engine; the derivation's
 pure function lives in ``taskq.workflows._status`` (the table stated
-BEFORE the failed row — the absorbed-failure clause, B2).
+before the failed row — the absorbed-failure clause, B2).
 """
 
 from __future__ import annotations
@@ -49,14 +49,14 @@ def _nodes(*statuses: str, **kwargs: Any) -> tuple[NodeView, ...]:
     return tuple(NodeView(status=s, deps_pending=kwargs.get("deps_pending", 0)) for s in statuses)
 
 
-# ── The derivation table's rows + the PRECEDENCE matrix ────────────────
+# ── The derivation table's rows + the precedence matrix ────────────────
 
 
-def test_t08_derivation_rows_precedence_matrix() -> None:
+def test_derivation_rows_precedence_matrix() -> None:
     """Every rule row exercised, IN ORDER — and each FLIP caught: swapping
     any two rows' precedence reds (the derivation is order-sensitive by
     the table's own contract). The absorbed-failure clause is stated
-    FIRST (B2): the partial-failure collect derives through its parent,
+    first (B2): the partial-failure collect derives through its parent,
     never failed."""
     # Row 1: any running → running (even with a failed node present —
     # the flip: failed-before-running would red this row).
@@ -65,18 +65,17 @@ def test_t08_derivation_rows_precedence_matrix() -> None:
     assert (
         derive_workflow_status((NodeView(status="pending", cancel_in_flight=True),)) == "running"
     ), "the cancel-in-flight leg"
-    # THE TERMINAL-CRASH FOLD (the crashed-terminal wedge's fix):
-    # crashed/abandoned are TERMINALS (the state machine gives them zero
-    # outbound transitions; no sweep arm ever reclaims them) — they fold
-    # into the failed-class terminal, never liveness. The old claim ("a
-    # crashed node is the reclaim's input — the run is live") was the
-    # wedge: the {succeeded, crashed} corpse derived 'running' forever.
+    # crashed/abandoned are terminals (the state machine gives them zero
+    # outbound transitions; no sweep arm ever reclaims them) — they fold into
+    # the failed-class terminal, never liveness. The old claim ("a crashed node
+    # is the reclaim's input — the run is live") was the wedge: the {succeeded,
+    # crashed} corpse derived 'running' forever.
     assert derive_workflow_status((NodeView(status="crashed"),)) == "failed", (
         "the terminal-crash fold: a crashed row is the failed-class "
         "terminal — the reclaim's input is 'running' only"
     )
 
-    # Row 2 (B2): the ABSORBED failure derives through its parent — a
+    # Row 2 (B2): the absorbed failure derives through its parent — a
     # collect's 3 Failed among 997 Ok derive complete, never failed; the
     # maybe-absorption the same.
     collect_partial = tuple(
@@ -91,7 +90,7 @@ def test_t08_derivation_rows_precedence_matrix() -> None:
         "the absorbed-failure clause: the partial-failure collect derives "
         "through the parent's outcome, never failed"
     )
-    # The flip: UN-absorb one of them → the failed row fires.
+    # The flip: un-absorb one of them → the failed row fires.
     un_absorbed = (*collect_partial[:-1], NodeView(status="failed"))
     assert derive_workflow_status(un_absorbed) == "failed", (
         "the flip is caught: one non-absorbed failure → failed"
@@ -121,8 +120,8 @@ def test_t08_derivation_rows_precedence_matrix() -> None:
     # failed-class terminal — the deterministic death (the reclaim's
     # crashed branch wrote it: the budget exhausted, nothing will ever
     # revive it; the state machine gives it zero outbound transitions).
-    # THE WEDGE'S PIN: the old row-1 read crashed as liveness and the
-    # {succeeded, crashed} corpse derived 'running' forever.
+    # the old row-1 read crashed as liveness and the {succeeded, crashed}
+    # corpse derived 'running' forever.
     assert derive_workflow_status(_nodes("succeeded", "crashed")) == "failed", (
         "the terminal-crash fold: a budget-exhausted crash terminal is the "
         "failed-class terminal — never liveness (the crashed-terminal wedge)"
@@ -136,7 +135,7 @@ def test_t08_derivation_rows_precedence_matrix() -> None:
         == "failed"
     )
     assert derive_workflow_status(_nodes("abandoned", "succeeded")) == "failed"
-    # The flip: the fold's ABSORPTION consistency — an ABSORBED crash
+    # The flip: the fold's absorption consistency — an absorbed crash
     # derives through its parent's outcome (the collect's partial-failure
     # clause reads the crash the way it reads the failure).
     assert (
@@ -145,7 +144,7 @@ def test_t08_derivation_rows_precedence_matrix() -> None:
         )
         == "complete"
     )
-    # And the fold loses ONLY to row 1's genuine liveness (a running row
+    # And the fold loses only to row 1's genuine liveness (a running row
     # — the reclaim's real input — or a cancel in flight), never to the
     # crash itself.
     assert derive_workflow_status(_nodes("running", "crashed")) == "running"
@@ -162,20 +161,20 @@ def test_t08_derivation_rows_precedence_matrix() -> None:
 
 
 @pytest.mark.integration
-async def test_t08_reconstruction_two_sources_rows_only(
+async def test_reconstruction_two_sources_rows_only(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     propagation_redlog: RedLog,
 ) -> None:
-    """Kill everything mid-run (the worker AND the admin), re-derive, and
+    """Kill everything mid-run (the worker and the admin), re-derive, and
     the status matches the pre-kill semantic state — reconstructed from
     ROWS ALONE: the ledger (the attempted terminals) + the node row's
     error jsonb (the never-granted terminals — a cancelled pending node,
-    a skip: NO ledger rows, the terminal CLASS rides the error row).
+    a skip: no ledger rows, the terminal CLASS rides the error row).
     Pinned so no status cache is ever introduced: the reconstruction
-    consults NO cached surface."""
+    consults no cached surface."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=2)
     child_a = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="a")
@@ -183,7 +182,7 @@ async def test_t08_reconstruction_two_sources_rows_only(
     await seed_edge(wf_conn, wf_schema, join_id, child_a, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, child_b, flow_id)
 
-    # a TERMINALIZES (an ATTEMPTED terminal — the ledger carries it).
+    # a terminalizes (an attempted terminal — the ledger carries it).
     await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -196,17 +195,17 @@ async def test_t08_reconstruction_two_sources_rows_only(
         outcome="succeeded",
         result={"ok": "a"},
     )
-    # b is CANCELLED while pending-never-granted (the cancel's own write —
-    # NO ledger row exists for it: the two-source rule's second source).
+    # b is cancelled while pending-never-granted (the cancel's own write —
+    # no ledger row exists for it: the two-source rule's second source).
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled', "
         "finished_at = now(), error_class = 'CancelledBeforeStart' WHERE id = $1",
         child_b,
     )
 
-    # THE KILL: no cache anywhere — the reconstruction is a pure read.
-    # The sweep's pass runs first (the rederive resolves the join: both
-    # parents terminal — the fired join is claimable, never blocked).
+    # no cache anywhere — the reconstruction is a pure read. The sweep's pass
+    # runs first (the rederive resolves the join: both parents terminal — the
+    # fired join is claimable, never blocked).
     await sweep_join_rederive(module_pg_pool, wf_sql)
     reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, flow_id)
     propagation_redlog.red(
@@ -220,10 +219,9 @@ async def test_t08_reconstruction_two_sources_rows_only(
     # verdict a root flip would report.
     assert reconstructed == "cancelled"
 
-    # THE REVERT-PROOF SHAPE (the cache recorded finding): a root LIED to
-    # ('running') must disagree with the rows — the check's sensitivity
-    # demonstrated on this very state (the G7 teeth-scenario runs the full
-    # lie through the fixture).
+    # a root lied to ('running') must disagree with the rows — the check's
+    # sensitivity demonstrated on this very state (the G7 teeth-scenario runs
+    # the full lie through the fixture).
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'running' WHERE id = $1", flow_id
     )
@@ -236,7 +234,7 @@ async def test_t08_reconstruction_two_sources_rows_only(
 
 
 @pytest.mark.integration
-async def test_t08_g7_teeth_the_lying_fixture_reds(
+async def test_g7_teeth_the_lying_fixture_reds(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_sql: WorkflowSql,
@@ -247,18 +245,18 @@ async def test_t08_g7_teeth_the_lying_fixture_reds(
     fail, it is not a decoration."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     await seed_running_node(wf_conn, wf_schema, flow_id)
-    # THE LIE: the root reports succeeded while a node is still pending —
-    # the exact shape a status cache would produce.
+    # the root reports succeeded while a node is still pending — the exact
+    # shape a status cache would produce.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded' WHERE id = $1",
         flow_id,
     )
     with pytest.raises(AssertionError, match="drifted from the rows"):
         await g7_check(wf_conn, wf_schema, wf_sql)
-    # THE TRUTH RESTORED: the scenario's lie is in-body only — the always-on
-    # teardown runs the same check the scenario just rejected (the round
-    # made the teardown real), so the record must end lawful: the rows
-    # (a pending node) are the truth, the root is the cache.
+        # the scenario's lie is in-body only — the always-on teardown runs the same
+    # check the scenario just rejected (the round made the teardown real), so
+    # the record must end lawful: the rows (a pending node) are the truth, the
+    # root is the cache.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'running' WHERE id = $1",
         flow_id,
@@ -268,7 +266,7 @@ async def test_t08_g7_teeth_the_lying_fixture_reds(
 # ── The gauge's cardinality law ─────────────────────────────────────────
 
 
-def test_t08_cardinality_never_per_node_labels() -> None:
+def test_cardinality_never_per_node_labels() -> None:
     """The metric registration must REJECT a per-node label series — a
     per-node series cannot be created: the cache is (workflow, state)-keyed
     (a node-dimensioned key cannot enter — ATTEMPTED here, the rejection
@@ -295,24 +293,23 @@ def test_t08_cardinality_never_per_node_labels() -> None:
             f"the label set is exactly the declared-workflow dimension + "
             f"state, never a per-node label: {labels}"
         )
-    # The _other_ collapse: the unregistered runs' SUMMED counts ride ONE
+    # The _other_ collapse: the unregistered runs' summed counts ride one
     # bucket (the named-bucket precedent).
     others = [o for o in observations if (o.attributes or {}).get("workflow") == "_other_"]
     assert len(others) == 1 and others[0].value == 11
 
-    # THE PER-NODE ATTEMPT, REJECTED: a node-dimensioned key (the
-    # rejected per-node series' shape) cannot enter the cache — the
-    # callback's strict pair-unpack raises, the series is never emitted.
+    # a node-dimensioned key (the rejected per-node series' shape) cannot enter
+    # the cache — the callback's strict pair-unpack raises, the series is never
+    # emitted.
     update_wf_progress_cache(
         {
-            ("registered-wf", "running", "c7"): 1,  # type: ignore[dict-item]  # Why: the ATTEMPT — the rejected per-node key shape, rejected at the observation.
+            ("registered-wf", "running", "c7"): 1,  # type: ignore[dict-item]  # Why: the attempt — the rejected per-node key shape, rejected at the observation.
         }
     )
     with pytest.raises(ValueError, match="too many values to unpack"):
         list(_observe_wf_progress(None))  # pyright: ignore[reportArgumentType]  # Why: as above — the options argument is ignored.
-    # THE CACHE RESTORED: the rejected key must not sit in the
-    # process-global cache for the next observer (the scenario's own
-    # hygiene — the lawful shape goes back).
+        # the rejected key must not sit in the process-global cache for the next
+    # observer (the scenario's own hygiene — the lawful shape goes back).
     update_wf_progress_cache(
         {
             ("registered-wf", "running"): 7,
@@ -322,17 +319,17 @@ def test_t08_cardinality_never_per_node_labels() -> None:
 
 
 @pytest.mark.integration
-async def test_t08_query_count_one_read_per_status_surface(
+async def test_query_count_one_read_per_status_surface(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_sql: WorkflowSql,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """ONE query per status read, INDEPENDENT OF THE POPULATION: the
+    """one query per status read, INDEPENDENT OF the POPULATION: the
     status surfaces (the per-run reconstruction — the admin's debug view —
     and the wf-progress gauge's fleet sampler) are single-statement reads
-    per class, never a per-row loop. THE REAL-MUTATION SHAPE (the audit's
-    rewrite — the pre-rewrite pin counted ITS OWN three calls through a
+    per class, never a per-row loop. the REAL-MUTATION SHAPE (the audit's
+    rewrite — the pre-rewrite pin counted ITS own three calls through a
     passthrough, no surface driven, nothing could fail): the pin drives
     the REAL surfaces through a counting connection at TWO node counts —
     the statement count must not move with the population, so an N+1
@@ -370,8 +367,7 @@ async def test_t08_query_count_one_read_per_status_surface(
     small_run_statements = len(queries)
     assert small_run_statements == 3, queries  # the nodes + the ledger + the never-granted
 
-    # THE POPULATION GROWS (more terminal nodes + the join's edges): the
-    # statement count must NOT.
+    # more terminal nodes + the join's edges. the statement count must not.
     for i in range(30):
         child = await seed_running_node(wf_conn, wf_schema, flow_id, step_key=f"b{i}")
         await wf_conn.execute(
@@ -395,9 +391,9 @@ async def test_t08_query_count_one_read_per_status_surface(
         "loop (the N+1 monster class) arrived"
     )
 
-    # THE GAUGE'S FLEET SAMPLER: ONE grouped statement — the same read
-    # class the panel uses — never a per-workflow query (the query-count
-    # pin's original claim, driven at the REAL surface).
+    # one grouped statement — the same read class the panel uses — never a
+    # per-workflow query (the query-count pin's original claim, driven at the
+    # real surface).
     from taskq.worker._leader_shared import (
         _QUERY_WF_PROGRESS_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]
     )
@@ -420,26 +416,26 @@ async def test_t08_query_count_one_read_per_status_surface(
 
 
 @pytest.mark.integration
-async def test_t08_maintenance_leg_finalizes_the_wedged_root(
+async def test_maintenance_leg_finalizes_the_wedged_root(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     propagation_redlog: RedLog,
 ) -> None:
-    """THE CRASH-WINDOW ROOT WEDGE (the phase-2 attack's wedge): tx1 commits
+    """The crash-window root wedge (the phase-2 attack's wedge): tx1 commits
     the child's terminal FAILURE, tx2 (the cascade) never runs — the
     sweep's blocked_required heal stamps the join, but the maintenance
     leg's ``has_live`` counted the stamped join row LIVE forever (nothing
     dispatches it, nothing fires it, nothing will ever terminalize it), so
     the root wedged 'running': unbounded retention (the pruner's liveness
     guard holds every row) + the dead run re-scanned every sweep pass.
-    THE FIX PINNED: the maintenance leg derives the root's terminal state
-    FROM THE ROWS — the same reconstruction the debug view uses — and
+    The maintenance leg derives the root's terminal state
+    FROM the ROWS — the same reconstruction the debug view uses — and
     FINALIZES the root in the same tx when the rows are terminal and the
     root row isn't (the named terminal state + the reason). One sweep pass
     releases the retention.
-    THE REJECTED VARIANT (the scenario): the has_live predicate counting the
+    The has_live predicate counting the
     resolved-blocked rows live — the root wedges 'running'."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id = await seed_join(wf_conn, wf_schema, flow_id, step_key="fc_join", deps=2)
@@ -448,8 +444,8 @@ async def test_t08_maintenance_leg_finalizes_the_wedged_root(
     await seed_edge(wf_conn, wf_schema, join_id, failed_child, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, peer, flow_id)
 
-    # THE CRASH WINDOW: tx1's fenced terminal FAILURE lands (the direct
-    # write — the exact tx1 shape), tx2 (the cascade) never runs.
+    # tx1's fenced terminal failure lands (the direct write — the exact tx1
+    # shape), tx2 (the cascade) never runs.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', finished_at = now(), "
         "error_class = 'ValueError' WHERE id = $1",
@@ -458,7 +454,7 @@ async def test_t08_maintenance_leg_finalizes_the_wedged_root(
     summary = await sweep_join_rederive(module_pg_pool, wf_sql)
     assert summary.blocked_required >= 1, "the heal must stamp the join first"
 
-    # The peer's own work completes (its worker finalizes) — now EVERY
+    # The peer's own work completes (its worker finalizes) — now every
     # node row is terminal-or-resolved-blocked. One more sweep pass: the
     # maintenance leg's window to finalize the root.
     await wf_conn.execute(
@@ -493,19 +489,18 @@ async def test_t08_maintenance_leg_finalizes_the_wedged_root(
         "finalize the root from the rows in the same pass"
     )
     assert root["finished_at"] is not None, "the finalize stamps the completion"
-    # THE REASON, NAMED: the sweep's finalize names its mechanism — the
-    # root the cascade never flipped carries the maintenance stamp (the
-    # cascade's own flip stamps the peer-cancel origin instead).
+    # the sweep's finalize names its mechanism — the root the cascade never
+    # flipped carries the maintenance stamp (the cascade's own flip stamps the
+    # peer-cancel origin instead).
     assert root["error_class"] is not None, "the finalize names the reason"
-    # RETENTION RELEASED: the root is terminal, so the pruner's liveness
-    # guard (T18) no longer holds the run's rows — the terminal state IS
+    # retention released: the root is terminal, so the pruner's liveness
+    # guard (the retention coupling  no longer holds the run's rows — the terminal state is
     # the release. (The root's own rows prune on the normal schedule.)
 
-    # THE MUTATION TEST (live, on a FRESH wedged flow): the maintenance
-    # leg WITHOUT the failed-root arm (the old gate's shape — the finalize
-    # requires EVERY row terminal, and the stamped join row is
-    # terminalizable by nothing) — the shipped statement's recorded finding
-    # reproduces and the root NEVER finalizes.
+    # live, on a fresh wedged flow. the maintenance leg without the failed-root
+    # arm (the old gate's shape — the finalize requires every row terminal, and
+    # the stamped join row is terminalizable by nothing) — the wedge reproduces
+    # and the root never finalizes.
     mutated = wf_sql.workflow_root_maintain.replace(
         "(pf.has_failed AND NOT COALESCE(pf.has_unresolved, false))",
         "false",
@@ -524,9 +519,9 @@ async def test_t08_maintenance_leg_finalizes_the_wedged_root(
     wedged = await node_state(wf_conn, wf_schema, flow2)
     assert wedged["status"] == "running", (
         f"the mutated predicate did NOT wedge the root ({wedged['status']!r}) — "
-        "the scenario's recorded finding is broken: the mutant must reproduce the wedge"
+        "the scenario's contract is broken: the mutant must reproduce the wedge"
     )
-    # The SHIPPED statement finalizes the same shape (the control arm —
+    # The shipped statement finalizes the same shape (the control arm —
     # the scenario's comparator is honest both ways).
     await sweep_join_rederive(module_pg_pool, wf_sql)
     healed = await node_state(wf_conn, wf_schema, flow2)
@@ -538,7 +533,7 @@ async def test_t08_maintenance_leg_finalizes_the_wedged_root(
 
 
 @pytest.mark.integration
-async def test_t08_one_run_one_trace_concurrent(
+async def test_one_run_one_trace_concurrent(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -552,8 +547,8 @@ async def test_t08_one_run_one_trace_concurrent(
         runs.append(flow_id)
 
     async def one_run(flow_id: JobId, index: int) -> None:
-        # SHORT holds only: the leg's own reads/writes take a connection
-        # and RELEASE it before the finalize (which manages its own
+        # short holds only: the leg's own reads/writes take a connection
+        # and release it before the finalize (which manages its own
         # acquisitions) — a held connection across the finalize deadlocks
         # the pool (10 legs x 2 connections each).
         async with module_pg_pool.acquire() as conn:
@@ -580,8 +575,8 @@ async def test_t08_one_run_one_trace_concurrent(
 
     await asyncio.gather(*(one_run(rid, i) for i, rid in enumerate(runs)))
 
-    # Every run's surfaces are FLOW-SCOPED: each run's ledger rows carry
-    # ONLY its own trace, trace ids unique per run, no shared seqs.
+    # Every run's surfaces are flow-scoped: each run's ledger rows carry
+    # only its own trace, trace ids unique per run, no shared seqs.
     traces: dict[JobId, str | None] = {}
     for flow_id in runs:
         row = await wf_conn.fetchrow(
@@ -600,7 +595,7 @@ async def test_t08_one_run_one_trace_concurrent(
 
 @pytest.mark.load_sensitive
 @pytest.mark.integration
-async def test_t08_rollup_cost_gate_index_driven(
+async def test_rollup_cost_gate_index_driven(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -608,13 +603,13 @@ async def test_t08_rollup_cost_gate_index_driven(
 ) -> None:
     """At the FLEET shape the flow-scoped reads are INDEX-DRIVEN (the
     EXPLAIN assert: no seq scan of the fleet table) and inside the recorded
-    band. THE SHAPE IS THE LOAD-BEARING PART (the phase-2 attack's H3b):
-    the pre-rewrite pin measured a table that contained ONLY the measured
+    band. the SHAPE IS the LOAD-BEARING PART (the phase-2 attack's H3b):
+    the pre-rewrite pin measured a table that contained only the measured
     flow's own rows — where the measured flow IS the whole table, a seq
     scan and an index scan cost the same and the plan assert cannot fail.
-    Here the measured run is ONE AMONG MANY on a fleet table (40 runs +
+    Here the measured run is one AMONG MANY on a fleet table (40 runs +
     a 60k-row vanilla population), the production shape — the seq-scan
-    shape (the pre-fix index: the raw-TEXT key the reads' uuid cast
+    shape (the raw-TEXT index: the key the reads' uuid cast
     broke, measured p50 21.2 ms for the rollup and 20.7 ms for the
     per-node read at this very shape —
     .measurements/fix2/index-before-text-index.txt) REDS the plan assert.
@@ -627,9 +622,9 @@ async def test_t08_rollup_cost_gate_index_driven(
     n_flows = 40
     n_nodes = 500
 
-    # THE VANILLA POPULATION: production's fleet table is mostly NOT
-    # workflow rows — this is what makes the plan assert honest (a seq
-    # scan must traverse THIS to find the measured run).
+    # production's fleet table is mostly not workflow rows — this is what makes
+    # the plan assert honest (a seq scan must traverse this to find the
+    # measured run).
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, step_key, scheduled_at, idempotency_scope, idempotency_key) "
@@ -657,15 +652,15 @@ async def test_t08_rollup_cost_gate_index_driven(
             n_nodes,
         )
 
-    # THE STEADY STATE: the VACUUMED table (index scans need the
-    # visibility map; a freshly-seeded table heap-visits every row — the
-    # two measurements both recorded, the argument in the artifact).
+        # the vacuumed table (index scans need the visibility map; a freshly-seeded
+    # table heap-visits every row — the two measurements both recorded, the
+    # argument in the artifact).
     await wf_conn.execute("VACUUM (ANALYZE)")
 
-    # THE PLAN ASSERT: no seq scan of jobs/wf_edge in ANY flow-scoped read
-    # (the rollup, the per-node read, the maintenance leg — the fleet
-    # gauge's sampler is deliberately fleet-wide: it groups the WHOLE
-    # fleet, there is no run id to key it; its recorded band is its own).
+    # no seq scan of jobs/wf_edge in any flow-scoped read (the rollup, the
+    # per-node read, the maintenance leg — the fleet gauge's sampler is
+    # deliberately fleet-wide: it groups the whole fleet, there is no run id to
+    # key it; its recorded band is its own).
     async def assert_index_driven(sql: str, *args: object) -> None:
         plan_rows = await wf_conn.fetch(f"EXPLAIN (FORMAT JSON) {sql}", *args)
         plan = plan_rows[0][0]
@@ -675,8 +670,8 @@ async def test_t08_rollup_cost_gate_index_driven(
         def walk(node: dict[str, Any]) -> None:
             node_type = node.get("Node Type")
             rel = node.get("Relation Name")
-            # The FLEET TABLE is the gate's subject: a seq scan of jobs at
-            # the fleet shape is the monster class. (wf_edge is EMPTY in
+            # The fleet TABLE is the gate's subject: a seq scan of jobs at
+            # the fleet shape is the monster class. (wf_edge is empty in
             # this shape — a seq scan of an empty relation is the
             # planner's correct, zero-cost pick, not a fleet walk; the
             # per-node probes ride wf_edge_parent_idx when rows exist.)
@@ -695,11 +690,11 @@ async def test_t08_rollup_cost_gate_index_driven(
     await assert_index_driven(wf_sql.workflow_nodes, measured_flow)
     await assert_index_driven(wf_sql.workflow_root_maintain, 200)
 
-    # THE BAND: the fleet-shape read is O(the run's own node count) — the
-    # measured p50 sits in the sub-millisecond class at the 500-node run
-    # shape (measured 0.12-0.24 ms; the band is set from the measurement
-    # with CI-noise margin, G11/G12: bands are SET from measurements,
-    # then pinned — the band moves only by argument in review).
+    # the fleet-shape read is O(the run's own node count) — the measured p50
+    # sits in the sub-millisecond class at the 500-node run shape (measured
+    # 0.12-0.24 ms; the band is set from the measurement with CI-noise margin —
+    # bands are set from measurements, then pinned — the band moves only by
+    # argument in review).
     samples: list[float] = []
     for _ in range(5):
         start_ns = time.perf_counter_ns()
@@ -714,9 +709,8 @@ async def test_t08_rollup_cost_gate_index_driven(
         "review, never edit it silently"
     )
 
-    # THE APPEND-ONLY CONVERSION (the stale-evidence hunt's source fix):
-    # the band is a RUN-SCOPED, head-stamped artifact — the in-place
-    # write_text was the torn-write race + the unstamped rumor.
+    # the band is a run-scoped, head-stamped artifact — the in-place write_text
+    # was the torn-write race + the unstamped rumor.
     write_band_artifact(
         "wf-rollup-band.json",
         {
@@ -730,12 +724,11 @@ async def test_t08_rollup_cost_gate_index_driven(
             "samples_ms": [round(s, 3) for s in samples],
             "recorded_band_ms": band_budget_ms,
             "argument": (
-                "the pin REWRITTEN for the fleet shape (the phase-2 "
-                "attack's H3b): the pre-rewrite shape measured a table "
+                "the pin REWRITTEN for the fleet shape: the flow-solo shape measured a table "
                 "containing ONLY the measured flow's rows — the "
                 "measured flow WAS the whole table, so the plan assert "
                 "could not fail on a seq scan. At the fleet shape the "
-                "pre-fix index (01.00.26_01's raw-TEXT key) served NO "
+                "raw-TEXT index (01.00.26_01's key) served NO "
                 "flow-scoped read: the rollup read p50 21.2 ms and the "
                 "per-node read 20.7 ms, BOTH Seq Scans, linear in the "
                 "fleet table (.measurements/fix2/index-before-text-"

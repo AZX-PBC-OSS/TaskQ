@@ -1,11 +1,11 @@
 """Attack: the /history page's keyset seam must not skip or repeat rows.
 
 The history list orders its UNION of ``jobs_archive`` and live terminal
-``jobs`` by ``(status_priority, finished_at DESC NULLS LAST, created_at
+``jobs`` by ``(status_priority, finished_at DESC NULLS last, created_at
 DESC, id DESC)`` but its keyset cursor bound only
 ``(COALESCE(finished_at, ceiling), id)`` -- the ``created_at`` sort key
 never reached the seam predicate. An EPQ-safe keyset predicate has to
-cover EVERY column the ORDER BY uses: the row-wise tuple comparison is
+cover every column the ORDER BY uses: the row-wise tuple comparison is
 the only thing that defines "strictly after the last row I showed you",
 and a dropped sort key makes rows whose ``id`` order disagrees with their
 ``created_at`` order land on the wrong side of the seam.
@@ -14,7 +14,7 @@ That disagreement is not exotic: ``id`` is UUIDv7 stamped by the
 ENQUEUING worker's clock while ``created_at`` is stamped by the DATABASE
 clock, so two workers with skewed clocks (or two enqueues in the same
 UUIDv7 millisecond) routinely have ``id`` order and ``created_at`` order
-inverted. The walk then repeats rows it already showed AND skips rows it
+inverted. The walk then repeats rows it already showed and skips rows it
 never shows, the two wrong-but-plausible answers a paginated audit page
 can give.
 
@@ -88,10 +88,10 @@ async def inverted_fleet(
     """52 terminal rows whose id order is the exact inverse of created_at order.
 
     Enqueue 52 real jobs (UUIDv7 ids, monotonic with enqueue order), then
-    stamp ``created_at`` so the FIRST-enqueued row (lowest id) carries the
+    stamp ``created_at`` so the first-enqueued row (lowest id) carries the
     NEWEST created_at and every later row is older -- the DB-vs-worker
     clock disagreement, deterministically. All rows go terminal with the
-    SAME finished_at so the seam sits inside one finished_at tie group,
+    same finished_at so the seam sits inside one finished_at tie group,
     where the dropped created_at key is the only thing that orders rows.
     """
     deps, backend = clean_jobs_app
@@ -106,7 +106,7 @@ async def inverted_fleet(
     try:
         base = datetime(2026, 3, 1, tzinfo=UTC)
         for offset, job_id in enumerate(handle_ids):
-            # Later-enqueued (higher id) rows get OLDER created_at.
+            # Later-enqueued (higher id) rows get older created_at.
             created = base - timedelta(minutes=offset)
             await conn.execute(
                 f'UPDATE "{schema}".jobs SET status = $2::"{schema}".job_status, '  # noqa: S608  # Why: schema is fixture-derived and validated; every value is $N-bound.

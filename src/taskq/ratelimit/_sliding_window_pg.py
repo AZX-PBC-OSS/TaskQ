@@ -135,9 +135,9 @@ async def _peek_pg_gcra(
             try:
                 current_tat = float(state.get("tat", now_seconds))  # type: ignore[index]  # Why: state is non-None; fallback to now_seconds for rows missing "tat"
             except (TypeError, ValueError, OverflowError) as exc:
-                # The trust boundary is the same as the redis GCRA peek's: a
+                # The trust boundary is the same as the redis gcra peek's: a
                 # state value no honest write could have produced (the row
-                # IS the reply) is a store lie, failed closed as the outage
+                # is the reply) is a store lie, failed closed as the outage
                 # it is indistinguishable from, never a ValueError crash
                 # with no provenance.
                 raise RateLimitStoreCorrupt(
@@ -168,7 +168,7 @@ async def _peek_pg_gcra(
         # check above still admits any finite float (1e300), and
         # timedelta(seconds=1e300) overflows out of the peek. The hint is
         # advisory, so a value no honest store can ask for is clamped to
-        # the same bounded "not any time soon" hint the redis GCRA peek
+        # the same bounded "not any time soon" hint the redis gcra peek
         # uses; the denial itself stands, only the wait is bounded.
         retry_after = _retry_after(retry_after_seconds)
 
@@ -257,15 +257,15 @@ async def _refund_pg_log(
 
 
 #: Bounded wait (milliseconds) for the per-bucket log-style advisory
-#: lock. The lock is held across ONE fused statement (prune + admission
+#: lock. The lock is held across one fused statement (prune + admission
 #: insert + count + retry hint in a single round trip), so a
 #: holder's critical section is one statement's execution time, and
 #: 5 s tolerates a burst of hundreds of queued racers while capping
 #: tail latency instead of letting it scale with the racer count, and a
-#: black-holed holder (dead TCP, no FIN) blocks its bucket for at most
+#: black-holed holder (dead TCP, no fin) blocks its bucket for at most
 #: one budget instead of until the server's keepalives reap it. Same
 #: default as the enqueue path's DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS. A
-#: racer that exhausts the budget gets the limiter's DENIAL outcome ,
+#: racer that exhausts the budget gets the limiter's denial outcome ,
 #: fail closed, never an admission. ``0`` (or less) waits indefinitely,
 #: matching the ``lock_timeout`` GUC convention used by migrate.py.
 #: The shipped ceiling; an operator retunes it with
@@ -312,7 +312,7 @@ async def _acquire_pg_log(
 
     window_ms = int(self._window.total_seconds() * 1000)
 
-    # ONE fused statement for the whole locked critical section:
+    # one fused statement for the whole locked critical section:
     # the pre-fused shape spent DELETE + INSERT + COUNT (+ retry SELECT on
     # denial) as four separate round trips under the advisory lock,
     # and lock hold time linear in round trips is exactly the contention tail
@@ -324,13 +324,13 @@ async def _acquire_pg_log(
     #   count measures, the two row sets are disjoint under the same
     #   statement snapshot).
     # * ``inserted``: the admission INSERT, guarded by an in-window
-    #   count read at the STATEMENT's snapshot. The advisory lock (taken
-    #   by a PRIOR statement in this transaction) serializes racers, and
+    #   count read at the statement's snapshot. The advisory lock (taken
+    #   by a prior statement in this transaction) serializes racers, and
     #   each racer's statement snapshot postdates the previous holder's
     #   commit, the cron-tick lesson (test_round_trip_budgets): a lock
     #   probe folded INTO the work statement would read a snapshot that
     #   predates its own lock grant and re-admit the batch. The lock
-    #   stays a separate statement; the WORK is one.
+    #   stays a separate statement; the work is one.
     # * the main SELECT: everything the decision needs, from the same
     #   snapshot: whether the insert landed (a data-modifying CTE's
     #   RETURNING is visible to the parent query), the in-window count
@@ -368,7 +368,7 @@ async def _acquire_pg_log(
     retry_after: timedelta
     count_after: int
 
-    # Serialise acquirers per bucket: under READ COMMITTED the DELETE +
+    # Serialise acquirers per bucket: under read committed the DELETE +
     # INSERT ... WHERE count < N pair is not serialised, two concurrent
     # acquires can each count the pre-insert window and both insert,
     # over-admitting past the limit. A transaction-scoped advisory lock
@@ -383,29 +383,29 @@ async def _acquire_pg_log(
     # tables. Qualifying keeps the lock's scope identical to the table
     # it serializes access to.
     #
-    # Why a bounded TWO-TIER acquire and not the unbounded blocking
+    # Why a bounded two-tier acquire and not the unbounded blocking
     # acquire this path once took (the same machinery as the enqueue
     # path's locks, see acquire_advisory_xact_lock_bounded in
     # taskq._advisory for the measured rationale): every racer on this lock holds it across
     # its own DELETE + count/INSERT round trips, so an unbounded
     # blocking acquire makes N concurrent dispatches of a rate-limited
     # actor queue on one lock, tail latency linear in the racer count,
-    # and a black-holed holder (dead TCP, no FIN; the server reaps it
+    # and a black-holed holder (dead TCP, no fin; the server reaps it
     # only via keepalives) blocks the whole bucket's dispatch until
     # then. The two-tier acquire keeps the happy path at exactly one
-    # try-lock statement, queues contended racers SERVER-SIDE (Postgres'
+    # try-lock statement, queues contended racers server-side (Postgres'
     # lock scheduler hands off at holder-release rate, not at a client
     # poll cadence), bounds the wait with a savepoint-scoped
     # lock_timeout, and backstops the network black hole client-side.
     # Once acquired, the lock is transaction-scoped and the fused
     # statement below is the whole critical section: the window
-    # itself stays EXACT.
+    # itself stays exact.
     #
-    # On budget exhaustion the acquire FAILS CLOSED: a racer that could
+    # On budget exhaustion the acquire fails closed: a racer that could
     # not check the window must never over-admit, so it returns the
     # limiter's denial outcome, RateLimitDecision allowed=False with a
     # retry hint, never an exception, never an admission. A lock-timeout
-    # denial is NOT an empty bucket; operators should read it the same
+    # denial is not an empty bucket; operators should read it the same
     # way as any other denial (backpressure, the dispatch layer snoozes
     # and re-promotes the job either way), with the distinct
     # ratelimit-lock-timeout warning below as the signal that the bucket
@@ -488,7 +488,7 @@ async def _acquire_pg_gcra(
 ) -> RateLimitDecision:
     """Acquire GCRA-style against PG.
 
-    ONE fused ``INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING``
+    one fused ``INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING``
     : the pre-fused shape spent a preseed, a blocking ``SELECT …
     FOR UPDATE``, and a TAT upsert (BEGIN + set_config + SAVEPOINT
     around them, 8 round trips in bounded mode); the conflict arm now
@@ -525,19 +525,19 @@ async def _acquire_pg_gcra(
     emission_interval_seconds = window_seconds / self._limit
     delay_tolerance_seconds = window_seconds
 
-    # ONE fused upsert: the pre-fused shape spent preseed + SELECT
+    # one fused upsert: the pre-fused shape spent preseed + SELECT
     # FOR UPDATE + upsert (BEGIN + set_config + SAVEPOINT around them):
-    # 8 round trips in bounded mode. The conflict arm computes the TAT
-    # advance server-side, and the ALLOWANCE is the update's WHERE
+    # 8 round trips in bounded mode. The conflict arm computes the tat
+    # advance server-side, and the allowance is the update's WHERE
     # clause, so RETURNING yields a row exactly when the acquire was
     # granted (or the bucket was cold, the INSERT arm, and a cold start
     # is always allowed: emission <= window for limit >= 1, so the
     # allow_at boundary is at or before now). A denial updates nothing:
-    # the pre-fused behavior, preserved exactly (the TAT stands, the
+    # the pre-fused behavior, preserved exactly (the tat stands, the
     # row's stamps are untouched), and the retry hint is read by the
     # one follow-up statement below rather than folded into the upsert:
-    # a WHERE-gated conflict arm returns NO row on denial, so the hint's
-    # inputs (the standing TAT, the server now) must come from a read.
+    # a WHERE-gated conflict arm returns no row on denial, so the hint's
+    # inputs (the standing tat, the server now) must come from a read.
     #
     # The kind guard rides the WHERE too, preserving the loud
     # misconfiguration refusal: a token-bucket row under this name
@@ -545,9 +545,9 @@ async def _acquire_pg_gcra(
     # raised, and the follow-up read below distinguishes the two
     # no-row causes (kind mismatch -> RuntimeError; otherwise denial).
     #
-    # statement_timestamp() (STABLE) is the arithmetic's clock: the
-    # WHERE's allowance test and the SET's TAT advance are separate
-    # evaluations of the same GREATEST(...) expression, and a stable
+    # statement_timestamp() (stable) is the arithmetic's clock: the
+    # WHERE's allowance test and the set's tat advance are separate
+    # evaluations of the same greatest(...) expression, and a stable
     # statement clock keeps them identical, the same doctrine the
     # fused token-bucket acquire documents.
     _now_epoch = "EXTRACT(EPOCH FROM statement_timestamp())"
@@ -566,9 +566,9 @@ async def _acquire_pg_gcra(
         f"RETURNING (state->>'tat')::float8 AS new_tat, "
         f"{_now_epoch}::float8 AS now_s"
     )
-    # The denial follow-up: the standing TAT and the server now for the
+    # The denial follow-up: the standing tat and the server now for the
     # retry hint, plus the kind the WHERE guard may have refused on. The
-    # TAT is carried as TEXT and converted in Python at the trust
+    # tat is carried as text and converted in Python at the trust
     # boundary (guarded conversion family + finite check + the advisory
     # _retry_after clamp): a server-side ::float8 cast would crash the
     # read with NumericValueOutOfRangeError on a poisoned value — a class
@@ -612,7 +612,7 @@ async def _acquire_pg_gcra(
             except (LockNotAvailableError, TimeoutError):
                 # Fail closed: the limiter's denial outcome with a retry
                 # hint of one more budget: the fused statement is
-                # atomic, so the timed-out racer advanced no TAT and
+                # atomic, so the timed-out racer advanced no tat and
                 # admitted nothing. The warning is the operator signal
                 # that the bucket (or its holder) is contended or sick
                 # rather than merely busy: the same event name the
@@ -642,10 +642,10 @@ async def _acquire_pg_gcra(
 
     if row is not None:
         # Granted (or cold start, which is always granted): the RETURNING
-        # row carries the advanced TAT and the statement clock the
+        # row carries the advanced tat and the statement clock the
         # arithmetic used. The refund's previous_state pair is derivable
-        # exactly: the pre-acquire TAT is the candidate minus one
-        # emission interval, the post-acquire TAT is the candidate.
+        # exactly: the pre-acquire tat is the candidate minus one
+        # emission interval, the post-acquire tat is the candidate.
         allowed = True
         new_tat = float(row["new_tat"])
         now_seconds = float(row["now_s"])
@@ -680,7 +680,7 @@ async def _acquire_pg_gcra(
             try:
                 current_tat = float(deny_row["tat"]) if deny_row["tat"] is not None else now_seconds
             except (TypeError, ValueError, OverflowError) as exc:
-                # The row IS the reply: a standing TAT no honest write could
+                # The row is the reply: a standing tat no honest write could
                 # have produced is a store lie, failed closed with the
                 # sentinel — never a bare ValueError out of the acquire.
                 raise RateLimitStoreCorrupt(
@@ -704,7 +704,7 @@ async def _acquire_pg_gcra(
             # timedelta(seconds=1e300) overflows out of the acquire —
             # the outage-fallback admission path. The hint is advisory;
             # the denial stands, only the wait is bounded (the same clamp
-            # the redis GCRA peek applies).
+            # the redis gcra peek applies).
             retry_after = _retry_after(retry_after_seconds)
         else:
             # The row vanished between the fused statement and this read

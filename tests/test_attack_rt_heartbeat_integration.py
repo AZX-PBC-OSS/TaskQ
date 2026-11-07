@@ -6,7 +6,7 @@ the seams BETWEEN them, behavior-level only:
 1. The beat-gap bound. Every point a tick can fail (the pool acquire's
    own timeout, an instant acquire error, a mid-tick command inside the
    transaction, the in-tx cancel hook, the post-ledger post-tx drain)
-   and every point it can recover from, chained in ONE loop run: the
+   and every point it can recover from, chained in one loop run: the
    worst gap between two GOOD beats must stay under
    ``heartbeat_interval + 2 * heartbeat_command_timeout`` (the bound
    ``_lease_renewal_threshold`` sizes the renewal gate against), and the
@@ -19,7 +19,7 @@ the seams BETWEEN them, behavior-level only:
    (real PG): the isolate decision fires on exactly the
    ``(max_heartbeat_failures + 1)-th`` consecutive failure, its observed
    wall clock fits the validator's cascade floor, and at the decision
-   instant the job's lease is STILL VALID - the sweep never beat the
+   instant the job's lease is still VALID - the sweep never beat the
    cascade.
 
 3. The stamp window under contention (looped, forced interleavings):
@@ -89,7 +89,7 @@ _RECOVERY_BOUND = (1 + 0.25) * _I + _EPS  # the prompt-retry promise
 #:   (a refused connection).
 #: - ``acquire_timeout``: the acquire burns its whole timeout
 #:   (``heartbeat_loop`` acquires with ``timeout=interval``).
-#: - ``max_cost``: the compound-brownout tick the ENFORCED budget admits:
+#: - ``max_cost``: the compound-brownout tick the enforced budget admits:
 #:   the acquire succeeds slowly (a stalled pool create, just under its
 #:   own timeout), the tick's command sequence stalls and is cut at the
 #:   budget, and the teardown's bounded close stalls to its bound before
@@ -98,7 +98,7 @@ _RECOVERY_BOUND = (1 + 0.25) * _I + _EPS  # the prompt-retry promise
 #:   dies on the 2nd / 3rd statement (inside the transaction, after the
 #:   liveness write / after the jobs-lock renewal).
 #: - ``hook_fail``: the in-tx cancel hook raises (its own carve-out).
-#: - ``post_tx_fail``: the tick COMMITS, then the post-ledger post-tx
+#: - ``post_tx_fail``: the tick commits, then the post-ledger post-tx
 #:   drain raises - the last failure point before the wait block.
 OK = "ok"
 _ACQUIRE_ERROR = "acquire_error"
@@ -162,7 +162,7 @@ class _ScriptedTx:
         return None
 
     async def commit(self) -> None:
-        # The GOOD-beat observation point: the moment the tick's renewal
+        # The good-beat observation point: the moment the tick's renewal
         # became durable. The lease arithmetic's beat gap is measured
         # between these.
         self._commits.append(time.monotonic())
@@ -178,7 +178,7 @@ class _ScriptedTx:
 class _ScriptedController:
     """Cancel-controller double scripting ``hook_fail`` / ``post_tx_fail``.
 
-    ONE script entry per tick: ``run_in_tx`` pops the tick's shape (or,
+    one script entry per tick: ``run_in_tx`` pops the tick's shape (or,
     when the acquire itself failed and ``run_in_tx`` never ran,
     ``run_post_tx`` pops it) so the pool's and the controller's scripts
     stay aligned tick for tick."""
@@ -238,7 +238,7 @@ class _ScriptedPool:
             await asyncio.wait_for(asyncio.sleep(_I * 10), timeout=caller_timeout)
         if shape == _MAX_COST:
             # The compound-brownout acquire: a stalled pool create that
-            # still SUCCEEDS, just under the caller's timeout (a failover
+            # still succeeds, just under the caller's timeout (a failover
             # gray window: accepts connections, answers nothing).
             await asyncio.sleep(_I * 0.9)
         stall = shape == _MAX_COST
@@ -272,7 +272,7 @@ def _deps(pool: _ScriptedPool, max_heartbeat_failures: int) -> MagicMock:
     deps = MagicMock(spec=WorkerDeps)
     deps.settings = _settings(max_heartbeat_failures)
     deps.heartbeat_pool = pool  # type: ignore[assignment]
-    # The REAL registry, not a Mock child: the tick's claim-loss reconcile
+    # The real registry, not a Mock child: the tick's claim-loss reconcile
     # probe reads active_jobs.held_ids()/queued_ids() as the renewal's
     # exclusion array; a Mock child's return value poisons the probe and
     # every beat dies an AttributeError death before its commit.
@@ -351,8 +351,8 @@ def _gaps(commits: list[float]) -> list[float]:
 
 
 def _recovery_gap(commits: list[float]) -> float:
-    """The gap between the last good beat BEFORE the failure and the
-    first good beat AFTER it (the first commit gap in a 4-tick script
+    """The gap between the last good beat before the failure and the
+    first good beat after it (the first commit gap in a 4-tick script
     ``[OK, shape, OK, OK]``: commit → recovery-commit)."""
     gaps = _gaps(commits)
     assert len(gaps) >= 2
@@ -372,7 +372,7 @@ def _recovery_gap(commits: list[float]) -> float:
 )
 async def test_every_fail_point_recovers_inside_the_beat_gap_bound(shape: str, fast: bool) -> None:
     """Fail at every point the loop can fail, recover at that point, and
-    hold BOTH bounds: every beat gap ≤ interval + 2*command_timeout, and
+    hold both bounds: every beat gap ≤ interval + 2*command_timeout, and
     the recovery beat after a FAST failed tick lands inside
     (1 + retry fraction) * interval. The first bound is what
     _lease_renewal_threshold sizes the renewal gate against; the second
@@ -389,7 +389,7 @@ async def test_every_fail_point_recovers_inside_the_beat_gap_bound(shape: str, f
     commits = pool.commits[:3]
     starts = pool.starts[:4]
     gaps = _gaps(commits)
-    # The tick-START to tick-START cycle bound: max(interval, tick duration),
+    # The tick-start to tick-start cycle bound: max(interval, tick duration),
     # a failed tick's duration bounded by acquire + budget + teardown.
     cycle_bound = _I + 2 * _C + _EPS
     cycle_gaps = _gaps(starts)
@@ -399,7 +399,7 @@ async def test_every_fail_point_recovers_inside_the_beat_gap_bound(shape: str, f
         f"(cycle gaps={cycle_gaps!r}) - the renewal gate's floor no longer "
         "covers what the loop can actually gap"
     )
-    # The renewal-to-renewal bound (what the LEASE actually consumes): the
+    # The renewal-to-renewal bound (what the lease actually consumes): the
     # last good beat's tail (its cadence sleep, from the renewal point to
     # the next tick's start) plus one failed cycle.
     renewal_bound = 2 * (_I + _C) + _EPS
@@ -424,7 +424,7 @@ async def test_every_fail_point_recovers_inside_the_beat_gap_bound(shape: str, f
 
 async def test_a_failure_chain_holds_the_bound_at_every_link() -> None:
     """One run, every fail point in sequence, each followed by its
-    recovery: EVERY consecutive good-beat gap holds the bound."""
+    recovery: every consecutive good-beat gap holds the bound."""
     pool_script = [
         OK,
         _ACQUIRE_ERROR,
@@ -551,8 +551,8 @@ async def test_a_max_cost_brownout_tick_holds_the_renewal_span() -> None:
 async def test_the_max_cost_cascade_fits_the_validator_floor() -> None:
     """F+1 max-cost failed ticks (the validator's own worst cascade, each
     term enforced) from the last good renewal: the isolate decision must
-    land INSIDE the cascade floor the settings validator computes from
-    the SAME settings - the lease the validator accepts must outlive the
+    land inside the cascade floor the settings validator computes from
+    the same settings - the lease the validator accepts must outlive the
     cascade its own arithmetic describes. Measured, not modelled: the
     loop runs the real pacing against the scripted worst-case ticks and
     the decision's wall clock is compared to the floor."""
@@ -575,11 +575,11 @@ async def test_the_max_cost_cascade_fits_the_validator_floor() -> None:
         f"beat first, the (F+1)-th = {max_failures + 1} consecutive failure "
         f"is tick {max_failures + 2}"
     )
-    # The last GOOD renewal (the seed tick's commit) -> the isolate decision.
+    # The last good renewal (the seed tick's commit) -> the isolate decision.
     cascade = isolate_times[0] - pool.commits[0]
     # The settings validator's own floor math, mirrored from post_load:
     # the last good beat's tail plus (F+1) enforced failed cycles
-    # (acquire + ONE budget, the sequence and its teardown sharing it).
+    # (acquire + one budget, the sequence and its teardown sharing it).
     floor = max(_I, _C) + (max_failures + 1) * (_I + _C)
     assert cascade <= floor + _EPS, (
         f"RED: the observed max-cost cascade took {cascade:.3f}s from the "
@@ -643,7 +643,7 @@ async def test_a_wake_storm_never_advances_the_ledger() -> None:
 
 # Real-PG numbers: F=2, I=0.5, c=0.1 -> the validator's cascade floor is
 # max(I, c) + (F+1) * (I + c) = 0.5 + 3 * 0.6 = 2.3s, and the lease is set
-# to EXACTLY that floor (the validator allows equality): the cascade must
+# to exactly that floor (the validator allows equality): the cascade must
 # fit inside the lease with nothing to spare but the validator's own math.
 _PG_I = 0.5
 _PG_C = 0.1
@@ -686,8 +686,8 @@ async def test_the_isolate_decision_fits_the_validator_floor_and_beats_the_lease
     """Real PG, the lease at EXACTLY the validator's cascade floor: every
     acquire fails, the isolate decision fires on exactly the (F+1)-th
     consecutive failure, its observed wall clock fits the floor the
-    validator computes from the SAME settings, and at the decision
-    instant the running job's lease is STILL VALID - the reclaim sweep's
+    validator computes from the same settings, and at the decision
+    instant the running job's lease is still VALID - the reclaim sweep's
     deadline never beat the cascade, the isolate's own guarded UPDATE is
     what transitions the row."""
     from taskq.testing.pg import create_running_job, create_worker
@@ -733,7 +733,7 @@ async def test_the_isolate_decision_fits_the_validator_floor_and_beats_the_lease
         async def _spy_isolate(
             spy_deps: WorkerDeps, spy_worker_id: UUID, spy_shutdown: asyncio.Event
         ) -> None:
-            # The observation point: the isolate DECISION's wall clock,
+            # The observation point: the isolate decision's wall clock,
             # and the row's state at that instant - before isolate's own
             # writes move it.
             nonlocal observed_row
@@ -825,9 +825,9 @@ def _crash_settings() -> WorkerSettings:
 
 @pytest.mark.parametrize("gate_at", ["pre_stamp", "post_stamp"])
 async def test_a_crash_racing_fresh_claims_never_phantom_cancels(gate_at: str) -> None:
-    """Looped, forced interleavings: a pre-registered job AND a fresh
+    """Looped, forced interleavings: a pre-registered job and a fresh
     claim whose registration completes around the crash's stamp - the
-    stamp-to-delivery gap - must BOTH end in exactly one legal state,
+    stamp-to-delivery gap - must both end in exactly one legal state,
     with zero phantom cancels and zero lost interrupts, whatever order
     the registration, the stamp, and the group's cancellation sweep land
     in."""
@@ -845,7 +845,7 @@ async def test_a_crash_racing_fresh_claims_never_phantom_cancels(gate_at: str) -
         real_register = registry.register
 
         async def gated_register(job_id: object, task: object, ctx: object) -> object:
-            # Only the RACING claim is parked: until the test's chosen
+            # Only the racing claim is parked: until the test's chosen
             # instant in the stamp window, then a scheduling breath, then
             # the real registration. The pre-registered job passes through.
             # (The signature mirrors ActiveJobRegistry.register's
@@ -879,7 +879,7 @@ async def test_a_crash_racing_fresh_claims_never_phantom_cancels(gate_at: str) -
         async def crashing() -> None:
             await crash_go.wait()
             if gate_at == "pre_stamp":
-                # Release the racing claim BEFORE the stamp: it must be
+                # Release the racing claim before the stamp: it must be
                 # registered (and so stamped) before the group cancels.
                 claim_gate.set()
                 await wait_for_condition(
@@ -890,7 +890,7 @@ async def test_a_crash_racing_fresh_claims_never_phantom_cancels(gate_at: str) -
             _stamp_interrupt_origins(deps)
             stamped.set()
             if gate_at == "post_stamp":
-                # Release the racing claim INSIDE the stamp-to-delivery
+                # Release the racing claim inside the stamp-to-delivery
                 # gap: the stamp has run, the group's cancellation sweep
                 # has not reached this consumer yet.
                 claim_gate.set()

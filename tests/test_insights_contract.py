@@ -15,7 +15,7 @@ layers of it.
   defaults, because an operator calls them keyword-only from a pinned
   script. A renamed keyword, a changed default, a parameter demoted to
   positional reds here.
-* **The return-row shapes** — every statement's column names AND Postgres
+* **The return-row shapes** — every statement's column names and Postgres
   types, prepared against a real migrated schema (the columns are what an
   operator's ``row["eta_seconds"]``-style read indexes into; the types are
   what its driver deserializes). A removed, renamed, retyped or reordered
@@ -48,7 +48,7 @@ from taskq.insights import (
 from taskq.migrate import apply_pending
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 
-#: The contract version this file documents. Bump WITH
+#: The contract version this file documents. Bump with
 #: ``INSIGHTS_CONTRACT_VERSION`` in the same commit as the breaking change.
 _CONTRACT_VERSION = 1
 

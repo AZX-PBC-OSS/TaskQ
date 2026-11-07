@@ -4,7 +4,7 @@ The adoption map's concurrency evidence.  tors's big-input primitives run
 their scan with the GIL released (one ``py.detach`` per call), so threads
 hammering the same primitive scale with cores; TaskQ's current expressions
 (``str.encode``, ``hashlib`` + ``hexdigest``) hold the GIL for their
-whole wall.  Each cell runs T threads x ops calls against the SAME
+whole wall.  Each cell runs T threads x ops calls against the same
 callable and reports the wall per op, so a GIL-free primitive overlaps on
 cores while a GIL-bound one serializes — exactly the adoption question.
 

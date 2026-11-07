@@ -70,7 +70,7 @@ def _args(
 
 
 async def none_stored(backend: InMemoryBackend, ids: list[JobId]) -> bool:
-    """True when NO id in ``ids`` resolves through the public read."""
+    """True when no id in ``ids`` resolves through the public read."""
     return all([await backend.get(jid) is None for jid in ids])
 
 
@@ -207,7 +207,7 @@ async def test_rollback_withdraws_exactly_own_rows_intruder_survives() -> None:
     # The pair P resolves to the intruder's committed row, not a phantom.
     probe = await backend.enqueue(_args(key="P"))
     assert probe.id == intruder_pair_row.id
-    # The rolled-back pair Q is gone: a fresh enqueue of it writes a NEW
+    # The rolled-back pair Q is gone: a fresh enqueue of it writes a new
     # resolvable row (and dedup never aliases onto the withdrawn call).
     probe_q = await backend.enqueue(_args(key="Q"))
     assert await backend.get(probe_q.id) is not None
@@ -347,7 +347,7 @@ async def test_keyed_rollback_does_not_over_admit_the_cap() -> None:
 
 
 async def test_atomic_arm_rollback_covers_finalizer_and_batch_row() -> None:
-    """A pre-existing batch id fails the batch-row write AFTER every item
+    """A pre-existing batch id fails the batch-row write after every item
     and the finalizer inserted: the rollback withdraws all of them (the
     finalizer's in-batch dedup alias included) and leaves the pre-existing
     batch row untouched."""
@@ -399,7 +399,7 @@ async def test_concurrent_hammer_overlapping_keyed_batches() -> None:
     n_tasks = 12
     keys = [f"key{i}" for i in range(4)]
     # Per-task outcome bookkeeping: (batch refused?, the batch's own item
-    # ids, the ids the task's calls RETURNED).
+    # ids, the ids the task's calls returned).
     outcomes: dict[int, tuple[bool, list[JobId], list[JobId]]] = {}
 
     async def one_task(t: int) -> None:
@@ -431,7 +431,7 @@ async def test_concurrent_hammer_overlapping_keyed_batches() -> None:
                 f"task {t}'s batch was refused as a whole call yet its own rows "
                 f"{stored_own} survived: the refusal was not atomic"
             )
-        # A COMPLETED call's returned ids must stay resolvable: a dedup
+        # A completed call's returned ids must stay resolvable: a dedup
         # hit that aliases a row another task's rollback withdraws is a
         # dangling handle no PG caller can observe (PG's unique-index
         # wait means the aliasing call cannot complete before the holder
@@ -446,7 +446,7 @@ async def test_concurrent_hammer_overlapping_keyed_batches() -> None:
 
 
 async def test_batch_fast_cap_refusal_keeps_admitted_rows_and_index() -> None:
-    """The fast tier's typed cap refusal raises AFTER the admitted rows
+    """The fast tier's typed cap refusal raises after the admitted rows
     are stored (PG parity: the COPY commits, then the refusal). The
     admitted rows survive, refused actors' items are absent, and the
     dedup state stays consistent."""
@@ -484,7 +484,7 @@ async def test_dedup_alias_onto_in_flight_batch_row_dangles_after_rollback() -> 
 
     On PG this interleaving cannot complete that way: B's INSERT blocks
     on the uncommitted unique-index entry A's transaction created, A's
-    abort releases it, and B inserts its OWN row - B's returned id always
+    abort releases it, and B inserts its own row - B's returned id always
     resolves. The twin cannot block a cooperative task at the dedup
     read, so the divergence is inherent to the in-memory model: the
     single-threaded-by-contract backend has no isolation between tasks,
@@ -518,7 +518,7 @@ async def test_dedup_alias_onto_in_flight_batch_row_dangles_after_rollback() -> 
 
     def script(n: int, args: EnqueueArgs) -> Awaitable[None] | None:
         async def poison_and_release() -> None:
-            # Land the cross-actor holder for key Q HERE (after the
+            # Land the cross-actor holder for key Q here (after the
             # batch's preflight, before item1's insert) so the refusal
             # is the mid-loop insert-time one, then wake task B.
             await backend.enqueue(_args(actor="other", key="Q", tag="holder"))

@@ -11,13 +11,13 @@ One module, every flagship surface the demo walks:
   the catch-up window's skip and its sequential catch-up crawl both act on it.
 - ``cron_greedy_one`` / ``cron_greedy_two`` — two schedules whose payload
   factories each burn ~4s of the cron tick's ~4.5s funded budget. The tick
-  can fund ONE of them; the other is budget-DEFERRED every greedy tick
+  can fund one of them; the other is budget-DEFERRED every greedy tick
   (the ``cron-fire-budget-deferred`` event), never struck.
 - ``offline_meter``       — bound to queue ``offline``, which no worker
   serves: the stranded-work finding the doctor act stages.
-- ``ghost_job``           — present ONLY in ``SICK_ACTORS`` (the doctor
+- ``ghost_job``           — present only in ``SICK_ACTORS`` (the doctor
   act's registry), never in the worker's registry, so it has no stored
-  actor_config row: the "NEVER DISPATCHES" finding family.
+  actor_config row: the "never DISPATCHES" finding family.
 
 Rate-limit primitives register on the module-level ``registry`` singleton
 at import time, so the worker picks them up before dispatch begins.
@@ -168,7 +168,7 @@ async def cron_greedy_two(payload: GreedyPayload) -> None:
 def _burn_budget() -> GreedyPayload:
     """A slow-SUCCESSFUL factory: sleeps ~4s of the tick's ~4.5s funded budget.
 
-    The tick can fund ONE call of this shape. Whichever greedy schedule the
+    The tick can fund one call of this shape. Whichever greedy schedule the
     tick plans SECOND is refused (the leftover 0.45s is below the minimum
     fundable grant, a quarter of the funded budget) and is budget-DEFERRED:
     its next_fire_at advances one cadence, no strike is recorded, and the
@@ -229,7 +229,7 @@ def _refs(*actors_: Any) -> dict[str, ActorRef[Any, Any]]:
 
 
 #: The worker's registry: everything the fleet serves. `offline_meter` and
-#: `ghost_job` are deliberately absent — their absence IS the demo.
+#: `ghost_job` are deliberately absent — their absence is the demo.
 FLEET_ACTORS: dict[str, ActorRef[Any, Any]] = _refs(
     ship_order,
     token_metered,
@@ -240,7 +240,7 @@ FLEET_ACTORS: dict[str, ActorRef[Any, Any]] = _refs(
     cron_greedy_two,
 )
 
-#: The doctor act's registry: the fleet's actors PLUS the sick pair. The
+#: The doctor act's registry: the fleet's actors plus the sick pair. The
 #: worker never sees this dict, so `ghost_job` never gets a stored row and
 #: `offline_meter`'s queue is never subscribed.
 SICK_ACTORS: dict[str, ActorRef[Any, Any]] = {

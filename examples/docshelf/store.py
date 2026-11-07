@@ -1,6 +1,6 @@
 """DocShelf's own durable state — the app's tables beside the TaskQ rows.
 
-Everything the measurements read lives HERE, in the app's schema: the
+Everything the measurements read lives here, in the app's schema: the
 document register, the mock API's call ledger (the double-effect and
 retry-count witnesses), the parent↔child run links, the re-index
 cursor, the index and the digests. All writes are idempotent — the
@@ -83,7 +83,7 @@ async def register_docs(
     """Idempotent ingestion: INSERT ON CONFLICT DO NOTHING per document.
 
     Returns (the NEWLY-registered documents — a re-delivered document is
-    NOT re-processed, whoever delivers it — and the delivered ids that
+    not re-processed, whoever delivers it — and the delivered ids that
     were ALREADY registered: the duplicate-feed witness).
     """
     new: list[DocPayload] = []
@@ -91,7 +91,7 @@ async def register_docs(
     duplicates: list[str] = []
     for doc in docs:
         if doc.doc_id in seen:
-            # A duplicate WITHIN one delivery: deduped on arrival.
+            # A duplicate within one delivery: deduped on arrival.
             if doc.doc_id not in duplicates:
                 duplicates.append(doc.doc_id)
             continue
@@ -174,7 +174,7 @@ async def record_sub_result(
 ) -> int:
     """One child's typed outcome, durable. Idempotent by child run (the
     tail's re-run — a reclaim — records the same outcome once). Returns
-    the batch's recorded count AFTER this insert."""
+    the batch's recorded count after this insert."""
     raw = json.dumps(payload)
     await pool.execute(
         f'INSERT INTO "{schema}".docshelf_sub_results '  # noqa: S608  # Why: the interpolated value is the app's settings-validated schema identifier; every caller-controlled value is $N-bound.
@@ -247,7 +247,7 @@ async def read_cursor(pool: asyncpg.Pool, schema: str) -> int:
 
 
 async def advance_cursor(pool: asyncpg.Pool, schema: str, seq: int) -> int:
-    """Advance the cursor to *seq* — GREATEST: the cursor NEVER rewinds,
+    """Advance the cursor to *seq* — GREATEST: the cursor never rewinds,
     not on a crash, not on a stale writer."""
     return int(
         await pool.fetchval(

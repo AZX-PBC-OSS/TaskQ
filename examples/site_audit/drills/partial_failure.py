@@ -8,7 +8,7 @@ raises ``SiteBusUnreachable`` every attempt). The drill proves:
 2. the failure lands TYPED — the join row's ``metadata.failures`` carries
    the full ``FailureInfo`` (error class, message, the attempt history,
    the policy that ran);
-3. the aggregate reflects BOTH — the report's ``failed`` residual names
+3. the aggregate reflects both — the report's ``failed`` residual names
    the doomed site, the survivors' counts stand beside it;
 4. the run SUCCEEDS — the envelope carries the failure, it is not a
    silent swallow and not a fleet-wide cascade.

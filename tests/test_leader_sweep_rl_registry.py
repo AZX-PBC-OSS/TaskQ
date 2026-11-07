@@ -1,9 +1,8 @@
-"""Keyed eviction is de-gated from leadership: every worker sweeps its OWN
+"""Keyed eviction is de-gated from leadership: every worker sweeps its own
 registry (ctx.rate_limit_registry) each tick, leader or not; the module
 singleton remains the fallback when no registry was supplied."""
 
 import asyncio
-import contextlib
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -93,24 +92,20 @@ def _seed_idle_keyed_entry(reg: RateLimitRegistry) -> None:
 
 async def _run_one_tick(ctx: SweepContext, done: Callable[[], bool]) -> None:
     import taskq.worker._leader_sweeps as sweeps_mod
+    from tests._loop_control import managed_loop
 
-    shutdown = asyncio.Event()
-    task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the sweep loop directly, matching precedent in test_keyed_reservation_hardening.py
-    for _ in range(200):
-        if done():
-            break
-        await asyncio.sleep(0.01)
-    shutdown.set()
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    async with managed_loop(lambda shutdown: sweeps_mod._sweep_loop(ctx, shutdown)):
+        for _ in range(200):
+            if done():
+                break
+            await asyncio.sleep(0.01)
 
 
 async def test_non_leader_worker_sweeps_own_registry() -> None:
-    """is_leader NOT set: the worker's OWN registry is still evicted (de-gated)."""
+    """is_leader not set: the worker's own registry is still evicted (de-gated)."""
     own = RateLimitRegistry()
     _seed_idle_keyed_entry(own)
-    deps = _deps()  # is_leader deliberately NOT set
+    deps = _deps()  # is_leader deliberately not set
     clock: Clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     ctx = SweepContext(
         deps=deps,
@@ -128,7 +123,7 @@ async def test_non_leader_worker_sweeps_own_registry() -> None:
 
 async def test_non_leader_falls_back_to_module_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     """ctx.rate_limit_registry=None → module-level singleton used, even when
-    NOT leader (de-gating applies to the fallback path too)."""
+    not leader (de-gating applies to the fallback path too)."""
     import taskq.worker._leader_sweeps as sweeps_mod
 
     mock_registry = MagicMock()
@@ -137,7 +132,7 @@ async def test_non_leader_falls_back_to_module_singleton(monkeypatch: pytest.Mon
     mock_registry.evict_idle_keyed_reservations.return_value = 0
     monkeypatch.setattr(sweeps_mod, "rl_registry", mock_registry)
 
-    deps = _deps()  # is_leader deliberately NOT set
+    deps = _deps()  # is_leader deliberately not set
     clock: Clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     ctx = SweepContext(
         deps=deps,

@@ -298,7 +298,7 @@ async def test_property_sweep_equivalence(
     lock_expires_at_offset), isolate_self and sweep_expired_locks produce
     equivalent row state in the equivalence domain, divergent state outside it.
 
-    Equivalence domain: cancel_phase == 0 OR the lock is deeply expired
+    Equivalence domain: cancel_phase == 0 or the lock is deeply expired
     (lock_expires_at < clock_timestamp() - cancel_grace - cleanup_grace - 60s).
 
     Divergence domain: cancel_phase > 0 within grace window. isolate_self
@@ -326,7 +326,7 @@ async def test_property_sweep_equivalence(
     from taskq.worker.heartbeat import _ISOLATE_JOB_SQL_TEMPLATE
 
     attempt, max_attempts, retry_kind, cancel_phase, offset_secs = params
-    # This test asserts row STATE, not timing, so it must not inherit the
+    # This test asserts row state, not timing, so it must not inherit the
     # blitz integration default's 0.1s client-side command timeout on the
     # heartbeat pool every statement here rides: under a parallel ``-n`` run
     # on a 2-vCPU CI runner, event-loop starvation past 100ms makes any

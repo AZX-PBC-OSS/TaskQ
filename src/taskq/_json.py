@@ -4,7 +4,7 @@ The library never imports stdlib ``json`` directly. Use ``dumps`` / ``loads``
 from this module so behaviour is consistent and the serialization hot path
 stays fast.
 
-``loads`` does NOT revive UUID-like strings into :class:`uuid.UUID` objects.
+``loads`` does not revive UUID-like strings into :class:`uuid.UUID` objects.
 Type coercion is the responsibility of the consuming Pydantic model
 (``model_validate`` coerces strings to ``UUID`` when the field is typed
 ``UUID``, and keeps them as ``str`` when the field is typed ``str``).
@@ -140,7 +140,7 @@ def dumps_str(value: Any, /) -> str:
 # the scan cannot move a verdict (tests/test_tors_nul_parity.py pins the
 # differential on the adversarial shapes and a randomized sweep against an
 # independent oracle). tors is a first-party core dependency (same org,
-# AZX PBC), so the import is direct: one code path, no probe, no fallback.
+# azx pbc), so the import is direct: one code path, no probe, no fallback.
 # No other tors surface is adopted: the redaction scrub and payload_hash
 # are regex/sha256 contracts whose observables a tors primitive would
 # change, and the normalization/chunking APIs have no TaskQ call site at

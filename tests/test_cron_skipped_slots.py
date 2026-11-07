@@ -4,7 +4,7 @@
 slots of a schedule whose ``next_fire_at`` fell behind
 ``server_now - cron_catch_up_window`` — the system ADMITTING it is losing
 the race (fires it cannot even attempt). Until now that admission was
-LOG-ONLY: no counter, no gauge, no per-schedule metric, so "jobs clearing
+LOG-only: no counter, no gauge, no per-schedule metric, so "jobs clearing
 slower than the cron period" (the runaway) was invisible on the metrics
 plane.
 
@@ -82,7 +82,7 @@ def metric_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
     The skip counter resolves through :func:`taskq.obs._otel._lazy_counter`
     at call time, so patching ``get_meter`` is enough. The lag gauge is a
     module-level observable gauge bound at import time; the test re-registers
-    the SAME production callback on a test-scoped meter over a fresh cache,
+    the same production callback on a test-scoped meter over a fresh cache,
     the established pattern (``tests/test_queue_depth_gauge_bounded.py``).
     """
     reader = InMemoryMetricReader()
@@ -196,7 +196,7 @@ async def test_a_within_window_miss_moves_no_skip_counter(
     metric_reader: InMemoryMetricReader,
 ) -> None:
     """next_fire_at 30 minutes old against a 1-hour window — the missed
-    slot is CAUGHT UP (fired late), not skipped: the counter must not
+    slot is CAUGHT up (fired late), not skipped: the counter must not
     move, the skip path is the beyond-window admission only."""
     conn = _FakeCronConn(
         schedule_rows=[
@@ -440,7 +440,7 @@ async def test_runaway_fan_out_shape_fires_survive_and_are_counted(
     assert next(e for e in logs if e["event"] == "cron missed slots skipped")["skipped_slots"] == 3
     assert next(e for e in logs if e["event"] == "cron fired")["skipped_slots"] == 3
 
-    # The budget-deferral / auto-disable machinery did NOT engage: nothing
+    # The budget-deferral / auto-disable machinery did not engage: nothing
     # failed, nothing was suppressed — the runaway here is pure lag, and
     # its only trace is the skip telemetry above.
     assert not any("consecutive_failures = f.consecutive" in sql for sql, _ in conn.execute_calls)
@@ -459,7 +459,7 @@ async def test_a_budget_deferred_overdue_schedule_still_counts_its_skips(
     not: the deferral carries the skip count onto the counter.
 
     The budget consumer is the MORE overdue schedule (next_fire_at order),
-    so it skips AND consumes the funded grant; the second schedule skips
+    so it skips and consumes the funded grant; the second schedule skips
     and defers with nothing left to fund its factory."""
     consumer_id, deferred_id = new_uuid(), new_uuid()
     conn = _FakeCronConn(
@@ -533,7 +533,7 @@ async def test_the_gauge_publishes_from_the_committed_emission(
         published.append(dict(data))
         real_update(data)
 
-    # cron_loop binds the update function at import; patch ITS reference.
+    # cron_loop binds the update function at import; patch its reference.
     monkeypatch.setattr(cron_loop, "update_cron_slots_behind", _spy)
     conn, settings, backend = _runaway_tick()
 

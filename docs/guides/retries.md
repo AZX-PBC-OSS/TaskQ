@@ -994,11 +994,11 @@ workflow-specific rules compose on top:
 * **Ladder retries emit no workflow terminal** (P3 decision 7): a child
   mid-ladder decrements nothing, cascades nothing, fans in nothing — the
   join's counter moves ONLY at exhaustion. See
-  [workflows.md](workflows.md#the-failed-parent-propagation-t06).
+  [workflows.md](workflows.md#the-failed-parent-propagation).
 * **At exhaustion the failure resolves per the edge's declared policy**:
   `fail_closed` (the default) peer-cancels the running siblings and fails
   the flow; `collect` fans the failure in as a `FailureInfo` item — the
   full attempt history, the estate's `ErrorInfo` envelope — and the join
   fires with the partial result. The two semantics side by side, with the
   peer-cancel record and the skip rule: [workflows.md's failure
-  section](workflows.md#the-failed-parent-propagation-t06).
+  section](workflows.md#the-failed-parent-propagation).

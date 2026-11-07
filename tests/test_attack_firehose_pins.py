@@ -90,7 +90,7 @@ async def test_pin_flush_flood_10k_dirty_set_statement_bounds() -> None:
         buf.dirty = True
         buffers[job_id] = buf
 
-    # The 10k-dirty set coalesces into ONE tick's dirty snapshot.
+    # The 10k-dirty set coalesces into one tick's dirty snapshot.
     await _flush_dirty_set(
         _Pool(),
         "taskq_test",
@@ -116,7 +116,7 @@ async def test_pin_flush_flood_10k_dirty_set_statement_bounds() -> None:
         f"the flood's remainder must stay dirty for the next tick; "
         f"{still_dirty} dirty vs {_FLOOD_DIRTY - flushed} expected"
     )
-    # And the tick drains the remainder on the NEXT tick: run it again.
+    # And the tick drains the remainder on the next tick: run it again.
     statements.clear()
     await _flush_dirty_set(
         _Pool(),
@@ -188,7 +188,7 @@ async def test_pin_sse_seq_total_order_under_10k_flood() -> None:
     """A 10k-event flood reaches the consumer exactly once, in order.
 
     The client's seq-cursor discipline discards anything at or below its
-    cursor, so ONE out-of-order yield drops a LIVE delta (the client
+    cursor, so one out-of-order yield drops a LIVE delta (the client
     discards the re-sent higher seq later? no - it discards the STALE
     re-ordering) and one duplicate hides a fresh tick. The generator's
     single-connection read loop is the total order's guarantee: one
@@ -198,7 +198,7 @@ async def test_pin_sse_seq_total_order_under_10k_flood() -> None:
     events = [_flood_event(seq) for seq in range(1, n + 1)]
     # Replay shapes the broker can produce under a storm (a pubsub
     # reconnect re-delivers, a dual-publish race double-fires): a stale
-    # seq AFTER newer ones and an exact duplicate. The cursor gate must
+    # seq after newer ones and an exact duplicate. The cursor gate must
     # drop both - one stale yield rendered is a client regression, one
     # duplicate hides nothing but breaks the exactly-once order.
     for replay_at, replay_seq in ((2_500, 2_000), (5_000, 2_000), (7_500, 7_499)):
@@ -225,7 +225,7 @@ async def test_pin_sse_seq_total_order_under_10k_flood() -> None:
     async for sse in gen:
         seen_seqs.append(int(sse.id or -1) if sse.data else -1)
 
-    # The initial snapshot (seq 0), then EVERY flood event 1..n in order
+    # The initial snapshot (seq 0), then every flood event 1..n in order
     # (every replay dropped by the cursor gate), then the terminal's
     # seq n+1; the trailing done event carries no id.
     assert seen_seqs == [*range(0, n + 2), -1], (
@@ -288,7 +288,7 @@ async def test_pin_notify_wake_callback_flood_o1_retention() -> None:
     Two contracts at flood magnitude:
 
     - the EMPTY payload (the wake-everything shape the COPY fixup and
-      rolling-deploy triggers send) wakes EVERY subscriber, the
+      rolling-deploy triggers send) wakes every subscriber, the
       queue-filtered ones included - a dropped arm is the lost-wake
       dispatch stall;
     - a queue-filtered subscriber stays asleep on a foreign queue's
@@ -332,12 +332,12 @@ async def test_pin_notify_wake_callback_flood_o1_retention() -> None:
 
 
 async def test_pin_notify_wake_callback_queue_filter_stays_asleep() -> None:
-    """A queue-filtered subscriber must NOT wake on a foreign payload.
+    """A queue-filtered subscriber must not wake on a foreign payload.
 
     The flood's other half: the filter exists so a 50-worker fleet stops
     answering every insert with a full claim round. A foreign queue's
     notify leaves the subscriber's event unset - and the subscriber must
-    still wake the moment its OWN queue's payload lands.
+    still wake the moment its own queue's payload lands.
     """
     from taskq.backend.postgres import PostgresBackend
     from taskq.worker.notify import _make_callback

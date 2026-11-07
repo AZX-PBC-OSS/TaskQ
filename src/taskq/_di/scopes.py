@@ -125,8 +125,8 @@ class ScopeContainer:
     """Concrete scope-lifetime container owning a cache and a teardown list.
 
     The container is responsible for ALL factory invocation, caching, and
-    teardown registration. The solver engine NEVER calls a factory directly
-    and NEVER registers a teardown.
+    teardown registration. The solver engine never calls a factory directly
+    and never registers a teardown.
     """
 
     def __init__(
@@ -286,7 +286,7 @@ class ScopeContainer:
             exit_future = loop.run_in_executor(executor, cm.__exit__, None, None, None)
             if self._factory_timeout is None:
                 # Same policy as _await_factory: the caller (the per-job
-                # TRANSIENT scope's consumer) owns the bound.
+                # transient scope's consumer) owns the bound.
                 await exit_future
                 return
             bound = asyncio.timeout(self._factory_timeout)
@@ -359,7 +359,7 @@ class ScopeContainer:
                 if isinstance(exc, asyncio.CancelledError):
                     pending_cancel = exc
 
-        # Why: shut down the pinned SYNC_GENERATOR executor AFTER all
+        # Why: shut down the pinned SYNC_GENERATOR executor after all
         # per-provider teardown callbacks have run. shutdown(wait=True) is
         # blocking; running it inline would block the loop .
         #
@@ -371,7 +371,7 @@ class ScopeContainer:
         # the background whenever the user code returns, and the residue
         # is that one thread per hung container until then (a leak the
         # stdlib makes unrecoverable by construction; what teardown owns
-        # is never parking the REST of the close on it).
+        # is never parking the rest of the close on it).
         if self._sync_gen_executor is not None:
             executor = self._sync_gen_executor
             self._sync_gen_executor = None
@@ -527,7 +527,7 @@ class LoopScope(ScopeContainer):
         providers resolved after this method is called (e.g., lazy
         providers) become visible without re-fetching, and replacements
         made via :meth:`replace_value` become visible to subsequent
-        ``.get()`` reads. Callers MUST NOT attempt to mutate the mapping;
+        ``.get()`` reads. Callers MUST not attempt to mutate the mapping;
         doing so raises ``TypeError``.
 
         Stability invariant: once ``bootstrap`` returns, the registered
@@ -558,7 +558,7 @@ class LoopScope(ScopeContainer):
         drains and closes the old pool; without this, DI-injected
         ``db: asyncpg.Pool`` consumers would keep using a closed pool).
 
-        The old value is NOT torn down here, its lifecycle belongs to
+        The old value is not torn down here, its lifecycle belongs to
         the swapper. Only the cache entry is replaced; the (sealed)
         registry is untouched. Raises :class:`KeyError` when *type_* has
         no cached value, replacing an absent entry would silently
@@ -589,7 +589,7 @@ class LoopScopeSlotView:
     actor, and every nested LOOP-scoped resolution its dependencies
     trigger through the same scope-containers map, resolves the slot's
     instance instead of the one object registered at ``Scope.LOOP``.
-    Without the shadow, every concurrent slot's actor received the SAME
+    Without the shadow, every concurrent slot's actor received the same
     registered connection and interleaved operations on it: asyncpg
     permits one operation per connection, so healthy actors raised
     ``InterfaceError`` (misattributed to the actor, retry budget burned),
@@ -605,7 +605,7 @@ class LoopScopeSlotView:
     removed) is re-resolved PER INVOCATION through the invocation's
     TRANSIENT runner instead of the LOOP cache. The scope's bootstrap
     eagerly resolved that factory through the REAL containers, so the
-    cached singleton holds the ONE registered connection; handing it to
+    cached singleton holds the one registered connection; handing it to
     concurrent slots' actors would rebuild the exact sharing the view
     exists to prevent. Re-resolution runs the factory's own parameters
     through the same shadowed scope-containers map (nested LOOP-scoped
@@ -621,7 +621,7 @@ class LoopScopeSlotView:
     teardown, a mapped instance's lifecycle belongs to the wiring that
     supplied it (the dispatch acquire/release exit stack that owns the
     slot connection), and a re-resolved instance's to the invocation
-    runner. Every type NOT in the mapping and NOT shadow-derived
+    runner. Every type not in the mapping and not shadow-derived
     resolves through the real LOOP container unchanged, and nothing
     outside this actor invocation can observe the shadow: the LOOP
     cache itself is never touched.
@@ -649,12 +649,12 @@ class LoopScopeSlotView:
         value = self._slot_values.get(type_)
         if value is not None:
             self._last_cache_hit = True
-            return cast("T", value)  # pyright: ignore[reportReturnType]  # Why: the DI erasure boundary, the mapping's value is the live instance the caller's wiring owns for type_ (dispatch maps the slot connection under asyncpg.Connection); the same value-shape trust ScopeContainer's cache-hit branch applies.
+            return cast("T", value)  # pyright: ignore[reportReturnType]  # Why: the di erasure boundary, the mapping's value is the live instance the caller's wiring owns for type_ (dispatch maps the slot connection under asyncpg.Connection); the same value-shape trust ScopeContainer's cache-hit branch applies.
         if type_ in self._shadow_derived:
-            # A LOOP-scoped factory derived (transitively) from a
-            # shadowed type: the LOOP cache's bootstrap singleton baked
+            # A loop-scoped factory derived (transitively) from a
+            # shadowed type: the loop cache's bootstrap singleton baked
             # in the registered instance, so resolve this invocation's
-            # own through the TRANSIENT runner, fresh parameters off
+            # own through the transient runner, fresh parameters off
             # the shadowed containers map, no caching, teardown owned
             # by the invocation.
             self._last_cache_hit = False
@@ -668,7 +668,7 @@ class LoopScopeSlotView:
         return self._last_cache_hit
 
     async def aclose(self) -> None:
-        # The view owns no resources; the LOOP container's lifecycle is
+        # The view owns no resources; the loop container's lifecycle is
         # unchanged by one actor invocation having looked through it.
         await self._inner.aclose()
 
@@ -742,14 +742,14 @@ async def build_actor_scope(
 
     transient_scope = ScopeContainer(scope=Scope.TRANSIENT, resolver=_resolver)
 
-    # Why a per-invocation view instead of mutating the LOOP cache: the
-    # LOOP cache is shared by every concurrent slot, a swap would race
+    # Why a per-invocation view instead of mutating the loop cache: the
+    # loop cache is shared by every concurrent slot, a swap would race
     # sibling dispatches and leak the slot's connection to later jobs.
-    # The view is visible only to the solves that run inside THIS
+    # The view is visible only to the solves that run inside this
     # build_actor_scope body, which is exactly the audience the slot's
     # connection is safe for. The invocation runner is the body's own
-    # TRANSIENT container: a shadow-derived LOOP factory resolves its
-    # parameters through the same containers map (LOOP is this view, so
+    # transient container: a shadow-derived loop factory resolves its
+    # parameters through the same containers map (loop is this view, so
     # its connection-typed parameters see the slot's instance) and its
     # lifecycle teardowns land on the invocation's teardown, the
     # derived object lives and dies with this one actor call, never
@@ -770,7 +770,7 @@ async def build_actor_scope(
         Scope.TRANSIENT: transient_scope,
     }
 
-    # Why: the resolver closure captured scope_containers before TRANSIENT
+    # Why: the resolver closure captured scope_containers before transient
     # was added; re-bind so the resolver sees all four containers.
     def _resolver_with_all(func: object) -> Any:
         async def _resolve() -> dict[str, object]:
@@ -782,9 +782,9 @@ async def build_actor_scope(
 
         return _resolve()
 
-    transient_scope._resolver = _resolver_with_all  # pyright: ignore[reportPrivateUsage]  # Why: build_actor_scope constructs the TRANSIENT container and must wire its resolver to see all four scope containers; the resolver is a closure detail owned by this call site
+    transient_scope._resolver = _resolver_with_all  # pyright: ignore[reportPrivateUsage]  # Why: build_actor_scope constructs the transient container and must wire its resolver to see all four scope containers; the resolver is a closure detail owned by this call site
 
-    # DEBUG, not INFO: this pair fires once per job carrying only the
+    # debug, not info: this pair fires once per job carrying only the
     # actor name, so at the default level it is a per-job rendering cost
     # for a line nothing consumes.
     logger.debug("transient-scope-opened", actor_name=actor_name)
@@ -808,7 +808,7 @@ async def build_actor_scope(
             )
         yield ResolvedActorScope(ctx=ctx, di_kwargs=di_kwargs)  # type: ignore[reportUnknownArgumentType]  # Why: ctx is narrowed to JobContext[Any] by isinstance but pyright cannot recover the BaseModel bound from the passthrough_kwargs dict[str, object], the consumer that built passthrough_kwargs guarantees the correct P at the call site
     finally:
-        # Why: shield the TRANSIENT teardown so cancellation /
+        # Why: shield the transient teardown so cancellation /
         # asyncio.wait_for timeouts in the with-body do not
         # short-circuit the teardown mid-way.
         # ("wrap terminal writes in asyncio.shield") applies to

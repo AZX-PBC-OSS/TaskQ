@@ -296,14 +296,14 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     metadata_dict.pop("batch_id", None)
     # Security boundary, same class: "cron_schedule_id" is the provenance
     # stamp the cron tick writes on its own fires and pre-scheduled twins ,
-    # the DST twin-coverage walk counts a row bearing the planning
+    # the dst twin-coverage walk counts a row bearing the planning
     # schedule's id as that schedule's delivery. A caller-supplied value
     # would let any on-demand enqueue self-assert membership in a victim
     # schedule's delivery set and silently skip its owed occurrences, so it
     # is stripped here exactly like batch_id. The tick mints the stamp
     # itself, on args it builds directly, it never crosses this boundary.
     metadata_dict.pop("cron_schedule_id", None)
-    # Library-side batch stamping, INSIDE the boundary: the strip above runs
+    # Library-side batch stamping, inside the boundary: the strip above runs
     # first regardless, so a caller-supplied batch_id can never survive, and
     # the only value that lands here is the library's own. Accepting the stamp
     # as a parameter (instead of the caller re-constructing args via
@@ -356,7 +356,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     # AfterValidator only fires inside pydantic model validation), so the
     # charset check must run here explicitly, for the per-call override
     # and the actor-declared default alike. Without it a typo'd queue name
-    # strands jobs on a queue no worker's ``queue = ANY($1)`` ever matches.
+    # strands jobs on a queue no worker's ``queue = any($1)`` ever matches.
     _validate_queue_name(resolved_queue)
 
     return EnqueueArgs(
@@ -417,7 +417,7 @@ def build_batch_args(
     as before.
 
     ``parent_id`` is the fan-out ledger stamp: the caller read
-    the ambient parent context ONCE per call and passed it here, every
+    the ambient parent context once per call and passed it here, every
     item carries it. Pure like the rest of the module — no contextvar
     read inside.
     """

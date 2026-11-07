@@ -4,7 +4,7 @@ Section 4 (event INSERT under flood): the production
 ``INSERT_EVENTS_DETAIL_BATCH_SQL`` at the sweep's batch cap (100 rows) with
 the sweeps' own ``statement_timeout`` arm, measured at p50/p99 under a hot
 ``job_events`` table - the margin ratio against the 1750 ms timeout - and
-deliberately oversize (10k rows in ONE unnest, the unbounded-caller
+deliberately oversize (10k rows in one unnest, the unbounded-caller
 monster) to show why every caller must stay under the cap.
 
 Section 5 (dispatch fairness): a hot queue with a 10k-deep pending flood
@@ -96,7 +96,7 @@ async def section_event_insert(pool: asyncpg.Pool) -> dict[str, object]:
 
     lat_sorted = sorted(latencies)
 
-    # The monster: ONE 10k-row unnest INSERT (what an unbounded caller
+    # The monster: one 10k-row unnest INSERT (what an unbounded caller
     # would issue), same statement shape, same table.
     async with pool.acquire() as conn:
         prev_timeout = await _apply_batch_statement_timeout(conn, 1750)
@@ -198,7 +198,7 @@ async def section_fairness() -> dict[str, object]:
             cold,
         )
 
-    # 20 dispatch rounds, limit 50, round-robin across BOTH queues.
+    # 20 dispatch rounds, limit 50, round-robin across both queues.
     cold_claimed = 0
     hot_claimed = 0
     round_latencies: list[float] = []

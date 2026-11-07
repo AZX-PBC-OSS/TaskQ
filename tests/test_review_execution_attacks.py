@@ -1,13 +1,13 @@
 """Area-3 review attacks: execution & retry policies.
 Probes (each predicts a specific outcome; RED pins get fixed in this branch):
 
-1. THE TAKE-TO-REGISTER WINDOW LEAK: between the progress buffer's install
+1. the TAKE-TO-REGISTER WINDOW LEAK: between the progress buffer's install
    and the attempt ``try`` whose ``finally`` is its only removal sit two
    awaits (``active_jobs.register``, the ``running`` publish). A
    cancellation landing there exits ``consume_one_job`` without running the
    removal finally — the exact issue-461 map-hygiene class the install's
    comment says the seam fix closed for the shutdown-seam exit.
-2. THE FENCED TERMINAL PATH'S DIRTY CLEAR: ``_run_terminal_path`` clears
+2. the FENCED TERMINAL PATH'S DIRTY CLEAR: ``_run_terminal_path`` clears
    ``dirty`` on whatever buffer the job-id key holds, ungated — the
    autonomous and tx paths both gate the same clear on the write landing.
    A stale attempt whose write was fenced must not clear the live
@@ -140,7 +140,7 @@ async def test_cancel_in_running_publish_window_does_not_leak_progress_buffer(
     buffers: dict[UUID, _ProgressBuffer] = {}
 
     async def _cancelling_publish(*args: object, **kwargs: object) -> None:
-        # A cancellation delivered at THIS await: from the task's frame the
+        # A cancellation delivered at this await: from the task's frame the
         # delivery shape of an external task.cancel() landing while the
         # consumer is suspended on the running publish is exactly a
         # CancelledError raised here.
@@ -216,7 +216,7 @@ async def test_fenced_terminal_path_does_not_clear_live_buffers_dirty_flag() -> 
 
     async def actor(running: "JobRow", ctx: JobContext[BaseModel]) -> object:
         await ctx.progress(step=1, detail="stale attempt progress")
-        # The reclaim race: a same-worker re-claim installs the LIVE
+        # The reclaim race: a same-worker re-claim installs the live
         # attempt's buffer at the key, with its own unflushed delta.
         live = _ProgressBuffer(job_id=running.id, base_seq=10, attempt=2)
         live.pending_seq_delta = 3
@@ -414,7 +414,7 @@ class TestAttemptCountingRealPG:
                     break
                 # The surviving worker re-claims: attempt + 1. The
                 # re-pend arm stamped a new scheduled_at; that is the
-                # claim-time due time THIS next attempt is taken against.
+                # claim-time due time this next attempt is taken against.
                 due_at_by_attempt[row["attempt"] + 1] = await conn.fetchval(
                     f'SELECT scheduled_at FROM "{schema}".jobs WHERE id = $1', job_id
                 )

@@ -1,7 +1,7 @@
 """Admission denials are HTTP-429 semantics: come back later, never fail.
 
 A rate-limited job that is denied admission - because the limiter's store
-cannot answer (Redis unreachable, the PG fallback disabled) OR because the
+cannot answer (Redis unreachable, the PG fallback disabled) or because the
 bucket is saturated - has not executed. Its actor never ran, no
 handler raised, nothing about the job itself went wrong. The denial is the
 system saying "no capacity right now, come back later", exactly as an HTTP

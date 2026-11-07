@@ -29,11 +29,11 @@ contract pinned here):
    drain's exclusion fold (``held_ids``) keeps the DRAINING pass off the
    row; exactly one of the success write and the interruption release
    lands. Two folds of the exclusion are pinned here: a consumer-disowned
-   row (the terminal write failed on infrastructure) is NOT the drain's
+   row (the terminal write failed on infrastructure) is not the drain's
    population - the drain must not refund an attempt that started
    executing, and the heartbeat reconcile's refunded row (its output is
    ``running`` + locked + ``started_at`` un-stamped) must not be
-   re-refunded by the DRAINING pass (the drain's ``started_at IS NOT
+   re-refunded by the DRAINING pass (the drain's ``started_at IS not
    NULL`` conjunct is exactly that fence).
 5. CANCELLED during the shutdown (an operator cancel in flight when
    SIGTERM landed). The drain's ``cancel_phase = 0`` fence keeps the row
@@ -146,7 +146,7 @@ async def _enqueue(
 
 async def _new_worker(deps: WorkerDeps, schema: str, worker_id: UUID | None = None) -> UUID:
     wid = worker_id or new_uuid()
-    # A successor is a NEW PROCESS: a fresh WorkerDeps carries no shutdown
+    # A successor is a new process: a fresh WorkerDeps carries no shutdown
     # state, and the consumer's take-to-register seam reads exactly that
     # state - a deps object reused across a completed orchestration still
     # carries the finished shutdown's stamps (the orchestrator never
@@ -303,7 +303,7 @@ async def _assert_balanced(deps: WorkerDeps, schema: str, tag: str) -> None:
     assert not violations, "the balancing counter does not balance:\n" + "\n".join(violations)
 
 
-# ── State 1: PARKED in the local queue ───────────────────────────────────
+# ── State 1: parked in the local queue ───────────────────────────────────
 
 
 async def test_state1_parked_rows_are_re_pended_to_the_fleet_not_abandoned(
@@ -313,8 +313,8 @@ async def test_state1_parked_rows_are_re_pended_to_the_fleet_not_abandoned(
     re-pended by the DRAINING pass with its attempt refunded, and a
     successor worker picks it up.
 
-    The contract on main: the parked row is NOT this worker's to run
-    during shutdown and NOT abandoned - it goes back to the fleet
+    The contract on main: the parked row is not this worker's to run
+    during shutdown and not abandoned - it goes back to the fleet
     (``pending``, unlocked, the claim's increment refunded, the row
     routed by its actor's assignment). The refund is exactly-once: the
     producer's exit hand-back pass (the second writer on this path)
@@ -443,7 +443,7 @@ async def _producer(
     )
 
 
-# ── State 2: TAKEN, the take-to-register window ──────────────────────────
+# ── State 2: taken, the take-to-register window ──────────────────────────
 
 
 async def test_state2_claim_intent_fences_the_row_out_of_every_hand_back(
@@ -454,7 +454,7 @@ async def test_state2_claim_intent_fences_the_row_out_of_every_hand_back(
     While the claim intent stands, no hand-back pass may re-pend the row
     or refund its attempt, and no successor may claim it. When the window
     resolves without a run (the consumer loop's exit resolves the claim),
-    the NEXT hand-back pass re-pends the row whole: refund, exactly once.
+    the next hand-back pass re-pends the row whole: refund, exactly once.
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -471,7 +471,7 @@ async def test_state2_claim_intent_fences_the_row_out_of_every_hand_back(
         "the premise: the take-to-register window is held by the intent map"
     )
 
-    # The DRAINING pass runs with the intent standing: the row is not
+    # The draining pass runs with the intent standing: the row is not
     # re-pended, its attempt is not refunded.
     drained = await drain_local_queue_to_pending(deps, worker_id)
     assert drained == 0, (
@@ -561,7 +561,7 @@ async def test_state2_late_registration_torn_down_by_the_shutdown_requeues(
     row = claimed[0]
 
     registry = _GatedRegisterRegistry()
-    # The gated registry IS the worker's registry: the drain's exclusion
+    # The gated registry is the worker's registry: the drain's exclusion
     # folds and the orchestrator read the same instance the consumer
     # registers into (one process, one registry).
     deps.active_jobs = registry
@@ -576,7 +576,7 @@ async def test_state2_late_registration_torn_down_by_the_shutdown_requeues(
         return {}
 
     attempt_task = _run_attempt(deps, backend, worker_id, row, actor, registry)
-    # The attempt task parks INSIDE register(): the take-to-register window
+    # The attempt task parks inside register(): the take-to-register window
     # is held open, the claim intent fences the row.
 
     shutdown_event = asyncio.Event()
@@ -588,7 +588,7 @@ async def test_state2_late_registration_torn_down_by_the_shutdown_requeues(
 
     orchestrator = asyncio.create_task(shutdown_task())
     # The orchestration runs to completion with the registration parked:
-    # no phase sees the job. The claim intent fences the DRAINING pass off
+    # no phase sees the job. The claim intent fences the draining pass off
     # the row the whole time.
     await orchestrator
     assert deps.shutdown_phase is ShutdownPhase.RELEASING
@@ -631,7 +631,7 @@ async def test_state2_late_registration_torn_down_by_the_shutdown_requeues(
     )
 
     # The successor picks the row up within the bound (hold=0: the async
-    # actor provably unwound) and runs it once at a NEW attempt.
+    # actor provably unwound) and runs it once at a new attempt.
     successor = await _new_worker(deps, schema)
     claimed = await backend.dispatch_batch(successor, ["default"], 5, _LOCK_LEASE)
     assert [job.id for job in claimed] == [job_id], "the successor claims the requeued row"
@@ -656,7 +656,7 @@ async def test_state2_late_registration_torn_down_by_the_shutdown_requeues(
     await _assert_balanced(deps, schema, _TAG)
 
 
-# ── State 2, the consumer side: the take-to-register SHUTDOWN SEAM ───────
+# ── State 2, the consumer side: the take-to-register shutdown seam ───────
 
 
 async def test_shutdown_seam_releases_the_never_started_claim_whole(
@@ -677,7 +677,7 @@ async def test_shutdown_seam_releases_the_never_started_claim_whole(
     proving whose write it was); no ``job_attempts`` ledger row exists (a
     never-started attempt is not an execution); the ``scheduled``
     state-change reaches Redis like every other requeue (the ordinary
-    snooze path's publish); and - the leak's tooth - NO
+    snooze path's publish); and - the leak's tooth - no
     ``progress_buffers`` entry is left behind: the buffer is installed
     only after the seam declines to fire, so a seam-fired dispatch cannot
     strand an entry the flush tick's dirty-scan would iterate forever.
@@ -703,7 +703,7 @@ async def test_shutdown_seam_releases_the_never_started_claim_whole(
     try:
         # The shutdown stamp: the orchestrator's entry stamps
         # shutdown_started_at in the same synchronous block that raises
-        # the phase to DRAINING - one signal, no await between them. The
+        # the phase to draining - one signal, no await between them. The
         # consumer's window walk (payload validation, the effective-surface
         # resolution) reaches the seam guard with the stamp standing.
         deps.redis_client = clean_redis_client
@@ -750,11 +750,11 @@ async def test_shutdown_seam_releases_the_never_started_claim_whole(
             "no ledger row: a never-started attempt is not an execution outcome"
         )
 
-        # THE LEAK'S TOOTH. A seam returning from between the
-        # buffer install and the ``finally`` that removes it: every
-        # shutdown-raced dispatch left one entry in the map for the
-        # process's remaining life, and the flush tick's dirty-scan
-        # iterated it forever. The pin goes red under that order.
+        # the leak's tooth. A seam returning from between the buffer install
+        # and the ``finally`` that removes it: every shutdown-raced dispatch
+        # left one entry in the map for the process's remaining life, and the
+        # flush tick's dirty-scan iterated it forever. The pin goes red under
+        # that order.
         assert job_id not in deps.progress_buffers and not deps.progress_buffers, (
             f"the seam-fired dispatch left a progress_buffers entry behind "
             f"({len(deps.progress_buffers)}): the install preceded the guard, the "
@@ -787,7 +787,7 @@ async def test_shutdown_seam_releases_the_never_started_claim_whole(
         await pubsub.aclose()
 
 
-# ── State 3: RUNNING pre-terminal ────────────────────────────────────────
+# ── State 3: running pre-terminal ────────────────────────────────────────
 
 
 async def test_state3_running_job_interrupted_requeues_whole_for_the_successor(
@@ -872,7 +872,7 @@ async def test_state3_running_job_interrupted_requeues_whole_for_the_successor(
     await _assert_balanced(deps, schema, _TAG)
 
 
-# ── State 4: RUNNING, terminal write in flight ───────────────────────────
+# ── State 4: running, terminal write in flight ───────────────────────────
 
 
 async def test_state4_success_write_in_flight_the_drain_never_touches_the_row(
@@ -919,7 +919,7 @@ async def test_state4_success_write_in_flight_the_drain_never_touches_the_row(
     orchestrator = asyncio.create_task(
         orchestrate_shutdown(deps, deps.settings, worker_id, shutdown_event, None, backend=backend)
     )
-    # The consumer is parked on the shielded write when FORCING delivers
+    # The consumer is parked on the shielded write when forcing delivers
     # its cancel. The gate stays closed, so the ordering is deterministic:
     # the success write cannot land first, the interruption release wins
     # the row, and the drain (whose pass ran with the entry in held_ids)
@@ -944,7 +944,7 @@ async def test_state4_success_write_in_flight_the_drain_never_touches_the_row(
     )
     assert ledger == [], "an interrupted attempt writes no ledger row"
 
-    # The successor picks the row up and runs it once, at a NEW attempt.
+    # The successor picks the row up and runs it once, at a new attempt.
     successor = await _new_worker(deps, schema)
     runs: dict[UUID, list[int]] = {}
     claimed = await backend.dispatch_batch(successor, ["default"], 5, _LOCK_LEASE)
@@ -975,7 +975,7 @@ async def test_state4_consumer_disowned_row_is_not_the_drains_refund_population(
 
     Refunding a started attempt re-creates the exact attempt epoch the
     first execution ran under: the successor re-claims and re-runs the
-    body at the SAME attempt number - a second run of one attempt, the
+    body at the same attempt number - a second run of one attempt, the
     shape the attempt-refund fragment's own header forbids. The disowned
     row's recovery is the lease-expiry sweep (Sweep 1), whose budget
     predicate re-pends it at the charged attempt.
@@ -1055,7 +1055,7 @@ async def test_state4_consumer_disowned_row_is_not_the_drains_refund_population(
             job_id,
         )
 
-    # The successor re-runs the body under a NEW attempt: exactly once per
+    # The successor re-runs the body under a new attempt: exactly once per
     # attempt, the effects ledger reconciles.
     successor = await _new_worker(deps, schema)
     runs: dict[UUID, list[int]] = {}
@@ -1135,7 +1135,7 @@ async def test_state4_the_drain_never_re_refunds_the_reconciles_refund(
         f"the premise: the reconcile refunded once and un-stamped, got {row}"
     )
 
-    # SIGTERM: the DRAINING pass. The reconciled output must be left for
+    # SIGTERM: the draining pass. The reconciled output must be left for
     # Sweep 1 - no re-pend, no second refund.
     shutdown_event = asyncio.Event()
     exit_code = await orchestrate_shutdown(
@@ -1156,7 +1156,7 @@ async def test_state4_the_drain_never_re_refunds_the_reconciles_refund(
         "attempt epoch its genuine ledger row already holds"
     )
 
-    # Sweep 1 reclaims; the successor claims at a NEW attempt and the
+    # Sweep 1 reclaims; the successor claims at a new attempt and the
     # ledger reconciles.
     await _age_lock_expiry(deps, schema, job_id)
     async with deps.worker_pool.acquire() as conn:
@@ -1200,7 +1200,7 @@ async def test_state4_the_drain_never_re_refunds_the_reconciles_refund(
     await _assert_balanced(deps, schema, _TAG)
 
 
-# ── State 5: CANCELLED during the shutdown ───────────────────────────────
+# ── State 5: cancelled during the shutdown ───────────────────────────────
 
 
 async def test_state5_operator_cancel_in_flight_owns_the_rows_exit(
@@ -1232,8 +1232,8 @@ async def test_state5_operator_cancel_in_flight_owns_the_rows_exit(
     await wait_for(started, timeout=5.0, description="the actor to be running")
 
     # The operator's cancel write lands on the row (phase 1), and the
-    # SIGTERM lands BEFORE the ladder's poll observes it: the entry's
-    # origin is still NONE, the row says who asked. This is the exact
+    # SIGTERM lands before the ladder's poll observes it: the entry's
+    # origin is still none, the row says who asked. This is the exact
     # window a cancel that races a deploy occupies.
     result = await backend.cancel_where(JobFilter(tags=(_TAG,)), reason="offboard")
     assert result.cancelled_directly == 0 and result.cancel_requested == 1, (
@@ -1286,7 +1286,7 @@ async def test_state5_operator_cancel_in_flight_owns_the_rows_exit(
 async def test_state5_the_cancel_fence_keeps_a_phase_one_row_off_the_drain(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """The fence shape: an operator cancel stamped on a row NO consumer
+    """The fence shape: an operator cancel stamped on a row no consumer
     holds (the claim response was lost, the ladder has not run) when
     SIGTERM lands.
 
@@ -1346,8 +1346,8 @@ async def test_state5_the_cancel_fence_keeps_a_phase_one_row_off_the_drain(
     )
     ledger = await _attempt_rows(deps, schema, job_id)
     # The reclaim's ledger row records outcome='crashed' on every branch
-    # (the sweep's own pinned contract: that IS what happened to the
-    # attempt - the holder died mid-protocol), while the ROW says
+    # (the sweep's own pinned contract: that is what happened to the
+    # attempt - the holder died mid-protocol), while the row says
     # 'cancelled': the honoured request is the row's verdict.
     assert [(int(r["attempt"]), r["outcome"]) for r in ledger] == [(1, "crashed")], (
         f"one ledger row records the reclaim: {ledger}"
@@ -1367,11 +1367,11 @@ async def test_state4_the_ledger_row_blocks_the_drains_refund(
 ) -> None:
     """A running row whose CURRENT attempt already carries a job_attempts
     row (the isolate-self write, the reclaim INSERT, or a retried
-    terminal's shape) is NEVER the drain's refund population.
+    terminal's shape) is never the drain's refund population.
 
     The refund would erase the executed attempt's charge and the
     successor's re-claim would re-issue the number the ledger's PK
-    already holds: the exact collision the ledger guard's NOT EXISTS
+    already holds: the exact collision the ledger guard's not EXISTS
     conjunct enforces the premise against. The row stays running and
     locked, its charge and started_at intact, the ledger untouched.
     """

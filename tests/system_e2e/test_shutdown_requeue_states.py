@@ -68,14 +68,14 @@ pytestmark = [pytest.mark.integration, pytest.mark.system]
 
 _TAG = "sys-req"
 
-#: The client-side bound on ONE ledger read. The tier's reads are plain
+#: The client-side bound on one ledger read. The tier's reads are plain
 #: polls and primary-key selects — never a legitimately-long query — and
 #: the server-side ``statement_timeout`` the ``sys_ledger`` fixture
 #: carries bounds the slow-server class. This bound is the dead-socket
 #: half (the server never sees the statement at all): the rejected
-#: shape (the system-e2e (17) leg, run 38053606389 — a scenario hung
-#: past its own 240s budget on ONE unbounded fetch) must end at a bound
-#: the HELPER owns, so the cap's DESIGNED assertion is the failure the
+#: shape (the PG17 leg's dead socket — a scenario hung
+#: past its own 240s budget on one unbounded fetch) must end at a bound
+#: the helper owns, so the cap's designed assertion is the failure the
 #: report carries, never a pytest-timeout.
 _LEDGER_READ_TIMEOUT_S = 10.0
 
@@ -138,8 +138,8 @@ async def test_sigterm_mid_body_interrupts_and_the_successor_completes(
         ]
         in_flight = await _wait_running(conn, schema, _TAG, want=3, cap_secs=30.0)
 
-        # The SIGTERM with every slot mid-body: the drain's CANCELLING
-        # signal reaches the async bodies, the FORCING cancel lands, and
+        # The SIGTERM with every slot mid-body: the drain's cancelling
+        # signal reaches the async bodies, the forcing cancel lands, and
         # the consumer's interruption release re-pends each row (the spent
         # attempt standing) before the process exits cleanly.
         rc = graceful_stop(worker_a, timeout=60.0)
@@ -179,12 +179,12 @@ async def test_sigterm_mid_body_interrupts_and_the_successor_completes(
                 f"{row['status']!r} (archived={archived})"
             )
             # The state the job was in at the SIGTERM decides the shape,
-            # and both requeue whole: TAKEN-and-running jobs are
+            # and both requeue whole: taken-and-running jobs are
             # interrupted (interrupt_count 1, the charged attempt stands,
-            # the successor's run is a NEW attempt); jobs still parked in
+            # the successor's run is a new attempt); jobs still parked in
             # the departing worker's local queue (claimed, untaken - the
             # claim beats the take by milliseconds) are handed back with
-            # the attempt refunded, and the successor's run IS the first
+            # the attempt refunded, and the successor's run is the first
             # attempt. The biconditional is the pin: an interrupted job
             # with no re-run, or a refunded claim that still spent an
             # attempt, is a broken requeue either way.
@@ -242,7 +242,7 @@ async def test_operator_cancel_racing_the_sigterm_owns_the_exit(
         # racing row terminalises cancelled. At the harness's chaos-tier
         # 1s+1s graces, a drain whose holder stalls a few seconds under
         # co-tenant load escalates the row to 'abandoned' (the graces'
-        # documented expiry), the pin's designed shape LOST to the host's
+        # documented expiry), the pin's designed shape lost to the host's
         # weather. The deployment margins keep the ladder's poll in front
         # of the graces on a loaded runner, and the drain still honours
         # the cooperative phases (the bodies are 8s sleeps, cancellable
@@ -260,10 +260,10 @@ async def test_operator_cancel_racing_the_sigterm_owns_the_exit(
         )
         wait_worker_ready(worker_a)
 
-        # Bodies that OUTLIVE the cancel graces (60s sleeps against the
+        # Bodies that outlive the cancel graces (60s sleeps against the
         # 10s deployment grace): the ladder's cooperative window can
         # never let the body finish first, so the forced escalation
-        # OWNS the terminal state deterministically - on any host
+        # owns the terminal state deterministically - on any host
         # speed. (The 8s bodies of scenario 1 race the grace: a body
         # that finishes inside the cooperative window lands 'succeeded'
         # and the pin's premise is lost to the host's weather.)

@@ -95,7 +95,7 @@ async def _batch_partition_refusal(side: DiffSide) -> None:
 
 async def test_diff_max_pending_batch_partition(pg_dsn: str) -> None:
     """Batch cap partition: the over-cap actor's items refuse as a group, the
-    other actor's items still land, and the typed refusal raises AFTER."""
+    other actor's items still land, and the typed refusal raises after."""
     mem, pg = await run_differential(
         _batch_partition_refusal,
         pg_dsn=pg_dsn,
@@ -199,7 +199,7 @@ async def _batch_fast_duplicate_abort(side: DiffSide) -> None:
     try:
         count = await side.backend.enqueue_batch_fast(batch)
         side.record("fast", count)
-    except Exception as exc:  # Why: the typed outcome IS the observable; recorded by name.
+    except Exception as exc:  # Why: the typed outcome is the observable; recorded by name.
         side.record("fast", type(exc).__name__)
 
 

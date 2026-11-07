@@ -256,7 +256,7 @@ async def test_fenced_transactional_success_rolls_back_actor_side_effects_same_w
     """A same-worker re-claim must roll back exactly like a cross-worker one.
 
     The worker fence alone (``locked_by_worker = $worker_id``) cannot tell
-    attempt N's suspended handler from attempt N+1's live one when the SAME
+    attempt N's suspended handler from attempt N+1's live one when the same
     worker process re-claims the job after a lease-expiry sweep - both
     present the identical worker id. Only the attempt conjunct
     (``attempt = $k``) rejects the stale write. This is the shape most
@@ -301,7 +301,7 @@ async def test_fenced_transactional_success_rolls_back_actor_side_effects_same_w
         async def run_actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
             await enqueuer.enqueue(_CHILD, _Payload())
             # The reclaim happens on a separate connection, but re-claims
-            # back to the SAME worker id - a lease-expiry sweep followed
+            # back to the same worker id - a lease-expiry sweep followed
             # by that same worker's next poll winning the re-dispatch,
             # not a hand-off to a different process.
             async with deps.worker_pool.acquire() as sweep_conn:

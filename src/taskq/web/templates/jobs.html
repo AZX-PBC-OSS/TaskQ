@@ -41,7 +41,7 @@ window.__taskqJobConfig = {
     <div class="flex items-center justify-between">
         <h2 class="text-xl font-semibold tracking-tight">Jobs</h2>
         {# The header owns the count (U4): the "of N" comes from the
-           server's COUNT over the SAME filters (total_count), refreshed
+           server's count over the same filters (total_count), refreshed
            live from /jobs/count by admin.js. The old footer duplicated a
            page-only count; it is gone. The inner span's text is the
            no-JS render; Alpine replaces it on boot. #}
@@ -201,7 +201,7 @@ window.__taskqJobConfig = {
 
     {# Table container #}
     {# The container id lives on the table fragment's own root (the partial
-       both htmx and the poll's fetch receive) — NOT on this wrapper: a
+       both htmx and the poll's fetch receive) — not on this wrapper: a
        wrapper id would be replaced by the id-less fragment on the first
        swap and stranded every later refresh. #}
     <div>

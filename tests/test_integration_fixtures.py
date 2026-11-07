@@ -108,7 +108,7 @@ class TestModuleRedisUrl:
         # The membership assert is the module-scope proof: the fixture
         # allocates a never-reused DB id per instantiation, so a
         # re-instantiated fixture would hand this test a different URL. The
-        # recorded value is captured at fixture SETUP (order-invariant under
+        # recorded value is captured at fixture setup (order-invariant under
         # pytest-randomly's per-worker shuffle), not by a sibling test body.
         assert module_redis_url == redis_url_seen_at_setup
         assert module_redis_url in _REDIS_DB_SEEN
@@ -301,7 +301,7 @@ class TestTruncateSchemaMetadata:
 # A test that installs a trigger changes the schema's DDL, which no
 # TRUNCATE undoes, so the reset drops any trigger the migrations did not
 # install.  The trigger and table names come from the catalog, and the
-# DROP interpolates them - the project's identifier rule (validate
+# drop interpolates them - the project's identifier rule (validate
 # against the canonical identifier regex before any interpolation)
 # applies to catalog-sourced names exactly as to user-sourced ones.
 
@@ -359,7 +359,7 @@ class TestTruncateSchemaTriggerReset:
                 "RETURNS trigger AS $$ BEGIN RETURN NULL; END; $$ LANGUAGE plpgsql"
             )
             # The quote in the name is the point: interpolated raw it
-            # terminates the quoted identifier in the DROP.
+            # terminates the quoted identifier in the drop.
             await conn.execute(
                 f'CREATE TRIGGER "trg""unsafe" AFTER INSERT ON "{s}".jobs '  # Why: schema is the test-fixture identifier; trigger/function names are test-authored literals.
                 f'FOR EACH ROW EXECUTE FUNCTION "{s}".trg_probe_unsafe()'

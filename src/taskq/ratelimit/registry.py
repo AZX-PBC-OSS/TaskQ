@@ -1,11 +1,11 @@
-"""Unified rate-limit registry and AND-composition.
+"""Unified rate-limit registry and and-composition.
 
 ``RateLimitRegistry`` holds all registered ``TokenBucket``, ``SlidingWindow``,
 and ``ConcurrencyReservation`` instances in two separate dicts.  It
 provides ``register()`` with duplicate detection, lookup methods, and
 the ``acquire()`` async context manager for non-job code.
 
-AND-composition (``acquire_for_actor`` / ``release_for_actor``) implements
+and-composition (``acquire_for_actor`` / ``release_for_actor``) implements
 reservations first in declaration order, then
 rate limits in declaration order; rollback on failure in reverse acquisition
 order; best-effort release with per-handle error catching; post-actor release
@@ -17,8 +17,8 @@ primitive from the job payload on first acquisition; registry growth from
 high key cardinality is bounded by the per-worker sweep eviction methods.
 
 Every worker's 30-second sweep calls ``evict_idle_keyed_reservations`` /
-``evict_idle_keyed_rate_limits`` against that worker's OWN registry ,
-eviction is process-local bookkeeping and deliberately NOT leader-gated
+``evict_idle_keyed_rate_limits`` against that worker's own registry ,
+eviction is process-local bookkeeping and deliberately not leader-gated
 (a non-leader's registry would otherwise receive no periodic eviction),
 so it always runs in any topology that is capable of materializing keyed
 primitives in the first place (keyed materialisation only happens from a
@@ -241,14 +241,13 @@ def _same_config(
             and a.ttl == b.ttl
         )
     if isinstance(a, ConcurrencyReservation) and isinstance(b, ConcurrencyReservation):
-        # THE DUPLICATE-NAME LAW: the identity that SURVIVES the
-        # rebind — ``(name, slots, lease, keyed, lock_lease)``. The
-        # schema is EXCLUDED: a reservation is declared at module import
-        # (the settings' schema unknowable there) and the worker's
-        # registration REBINDS the live entry to the deployment's schema
-        # (the rebind doctrine) — a same-config differing-schema
-        # re-register is ONE reservation meeting its own rebind, never a
-        # conflict. A differing ``keyed``/``lock_lease`` IS materially
+        # the identity that survives the rebind — ``(name, slots, lease, keyed,
+        # lock_lease)``. The schema is EXCLUDED: a reservation is declared at
+        # module import (the settings' schema unknowable there) and the
+        # worker's registration rebinds the live entry to the deployment's
+        # schema (the rebind doctrine) — a same-config differing-schema
+        # re-register is one reservation meeting its own rebind, never a
+        # conflict. A differing ``keyed``/``lock_lease`` is materially
         # different (the fleet-reclaim mark, the heartbeat's extension).
         return (
             a.name == b.name
@@ -283,7 +282,7 @@ def _rate_limit_config_diff(
     a: "TokenBucket | SlidingWindow", b: "TokenBucket | SlidingWindow"
 ) -> list[str]:
     """The FIELD NAMES (with their values) the two rate-limit primitives
-    differ on — the reservation face's own law (the fix, mirrored):
+    differ on — the reservation face's own rule (mirrored here):
     the refusal names the field, never a values-only repr dump (the
     default repr is an address, not a diagnosis)."""
     differing: list[str] = []
@@ -323,7 +322,7 @@ class RateLimitRegistry:
     Actor-declared primitive instances are registered by the worker
     bootstrap's collection pass; use explicit ``.register()`` for
     primitives shared outside actor dispatch. :meth:`clear` resets all
-    state and is a test aid only, NOT safe while a worker is running.
+    state and is a test aid only, not safe while a worker is running.
     """
 
     def __init__(self) -> None:
@@ -331,11 +330,11 @@ class RateLimitRegistry:
         self._reservations: dict[str, ConcurrencyReservation] = {}
         # Per-reservation release signals, created on demand: a consumer
         # whose admission acquire was denied parks its bounded local retry
-        # on its bucket's event instead of a bare sleep, so a LIVE holder's
+        # on its bucket's event instead of a bare sleep, so a live holder's
         # completion (a release this process performed) wakes the retry
         # within one loop turn - the freed slot is then contested against
         # fresh claimants' acquires, which the retry's head start wins.
-        # The event is a WAKE SIGNAL, never a token: any number of waiters
+        # The event is a wake signal, never a token: any number of waiters
         # wake on one release and re-probe, each denial re-arming its own
         # wait. Cross-process releases (a peer worker's) are not seen here;
         # the retry's timeout floor covers them.
@@ -363,7 +362,7 @@ class RateLimitRegistry:
         self._keyed_rate_limit_last_used: dict[str, float] = {}
         # The workflow surface's declared keyed refs, collected at boot
         # (the collect passes register them), keyed by base_name. A
-        # fork-stamped CONCRETE name ("base:key") on a workflow row
+        # fork-stamped concrete name ("base:key") on a workflow row
         # resolves back through these decls at claim: the matching ref
         # (longest base_name wins) provides the bucket's config, the key
         # parses out of the name, and the primitive materializes with
@@ -382,9 +381,9 @@ class RateLimitRegistry:
         # Evicted keyed-reservation bucket names whose reservation_slots
         # rows are still to be deleted, keyed by the schema those rows
         # live in. Each schema's names live in a dict[str, None] used as
-        # an insertion-ordered set: the drain takes the FRONT batch and
+        # an insertion-ordered set: the drain takes the front batch and
         # re-appends that tick's survivors (names whose rows were all
-        # still held) to the BACK, so a held bucket waits at most one
+        # still held) to the back, so a held bucket waits at most one
         # full rotation and never starves the buckets behind it. Bounded:
         # eviction refuses to record past the pending cap (the
         # settings-derived max_keyed_reservations at both production call
@@ -410,7 +409,7 @@ class RateLimitRegistry:
         # registration's lifecycle: discarded on re-registration, pruned
         # by the same eviction pass that drops the tracking entry.
         self._keyed_reservation_heal_attempted: dict[str, float] = {}
-        # Monotonic time of the last heal-failure WARNING per keyed
+        # Monotonic time of the last heal-failure warning per keyed
         # reservation name. The heal itself retries on every denial (a
         # failed attempt rolls its own stamp back), so the log needs a
         # separate gate: one warning per bucket per heal window, while
@@ -482,7 +481,7 @@ class RateLimitRegistry:
     def has_reservation(self, name: str) -> bool:
         """O(1) membership test against the live reservations dict.
 
-        Unlike the :attr:`reservations` property this does NOT defensively
+        Unlike the :attr:`reservations` property this does not defensively
         copy the dict, use it on per-job hot paths (e.g. the dispatch
         queue-cap check), where copying the whole registry per call is
         prohibitive at high keyed-entry cardinality.
@@ -651,7 +650,7 @@ class RateLimitRegistry:
         -same-config → idempotent no-op — and a same-config registration
         whose SCHEMA differs (a pre-registered RAW declaration meeting the
         worker's settings-bound copy) REBINDS the stored entry to the
-        incoming copy, so the resolved registry's entries are ALWAYS
+        incoming copy, so the resolved registry's entries are always
         settings-schema-bound (the rebind doctrine — the rebind at the
         REGISTER step, whichever pass encounters the raw instance)."""
         name = primitive.name
@@ -659,13 +658,12 @@ class RateLimitRegistry:
         if existing is not None:
             if _same_config(existing, primitive):
                 if existing.schema != primitive.schema:
-                    # THE REBIND AT THE REGISTER STEP: the stored
-                    # entry's schema binding moves to the incoming copy —
-                    # the caller's own settings-bound instance (the
-                    # bootstrap rebinds BEFORE register; the raw
-                    # declaration object is never mutated). The acquire
-                    # SQL interpolates THIS deployment's schema, never
-                    # the declaration's import-time default.
+                    # the stored entry's schema binding moves to the incoming
+                    # copy — the caller's own settings-bound instance (the
+                    # bootstrap rebinds before register; the raw declaration
+                    # object is never mutated). The acquire SQL interpolates
+                    # this deployment's schema, never the declaration's
+                    # import-time default.
                     self._reservations[name] = primitive
                     logger.info(
                         "registry-reservation-schema-rebound",
@@ -700,7 +698,7 @@ class RateLimitRegistry:
     ) -> None:
         """Register a fleet-wide queue-cap reservation in the reserved namespace.
 
-        This is the ONLY way to register a reservation whose name starts with
+        This is the only way to register a reservation whose name starts with
         :data:`QUEUE_CONCURRENCY_PREFIX`. The public :meth:`register` rejects
         such names to prevent users from accidentally shadowing internal
         queue caps. Idempotency and conflict detection are identical to
@@ -780,7 +778,7 @@ class RateLimitRegistry:
         controls the wording of the empty/non-string error (the two
         call-sites use slightly different phrasing).
 
-        The error deliberately does NOT embed the payload (or its
+        The error deliberately does not embed the payload (or its
         ``model_dump()``): this ``ValueError`` propagates into the
         persisted ``error_message`` (job row / web admin) via generic
         exception handling, and payload values are attacker-controlled ,
@@ -809,7 +807,7 @@ class RateLimitRegistry:
             )
         # Normalize to a base ``str``: ``f"{base_name}:{key}"`` at the
         # call sites would render a str-Enum member via ``Enum.__format__``
-        # (``'Tenant.ACME'``) instead of its value (``'acme'``), and the
+        # (``'Tenant.acme'``) instead of its value (``'acme'``), and the
         # registry should key on the canonical plain-string form. A full
         # slice returns a base ``str`` with identical content.
         return key[:]
@@ -893,7 +891,7 @@ class RateLimitRegistry:
         registration, recency tracking, entry cap and opportunistic
         eviction the payload-derived path
         (:meth:`_resolve_rate_limit_name`) runs. Returns the names that
-        resolve to NO declared ref (or carry a malformed key) — the
+        resolve to no declared ref (or carry a malformed key) — the
         caller's unknown-bucket arm owns them."""
         unresolved: list[str] = []
         for name in names:
@@ -969,7 +967,7 @@ class RateLimitRegistry:
           entry was idle-evicted in between, the second ref re-materializes
           its own config without error, eviction resets the guard.
         - **Statically pre-registered entry** (not tracked): reused as-is,
-          and deliberately NOT stamped into ``_keyed_reservation_last_used``
+          and deliberately not stamped into ``_keyed_reservation_last_used``
           so the idle-eviction sweep can never evict a user's static entry.
 
         The ``key_fn`` return value is validated: it must be non-empty, at
@@ -1040,7 +1038,7 @@ class RateLimitRegistry:
         collision guard and the recency refresh on reuse. ``key``
         arrives already validated."""
         concrete_name = f"{ref.base_name}:{key}"
-        # The cap bounds keyed-materialized GROWTH. It must not fire when
+        # The cap bounds keyed-materialized growth. It must not fire when
         # the concrete name already exists, neither for a tracked keyed
         # entry (recency refresh grows nothing) nor for a statically
         # pre-registered entry (reused as-is, never tracked, grows nothing).
@@ -1099,7 +1097,7 @@ class RateLimitRegistry:
             # re-materialised) must not survive.
             self._keyed_reservation_heal_attempted.pop(concrete_name, None)
             self._keyed_reservation_heal_failure_logged.pop(concrete_name, None)
-            # Stamp BEFORE the ensure_slots await so that a concurrent
+            # Stamp before the ensure_slots await so that a concurrent
             # evict_idle_keyed_reservations cannot evict the in-flight
             # key; re-stamp after the await in case an aggressive eviction
             # removed both entries anyway (belt-and-suspenders).
@@ -1124,7 +1122,7 @@ class RateLimitRegistry:
                 self._keyed_reservation_last_used[concrete_name] = monotonic()
         elif concrete_name in self._keyed_reservation_last_used:
             # Keyed-materialized entry reused for the same concrete name:
-            # refresh recency, and guard against a concrete-name COLLISION
+            # refresh recency, and guard against a concrete-name collision
             # between two refs with different configs (one ref's base_name
             # can be a prefix of another's concrete name since ':' is an
             # allowed key character). Silently reusing the existing entry
@@ -1142,7 +1140,7 @@ class RateLimitRegistry:
                     f"concrete name)"
                 )
             self._keyed_reservation_last_used[concrete_name] = monotonic()
-        # else: the concrete name was STATICALLY pre-registered (not keyed-
+        # else: the concrete name was statically pre-registered (not keyed-
         # materialized), reuse it as-is and never stamp the tracking dict,
         # so the sweep can never evict a user's static entry.
         return concrete_name
@@ -1239,7 +1237,7 @@ class RateLimitRegistry:
         the recency refresh on reuse. ``key`` arrives already
         validated."""
         concrete_name = f"{ref.base_name}:{key}"
-        # The cap bounds keyed-materialized GROWTH. It must not fire when
+        # The cap bounds keyed-materialized growth. It must not fire when
         # the concrete name already exists, neither for a tracked keyed
         # entry (recency refresh grows nothing) nor for a statically
         # pre-registered entry (reused as-is, never tracked, grows nothing).
@@ -1281,7 +1279,7 @@ class RateLimitRegistry:
             self.register(new_bucket)
             self._keyed_rate_limit_last_used[concrete_name] = monotonic()
             # Publish the freshly-materialized bucket to PG (best-effort)
-            # so the admin UI's rate-limits page surfaces it in ANY
+            # so the admin UI's rate-limits page surfaces it in any
             # topology: statically registered buckets are published at
             # worker startup by sync_rate_limit_buckets, but a keyed bucket
             # materialized long after startup would otherwise be invisible
@@ -1290,7 +1288,7 @@ class RateLimitRegistry:
             # look like "no limiter configured". Unlike ensure_slots for
             # keyed reservations (a correctness precondition for acquire),
             # this row is observability metadata, so a publish failure
-            # must NOT fail the acquisition, warn and continue.
+            # must not fail the acquisition, warn and continue.
             if pg_pool is not None:
                 try:
                     await _upsert_rate_limit_bucket_row(
@@ -1306,7 +1304,7 @@ class RateLimitRegistry:
                         bucket_name=concrete_name,
                         exc_info=True,
                     )
-                # The reclaim capture rides the RESOLUTION, not the
+                # The reclaim capture rides the resolution, not the
                 # publish's outcome. A row can exist without a successful
                 # publish: the acquire path preseeds one for
                 # backend="postgres" (and for the redis backend's PG
@@ -1321,7 +1319,7 @@ class RateLimitRegistry:
                 self._keyed_rate_limit_row_schemas[concrete_name] = schema
         elif concrete_name in self._keyed_rate_limit_last_used:
             # Keyed-materialized entry reused for the same concrete name:
-            # refresh recency, and guard against a concrete-name COLLISION
+            # refresh recency, and guard against a concrete-name collision
             # between two refs with different configs (see the reservation
             # twin in _resolve_reservation_name for the full rationale).
             existing = self._rate_limits[concrete_name]
@@ -1351,7 +1349,7 @@ class RateLimitRegistry:
             if pg_pool is not None and concrete_name not in self._keyed_rate_limit_row_schemas:
                 # First pool-bearing touch of a bucket materialized without
                 # a pool: the materialisation arm above never ran its
-                # publish, so the admin-UI row is missing AND the reclaim
+                # publish, so the admin-UI row is missing and the reclaim
                 # capture is missing. Publish now (the same idempotent,
                 # best-effort statement the materialisation arm uses) and
                 # capture whatever the publish's outcome, the acquire
@@ -1375,7 +1373,7 @@ class RateLimitRegistry:
                         exc_info=True,
                     )
                 self._keyed_rate_limit_row_schemas[concrete_name] = schema
-        # else: the concrete name was STATICALLY pre-registered (not keyed-
+        # else: the concrete name was statically pre-registered (not keyed-
         # materialized), reuse it as-is and never stamp the tracking dict,
         # so the sweep can never evict a user's static entry.
         return concrete_name
@@ -1393,7 +1391,7 @@ class RateLimitRegistry:
         clock: "Clock | None" = None,
         settings: "WorkerSettings | None" = None,
     ) -> list[AcquiredResource]:
-        """AND-composition: acquire reservations first, then rate limits.
+        """and-composition: acquire reservations first, then rate limits.
 
         ``reservations`` entries may be plain names (resolved against
         statically pre-registered primitives), :class:`KeyedReservationRef`
@@ -1417,7 +1415,7 @@ class RateLimitRegistry:
         internally before re-raising (already-acquired resources released in
         reverse order, each failure logged at ERROR).
         """
-        # Normalize primitive instances to their names BEFORE any use ,
+        # Normalize primitive instances to their names before any use ,
         # _ref_display (below) only handles str | keyed refs and would
         # AttributeError on a primitive instance, and every dict lookup
         # and handle construction sees names only. No acquisition-time
@@ -1522,10 +1520,10 @@ class RateLimitRegistry:
             # asyncio.CancelledError derives from BaseException, not
             # Exception, so a cancellation landing mid-composition leaves
             # any already-acquired handles in place. That is an accepted,
-            # bounded, self-healing leak, NOT an oversight: leaked
+            # bounded, self-healing leak, not an oversight: leaked
             # reservation slots are reclaimed by lease expiry (the
             # lock-expiry sweep, within ~30s), and consumed rate-limit
-            # tokens are bounded by the bucket's Redis EXPIRE TTL. Rolling
+            # tokens are bounded by the bucket's Redis expire TTL. Rolling
             # back here would mean network I/O (handle.release()) while the
             # task is being torn down, delaying cancellation, with a
             # second cancel able to interrupt the release itself, which is
@@ -2121,7 +2119,7 @@ class RateLimitRegistry:
         1-hour idle threshold; call directly for custom eviction windows.
 
         Removes the in-memory registry entry and its acquire-recency
-        tracking. The underlying Redis hash is deliberately NOT touched:
+        tracking. The underlying Redis hash is deliberately not touched:
         per-key Redis memory is already self-bounding via the Lua script's
         ``EXPIRE`` TTL on the bucket's hash (see
         :meth:`_resolve_rate_limit_name`), that TTL governs Redis, not
@@ -2157,7 +2155,7 @@ class RateLimitRegistry:
 
         **Exemption: memory fixed-quota buckets.** A ``backend="memory"``
         bucket with ``refill_per_second == 0`` that has consumed part of its
-        quota is NOT evicted (see :meth:`TokenBucket.holds_consumed_quota`):
+        quota is not evicted (see :meth:`TokenBucket.holds_consumed_quota`):
         its token state lives only on the in-process instance, so eviction
         would silently reset the drained quota to full, and the next acquire
         would over-admit against a budget the tenant already spent. The
@@ -2171,7 +2169,7 @@ class RateLimitRegistry:
         than silently resetting quotas, which is the correct failure
         direction for a limiter.
 
-        PG fixed-quota buckets are NOT exempt: their quota state lives in
+        PG fixed-quota buckets are not exempt: their quota state lives in
         the ``rate_limit_buckets`` row, and no reclamation path here can
         lose it, the drain's DELETE below and the maintenance leader's
         fleet sweep share the consumed-quota veto
@@ -2244,7 +2242,7 @@ class RateLimitRegistry:
         ``reservation_slots`` rows of evicted keyed reservations, and the
         published ``rate_limit_buckets`` rows of evicted keyed rate
         limits. For each kind and schema, at most *batch_names* pending
-        bucket names and ONE batched DELETE. The slice is the FRONT of
+        bucket names and one batched DELETE. The slice is the FRONT of
         the per-schema insertion-ordered pending set. Driven by the
         per-worker sweep loop on the sweep cadence, immediately after
         the keyed evictions that feed it; a no-op (no connection
@@ -2253,7 +2251,7 @@ class RateLimitRegistry:
         Semantics, what stays pending and why:
 
         - A name that re-registered since eviction is dropped from its
-          pending set WITHOUT a statement: a re-activated key owns its
+          pending set without a statement: a re-activated key owns its
           rows again.
         - The reservation DELETE removes only free or lease-expired rows
          , a slot still held by a live lease survives (the
@@ -2357,7 +2355,7 @@ class RateLimitRegistry:
                         pending.pop(name, None)
                     for name in surviving:
                         # A survivor (rows still held) re-enters at the
-                        # BACK: its next chance comes after every other
+                        # back: its next chance comes after every other
                         # pending bucket's, never before them.
                         pending[name] = None
                     self._drop_pending_schema_if_empty(self._pending_reservation_reclaims, schema)
@@ -2417,7 +2415,7 @@ class RateLimitRegistry:
             pending.pop(schema, None)
 
     def clear(self) -> None:
-        """Reset ALL mutable registry state, a test aid, NOT safe while running.
+        """Reset ALL mutable registry state, a test aid, not safe while running.
 
         Clears the nine dicts (``_rate_limits``, ``_reservations``,
         ``_keyed_reservation_last_used``, ``_keyed_rate_limit_last_used``,
@@ -2426,7 +2424,7 @@ class RateLimitRegistry:
         ``_pending_rate_limit_reclaims``,
         ``_keyed_reservation_heal_attempted``,
         ``_keyed_reservation_heal_failure_logged``)
-        AND resets the two opportunistic-eviction scan timestamps
+        and resets the two opportunistic-eviction scan timestamps
         (``_keyed_reservation_last_eviction_scan`` /
         ``_keyed_rate_limit_last_eviction_scan``) to ``float("-inf")``.
         Omitting the timestamps would leave the opportunistic-eviction
@@ -2440,7 +2438,7 @@ class RateLimitRegistry:
         inconsistent state. Use for per-test isolation only.
 
         Like the eviction methods, this resets IN-PROCESS bookkeeping
-        only, it does NOT touch Redis bucket hashes or Postgres
+        only, it does not touch Redis bucket hashes or Postgres
         ``reservation_slots`` / ``rate_limit_buckets`` rows; backend
         state persists and will be observed on next acquire.
         """
@@ -2463,7 +2461,7 @@ class RateLimitRegistry:
 # templates in ratelimit/reservation.py). A rate_limit_buckets row has no
 # holder, so there is no lease guard like the reservation twin's, but
 # idleness is still not evidence the row is safe to delete. For a
-# PG-backed bucket the row IS the state, so deleting one that still holds
+# PG-backed bucket the row is the state, so deleting one that still holds
 # consumed fixed quota lets the next acquire re-preseed at full capacity
 # and re-admit a budget the tenant already spent, the exact damage the
 # memory backend's eviction exemption prevents on the instance side.
@@ -2527,7 +2525,7 @@ async def sync_rate_limit_buckets(
     Each worker calls this at startup so the admin UI can discover
     configured buckets from PG without depending on the in-memory
     singleton being populated in the admin process.  Keyed buckets
-    materialized lazily AFTER startup are published individually by the
+    materialized lazily after startup are published individually by the
     acquisition path, see
     :meth:`RateLimitRegistry._resolve_rate_limit_name`.
 

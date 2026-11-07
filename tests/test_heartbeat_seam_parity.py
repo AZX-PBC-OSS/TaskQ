@@ -12,7 +12,7 @@ pins them. PG is the production oracle:
 * ``heartbeat_jobs`` renews every running row the worker still holds except
   the ``disowned`` ids, and its count is the number of JOB rows renewed
   (``UPDATE_JOBS_LOCK_SQL_TEMPLATE``). Duplicate ids in the ``disowned``
-  Collection change nothing: ``NOT (id = ANY($3))`` is a set predicate.
+  Collection change nothing: ``not (id = any($3))`` is a set predicate.
 * ``extend_reservation_leases`` renews the worker's ``reservation_slots``
   ROWS - pre-allocated by the reservation registry's acquisition, never by
   dispatch (``UPDATE_RESERVATION_LEASES_SQL_TEMPLATE``). Its count is the
@@ -69,7 +69,7 @@ async def test_extend_reservation_leases_counts_slots_not_held_jobs(
     module_pg_schema: ModulePgSchema,
     clean_jobs_app: JobsApp,
 ) -> None:
-    """A worker holding plain running jobs extends NO reservation slots: 0.
+    """A worker holding plain running jobs extends no reservation slots: 0.
 
     The mirror's slot-table-less default models a deployment with no
     reservation buckets - exactly the PG shape below, where dispatch never

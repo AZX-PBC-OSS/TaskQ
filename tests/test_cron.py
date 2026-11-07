@@ -159,7 +159,7 @@ def testcompute_next_fire_after_naive_candidate_gets_localized(
     assert result == [datetime(2025, 6, 15, 10, 30, 0, tzinfo=tz)]
 
 
-# ── compute_next_fire_after: DST gap (spring-forward) ────────────────
+# ── compute_next_fire_after: dst gap (spring-forward) ────────────────
 
 
 def testcompute_next_fire_after_gap_day_fires_at_gap_end_not_next_day() -> None:
@@ -167,9 +167,9 @@ def testcompute_next_fire_after_gap_day_fires_at_gap_end_not_next_day() -> None:
 
     On 2025-03-30 Europe/Berlin the local wall 02:00→03:00 never exists
     (the gap is [02:00, 03:00)).  croniter's aware-seed resolution, the
-    only path production seeds reach, answers a match that falls INSIDE
+    only path production seeds reach, answers a match that falls inside
     the gap with the gap's END instant - the fire still happens that day,
-    delayed by the gap's length.  It does NOT skip to the next day's
+    delayed by the gap's length.  It does not skip to the next day's
     match, and it does not drop the first valid post-gap match:
 
     * a daily 02:30 fires that day at 03:00 (a shifted instant, not a
@@ -183,14 +183,14 @@ def testcompute_next_fire_after_gap_day_fires_at_gap_end_not_next_day() -> None:
     The monkeypatched tests below pin the defensive branch that governs
     if a future croniter ever returns a nonexistent candidate; these pin
     what operators actually observe today.  All three strategies share
-    the gap behavior, and 'allof' returns ONE element on a gap day (a
+    the gap behavior, and 'allof' returns one element on a gap day (a
     gap has no fold pair to double).
     """
     tz_name = "Europe/Berlin"
     tz = ZoneInfo(tz_name)
     gap_end = datetime(2025, 3, 30, 3, 0, tzinfo=tz)
 
-    seed = datetime(2025, 3, 30, 1, 30, tzinfo=tz)  # 01:30 CET, exists
+    seed = datetime(2025, 3, 30, 1, 30, tzinfo=tz)  # 01:30 cet, exists
     out = compute_next_fire_after("30 2 * * *", tz_name, seed, dst_strategy="skip")
     assert out == [gap_end], (
         "the transition-day fire must happen at the gap's end, not skip to "
@@ -276,7 +276,7 @@ def testcompute_next_fire_after_gap_naive_next_valid_gets_localized(
     assert result == [datetime(2025, 3, 10, 2, 30, 0, tzinfo=tz)]
 
 
-# ── compute_next_fire_after: DST overlap (fall-back) ──────────────────
+# ── compute_next_fire_after: dst overlap (fall-back) ──────────────────
 
 
 def testcompute_next_fire_after_overlap_allof_returns_both_occurrences() -> None:
@@ -312,14 +312,14 @@ def testcompute_next_fire_after_overlap_seed_on_spent_earlier_occurrence_advance
     None
 ):
     """A fold-0 seed SITTING ON the overlap's earlier occurrence - the slot
-    that just fired - must be answered with a fire strictly AFTER the seed
+    that just fired - must be answered with a fire strictly after the seed
     under ``skip`` and ``firstof``.
 
     WHY IT MATTERS: the seed (``server_now`` in the tick, ``next_fire_at``'s
     re-anchor) at wall 01:30 fold=0 IS the earlier occurrence, already
     spent. croniter answers the fold-1 replay (strictly after, correct for
     its own wall semantics); the overlap branch then re-interpreted that
-    candidate at fold=0 for ``skip``/``firstof`` - the SAME instant as the
+    candidate at fold=0 for ``skip``/``firstof`` - the same instant as the
     seed. The tick's advance wrote a ``next_fire_at`` at or before the
     instant that had just fired: the schedule stayed due, and re-fired
     every tick through the rest of the repeated hour. The function's own
@@ -329,7 +329,7 @@ def testcompute_next_fire_after_overlap_seed_on_spent_earlier_occurrence_advance
     range already gets.
     """
     tz = ZoneInfo("America/New_York")
-    # 2025-11-02 01:30 fold=0 EDT == 05:30 UTC: the earlier occurrence of
+    # 2025-11-02 01:30 fold=0 edt == 05:30 UTC: the earlier occurrence of
     # the day's only 01:30 slot, the instant a tick at that slot fires.
     spent = datetime(2025, 11, 2, 1, 30, 0, tzinfo=tz)
     assert spent.astimezone(UTC) == datetime(2025, 11, 2, 5, 30, 0, tzinfo=UTC)
@@ -346,14 +346,14 @@ def testcompute_next_fire_after_overlap_seed_on_spent_earlier_occurrence_advance
             f"{dst_strategy}: a seed on the spent earlier occurrence must "
             "be answered strictly after itself"
         )
-        # The first match BEYOND the repeated range: the next day's 01:30
-        # (unambiguous, EST), not the fold-1 replay of today's slot.
+        # The first match beyond the repeated range: the next day's 01:30
+        # (unambiguous, est), not the fold-1 replay of today's slot.
         assert result[0].astimezone(UTC) == datetime(2025, 11, 3, 6, 30, 0, tzinfo=UTC)
 
 
 def testcompute_next_fire_after_overlap_seed_just_before_slot_still_fires_the_slot() -> None:
     """The spent-slot advance must not swallow the slot itself: a seed just
-    BEFORE the overlap slot still answers that slot's earlier occurrence."""
+    before the overlap slot still answers that slot's earlier occurrence."""
     tz = ZoneInfo("America/New_York")
     before = datetime(2025, 11, 2, 1, 29, 0, tzinfo=tz)
     result = compute_next_fire_after("30 1 * * *", "America/New_York", before, dst_strategy="skip")
@@ -429,7 +429,7 @@ def test_fold_to_utc_resolves_by_fold_value() -> None:
     assert later.astimezone(UTC) == datetime(2025, 11, 2, 6, 30, 0, tzinfo=UTC)
 
 
-# ── _check_gap advances past a DST gap, localizes naive input ─────────
+# ── _check_gap advances past a dst gap, localizes naive input ─────────
 
 
 def test_check_gap_advances_naive_gap_datetime_to_valid_time() -> None:
@@ -1009,8 +1009,8 @@ async def testresolve_payload_trivial_sync_factory_survives_a_saturated_actor_po
 
 # ── compute_next_fire_after: a seed inside a repeated (fall-back) hour ──
 #
-# croniter walks naive wall-clock time, so a seed sitting exactly ON a
-# match inside a DST overlap is invisible to the strictly-greater walk:
+# croniter walks naive wall-clock time, so a seed sitting exactly on a
+# match inside a dst overlap is invisible to the strictly-greater walk:
 # the same wall-clock's later occurrence is a real next match, but naive
 # comparison cannot distinguish the two and the walk jumps a year.  The
 # strategies split on what that means: ``skip``/``firstof`` fire a
@@ -1018,14 +1018,14 @@ async def testresolve_payload_trivial_sync_factory_survives_a_saturated_actor_po
 # is - so the next slot is genuinely next year; ``allof`` owes the later
 # occurrence, so the fold-1 twin is the next fire.  Reachable in
 # production whenever a leader outage or manual edit leaves
-# ``next_fire_at`` ON the fold-0 occurrence: the post-outage tick fires
+# ``next_fire_at`` on the fold-0 occurrence: the post-outage tick fires
 # the earlier occurrence and, without this, the later one is silently
 # lost for a year.
 
 _OVERLAP_TZ = "America/New_York"
 _OVERLAP_EXPR = "30 1 1 11 *"  # 01:30 local every Nov 1; 2026-11-01 falls back
-_FOLD0_UTC = datetime(2026, 11, 1, 5, 30, tzinfo=UTC)  # 01:30 EDT (first 01:30)
-_FOLD1_UTC = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)  # 01:30 EST (second 01:30)
+_FOLD0_UTC = datetime(2026, 11, 1, 5, 30, tzinfo=UTC)  # 01:30 edt (first 01:30)
+_FOLD1_UTC = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)  # 01:30 est (second 01:30)
 _NEXT_SLOT_UTC = datetime(2027, 11, 1, 5, 30, tzinfo=UTC)
 
 
@@ -1066,10 +1066,10 @@ def test_single_fire_strategies_advance_one_slot_from_inside_the_overlap(
 
 
 def test_allof_seed_inside_overlap_on_a_non_matching_wall_is_untouched() -> None:
-    """A seed inside the repeated hour whose wall-clock is NOT a match
+    """A seed inside the repeated hour whose wall-clock is not a match
     takes the normal walk - the fold handling only owns the seed's own
     matched wall-clock."""
-    seed = datetime(2026, 11, 1, 5, 10, tzinfo=UTC)  # 01:10 EDT, inside the hour
+    seed = datetime(2026, 11, 1, 5, 10, tzinfo=UTC)  # 01:10 edt, inside the hour
     out = compute_next_fire_after(_OVERLAP_EXPR, _OVERLAP_TZ, seed, dst_strategy="allof")
     assert [d.astimezone(UTC) for d in out] == [_FOLD0_UTC, _FOLD1_UTC], (
         "a non-matching seed inside the fold must still see both occurrences"
@@ -1097,7 +1097,7 @@ async def testresolve_payload_timeout_names_the_factory() -> None:
 # ── resolve_payload: a coroutine-function factory needs only the loop ──
 #
 # Running a factory off the event loop exists to protect the loop from a
-# SYNC factory that blocks. A coroutine function needs no such protection:
+# sync factory that blocks. A coroutine function needs no such protection:
 # calling it does not run the body, it only constructs a coroutine object,
 # and that construction never blocks. Routing that call through the
 # default thread pool buys nothing and couples cron payload resolution to
@@ -1126,7 +1126,7 @@ async def testresolve_payload_async_factory_resolves_off_the_shared_thread_pool(
 
     loop = asyncio.get_running_loop()
     # The default executor is created lazily on first use; touch it, then
-    # read its real configured size. Saturating EXACTLY that many workers
+    # read its real configured size. Saturating exactly that many workers
     # matters: extra submissions would queue behind the blockers and
     # deadlock this test's own setup, since none of them release early.
     probe = await loop.run_in_executor(None, lambda: None)
@@ -1159,7 +1159,7 @@ async def testresolve_payload_async_factory_resolves_off_the_shared_thread_pool(
         # Derived bound: the factory call must be made directly on the event
         # loop — a loop turn, microseconds. The enclosing wait_for budget is
         # 2.0 s; this 1.0 s pin is half of that: if the call were submitted to
-        # the SATURATED thread pool instead, the executor queue wait alone
+        # the saturated thread pool instead, the executor queue wait alone
         # would consume the full budget and trip this first.
         assert elapsed < 1.0, (
             f"resolving a coroutine-function factory took {elapsed:.2f}s with the "
@@ -1259,18 +1259,18 @@ async def testresolve_payload_healthy_factory_survives_a_saturated_cron_pool() -
     stdlib executor cannot recall a parked thread, so that many hung sync
     factories strand the whole pool. Without recovery a healthy factory
     then queues behind the residue and misses every deadline for the rest
-    of the process's life - cron's OWN contention against itself, one
+    of the process's life - cron's own contention against itself, one
     level in from where the actor-pool isolation fixed it. The contract:
     the submit path detects the fully-stranded pool, retires it loudly
     (one WARN, naming the residue), and the healthy factory resolves on a
-    fresh pool. The parked threads are NOT reclaimed - they finish when
+    fresh pool. The parked threads are not reclaimed - they finish when
     their factories return, which the test's release forces so nothing
     outlives it.
     """
     import structlog.testing
 
     from taskq.cron import (
-        _FACTORY_POOL_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: the saturation level under test IS the pool's own cap.
+        _FACTORY_POOL_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: the saturation level under test is the pool's own cap.
     )
 
     _HUNG_FACTORY_RELEASE.clear()
@@ -1328,7 +1328,7 @@ async def testresolve_payload_busy_but_alive_cron_pool_is_not_retired() -> None:
     import structlog.testing
 
     from taskq.cron import (
-        _FACTORY_POOL_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: the occupancy level under test IS the pool's own cap.
+        _FACTORY_POOL_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: the occupancy level under test is the pool's own cap.
     )
 
     pool_size = _FACTORY_POOL_SIZE

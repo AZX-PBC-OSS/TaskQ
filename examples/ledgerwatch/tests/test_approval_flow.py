@@ -1,7 +1,7 @@
-"""THE APPROVAL FLOW: a HIGH-risk transaction's approval asked ->
+"""A HIGH-risk transaction's approval asked ->
 resolved -> the flow continues (the typed verdict); the rejected face;
 and the Expired arm — no approval lands in the window — escalates to
-the compliance queue (ONE durable row)."""
+the compliance queue (one durable row)."""
 
 from __future__ import annotations
 
@@ -26,14 +26,14 @@ async def test_approval_asked_resolved_flow_continues(
     claim = await submit_batch(pool, schema, batch)
     assert claim.kind == "created"
 
-    # the batch's pipeline completes; the review run HOLDS
+    # the batch's pipeline completes; the review run holds
     await await_terminal(pool, schema, str(claim.flow_id), timeout_s=120)
     ids = await _wait_review_runs(pool, schema, batch.batch_id)
     client = HitlClient(pool, schema=schema)
     (hold,) = await client.list(ids[0])
     assert hold.signal_name == "ApprovalDecision"
 
-    # THE HUMAN APPROVES — the typed door delivers; the flow continues
+    # the human approves — the typed door delivers; the flow continues
     # to its typed verdict.
     result = await client.resolve(hold.hold_id, {"approved": True, "reviewer": "op-7"})
     assert result.status == "delivered"
@@ -41,7 +41,7 @@ async def test_approval_asked_resolved_flow_continues(
     verdict = ApprovedTxn.model_validate(raw)
     assert verdict.txn_id == "B-approve-T00000"
     assert verdict.reviewer == "op-7"
-    # the compliance queue did NOT eat it (scoped to this batch — the
+    # the compliance queue did not eat it (scoped to this batch — the
     # estate may carry other batches' escalations)
     n = await pool.fetchval(
         f'SELECT count(*) FROM "{schema}".lw_compliance_queue WHERE batch_id = $1',  # noqa: S608  # Why: the schema identifier only.

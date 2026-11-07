@@ -10,8 +10,6 @@ to WorkerDeps pools opened by the fixture - subprocess spawning
 would duplicate pool setup and complicate fixture sharing.
 Known limitation: pool teardown and deregister_worker cleanup are
 not exercised; those paths are covered by unit tests.
-
-anchors:,,,.
 """
 
 import asyncio
@@ -381,7 +379,7 @@ async def test_ti4_drain_to_pending(
     # Lock 3 jobs as "dispatched but not started" - use worker_pool to simulate
     # the dispatch claim's row shape: running, locked, and the claim CTE's
     # ``started_at = clock_timestamp()`` stamp (backend/_dispatch_sql.py).
-    # The stamp is not decoration: the drain's ``started_at IS NOT NULL``
+    # The stamp is not decoration: the drain's ``started_at is not NULL``
     # conjunct fences the claim-loss reconcile's refunded output (a
     # running-and-locked row with a NULL stamp is an already-refunded
     # claim), so a seed without the stamp pins a row shape the drain no
@@ -694,8 +692,8 @@ async def test_tc1_forcing_recovery(
     no-op (the real path would be the consumer stub catching
     CancelledError). Oracle: FORCING escalates the row to phase 2 and
     re-stamps the entry OPERATOR; RELEASING writes mark_cancelled (the
-    operator's own verdict, #596's contract - NEVER an abandon, which is
-    the pre-fix verdict this assertion refuses to tolerate); job not
+    operator's own verdict, #596's contract - never an abandon, which is
+    the false verdict this assertion refuses to tolerate); job not
     running.
     """
     deps = clean_jobs_app.deps
@@ -747,10 +745,10 @@ async def test_noop_release_writes_the_operators_verdict_on_a_real_row(
     """The RELEASING noop fence routes to mark_cancelled on REAL PG (#596).
 
     The unit suite pins the noop arm with backend mocks; this pins the
-    row-side half end-to-end: an operator cancel lands on the row AFTER
+    row-side half end-to-end: an operator cancel lands on the row after
     the FORCING probe's snapshot (the poll had not seen it), so
     ``mark_interrupted``'s ``cancel_phase = 0`` fence declines the release
-    (noop) and the noop arm must fire the operator's OWN verdict through
+    (noop) and the noop arm must fire the operator's own verdict through
     the real fenced write. On real PG the race must dissolve: the row
     reads ``cancelled`` - never released back to the fleet (resurrecting
     the execution the operator killed) and never ``abandoned`` (the
@@ -768,9 +766,9 @@ async def test_noop_release_writes_the_operators_verdict_on_a_real_row(
 
     jid = new_uuid()
     _active = _fake_active_job(job_id=jid)
-    # The CANCELLING stamp must not overwrite this: the entry already
+    # The cancelling stamp must not overwrite this: the entry already
     # carries the shutdown origin and the phase's stamping loop only
-    # fills NONE, so the orchestration preserves it.
+    # fills none, so the orchestration preserves it.
     _active.cancel_origin = CancelOrigin.SHUTDOWN
 
     await deps.active_jobs.register(_active.job_id, _active.task, _active.ctx)  # type: ignore[arg-type] # Why: JobContext[PassthroughPayload] is a JobContext[BaseModel]; pyright cannot widen Generic contravariance.
@@ -796,9 +794,9 @@ async def test_noop_release_writes_the_operators_verdict_on_a_real_row(
     async def _cancel_lands_after_the_probe(job_id: JobId, worker_id: UUID, phase: int) -> bool:
         landed = await real_escalation(job_id, worker_id, phase)
         if not landed:
-            # The probe missed (the row was still clean): NOW the
+            # The probe missed (the row was still clean): now the
             # operator's cancel request lands on the row, the window
-            # between FORCING's snapshot and RELEASING's release.
+            # between forcing's snapshot and releasing's release.
             conn = await asyncpg.connect(str(deps.settings.pg_dsn_direct))
             try:
                 await conn.execute(
@@ -832,7 +830,7 @@ async def test_noop_release_writes_the_operators_verdict_on_a_real_row(
         f"{row.status!r} - 'pending' would resurrect the execution the "
         f"operator killed, 'abandoned' is the competing verdict #596 fixed"
     )
-    # The RELEASING summary reports the row where the audit reconciles:
+    # The releasing summary reports the row where the audit reconciles:
     # the fence declined (noop) and the operator verdict tallied.
     summaries = [
         e
@@ -950,7 +948,7 @@ async def test_tc3_shielded_releasing_write(
         )
     )
 
-    # Wait for RELEASING phase or orchestrator completion (under
+    # Wait for releasing phase or orchestrator completion (under
     # parallel load the orchestrator may complete before we observe
     # the phase transition).
     while deps.shutdown_phase != ShutdownPhase.RELEASING and not orch_task.done():  # noqa: ASYNC110 # Why: polling for phase transition in test; ShutdownPhase is not an asyncio.Event.
@@ -961,7 +959,7 @@ async def test_tc3_shielded_releasing_write(
     with contextlib.suppress(asyncio.CancelledError):
         await orch_task
 
-    # The shielded RELEASING write may still be in-flight after
+    # The shielded releasing write may still be in-flight after
     # the orchestrator task is cancelled. Poll briefly for the job to
     # reach a terminal state before asserting.
     row = await backend.get(JobId(jid))
@@ -1162,7 +1160,7 @@ async def test_tn1_signal_handler_must_not_await(
     # `add_signal_handler` invokes its callback synchronously, in the signal
     # context: a coroutine function would never run. This assertion is
     # the whole check - a companion scan for `"await " not in getsource(...)`
-    # used to follow it and could not fail. Python rejects `await` in a
+    # could not fail beside it. Python rejects `await` in a
     # non-async def at compile time ("SyntaxError: 'await' outside async
     # function"), so given the assertion above, the substring could only ever
     # have appeared inside a nested `async def` (legal, and not a defect) or
@@ -1197,7 +1195,7 @@ async def test_tn2_releasing_runs_with_zero_jobs(
 
     assert result == 0
     assert shutdown_event.is_set()
-    # Behavioral: shutdown proceeds through all phases including RELEASING
+    # Behavioral: shutdown proceeds through all phases including releasing
     # even with zero active jobs - verified by shutdown_event being set
     # and result == 0 (clean exit).
 
@@ -1251,7 +1249,7 @@ async def test_deploy_releases_running_work_back_to_the_fleet(
     attempt_at_claim = {row.id: row.attempt for row in claimed}
 
     # In-flight entries whose actors never unwind (tasks already done, so
-    # the forced cancel lands nowhere) - the rows survive to RELEASING.
+    # the forced cancel lands nowhere) - the rows survive to releasing.
     for jid in job_ids:
         active = _fake_active_job(job_id=jid)
         await deps.active_jobs.register(active.job_id, active.task, active.ctx)  # type: ignore[arg-type] # Why: JobContext[PassthroughPayload] is a JobContext[BaseModel]; pyright cannot widen Generic contravariance.
@@ -1351,3 +1349,93 @@ async def test_deploy_release_is_not_reclaimable_until_the_hold(
         "immediately - the hold exists so the row cannot be claimed while "
         "the interrupted actor might still be alive"
     )
+
+
+async def test_the_ladder_stops_dispatch_before_the_hand_back(
+    clean_jobs_app: JobsApp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real ladder's DRAINING order, on the real ladder: the producer's
+    stop event lands before the drain's hand-back statement runs - a claim
+    landing between the two steps is missed by the sweep and stranded
+    locked until lease expiry. The phase marker is already DRAINING when
+    the hand-back runs (health endpoints and the consumer loops read it
+    to decide they are draining).
+
+    (Converted from tests/test_shutdown_orchestrator.py's mock arm in the
+    mock-subtraction cure: the wrapper here RECORDS the order and
+    DELEGATES to the real drain - COUNT, DON'T ANSWER - so the ordering
+    property is pinned on the ladder that runs in production, with real
+    rows handed back.)
+
+    The patch site is the exempt-registry entry itself: the wrapper is a
+    recording proxy over the REAL drain, not a mock answering for it.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+    from taskq._ids import new_uuid as _new_uuid
+    from taskq.worker.shutdown import ShutdownPhase, drain_local_queue_to_pending
+
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    worker_id = new_uuid()
+
+    jid = new_uuid()
+    await backend.enqueue(
+        EnqueueArgs(
+            id=JobId(jid),
+            actor="test_actor",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_immediate(),
+        )
+    )
+    await _mark_jobs_running(deps, [jid], worker_id, cancel_phase=0)
+
+    order: list[str] = []
+    observed_phase: list[ShutdownPhase] = []
+    producer_stopped_at_drain: list[bool] = []
+
+    async def _recording_drain(d: WorkerDeps, w: UUID) -> int:
+        order.append("hand_back")
+        observed_phase.append(d.shutdown_phase)
+        producer_stopped_at_drain.append(d.producer_stop_event.is_set())
+        return await drain_local_queue_to_pending(d, w)  # the real drain
+
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", _recording_drain)
+
+    original_set = deps.producer_stop_event.set
+
+    def _recording_set() -> None:
+        order.append("stop_dispatch")
+        original_set()
+
+    deps.producer_stop_event.set = _recording_set  # type: ignore[method-assign]  # Why: recording wrapper observing the draining phase's own two steps.
+
+    active = _fake_active_job(job_id=jid)
+    _ = active  # the drain's shape is a locked row with no consumer registered
+
+    shutdown_event = asyncio.Event()
+    result = await orchestrate_shutdown(
+        deps,
+        deps.settings,
+        worker_id,
+        shutdown_event,
+        None,
+        backend=backend,
+    )
+    assert result == 0
+    assert order == ["stop_dispatch", "hand_back"], (
+        f"consumers must stop taking new work before claimed work is handed "
+        f"back; observed {order!r}"
+    )
+    assert producer_stopped_at_drain == [True]
+    assert observed_phase == [ShutdownPhase.DRAINING], (
+        f"the draining marker must be readable when the hand-back runs; observed {observed_phase!r}"
+    )
+    row = await backend.get(JobId(jid))
+    assert row is not None and row.status == "pending", (
+        "the real drain must have handed the claimed row back to the fleet"
+    )
+    _ = _new_uuid

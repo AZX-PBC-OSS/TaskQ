@@ -1,14 +1,14 @@
-"""THE EMIT TX (T20) — the streaming source's per-page statement group,
-the design's ONE new primitive (PROOF.md §6a).
+"""the EMIT TX — the streaming source's per-page statement group,
+the design's one new primitive (PROOF.md §6a).
 
-The shipped fork inserts children ONLY inside the parent's terminal-mark
+The shipped fork inserts children only inside the parent's terminal-mark
 tx1 (fork-at-finalize): a child's existence is INDEXED to its parent's
 death. A STREAMING source must do the opposite — emit children while
 ITSELF staying ``running`` — so its pages stream (children claim +
 terminal while the source is mid-fetch; the spike measured 236 chain
 claims while the source was still streaming).
 
-THE EMIT TX, ONE transaction:
+EMIT TX, one transaction
   1. the children INSERT   (the certified FORK_CHILDREN shape re-bound)
   2. the edge rows         (the certified FORK_EDGES shape re-bound —
                            child→source, fail_closed: a mid-stream source
@@ -16,29 +16,29 @@ THE EMIT TX, ONE transaction:
   3. the CURSOR CHECKPOINT (the source row's own metadata under the FULL
                            claim fence — no new table, no new column)
 
-Atomicity is the resume invariant: a kill at ANY statement window —
-including after the cursor write but BEFORE the commit — rolls the whole
+Atomicity is the resume invariant: a kill at any statement window —
+including after the cursor write but before the commit — rolls the whole
 tx back; the reclaim re-pends the source (it never finalized), the
 re-claim re-emits exactly the lost page, never a partial one, never a
-duplicate one. THE FENCE IS THE CLAIM: a zombie source (its attempt
+duplicate one. the FENCE IS the CLAIM: a zombie source (its attempt
 superseded) updates nothing in step 3 → :class:`EmitFencedError` → the
 children and edges roll back with the tx — a zombie cannot emit.
 
-THE MAP_INDEX CEILING (the number an author plans around): the ledger's
+The ledger's
 claim-arbiter column is a SMALLINT — the ceiling is 32767. A page whose
 record's map_index crosses it raises :class:`MapIndexExhaustedError` at
 the emit door (typed, named, the ceiling's number on the record); the
 valid page-mates' tx commits first (the poison record kills itself,
 never its mates), and the deterministic route terminalizes the source.
-The ceiling is per-map-index, NOT per-run.
+The ceiling is per-map-index, not per-run.
 
-THE STATEMENT-WINDOW KILL PINS: ``emit_batch`` accepts ``_window_hook``
-(the attack suite's seam — the spike's storm drove the same hook), fired
+``emit_batch`` accepts ``_window_hook``
+(the attack suite's seam), fired
 after EACH statement with ``emit:{1|2|3}``; the pins terminate the
 backend there (a real server-side kill) and prove zero re-emitted, zero
 lost children.
 
-THE EMIT BACKPRESSURE (the ticket's decision 7): the
+The
 MAX-IN-FLIGHT bound is DECLARED at the workflow level (the runner
 supplies the workflow's declaration; ``None`` = the explicit
 unbounded). The emit admits its WHOLE page: the run's outstanding
@@ -46,14 +46,14 @@ non-terminal rows (the ledger's truth — pending/scheduled/running,
 excluding the source's own claim) + the page's width must fit under the
 bound, or the pager BLOCKS — the generator's laziness IS the pause (a
 bounded poll OUTSIDE any tx: no connection, no transaction held while
-waiting). The admission's second gate sits INSIDE the tx under the
+waiting). The admission's second gate sits inside the tx under the
 flow's ADMISSION LOCK (``pg_advisory_xact_lock`` — the admission-lock pattern: the
 count and the insert serialize on the same lock, so two concurrent
 emitters of one run cannot both admit past the bound; a lost admission
 rolls the tx back WHOLE and the wait retries — a guard, never a timing
 argument). A stall past the wait's deadline is the LOUD refusal
 (:class:`EmitBackpressureTimeoutError`) — and the certified ladder owns it:
-the source re-pends with backoff, the re-claim resumes FROM THE CURSOR,
+the source re-pends with backoff, the re-claim resumes FROM the CURSOR,
 the blocked page emits fresh (it never ran — nothing was written). The
 degradation is the dispatch band's latency, never unbounded
 materialization.
@@ -86,20 +86,19 @@ __all__ = [
     "emit_batch",
 ]
 
-#: The cursor checkpoint's metadata key on the SOURCE row itself (the
+#: The cursor checkpoint's metadata key on the source row itself (the
 #: checkpoint rides the row's jsonb — no new table, no new column, no
 #: migration). The value is the caller's cursor document, merged at the
 #: top level of the row's metadata under this one key.
 EMIT_CURSOR_KEY: Final[str] = "emit_cursor"
 
-#: THE MAX-IN-FLIGHT DEFAULT (the bound is ON for the new surface): the
-#: bound a workflow gets when it does not declare one. The author opts
-#: OUT loudly (``max_in_flight=None`` on the workflow declaration — the
-#: explicit unbounded, never a silent default).
+#: the bound a workflow gets when it does not declare one. The author opts out
+#: loudly (``max_in_flight=None`` on the workflow declaration — the explicit
+#: unbounded, never a silent default).
 EMIT_MAX_IN_FLIGHT_DEFAULT: Final[int] = 1000
 
 #: The backpressure wait's default term: the pager blocks at most this
-#: long before the LOUD refusal. The body may tighten it (the pager
+#: long before the loud refusal. The body may tighten it (the pager
 #: knows its own pace); nothing waits forever.
 _EMIT_BACKPRESSURE_DEFAULT_S: Final[float] = 30.0
 
@@ -118,39 +117,37 @@ WindowHook = Callable[[str, Any], Awaitable[None]]
 class EmitFencedError(RuntimeError):
     """The emit's cursor checkpoint updated nothing — the claim was
     superseded (the source row was reclaimed and re-claimed under us).
-    The tx aborts: the children and edges roll back with it. THE LOUD
+    The tx aborts: the children and edges roll back with it. the LOUD
     REFUSAL — a zombie source cannot emit, silently or otherwise."""
 
 
-#: THE MAP_INDEX CEILING (the number an author plans around):
-#: ``jobs.map_index`` is a SMALLINT — the ceiling is 32767. A page whose
-#: record's map_index crosses it raises :class:`MapIndexExhaustedError`
-#: AT THE EMIT DOOR (typed, named, the ceiling's number on the record);
-#: the valid page-mates' tx commits first (the poison record kills
-#: itself, never its mates), and the deterministic route terminalizes
-#: the source. The ceiling is per-map-index, NOT per-run: a map's
-#: children count against the same smallint the ledger's claim-arbiter
-#: keys on.
+#: ``jobs.map_index`` is a smallint — the ceiling is 32767. A page whose
+#: record's map_index crosses it raises :class:`MapIndexExhaustedError` at the
+#: emit door (typed, named, the ceiling's number on the record); the valid
+#: page-mates' tx commits first (the poison record kills itself, never its
+#: mates), and the deterministic route terminalizes the source. The ceiling is
+#: per-map-index, not per-run: a map's children count against the same smallint
+#: the ledger's claim-arbiter keys on.
 
 
 class PageDivergedError(RuntimeError):
-    """THE DIVERGENT PAGING ON RESUME, NAMED (the T20/T21 fixer's typed
-    death): the emit's children INSERT hit the idempotency arbiter — the
+    """The emit's children INSERT
+    hit the idempotency arbiter — the
     page's rows ALREADY EXIST under the page's ``(flow, emit,
     map_index, step)`` keys — while the source's cursor checkpoint says
     the page never ran. The cursor and the row history have diverged:
     the atomic emit tx can produce this only from a cursor the row
     history outgrew (a hand-rewound checkpoint, a resumed source whose
-    body re-pages an already-committed page). THE RAW DEATH IT FIXES:
+    body re-pages an already-committed page). the RAW DEATH IT FIXES:
     the raw ``UniqueViolationError`` escaped the tx, the body boundary
-    laddered it as transient, and the re-claim re-read the SAME cursor
+    laddered it as transient, and the re-claim re-read the same cursor
     and collided again — the ladder burned to a raw-typed terminal,
-    never named. THE NAMED DEATH: this error terminalizes the source
+    never named. the NAMED DEATH: this error terminalizes the source
     LOUDLY (the deterministic route — re-running cannot fix a diverged
-    cursor), and the message carries the remedy: RE-SYNC THE CURSOR (the
+    cursor), and the message carries the remedy: RE-SYNC the CURSOR (the
     checkpoint is the source row's metadata under
     :data:`EMIT_CURSOR_KEY` — point it at the last page the rows prove
-    committed). THE TX ROLLED BACK: the divergent page wrote NOTHING."""
+    committed). the TX ROLLED BACK: the divergent page wrote NOTHING."""
 
     def __init__(self, flow_id: JobId, source_id: JobId, detail: str) -> None:
         super().__init__(
@@ -165,14 +162,13 @@ class PageDivergedError(RuntimeError):
 
 
 class MapIndexExhaustedError(RuntimeError):
-    """THE SMALLINT CEILING, TYPED (the T20/T21 fixer's typed death):
-    a page carried a record whose ``map_index`` is past the smallint
+    """A page carried a record whose ``map_index`` is past the smallint
     ceiling (:data:`taskq.workflows._types.MAP_INDEX_CEILING` — 32767;
-    the ledger's claim-arbiter column is a smallint). THE BATCH
-    SEMANTICS: a poison record kills ITSELF loudly, NEVER ITS MATES —
+    the ledger's claim-arbiter column is a smallint). the BATCH
+    SEMANTICS: a poison record kills ITSELF loudly, never ITS MATES —
     the emit emits the VALID page-mates first (their tx commits; the
-    valid work survives), THEN raises THIS naming the offending record.
-    THE RAW DEATH IT FIXES: the smallint cast's raw DataError escaped
+    valid work survives), then raises THIS naming the offending record.
+    The smallint cast's raw DataError escaped
     MID-TX and rolled the whole page back — the valid page-mates died
     with the poison record, an accidental untyped ceiling. The
     deterministic route terminalizes the source with the ceiling on the
@@ -181,17 +177,17 @@ class MapIndexExhaustedError(RuntimeError):
 
 
 class EmitBackpressureTimeoutError(RuntimeError):
-    """THE MAX-IN-FLIGHT BOUND STALLED: the run's outstanding
+    """The run's outstanding
     non-terminal rows plus the page's width did not fit under the
     declared bound for the whole wait's term — the LOUD refusal, never a
-    silent unbounded emit, never an infinite block. THE LADDER OWNS IT:
-    the source re-pends with backoff, the re-claim resumes FROM THE
+    silent unbounded emit, never an infinite block. the LADDER OWNS IT:
+    the source re-pends with backoff, the re-claim resumes FROM the
     CURSOR, and the blocked page emits fresh (it never ran — the block
-    is BEFORE the tx, nothing was written)."""
+    is before the tx, nothing was written)."""
 
 
 class _AdmissionLostError(Exception):
-    """The admission re-check INSIDE the tx (under the flow's admission
+    """The admission re-check inside the tx (under the flow's admission
     lock) found the bound taken by a concurrent emitter — the tx aborts
     (nothing partial) and the wait loop retries. Never escapes."""
 
@@ -223,11 +219,11 @@ async def _emit_tx(
     INSERT, the edge rows, the cursor checkpoint — the certified fork
     shapes re-bound, chunked parallel arrays, ids minted app-side.
 
-    THE DIVERGENT PAGE IS NAMED (the T20/T21 fixer's typed death): the
-    children INSERT is the page's ONLY unique-violation surface (the
+    The children INSERT is the page's
+    only unique-violation surface (the
     idempotency arbiter — the composite ``(scope, key)`` index). The raw
     ``UniqueViolationError`` used to escape whole: the body boundary
-    laddered it transient, the re-claim re-read the SAME cursor and
+    laddered it transient, the re-claim re-read the same cursor and
     collided again — the ladder burned to a raw-typed death. Here the
     arbiter's refusal is :class:`PageDivergedError` — the named, loud
     death carrying the remedy (re-sync the cursor) — and the tx rolls
@@ -258,9 +254,8 @@ async def _emit_tx(
                 # emit scope + the per-record index.
                 [f"workflow:{flow_id}"] * len(chunk),
                 [f"wf:{flow_id}:emit:{c.map_index}:{c.step_key}" for c in chunk],
-                # THE CHILDREN'S DISPATCH COHORT (the wf fairness stamp):
-                # one cohort per run (the flow_id), the fork's own law at
-                # the page inserts.
+                # one cohort per run (the flow_id), the fork's own law at the
+                # page inserts.
                 [str(flow_id)] * len(chunk),
             )
         except asyncpg.UniqueViolationError as exc:
@@ -287,10 +282,10 @@ async def _emit_tx(
         if _window_hook is not None:
             await _window_hook("emit:2", conn)
 
-    # THE CURSOR CHECKPOINT — under the FULL claim fence. The metadata
-    # merge is a top-level concat under ONE key: the caller's cursor
-    # document is never diffed field-by-field, and the row's other
-    # metadata (flow_id, the hold stamps) survives.
+    # the cursor checkpoint — under the full claim fence. The metadata merge is
+    # a top-level concat under one key: the caller's cursor document is never
+    # diffed field-by-field, and the row's other metadata (flow_id, the hold
+    # stamps) survives.
     fenced = await conn.fetchval(
         wsql.emit_cursor,
         source_id,
@@ -312,7 +307,7 @@ async def _emit_tx(
 
 def _raise_poison(flow_id: JobId, source_id: JobId, poison: list[EmitChild]) -> None:
     """Name the page's poison records and raise (the ceiling's loud
-    terminal — AFTER the valid page-mates' tx committed, so the valid
+    terminal — after the valid page-mates' tx committed, so the valid
     work survives on the record; the batch semantics, the error's
     docstring)."""
     raise MapIndexExhaustedError(
@@ -342,28 +337,28 @@ async def emit_batch(
     backpressure_timeout_s: float = _EMIT_BACKPRESSURE_DEFAULT_S,
     _window_hook: WindowHook | None = None,
 ) -> tuple[JobId, ...]:
-    """Emit ONE page of chain starts: the children + the edges + the
-    cursor checkpoint, ONE transaction, while the source stays
+    """Emit one page of chain starts: the children + the edges + the
+    cursor checkpoint, one transaction, while the source stays
     ``running``.
 
     The REFUTED-CLAIM DISCIPLINE is enforced at the door: every child
     carries its ``map_index`` (the discriminator the fork's idempotency
-    key and the ledger's arbiter both ride — a ``None`` is refused BEFORE
+    key and the ledger's arbiter both ride — a ``None`` is refused before
     any row exists) and its ``trace_id`` (the per-record lineage).
 
     The idempotency keys are PARENT-SCOPED at the emit scope —
     ``wf:{flow}:emit:{map_index}:{step_key}`` — distinct from the
     fork-at-finalize keys (``wf:{flow}:{parent_step}:{step}:{idx}``): a
-    source that ALSO forks at its finalize can never key-collide with its
+    source that also forks at its finalize can never key-collide with its
     own emitted chains.
 
-    THE MAX-IN-FLIGHT BOUND: *max_in_flight* is the DECLARED bound
+    *max_in_flight* is the DECLARED bound
     (the workflow-level declare — the runner supplies the workflow's;
     ``None`` = the explicit unbounded). The emit admits its WHOLE page:
     the run's outstanding non-terminal rows + the page's width must fit
     under the bound, or the pager BLOCKS (the generator's laziness is
     the pause — a bounded poll outside any tx, no connection held while
-    waiting). The admission's second gate sits INSIDE the tx under the
+    waiting). The admission's second gate sits inside the tx under the
     flow's admission lock — the concurrent emitters' count+insert
     serialize (a lost admission aborts the tx and retries the wait; a
     guard, never a timing argument). A stall past the wait's term is the
@@ -376,17 +371,17 @@ async def emit_batch(
     :class:`PageDivergedError` when the page's rows already exist (the
     cursor diverged from the row history — the tx rolled back, nothing
     written). Raises :class:`MapIndexExhaustedError` when a record's
-    ``map_index`` is past the smallint ceiling — AFTER emitting the
+    ``map_index`` is past the smallint ceiling — after emitting the
     valid page-mates (the batch semantics: a poison record kills ITSELF
     loudly, never its mates — the valid work SURVIVES on the record)."""
     for child in children:
-        if child.map_index is None:  # pyright: ignore[reportUnnecessaryComparison]  # Why: the runtime guard behind the typed door — EmitChild.map_index's int type is the declaration; a hand-built child carrying None must be REFUSED here (the refuted-claim discipline), never trusted to the checker.
+        if child.map_index is None:  # pyright: ignore[reportUnnecessaryComparison]  # Why: the runtime guard behind the typed door — EmitChild.map_index's int type is the declaration; a hand-built child carrying None must be refused here (the refuted-claim discipline), never trusted to the checker.
             raise ValueError(
                 f"emit child {child.step_key!r} has map_index=None — the "
                 "emit stamps map_index per record (the discriminator the "
                 "fork's idempotency key and the ledger's arbiter both "
                 "ride); without it every record's children collide onto "
-                "one row (the spike's 198 UniqueViolations)"
+                "one row (the measured 198 UniqueViolations)"
             )
         if not child.trace_id:
             raise ValueError(
@@ -395,15 +390,13 @@ async def emit_batch(
                 "the per-record trace (the one-query lineage)"
             )
 
-    # THE SMALLINT CEILING AT THE DOOR (the T20/T21 fixer's typed death):
-    # jobs.map_index is a smallint — a record past
-    # :data:`MAP_INDEX_CEILING` used to die as the raw DataError
-    # MID-TX, taking the valid page-mates down with the rollback (an
-    # accidental untyped ceiling). THE BATCH SEMANTICS: the poison
-    # record kills ITSELF loudly, never its mates — the valid
-    # page-mates emit (their tx commits below), THEN the poison is
-    # named and raised (the deterministic route terminalizes the
-    # source). An all-poison page is refused BEFORE any work.
+    # jobs.map_index is a smallint — a record past :data:`MAP_INDEX_CEILING`
+    # used to die as the raw DataError mid-tx, taking the valid page-mates down
+    # with the rollback (an accidental untyped ceiling). the batch semantics:
+    # the poison record kills itself loudly, never its mates — the valid
+    # page-mates emit (their tx commits below), then the poison is named and
+    # raised (the deterministic route terminalizes the source). An all-poison
+    # page is refused before any work.
     poison = [c for c in children if not 0 <= int(c.map_index) <= MAP_INDEX_CEILING]
     if not poison:
         valid = list(children)
@@ -425,7 +418,7 @@ async def emit_batch(
     deadline = loop.time() + backpressure_timeout_s
 
     if max_in_flight is not None:
-        # AN ADMISSION THAT CAN NEVER SUCCEED is refused at the door.
+        # an admission that can never succeed is refused at the door.
         if len(valid) > max_in_flight:
             raise ValueError(
                 f"the emit's page ({len(valid)} children) can never fit "
@@ -435,7 +428,7 @@ async def emit_batch(
             )
 
         while True:
-            # THE WAIT (outside any tx — the pager blocks here; no
+            # the wait (outside any tx — the pager blocks here; no
             # connection held while waiting).
             async with pool.acquire() as conn:
                 count = await _outstanding(conn, wsql, flow_id, source_id)
@@ -452,9 +445,9 @@ async def emit_batch(
                     )
                 await asyncio.sleep(_EMIT_BACKPRESSURE_POLL_S)
                 continue
-            # THE TX — the admission's second gate inside (the flow's
+            # the tx — the admission's second gate inside (the flow's
             # admission lock serializes the concurrent emitters'
-            # count+insert; a lost admission rolls back WHOLE and
+            # count+insert; a lost admission rolls back whole and
             # retries the wait).
             try:
                 async with pool.acquire() as conn, conn.transaction():
@@ -481,13 +474,10 @@ async def emit_batch(
                         retry_kind=retry_kind,
                         _window_hook=_window_hook,
                     )
-                    # THE POISON'S LOUD DEATH IS OUTSIDE THE TX: the valid
-                    # page-mates' tx COMMITTED above (the batch semantics —
-                    # a poison record kills itself loudly, never its
-                    # mates); a raise INSIDE the with would roll the
-                    # valid work back (the raw DataError's own crime).
-                if poison:
-                    _raise_poison(flow_id, source_id, poison)
+                    # the valid page-mates' tx committed above (the batch
+                    # semantics — a poison record kills itself loudly, never
+                    # its mates); a raise inside the with would roll the valid
+                    # work back (the raw DataError's own crime).
                 if poison:
                     _raise_poison(flow_id, source_id, poison)
                 return tuple(child_ids)
@@ -519,7 +509,7 @@ async def emit_batch(
             retry_kind=retry_kind,
             _window_hook=_window_hook,
         )
-    # THE POISON'S LOUD DEATH IS OUTSIDE THE TX (the valid work committed).
+    # the poison's loud death is outside the tx (the valid work committed).
     if poison:
         _raise_poison(flow_id, source_id, poison)
     return tuple(child_ids)

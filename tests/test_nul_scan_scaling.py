@@ -30,7 +30,7 @@ also compresses the cheapest superlinear mutant -- a memcpy-cheap
 quadratic sim, an O(pos) copy per match added to the real scan --
 to 1.92x, below any gate that safely clears the linear band. The twin
 (a control that shares the scan's cost structure) keeps both ratios at
-~8-10x in BOTH environments, and the difference framing leaves the
+~8-10x in both environments, and the difference framing leaves the
 memcpy mutant nowhere to hide: the linear band is -1.2 to -0.3 ratio
 units, the mutant lands at +7 to +8, and the gate sits at 2.5.
 
@@ -57,7 +57,7 @@ excess on the runner that sourced the pin's mutant numbers (+16 to +17
 on a second runner; the committed-test mutant lands at +7 to +8) --
 all far over the 2.5 gate. But a C-LEVEL O(pos) per-match term (one
 `bytes.rfind` over the payload per match, no copy) measures excess
--0.24 to -0.45 (-0.47 to +0.35 on the second runner) -- UNDER the 2.5
+-0.24 to -0.45 (-0.47 to +0.35 on the second runner) -- under the 2.5
 gate, invisible: a C scan is roughly two orders of magnitude cheaper
 per byte than the interpreter loop, so the added O(pos) work never
 lifts the scan's ratio above its twin's. An earlier draft of this
@@ -167,8 +167,8 @@ def test_nul_scan_growth_is_linear_relative_to_its_twin() -> None:
     # flake of the previous gate divides out. Superlinear shapes leave
     # an absolute excess: a memcpy-cheap quadratic sim (an O(pos) copy
     # per match) lands at +7 to +8 units and fails the gate. A C-level
-    # O(pos) rfind per match lands IN the linear band (-0.47 to +0.35)
-    # and does NOT fail it -- the gate's sensitivity boundary is
+    # O(pos) rfind per match lands in the linear band (-0.47 to +0.35)
+    # and does not fail it -- the gate's sensitivity boundary is
     # python-level work; see the docstring's known boundary and its
     # review rule for that case.
     assert excess < _DIFFERENCE_GATE, (

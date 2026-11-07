@@ -433,13 +433,13 @@ async def test_fresh_enqueue_emits_no_dedup_counter_datapoint(
 async def test_batch_dedup_stampede_counts_every_hit_despite_warning_suppression(
     otel_reader: InMemoryMetricReader,
 ) -> None:
-    """A terminal-target dedup stampede at batch scale counts EVERY hit on
+    """A terminal-target dedup stampede at batch scale counts every hit on
     the counter even where the per-hit WARNING budget suppresses the log
     lines - the counter is the rate signal that survives the flood bound.
 
     The WARNING budget bounds per-hit terminal WARNINGs to
     three plus one summary line; a stampede that once emitted 500
-    WARNINGs now emits four. What it must NOT lose is the rate itself:
+    WARNINGs now emits four. What it must not lose is the rate itself:
     the operator muting nothing still needs to see 500 dedups happened.
     """
     from taskq.backend._enqueue import (

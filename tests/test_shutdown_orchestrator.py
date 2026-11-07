@@ -23,7 +23,7 @@ from taskq.obs import bind_job_context
 from taskq.settings import WorkerSettings
 from taskq.testing.in_memory import PassthroughPayload
 from taskq.worker import (
-    shutdown as shutdown_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace the clock fakes must be bound in (patch where it is LOOKED UP); the symbols above are its public surface.
+    shutdown as shutdown_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace the clock fakes must be bound in (patch where it is looked up); the symbols above are its public surface.
 )
 from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the flush bound is half of the exit tail pinned above.
     _METRICS_FLUSH_TIMEOUT_SECS,
@@ -141,7 +141,7 @@ def _patch_clock(
     fake_loop: Mock,
 ) -> None:
     fake_loop.time = lambda: clock.time_val  # type: ignore[method-assign] # Why: Mock attribute shadowing for loop.time() callable; the test clock replaces the event loop's monotonic clock.
-    # Patch where the names are LOOKED UP - the shutdown module's own
+    # Patch where the names are looked up - the shutdown module's own
     # ``asyncio`` binding - not through to the global asyncio module
     # (tests/_ns_patch.py).
     monkeypatch.setattr(
@@ -233,10 +233,10 @@ async def test_phase_ordering_and_backend_calls(monkeypatch: pytest.MonkeyPatch)
         assert job.cancel_phase == CancelPhase.FORCED
         assert job.cancel_origin is CancelOrigin.SHUTDOWN
 
-    # The probe reads each row once at FORCING; neither matched (no
+    # The probe reads each row once at forcing; neither matched (no
     # operator cancel in flight), so nothing is escalated to phase 2.
     assert backend.write_cancel_escalation.call_count == 2
-    # Both jobs are released back to the fleet at RELEASING - the shutdown
+    # Both jobs are released back to the fleet at releasing - the shutdown
     # never terminalises them.
     assert backend.mark_interrupted.call_count == 2
     # The exit tail the hold must cover past the deadline itself: the
@@ -250,8 +250,8 @@ async def test_phase_ordering_and_backend_calls(monkeypatch: pytest.MonkeyPatch)
     )
     for call in backend.mark_interrupted.call_args_list:
         assert call.kwargs["attempt"] == 1
-        # The hold is the remaining termination budget PLUS that exit
-        # tail: 60s grace counted from DRAINING, minus the ~0.8-0.9s the
+        # The hold is the remaining termination budget plus that exit
+        # tail: 60s grace counted from draining, minus the ~0.8-0.9s the
         # two grace windows consume on the fake clock (the 0.1s sleep
         # quantum plus float drift can overshoot a grace boundary by one
         # step).
@@ -262,79 +262,12 @@ async def test_phase_ordering_and_backend_calls(monkeypatch: pytest.MonkeyPatch)
     assert 0.7 < clock.time_val < 1.0
 
 
-async def test_consumers_are_stopped_before_claimed_work_is_handed_back(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Dispatch stops before the hand-back sweeps, never after.
-
-    The hand-back is a single statement over the rows this worker currently
-    holds. If the producer were still claiming while it ran, a row claimed a
-    moment later would be missed by the sweep and left running and locked to a
-    worker that is exiting - stranded until its lock lease expires, minutes of
-    dead latency on a job nobody is running.
-
-    Stopping dispatch first closes that window: after the stop event, no new
-    row can join the set the sweep is about to release, so every claimed row
-    is handed back, and handed back once.
-
-    The phase marker must also be visible before either step, since health
-    endpoints and the consumer loops read it to decide they are draining.
-    """
-    import taskq.worker.shutdown as shutdown_mod
-    from taskq.worker.shutdown import ShutdownPhase
-
-    registry = FakeActiveJobRegistry([])
-    settings = _worker_settings(cancellation_grace=0.0, cleanup_grace=0.0)
-    deps = _make_deps(registry=registry, settings=settings)
-
-    order: list[str] = []
-    observed_phase: list[ShutdownPhase] = []
-    producer_stopped_at_drain: list[bool] = []
-
-    async def _recording_drain(d: WorkerDeps, w: UUID) -> int:
-        order.append("hand_back")
-        observed_phase.append(d.shutdown_phase)
-        producer_stopped_at_drain.append(d.producer_stop_event.is_set())
-        return 0
-
-    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", _recording_drain)
-
-    original_set = deps.producer_stop_event.set
-
-    def _recording_set() -> None:
-        order.append("stop_dispatch")
-        original_set()
-
-    deps.producer_stop_event.set = _recording_set  # type: ignore[method-assign] # Why: recording wrapper to observe the ordering of the two DRAINING steps.
-
-    backend = AsyncMock(spec=Backend)
-    backend.write_cancel_escalation = AsyncMock(return_value=True)
-    backend.mark_abandoned = AsyncMock(return_value=True)
-
-    clock = FakeClock()
-    fake_loop = Mock()
-    _patch_clock(monkeypatch, clock, fake_loop)
-
-    await orchestrate_shutdown(
-        deps,
-        deps.settings,
-        new_uuid(),
-        asyncio.Event(),
-        None,
-        backend=backend,
-    )
-
-    assert order == ["stop_dispatch", "hand_back"], (
-        "consumers must stop taking new work before claimed work is handed "
-        "back; a claim landing between the two steps is missed by the sweep "
-        f"and stranded locked until lease expiry. Observed order: {order!r}"
-    )
-    assert producer_stopped_at_drain == [True]
-    assert observed_phase == [ShutdownPhase.DRAINING], (
-        "the draining phase marker must already be readable when the "
-        "hand-back runs - health endpoints and consumer loops read it to "
-        f"decide they are draining. Observed: {observed_phase!r}"
-    )
+# NOTE (the mock-subtraction cure): the stop-before-hand-back ORDER arm
+# converted to the real ladder in tests/test_shutdown_integration.py
+# (test_the_ladder_stops_dispatch_before_the_hand_back): the recording
+# wrapper delegates to the real drain over real PG (count, don't answer),
+# so the ordering property is pinned on the ladder that runs in
+# production, with real rows handed back.
 
 
 # ── Shielded cleanup ─────────────────────────────────────────────
@@ -394,7 +327,7 @@ async def test_shielded_write_completes_despite_cancellation(
     assert write_done
 
 
-# ── FORCING PG-write-before-cancel ordering ─────────────────────
+# ── forcing PG-write-before-cancel ordering ─────────────────────
 
 
 async def test_forcing_pg_write_before_cancel_phase_advances(
@@ -435,7 +368,7 @@ async def test_forcing_pg_write_before_cancel_phase_advances(
     backend.write_cancel_escalation.assert_called_with(job.job_id, worker_id, phase=2)
 
 
-# ── FORCING per-job PG write failure isolation ──────────────────
+# ── forcing per-job PG write failure isolation ──────────────────
 
 
 async def test_forcing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -696,13 +629,13 @@ async def test_releasing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> N
     assert backend.mark_abandoned.call_count == 0
 
 
-# ── RELEASING: the noop fence routes to the abandon ladder ───────
+# ── releasing: the noop fence routes to the abandon ladder ───────
 
 
 async def test_releasing_noop_abandons_operator_cancelled_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A ``mark_interrupted`` noop must terminalise with the operator's OWN
+    """A ``mark_interrupted`` noop must terminalise with the operator's own
     verdict, never release the row.
 
     The fence declines the release for exactly one class of row: one that
@@ -717,9 +650,9 @@ async def test_releasing_noop_abandons_operator_cancelled_job(
     - propagating the noop as an error: the release loop dies mid-phase
       and every job registered after this one is never handed back.
 
-    The observable contract: ``mark_cancelled`` is awaited ONCE with the
+    The observable contract: ``mark_cancelled`` is awaited once with the
     job id and the entry's attempt fence (the operator's own verdict, the
-    SAME write the consumer's unwind races - never ``mark_abandoned``,
+    same write the consumer's unwind races - never ``mark_abandoned``,
     whose competing verdict let an operator's cancelled job show
     ``abandoned``), and the RELEASING summary reports the row as
     ``cancelled`` (with ``noop`` and ``released``), the number an
@@ -951,11 +884,11 @@ async def test_releasing_routes_operator_cancel_and_cancellederror_arms(
         )
 
     assert result == 0
-    # The operator ladder's verdict fired for BOTH operator rows (the
+    # The operator ladder's verdict fired for both operator rows (the
     # plain one and the interrupted one); the noop row routed to it too.
     assert backend.mark_cancelled.await_count == 3
     # mark_interrupted ran for the noop, the released, and the
-    # CancelledError rows - NEVER for the operator row (the release
+    # CancelledError rows - never for the operator row (the release
     # would pend an operator-cancelled job).
     assert backend.mark_interrupted.await_count == 3
     interrupted_ids = {call.args[0] for call in backend.mark_interrupted.await_args_list}
@@ -965,7 +898,7 @@ async def test_releasing_routes_operator_cancel_and_cancellederror_arms(
         call.kwargs == {"attempt": 1, "claim_epoch": 0}
         for call in backend.mark_cancelled.await_args_list
     )
-    # No PG-failure WARN anywhere: both CancelledError arms swallow
+    # No PG-failure warn anywhere: both CancelledError arms swallow
     # silently, a cancellation is not a PG failure.
     assert not [e for e in captured if e.get("event") == "cancel-pg-write-failed"], (
         "the verdict CancelledError arm must stay silent - the WARN is "
@@ -997,8 +930,8 @@ async def test_releasing_operator_entry_writes_the_operators_verdict(
     cancel-racing-SIGTERM scenario, ``test_operator_cancel_racing_the_
     sigterm_owns_the_exit``: the unwind's commit lags the grace under
     co-tenant load). The phase's terminal write must carry the operator's
-    OWN verdict - ``mark_cancelled``, fenced to this worker's attempt, the
-    SAME write the consumer is racing - so whichever of the two commits,
+    own verdict - ``mark_cancelled``, fenced to this worker's attempt, the
+    same write the consumer is racing - so whichever of the two commits,
     the row reads ``cancelled``. Writing ``mark_abandoned`` here races a
     DIFFERENT verdict: the first committer owned the terminal state, and a
     row the operator cancelled showed ``abandoned`` (the audit's
@@ -1125,7 +1058,7 @@ async def test_forcing_escalation_probe_stamps_and_warns_by_row_origin(
     )
 
 
-# ── DRAINING failure must not collapse the later phases ──────────
+# ── draining failure must not collapse the later phases ──────────
 
 
 async def test_draining_failure_does_not_skip_cancelling_forcing_releasing(
@@ -1185,14 +1118,14 @@ async def test_draining_failure_does_not_skip_cancelling_forcing_releasing(
 
     assert result == 0, "a contained drain failure must not fail the orchestration"
     assert shut_event.is_set()
-    # The phases after DRAINING still ran: the cooperative cancel was
+    # The phases after draining still ran: the cooperative cancel was
     # stamped, the forced cancel delivered, and the release written.
     assert job.ctx.cancel_event.is_set()
     assert job.cancel_origin is CancelOrigin.SHUTDOWN
     assert job.cancel_phase == CancelPhase.FORCED
     backend.mark_interrupted.assert_awaited_once()
     backend.mark_abandoned.assert_not_called()
-    # The failure is loud, once, distinct from the helper's transient WARN.
+    # The failure is loud, once, distinct from the helper's transient warn.
     failures = [e for e in captured if e.get("event") == "drain-phase-failed"]
     assert len(failures) == 1, f"expected one drain-phase-failed record, got {failures!r}"
     assert "schema dropped mid-drain" in failures[0]["error"]
@@ -1275,7 +1208,7 @@ async def test_race_winner_not_released(monkeypatch: pytest.MonkeyPatch) -> None
         await clock.sleep(delta)
 
     # asyncio.sleep is resolved on the shutdown module's own ``asyncio``
-    # binding at call time; binding the fake THERE is exactly what the
+    # binding at call time; binding the fake there is exactly what the
     # orchestrator sees, without swinging the process-global module
     # (the pre-rename suite did this through the shutdown module's
     # re-import; tests/_ns_patch.py explains the hazard class).
@@ -1296,7 +1229,7 @@ async def test_race_winner_not_released(monkeypatch: pytest.MonkeyPatch) -> None
     backend.mark_abandoned.assert_not_called()
 
 
-# ── MAJOR-3: CANCELLING guard (don't restart grace clock) ───────────────
+# ── MAJOR-3: cancelling guard (don't restart grace clock) ───────────────
 
 
 async def test_cancelling_guard_preserves_observed_at(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1415,7 +1348,7 @@ async def test_second_signal_fast_advance(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
     elapsed = asyncio.get_running_loop().time() - t0
-    assert elapsed < 11.0  # CANCELLING breaks early (~0.1s) + cleanup_grace (10s) + RELEASING
+    assert elapsed < 11.0  # cancelling breaks early (~0.1s) + cleanup_grace (10s) + releasing
 
 
 # ── leader_conn close ───────────────────────────────────────────────────
@@ -1606,7 +1539,7 @@ async def test_orchestrate_shutdown_terminates_hung_leader_close(
     shut_event = asyncio.Event()
 
     # Why the outer timeout: unguarded, orchestrate_shutdown awaited
-    # leader_conn.close() unbounded, so the RED state would hang forever
+    # leader_conn.close() unbounded, so the red state would hang forever
     # instead of failing fast.
     async with asyncio.timeout(5):
         result = await orchestrate_shutdown(
@@ -1680,7 +1613,7 @@ async def test_orchestrate_shutdown_does_not_null_swapped_leader_conn(
     )
 
     # Why the outer timeout: the close gate parks the orchestrator, so a
-    # broken RED state must fail fast rather than hang the suite.
+    # broken red state must fail fast rather than hang the suite.
     async with asyncio.timeout(5):
         await close_began.wait()
         # Simulate the election loop's health probe dropping the closing
@@ -1698,7 +1631,7 @@ async def test_orchestrate_shutdown_does_not_null_swapped_leader_conn(
 async def test_orchestrate_shutdown_sets_shutdown_event_before_leader_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The election loop must be stopped BEFORE the bounded close parks.
+    """The election loop must be stopped before the bounded close parks.
 
     The conn records shutdown_event.is_set() at the moment its close() is
     entered; on unfixed code the event fires only in the finally, leaving
@@ -1734,7 +1667,7 @@ async def test_orchestrate_shutdown_sets_shutdown_event_before_leader_close(
     monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", AsyncMock(return_value=0))
 
     # Why the outer timeout: matches the hung-close test convention so a
-    # RED state fails fast instead of hanging.
+    # red state fails fast instead of hanging.
     async with asyncio.timeout(5):
         await orchestrate_shutdown(
             deps,
@@ -1835,13 +1768,13 @@ async def test_orchestrate_shutdown_does_not_double_close_leader_conn(
     """Race regression: the deps exit-stack guard must not double-close the
     leader conn while the orchestrator's bounded close is parked.
 
-    _bootstrap wiring: ``await shutdown_event.wait()`` runs INSIDE
+    _bootstrap wiring: ``await shutdown_event.wait()`` runs inside
     ``async with open_worker_deps(...)``; the orchestrator task is awaited
-    only AFTER the context exits. The early ``shutdown_event.set()``
+    only after the context exits. The early ``shutdown_event.set()``
     (stops the election loop before the close park) therefore releases
     the exit-stack unwind CONCURRENTLY with the parked close, and the
     guard's ``_close_leader_conn`` enters a second ``close_conn_bounded`` on
-    the same conn unless ``deps.leader_conn`` is nulled BEFORE the park. On
+    the same conn unless ``deps.leader_conn`` is nulled before the park. On
     a real asyncpg conn one closer's terminate aborts the other's in-flight
     close, logging a spurious conn-teardown-close-error.
     """
@@ -1878,7 +1811,7 @@ async def test_orchestrate_shutdown_does_not_double_close_leader_conn(
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns) as deps:
             # Mirror _bootstrap: the orchestrator is a bare create_task that
-            # is NOT joined before the open_worker_deps context exits.
+            # is not joined before the open_worker_deps context exits.
             orch_task = asyncio.ensure_future(
                 orchestrate_shutdown(
                     deps,
@@ -1918,7 +1851,7 @@ _valid_grace_settings = st.tuples(
     lambda t: (
         t[0] + t[1] < t[2] - 5.0
         and t[0] + t[1] < t[3]
-        # The ENFORCED cascade floor (settings.py's post_load):
+        # The enforced cascade floor (settings.py's post_load):
         # max(hb, c) + (F+1) * (hb + c), at the defaults this tuple
         # family loads with (F=3, c=2.0). The old arm encoded it as
         # 4 * hb + 18 - the replaced (F+1) * (interval + 2 * command_
@@ -1970,10 +1903,10 @@ _invalid_grace_settings = st.tuples(
     lambda t: (
         t[0] + t[1] >= t[2] - 5.0
         or t[0] + t[1] >= t[3]
-        # The ENFORCED cascade floor (settings.py's post_load): max(hb, c)
+        # The enforced cascade floor (settings.py's post_load): max(hb, c)
         # + (F+1) * (hb + c), at the factory defaults this tuple family
         # loads with (F=3, command timeout c=2.0, unoverridden here).
-        # The old arm encoded the REPLACED rule - 4 * hb + 18, the banned
+        # The old arm encoded the replaced rule - 4 * hb + 18, the banned
         # (F+1) * (interval + 2 * command_timeout) shape plus a fudge -
         # whose band disagrees with the enforced floor (e.g. hb=4.5: the
         # old arm called lock_lease 35 invalid; the enforced floor is

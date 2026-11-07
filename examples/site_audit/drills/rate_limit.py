@@ -4,7 +4,7 @@
 The in-process driver executes bodies itself and does not pass through
 the worker's dispatch gate, so this drill runs the production shape: the
 driver spawns a real worker process, which executes the flow's rows
-through the queue-routed claim, and each arm's OWN bucket gates its
+through the queue-routed claim, and each arm's own bucket gates its
 children's dispatch cadence.
 
 The drill proves: with a 1 token/second bucket on each arm, the observed
@@ -127,13 +127,12 @@ async def _driver() -> None:
             arm_rows = [r for r in rows if r["step_key"].endswith(arm)]
             starts = sorted(r["started_at"] for r in arm_rows if r["started_at"])
             blocked = sum(r["rate_limit_blocked_count"] for r in arm_rows)
-            # THE TOKEN BUCKET'S CONTRACT is throughput with BURST
-            # tolerance (the docs' own primitive table): up to `capacity`
-            # admits may land as one burst once the tokens have
-            # accumulated, and the sustained rate may never exceed
-            # `refill`. The honest windowed measure: in any sliding
-            # window, admits <= capacity + what the refill could have
-            # minted in that window (+1 for the clock's rounding).
+            # the token bucket's contract is throughput with burst tolerance:
+            # up to `capacity` admits may land as one burst once the tokens
+            # have accumulated, and the sustained rate may never exceed
+            # `refill`. The honest windowed measure: in any sliding window,
+            # admits <= capacity + what the refill could have minted in that
+            # window (+1 for the clock's rounding).
             win = timedelta(seconds=window)
             worst = max(sum(1 for s in starts if t <= s < t + win) for t in starts)
             bound = capacity + refill * window + 1

@@ -3,11 +3,11 @@
 This is the operator's shift, asserted. The family proves the loop works
 as a WHOLE on both storage modes - the deployment surfaces, the
 observability surfaces, the operator actions, the crash recovery - and
-that every surface TELLS THE TRUTH about a fleet the test seeded itself.
+that every surface TELLS the TRUTH about a fleet the test seeded itself.
 Nothing here is a vacuous 200-check: every read is reconciled against the
 seeded population (depth, wait percentiles, the cron ledger's fires, the
 Prometheus exposition's gauges), and every action is verified in the
-ledger (``admin_audit``, ``job_events``, the job row) AND rendered back
+ledger (``admin_audit``, ``job_events``, the job row) and rendered back
 on the surface it claims to serve.
 
 The four phases, per test:
@@ -41,7 +41,7 @@ The four phases, per test:
 
 The loop runs TWICE - plain Postgres and the TimescaleDB hypertable mode
 (``TASKQ_TIMESCALEDB_HYPERTABLES=true``, the admin-on-hypertables
-precedent) - from the SAME body, so no phase can silently depend on a
+precedent) - from the same body, so no phase can silently depend on a
 vanilla-only shape.
 
 One deployment gap is PINNED where the loop hits it: ``taskq ui serve``
@@ -143,7 +143,7 @@ _CANCEL_REASON = "ops-loop cancel: the operator stopped this one"
 _CANCELLATION_GRACE_S = DEPLOYMENT_CANCELLATION_GRACE_S
 _CLEANUP_GRACE_S = DEPLOYMENT_CLEANUP_GRACE_S
 #: The recovery workload's simulated runtime: long enough that the
-#: kill -9 lands mid-run (the RECOVER phase's reclaim has a body to
+#: kill -9 lands mid-run (the recover phase's reclaim has a body to
 #: catch), short enough to keep the loop under its timeout.
 _SLOW_SLEEP = 40.0
 
@@ -162,7 +162,7 @@ _CLAIM_CYCLE_S = SWEEP_INTERVAL_S + _POLL_FLOOR_S
 #: One job's claim → terminal chain on this fleet: a boot-readiness
 #: ceiling (the slowest legal first beat), one claim cycle, and the lock
 #: lease the claim rides, stretched by the tier's load factor. The
-#: fast-mix, rated-mix and neighbor settles all wait on THIS bound; a
+#: fast-mix, rated-mix and neighbor settles all wait on this bound; a
 #: fleet that never serves still reds inside it.
 _SETTLE_BOUND_S = (
     BOOT_READY_BOUND_S + _CLAIM_CYCLE_S + DEPLOYMENT_LOCK_LEASE_S
@@ -184,7 +184,7 @@ _CANCEL_LAND_BOUND_S = (
 #: (60s) plus the settle bound above.
 _CRON_FIRE_BOUND_S = 60.0 + _SETTLE_BOUND_S
 
-#: The RECOVER phase's bounds: the killed worker's lease must lapse (the
+#: The recover phase's bounds: the killed worker's lease must lapse (the
 #: lock lease the claim rode) before the leader's sweep requeues, one or
 #: two dispatch cycles move the work, and the survivor's re-run of the
 #: body the kill caught adds the recovery mix's own runtime - all
@@ -196,10 +196,10 @@ _RECLAIM_LAND_S = (DEPLOYMENT_LOCK_LEASE_S + 2 * _CLAIM_CYCLE_S) * TIER_LOAD_STR
 _RECLAIM_SETTLE_S = (DEPLOYMENT_LOCK_LEASE_S + 2 * _CLAIM_CYCLE_S + _SLOW_SLEEP) * TIER_LOAD_STRETCH
 
 #: The exec probes' retry budget (the health live/ready loop and the
-#: Prometheus probe). The ATTEMPTS are the test-side lever: the CLI's
+#: Prometheus probe). The attempts are the test-side lever: the CLI's
 #: per-request bound is the product's hardcoded 2.0s (``Final`` — not
-#: ours to move), so under box load the probe's tolerance is the ATTEMPT
-#: COUNT. Four attempts ≈ 12s of tolerance lost the DEPLOY-phase probes
+#: ours to move), so under box load the probe's tolerance is the attempt
+#: count. Four attempts ≈ 12s of tolerance lost the deploy-phase probes
 #: on the cross-contended runner (the review's contended runs: F, F, P
 #: with the worker logs clean — the box, not the fleet; the same
 #: 1.3-2x runner-bet the recover-phase bounds fixed, left un-fixed
@@ -211,7 +211,7 @@ _PROBE_ATTEMPTS = 4 * math.ceil(TIER_LOAD_STRETCH)
 #: The drain-cap's exposure window: how long the held backlog is given
 #: the chance to (wrongly) run. A broken ``max_concurrent = 0`` leaks a
 #: claim within one dispatch cycle; the window is two, stretched - and
-#: the assertion after it is STATE (pending rows, zero running), not a
+#: the assertion after it is state (pending rows, zero running), not a
 #: clock, so the exposure's length carries no tooth of its own.
 _DRAIN_EXPOSURE_S = 2 * _CLAIM_CYCLE_S * TIER_LOAD_STRETCH
 _TIMESCALE_IMAGE = (
@@ -229,7 +229,7 @@ CREATE TABLE IF NOT EXISTS "{schema}".sys_effects (
 """
 
 # The fleet env: the harness's defaults with the loop's cadence - the
-# DEPLOYMENT-shaped pair from the tier's own constants (the rationale
+# deployment-shaped pair from the tier's own constants (the rationale
 # lives on the constants; the reaping window at this beat is 12s, the
 # kill9 reclaim still lands well inside the recovery poll, and the
 # fleet-wide surfaces (the 30s liveness window) see the same healthy
@@ -575,10 +575,10 @@ async def loop_env(
         )
         # The checklist's storage-engine row, second half: "at least one
         # chunk exists once events have landed - SELECT
-        # show_chunks('<schema>'.job_events)". The loop lands the FIRST
+        # show_chunks('<schema>'.job_events)". The loop lands the first
         # event at deploy time (a probe row that is removed in the same
         # transaction, so only the chunk it forces stays): the first
-        # chunk-creation DDL then happens BEFORE the fleet boots, not as
+        # chunk-creation DDL then happens before the fleet boots, not as
         # a surprise under the first event burst.
         probe = await asyncpg.connect(ts_dsn)
         try:
@@ -652,11 +652,11 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
     cli_env = {"TASKQ_PG_DSN": dsn, "TASKQ_SCHEMA_NAME": schema}
 
     async with TaskQ(dsn=dsn, schema=schema) as client:
-        # ══ 1. DEPLOY ══════════════════════════════════════════════════
+        # ══ 1. deploy ══════════════════════════════════════════════════
         # The operator's post-deploy checklist (deployment.md), executed
         # as assertions.
 
-        # Schemas migrated: the REAL migrate status answers, and every
+        # Schemas migrated: the real migrate status answers, and every
         # migration line carries the applied marker.
         status = await asyncio.to_thread(run_cli, ["migrate", "status"], cli_env)
         assert status.returncode == 0, (
@@ -699,7 +699,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
         ui_client: httpx.AsyncClient | None = None
         embedded_pool: asyncpg.Pool | None = None
         try:
-            # Health probes: the exec probes the manifest wires, live AND
+            # Health probes: the exec probes the manifest wires, live and
             # ready, per replica. Retried, the way an orchestrator's
             # failureThreshold absorbs a probe that loses its request to
             # a busy bootstrap tick (the CLI's own request bound is 2s).
@@ -741,7 +741,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 "both workers registered in the fleet table",
             )
 
-            # The leader elected, and it is one of OUR workers.
+            # The leader elected, and it is one of our workers.
             leader_pid_box: list[int] = []
 
             async def _leader_elected() -> bool:
@@ -764,7 +764,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             )
             leader_pid = leader_pid_box[0]
 
-            # The admin UI serves the fleet: the workers page shows BOTH
+            # The admin UI serves the fleet: the workers page shows both
             # replicas, and the leader page names the elected one.
             ui, ui_client = await spawn_admin_ui(dsn, schema)
             workers_page = await ui.get("/admin/workers")
@@ -779,11 +779,11 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 "the leader page does not name the elected leader's pid"
             )
 
-            # ══ 2. OBSERVE ═════════════════════════════════════════════
+            # ══ 2. observe ═════════════════════════════════════════════
             # Seed the traffic mix, then read every operational surface
             # and reconcile it against this seeded truth.
 
-            # The cron schedule goes in FIRST: its every-minute fire
+            # The cron schedule goes in first: its every-minute fire
             # chain starts on the next minute boundary while the rest of
             # the mix runs.
             schedule = await client.create_schedule(
@@ -798,8 +798,8 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 await client.enqueue(sys_rated, RatedPayload(tenant="t0"), tags=[_TAG])
                 for _ in range(3)
             ]
-            # The running pair the OBSERVE surfaces must read: the hold
-            # actor runs UNTIL the operator's cancel lands, so "two rows
+            # The running pair the observe surfaces must read: the hold
+            # actor runs until the operator's cancel lands, so "two rows
             # running" is a state the scenario owns for as long as the
             # read sweep needs - not a 40s sleep the sweep can outrun on a
             # loaded runner (the timing premise the #651 doctrine
@@ -867,7 +867,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 ) from None
 
             # The rate-limited actor: with a 1-token bucket refilling at
-            # half a token per second, the SECOND and THIRD concurrent
+            # half a token per second, the second and third concurrent
             # enqueue are denied and re-scheduled - the deferral the
             # insights layer counts.
             await _poll(
@@ -891,7 +891,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             # The running pair is on the surfaces while it runs: the
             # admin count endpoint, the depth CLI, the Prometheus
             # exposition, the insights layer. The premise itself is a
-            # DURABLE receipt first (the hold pair is running - the state
+            # durable receipt first (the hold pair is running - the state
             # the scenario owns, waited out on the ledger), then every
             # surface is reconciled against the ledger's count - a
             # surface that lies reds even when the premise holds.
@@ -1039,10 +1039,10 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 f"the drain estimate does not see the fleet's own traffic: {e2e_drain}"
             )
 
-            # ══ 3. ACT ═════════════════════════════════════════════════
+            # ══ 3. act ═════════════════════════════════════════════════
             # Through the real surfaces, each action verified in the
-            # ledger AND rendered back. The running-job cancel goes
-            # FIRST: it acts on the hold pair, which runs until the
+            # ledger and rendered back. The running-job cancel goes
+            # first: it acts on the hold pair, which runs until the
             # operator acts (the premise is the scenario's own durable
             # state, not a sleep the read sweep could have outrun); the
             # cron wait trails the actions (its minute boundary is
@@ -1050,7 +1050,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
 
             embedded, embedded_pool = await open_embedded_admin(dsn, schema)
 
-            # (a) Cancel a RUNNING job through the admin route.
+            # (a) Cancel a running job through the admin route.
             cancel_target = hold_jobs[0]
             still_running = await conn.fetchval(
                 f'SELECT status::text FROM "{schema}".jobs WHERE id = $1',
@@ -1144,7 +1144,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 f"{ui_cancelled.json()}"
             )
 
-            # The standalone ui serve's OWN mutation route: the pinned gap.
+            # The standalone ui serve's own mutation route: the pinned gap.
             # _ui_serve never configures a Backend and create_router
             # (backend=None) does not build one, so the mutation routes
             # answer 503 from the standalone deployment even with admin
@@ -1161,7 +1161,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             # other surface (the same `taskq job cancel` a runbook calls).
             # The loop's population must terminalise through operator
             # action, and the hold actor gives the cancel a target that is
-            # running BY CONSTRUCTION. Same receipt: the row terminalises
+            # running by construction. Same receipt: the row terminalises
             # 'cancelled' inside the derived bound, the event carries the
             # reason, and the cooperative cancel - not the escalation
             # ladder - is what landed it.
@@ -1254,7 +1254,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 f"actor-config move-queue failed: {move.stderr.decode(errors='replace')}"
             )
             # The enqueue side keeps the actor literal's queue label (the
-            # row's audit trail); what the move changes is the ROUTING.
+            # row's audit trail); what the move changes is the routing.
             # The loop therefore does not wait for the queue column to
             # turn over - it asserts the assignment, the served work and
             # the reads below.
@@ -1327,7 +1327,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
 
             # Two exposures, each a derived window (a broken cap leaks a
             # claim within one dispatch cycle; the window gives it two,
-            # stretched), each followed by the SAME state assertion - the
+            # stretched), each followed by the same state assertion - the
             # teeth are the pending rows and the zero running count, not
             # the clock.
             await asyncio.sleep(_DRAIN_EXPOSURE_S)
@@ -1344,7 +1344,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             )
 
             # The rest of the fleet is alive through the drain: the
-            # neighbor's completion is read off the LEDGER (the durable
+            # neighbor's completion is read off the ledger (the durable
             # row), on the settle bound - not a client-side wait whose
             # clock a starved runner owns.
             neighbor = await client.enqueue(sys_fast, SysPayload(sleep=0.05), tags=[_TAG])
@@ -1417,7 +1417,7 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 f"the cron ledger does not count the schedule's own fire: {ledger}"
             )
 
-            # ══ 4. RECOVER ═════════════════════════════════════════════
+            # ══ 4. recover ═════════════════════════════════════════════
             # kill -9 a worker mid-loop: the fleet self-heals, and the
             # event trail answers what happened.
 
@@ -1464,9 +1464,9 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
             survivor = survivor_box[0]
 
             victim_pid = victim.proc.pid
-            # Map worker ids to pids NOW (the stale-worker cleanup erases
+            # Map worker ids to pids now (the stale-worker cleanup erases
             # the dead replica's row later): the limbo forensic below
-            # needs to name WHOSE row lapsed.
+            # needs to name whose row lapsed.
             worker_id_by_pid = {
                 int(r["pid"]): str(r["id"])
                 for r in await conn.fetch(f'SELECT id, pid FROM "{schema}".workers')
@@ -1509,21 +1509,21 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 "the SIGKILLed worker's jobs reclaimed and re-run",
             )
 
-            # No stuck leases - the sweep's OWN eligibility contract, not
+            # No stuck leases - the sweep's own eligibility contract, not
             # a looser glance: a running row whose lease lapsed must have
-            # been reclaimed, EXCEPT a row carrying an in-flight cancel
+            # been reclaimed, except a row carrying an in-flight cancel
             # request, which the sweep deliberately leaves with its
             # (possibly live) holder until the lapse outlasts both graces
             # plus a 60s honesty window before it terminalises the
             # operator's request itself (_SWEEP_1_SQL's lease arm). A row
             # inside that window is the contract's designed shape, not a
             # stuck lease; anything else lapsed-and-running is.
-            # POLLED, not single-shot: the reclaim is the sweep's own
-            # eventual act - its tick must land AND the killed holder's
+            # polled, not single-shot: the reclaim is the sweep's own
+            # eventual act - its tick must land and the killed holder's
             # worker row must expire before the lease arm is eligible -
             # and neither synchronises with the moment the recovery poll
             # above returns. A single glance raced that arithmetic and
-            # flaked; the poll fails only if the sweep NEVER reclaims.
+            # flaked; the poll fails only if the sweep never reclaims.
             limbo: list[Any] = []
 
             async def _sweep_reclaimed_all_lapsed() -> bool:
@@ -1562,12 +1562,12 @@ async def test_operational_loop_deploy_observe_act_recover(loop_env: Any) -> Non
                 raise
 
             # The reclaim is visible in the ledger: at least one recovery
-            # job re-ran at a NEW attempt. POLLED, not single-shot: the
+            # job re-ran at a new attempt. polled, not single-shot: the
             # reclaim's crashed-attempt row is the batched insert the sweep
             # commits after the lease transfer, and the re-run's own row
             # lands at its terminal write - both eventual, and neither
             # synchronises with the limbo poll above returning. The poll
-            # fails only if the ledger NEVER shows the second attempt.
+            # fails only if the ledger never shows the second attempt.
             attempts: list[Any] = []
 
             async def _reclaim_visible_in_ledger() -> bool:

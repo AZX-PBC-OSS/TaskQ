@@ -1,7 +1,7 @@
-"""THE TIMER DRILL: the scheduled reconciliation pass runs on the
+"""The scheduled reconciliation pass runs on the
 DURABLE TIMER — a hold whose DB-clock deadline IS the tick.
 
-* fires NO EARLIER than scheduled (the body ENFORCES the schedule —
+* fires no EARLIER than scheduled (the body ENFORCES the schedule —
   even an operator's early nudge is enforced away);
 * SURVIVES a worker death mid-hold (the hold row is in Postgres; the
   sweep's expiry arm is the only live timer).
@@ -27,7 +27,7 @@ FLEET_ENV: dict[str, str] = {"LW_RECON_DELAY_S": "4"}
 
 
 async def _scheduled_at(pool: asyncpg.Pool, schema: str, flow_id: str) -> dt.datetime:
-    """The armed schedule of ONE run, from the step ledger (the
+    """The armed schedule of one run, from the step ledger (the
     memoized substep's recorded result) — polled (the arming happens
     when the worker first claims the node). SCOPED BY FLOW: the tests
     run in shuffled order (pytest-randomly) and share the estate — a
@@ -56,16 +56,16 @@ async def test_recon_fires_no_earlier_than_scheduled(
     claim = await submit_reconciliation(pool, schema, run_key="recon:drill-1")
     assert claim.kind == "created"
 
-    # The ARM (the body's first execution, whenever the worker claims
-    # it — a busy estate claims late; the schedule is RELATIVE to the
+    # The arm (the body's first execution, whenever the worker claims
+    # it — a busy estate claims late; the schedule is relative to the
     # arm, never to the submit).
     scheduled = await _scheduled_at(pool, schema, str(claim.flow_id))
 
     report = await await_recon_report(pool, schema, str(claim.flow_id), timeout_s=90)
     assert isinstance(report, ReconReport)
 
-    # FIRED NO EARLIER THAN SCHEDULED (the DB clocks' own comparison —
-    # the pass row is THIS run's, by the receipt's own pass id; the
+    # fired no earlier than scheduled (the DB clocks' own comparison —
+    # the pass row is this run's, by the receipt's own pass id; the
     # body's while-loop is the enforcement, this row is the proof).
     rows = await pool.fetch(
         f'SELECT fired_at FROM "{schema}".lw_recon_passes WHERE pass_id = $1',  # noqa: S608  # Why: as above.
@@ -113,7 +113,7 @@ async def test_recon_timer_survives_worker_death(
     claim = await submit_reconciliation(pool, schema, run_key="recon:drill-3")
     scheduled = await _scheduled_at(pool, schema, str(claim.flow_id))
 
-    # THE HOLD IS LIVE before the crash (the timer's wait is what must
+    # the hold is live before the crash (the timer's wait is what must
     # survive).
     from taskq.workflows import HitlClient
 
@@ -125,7 +125,7 @@ async def test_recon_timer_survives_worker_death(
 
     await wait_for(_hold, timeout_s=30, message="the timer's hold never appeared")
 
-    # THE CRASH, mid-hold.
+    # the crash, mid-hold.
     await fleet.kill_all()
     held = await pool.fetchval(
         f'SELECT count(*) FROM "{schema}".wf_signals'  # noqa: S608  # Why: the schema identifier only.

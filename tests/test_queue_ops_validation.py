@@ -6,7 +6,7 @@ on real Postgres; these tests pin the guards that must reject a bad value
 
 The headline case is ``max_concurrent=0``: it parses, passes a naive
 ``< 0`` guard, and only dies on the table's CHECK constraint
-(``max_concurrent IS NULL OR max_concurrent >= 1`` -
+(``max_concurrent IS NULL or max_concurrent >= 1`` -
 01.00.04_01_pre_queue_concurrency.sql) after the round trip, surfacing a
 raw asyncpg ``CheckViolationError`` traceback to the operator. NULL is
 the uncapped state; an emergency drain to 0 belongs to
@@ -35,7 +35,7 @@ class _RecordingConn:
     async def fetchrow(self, query: str, *args: object) -> dict[str, object]:
         self.statements.append(query)
         # A plausible stored row, so a call that misses the guard fails on
-        # "DID NOT RAISE" rather than on a downstream assert.
+        # "did not raise" rather than on a downstream assert.
         return {"name": "q", "mode": "strict_fifo", "max_concurrent": 0}
 
 
@@ -78,7 +78,7 @@ async def test_one_and_none_pass_validation() -> None:
 
 # ── queue name charset ───────────────────────────────────────────────────
 #
-# ``set_queue_mode``/``set_queue_max_concurrent`` UPSERT an operator-supplied
+# ``set_queue_mode``/``set_queue_max_concurrent`` upsert an operator-supplied
 # name. They validated ``schema`` and ``mode`` but never the name, making them
 # the only write path in TaskQ able to create a queue name the rest of the
 # system rejects. ":" is the critical case: queue names are concatenated
@@ -180,7 +180,7 @@ def test_cli_ops_value_error_exits_cleanly(monkeypatch: pytest.MonkeyPatch) -> N
     assert result.exit_code == 1
     assert "max_concurrent must be >= 1" in plain_cli_output(result.stderr)
     # The clean path: click/typer convert the handled exit to SystemExit. If
-    # the ops ValueError escaped instead, result.exception would BE that
+    # the ops ValueError escaped instead, result.exception would be that
     # ValueError - the traceback-to-operator failure mode.
     assert isinstance(result.exception, SystemExit)
     assert "Traceback" not in plain_cli_output(result.output)

@@ -1,6 +1,6 @@
 """Consumer-level single-serialization contract for the result payload.
 
-``_encode_result`` serializes the actor's result ONCE and both consumer
+``_encode_result`` serializes the actor's result once and both consumer
 paths (autonomous and transactional) pass those bytes into
 ``mark_succeeded`` / ``mark_succeeded_with_conn`` via the explicit
 ``result_bytes`` parameter so the terminal write never re-serializes.

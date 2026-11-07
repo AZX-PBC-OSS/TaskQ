@@ -24,12 +24,12 @@ medians of interleaved A batches, which already cancels thermal/frequency
 drift within a run):
 
     REGRESSION  current.a_ns / baseline.a_ns > threshold   (default 1.20)
-                AND current.a_ns - baseline.a_ns > --min-abs-delta (default 100 ns)
+                and current.a_ns - baseline.a_ns > --min-abs-delta (default 100 ns)
 
-    IMPROVED    symmetric: ratio < 1/threshold AND the absolute drop exceeds
+    IMPROVED    symmetric: ratio < 1/threshold and the absolute drop exceeds
                 --min-abs-delta.
 
-Requiring BOTH the relative and the absolute condition keeps benches whose
+Requiring both the relative and the absolute condition keeps benches whose
 whole magnitude sits inside timer/jitter noise (sub-microsecond) from
 flip-flopping the gate on machine noise; the relative condition alone would
 flag a 300ns -> 305ns drift on a noisy box, the absolute alone would never
@@ -71,7 +71,7 @@ def _bench_groups() -> dict[str, Any]:
     import bench_hotspots as bh  # needs _BENCH_DIR on sys.path
 
     # Mirrors bench_hotspots.main(): pin the log config the production
-    # dispatch path runs under so the DI solver's per-dep debug logging is
+    # dispatch path runs under so the di solver's per-dep debug logging is
     # dropped before terminal rendering cost lands inside timed regions.
     from taskq.obs._structlog import setup_logging
 
@@ -410,7 +410,7 @@ def main() -> int:
             rows, failed = compare(doc, baseline, args.threshold, args.min_abs_delta)
             if not args.json:
                 # Inside the guard too: a baseline with a non-numeric a_ns on a
-                # MISSING row (name never merged) surfaces as a TypeError in the
+                # missing row (name never merged) surfaces as a TypeError in the
                 # table renderer, not in compare.
                 print_check_table(rows, args.threshold, args.min_abs_delta)
                 print(f"baseline: {baseline_path}")

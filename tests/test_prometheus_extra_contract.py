@@ -1,4 +1,4 @@
-"""The ``[prometheus]`` extra's contract, proven under ONLY its dependencies.
+"""The ``[prometheus]`` extra's contract, proven under only its dependencies.
 
 The CI test-extras leg for this extra syncs ``--extra prometheus`` (plus
 fastapi, which the router suites need), but THIS module deliberately
@@ -32,7 +32,7 @@ def test_the_prometheus_extra_renders_a_taskq_emit_site_into_the_exposition(
 ) -> None:
     """A real ``taskq.obs`` emit site reaches the Prometheus text exposition.
 
-    Imports ONLY the [prometheus] extra's dependencies. Drives
+    Imports only the [prometheus] extra's dependencies. Drives
     ``obs.record_heartbeat_miss`` — an actual production emit site —
     through its real gate, then asserts the scrape renders the
     documented ``taskq_heartbeat_misses_total`` series.

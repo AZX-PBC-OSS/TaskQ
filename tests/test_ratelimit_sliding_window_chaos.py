@@ -13,7 +13,7 @@ two backends are independent state stores. Container-stopping tests use a
 function-scoped killable container, never the shared session container.
 
 Both backends unavailable - stop both Redis and PG; acquire() raises
-(the underlying error), does NOT silently allow. Also tests
+(the underlying error), does not silently allow. Also tests
 ``rate_limit_pg_fallback_enabled=False`` with Redis-only-down: the Redis
 error propagates without WARNING (no fallback attempted).
 """
@@ -210,7 +210,7 @@ async def test_both_backends_unavailable(
     style: str,
 ) -> None:
     """Both Redis and PG are unavailable. ``acquire()`` raises the
-    underlying error - it does NOT silently allow.
+    underlying error - it does not silently allow.
 
     ``rate_limit_pg_fallback_enabled`` is True (default): a WARNING fires
     when Redis fails, then PG raises RuntimeError (pg_pool=None) which propagates.

@@ -53,7 +53,7 @@ class MockExtractionAPI:
         )
 
     async def call(self, chunk: ChunkRef, attempt: int) -> ExtractedChunk:
-        """ONE mock API call: the delay, the flake, the hang — each
+        """one mock API call: the delay, the flake, the hang — each
         attempt's fate is deterministic in (chunk_key, attempt)."""
         await asyncio.sleep(self.delay_s(chunk.chunk_key))
         if self.is_flaky(chunk.chunk_key, attempt):

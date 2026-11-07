@@ -1,7 +1,7 @@
 """Guard semantics of batch completion, pinned through the in-memory mirror.
 
 The PG ``complete_batch`` UPDATE arbitrates completion inside its own
-statement via a NOT EXISTS guard over non-terminal member jobs (the same
+statement via a not EXISTS guard over non-terminal member jobs (the same
 shape as the stale-batch sweep's ``complete_stale_batches``), so a
 completion attempt can never land while a member is still in flight, and
 never waits on a caller-held count that a concurrent terminal write may

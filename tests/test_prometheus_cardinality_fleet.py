@@ -166,7 +166,7 @@ class TestJobSideCapContract:
         assert published, "published counter absent from the fleet scrape"
         queues = _queue_series(fleet_exposition, "messaging_client_published_messages_total")
         # 50 fleet + 100 admitted overflow + _other_ ... the cap admits
-        # the FIRST 100 distinct names the process saw: the 50 fleet
+        # the first 100 distinct names the process saw: the 50 fleet
         # queues plus the first 50 overflow queues; overflow_queue_050+
         # collapse onto `_other_`.
         assert len(queues) <= 101, (
@@ -195,7 +195,7 @@ class TestJobSideCapContract:
 
     def test_consumed_messages_bounded_at_101(self, fleet_exposition: Any) -> None:
         # consumed carries outcome too: 101 queues x 3 outcomes is the
-        # documented bound's product, but the QUEUE dimension itself must
+        # documented bound's product, but the queue dimension itself must
         # stay at <= 101 distinct values.
         distinct = {
             sample.labels.get("queue", "")
@@ -235,9 +235,9 @@ class TestGaugeCapContract:
         )
         assert "_other_" in queues
         # The documented partition, recomputed from the fed cache shape:
-        # the 100 DEEPEST queues keep their series (ties broken by queue
+        # the 100 deepest queues keep their series (ties broken by queue
         # name), the 50 shallowest collapse onto one _other_ observation
-        # carrying their SUMMED depth, so the fleet total stays exact.
+        # carrying their summed depth, so the fleet total stays exact.
         depths = {f"gauge_queue_{i:03d}": (i % 10) + 1 for i in range(150)}
         ranked = sorted(depths.items(), key=lambda kv: (-kv[1], kv[0]))
         expected_overflow = sum(v for _, v in ranked[100:])
@@ -281,7 +281,7 @@ class TestGaugeCapContract:
             if "_bucket" not in name and "_sum" not in name and "_count" not in name:
                 # The gauge families (queue-labeled, no actor dimension)
                 # are hard-bounded at 101 series. The job-side counters
-                # multiply the queue cap by the ACTOR dimension, which the
+                # multiply the queue cap by the actor dimension, which the
                 # docs keep unbounded on those emitters ("actor remains
                 # user-defined and unbounded: keep actor names a bounded
                 # enum") - the enforced contract is the queue-value cap.
@@ -293,14 +293,14 @@ class TestGaugeCapContract:
                     )
 
 
-# ── the REAL sampler, end to end ────────────────────────────────────
+# ── the real sampler, end to end ────────────────────────────────────
 #
 # The capped-gauge contract above feeds the cache by hand. The sampler the
 # leader actually runs is ``_queue_depth_loop``: a SQL GROUP BY over the
 # jobs table, fed through ``update_queue_depth_cache`` every tick. This
-# leg drives that REAL read - the shipped SQL template over a real
+# leg drives that real read - the shipped SQL template over a real
 # migrated schema seeded with 150 distinct queue values - into the real
-# cache write and asserts the SERVED exposition's series count, so the
+# cache write and asserts the served exposition's series count, so the
 # SQL's row shape (queue names straight out of the jobs table) is proven
 # to enter the cap unchanged.
 
@@ -419,7 +419,7 @@ asyncio.run(_run())
     )
     assert result.returncode == 0, f"seeding failed: {result.stderr[-2000:]}"
 
-    # The REAL sampler read: the shipped SQL template, exactly as
+    # The real sampler read: the shipped SQL template, exactly as
     # _queue_depth_loop runs it every tick.
     from taskq.worker._leader_shared import _QUERY_QUEUE_DEPTH_SQL_TEMPLATE
 

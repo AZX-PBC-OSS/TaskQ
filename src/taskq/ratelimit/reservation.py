@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger("taskq.ratelimit.reservation")
 
 # One statement, one row set, two conflict-arm rules. The stamp rule:
-# re-materialisation over rows that SURVIVED (the registry's re-resolve
+# re-materialisation over rows that survived (the registry's re-resolve
 # path after an idle eviction whose rows outlived the pending-reclaim
 # drain, held by another worker's live leases) restarts the horizon ,
 # ensure_slots' contract promises the bucket a fresh ``last_used_at``,
@@ -57,13 +57,13 @@ logger = structlog.get_logger("taskq.ratelimit.reservation")
 # as idle past the horizon on staleness that predates its
 # re-materialisation, or the leader tick between the ensure and the
 # acquire's first stamp deletes the whole bucket out from under the
-# acquiring worker. The mark rule: ``keyed = existing AND EXCLUDED`` ,
+# acquiring worker. The mark rule: ``keyed = existing and EXCLUDED`` ,
 # the mark may be born true (the INSERT arm) or driven to false, never
 # resurrected. A keyed=false row is a static claim, and the registry's
 # concrete-name collision guard is process-local: another process's
 # registry can legally hold a static declaration whose concrete name
 # equals this keyed ref's, and flipping those rows true would hand the
-# fleet sweep a STATIC reservation's rows (no keyed lifecycle, no heal,
+# fleet sweep a static reservation's rows (no keyed lifecycle, no heal,
 # no re-materialisation, every later acquisition on that worker denies
 # forever). The reverse direction stays: a static bootstrap ensure over
 # former keyed rows retires the mark (never-sweep again). The conflict
@@ -83,8 +83,8 @@ ON CONFLICT (bucket_name, slot_index) DO UPDATE SET
 # NULL when nothing was acquired, the Python side reads the hint off
 # that row instead of issuing a second statement.
 #
-# The acquirability predicate below, ``job_id IS NULL OR
-# lease_expires_at < clock_timestamp()``, is THE definition of a free
+# The acquirability predicate below, ``job_id is NULL or
+# lease_expires_at < clock_timestamp()``, is the definition of a free
 # slot, and it has a coupled reader: the dispatch claim's
 # reservation-headroom gate (taskq/backend/_dispatch_sql.py's
 # reservation_holdings / reservation_headroom CTEs) clamps an actor's
@@ -98,8 +98,8 @@ ON CONFLICT (bucket_name, slot_index) DO UPDATE SET
 # clock the leases are stamped with and the free-slot predicate reads)
 # so app↔DB clock skew cannot stretch or shrink it. It is NULL when no
 # live-held row exists, every row free but row-locked by a peer acquire
-# (the SKIP LOCKED case), or the anomalous held-without-lease state ,
-# and the caller substitutes the flat constant. GREATEST clamps the
+# (the skip locked case), or the anomalous held-without-lease state ,
+# and the caller substitutes the flat constant. greatest clamps the
 # microsecond skew between the WHERE's and the SELECT's own
 # ``clock_timestamp()`` evaluations inside this one statement.
 #
@@ -340,9 +340,9 @@ class _InMemorySlotTable:
             # lease is NULL (no production path stamps this) or past (an
             # expired lease is acquirable above, so it never reaches the
             # denial) contributes no expiry; with none at all the flat
-            # constant is the fallback, as it is on PG for the SKIP
-            # LOCKED case. The live filter guarantees expiry >= now, so
-            # no clamp is needed here, the PG statement's GREATEST
+            # constant is the fallback, as it is on PG for the skip
+            # locked case. The live filter guarantees expiry >= now, so
+            # no clamp is needed here, the PG statement's greatest
             # covers the microsecond skew between its own two
             # clock_timestamp() reads, which a single clock read has none
             # of.
@@ -580,13 +580,13 @@ class ConcurrencyReservation:
     def schema(self) -> str:
         """The PG schema this reservation's slot table lives in.
 
-        THE REBIND OWNS THE LIVE BINDING (the one rebind doctrine): a
+        A
         declaration is constructed at module import — before any settings
         exist — so its schema is the import-time default, not the
         deployment's; the worker's bootstrap registration rebinds the
         live entry to the settings schema at the REGISTER step (a
         pre-registered raw instance included), so a resolved registry's
-        entries are ALWAYS settings-schema-bound. The declaration's own
+        entries are always settings-schema-bound. The declaration's own
         schema matters only for registry-less, direct ``acquire()`` use
         (the docs' own-registry pattern): there the constructor's value
         is the slot table's address, and it must match the deployment's
@@ -600,7 +600,7 @@ class ConcurrencyReservation:
         registered by many processes and many deployments; the declaring
         module's own reference must not drift).
 
-        THE SCHEMA-AT-IMPORT SEAM (the flows demo's finding): a
+        A
         workflow-declared reservation is constructed at module import —
         before any settings exist — so it cannot know the deployment's
         schema; the bootstrap rebinds the live one at registration. The
@@ -665,7 +665,7 @@ class ConcurrencyReservation:
         self,
         pool: "asyncpg.Pool",
         *,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire(timeout=...); the bound IS the forwarded driver kwarg, not an enclosing asyncio.timeout scope.
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire(timeout=...); the bound is the forwarded driver kwarg, not an enclosing asyncio.timeout scope.
     ) -> None:
         """Idempotent pre-allocation of slot rows.
 
@@ -779,7 +779,7 @@ class ConcurrencyReservation:
 
         # No explicit transaction: the acquire is one data-modifying-CTE
         # statement, atomic on its own, its FOR UPDATE SKIP LOCKED row
-        # lock lives exactly as long as the statement, so BEGIN/COMMIT
+        # lock lives exactly as long as the statement, so begin/COMMIT
         # would be two extra round trips per reserved job.
         async with pool.acquire(timeout=timeout) as conn:
             row = await conn.fetchrow(
@@ -941,7 +941,7 @@ async def sync_slots(
     "Free" / "held" use the same definition as the acquire CTE: a slot row
     with an EXPIRED lease is acquirable, hence deletable; only rows with a
     live (unexpired) lease are reported as ``skipped_held``. The anomalous
-    ``job_id NOT NULL / lease_expires_at NULL`` state (no code path
+    ``job_id not NULL / lease_expires_at NULL`` state (no code path
     produces it, but the nullable schema permits it) is conservatively
     reported as held rather than deleted, matching the in-memory table.
     Treating expired-lease rows as held would let a dead worker's leaked slots

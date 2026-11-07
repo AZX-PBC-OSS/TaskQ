@@ -278,7 +278,7 @@ async def test_di_consumer_loop_increments_drain_failures_on_failure() -> None:
 
 
 async def test_di_consumer_loop_no_increment_on_success() -> None:
-    """di_consumer_loop does NOT increment drain_failures on 'succeeded'."""
+    """di_consumer_loop does not increment drain_failures on 'succeeded'."""
 
     async def _fake_dispatch(*args: object, **kwargs: object) -> AttemptOutcome:
         return "succeeded"
@@ -290,7 +290,7 @@ async def test_di_consumer_loop_no_increment_on_success() -> None:
 
 
 async def test_di_consumer_loop_no_increment_on_scheduled() -> None:
-    """di_consumer_loop does NOT increment drain_failures on 'scheduled'
+    """di_consumer_loop does not increment drain_failures on 'scheduled'
     (snooze/retry - a retried job is not a drain failure)."""
 
     async def _fake_dispatch(*args: object, **kwargs: object) -> AttemptOutcome:
@@ -396,11 +396,11 @@ async def test_di_consumer_loop_does_not_count_slot_pool_acquire_failures() -> N
 
 async def test_di_consumer_loop_no_increment_on_cancelled_as_value() -> None:
     """If dispatch_one_job somehow returns 'cancelled' as a value (not
-    raising CancelledError), drain_failures is NOT incremented.
+    raising CancelledError), drain_failures is not incremented.
 
     In the real code path, CancelledError propagates as BaseException
     and never reaches the outcome check. But this test documents the
-    contract: 'cancelled' is NOT in the failure set.
+    contract: 'cancelled' is not in the failure set.
     """
 
     async def _fake_dispatch(*args: object, **kwargs: object) -> AttemptOutcome:
@@ -500,7 +500,7 @@ def _make_mock_deps(*, active_jobs_count: int = 0, drain_failures: int = 0) -> M
     shutdown_phase MUST be the real ShutdownPhase.NONE enum member -
     _trigger_drain_shutdown's double-orchestration guard is
     ``deps.shutdown_phase is not ShutdownPhase.NONE``, so a stand-in
-    (string, MagicMock attribute) would trip the guard in EVERY test.
+    (string, MagicMock attribute) would trip the guard in every test.
     """
     deps = MagicMock()
     deps.active_jobs.count.return_value = active_jobs_count
@@ -723,7 +723,7 @@ async def test_drain_monitor_resets_settle_on_new_jobs() -> None:
 
     assert exit_code == 0
     assert trigger_at, "orchestrate_shutdown was invoked without recording a trigger time"
-    # THE reset assertion: the trigger must postdate the last job poll by
+    # the reset assertion: the trigger must postdate the last job poll by
     # at least the settle window. A monitor that carried the original
     # idle_since fires on the first re-idle poll - one poll interval
     # after the last job poll, 20x inside this margin.
@@ -791,7 +791,7 @@ async def test_drain_monitor_does_not_trigger_when_active_jobs() -> None:
 
 
 async def test_drain_monitor_skips_when_orchestration_already_active() -> None:
-    """Drain monitor does NOT trigger a second orchestrate_shutdown when
+    """Drain monitor does not trigger a second orchestrate_shutdown when
     one is already in progress (H2: double-orchestration guard)."""
     poll_count = 0
     polled_past_would_be_trigger = asyncio.Event()
@@ -834,7 +834,7 @@ async def test_drain_monitor_skips_when_orchestration_already_active() -> None:
             )
         )
         # The window must cover the trigger attempt. The current contract
-        # returns the monitor right after a SKIPPED trigger, so the task
+        # returns the monitor right after a skipped trigger, so the task
         # completing proves it; a variant that kept polling instead is
         # covered by the poll-count event. Whichever fires first, the
         # guard decision has been made - no wall-clock sleep needed.
@@ -927,7 +927,7 @@ async def test_drain_monitor_settle_window_zero() -> None:
     """idle_settle_window=0.0 triggers after one poll interval (not instant).
 
     With settle=0, the first idle detection sets idle_since, then on the
-    NEXT poll (after idle_poll_interval), idle_elapsed >= 0.0 is True.
+    next poll (after idle_poll_interval), idle_elapsed >= 0.0 is True.
     So two polls are needed, not one.
     """
     call_count = 0
@@ -966,7 +966,7 @@ async def test_drain_monitor_settle_window_zero() -> None:
 #
 # The monitor returns as soon as it has triggered orchestrate_shutdown,
 # but orchestrate_shutdown sets shutdown_event only in its finally -
-# after ALL phases. loop_watchdog_loop keeps sweeping until then, so a
+# after all phases. loop_watchdog_loop keeps sweeping until then, so a
 # lingering "drain_monitor" registration goes stale mid-grace and
 # detector 2 force-exits the worker (os._exit(2)) instead of letting the
 # drain exit code land. The producer loop forgets its registration on

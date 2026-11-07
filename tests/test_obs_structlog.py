@@ -220,7 +220,7 @@ def test_log_state_change_emits_correct_kind_and_states() -> None:
 
     assert len(captured) == 1
     entry = captured[0]
-    # The EVENT name as well as the kind: asserting only `kind` is what let the
+    # The event name as well as the kind: asserting only `kind` is what let the
     # two backends drift apart, the in-memory path emitting "state_change" as
     # its event name against this one's "state-change" for the same logical
     # transition. Operators filtering on event saw one backend's transitions.
@@ -586,7 +586,7 @@ def test_debug_below_configured_level_skips_processor_chain(
     assert calls == ["info"]
 
 
-# ── The DEFAULT (pre-setup_logging) chain filters at the same position ─
+# ── The default (pre-setup_logging) chain filters at the same position ─
 
 
 def test_default_chain_drops_below_level_before_processors(

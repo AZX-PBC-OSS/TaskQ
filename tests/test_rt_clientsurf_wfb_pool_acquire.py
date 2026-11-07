@@ -9,7 +9,7 @@ integration tests", src/taskq/batch.py:469-473) polls through::
             async with db.acquire() as conn:   # <- no timeout
                 return await _fetch_and_decide(conn)
 
-(src/taskq/batch.py:576-580). asyncpg's ``Pool.acquire`` has NO default
+(src/taskq/batch.py:576-580). asyncpg's ``Pool.acquire`` has no default
 timeout, so on an exhausted pool every poll - the first one and every
 snooze-loop iteration after it - parks forever.
 

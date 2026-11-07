@@ -1,7 +1,7 @@
 """SPIKE A - OTel SDK per-configuration cost at realistic TaskQ cardinality.
 
 Questions (from the perf-rust-hotspots spike brief):
-  1. What is INSIDE the measured 15.8 µs/job span tax and ~1.35 µs metric
+  1. What is inside the measured 15.8 µs/job span tax and ~1.35 µs metric
      add()?  cProfile + pyinstrument at 10k spans: BatchSpanProcessor queue
      overhead, attribute-dict handling, Context machinery.
   2. Is there a cheaper configuration that changes per-job cost?
@@ -81,7 +81,7 @@ N_METRICS = 10_000
 ROUNDS = 5
 
 # Same shape/values as dispatch.py:205-215 builds per job.
-_JOB_ID = uuid.uuid4()  # noqa: TID251  # Why: throwaway attribute payload for timing A/Bs; PK locality is not the variable under test.
+_JOB_ID = uuid.uuid4()  # noqa: TID251  # Why: throwaway attribute payload for timing A/Bs; pk locality is not the variable under test.
 _JOB_ID_STR = str(_JOB_ID)
 
 
@@ -159,7 +159,7 @@ def _span_loop(tracer) -> float:  # type: ignore[no-untyped-def]
 
 def measure_span_config(name: str, sampler=None, processor=None, **bsp_kwargs):  # type: ignore[no-untyped-def]
     tracer, provider = _tracer_for(sampler=sampler, processor=processor, **bsp_kwargs)
-    _span_loop(tracer)  # warmup (JIT-ish caches, thread startup for BSP)
+    _span_loop(tracer)  # warmup (jit-ish caches, thread startup for bsp)
     per_ops = []
     for _ in range(ROUNDS):
         t0 = time.perf_counter_ns()

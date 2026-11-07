@@ -117,7 +117,7 @@ class TestAbandonedWithoutProgressState:
         backend = _make_backend()
         job_id, _wid = await _enqueue_and_dispatch(backend)
         # Abandon is the forced-cancel terminal: the row must carry the
-        # operator's FORCED phase for the guard to admit it.
+        # operator's forced phase for the guard to admit it.
         row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: forcing a race-window state the public API cannot reach directly
         backend._jobs[job_id] = replace(row, cancel_phase=CancelPhase.FORCED)  # type: ignore[reportPrivateUsage]
 

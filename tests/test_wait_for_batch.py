@@ -562,7 +562,7 @@ class TestWithFailedChild:
         assert status.failed == 1
 
 
-# ── GIN index oracle ───────────────────────────────────────────
+# ── gin index oracle ───────────────────────────────────────────
 
 
 def _find_index_in_plan(plan: dict[str, object], index_name: str) -> bool:

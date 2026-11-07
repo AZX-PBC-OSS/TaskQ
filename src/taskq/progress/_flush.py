@@ -9,6 +9,7 @@ import asyncpg
 import structlog
 
 from taskq._json import dumps_jsonb_str, embed_encoded
+from taskq._sql_render import render as shared_render
 from taskq.constants import (
     require_schema,
 )
@@ -21,7 +22,7 @@ __all__ = ["_flush_buffer", "_flush_buffer_immediate", "_flush_dirty_set", "prog
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.progress._flush")
 
-# Columnar unnest binding order shared by BOTH flush surfaces, the
+# Columnar unnest binding order shared by both flush surfaces, the
 # tick's batched multi-row statement and the single-row immediate/crash
 # statement (which binds one-element arrays). Keeping one list keeps the
 # template's parameter positions and the two call sites from drifting.
@@ -48,6 +49,27 @@ _FLUSH_BATCH_ROWS: Final[int] = 32
 _FLUSH_MAX_BATCHES_PER_TICK: Final[int] = 8
 
 
+# The flush UPDATE's template (the single-source-of-truth statement, the
+# two call sites render it per schema through the shared render — the
+# validated schema identifier is the only interpolated value, so the
+# S608 rule's rationale rides here, never an inline f-string at a call
+# site).
+_FLUSH_UPDATE_SQL: Final[str] = (
+    # Why: the schema is the only interpolated value, validated against
+    # _IDENT_RE by the shared render before the substitution.
+    'UPDATE "{schema}".jobs AS j '
+    "SET progress_state = COALESCE(j.progress_state, '{}'::jsonb) || f.state_delta, "
+    "    progress_seq   = j.progress_seq + f.seq_delta "
+    "FROM unnest($1::uuid[], $2::int[], $3::jsonb[], $4::int[]) "
+    "    AS f(job_id, seq_delta, state_delta, attempt) "
+    "WHERE j.id = f.job_id "
+    "  AND j.status = 'running' "
+    "  AND j.locked_by_worker = $5::uuid "
+    "  AND j.attempt = f.attempt "
+    "RETURNING j.id, j.progress_seq"
+)
+
+
 def _flush_update_sql(schema: str) -> str:
     """Render the single-source-of-truth progress flush UPDATE.
 
@@ -71,19 +93,7 @@ def _flush_update_sql(schema: str) -> str:
       ``$4::int[]``    per-row attempt epochs (the fence's epoch conjunct)
       ``$5::uuid``     the flushing worker, the loop-wide owner
     """
-    require_schema(schema)
-    return (
-        f'UPDATE "{schema}".jobs AS j '  # noqa: S608  # Why: schema validated against _IDENT_RE immediately above.
-        "SET progress_state = COALESCE(j.progress_state, '{}'::jsonb) || f.state_delta, "
-        "    progress_seq   = j.progress_seq + f.seq_delta "
-        "FROM unnest($1::uuid[], $2::int[], $3::jsonb[], $4::int[]) "
-        "    AS f(job_id, seq_delta, state_delta, attempt) "
-        "WHERE j.id = f.job_id "
-        "  AND j.status = 'running' "
-        "  AND j.locked_by_worker = $5::uuid "
-        "  AND j.attempt = f.attempt "
-        "RETURNING j.id, j.progress_seq"
-    )
+    return shared_render(_FLUSH_UPDATE_SQL, schema)
 
 
 def _drop_fenced_out_buffer(
@@ -125,7 +135,7 @@ def _retire_flushed_snapshot(
     snapshot_delta: int,
     snapshot_state: dict[str, object],
 ) -> None:
-    """Adopt the authoritative seq and retire ONLY the snapshotted portion.
+    """Adopt the authoritative seq and retire only the snapshotted portion.
 
     A ctx.progress() call landing while the statement was suspended
     mutates ``buffer.pending_seq_delta`` / ``buffer.pending_state`` in
@@ -171,7 +181,7 @@ async def _flush_buffer(
     snapshot_state = dict(buffer.pending_state)
 
     try:
-        # The acquire is a POOL-stage operation: a failure or exhaustion
+        # The acquire is a pool-stage operation: a failure or exhaustion
         # here loses every job's flush this tick, not just this one's, so
         # it is labeled with the pool event/kind, the same taxonomy the
         # loop-level pool_getter handler uses, and must not be folded
@@ -486,8 +496,8 @@ async def progress_flush_loop(
     # The unexpected-error backstop, the same one every other long-lived
     # loop carries (worker/_transient.py): the statement and pool failures
     # inside _flush_dirty_set are already handled per batch (buffers stay
-    # dirty, the tick goes on), but the frames AROUND them, the snapshot
-    # phase's per-buffer state rendering and the retire loop, are NOT, and
+    # dirty, the tick goes on), but the frames around them, the snapshot
+    # phase's per-buffer state rendering and the retire loop, are not, and
     # before this guard a non-transient shape there (a partial-migration
     # AttributeError on a buffer field, a data defect that renders
     # TypeError past the ValueError guard) escaped the while body and
@@ -510,7 +520,7 @@ async def progress_flush_loop(
 
         # Snapshot the dirty set before any await: a ctx.progress() call
         # landing mid-tick mutates buffers and must be picked up by the
-        # NEXT tick, not raced into this one's in-flight statement.
+        # next tick, not raced into this one's in-flight statement.
         dirty = [(job_id, buffer) for job_id, buffer in progress_buffers.items() if buffer.dirty]
         if not dirty:
             continue

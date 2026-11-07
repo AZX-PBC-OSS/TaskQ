@@ -8,11 +8,11 @@ live backend's work discarded the hard way.
 
 The proof, in order:
 
-1. AT THE KILL, a worker is mid-job (real executions in flight, observed
+1. AT the KILL, a worker is mid-job (real executions in flight, observed
    via the effects ledger) and the TEST holds an uncommitted transaction
    that has written a row - the mid-transaction shape;
 2. ``docker kill`` (no checkpoint, no graceful shutdown), then
-   ``docker start`` on the SAME container (its declared config - the
+   ``docker start`` on the same container (its declared config - the
    pinned host port included - is restored verbatim);
 3. crash recovery CONVERGES: PG answers, the migration ledger is whole
    (a re-run of ``apply_pending_locked`` applies NOTHING - no half-applied
@@ -71,7 +71,7 @@ _PG_DB = "taskq"
 #: Worker isolation after the PG kill: 3 failed heartbeats at the 0.5s
 #: interval trigger isolate_self, its bounded reconnect fails against the
 #: dead PG, and the shutdown ladder runs the 15s termination grace. The
-#: cap is generous because it bounds the LADDER, not one phase - and the
+#: cap is generous because it bounds the ladder, not one phase - and the
 #: ladder is co-tenancy sensitive: under heavy parallel docker pressure
 #: (three concurrent family sessions plus container churn) the measured
 #: exit latency approached the old 90s cap from below (the reconnect
@@ -98,7 +98,7 @@ class Kill9ChaosPg(NamedTuple):
 
 @pytest.fixture
 def kill9_chaos_pg() -> Iterator[Kill9ChaosPg]:
-    """Function-scoped chaos PG: its OWN container (the session-shared one
+    """Function-scoped chaos PG: its own container (the session-shared one
     must never be touched), pinned host port (an explicitly published port
     is part of the container's declared config and survives kill/start),
     ownership labels for sweepability under disabled Ryuk. Skips with a
@@ -125,7 +125,7 @@ def kill9_chaos_pg() -> Iterator[Kill9ChaosPg]:
 
 @pytest_asyncio.fixture
 async def kill9_schema(kill9_chaos_pg: Kill9ChaosPg) -> AsyncIterator[str]:
-    """The chaos schema: unique per test, migrations applied ONCE at setup
+    """The chaos schema: unique per test, migrations applied once at setup
     (the crash mid-test must recover a FULLY-migrated ledger, not a
     half-applied one), torn down after the container is back up."""
     import asyncpg
@@ -220,7 +220,7 @@ async def test_docker_kill_mid_transaction_recovers_and_conserves(
         await _wait_started(dsn, schema, handles[0].job_id)
 
         # The mid-transaction shape: an open transaction with a durable
-        # write the kill must ROLL BACK.
+        # write the kill must roll back.
         tx_conn = await asyncpg.connect(dsn)
         tx = tx_conn.transaction()
         await tx.start()
@@ -256,14 +256,14 @@ async def test_docker_kill_mid_transaction_recovers_and_conserves(
         docker_killed = False  # the container is up again; teardown can stop it
         await _wait_pg_answers(dsn, _PG_RESTART_PROBE_CAP_S)
 
-        # Convergence 1 - NO HALF-APPLIED MIGRATION STATE: a re-run of the
+        # Convergence 1 - no half-applied migration state: a re-run of the
         # migration runner applies NOTHING (every shipped file is in the
         # ledger with its checksum intact; a drifted or half-applied
         # ledger raises SystemExit here).
         pending = await apply_pending_locked(dsn, schema=schema)
         assert pending == [], f"the crash left {len(pending)} migration(s) unapplied: {pending}"
 
-        # Convergence 2 - the uncommitted transaction is GONE.
+        # Convergence 2 - the uncommitted transaction is gone.
         with contextlib.suppress(Exception):
             await tx.rollback()  # the connection died with the kill; the rollback is PG's own
         ghost = await _count_effects(dsn, schema, kind="uncommitted")

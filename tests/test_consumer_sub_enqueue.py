@@ -10,7 +10,7 @@ Covers:
 - Autonomous path: no flush/discard, row committed immediately
 - Same enqueuer instance across interim and live ctx
 - Shielded success block: commit protected from cancellation
-- Shielded success + outer cancel: NOT marked as cancelled (invariant)
+- Shielded success + outer cancel: not marked as cancelled (invariant)
 """
 
 import asyncio
@@ -327,7 +327,7 @@ async def test_autonomous_path_no_buffer_ops() -> None:
 
 async def test_same_enqueuer_instance_across_contexts() -> None:
     """Two JobContext instances constructed during dispatch (interim and
-    live) reference the SAME SubJobEnqueuer instance."""
+    live) reference the same SubJobEnqueuer instance."""
     fb = _FakeBackend()
     enqueuer = SubJobEnqueuer(
         loop_scope_resolved=None,
@@ -346,12 +346,12 @@ async def test_same_enqueuer_instance_across_contexts() -> None:
     assert seen_enqueuers[0] is enqueuer
 
 
-# ── Shielded success + outer cancel: NOT marked as cancelled ──────────
+# ── Shielded success + outer cancel: not marked as cancelled ──────────
 
 
 async def test_shielded_success_not_marked_cancelled() -> None:
     """C3 invariant: when the success path commits before cancellation
-    arrives, mark_cancelled is NOT called and mark_succeeded_with_conn
+    arrives, mark_cancelled is not called and mark_succeeded_with_conn
     IS called. The _OK sentinel prevents the CancelledError arm from
     running mark_cancelled on a committed row."""
 
@@ -442,7 +442,7 @@ async def test_discard_buffer_on_reservation_unavailable() -> None:
 
 
 async def test_snooze_preserves_in_actor_child_enqueues() -> None:
-    """M5 fix: when an actor enqueues children AND raises Snooze inside
+    """M5 fix: when an actor enqueues children and raises Snooze inside
     a LOOP-scope transaction, the child jobs are re-enqueued on a
     separate connection instead of being silently lost."""
     fb = _FakeBackend()
@@ -469,7 +469,7 @@ async def test_snooze_preserves_in_actor_child_enqueues() -> None:
 
 
 async def test_retry_after_preserves_in_actor_child_enqueues() -> None:
-    """M5 fix: when an actor enqueues children AND raises RetryAfter inside
+    """M5 fix: when an actor enqueues children and raises RetryAfter inside
     a LOOP-scope transaction, the child jobs are re-enqueued on a
     separate connection instead of being silently lost."""
     fb = _FakeBackend()

@@ -9,7 +9,7 @@ before invoking the script. We deviate by always invoking the Lua script
 and post-processing the result.
 - Why: the pre-check requires local knowledge of ``tokens``.
   The in-memory backend has that knowledge in ``_InMemoryBucket._tokens``
-  and implements the pre-check. The Redis backend does NOT
+  and implements the pre-check. The Redis backend does not
   have local knowledge of ``tokens``, that state lives in the Redis
   hash and is computed inside the Lua script using ``elapsed * refill``.
   The guard cannot be applied verbatim on the Redis path
@@ -86,7 +86,7 @@ _DEFAULT_FIXED_QUOTA_TTL: Final[timedelta] = timedelta(seconds=86400)
 #:, the PG fallback is the Redis-outage funnel
 #: (``rate_limit_pg_fallback_enabled`` defaults on), so every admission
 #: waits on this lock exactly when the fleet is already degraded; the
-#: bound converts a black-holed holder (dead TCP, no FIN, the server
+#: bound converts a black-holed holder (dead TCP, no fin, the server
 #: reaps it only via keepalives) from a bucket-wide admission hang into
 #: the limiter's fail-closed denial. ``0`` (or less) waits indefinitely,
 #: the ``lock_timeout`` GUC convention shared with migrate.py and
@@ -109,7 +109,7 @@ DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS: Final[float] = 5000.0
 #: operator configuring a genuinely slow trickle (a monthly quota, a value
 #: from config). A year is far more conservative than the policy this module
 #: already applies to the extreme case: a bucket with ``refill == 0`` can
-#: NEVER recover its state and is nonetheless given 24 h. A bucket that takes
+#: never recover its state and is nonetheless given 24 h. A bucket that takes
 #: longer than a year to refill is a fixed quota over any operational horizon.
 _MAX_TTL: Final[timedelta] = timedelta(days=365)
 
@@ -172,7 +172,7 @@ class _LuaResult:
 
 
 def _decode_lua_result(raw: object, *, capacity: float) -> _LuaResult:
-    """Decode AND validate the raw Redis response from the token-bucket
+    """Decode and validate the raw Redis response from the token-bucket
     Lua script at the trust boundary.
 
     This function is the **only** place where redis-py's untyped
@@ -237,7 +237,7 @@ def _decode_lua_result(raw: object, *, capacity: float) -> _LuaResult:
         )
     if retry_after_seconds < 0.0:
         # A negative hint is a spin lie: it clamps to the zero-wait
-        # sentinel downstream, which is the ALLOWED decision's value,
+        # sentinel downstream, which is the allowed decision's value,
         # so trusting it turns a denial into a zero-wait retry. nan/inf
         # stay tolerated (the documented deviation: nan never reaches
         # the hint on the fixed-quota arm, inf clamps to _MAX_TTL).
@@ -344,7 +344,7 @@ class TokenBucket:
     ``keyed`` (default ``False``) marks a bucket materialised from a
     :class:`~taskq.ratelimit.refs.KeyedRateLimitRef` whose
     ``rate_limit_buckets`` row is FLEET-reclaimable: keyed-materialised
-    AND PG-state-backed. The restriction to ``backend="postgres"`` is
+    and PG-state-backed. The restriction to ``backend="postgres"`` is
     the point, not an accident: only a PG-state-backed bucket's acquire
     path touches its PG row, so only there does the row's
     ``last_used_at`` stamp (refreshed by the preseed/upsert/refund
@@ -446,7 +446,7 @@ class TokenBucket:
         existed carry neither, and the sweep's veto treats a row it
         cannot prove safe to delete as one it must keep.
 
-        THE CANONICAL KEY SET is exactly ``{tokens, ts, capacity,
+        the CANONICAL KEY SET is exactly ``{tokens, ts, capacity,
         refill}``, this method is its definition, and every reader of the
         document reads NAMED keys only (``_peek_pg`` reads ``tokens``;
         ``_refund_pg`` reads ``tokens``/``ts``; the reclaim sweeps read
@@ -482,7 +482,7 @@ class TokenBucket:
         bounded divergence.
 
         What eviction destroys differs by where the state lives, and only
-        ONE backend actually loses the budget:
+        one backend actually loses the budget:
 
         * **memory**: token state lives on the instance and nowhere else,
           so eviction discards it and the next acquire materializes at
@@ -516,7 +516,7 @@ class TokenBucket:
         if self._backend != "memory":
             # postgres: the row-delete vetoes carry the state-safety
             # guarantee (see the docstring); redis: the 24 h TTL does.
-            # Neither's quota can be reset by a REGISTRY eviction.
+            # Neither's quota can be reset by a registry eviction.
             return False
         # Why the protected read: _InMemoryBucket._tokens is this module's
         # own accumulator, and the registry's idle-eviction sweep (the
@@ -597,7 +597,7 @@ class TokenBucket:
         """
         # Why decision.backend and not self._backend: with backend="redis" and
         # rate_limit_pg_fallback_enabled (the default), an acquire during a
-        # Redis outage falls through to Postgres and consumes the token THERE.
+        # Redis outage falls through to Postgres and consumes the token there.
         # The decision records which store actually paid; the primitive's own
         # configuration only records where it prefers to go. Dispatching on the
         # latter refunded Redis for a token Postgres spent, inflating one
@@ -689,15 +689,15 @@ class TokenBucket:
         raw = await redis_client.hmget(key, ["tokens", "ts"])  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportGeneralTypeIssues]  # Why: redis-py hmget return type is untyped in the stub; all operations reflect correct runtime behavior.
 
         if raw is not None and not isinstance(raw, (list, tuple)):  # pyright: ignore[reportUnnecessaryIsInstance, reportUnnecessaryComparison]  # Why: the stub types hmget as a list of per-field values (never None), but the declared type is exactly what a lying reply violates at runtime - the RESP3 map and the set both arrive through this untyped boundary, so the runtime shape check is the defense, not a redundancy.
-            # Why the CONTAINER gets its own shape check before the
+            # Why the container gets its own shape check before the
             # element access: the guarded float conversion below
-            # validates the ELEMENT's value, but ``raw[0]``/``raw[1]``
+            # validates the element's value, but ``raw[0]``/``raw[1]``
             # index the raw hmget reply itself - a dict-shaped map (the
             # RESP3 reply, byte- or str-keyed) raises bare KeyError on
             # the integer index and a set or bare int raises TypeError,
             # and neither is in any guarded conversion family, so the
             # lie escapes the peek as a bare crash. Worse, a bare
-            # string or bare bytes reply IS subscriptable, so the index
+            # string or bare bytes reply is subscriptable, so the index
             # silently yields garbage ("12" -> "1") and the peek builds
             # a RateLimitState from the proxy's lie - the fail-open
             # direction. The honest hmget reply is a list (one value
@@ -798,11 +798,11 @@ class TokenBucket:
         else:
             state = jsonb_to_dict(row["state"], column="state")
             try:
-                tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
+                tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is not NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
             except (TypeError, ValueError, OverflowError) as exc:
                 # A peek is read-only, but the trust boundary is the same as
                 # the redis peek's: a state value no honest write could have
-                # produced (the row IS the reply) is a store lie, failed
+                # produced (the row is the reply) is a store lie, failed
                 # closed as the outage it is indistinguishable from, never a
                 # ValueError crash with no provenance.
                 raise RateLimitStoreCorrupt(
@@ -927,7 +927,7 @@ class TokenBucket:
             f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
             f'FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1 FOR UPDATE'
         )
-        # The refund is a release-path USE of the row (the token goes
+        # The refund is a release-path use of the row (the token goes
         # back), so it rides the same last_used_at refresh the acquire
         # does: a bucket whose token was just refunded is mid-workflow,
         # and an unstamped refund could let the fleet sweep catch the
@@ -969,8 +969,8 @@ class TokenBucket:
                 except (LockNotAvailableError, TimeoutError):
                     # The acquire converts exhaustion into the limiter's
                     # denial outcome; the refund cannot, its success
-                    # shape IS the silent ``None`` return, so the only
-                    # honest exhausted outcome is the RAISE. The warning
+                    # shape is the silent ``None`` return, so the only
+                    # honest exhausted outcome is the raise. The warning
                     # is the same contended-or-sick-bucket signal every
                     # bounded limiter lock emits (one event name, one
                     # condition), with ``phase`` marking the different
@@ -994,11 +994,11 @@ class TokenBucket:
             now = float(row["now_s"])
             state = jsonb_to_dict(row["state"], column="state")
             try:
-                tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
+                tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is not NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
                 ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same, state is non-None; fallback to now for rows missing "ts"
             except (TypeError, ValueError, OverflowError) as exc:
-                # The refund WRITES from the values it reads, so a state
-                # document no honest write could have produced (the row IS
+                # The refund writes from the values it reads, so a state
+                # document no honest write could have produced (the row is
                 # the reply) must not reach the arithmetic: NaN collapses
                 # the ``min`` cap to capacity (restoring a spent fixed
                 # quota, an over-refund) and a non-numeric value is a bare
@@ -1128,7 +1128,7 @@ class TokenBucket:
         *,
         lock_timeout_ms: float | None = None,
     ) -> RateLimitDecision:
-        """PG path: ONE upsert statement whose conflict arm does the arithmetic.
+        """PG path: one upsert statement whose conflict arm does the arithmetic.
 
         ``INSERT … ON CONFLICT (bucket_name) DO UPDATE … RETURNING``, the
         preseed, the locked state read, and the upsert of the pre-fused
@@ -1202,7 +1202,7 @@ class TokenBucket:
         # pre-validated against _IDENT_RE at WorkerSettings load time.
         # $1 name, $2 capacity, $3 refill, $4 keyed mark, $5 count.
         #
-        # The conflict arm's SET expressions reference the EXISTING row
+        # The conflict arm's set expressions reference the existing row
         # as ``rate_limit_buckets.<col>`` (the ON CONFLICT DO UPDATE
         # convention); the COALESCE fallbacks mirror the pre-fused
         # Python fallbacks for rows written before the state document
@@ -1210,7 +1210,7 @@ class TokenBucket:
         # zero). The fleet-reclaim marking rides the write the conflict
         # arm already makes: last_used_at refreshes on every acquire,
         # including denials, whose state write must not read as idle,
-        # and keyed takes the CURRENT owner's mark (EXCLUDED.keyed), so
+        # and keyed takes the current owner's mark (EXCLUDED.keyed), so
         # a keyed bucket acquiring over a stale static-marked row claims
         # it and a static bucket acquiring over a former keyed row
         # retires it.
@@ -1219,7 +1219,7 @@ class TokenBucket:
         _old_ts = f"COALESCE((rate_limit_buckets.state->>'ts')::float8, {_now_epoch})"
         # Post-refill token count: the spend decision's left side.
         # Every evaluation is identical (statement_timestamp() is
-        # stable), so the CASE below and the granted flag cannot
+        # stable), so the case below and the granted flag cannot
         # disagree at the spend boundary.
         _refilled = (
             f"LEAST($2::float8, {_old_tokens} + GREATEST({_now_epoch} - {_old_ts}, 0) * $3::float8)"

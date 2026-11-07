@@ -8,7 +8,7 @@ Unit execution for two defensive families:
    read outlives ``heartbeat_secs + _BROKER_READ_GRACE_SECS`` must RAISE
    — the browser's EventSource reconnects — never silently retry into
    another unbounded wait; the ``sse-redis-read-timeout`` warning names
-   the incident; and the ``finally`` releases BOTH held resources, the
+   the incident; and the ``finally`` releases both held resources, the
    Redis subscription and the SSE-limit slot (a released-on-raise
    contract: the slot is held for the LIFE of the stream, so a raise
    that leaked it would permanently burn the process's connection cap).
@@ -129,7 +129,7 @@ class _StubPubSub:
 
 
 class _HangingReadPubSub(_StubPubSub):
-    """A pubsub whose reads NEVER return: the broker-lying/hang shape the
+    """A pubsub whose reads never return: the broker-lying/hang shape the
     read-timeout arm exists for (a wedged socket read, a broker that
     accepted the subscribe and stopped answering)."""
 
@@ -185,7 +185,7 @@ async def test_hung_broker_read_raises_fail_visible_and_releases_everything(
 
     Regression caught: (a) dropping the wait_for (a silent unbounded
     wait) wedges the generator on the hung read forever, holding the
-    subscription AND the slot — after enough wedged streams the route
+    subscription and the slot — after enough wedged streams the route
     429s every new client forever; (b) catching the TimeoutError and
     continuing the loop would pin the same resources behind a retry
     loop that never terminates against a dead broker.
@@ -263,7 +263,7 @@ async def test_lying_envelope_is_discarded_with_its_counter_and_the_stream_survi
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Each lying envelope: exactly one malformed-counter bump, the debug
-    drop (never a raise), and the NEXT VALID envelope still forwards.
+    drop (never a raise), and the next VALID envelope still forwards.
 
     Regression caught: any validator that (a) let the lie through — the
     foreign envelope would be forwarded onto this job's stream and its

@@ -87,7 +87,7 @@ _PRIOR_ATTEMPTS_QUALIFIED_CSV: Final[str] = (
 )
 
 # Verbatim prior-release archive CTE (git show b23c921^:.../_leader_shared.py):
-# no MATERIALIZED fence, 38-column list, identical CTE arms.
+# no materialized fence, 38-column list, identical CTE arms.
 _PRIOR_RELEASE_ARCHIVE_CTE: Final[str] = (
     "WITH candidate_ids AS ("
     '  SELECT id FROM "{schema}".jobs'

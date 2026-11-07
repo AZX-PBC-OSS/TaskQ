@@ -7,7 +7,7 @@ cron tick runs between planning and the batched enqueue:
   created)** - the singleton gate is in memory (two due schedules for one
   singleton actor: the earlier fires, the later suppresses against the
   fired job), but the ``max_pending`` check reads the DB count alone.
-  Two due schedules for one ``max_pending=1`` actor in the SAME tick both
+  Two due schedules for one ``max_pending=1`` actor in the same tick both
   pass (neither of this tick's jobs exists yet) and both enqueue: cap+N
   jobs from one tick.  The client path cannot do this - its second,
   sequential enqueue sees the first job's row and raises
@@ -17,7 +17,7 @@ cron tick runs between planning and the batched enqueue:
   as active as a running one; the suppression predicate is
   ``status IN ('pending','scheduled','running')`` and the snooze is the
   issue's own named shape.
-* **Cross-direction parity** - the stamps must close the loop in BOTH
+* **Cross-direction parity** - the stamps must close the loop in both
   directions through the REAL paths: a cron-fired singleton job (stamped
   by the tick) must make a CLIENT enqueue raise
   ``SingletonCollisionError``, and a client-enqueued singleton job (via
@@ -29,7 +29,7 @@ cron tick runs between planning and the batched enqueue:
   counter increments once per suppressed slot, mirroring the enqueue
   path's once-per-attempt increment.
 * **Suppression x catch-up recompute** - a schedule missed beyond the
-  catch-up window AND singleton-blocked takes BOTH branches in one tick:
+  catch-up window and singleton-blocked takes both branches in one tick:
   planning re-anchors ``fire_at`` on the server clock, then the
   suppression UPDATE must advance ``next_fire_at`` to exactly that
   recomputed target - one advance, the recompute's own value, no stale
@@ -255,7 +255,7 @@ class TestCrossDirectionParity:
 
 
 class TestIntraBatchMaxPending:
-    """The cap must hold across the tick's OWN kept plans, not only against
+    """The cap must hold across the tick's own kept plans, not only against
     the pre-tick DB count."""
 
     async def test_second_due_schedule_for_capped_actor_suppresses_intra_batch(
@@ -451,7 +451,7 @@ class TestReturnAndMetricSemantics:
 
 
 class TestSuppressionCatchUpInterplay:
-    """A8: a beyond-window miss that is ALSO singleton-blocked takes the
+    """A8: a beyond-window miss that is also singleton-blocked takes the
     recompute branch and the suppression branch in one tick."""
 
     async def test_beyond_window_miss_blocked_advances_to_the_recomputed_target(

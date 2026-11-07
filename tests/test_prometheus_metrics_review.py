@@ -10,7 +10,7 @@ metrics document: enqueues (success, terminal failure, retryable failure,
 timeout, backpressure refusal, unserved queue, missing actor_config), a
 failing cron schedule through the real three-strike auto-disable, the
 leader's gauge samplers, the heartbeat loop, the watchdog, and a clean
-SIGTERM shutdown. The exposition is captured from BOTH real scrape paths —
+SIGTERM shutdown. The exposition is captured from both real scrape paths —
 the ``/jobs/health/metrics`` bridge router exactly as ``taskq ui serve``
 mounts it, and the worker's own ``TASKQ_METRICS_PORT`` pull listener — and
 asserted for the documented NAME + LABELS + plausible VALUES of a
@@ -24,13 +24,13 @@ expression is evaluated by promtool (inside the prom/prometheus image)
 against input series that carry the metric names and label sets the REAL
 probe's exposition actually served, seeded with the pathology the rule
 guards. Every rule must fire; a second set of healthy-shape inputs must
-NOT fire (the false-page guard). A rule that cannot fire against real
+not fire (the false-page guard). A rule that cannot fire against real
 names/labels - or that fires on a healthy fleet - fails here.
 
 Marks: integration (testcontainers PG), otel ([prometheus] extra); the
 lock-contention family and the two promtool binding pins carry
 load_sensitive (their verdicts are emission-window-dependent — PR #698's
-recorded finding) and run in the serial load-sensitive lane.
+band) and run in the serial load-sensitive lane.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ _PROMQL_KEYWORDS = frozenset(
 )
 
 
-# ── fixtures: each probe runs ONCE per module ──────────────────────
+# ── fixtures: each probe runs once per module ──────────────────────
 
 
 @pytest.fixture(scope="module")
@@ -99,7 +99,7 @@ def worker_scrapes(pg_dsn: str, module_pg_schema: Any, tmp_path_factory: Any) ->
     (served by the bridge router) and ``LIVE.port``/``FINAL.port`` (served
     by the worker's own TASKQ_METRICS_PORT pull listener).
 
-    ONCE PER INVOCATION, not once per xdist worker: the probe is ~130s
+    once PER INVOCATION, not once per xdist worker: the probe is ~130s
     of real worker + follower + migrations; module scope is per worker,
     and at ``-n 8`` the concurrent fleets drowned the box (the
     follower's boot outran every poll — the consolidated proof's
@@ -214,7 +214,7 @@ class TestLeaderGauges:
         by_queue = {_scopeless(s.labels).get("queue"): s.value for s in series}
         assert by_queue.get("probe_queue") == 1.0, by_queue
         # The TaskQQueueUnserved join contract: a queue with no live worker
-        # has NO live_workers series at all, not a 0-valued one.
+        # has no live_workers series at all, not a 0-valued one.
         assert "ghost_queue" not in by_queue, by_queue
 
     def test_stranded_by_actor_and_reason(self, live: Exposition) -> None:
@@ -553,8 +553,8 @@ class TestWatchdogFamily:
 
 
 class TestFleetHandover:
-    # load_sensitive (PR #698's recorded finding — one root, four faces in this
-    # file): the contention counters record the LOSING side of a lock race
+    # load_sensitive (one root, four faces in this
+    # file): the contention counters record the losing side of a lock race
     # whose cycle the lease/tick machinery owns — the follower's election
     # against the leader's lease, the tick's try-lock against the held
     # key. The probe's ~130s window allows ~1 cycle of margin; a starved
@@ -652,11 +652,11 @@ _ALERT_RESULT: dict[str, tuple[dict[str, str], float]] = {
     "TaskQStrandedJobs": ({"actor": "probe_ghost_actor", "reason": "unserved_queue"}, 4.0),
     "TaskQRunningLeaseExpired": ({}, 3.0),
     "TaskQClaimLatencyDegraded": ({"queue": "probe_queue"}, 12.0),
-    # T08: the blocked-stuck alert ships WITH the gauge —
+    # the typed node view: the blocked-stuck alert ships with the gauge —
     # a metric nobody alerts on is a decoration). The pathology: a run's
     # blocked-node count pinned above zero past the 30m bound. The rule's
     # expression is a bare selector (no aggregation), so the result
-    # vector carries the series' FULL label set — state included.
+    # vector carries the series' full label set — state included.
     "TaskQWorkflowBlockedStuck": ({"workflow": "probe_wf", "state": "blocked"}, 3.0),
 }
 
@@ -938,7 +938,7 @@ def _build_promtool_cases(live: Exposition) -> list[dict[str, Any]]:
             "14m",
         )
     )
-    # Healthy: the count is DRAINING while a straggler ages past the
+    # Healthy: the count is draining while a straggler ages past the
     # threshold - the exact false-positive shape the rule's own
     # description says must stay silent.
     cases.append(
@@ -1042,7 +1042,7 @@ def _build_promtool_cases(live: Exposition) -> list[dict[str, Any]]:
         )
     )
 
-    # The MVCC-horizon degradation ratio (emitter-staged: the 5-minute
+    # The mvcc-horizon degradation ratio (emitter-staged: the 5-minute
     # baseline warm-up cannot be staged live, the emitter probe drives
     # the real record_claim_latency hook with synthetic stamps). Firing:
     # the ratio sustained past 10; silent: a ratio at its baseline.
@@ -1176,7 +1176,7 @@ def _build_promtool_cases(live: Exposition) -> list[dict[str, Any]]:
         )
     )
 
-    # T08 — TaskQWorkflowBlockedStuck: the alert suggestion shipped WITH
+    # the typed node view — TaskQWorkflowBlockedStuck: the alert suggestion shipped with
     # the gauge, evaluated through the honest harness: the pathology
     # (blocked nodes pinned past the 30m bound) staged through promtool;
     # the silent side is the healthy fleet (no blocked nodes).
@@ -1288,13 +1288,13 @@ def test_threshold_margins_fire_exactly_at_the_documented_line(
     missed page waiting for scale.
 
     - TaskQDispatchLatencyHigh (> 50 ms): every dispatch in the le=0.05
-      bucket - the healthy worst case just UNDER the line - must stay
+      bucket - the healthy worst case just under the line - must stay
       SILENT (the served p99 interpolates to 0.04975, not 50 ms); every
-      dispatch in the le=0.1 bucket - the first shape OVER the line - must
+      dispatch in the le=0.1 bucket - the first shape over the line - must
       FIRE. The bucket scale puts the decision exactly at the 50 ms edge.
     - TaskQLockExpiringSoon (p99 < 30 s): mass in the le=45 bucket (a
       healthy default fleet, remaining ~ lease 60 - interval 10) stays
-      silent. AND the found cliff: mass in the le="30" bucket - a HEALTHY
+      silent. and the found cliff: mass in the le="30" bucket - a HEALTHY
       minimal-valid lease configuration (heartbeat_interval 5s, lock_lease
       33s, the cascade floor for that cadence: remaining ~28s) - FIRES,
       because the served p99 quantiles to 20 + 10 * 0.99 = 29.9 < 30. This
@@ -1439,9 +1439,9 @@ def test_threshold_margins_fire_exactly_at_the_documented_line(
     reason="promtool runs in the prom/prometheus container; Docker unreachable",
 )
 # load_sensitive: the binding asserts require the contention series to be
-# among the REAL scrapes' emissions — the harness's literal "0+1x30"
+# among the real scrapes' emissions — the harness's literal "0+1x30"
 # contention feed presumes the event landed inside the probe's window
-# (PR #698's recorded finding: a slow runner's elections don't cycle in time).
+# (a slow runner's elections don't cycle in time).
 # Same family note as TestFleetHandover.
 @pytest.mark.load_sensitive
 def test_harness_series_are_bound_to_the_served_exposition(
@@ -1460,7 +1460,7 @@ def test_harness_series_are_bound_to_the_served_exposition(
     leader's admin-surface sample, never a worker scrape) - and the case
     counts must be the honest 25 firing + 12 healthy guards covering
     every shipped rule (the consolidation's 25-rule estate: the
-    claim-latency degradation AND the workflow blocked-stuck both
+    claim-latency degradation and the workflow blocked-stuck both
     landed)."""
     emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
     cases = _build_promtool_cases(live)
@@ -1476,7 +1476,7 @@ def test_harness_series_are_bound_to_the_served_exposition(
                 f"promtool input series {name!r} is not a series the real "
                 "scrapes served - the harness has drifted from the emitted truth"
             )
-    # The four emitter-bound families: the fed LABEL VALUES must match
+    # The four emitter-bound families: the fed label VALUES must match
     # what the real emitters serve, not just the names.
     for family, bound_label in (
         ("taskq_maintenance_leader_sweep_timeouts_total", "sweep_name"),
@@ -1509,7 +1509,7 @@ def test_harness_series_are_bound_to_the_served_exposition(
     reason="promtool runs in the prom/prometheus container; Docker unreachable",
 )
 # load_sensitive: the operand scan asserts the contention rule's metric
-# against the REAL emission (``token in emitted``), and promtool evaluates
+# against the real emission (``token in emitted``), and promtool evaluates
 # the window-fed cases — the same rejected root as the harness-binding
 # pin (the contention event must land inside the probe's window).
 @pytest.mark.load_sensitive
@@ -1534,7 +1534,7 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
     # schema, and the cron skipped-slots counter no live run reaches -
     # whose emission paths are the real public
     # record_sweep_*/record_cron_skipped_slots API). Label values and
-    # PromQL syntax are stripped before scanning; a rule operand the
+    # Promql syntax are stripped before scanning; a rule operand the
     # bridge never serves would make the rule unevaluatable against real
     # data.
     emitted = live.names() | follower.names() | hostile_mid.names() | emitter.names()
@@ -1545,7 +1545,7 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
         expr = re.sub(r"\[[^\]]*\]", "[]", expr)
         # ...so do offset durations (`offset 5m`).
         expr = re.sub(r"offset\s+\d+[smhd]", "offset", expr)
-        # Grouping clauses (by/without/on/ignoring) name LABELS, not series.
+        # Grouping clauses (by/without/on/ignoring) name labels, not series.
         expr = re.sub(r"\b(by|without|on|ignoring)\s*\([^)]*\)", r"\1 ()", expr)
         for token in set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_:]*", expr)):
             if token in _PROMQL_KEYWORDS:
@@ -1577,19 +1577,19 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
     assert "SUCCESS" in out, out
 
 
-# ── THE RUNBOOK-ANCHOR PIN (the F-R3 discipline, re-landed 2026-10-09) ──
+# ── the runbook-anchor pin ──
 
 
 def test_every_runbook_alert_row_names_a_rule_shipped_in_both_files() -> None:
-    """THE RUNBOOK ↔ SHIPPED-ALERT CROSS-CHECK (the reviewer's F-R3 scenario,
+    """The runbook ↔ shipped-alert cross-check (the cross-check scenario,
     made mechanical): every ``## TaskQ…`` alert row in
-    ``docs/guides/runbooks.md`` names an alert SHIPPED in BOTH
-    ``contrib/prometheus/rules.yaml`` AND ``contrib/kubernetes/prometheus_rule.yaml``
+    ``docs/guides/runbooks.md`` names an alert SHIPPED in both
+    ``contrib/prometheus/rules.yaml`` and ``contrib/kubernetes/prometheus_rule.yaml``
     (the pair ships lockstep), and every shipped alert has a runbook row —
     an operator paged by the real alert must find its row, and a row no
-    alert can fire is a page that lies. The rejected shape (F-R3's
+    alert can fire is a page that lies. The rejected shape (
     original + its carry-regression, both 2026-10-09): the runbook's
-    ``TaskQWfRunStuck``/``TaskQWfHoldExpired`` rows named rules NO rule
+    ``TaskQWfRunStuck``/``TaskQWfHoldExpired`` rows named rules no rule
     file carried — the runbook's promise had no code behind it. The two
     rows' operational content lives in ``TaskQWorkflowBlockedStuck``'s
     row (the alert that actually measures the blocked/held shape)."""
@@ -1628,14 +1628,14 @@ def test_every_runbook_alert_row_names_a_rule_shipped_in_both_files() -> None:
     phantom_rows = row_names - prometheus_alerts
     anchorless_alerts = prometheus_alerts - row_names
     assert not phantom_rows, (
-        "THE RUNBOOK NAMES AN ALERT THAT SHIPS NOWHERE (the F-R3 class): "
+        "THE RUNBOOK NAMES AN ALERT THAT SHIPS NOWHERE (the named-alert class): "
         f"{sorted(phantom_rows)} — a runbook row no shipped rule can fire "
         "is a page that lies: ship the rule (both files, lockstep, with "
         "its metric) or fold the row's content into the shipped alert's "
         "row"
     )
     assert not anchorless_alerts, (
-        "THE SHIPPED ALERT HAS NO RUNBOOK ROW (the F-R3 cross-face): "
+        "THE SHIPPED ALERT HAS NO RUNBOOK ROW (the cross-check face): "
         f"{sorted(anchorless_alerts)} — an operator paged by this alert "
         "finds no runbook row: write the row"
     )

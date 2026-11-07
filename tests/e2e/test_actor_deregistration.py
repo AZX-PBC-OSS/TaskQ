@@ -114,7 +114,7 @@ async def test_deregister_refuses_with_active_jobs(
     assert ac_count == 1
 
     # Cleanup: cancel the job, wait for terminal, then force-deregister.
-    # Do NOT use handle.wait() - it raises JobFailed for cancelled status.
+    # Do not use handle.wait() - it raises JobFailed for cancelled status.
     # long_running_job never calls ctx.check_cancelled(), so the cancel
     # lands only after the 30s sleep finishes - budget the full duration.
     await handle.cancel()

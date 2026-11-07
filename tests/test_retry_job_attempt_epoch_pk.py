@@ -4,9 +4,9 @@
 revisits a spent epoch's attempt numbers and no ``job_attempts`` write
 can collide on the table's PRIMARY KEY (job_id, attempt).
 
-History (the defect this pin replaced): ``retry_job`` used to reset
-``attempt`` to 0, so a re-dispatched job climbed back through its spent
-numbers and the next terminal write inserted at (job_id, N) again -
+History (the defect this pin replaced): ``retry_job`` resetting
+``attempt`` to 0 lets a re-dispatched job climb back through its spent
+numbers and the next terminal write inserts at (job_id, N) again -
 ``duplicate key value violates unique constraint "job_attempts_pkey"``
 - a revisited-primary-key violation the consumer's terminal-write infra
 family misclassified as transient, stranding the row ``running``. The

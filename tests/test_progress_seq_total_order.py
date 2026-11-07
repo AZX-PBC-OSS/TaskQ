@@ -178,7 +178,7 @@ async def test_seq_strictly_increases_across_progress_and_state_changes() -> Non
     # The retry arm announces the handler's outcome vocabulary on the wire
     # (the generic-exception handler publishes status="failed" for the
     # attempt, while the row itself goes back to scheduled); the pin is the
-    # SEQ arithmetic, not that vocabulary.
+    # seq arithmetic, not that vocabulary.
     assert kinds == [
         ("state_change", "running"),
         ("progress", "running"),
@@ -372,8 +372,8 @@ async def test_state_change_publish_after_flush_retire_carries_the_consumed_seq(
     ``pending_state``, so ``_seq_and_state_after_flush_attempt`` returns
     ``(consumed, None)``. The state-change publish must carry that
     consumed seq — exactly the value the ``mark_*`` write SETs durably —
-    and must NOT fall back to reading the buffer: the retired head is the
-    LAST event's seq, so a fallback publishes a duplicate of the progress
+    and must not fall back to reading the buffer: the retired head is the
+    last event's seq, so a fallback publishes a duplicate of the progress
     event before the state change and drops the consumed seq the row now
     holds (a seq-cursor consumer discards the state-change event as a
     duplicate and the stream never closes)."""

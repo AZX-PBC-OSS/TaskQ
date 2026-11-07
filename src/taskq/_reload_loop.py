@@ -62,16 +62,15 @@ async def run_reload_schedule(
         try:
             await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            # THE TEARDOWN'S OWN ORDER (the leaked-_wait fix, found by the
-            # leaked-task guard's own teeth): CANCEL ALL the pending
-            # waiters first, THEN reap each. The previous shape cancelled
-            # and reaped one waiter per lap — the reaper's own concurrent
-            # cancellation (this loop's shutdown cut arriving mid-reap)
-            # re-raised out of the FIRST reap and orphaned the remaining
-            # waiters: a cancelled-not-awaited trigger.wait and a STILL-
-            # RUNNING _wait, leaking the parked sleeper into later tests
-            # (the leaked-task guard's finding, 3 errors on the fast
-            # tier). The reaper's law is untouched: our OWN cancellation
+            # Teardown order: cancel all the pending
+            # waiters first, then reap each. Cancelling
+            # and reaping one waiter per lap would let the reaper's own
+            # concurrent cancellation (this loop's shutdown cut arriving
+            # mid-reap) re-raise out of the first reap and orphan the
+            # remaining
+            # waiters: a cancelled-not-awaited trigger.wait and a still-
+            # running _wait, leaking the parked sleeper into later tests.
+            # The reaper's rule is untouched: our own cancellation
             # still propagates — after the bounded reap completes, never
             # swallowed, only not allowed to orphan the children.
             pending = [t for t in waiters if not t.done()]
@@ -82,7 +81,7 @@ async def run_reload_schedule(
                 try:
                     await reap_cancelled_child(task)
                 except asyncio.CancelledError as exc:
-                    # the reaper re-raised OUR cancel (me.cancelling()):
+                    # the reaper re-raised our cancel (me.cancelling()):
                     # noted — the remaining children are reaped first.
                     own = exc
             if own is not None:

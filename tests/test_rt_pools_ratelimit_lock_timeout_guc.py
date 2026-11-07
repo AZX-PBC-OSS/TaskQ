@@ -8,13 +8,13 @@ these files are the OTHER GUC sites. The token-bucket PG acquire
 (``TokenBucket._acquire_pg``) and the GCRA sliding-window acquire
 (``_sliding_window_pg._acquire_pg_gcra``) each bind a bounded row-lock
 wait with ``set_config('lock_timeout', ..., true)`` - SET LOCAL
-semantics - issued INSIDE the acquire's own transaction and deliberately
-WITHOUT a save/restore cycle ("dies with the transaction's own commit",
+semantics - issued inside the acquire's own transaction and deliberately
+without a save/restore cycle ("dies with the transaction's own commit",
 per both call sites' comments). That is a different discipline from the
 sweeps', so it needs its own pin: the limiter's denial path must not
 leak the 250 ms wait bound onto the pooled session it hands back.
 
-The observable is asserted on the SAME session the limiter used: every
+The observable is asserted on the same session the limiter used: every
 acquire goes through a single-connection pool adapter, so after a
 fail-closed denial (a racing transaction holds the bucket row's FOR
 UPDATE lock past the budget) the test reads
@@ -66,7 +66,7 @@ class _SingleConnCtx:
 
 
 class _SingleConnPool:
-    """Duck-typed pool whose every acquire hands out the SAME real session.
+    """Duck-typed pool whose every acquire hands out the same real session.
 
     Why not a real pool: the limiter must run on a session the test can
     still address afterwards - a real pool's release makes the session

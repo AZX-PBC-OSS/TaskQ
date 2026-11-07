@@ -24,11 +24,11 @@ id order, so the renewal's heap scan runs opposite the drain's id
 probes) and races the two public surfaces for several rounds. The
 assertions are the observable contract:
 
-* BOTH operations complete - neither parks unbounded behind the other;
+* both operations complete - neither parks unbounded behind the other;
 * no lost update: every held row ends the round with cancel_phase = 1
   and a fresh lease, exactly one cancel_request event per row per
   round;
-* NO 40P01 is raised to either caller - the renewal may not turn an
+* no 40P01 is raised to either caller - the renewal may not turn an
   operator's bulk cancel into heartbeat tick failures (three in a row
   isolate a healthy worker and crash-reclaim its fleet);
 * a client-side command-budget expiry (asyncpg TimeoutError) is a
@@ -61,7 +61,7 @@ _RACE_BOUND_SECS = 60.0
 
 #: Failed-beat tolerance for the renewal loop, mirrored from production:
 #: the worker tolerates unexpected heartbeat tick failures until
-#: max_heartbeat_failures (the settings default, 3) land CONSECUTIVELY -
+#: max_heartbeat_failures (the settings default, 3) land consecutively -
 #: that is the isolate line. The probe reds at the same line: two
 #: isolated client-side command-budget expiries under a starved runner
 #: are tolerated beats (recorded, retried), the third consecutive one
@@ -137,7 +137,7 @@ async def test_heartbeat_renewal_vs_bulk_cancel_running_arm_no_deadlock_no_lost_
         await _reset_round(clean_pg_conn, schema, tag, ids)
 
         # Production renews every beat while an operator drain runs, so the
-        # probe renews in a loop across the drain's WHOLE paging window,
+        # probe renews in a loop across the drain's whole paging window,
         # not once at the start.
         renewals: list[int] = []
         failed_beats: list[str] = []
@@ -158,13 +158,13 @@ async def test_heartbeat_renewal_vs_bulk_cancel_running_arm_no_deadlock_no_lost_
                     raise
                 except TimeoutError as exc:
                     # A client-side budget expiry (the heartbeat pool's
-                    # command_timeout, or a pool-acquire budget), NOT a
+                    # command_timeout, or a pool-acquire budget), not a
                     # server verdict: under a starved runner the renewal
                     # can wait on row locks the drain holds - the exact
                     # blocking this probe races - and legitimately outlive
                     # the budget. Production does not crash on such a
                     # beat: a failed tick is tolerated until
-                    # max_heartbeat_failures (3) land CONSECUTIVELY, which
+                    # max_heartbeat_failures (3) land consecutively, which
                     # is the isolate threshold. The probe pins the same
                     # line: a failed beat is recorded and retried, the
                     # third consecutive one reds (the worker would
@@ -201,7 +201,7 @@ async def test_heartbeat_renewal_vs_bulk_cancel_running_arm_no_deadlock_no_lost_
             assert renewed == _JOBS, (
                 f"round {round_no}: the renewal must stamp every held row (got {renewed}/{_JOBS})"
             )
-        # The loop-liveness teeth: the renewal RACED this round - it either
+        # The loop-liveness teeth: the renewal raced this round - it either
         # landed stamps (renewals) or its beats were starved by the drain's
         # row locks and recorded (failed_beats). A round with neither means
         # the loop never ran at all, which is the dead-renewal red. (A

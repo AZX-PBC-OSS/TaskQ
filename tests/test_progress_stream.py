@@ -5,7 +5,7 @@ Covers:
 - PG fallback path: yields progress and state_change events, stops on terminal
 - Redis pub/sub path: yields events from channel, skips subscribe confirmations,
   discards malformed messages, stops on terminal
-- Redis path snapshot replay: a live row's current state is the FIRST event
+- Redis path snapshot replay: a live row's current state is the first event
 - redis_event_stream's on_timeout failure budget: infra errors are retried
   inside a 30 s budget, non-infra errors propagate untouched
 - the same failure budget on the decode_message leg (one shared run:
@@ -453,7 +453,7 @@ async def test_redis_state_change_not_deduplicated_by_seq() -> None:
 
 async def test_redis_replays_running_row_snapshot_before_the_live_tail() -> None:
     """A re-attach to a LIVE job gets the row's current snapshot as the
-    FIRST event, then the live tail: a fresh consumer (a transport cut is
+    first event, then the live tail: a fresh consumer (a transport cut is
     routine) must not starve until the actor's next publish — minutes on
     a slow actor. The parity contract is ``TaskQ.stream``'s: the first
     event is the row as it stands when the stream is opened."""
@@ -490,7 +490,7 @@ async def test_redis_replays_running_row_snapshot_before_the_live_tail() -> None
         events.append(event)
 
     assert len(events) == 3
-    # The FIRST event is the row's current snapshot, a plain progress
+    # The first event is the row's current snapshot, a plain progress
     # event, terminal False — then the live tail flows.
     assert (events[0].kind, events[0].seq, events[0].terminal) == ("progress", 3, False)
     assert events[0].status == "running"
@@ -691,7 +691,7 @@ async def test_transport_bounds_hung_pubsub_close(monkeypatch: pytest.MonkeyPatc
     from taskq.client._transport import redis_event_stream
 
     # Why raising=False: unguarded the module has no CLOSE_TIMEOUT_SECS seam,
-    # so the RED state must demonstrate the finalizer wedge (outer timeout),
+    # so the red state must demonstrate the finalizer wedge (outer timeout),
     # not an AttributeError from the shrink.
     monkeypatch.setattr(transport_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
     pubsub = _HungPubSub()
@@ -715,7 +715,7 @@ async def test_transport_bounds_hung_pubsub_close(monkeypatch: pytest.MonkeyPatc
         return terminal_event
 
     # Why the outer timeout: unguarded, the finally awaited pubsub.aclose()
-    # unbounded, so the RED state wedges here instead of failing fast.
+    # unbounded, so the red state wedges here instead of failing fast.
     with structlog.testing.capture_logs() as captured:
         async with asyncio.timeout(5):
             async for _ in redis_event_stream(

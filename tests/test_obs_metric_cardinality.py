@@ -20,7 +20,7 @@ row mints a fresh UUID), so the value set is not bounded by the code the user
 ships.
 
 The assertion is therefore the failure mode itself: recording from several
-distinct identities must produce ONE time series, not one per identity. Worker
+distinct identities must produce one time series, not one per identity. Worker
 and schedule attribution is not lost -- it lives on spans and log lines, where
 cardinality is free (``taskq.worker_id`` and ``taskq.cron_schedule_id`` on the
 cron-fire span; ``worker_id`` bound via contextvars onto every log line;
@@ -103,7 +103,7 @@ def test_distinct_identities_do_not_mint_new_time_series(
     reader = InMemoryMetricReader()
     meter = MeterProvider(metric_readers=[reader]).get_meter("taskq-cardinality-test")
     # Every instrument in the table, not just the one under test: some
-    # recorders touch more than one (a lost election bumps attempts AND
+    # recorders touch more than one (a lost election bumps attempts and
     # failures), and the module-level singletons carry whatever an earlier
     # test left on them.
     for case_attr, case_name, case_kind, _ in _CASES:

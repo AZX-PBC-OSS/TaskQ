@@ -223,7 +223,7 @@ def test_sse_returns_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "awaiting_progress_backend" in response.text
 
 
-# ── WARNING logged when no auth in non-dev environment ──────────
+# ── warning logged when no auth in non-dev environment ──────────
 
 
 def test_warning_no_auth_non_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -251,7 +251,7 @@ def test_warning_no_auth_non_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(warnings) >= 1
 
 
-# ── WARNING when no auth in dev environment ────────────────────
+# ── warning when no auth in dev environment ────────────────────
 
 
 def test_warning_in_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:

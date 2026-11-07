@@ -2072,7 +2072,7 @@ class TestExpireArchivedJobs:
 class TestArchiveFallbackLookup:
     async def test_archived_job_retrievable(self) -> None:
         """After archive_terminal_jobs(), a job absent from _jobs
-        but present in _archive answers through BOTH read seams, the
+        but present in _archive answers through both read seams, the
         parity behavior (``get`` falls back to the archive tier with
         ``archived=True`` exactly as PG's ``get`` probes jobs_archive,
         and ``get_archived`` answers the wrapper)."""

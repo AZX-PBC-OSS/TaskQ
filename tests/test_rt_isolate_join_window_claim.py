@@ -2,8 +2,8 @@
 
 """Adversarial review: a claim landing inside isolate_self's join window.
 
-``isolate_self`` used to capture the re-pend's exclusion set once, before
-any await, then cancel its active entries and join them with a bound of
+``isolate_self`` captures the re-pend's exclusion set once, before
+any await, then cancels its active entries and joins them with a bound of
 ``cancellation_grace_period + cleanup_grace_period + CLOSE_TIMEOUT_SECS``
 (45s at defaults). The producer and the consumer loops kept running for
 that whole window - ``shutdown`` is only set in the outermost ``finally``
@@ -21,7 +21,7 @@ by entry A's delivered cancellation, which can only fire after the
 pre-join snapshot the old code took):
 
 * B models the primary race: its claim intent and registry entry land
-  INSIDE the join window, after the old snapshot.
+  inside the join window, after the old snapshot.
 * C models the queue-resident shape: claimed, marked enqueued, parked in
   local_queue - in neither ``held_ids`` map, about to be taken and
   executed by a consumer the moment the loop schedules the take.
@@ -169,7 +169,7 @@ async def test_claim_landing_in_join_window_is_not_repended(
 
     deps = _isolate_deps(dsn, schema)
 
-    # Entry A: registered BEFORE the call, so the pre-join snapshot the
+    # Entry A: registered before the call, so the pre-join snapshot the
     # old code took covers it (the control). Its body parks; the
     # cancellation isolate delivers is the park point that proves the
     # snapshot has already run.
@@ -228,7 +228,7 @@ async def test_claim_landing_in_join_window_is_not_repended(
         finally:
             await conn.close()
     finally:
-        # Reap EVERY minted task before the loop's own teardown: a parked
+        # Reap every minted task before the loop's own teardown: a parked
         # task left pending hangs the loop shutdown (the suite's doctrine:
         # a task minted on the module loop is the minting test's to
         # retrieve).
@@ -274,7 +274,7 @@ async def test_unmarked_inflight_claim_residual_is_handed_back_not_double_run(
     """The residual's exact bound and disposition: a claim that committed
     to the jobs table but is not yet marked in either map at the
     exclusion-capture instant (the producer suspended inside
-    ``dispatch_batch``, one scheduler step wide) is NOT excluded - the
+    ``dispatch_batch``, one scheduler step wide) is not excluded - the
     capture cannot see it - so the re-pend takes it.
 
     That disposition is the safe one, and this pins it: after
@@ -285,7 +285,7 @@ async def test_unmarked_inflight_claim_residual_is_handed_back_not_double_run(
     the producer's own exit pass releases what it claimed unmarked. The
     re-pended row is therefore handed back exactly once - pending,
     unlocked, with the reclaim delay - and no local handler can race a
-    peer's claim of it. The old pre-join snapshot had the SAME blind spot
+    peer's claim of it. The old pre-join snapshot had the same blind spot
     for this shape (it also could not see an unmarked claim); what the
     fix changes is the verdict for the rows it CAN see, and the stop that
     makes the blind spot harmless.
@@ -308,7 +308,7 @@ async def test_unmarked_inflight_claim_residual_is_handed_back_not_double_run(
 
     deps = _isolate_deps(dsn, schema)
     # The residual state itself: the row is running and locked to this
-    # worker, and NEITHER map covers it - the producer is suspended inside
+    # worker, and neither map covers it - the producer is suspended inside
     # its claim round's dispatch_batch, the consumer cannot have taken a
     # row that was never put. Nothing is registered, so the actor join is
     # skipped entirely and the capture runs with the maps empty.

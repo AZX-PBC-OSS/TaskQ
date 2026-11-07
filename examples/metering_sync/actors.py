@@ -89,7 +89,7 @@ def batch_id_for(run_id: str, generation: int = 0) -> str:
     """Deterministic per-run batch id.
 
     Derived with ``uuid5`` so every attempt of a retried producer (and
-    every idempotent re-run of the same ``run_id``) addresses the SAME
+    every idempotent re-run of the same ``run_id``) addresses the same
     batch — the docs' fan-out guidance for retry-safe batch ids.
     """
     return str(uuid5(NAMESPACE_URL, f"metering-sync:{run_id}:{generation}"))
@@ -105,7 +105,7 @@ async def process_reading(
     payload: MeterReadingPayload, ctx: JobContext[MeterReadingPayload], db: asyncpg.Pool
 ) -> ProcessResult:
     """Land one reading; anomalous readings fan out to the review actor."""
-    # The PROGRESS face: observable while the run is still in flight.
+    # The progress face: observable while the run is still in flight.
     await ctx.progress(
         step=1,
         detail=f"landing {payload.reading_id}",
@@ -116,10 +116,9 @@ async def process_reading(
     flagged = payload.kind == "anomaly"
     status = "flagged" if flagged else "stored"
 
-    # THE IDEMPOTENT UPSERT: the row is written only when its content
-    # actually differs from what is stored. Re-running the same reading
-    # — from a retry, a reclaimed attempt, or a second pipeline pass —
-    # writes nothing and reports "unchanged".
+    # the row is written only when its content actually differs from what is
+    # stored. Re-running the same reading — from a retry, a reclaimed attempt,
+    # or a second pipeline pass — writes nothing and reports "unchanged".
     row = await db.fetchrow(
         """
         INSERT INTO meter_readings
@@ -150,8 +149,8 @@ async def process_reading(
     else:
         outcome = "updated"
 
-    # THE BRANCH: anomalies fan out to a second actor. The stable
-    # idempotency key means a retried parent cannot double-flag.
+        # anomalies fan out to a second actor. The stable idempotency key means a
+    # retried parent cannot double-flag.
     if flagged:
         await ctx.jobs.enqueue(
             flag_for_review,
@@ -209,7 +208,7 @@ async def finalize_sync(
     consuming retry budget. Each wake PUSHES progress first, so an
     operator watching the job sees the batch drain in real time.
 
-    The finalizer carries NO ``metadata.batch_id`` on purpose: it must
+    The finalizer carries no ``metadata.batch_id`` on purpose: it must
     not be counted among the children it waits on.
     """
     stored, flagged = await _counts(db, payload.run_id)

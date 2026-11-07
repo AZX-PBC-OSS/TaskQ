@@ -425,7 +425,7 @@ def test_pin_event_after_an_empty_skip_renders_at_push_latency() -> None:
 def test_pin_reconnect_catch_up_is_not_dropped_and_the_wake_is_not_lost() -> None:
     """STARVATION (recovery): deltas render, the stream drops, the poll
     reconciles the outage gap (seq 9), the browser reconnects, the
-    server's catch-up snapshot (seq 9) is cursor-deduped, and the NEXT
+    server's catch-up snapshot (seq 9) is cursor-deduped, and the next
     live delta (seq 10) still renders. Neither the skip nor the dedup may
     swallow the post-recovery wake, and the poller must stand down once
     the stream is back."""
@@ -473,7 +473,7 @@ def test_pin_reconnect_catch_up_is_not_dropped_and_the_wake_is_not_lost() -> Non
     # tick (at 1300), before the reconnect at t=4000
     poll_90 = [w for w in stats["writes"] if w["kind"] == "width" and w["value"] == "90%"]
     assert poll_90 and poll_90[0]["at"] < 4000
-    assert percents[-1] == "95%"  # the post-recovery wake was NOT lost
+    assert percents[-1] == "95%"  # the post-recovery wake was not lost
     # the poller stood down at the reconnect (t=4000): no fetch after it
     assert stats["stateFetches"] and max(f["at"] for f in stats["stateFetches"]) < 4000
     assert stats["esLive"] is True

@@ -4,7 +4,7 @@ The contract is that ``status='scheduled'`` is written by EXACTLY five
 authorised paths. Two tripwires enforce it:
 
 1. A runtime audit that calls every non-authorised Backend method on an
-   appropriate pre-state job and asserts the post-state is NOT
+   appropriate pre-state job and asserts the post-state is not
    ``'scheduled'``.
 
 2. An API-surface inventory: the set of ``mark_*`` methods on both backends
@@ -39,7 +39,7 @@ from taskq.testing.in_memory import InMemoryBackend
 
 # ── Authorised writers ──────────────────────────────────────────
 # These five paths are EXCLUDED from the audit. If a new authorised
-# writer is added, update this tuple AND the test docstring.
+# writer is added, update this tuple and the test docstring.
 AUTHORISED_SCHEDULED_WRITERS: tuple[str, ...] = (
     "enqueue(future_scheduled_at)",
     "mark_snoozed",
@@ -138,7 +138,7 @@ def _get_job(backend: InMemoryBackend, job_id: JobId) -> JobRow:
     return row
 
 
-# ── Runtime audit: non-authorised methods do NOT write 'scheduled' ─────
+# ── Runtime audit: non-authorised methods do not write 'scheduled' ─────
 
 
 async def test_fr5_audit_only_authorised_paths_write_scheduled(
@@ -245,8 +245,8 @@ async def test_fr5_audit_only_authorised_paths_write_scheduled(
     assert post.status != "scheduled"
 
     # ── write_cancel_request on a scheduled job → cancelled, not new scheduled ──
-    # Pre-state IS scheduled; cancel transitions it to cancelled.
-    # The audit must only flag NEW transitions TO scheduled, not pre-existing ones.
+    # Pre-state is scheduled; cancel transitions it to cancelled.
+    # The audit must only flag new transitions to scheduled, not pre-existing ones.
     job = await _enqueue_scheduled(backend)
     pre = _get_job(backend, job.id)
     assert pre.status == "scheduled"
@@ -254,7 +254,7 @@ async def test_fr5_audit_only_authorised_paths_write_scheduled(
     assert result is True
     post = _get_job(backend, job.id)
     assert post.status == "cancelled"
-    # Not a NEW transition to scheduled - it was already scheduled
+    # Not a new transition to scheduled - it was already scheduled
 
     # ── write_cancel_request on a running job → sets cancel_phase=1, still running ──
     job = await _enqueue_running(backend)
@@ -338,7 +338,7 @@ async def test_fr5_audit_only_authorised_paths_write_scheduled(
     pre = _get_job(backend, job.id)
     assert pre.status == "running"
     assert pre.lock_expires_at is not None
-    # Advance the backend's OWN clock past the job's lock (earlier steps in
+    # Advance the backend's own clock past the job's lock (earlier steps in
     # this test already moved it, so anchor to the row, not to _CLOCK_START).
     backend.advance_clock_to(pre.lock_expires_at + timedelta(seconds=1))
     count = await backend.reclaim_expired_locks(

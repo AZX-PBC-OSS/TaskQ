@@ -225,7 +225,7 @@ def test_env_set_without_the_sdk_warns_and_names_the_extra() -> None:
     proxies stay, the worker starts.
 
     Runs in a subprocess that hides the SDK's configurator module before
-    taskq is imported: the outcome requires NO provider to be reachable, and
+    taskq is imported: the outcome requires no provider to be reachable, and
     other tests in this process legitimately install real global providers
     (set-once, never unset), which would make the wiring report
     ``preconfigured`` instead.
@@ -292,7 +292,7 @@ def test_endpoint_alone_installs_otlp_exporters() -> None:
     metrics (the spec default), not providers with nothing attached. The
     endpoint is never contacted: the process reports and exits before any
     export interval, skipping the SDK's atexit flush."""
-    # The scenario builds the real OTLP exporter inside the subprocess, so a
+    # The scenario builds the real otlp exporter inside the subprocess, so a
     # tree without the exporter dist (an extras-isolation leg that installs
     # the SDK but not [otel]) must skip rather than exercise the fail-closed
     # refusal the [oidc]/[saml] legs pin through other tests.
@@ -458,7 +458,7 @@ def test_metrics_port_bind_failure_fails_the_startup_loudly() -> None:
         probe.bind(("127.0.0.1", 0))
         probe.listen(1)
         taken_port = probe.getsockname()[1]
-        # The scenario runs while THIS process still holds the port: the
+        # The scenario runs while this process still holds the port: the
         # child must find it taken.
         out = _run_scenario(
             _PREAMBLE

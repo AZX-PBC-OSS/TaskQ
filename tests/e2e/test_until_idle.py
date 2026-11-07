@@ -6,7 +6,7 @@ Verifies that a worker started with TASKQ_UNTIL_IDLE=true:
 3. Exits 4 when max-runtime is exceeded
 4. Waits for and processes scheduled jobs before exiting
 
-Each test enqueues jobs BEFORE starting the worker container, then
+Each test enqueues jobs before starting the worker container, then
 polls the container's exit code - the worker must stop on its own
 (no SIGTERM needed).
 """

@@ -260,7 +260,7 @@ async def test_pg_reclaim_increments_per_actor_and_disposition(
 # ── Map totality: the sweep must survive drift, and CI must see it ───────
 #
 # An unmapped post-update status driven through
-# the REAL sweep: a bare ``_RECLAIM_DISPOSITIONS[status]`` raised KeyError
+# the real sweep: a bare ``_RECLAIM_DISPOSITIONS[status]`` raised KeyError
 # inside the transaction -> the whole reclaim batch rolled back (no
 # job_attempts, no job_events, no wake NOTIFY, no metric) -> the exception
 # escaped the NotImplementedError/TRANSIENT_PG_ERRORS guards into
@@ -278,7 +278,7 @@ def test_disposition_map_is_exhaustive_over_the_sweep_case_branches() -> None:
     violated; this test makes the violation itself fail CI loudly, with
     the fix named in the failure message, instead of surfacing as an
     ``unknown`` series on a dashboard. (An ELSE arm counts as a branch:
-    the crashed literal is written by the CASE's ELSE, not a THEN.)"""
+    the crashed literal is written by the CASE's ELSE, not a then.)"""
     import re
 
     from taskq.backend._sweeps import _RECLAIM_DISPOSITIONS, _SWEEP_1_SQL
@@ -320,12 +320,22 @@ class _FabricatedTx:
 class _FabricatedReturningConn:
     """ConnLike whose sweep fetch returns fabricated RETURNING rows.
 
+    fail-closed-exempt: a RETURNING row carrying an UNMAPPED post-update
+    status. The shape is unproducible by an honest driver deterministically:
+    the claim statement's RETURNING projects ``j.status`` as written by the
+    SAME statement's CASE (worker/_sweeps's _SWEEP_1_SQL), and the map
+    totality pin above ties ``_RECLAIM_DISPOSITIONS`` to exactly those CASE
+    branches in both directions — so a RETURNING row whose status no case
+    branch writes exists only while CASE and map have drifted, a state
+    reachable only by mutating production SQL, never by seeding rows. The
+    arm exists to keep that drift's blast radius pinned (the sweep survives
+    and counts the unknown); the twin arm below simulates the same drift at
+    the map's source module.
+
     The adversarial review shape: everything else answers like Postgres
     would (the statement_timeout probe, set_config, the batched INSERTs,
     the wake NOTIFY), so the sweep runs its REAL Python path against rows
-    the database never wrote: the only way to reach an unmapped
-    post-update status while the CASE still writes the mapped three.
-    """
+    the database never wrote."""
 
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self._rows = rows
@@ -338,7 +348,10 @@ class _FabricatedReturningConn:
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
         if "current_setting" in sql:
             return [{"current_setting": "0"}]
-        return self._rows
+        if "RETURNING" in sql:
+            # The claim statement: the sweep's row loop reads these.
+            return self._rows
+        raise AssertionError(f"unmatched statement: {sql}")
 
     async def execute(self, sql: str, *args: object) -> str:
         self.executed_sql.append(sql)
@@ -358,7 +371,7 @@ def _fabricated_row(status: str, actor: str = "actor_alpha") -> dict[str, object
         "reclaim_reason": "lock_expired",
         "now_ts": now,
         # The snap's RETURNING now carries the claim-time due time
-        # (``scheduled_at AS due_at``, the attempt ledger's due stamp -
+        # (``scheduled_at as due_at``, the attempt ledger's due stamp -
         # 01.00.20_04_pre_attempt_due_at.sql). None is the honest legacy
         # value: the column is nullable and the batched attempt INSERT
         # accepts it, a row migrated from before the stamp has no due
@@ -378,7 +391,7 @@ async def test_pg_reclaim_survives_an_unmapped_returning_status(
     from taskq.backend._sweeps import sweep_expired_locks
 
     # One mapped row, one fabricated-unmapped row ('scheduled', a status
-    # no current CASE branch writes, standing in for any future one).
+    # no current case branch writes, standing in for any future one).
     conn = _FabricatedReturningConn([_fabricated_row("pending"), _fabricated_row("scheduled")])
 
     count = await sweep_expired_locks(
@@ -399,7 +412,7 @@ async def test_pg_reclaim_survives_an_unmapped_returning_status(
         "channel lose their low-latency wakeup when the batch rolls back"
     )
     assert any("job_attempts" in sql for sql in conn.executed_sql)
-    # The metric counts BOTH rows: the mapped one under its real
+    # The metric counts both rows: the mapped one under its real
     # disposition, the unmapped one under the explicit unknown label.
     # Totals preserved, drift visible on the dashboard.
     observed: Counter[tuple[str, str]] = Counter()

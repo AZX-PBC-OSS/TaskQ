@@ -1,47 +1,33 @@
 # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""THE DOCSHELF ADOPTION BLOCKERS' FIXES (the engine-fixes lane) — the
-adoption team's verdict was "Fix F1 + F4 + F2 and we would ship without
-hesitation"; F4 (the connection-hold) and F1 (the ladder's inheritance)
-re-probed against this branch are the HOLDMAP LANE's territory (the
-verdicts ride this lane's report); the REMAINING fixes are HERE, each
-failing-first (the pin rejected against the base head ``0e2f5cc09`` before
-its fix landed — the red receipts are this lane's captures):
+"""The docshelf adoption blockers' pins — the route arms' cohort
+projection, the derived join's cohort conflict, the fan-in bound's map
+face, the join's decode face.
 
-* **F2** — THE ROUTE ARMS' COHORTS NEVER PROJECTED AT BOOT: the arms
+* the ROUTE ARMS' COHORTS PROJECT AT BOOT: the arms
   fork at RUNTIME (the source's finalize stamps each arm's effective
-  placement), and the boot projection's cohort walk read the DECLARED
-  nodes only — an arm's rows stamped ``(actor, queue)`` pairs no
-  ``ActorConfig`` carried: the rows STRANDED SILENTLY (no dispatch
-  capacity, the strict-queue worker never listened) until the app
-  provisioned the cohorts itself. THE FIX: the boot projection's walk
-  extended to the arms' effective pairs
+  placement), and the boot projection's cohort walk reads the arms'
+  effective pairs
   (``_workflow_cohorts`` — the runner's ``_route_fork`` arithmetic, one
-  vocabulary); a boot that strands silently is the defect.
-* **F3** — THE DERIVED JOIN'S COHORT CONFLICT REPORTED AT VALIDATE:
+  vocabulary); an arm's rows stamped ``(actor, queue)`` pairs no
+  ``ActorConfig`` carries would STRAND SILENTLY (no dispatch
+  capacity, the strict-queue worker never listens) — a boot that
+  strands silently is the defect.
+* the DERIVED JOIN'S COHORT CONFLICT REPORTS AT VALIDATE:
   ``route()``'s derived join inherits the source's ACTOR and takes the
   route's ``queue=`` (default ``default``) — a source placed on a
-  non-default queue split its actor over two queues, the conflict
-  discovered ONLY at the worker's boot, ``validate()`` clean. THE FIX
-  (``W6-actor-queue-cohort``, the W2 precedent's severity — the wiring
-  warns, the boot projection's one-queue law stays the refusal door,
-  because the split placement under one actor is also the taught
-  heterogeneous shape): the ambush reported at the wiring — the actor,
+  non-default queue splits its actor over two queues, a conflict that
+  must surface at the wiring, not only at the worker's boot: the actor,
   both queues, and the distinct-actor remedy named; the map's EXPLICIT
   ``queue=`` knob (the doc-ingest guide's Shape-4 wiring) stays silent.
-* **F6** — THE FAN-IN BOUND'S ESCAPE EXPOSED ON THE MAP FACE: the
-  1000-parent bound is real (the docshelf's ``FanInBoundExceededError``
-  at 2335 chunks) and the child-driven escape was reachable only through
-  the raw ``JoinSpec`` — the authoring verbs exposed nothing. THE FIX:
+* the FAN-IN BOUND'S ESCAPE ON the MAP FACE: the
+  1000-parent bound is real (``FanInBoundExceededError`` at 2335
+  chunks) and the child-driven escape rides
   ``child_driven=`` on ``map_source`` / ``route`` (one machinery, both
   spellings), threaded to the fork's ``JoinSpec`` — and the guide's
   fan-in section teaches it.
-* **F9** — THE JOIN'S DECODE FACE, PINNED HONEST: the re-probe against
-  this branch found the decode ALREADY HONEST at both join faces (the
-  route barrier and the multi-parent fan-in — the declared models
-  decoded, the docshelf's raw-dict face not reproducible through the
-  shared tail with resolvable module-scope annotations). Per the
-  doctrine, the honesty is HELD: this pin asserts the join body receives
-  the DECLARED models — the silent type-mismatch is what's forbidden,
+* the JOIN'S DECODE FACE: both join faces (the
+  route barrier and the multi-parent fan-in) decode the DECLARED models
+  — the silent type-mismatch is what's forbidden,
   and the pin rejects it the day any face regresses to raw dicts.
 """
 
@@ -96,13 +82,13 @@ async def _arm_audio(ctx: Any, item: Audio) -> Report:
 
 
 def test_f2_the_route_arms_forked_cohorts_project_at_boot() -> None:
-    """THE ARMS' ROWS ARE CLAIMABLE ROWS: a route whose arms declare
+    """The arms' rows are claimable rows: a route whose arms declare
     their own placements (the per-arm queue, the arm's DISTINCT actor —
-    the one-queue law's remedy) must see BOTH arms' forked cohorts in
+    the one-queue law's remedy) must see both arms' forked cohorts in
     the boot projection, beside the source's own and the derived join's.
-    The pre-fix walk read the declared nodes only: the arms' cohorts
-    were absent — the arm rows stranded silently until the app
-    provisioned the cohorts itself (the docshelf's workaround)."""
+    A walk that reads the declared nodes only leaves the arms' cohorts
+    absent — the arm rows strand silently until the app
+    provisions the cohorts itself (the docshelf's workaround)."""
     seam.reset_app_registry_for_tests()
     try:
         app = WorkflowApp()
@@ -120,15 +106,15 @@ def test_f2_the_route_arms_forked_cohorts_project_at_boot() -> None:
             return build(routed)
 
         configs = [(c.actor, c.queue) for c in seam.project_workflow_actor_configs()]
-        # THE SOURCE'S OWN + THE DERIVED JOIN'S cohorts (the declared
-        # nodes) — and THE ARMS' FORKED cohorts (the fix's subjects).
+        # the source's own + the derived JOIN'S cohorts (the declared
+        # nodes) — and the arms' forked cohorts (the fix's subjects).
         assert ("wf", "default") in configs, (
             f"the source's own cohort vanished from the projection: {configs}"
         )
         assert ("wf-cpu", "cpu") in configs, (
             "F2: the cpu arm's forked cohort is ABSENT from the boot "
-            f"projection — the arm's rows strand silently (the pre-fix "
-            f"walk read the declared nodes only): {configs}"
+            f"projection — the arm's rows strand silently (a walk that "
+            f"reads the declared nodes only): {configs}"
         )
         assert ("wf-gpu", "gpu") in configs, (
             "F2: the gpu arm's forked cohort is ABSENT from the boot "
@@ -139,12 +125,12 @@ def test_f2_the_route_arms_forked_cohorts_project_at_boot() -> None:
 
 
 def test_f2_the_conflicting_arm_shape_skips_loud_never_silent() -> None:
-    """THE OTHER HONEST FACE (the pin's complement): an arm spelling a
-    SECOND queue on the source's OWN actor (the one-queue-law breach)
+    """The other honest face (the pin's complement): an arm spelling a
+    SECOND queue on the source's own actor (the one-queue-law breach)
     must go LOUD at boot — the workflow's cohorts project NOTHING and
     the defect is named (the projection-skipped arm) — never the silent
-    stranding the pre-fix boot shipped. The projection does NOT raise
-    for a workflow's OWN conflict (the isolation law — one broken build
+    silent stranding. The projection does not raise
+    for a workflow's own conflict (the isolation law — one broken build
     fn must not refuse the worker's whole boot); the READ is: no cohort
     of the broken workflow projects."""
     seam.reset_app_registry_for_tests()
@@ -176,12 +162,12 @@ def test_f2_the_conflicting_arm_shape_skips_loud_never_silent() -> None:
 
 
 def test_f3_the_derived_joins_cohort_conflict_is_convicted_at_validate() -> None:
-    """THE CONFLICT AT THE WIRING, NOT AT THE WORKER'S 3AM: a route's
+    """The conflict at the wiring, not at the worker's 3am: a route's
     source placed on a NON-DEFAULT queue — the derived join inherits the
     source's actor and takes the route's ``queue=`` (default
-    ``default``): one actor over two queues, and the pre-fix
+    ``default``): one actor over two queues, and a wiring that stays
     ``validate()`` was CLEAN — the conflict surfaced only at the
-    worker's boot (the projection's cohort refusal). THE FIX (W6): the
+    worker's boot (the projection's cohort refusal). The wiring warns: the
     same law is REPORTED at validate — the diagnostic names the actor,
     both queues, and the distinct-actor remedy (the W2 precedent's
     severity: the wiring warns, the boot projection's one-queue law
@@ -202,7 +188,7 @@ def test_f3_the_derived_joins_cohort_conflict_is_convicted_at_validate() -> None
     cohort = [d for d in diagnostics if d.rule == "W6-actor-queue-cohort"]
     assert cohort, (
         "F3: the derived join's cohort conflict is INVISIBLE at validate — "
-        "the pre-fix law left the ambush to the worker's boot "
+        "a silent wiring leaves the ambush to the worker's boot "
         f"(the diagnostics: {[d.rule for d in diagnostics]})"
     )
     message = cohort[0].message
@@ -211,7 +197,7 @@ def test_f3_the_derived_joins_cohort_conflict_is_convicted_at_validate() -> None
 
 
 def test_f3_the_taught_map_knobs_split_stays_silent() -> None:
-    """THE MAP'S EXPLICIT KNOB IS NOT THE AMBUSH: the plain map_source's
+    """The map's explicit knob is not the ambush: the plain map_source's
     ``queue=`` is the taught Shape-4 placement (the doc-ingest guide's
     own wiring — the item children on 'enrich' under the source's
     default-queue actor): an EXPLICIT author choice, never the derived
@@ -235,8 +221,8 @@ def test_f3_the_taught_map_knobs_split_stays_silent() -> None:
 
 
 def test_f3_the_taught_heterogeneous_shape_stays_clean_at_the_error_severity() -> None:
-    """THE SEVERITY'S GUARD (the doc-ingest guide's own wiring): the
-    heterogeneous placement under ONE actor (the map's children on
+    """The severity's guard (the doc-ingest guide's own wiring): the
+    heterogeneous placement under one actor (the map's children on
     'enrich', the downstream steps on 'cpu'/'io') is the estate's
     TAUGHT shape — the dev-loop door honors it, so the validate must
     never REFUSE it: the validate() raising face stays clean (the
@@ -273,11 +259,11 @@ async def _big_source(ctx: StepContext) -> list[Image]:
 
 
 def test_f6_the_child_driven_escape_is_exposed_on_the_map_face() -> None:
-    """THE ESCAPE AT THE AUTHORING VERB: ``map_source(src, body,
+    """The escape at the authoring verb: ``map_source(src, body,
     child_driven=True)`` (and route()'s own spelling — one machinery)
     compiles the CHILD-DRIVEN join shape — the compiled node carries the
     declaration, so the fork's ``JoinSpec`` admits a corpus past
-    MAX_FAN_IN_PER_JOIN (the docshelf's 2335-chunk recorded finding) that the
+    MAX_FAN_IN_PER_JOIN (the docshelf demo's 2335-chunk corpus) that the
     default shape REFUSES. The witness is the compile face (the declared
     field rides the node); the bound's own refusals are the fan-in
     pins' (test_wf_fanin_bound_pins)."""
@@ -296,7 +282,7 @@ def test_f6_the_child_driven_escape_is_exposed_on_the_map_face() -> None:
         "the raw JoinSpec, the authoring face silent)"
     )
 
-    # THE DEFAULT STAYS THE BOUNDED SHAPE.
+    # the default stays the bounded shape.
     app2 = WorkflowApp()
 
     @app2.workflow("dsc_f6_default")
@@ -312,7 +298,7 @@ def test_f6_the_child_driven_escape_is_exposed_on_the_map_face() -> None:
 def test_f6_the_child_driven_escape_is_exposed_on_route() -> None:
     """The route's own spelling (the dict form IS map_source — one
     machinery): ``route(source, arms, child_driven=True)`` carries the
-    same declaration to the SAME join."""
+    same declaration to the same join."""
     app = WorkflowApp()
 
     @app.workflow("dsc_f6_route_cd")
@@ -354,9 +340,9 @@ async def _f9_barrier_body(ctx: Any, items: list[Report]) -> int:
 async def test_f9_the_multi_parent_join_body_receives_the_declared_models(
     wf_pool: Any, wf_schema: str
 ) -> None:
-    """THE DECODE FACE AT THE JOIN, HELD: a multi-parent fan-in's body —
+    """The decode face at the join, held: a multi-parent fan-in's body —
     the step consuming SEVERAL promises — receives the parents' results
-    DECODED INTO THE DECLARED MODELS (the same R3 face the rest of the
+    DECODED into the DECLARED MODELS (the same R3 face the rest of the
     machinery honors), never the jsonb round-trip's raw dicts. The
     docshelf team's F9 observed raw dicts at this face; the re-probe
     against this branch found the decode HONEST (the docshelf face not
@@ -389,7 +375,7 @@ async def test_f9_the_multi_parent_join_body_receives_the_declared_models(
 
 
 async def test_f9_the_route_barrier_decodes_the_declared_sum(wf_pool: Any, wf_schema: str) -> None:
-    """THE BARRIER'S DECODE (the docshelf's digest face): the route
+    """The barrier's decode (the docshelf's digest face): the route
     join's consumer — its ``list[Sum]`` param — receives the DECLARED
     models with attribute access, never dicts (the guide's own
     teaching, now held by a pin)."""

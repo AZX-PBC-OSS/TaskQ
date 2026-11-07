@@ -131,7 +131,7 @@ def test_tc1_wedged_loop_unresponsive() -> None:
     elapsed time exceeds 1.5 s - the signal that the loop was
     unresponsive.
 
-    The return value of ``_check_live`` is NOT gated because
+    The return value of ``_check_live`` is not gated because
     ``call_later(0.01,...)`` fires before the 1 s timeout callback
     when the loop unblocks (earlier heapq deadline), producing a
     false positive. Only wall-clock timing is reliable from within
@@ -283,7 +283,7 @@ async def test_tp1_ready_body_schema_invariant(
     (a) every body has exactly the pinned key set from
     (b) ``shutdown_phase`` is ``None`` iff the deps phase is NONE,
         otherwise an int matching ``phase.value``,
-    (c) ``ready=True`` iff ``shutdown_phase == NONE AND pg_ping_ok=True``,
+    (c) ``ready=True`` iff ``shutdown_phase == NONE and pg_ping_ok=True``,
     (d) the keys appear in the order specified by.
     (.)
     """
@@ -357,7 +357,7 @@ async def test_tp1_cross_transport_parity() -> None:
     Mounts ``create_health_router(deps)`` on a FastAPI app and uses
     ``TestClient`` to GET ``/jobs/health/ready``. Compares the
     response body bytes to ``build_ready_body(await compute_health(deps), deps)``
-    for the SAME deps. Asserts byte-equality across three parametrised
+    for the same deps. Asserts byte-equality across three parametrised
     states (NONE+healthy, DRAINING+healthy, NONE+pg_failure).
     (cross-transport invariant.)
     """

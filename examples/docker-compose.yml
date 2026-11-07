@@ -109,7 +109,7 @@ services:
       TASKQ_EXAMPLE_PORT: "8000"
       TASKQ_ADMIN_URL: http://localhost:8001
       TASKQ_MIGRATE_ON_START: "true"
-      # THE DEMO'S CENTRAL PROPERTY (attack-4 F-P4-DEMO-DEAD-RESOLVE's
+      # THE DEMO'S CENTRAL PROPERTY (the demo dead-resolve attack's
       # cure): the trigger's 202 URL lands HERE — the run page renders on
       # THIS process's embedded admin, and its Resolve form POSTs to THIS
       # process's actions route. Without the actions opt-in the form's

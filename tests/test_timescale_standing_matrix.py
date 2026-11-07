@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, never user input; every value is $-bound.
-"""The STANDING-UP matrix: every way TaskQ gets deployed, with and without
+"""The STANDING-up matrix: every way TaskQ gets deployed, with and without
 hypertables, each cell proven against real containers through the
 operator's own subprocess-CLI deploy step.
 
@@ -18,13 +18,13 @@ stands up from, one per test, the cell named in the docstring:
   time - ledger, hypertables and policies converge, no duplicates;
 * ``migrate status`` + a second ``migrate up`` against an
   already-converted schema - the day-2 operator path, not just day 1;
-* the mixed state: a crash artifact that converted ONLY ``job_events`` -
+* the mixed state: a crash artifact that converted only ``job_events`` -
   ``migrate up`` converges the rest (pinned after the convergence fix);
-* cross-engine standing: the SAME env on plain Postgres. The flag-ON
+* cross-engine standing: the same env on plain Postgres. The flag-ON
   refusal cell is the deploy E2E's
   ``test_capability_refusal_exits_one_names_the_setting`` - referenced,
   not duplicated; the cell pinned here is the world's default
-  deployment, flag OFF, engine-agnostic;
+  deployment, flag off, engine-agnostic;
 * the worker's first boot on a converted schema: a REAL worker
   subprocess (the ``tests/system_e2e`` harness's spawn shape) claims a
   job and completes it on hypertables - the runtime proof, not just the
@@ -279,7 +279,7 @@ async def test_cell_fresh_flag_on_applies_the_full_migration_series(
 ) -> None:
     """MATRIX CELL: fresh + flag-on. The deploy E2E's happy deploy pins
     the resulting SHAPE; this cell pins the LEDGER's completeness: with
-    the conversion running after, EVERY migration in the bundled series
+    the conversion running after, every migration in the bundled series
     applies - not a subset - and the converted shape stands on top of the
     full series."""
     schema = matrix_schema
@@ -379,7 +379,7 @@ async def test_cell_remigrate_idempotence_converges_without_duplicates(
     policies converge. Convergence is pinned where the duplicates would
     have to hide: the deploy step's registration is remove-then-add (it
     deliberately re-registers on every flag-on run, minting a fresh bgw
-    job id each time - measured), so the stable invariants are ONE policy
+    job id each time - measured), so the stable invariants are one policy
     per hypertable (counted, never accumulated) at the interval the
     settings derive, identical after every run."""
     schema = matrix_schema
@@ -429,7 +429,7 @@ async def test_cell_remigrate_idempotence_converges_without_duplicates(
 async def test_cell_migrate_status_and_second_up_run_on_converted_schema(
     matrix_dsn: str, matrix_schema: str
 ) -> None:
-    """MATRIX CELL: migrations AFTER conversion. A converted schema is not
+    """MATRIX CELL: migrations after conversion. A converted schema is not
     a special case for the migrate tooling: ``migrate status`` walks the
     whole bundled series against it without error (every migration shows
     applied, none pending), and a second ``migrate up`` applies nothing
@@ -519,7 +519,7 @@ async def test_cell_mixed_partially_converted_schema_converges(
 
         # The crash artifact: only job_events converts - the boundary
         # between the conversion's own first and second halves. No
-        # policies: registration comes after ALL conversions, so the
+        # policies: registration comes after all conversions, so the
         # crashed run never reached it.
         settings = _flag_on_settings(matrix_dsn, schema)
         converted: list[str] = []
@@ -562,7 +562,7 @@ async def test_cell_plain_postgres_flag_off_deploys_clean(plain_dsn: str) -> Non
     deployment, and the cell the deploy E2E does not own (its
     ``test_capability_refusal_exits_one_names_the_setting`` already pins
     the flag-ON refusal on this engine; referenced, not duplicated).
-    The SAME env, flag off, on plain Postgres: the full series applies,
+    The same env, flag off, on plain Postgres: the full series applies,
     the vanilla shape stands, and zero timescale artifacts exist - the
     extension is not even probed for, let alone created."""
     schema = "tsxp_" + new_uuid().hex[:12]

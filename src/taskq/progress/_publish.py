@@ -253,7 +253,7 @@ async def _publish_progress_event_coalesced(
     ``ctx.progress()`` fires at actor call rate, and an uncoalesced
     publish per call costs one Redis round trip per call (the Postgres
     side has coalesced into the flush buffer all along). This wrapper
-    keeps at most ONE publish in flight per job: a progress call that
+    keeps at most one publish in flight per job: a progress call that
     lands while one is running only latches its event on the buffer's
     ``pending_publish`` (set by the caller, see ``JobContext.progress``),
     and the in-flight task re-publishes the latched event when its round
@@ -284,7 +284,7 @@ async def _publish_progress_event_coalesced(
         )
         while buffer.pending_publish is not None:
             # Read, clear, then publish: a progress call landing during the
-            # round trip below latches a NEWER event on the buffer, and the
+            # round trip below latches a newer event on the buffer, and the
             # next iteration publishes that one.
             pending = buffer.pending_publish
             buffer.pending_publish = None
@@ -344,12 +344,12 @@ async def _publish_state_change_event(
 
     if _override_seq is not None or _override_pending_state is not None:
         # The caller's terminal/requeue write computed the seq (and usually
-        # the state) it already durably SET: publish exactly those. A None
+        # the state) it already durably set: publish exactly those. A None
         # state means the write had no state delta to carry - a successful
         # pre-terminal flush retires the buffer (delta into base_seq,
         # flushed keys deleted from pending_state), so
         # _seq_and_state_after_flush_attempt legitimately returns None
-        # there. Falling back to the buffer read would publish the RETIRED
+        # there. Falling back to the buffer read would publish the retired
         # head, which is the last event's seq: the wire would duplicate the
         # progress event before the state change and drop the consumed seq
         # the mark_* write SETs, so a seq-cursor consumer discards the

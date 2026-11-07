@@ -13,7 +13,7 @@ tick:
   ``mark_abandoned`` uses a separate pool connection that would deadlock on the
   row lock that the heartbeat transaction still holds.
 
-- ``run_post_tx()``, called by ``heartbeat_loop`` AFTER the transaction block
+- ``run_post_tx()``, called by ``heartbeat_loop`` after the transaction block
   exits (and therefore after the transaction has committed and released its row
   locks).  Drains ``_pending_abandons``, calling ``mark_abandoned`` + deregister
   for each entry.
@@ -23,13 +23,13 @@ Key correctness invariants ():
 - ``all()`` is synchronous: in asyncio's single-threaded model no other
   coroutine can mutate ``_by_id`` between the list-copy and return *unless*
   there is an intervening ``await``.  ``all()`` has no ``await``, so the
-  copy is atomic from the event-loop perspective.  The lock is NOT acquired
+  copy is atomic from the event-loop perspective.  The lock is not acquired
   in ``all()``, acquiring an asyncio.Lock requires ``await`` and would force
   a coroutine boundary that breaks the atomicity guarantee.
 - ``cancel_observed_at`` uses ``asyncio.get_running_loop().time()`` (monotonic
   event-loop clock), never ``time.time()`` or ``datetime.now()``.
-- Phase-2 PG write (``conn.execute``) happens BEFORE ``task.cancel()`` in
-  code order with NO intervening ``await`` (PG-first invariant).
+- Phase-2 PG write (``conn.execute``) happens before ``task.cancel()`` in
+  code order with no intervening ``await`` (PG-first invariant).
 - No ``try/except`` inside the phase-2 block, PG-write failures propagate
   to ``heartbeat_loop``'s outer handler.
 - ``run_post_tx`` is always called after ``run_in_tx`` on the same tick, even
@@ -86,7 +86,7 @@ def _record_phase_transition(from_phase: CancelPhase, to_phase: CancelPhase) -> 
     (NONE, FORCED), PG-observation fast-advance (heartbeat hook
     observes ``db_phase=FORCED`` while local is still ``NONE``).
 
-    PG's ``cancel_phase`` column has ``CHECK (cancel_phase BETWEEN 0 AND 2)``
+    PG's ``cancel_phase`` column has ``CHECK (cancel_phase BETWEEN 0 and 2)``
     so :attr:`CancelPhase.ABANDON_PENDING` is in-process only, never
     persisted. Using the typed enum here keeps the metric attributes
     consistent with the rest of the cancel pipeline; the int conversion
@@ -196,7 +196,7 @@ class _CancelController:
         # key with the new attempt's entry. The drain's cancellation
         # delivery and deregister belong to the attempt it queued, never
         # to whatever the key holds by then. The entry is None for the
-        # UNHELD class (see run_in_tx's unheld walk): the row carries no
+        # unheld class (see run_in_tx's unheld walk): the row carries no
         # registry entry, so the drain's mark_abandoned is the whole
         # job - there is no task to cancel and nothing to deregister;
         # the drain still delivers to a late-registering entry (the
@@ -205,10 +205,10 @@ class _CancelController:
         self._pending_abandons: deque[tuple[JobId, _ActiveJob | None]] = deque()
 
         # First-sight stamps for the unheld class: polled rows carrying a
-        # cancel flag that no registry entry holds AND that none of this
+        # cancel flag that no registry entry holds and that none of this
         # worker's other holding maps covers (queued, claim intents - the
         # walk's ownership test excludes them, see run_in_tx's unheld
-        # walk). The graces measure THIS worker's observation of the flag
+        # walk). The graces measure this worker's observation of the flag
         # exactly as ``_ActiveJob.cancel_observed_at`` does for held rows;
         # a row the walk stops treating as unheld (taken by a consumer,
         # parked, terminalised, reclaimed) drops its stamp, so a
@@ -218,7 +218,7 @@ class _CancelController:
     def _tick_liveness(self) -> None:
         """Renew the heartbeat loop's detector-2 stamp between round trips.
 
-        A bulk cancel makes every active job's escalation due inside ONE
+        A bulk cancel makes every active job's escalation due inside one
         heartbeat tick, each costing an escalation UPDATE plus an event
         INSERT round trip; without renewing between them, a healthy drain
         that merely outlasts one staleness budget
@@ -266,12 +266,12 @@ class _CancelController:
                 active.cancel_observed_at = loop.time()
                 active.cancel_phase = CancelPhase.COOPERATIVE
                 # The poll only returns rows carrying cancel_requested_at,
-                # so this observation is proof the OPERATOR asked, it
-                # overrides a SHUTDOWN stamp from a deploy that signalled
+                # so this observation is proof the operator asked, it
+                # overrides a shutdown stamp from a deploy that signalled
                 # the job first (the row is the final arbiter of origin).
                 active.cancel_origin = CancelOrigin.OPERATOR
                 active.ctx._set_cancel_origin(CancelOrigin.OPERATOR)  # pyright: ignore[reportPrivateUsage]  # Why: the controller is the designated writer of the context's origin stamp (set alongside cancel_event.set(), per the field's contract).
-                # The EXECUTING side's cancel count (taskq.jobs.cancels_actored_total):
+                # The executing side's cancel count (taskq.jobs.cancels_actored_total):
                 # this is the durable surface a scrape can see — the
                 # issuer's own taskq.cancellation.requested dies with its
                 # process, this one moves on the worker whose poll is
@@ -290,7 +290,7 @@ class _CancelController:
 
             # ── PG-observation fast-advance ────────────────────────────
             if db_phase == CancelPhase.FORCED and active.cancel_phase < CancelPhase.FORCED:
-                # First observation of THIS request (local was NONE, the
+                # First observation of this request (local was none, the
                 # PG row already escalated past the poll's cooperative
                 # arm): count it here so the ladder's fast path is not
                 # the one cancel shape the executing-side counter misses.
@@ -305,7 +305,7 @@ class _CancelController:
                 )
                 _record_phase_transition(active.cancel_phase, CancelPhase.FORCED)
                 active.cancel_phase = CancelPhase.FORCED
-                # A row at FORCED is only reachable through an operator's
+                # A row at forced is only reachable through an operator's
                 # cancel request, stamp the origin so the terminal routing
                 # never reads the operator's escalation as a deploy.
                 active.cancel_origin = CancelOrigin.OPERATOR
@@ -317,13 +317,13 @@ class _CancelController:
                 elapsed = loop.time() - active.cancel_observed_at
 
             # ── Phase 2: forced escalation ───────────────────────────
-            # Why the second arm: a local phase of FORCED (or beyond) while PG
-            # still reads COOPERATIVE is the signature of a phase-2 write that
+            # Why the second arm: a local phase of forced (or beyond) while PG
+            # still reads cooperative is the signature of a phase-2 write that
             # was applied in memory but rolled back with its heartbeat
             # transaction, another job's statement failed inside the same
             # tick, or the COMMIT itself did.  Without re-issuing it, PG would
             # stay at phase 1 forever: the escalation only ever fires from a
-            # local COOPERATIVE phase, so mark_abandoned's `cancel_phase = 2`
+            # local cooperative phase, so mark_abandoned's `cancel_phase = 2`
             # guard could never match and the job would never again be
             # cancellable.  Re-issuing is safe: the escalation UPDATE is itself
             # guarded by `cancel_phase = 1`, and task.cancel() on an
@@ -361,7 +361,7 @@ class _CancelController:
                 )
                 # If both deadlines are already satisfied on this same
                 # tick, set the in-process phase-3 sentinel and queue the
-                # abandon WITHOUT delivering the cancellation here. The
+                # abandon without delivering the cancellation here. The
                 # abandon's write is not durable until the post-commit
                 # drain lands it, and a cancellation delivered inside this
                 # transaction lets the consumer unwind and deregister
@@ -374,7 +374,7 @@ class _CancelController:
                 # drain delivers the cancellation after mark_abandoned
                 # applies (see run_post_tx); a rollback leaves the entry
                 # registered, the handler still running, and the False
-                # arm re-arms the entry at FORCED for a later tick's
+                # arm re-arms the entry at forced for a later tick's
                 # re-issue, exactly the recovery the comment above
                 # describes. The consumer's ABANDON_PENDING guard still
                 # skips mark_cancelled: by the time the drain cancels the
@@ -396,14 +396,14 @@ class _CancelController:
                 _record_phase_transition(CancelPhase.COOPERATIVE, CancelPhase.FORCED)
 
             # ── Phase 3: queue for post-transaction abandonment ──────
-            # mark_abandoned MUST run outside the heartbeat transaction:
+            # mark_abandoned must run outside the heartbeat transaction:
             # the heartbeat transaction holds an UPDATE lock on this jobs
             # row, and mark_abandoned (on a separate _worker_pool connection)
             # would block waiting for that lock to release, a self-deadlock.
             # We queue the job here and drain in run_post_tx after the
             # transaction commits.
             #
-            # Why db_phase == FORCED: the poll's predicate
+            # Why db_phase == forced: the poll's predicate
             # (locked_by_worker = this worker, cancel_requested_at set,
             # status = 'running') is exactly the set of rows this worker's
             # abandon may touch, mark_abandoned itself is worker-unfenced,
@@ -411,7 +411,7 @@ class _CancelController:
             # terminate another worker's re-dispatched attempt once a
             # reclaim has moved the row.  A row still owned by this worker
             # is always returned by this worker's own poll, so a silent
-            # poll with a local FORCED entry means the entry is stale ,
+            # poll with a local forced entry means the entry is stale ,
             # the abandon must not be issued (the PG-level proof is
             # tests/test_rt_cancelwatch_cross_worker_abandon.py).
             if (
@@ -425,23 +425,23 @@ class _CancelController:
                 self._pending_abandons.append((active.job_id, active))
 
         # ── Unheld rows: the poll's orphan class ─────────────────────
-        # A polled row whose registry entry is GONE: the body exited and
+        # A polled row whose registry entry is gone: the body exited and
         # its outcome write was cancel-fenced (mark_retry's header: a
-        # phase-carrying row matches NO arm, the write no-ops, the
+        # phase-carrying row matches no arm, the write no-ops, the
         # consumer's unconditional finally deregisters, and "the row
         # stays 'running' carrying its phase for the cancel ladder to
         # terminalise"). Until this walk existed the ladder iterated
-        # active_jobs.all() only, so such a row matched NO writer: the
+        # active_jobs.all() only, so such a row matched no writer: the
         # heartbeat kept renewing its lease, and once its claim-stamped
         # started_at aged past the lock lease the claim-loss reconcile
-        # read it as "a claim that never reached an actor" and REFUNDED
+        # read it as "a claim that never reached an actor" and refunded
         # the attempt whose body had already run - the executed attempt
         # lost its ledger row and the row terminalised at the refunded
         # attempt number with no attempt row anywhere (the system tier's
         # effects ledger surfaced it: a body run with no claim row behind
         # it). The poll's own predicate is the ownership contract
         # mark_retry's header already grants this ladder; the walk gives
-        # every polled row the ladder, entry or not, on the SAME grace
+        # every polled row the ladder, entry or not, on the same grace
         # schedule the held walk uses, keyed by this controller's
         # observation map.
         #
@@ -457,13 +457,13 @@ class _CancelController:
         # pins, so the ordering holds wherever that cascade's premises
         # hold.
         #
-        # The ownership test excludes EVERY map this worker holds rows in,
+        # The ownership test excludes every map this worker holds rows in,
         # not just the registry. A bare ``get(id) is None`` reads two other
-        # classes as "unheld": a row PARKED in the local queue (the
+        # classes as "unheld": a row parked in the local queue (the
         # producer's mark_enqueued mark, no consumer take yet) and a row in
         # its take-to-register window (a standing claim intent). Neither
         # has an entry, and neither is orphaned - both are rows this
-        # process is ABOUT to execute, exactly the rows every hand-back
+        # process is about to execute, exactly the rows every hand-back
         # pass excludes through held_ids() + queued_ids(). Abandoning one
         # hands a terminal row to a consumer that has not taken it yet:
         # the abandon applies (the guard reads running x phase 2, both
@@ -475,7 +475,7 @@ class _CancelController:
         # run-after-terminal shape the system tier's effects ledger
         # surfaced; tests/test_attack_double_run_seams.py pins both
         # classes). The held walk owns the taken row the moment it
-        # registers: the same graces run from ITS observation, and the
+        # registers: the same graces run from its observation, and the
         # abandon delivers the cancellation to the live entry.
         owned_ids = set(self._deps.active_jobs.held_ids()) | set(
             self._deps.active_jobs.queued_ids()
@@ -571,7 +571,7 @@ class _CancelController:
         plus the unwinding consumer both race the drain with the
         operator's own verdict (see the comment in the body).
 
-        An abandon that did NOT apply (the write returns ``False``,
+        An abandon that did not apply (the write returns ``False``,
         because its guard did not match) leaves the job registered and its
         phase back at FORCED, so a later tick can re-issue the escalation
         and re-queue the abandon.  Deregistering there would strand a
@@ -609,17 +609,17 @@ class _CancelController:
         """
         worker_id = self._worker_id
         # The shutdown handover: while the shutdown orchestration is
-        # active, the orchestrator owns every HELD entry's exit (its
-        # RELEASING phase writes the operator's own verdict). A held
+        # active, the orchestrator owns every held entry's exit (its
+        # releasing phase writes the operator's own verdict). A held
         # abandon draining here would write `abandoned` over a consumer
         # that is unwinding toward `mark_cancelled` - two writers racing
-        # DIFFERENT verdicts on one row, and whichever committed first
+        # different verdicts on one row, and whichever committed first
         # owned the terminal state: a row the operator cancelled showed
         # `abandoned` (the system tier's cancel-racing-SIGTERM scenario).
         # The drain therefore writes the operator's verdict too
         # (mark_cancelled, the same worker+attempt fence the consumer's
         # write uses): whichever of the two commits, the row reads
-        # `cancelled`. The UNHELD class keeps mark_abandoned: no entry,
+        # `cancelled`. The unheld class keeps mark_abandoned: no entry,
         # no consumer, no other writer - the ladder is the row's only
         # terminal writer.
         shutdown_owns = self._deps.shutdown_phase is not ShutdownPhase.NONE
@@ -646,7 +646,7 @@ class _CancelController:
                 if not applied:
                     # A False is ambiguous: the guard no-ops for a job
                     # that finished naturally, for an escalation another
-                    # writer moved, and for an abandon that is ALREADY
+                    # writer moved, and for an abandon that is already
                     # durable. Only the row tells them apart, and the
                     # durable case still owes its delivery (see the
                     # False arm below). The read joins the try: a cut
@@ -661,7 +661,7 @@ class _CancelController:
                 # TimeoutError, a PostgresError, a socket death, or the
                 # heartbeat tick's command-budget cut, delivered as a
                 # CancelledError through the shield), the write's fate
-                # is not observable here: a cut write DETACHES under the
+                # is not observable here: a cut write detaches under the
                 # shield and can still commit after this re-queue, a
                 # failed write did not land. Re-queueing is correct
                 # either way: a write that did not land is re-issued by
@@ -669,7 +669,7 @@ class _CancelController:
                 # not-applied guard, which re-reads the row and
                 # completes the delivery the durable abandon still
                 # owes. CancelledError is caught for the
-                # SAME re-queue reason and re-raised unchanged: at real
+                # same re-queue reason and re-raised unchanged: at real
                 # task teardown the queue dies with the controller
                 # (nothing drains later - the pop-and-lose behavior),
                 # while at a budget cut the next tick drains
@@ -688,7 +688,7 @@ class _CancelController:
                     # guard miss on a live escalation: the terminal state
                     # owns the row (the shutdown swap's `cancelled` or the
                     # ladder's `abandoned`), the guard absorbed the
-                    # duplicate WRITE, and the delivery the cut dropped
+                    # duplicate write, and the delivery the cut dropped
                     # completes here. Same first-delivery-only shape as
                     # the applied arm below, and no second write: the
                     # attempt row is the first one's. The delivery and
@@ -715,7 +715,7 @@ class _CancelController:
             # durable, so the unwinding consumer's ABANDON_PENDING guard
             # skips mark_cancelled, and a rollback has already been
             # survived with the entry registered and re-armed. Deliver the
-            # cancellation now, but only as the FIRST delivery: a task
+            # cancellation now, but only as the first delivery: a task
             # already cancelling (the staggered path's phase-2 arm
             # cancelled it a tick earlier) or already done must not take a
             # second cancellation from the drain.
@@ -833,7 +833,7 @@ class ClaimIntent:
 
     Pure identity: one instance per ``mark_claimed`` call, held by the
     loop iteration that took the row and returned to ``resolve_claim`` at
-    exit, so the resolver drops only ITS OWN claim (the issue-461 class:
+    exit, so the resolver drops only ITS own claim (the issue-461 class:
     the same key can be re-marked by a later generation's take before the
     stale generation unwinds). Deliberately empty, the value is the
     object identity alone.
@@ -871,12 +871,12 @@ class ActiveJobRegistry:
         # to execute, and the fleet would run it concurrently. The intent
         # map closes that window: the mark lands with no await after the
         # take, and every hand-back pass excludes both maps. Keyed by id
-        # to a CLAIM TOKEN, not a bare set: the token is what makes
+        # to a claim token, not a bare set: the token is what makes
         # ``resolve_claim`` identity-scoped (the issue-461 class). A
-        # stale attempt's loop iteration can unwind AFTER a same-worker
+        # stale attempt's loop iteration can unwind after a same-worker
         # re-claim took the row again (the re-claim's own
         # ``mark_claimed`` overwrote the key); a bare-id discard would
-        # erase the LIVE claim's intent and the hand-back passes would
+        # erase the live claim's intent and the hand-back passes would
         # re-pend a row this process is about to execute. The resolver
         # drops only the claim it holds.
         self._claim_intents: dict[JobId, ClaimIntent] = {}
@@ -939,7 +939,7 @@ class ActiveJobRegistry:
     def held_ids(self) -> list[JobId]:
         """Snapshot of every row this process may still execute: registered and intent.
 
-        Deliberately NOT the queued ids (``queued_ids()``): a row parked
+        Deliberately not the queued ids (``queued_ids()``): a row parked
         in local_queue at a DRAINING exit must be re-pended by the exit
         hand-back, which excludes this snapshot only — the hand-back
         passes (drain, isolate) and the heartbeat's lost-claim probe

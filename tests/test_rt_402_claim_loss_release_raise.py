@@ -7,7 +7,7 @@ round's remaining steps run. The issue names the pool release as the one
 await left in that window: asyncpg's ``PoolConnectionHolder.release``
 re-raises a failed ``Connection.reset()`` (``finally: raise ex``), so a
 socket that dies between the claim's commit and the release makes
-``pool_ctx.__aexit__`` raise AFTER the rows are ``running`` and locked to
+``pool_ctx.__aexit__`` raise after the rows are ``running`` and locked to
 this worker. The producer's transient arm then continues knowing nothing
 was claimed.
 
@@ -82,7 +82,7 @@ class _InjectionState:
         self.claimed = False
         self.raised = False
         # The job ids the claim round actually returned: the canary that
-        # ties the injected raise to THIS test's jobs, not to some other
+        # ties the injected raise to this test's jobs, not to some other
         # row the dispatch CTE happened to return.
         self.claimed_ids: list[str] = []
 
@@ -208,7 +208,7 @@ async def test_dispatch_round_that_raises_after_its_claim_commit_recovers(
     # the issue names: the round's pool release, after the claim commit.
     import taskq.backend.postgres as pg_backend_module
 
-    # The seam IS the module-private alias the backend delegates through;
+    # The seam is the module-private alias the backend delegates through;
     # the same private-seam rationale the producer loop's _disown_job
     # import carries.
     real_dispatch = pg_backend_module._dispatch  # pyright: ignore[reportPrivateImportUsage]
@@ -250,7 +250,7 @@ async def test_dispatch_round_that_raises_after_its_claim_commit_recovers(
             )
         assert state.claimed, "the raise must land after a committed claim"
         # The canary, inside the patched path: the claim the injection
-        # raised on returned THIS test's jobs. An injection that fired on
+        # raised on returned this test's jobs. An injection that fired on
         # some other round's rows would strand nothing this test tracks,
         # and every phase-1 assertion below would be vacuous.
         assert set(ids) <= set(state.claimed_ids), (
@@ -302,11 +302,11 @@ async def test_dispatch_round_that_raises_after_its_claim_commit_recovers(
             )
             await asyncio.sleep(0.5)
 
-        # The recovery is a RE-DISPATCH, not a silent terminalization:
+        # The recovery is a re-dispatch, not a silent terminalization:
         # the rows re-claimed and ran to terminal. The re-dispatch runs on
-        # the REFUNDED attempt (issue 458: the reconcile refunds the
+        # the refunded attempt (issue 458: the reconcile refunds the
         # claim-time increment of a claim that never reached an actor, so
-        # the re-claim is each job's FIRST attempt), not on a second
+        # the re-claim is each job's first attempt), not on a second
         # charged attempt: an attempt >= 2 here would mean the stranded
         # claim's charge stood and spent this job's budget.
         rows = await _job_rows(probe, schema)

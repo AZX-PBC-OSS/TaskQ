@@ -3,7 +3,7 @@
 Generates a single RSA keypair at module import and provides helpers to build
 signed id_tokens and JWKS dicts so tests can mock an OIDC provider without
 any real IdP dependency. A second "foreign" keypair signs tokens that the
-served JWKS does NOT contain, for negative signature-validation tests.
+served JWKS does not contain, for negative signature-validation tests.
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ _KID: str = str(_PRIV_KEY.kid)
 _SIGN_KEYSET: KeySet = KeySet([_PRIV_KEY])
 _VERIFY_JWKS: dict[str, Any] = {"keys": [_PRIV_KEY.as_dict(private=False)]}
 
-# Signs id_tokens whose public half is NOT in ``jwks_dict()`` - an IdP (or
-# attacker) key the relying party has never seen.
+# Signs id_tokens whose public half is not in ``jwks_dict()`` - an IdP (or
+# or a foreign key) the relying party has never seen.
 _FOREIGN_KEY: RSAKey = RSAKey.import_key(
     rsa.generate_private_key(public_exponent=65537, key_size=2048)
 )

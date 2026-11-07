@@ -2,7 +2,7 @@
 
 The gap this closes is a connection-budget one. A consumer that already knows
 where TaskQ's tables live - because its own settings say so - could not adopt
-``build_worker_connections`` without ALSO exporting ``TASKQ_PG_DSN`` to the
+``build_worker_connections`` without also exporting ``TASKQ_PG_DSN`` to the
 same value, duplicating one fact across two config systems. So it built one
 ``make_pg_pool_factory`` by hand and passed that same factory object to all
 three pool roles. TaskQ resolves each role independently, so every role got a

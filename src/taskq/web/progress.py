@@ -11,7 +11,7 @@ includes ``sse-starlette``).
 
 Design notes
 ------------
-- Subscribe-before-query: the Redis channel is subscribed BEFORE the PG
+- Subscribe-before-query: the Redis channel is subscribed before the PG
   snapshot read to eliminate the race window where an event published between
   the PG read and the subscribe would be silently lost.
 - The PG connection is released immediately after the initial row fetch; no
@@ -30,7 +30,7 @@ Design notes
 - On client disconnect, ``try/finally`` in the generator calls
   ``pubsub.unsubscribe()`` and ``pubsub.aclose()`` to prevent stale Redis
   subscriptions.
-- Session re-check (#316): the router-level ``Depends(auth_dependency)`` runs
+- Session re-check : the router-level ``Depends(auth_dependency)`` runs
   once at request acceptance; a stream that authenticated once would otherwise
   keep delivering frames long after its session was revoked. The generator
   therefore re-invokes an optional ``session_verifier`` -- the re-check the
@@ -74,7 +74,7 @@ from taskq.obs import get_meter, record_sse_connection_closed
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
 from taskq.web._routing import HeadForGetRoute
-from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS, acquire_sse_slot
+from taskq.web._sse_limit import acquire_sse_slot, session_gate
 
 logger = structlog.get_logger("taskq.web.progress")
 
@@ -124,10 +124,10 @@ _REDIS_503_BODY: dict[str, str] = {"error": "redis_not_configured"}
 _BROKER_READ_GRACE_SECS: float = 0.5
 
 # Wire ceiling for a resume cursor and an envelope's ``seq``. Storage is
-# NOT the bound: the durable cursor is the jobs table's ``progress_seq``
+# not the bound: the durable cursor is the jobs table's ``progress_seq``
 # column, a bigint since migration 01.00.20_03 widened it from int4 (the
 # migration's own header explains why the storage domain, not any wire
-# choice, was the overflow risk). The 2^31-1 ceiling is wire HYGIENE: it
+# choice, was the overflow risk). The 2^31-1 ceiling is wire hygiene: it
 # bounds the domain a hostile cursor can name on the wire -- the query
 # parameter, the ``Last-Event-ID`` header, and the seq an envelope may
 # claim -- to far above anything the healthy pipeline issues and far
@@ -137,7 +137,7 @@ _BROKER_READ_GRACE_SECS: float = 0.5
 _MAX_PROGRESS_SEQ: int = 2**31 - 1
 
 # Cap on the effective keepalive/re-check cadence of a live stream. The
-# keepalive tick is what bounds post-revocation staleness (#316): the
+# keepalive tick is what bounds post-revocation staleness : the
 # generator re-checks the session once per tick, so a host configuring
 # ``sse_heartbeat_interval`` to hours would silently move the revocation
 # bound to hours. Whatever the configured interval, a quiet stream re-checks
@@ -277,39 +277,12 @@ async def _event_generator(
     browser's EventSource reconnects and is refused at the door.
     """
 
-    _recheck_count = {"n": 0}
-
-    async def _session_still_valid() -> bool:
-        if session_verifier is None:
-            return True
-        first_check = _recheck_count["n"] == 0
-        try:
-            _recheck_count["n"] += 1
-            return bool(
-                await asyncio.wait_for(
-                    session_verifier(),
-                    timeout=SESSION_RECHECK_TIMEOUT_SECS,
-                )
-            )
-        except TimeoutError:
-            # A verifier that outlives its bound is an unknown session
-            # state, not a pass: fail closed, but say WHY -- a hung verifier
-            # (wedged IdP introspection call) wedging the stream is a
-            # different incident from a revoked session, and the revocation
-            # warning below would misname it.
-            logger.warning(
-                "sse-session-recheck-timeout",
-                job_id=str(job_id),
-                channel=channel,
-                timeout_secs=SESSION_RECHECK_TIMEOUT_SECS,
-                stream_phase="initial" if first_check else "streaming",
-            )
-            return False
-        except Exception:
-            # Fail closed: an unknown session state must not keep a
-            # privileged stream open. Logged below via the shared
-            # revocation path's caller.
-            return False
+    _session_still_valid = session_gate(
+        session_verifier,
+        logger,
+        timeout_warning="sse-session-recheck-timeout",
+        timeout_fields={"job_id": str(job_id), "channel": channel},
+    )
 
     try:
         if not await _session_still_valid():
@@ -345,13 +318,13 @@ async def _event_generator(
                 # The reconnect blackhole: the row went terminal while the
                 # client was away and the durable progress_seq never
                 # advanced past the client's cursor (the terminal write's
-                # GREATEST() expression can stand still), so there is
-                # NOTHING to replay - the old arm fell through into the
-                # pub/sub loop, which only ever forwards NEW events: the
+                # greatest() expression can stand still), so there is
+                # NOTHING to replay — falling through into the
+                # pub/sub loop would only ever forward new events: the
                 # reconnecting EventSource subscribed to a finished job
-                # and received keepalives forever. The client cannot learn
+                # would receive keepalives forever. The client cannot learn
                 # the job is over from any frame; tell it directly - the
-                # replay contract is "catch up OR say done", not "be quiet".
+                # replay contract is "catch up or say done", not "be quiet".
                 yield _make_done_event()
                 return
             else:
@@ -380,7 +353,7 @@ async def _event_generator(
                 )
                 raise
 
-            # Session re-check (#316): once per streaming-loop iteration --
+            # Session re-check : once per streaming-loop iteration --
             # this point is both the keepalive tick and "before each yielded
             # event" -- and the read above suspends at most one heartbeat, so
             # a revoked session ends the stream within one keepalive
@@ -438,7 +411,7 @@ async def _event_generator(
                     raise ValueError("seq outside the int4 cursor domain")
                 if envelope["job_id"] != str(job_id):
                     # The crossed-wire check: the channel is per-job, but
-                    # a lying proxy can deliver ANOTHER job's envelope on
+                    # a lying proxy can deliver another job's envelope on
                     # it. Without this compare the foreign event would be
                     # forwarded onto this stream (its seq could even gate
                     # this job's future events). Off-wire deliverables
@@ -491,7 +464,7 @@ async def _event_generator(
 
     finally:
         # Released here, not in the route handler: the slot is held for the
-        # LIFE of the stream, and a client disconnect arrives as CancelledError
+        # life of the stream, and a client disconnect arrives as CancelledError
         # thrown into this generator. Releasing in the handler would free the
         # slot the instant the response was constructed, making the cap a no-op.
         if sse_slot_semaphore is not None:
@@ -575,7 +548,7 @@ def create_router(
         FastAPI dependency: it may declare ``request: Request``.
     session_verifier:
         Optional async re-check for long-lived SSE streams
-        (#316): ``Callable[[Request], Awaitable[bool]]`` returning whether the
+        : ``Callable[[Request], Awaitable[bool]]`` returning whether the
         session that opened the stream is still valid. Live streams re-invoke
         it before every yielded event and at every keepalive tick and end on
         failure, so a session revoked mid-stream (secret rotation, expiry, an
@@ -638,7 +611,7 @@ def create_router(
 
     router = APIRouter(**router_kwargs)
 
-    # Session re-check derivation (#316): prefer the explicit parameter, fall
+    # Session re-check derivation : prefer the explicit parameter, fall
     # back to the attribute the taskq auth dependencies attach to the callable
     # they return. An auth dependency without a re-check cannot be safely
     # re-invoked by us (it may need FastAPI dependency injection), so the
@@ -661,7 +634,7 @@ def create_router(
 
     _schema = schema
     _heartbeat_secs = sse_heartbeat_interval.total_seconds()
-    # Why the cap: the keepalive tick is the revocation bound (#316) -- the
+    # Why the cap: the keepalive tick is the revocation bound  -- the
     # generator re-checks the session once per tick -- so a host-configured
     # interval of hours would silently move that bound to hours. The loop and
     # the fallback ping below are both capped at _SSE_HEARTBEAT_CAP_SECS.
@@ -678,7 +651,7 @@ def create_router(
                 "sse_heartbeat_interval exceeds the "
                 f"{_SSE_HEARTBEAT_CAP_SECS:g} s cap and is clamped: the "
                 "keepalive tick is also the session re-check cadence "
-                "(#316), so a longer interval would silently loosen the "
+                ", so a longer interval would silently loosen the "
                 "bound on how long a revoked session keeps receiving "
                 "frames."
             ),
@@ -735,7 +708,7 @@ def create_router(
         On initial connection (no ``last_event_id`` / ``Last-Event-ID``
         header): emits the current PG snapshot, then streams Redis events.
 
-        On reconnect (``last_event_id`` present): subscribes Redis FIRST,
+        On reconnect (``last_event_id`` present): subscribes Redis first,
         emits one catch-up event from PG if ``progress_seq > last_event_id``,
         then resumes streaming.
 
@@ -770,7 +743,7 @@ def create_router(
         # not consume a slot) and before any pubsub subscription is created,
         # so a rejected connection allocates nothing.
         sse_slot_semaphore = await acquire_sse_slot("progress-stream", _max_sse)
-        # The slot is held for the LIFE of the stream, so ownership transfers
+        # The slot is held for the life of the stream, so ownership transfers
         # to the generator on the success path only. Every early exit below
         # (503 subscribe failure, PG error, 404 job not found) has to give it
         # back -- otherwise a run of requests for missing jobs would exhaust
@@ -923,10 +896,9 @@ def create_router(
                 headers=_SSE_HEADERS,
                 # We emit our own keepalive comments via the get_message timeout
                 # loop; sse-starlette's ping is only a fallback. Bounded at twice
-                # the effective (capped) heartbeat: the old 24-hour value was a
-                # no-lifetime-cap stream -- exactly the property the #316 fix
-                # removes -- while ping=0 causes a tight loop (anyio.sleep(0)
-                # returns immediately).
+                # the effective (capped) heartbeat: an unbounded value is a
+                # no-lifetime-cap stream, while ping=0 causes a tight loop
+                # (anyio.sleep(0) returns immediately).
                 ping=_effective_heartbeat_secs * 2,
                 sep=_SSE_SEPARATOR,
             )
@@ -974,20 +946,20 @@ def create_router(
             raise HTTPException(status_code=404, detail="job not found")
 
         # The progress sequence is a monotonically increasing write cursor
-        # on the progress bytes this endpoint returns, so it IS the ETag
+        # on the progress bytes this endpoint returns, so it is the ETag
         # for the progress state: a seq the client already rendered means
         # every progress field (including the fingerprint the client
         # derives from it) is unchanged.
         #
         # The terminal rows are the exception: the terminal writes' seq
-        # expression is GREATEST(progress_seq, $buffer_seq) and the
+        # expression is greatest(progress_seq, $buffer_seq) and the
         # consumer passes the seq its progress buffer just flushed,
         # exactly the row's current cursor, so the status flips terminal
         # and the cursor stands still. A 304 there would hide the
         # terminal transition behind an unchanged cursor, and the poll
-        # client (realtime.js stops only on a DOWNLOADED terminal status)
+        # client (realtime.js stops only on a downloaded terminal status)
         # would render running forever. A terminal row therefore always
-        # answers 200: the terminal body is the LAST body a poll client
+        # answers 200: the terminal body is the last body a poll client
         # needs, the one download that ends the poll loop, so the cost is
         # one bounded download per job and the seq-matching 304 keeps
         # serving the steady non-terminal state.

@@ -86,7 +86,7 @@ async def test_full_snooze_round_trip() -> None:
         ("running", "succeeded"),
     ]
     assert row.snooze_count == 1
-    # The row's snooze_count column is the deferral's ONLY counter - no
+    # The row's snooze_count column is the deferral's only counter - no
     # metadata mirror is merged alongside it (one source of truth).
     assert "snooze_count" not in (row.metadata or {})
 

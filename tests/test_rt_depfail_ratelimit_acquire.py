@@ -2,7 +2,7 @@
 
 Constitution: fail closed where a check cannot complete; a degraded outcome
 must be distinguishable, never a silent wrong answer. An infrastructure
-outage (Redis unreachable) during rate-limit acquisition is NOT a job
+outage (Redis unreachable) during rate-limit acquisition is not a job
 outcome - burning the job's retry budget and persisting the Redis error as
 the job's ``error_message`` is the misattribution class.
 """
@@ -290,7 +290,7 @@ async def test_redis_outage_fallback_composition_runs_actor_via_pg() -> None:
     dispatch composition: the acquire falls back to Postgres, the actor
     runs, and no failure accounting happens.
 
-    Verdict asserted: DEGRADE-AND-REPORT (fail-closed fallback, no retry
+    Verdict asserted: DEGRADE-and-REPORT (fail-closed fallback, no retry
     budget burn, distinguishable via the fallback warning).
     """
     _ACTOR_RUNS[0] = 0
@@ -362,7 +362,7 @@ async def test_redis_store_rejection_fallback_composition_runs_actor_via_pg(
     in ``Script.__call__`` (re-EVAL after re-SCRIPT LOAD), so it never
     signals a store outage.
 
-    Verdict asserted: DEGRADE-AND-REPORT, identical to the
+    Verdict asserted: DEGRADE-and-REPORT, identical to the
     ``ConnectionError`` composition test above.
     """
     _ACTOR_RUNS[0] = 0

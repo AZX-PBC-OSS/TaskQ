@@ -1,8 +1,8 @@
-"""THE EVIDENCE BRANCH'S READ FACE (the extraction's own — the estate
+"""The evidence branch's read face (the extraction's own — the estate
 lives on ``evidence/taskqflow``, the reviewable PR stops carrying it):
 the pins that read the measurement estate's FILES read them from the
 branch (the same files, the same paths, one indirection). The sha
-cross-check stays the verifier's and rv2-13's law — these helpers are
+cross-check stays the verifier's and 13's law — these helpers are
 the file-read face only."""
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ _staging_lock: IO[str] | None = None
 
 def evidence_measurements_dir() -> Path:
     """The estate's ROOT as a Path — the branch's .measurements/ staged
-    ONCE into a temp dir (git archive + extract), cached for the
+    once into a temp dir (git archive + extract), cached for the
     process's lifetime. The pins that WALK the tree (the docs-numbers
     rglob faces) read the staged copy; the verifier's own --evidence-ref
     uses the same staging shape.

@@ -9,14 +9,14 @@ package emitted ZERO: the fleet intercept bypasses ``consume_one_job``
 never enters it, so a consumer running otel (an Azure Monitor or a
 ddtrace backend) sees its flows as silence.
 
-THE FIX reuses the vanilla machinery — no new otel machinery, no new
+the FIX reuses the vanilla machinery — no new otel machinery, no new
 metrics (the vanilla's one wf-relevant instrument is the maintenance
 leader's fleet gauge ``taskq.wf_progress_nodes_total``; no per-run wf
 metric exists in the vanilla to mirror):
 
-* the SAME :func:`taskq.obs.safe_start_span` (the no-op law: telemetry
+* the same :func:`taskq.obs.safe_start_span` (the no-op law: telemetry
   off → a non-recording span, the flow runs, nothing fails);
-* the SAME scrubbed-error recording (``render_exception`` /
+* the same scrubbed-error recording (``render_exception`` /
   ``record_exception_text`` — EXCEPTION TEXT is scrubbed: the Postgres
   DETAIL row values and the URI credentials never reach the exporter.
   The posture is span-text-only, stated plainly: caller-supplied
@@ -24,13 +24,13 @@ metric exists in the vanilla to mirror):
   ride as-declared, unredacted — the same posture as the vanilla's
   ``taskq.identity_key``, which the observability guide documents as
   the operator's own declaration);
-* the SAME naming grammar (lowercase phrases beside the vanilla's
+* the same naming grammar (lowercase phrases beside the vanilla's
   ``process {actor}`` / ``cron fire``): the RUN span is ``run
   {workflow}``, the STEP span is ``step {step_key}``;
-* the SAME ``taskq.*`` attribute namespace (the vanilla's
+* the same ``taskq.*`` attribute namespace (the vanilla's
   ``taskq.actor`` / ``taskq.attempt`` / ``taskq.queue`` family).
 
-THE SPAN TREE
+the SPAN TREE
 -------------
 
 ``run {workflow}`` — the RUN span: a ROOT (``new_root=True``, the
@@ -38,11 +38,11 @@ producer-link pattern — linked, never parented, to the ambient trace),
 created at the flow's first claim (the run-key claim the packaged
 :func:`taskq.workflows.run` performs) and ended at the run's terminal
 (the drive's stop). One per ``run()`` call — the ROOT run's; child
-flows (T28) spawn through ``create_flow`` and carry no run span of
+flows spawn through ``create_flow`` and carry no run span of
 their own (their steps ride the tree below them).
 
-``step {step_key}`` — the STEP span: ONE attempt of one node through
-the claim tail (``FlowRunner._execute_claimed`` — the ONE tail both
+``step {step_key}`` — the STEP span: one attempt of one node through
+the claim tail (``FlowRunner._execute_claimed`` — the one tail both
 doors land in). The parent is the run span WHEN both execute in one
 process (the dev drive — otel's in-process context propagation). On a
 fleet worker there is no run span in that process, so the step span is
@@ -56,7 +56,7 @@ traceparent crosses processes — adding one would be new machinery
 (propagator injection into the node INSERT), deliberately out of
 scope.
 
-THE OUTCOMES
+the OUTCOMES
 ------------
 
 ``taskq.outcome`` echoes the claim tail's own label (the ROW is the
@@ -96,16 +96,16 @@ __all__ = [
     "step_span_name",
 ]
 
-#: The run span's ``taskq.queue``: the ROOT row's queue. The run-key
+#: The run span's ``taskq.queue``: the root row's queue. The run-key
 #: claim inserts the root through :class:`~taskq.workflows.api.
 #: _runner_codec.FlowEntryShim`, whose queue default is the constant —
-#: the root's placement is a constant by construction (the STEPS carry
+#: the root's placement is a constant by construction (the steps carry
 #: their own queues; the step span's ``taskq.queue`` is the node's).
 _ROOT_QUEUE: Final[str] = "default"
 
 #: The step span's status mapping — the tail's outcome labels onto the
 #: vanilla consumer span's own law (``dispatch.py``: OK on the
-#: succeeded class, ERROR on the failed class, the mid-states UNSET).
+#: succeeded class, error on the failed class, the mid-states unset).
 #: The mirror of the fleet door's ``_FLOW_OUTCOME_TO_CONSUMED`` (the
 #: consumed vocabulary), kept as its own table so the span contract
 #: names the labels it means without importing the worker seam.
@@ -222,7 +222,7 @@ def finish_step_span(span: Span, outcome: str) -> None:
 
     ``taskq.outcome`` is the tail's own label (the record's echo); the
     status follows the vanilla consumer span's law via
-    :data:`_OK_OUTCOMES`. The ladder's failure face is NOT set here —
+    :data:`_OK_OUTCOMES`. The ladder's failure face is not set here —
     the ladder arm (the site with the exception) already recorded the
     scrubbed text and the ERROR status;
     :func:`record_step_laddered`'s ERROR set survives this function's
@@ -241,7 +241,7 @@ def finish_step_span(span: Span, outcome: str) -> None:
 def record_step_laddered(span: Span, exc: Exception, *, retried: bool) -> None:
     """Record the ladder's verdict on the STEP span — SCRUBBED.
 
-    THE REDACTION LAW (the vanilla consumer's own idiom,
+    the REDACTION LAW (the vanilla consumer's own idiom,
     ``_consumer.py``'s attempt span): the exception is rendered through
     :func:`taskq.obs.render_exception` once — the pass that strips the
     Postgres DETAIL row values and masks the URI credentials — and
@@ -263,7 +263,7 @@ def record_step_laddered(span: Span, exc: Exception, *, retried: bool) -> None:
 
 
 def record_step_held(span: Span, hold_id: str, signals: Sequence[str]) -> None:
-    """Record the hold (T10) on the STEP span as the ``wf.held`` event.
+    """Record the hold on the STEP span as the ``wf.held`` event.
 
     The hold is not a terminal and not a failure — the node rests in
     the held representation and the resume re-executes the body; the

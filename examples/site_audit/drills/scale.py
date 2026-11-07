@@ -4,12 +4,12 @@
 200 sites fan out (one child per site), run to completion, and fan back
 in. While the drive runs, THREE observability faces are captured:
 
-1. THE PROGRESS PUSH — a ``ProgressListener`` subscribed to the run
+1. the PROGRESS PUSH — a ``ProgressListener`` subscribed to the run
    collects the pushed events while the fleet works (the receipt IS the
    event stream: count + samples);
-2. THE ADMIN VIEW, MID-FLIGHT — the operator surface (``taskq flows
+2. the ADMIN VIEW, MID-FLIGHT — the operator surface (``taskq flows
    list`` + ``taskq flows status``) sampled WHILE the fan-out is live;
-3. THE TERMINAL AGGREGATE — the typed report decoded at the result read,
+3. the TERMINAL AGGREGATE — the typed report decoded at the result read,
    all 200 accounted for.
 
 The wall-clock is reported honestly. One command:
@@ -121,7 +121,7 @@ async def drill() -> None:
     )
     for e in pushed[:3]:
         print(f"  sample: node={e.node_id} source={e.source}")
-    # the push is the POINTER (the docs' own law) — the per-entity payload
+    # the push is the pointer (the docs' own law) — the per-entity payload
     # lives in the state/stream rows; the stream's reach is the receipt.
 
     print("--- THE AGGREGATE ---")

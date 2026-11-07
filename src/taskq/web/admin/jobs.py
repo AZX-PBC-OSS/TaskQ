@@ -59,8 +59,8 @@ from taskq.web.admin._jsonb import decode_jsonb
 # ``list_jobs`` orderings are built from, so the admin's keyset and the
 # client's page through one implementation instead of two that drift.
 # ``descending`` here is a placeholder: the request's ``order`` supplies
-# it in _build_order.  ``nullable`` marks the columns that take NULLS
-# LAST placement and therefore have a NULL range to page through.
+# it in _build_order.  ``nullable`` marks the columns that take nulls
+# last placement and therefore have a NULL range to page through.
 _SORTABLE_LIVE: dict[str, SortColumn] = {
     "created_at": SortColumn("created_at", "ts", descending=True),
     "started_at": SortColumn("started_at", "ts", descending=True, nullable=True),
@@ -97,11 +97,11 @@ _LIVE_COLS = (
     # The live twin of duration_ms: a running row has no finished_at, so
     # duration_ms is NULL while it runs and the Duration cell rendered a
     # dash for exactly the rows an operator most needs a number on. The
-    # elapsed span is computed SERVER-SIDE against the database clock,
+    # elapsed span is computed server-side against the database clock,
     # the same single-arbiter shape as lease_expired below it: started_at
     # is database-written, so measuring it against this process's clock
     # would skew the span by the app-to-database offset. clock_timestamp()
-    # (VOLATILE) is fine here because this is a projection over the ≤
+    # (volatile) is fine here because this is a projection over the ≤
     # page-size fetched rows, not a WHERE bound, so there is no index
     # condition to lose. Rendered only while status='running'; it
     # disappears the row transition terminal, where duration_ms takes
@@ -127,12 +127,12 @@ _LIVE_COLS = (
     "CASE WHEN status = 'running' AND cancel_phase = 0 "
     "  AND lock_expires_at < clock_timestamp() "
     "  THEN true ELSE false END AS lease_expired, "
-    # error_message is deliberately NOT selected: the list renders no
+    # error_message is deliberately not selected: the list renders no
     # error text (the status column and the detail page carry it), and
     # the column is actor-derived text with no storage bound - one
     # poisoned row (an actor raising ValueError("a" * 10_000_000)) would
-    # otherwise TOAST its value through and make every list page view
-    # drag the whole message out of TOAST per row, per fetch, for as
+    # otherwise toast its value through and make every list page view
+    # drag the whole message out of toast per row, per fetch, for as
     # long as the row lives. The detail page bounds it at render
     # (_TRACEBACK_DISPLAY_LIMIT); the list refuses the transfer outright.
     "cancel_requested_at, progress_state, "
@@ -154,7 +154,7 @@ _ARCHIVE_COLS = (
 _TRACEBACK_DISPLAY_LIMIT: int = 2000
 
 # The refusal banners the mutation redirects key to. A refused op must be
-# NAMED where the operator lands (the refused-op contract): the message
+# named where the operator lands (the refused-op contract): the message
 # says what the write refused and what state the row is actually in, so
 # the operator re-reads the page's DB truth instead of guessing.
 _ERROR_MESSAGES: dict[str, str] = {
@@ -271,7 +271,7 @@ def _is_descending(order: str) -> bool:
 def _build_order(sort: str, order: str, sortable: dict[str, SortColumn]) -> JobOrdering:
     """Resolve the requested sort to the ordering that pages it.
 
-    ``id`` is appended in the SAME direction as the primary column, never
+    ``id`` is appended in the same direction as the primary column, never
     against it: the keyset predicate is a row-wise tuple comparison, which
     can only describe a page seam when every column of the tuple sorts the
     same way.  ``id`` is UUIDv7 and therefore time-ordered, so ordering it
@@ -298,12 +298,12 @@ def _cursor_values(
     hand-off raised ``DataError`` and 500'd every timestamp page turn.
 
     An empty ``cursor_at`` on a nullable column is not a missing cursor:
-    it is a seam *inside* the NULL range (``finished_at DESC NULLS LAST``
+    it is a seam *inside* the NULL range (``finished_at DESC NULLS last``
     ends in the unfinished rows), and parses to ``None``.  A malformed
     cursor -- hand-edited URL, stale bookmark, or an empty value on a
     column that has no NULL range -- returns ``None`` so the caller falls
     back to the unpaged first page rather than surfacing a driver error;
-    the caller must then treat the page as NOT paged-into (no cursor was
+    the caller must then treat the page as not paged-into (no cursor was
     applied, so there is no page before it) whatever the query string said.
     """
     if not cursor_id:
@@ -317,12 +317,12 @@ def _cursor_values(
 def _display_slice(rows: list[asyncpg.Record], *, forward: bool) -> list[asyncpg.Record]:
     """The page's display rows from one fetch, direction-aware.
 
-    A forward fetch serves its FIRST ``_PAGE_SIZE`` rows: the overfetch
+    A forward fetch serves its first ``_PAGE_SIZE`` rows: the overfetch
     marker is the FARTHEST row, which the slice correctly leaves
     unserved.  A backward ("prev") fetch is the ``_FETCH_SIZE`` rows
     NEAREST the cursor, re-sorted into forward display order -- the
     overfetch row sits at the END of that list (it is the row nearest
-    the cursor), so the page is its LAST ``_PAGE_SIZE`` rows.  Truncating
+    the cursor), so the page is its last ``_PAGE_SIZE`` rows.  Truncating
     from the front on a backward fetch drops the row closest to the
     cursor: exactly one row stranded on every full prev-page turn
     (backward from ``reference[95]`` served ``reference[44:94]``,
@@ -357,12 +357,12 @@ def _build_paginated_sql(
     cursor_clause = ""
     union_shape = False
     if page.cursor is not None:
-        # The forward walk past a VALUE cursor on a nullable leading column
+        # The forward walk past a value cursor on a nullable leading column
         # is rendered as TWO ordered branches UNION ALL'd, not one
-        # OR-wrapped predicate. The single-statement shape renders
-        # `(lead IS NULL OR row-compare)`; the OR defeats the planner's
+        # or-wrapped predicate. The single-statement shape renders
+        # `(lead IS NULL OR row-compare)`; the or defeats the planner's
         # index-condition extraction (a row-wise compare alone extracts as
-        # Index Cond; the OR turns it into a Filter), so every cursor page
+        # Index Cond; the or turns it into a Filter), so every cursor page
         # filter-scanned the index from its start -- page cost linear in
         # the walked depth, the keyset walk quadratic (measured on
         # PostgreSQL 18.6, a 100k archive, the tab's own page statement:
@@ -371,9 +371,9 @@ def _build_paginated_sql(
         # benchmarks/results/archive-scale-red-probe.json, the 10M-scale
         # extension in archive-scale.json's pagination_pathology). The
         # split restores the seek without changing the rows:
-        # under NULLS LAST the NULL range is wholly after the values, so
+        # under nulls last the NULL range is wholly after the values, so
         # rows strictly past a value cursor are exactly {tuple-compare}
-        # UNION {NULL range} -- branch one seeks the values past the
+        # union {NULL range} -- branch one seeks the values past the
         # cursor, branch two seeks the index's NULL range, and the
         # appended order IS the ordering. Outer ORDER BY re-asserts it
         # over the at-most-2x-page-size union (a deterministic total
@@ -417,7 +417,7 @@ class _PaginatedPage:
     """How one jobs-list request is positioned in its result set.
 
     ``cursor`` is the applied keyset cursor (``None`` on the unpaged first
-    page - absent OR malformed in the query string), and ``forward`` is the
+    page - absent or malformed in the query string), and ``forward`` is the
     walk direction that was actually used.  Both the SQL builder and the
     handler's has_prev / has_next derivation read these so they can never
     disagree about whether a cursor was applied.
@@ -507,7 +507,7 @@ def _cursor_field(value: Any) -> str:
     """Render a row value as the ``cursor_at`` query parameter.
 
     A NULL sort value is an empty parameter, never the string ``"None"``:
-    under NULLS LAST the unfinished rows are a real range that has to be
+    under NULLS last the unfinished rows are a real range that has to be
     paged through, and ``str(None)`` made its seam unparseable, the page
     turn then silently re-served the page the operator was already on.
     """
@@ -554,7 +554,7 @@ async def _resolve_filter_args(
     raw_search: str | None = None,
     raw_tags: str | None = None,
 ) -> tuple[str, list[Any], str, list[str]]:
-    """Parse the /jobs filter query the SAME way for the page and the count.
+    """Parse the /jobs filter query the same way for the page and the count.
 
     Both routes answer from one WHERE (the page's rows and the header's
     "of N" must describe the same set), so the parse lives here: the NUL
@@ -601,7 +601,7 @@ def register(router: APIRouter) -> None:
     """Attach job detail, cancel, list, count, and SSE routes to *router*."""
 
     # ── Jobs list page ──────────────────────────────────────────────────
-    # Must be registered BEFORE /jobs/{job_id} to avoid route conflicts.
+    # Must be registered before /jobs/{job_id} to avoid route conflicts.
 
     @router.get("/jobs", response_class=HTMLResponse)
     async def jobs_list(  # pyright: ignore[reportUnusedFunction]  # Why: FastAPI decorator pattern prevents pyright from seeing registration via router.get().
@@ -619,7 +619,7 @@ def register(router: APIRouter) -> None:
         time_to: str | None = Query(default=None),
         identity_key: str | None = Query(default=None),
         fairness_key: str | None = Query(default=None),
-        # Capped like `actor` above: `search` drives TWO unanchored ILIKEs,
+        # Capped like `actor` above: `search` drives two unanchored ILIKEs,
         # one of them against a cast `id::text`, evaluated per row.
         search: str | None = Query(default=None, max_length=128),
         tags: str | None = Query(default=None),
@@ -630,7 +630,7 @@ def register(router: APIRouter) -> None:
         order: str = Query(default="desc"),
         live: str = Query(default="on"),
     ) -> HTMLResponse:
-        # The undeclared-param refusal FIRST: FastAPI would drop any key
+        # The undeclared-param refusal first: FastAPI would drop any key
         # this signature does not name, and a dropped filter renders the
         # page 200-unfiltered -- the ask silently ignored.
         reject_unknown_query_params(
@@ -655,7 +655,7 @@ def register(router: APIRouter) -> None:
                 "live",
             ),
         )
-        # The page's filters and the header's count parse through ONE
+        # The page's filters and the header's count parse through one
         # resolver (the count endpoint's too), so the "of N" always
         # describes the same set the table's rows came from.
         where, params, tab, statuses = await _resolve_filter_args(
@@ -708,12 +708,12 @@ def register(router: APIRouter) -> None:
         async with pool.acquire() as conn:
             rows = await conn.fetch(query_sql, *query_params)
             # The header's "of N": the whole filtered set's size, from the
-            # SAME where the page's rows came from (the /jobs/count route
+            # same where the page's rows came from (the /jobs/count route
             # builds its count from this same resolver - one filter parse,
             # one truth). One extra query per page view, the admin cadence.
             total_count = int(await conn.fetchval(count_sql, *params) or 0)
 
-        # The walk direction resolves ONCE, before the display truncation,
+        # The walk direction resolves once, before the display truncation,
         # because the truncation itself is direction-aware -- see
         # :func:`_display_slice`.
         page = _paginated_page(sortable, cursor_at, cursor_id, cursor_dir, sort, order)
@@ -726,10 +726,10 @@ def register(router: APIRouter) -> None:
         # came from it), and vice versa, so has_next/has_prev must be
         # direction-aware rather than both derived from the same flag.
         #
-        # Paged-into means a cursor was APPLIED, which is what the resolved
+        # Paged-into means a cursor was applied, which is what the resolved
         # page reports: the query string alone cannot say so, because a
         # malformed cursor is dropped and the first page served, and on a
-        # NULLS LAST column the seam value itself is legitimately empty.
+        # nulls last column the seam value itself is legitimately empty.
         # (``page`` was resolved above the display truncation -- the
         # truncation reads its direction.)
         cursor_dir = "next" if page.forward else "prev"
@@ -821,7 +821,7 @@ def register(router: APIRouter) -> None:
         search: str | None = Query(default=None, max_length=128),
         tags: str | None = Query(default=None),
     ) -> dict[str, Any]:
-        # The jobs-table header counts against THIS route (the same
+        # The jobs-table header counts against this route (the same
         # filters): every filter /jobs itself honors must narrow the
         # count too, or the header's "of N" lies about the filtered set.
         where, params, tab, _statuses = await _resolve_filter_args(
@@ -881,8 +881,8 @@ def register(router: APIRouter) -> None:
                 archived_at = job["archived_at"]
                 attempts_archive_sql = _ATTEMPTS_ARCHIVE_SQL.format(schema=schema)
                 attempts = await conn.fetch(attempts_archive_sql, job_id)
-                # Events read from the SAME ledger the live arm reads -- and
-                # in production that read comes back EMPTY: the archive
+                # Events read from the same ledger the live arm reads -- and
+                # in production that read comes back empty: the archive
                 # sweep's DELETE FROM jobs cascades job_events away (the
                 # sweep's own comment names the cascade; there is no
                 # job_events_archive), so a job the archive arm can serve has
@@ -892,7 +892,7 @@ def register(router: APIRouter) -> None:
                 # archive), never as "No events recorded." -- that phrasing
                 # misreads as the job never emitted any.
                 events = await conn.fetch(events_sql, job_id)
-            # The audit trail is queried for live AND archived jobs: the
+            # The audit trail is queried for live and archived jobs: the
             # whole point of the no-FK design is that the record of who
             # cancelled what outlives the row. A schema the migration has
             # not reached yet renders the page without the section rather
@@ -946,10 +946,10 @@ def register(router: APIRouter) -> None:
             admin_actions_enabled=settings.admin_actions_enabled,
             backend_configured=backend is not None,
             error_text=error_text,
-            # realtime.js is this page's transport in EVERY mode (the
+            # realtime.js is this page's transport in every mode (the
             # script block below: the stream in real-time mode, the state
             # poll everywhere else). The meta refresh alongside it was the
-            # #337 double-fetch on this page - a full-document reload
+            # The double-fetch defect on this page - a full-document reload
             # racing the driver's own poll every interval.
             suppress_refresh=True,
         )
@@ -977,7 +977,7 @@ def register(router: APIRouter) -> None:
         # opaque-driver-error class the list filters reject with
         # parse_text_filter, so reason gets the same clean 400 here.
         #
-        # reason is a FORM field now, not a query parameter: the cancel
+        # reason is a form field now, not a query parameter: the cancel
         # form on the job detail page collects it (the operator is being
         # asked why, the browser should show the box, not the URL bar),
         # and the audit trail records what was submitted.
@@ -994,7 +994,7 @@ def register(router: APIRouter) -> None:
         written = await backend.write_cancel_request(JobId(job_id), reason)
 
         if not written:
-            # The write REFUSED: the row left its cancellable state between
+            # The write refused: the row left its cancellable state between
             # the pre-check above and the write (a worker terminalised it),
             # or a cancel is already in flight (cancel_phase >= 1). The
             # refused-op contract: the operator must hear the refusal where
@@ -1032,7 +1032,7 @@ def register(router: APIRouter) -> None:
         # (or lands in the host's own routes).
         return RedirectResponse(url=f"{base_path}/jobs/{job_id}", status_code=303)
 
-    # ── THE WORKFLOW PROGRESS STREAM (T21 — the SSE face's HTTP mapping) ────
+    # ── the workflow progress stream (the SSE face's HTTP mapping) ────
 
     @router.get("/api/flow/{flow_id}/progress/stream")
     async def flow_progress_stream(  # pyright: ignore[reportUnusedFunction, reportUntypedFunctionDecorator]  # Why: registered via FastAPI decorator; pyright cannot see the route registration, and the router's `.get` is the untyped decorator shape the file's other registrations already carry their ignores for.
@@ -1043,18 +1043,18 @@ def register(router: APIRouter) -> None:
         settings: TaskQSettings = Depends(get_settings),
         last_event_id: int | None = Query(default=None),
     ) -> Any:
-        """The run's progress stream (T21): the seq-cursor replay over the ONE
+        """The run's progress stream: the seq-cursor replay over the one
         workflow stream, mapped onto SSE.
 
-        THE CONNECT SHAPE: a ``display`` frame first (the LEDGER + the state
+        A ``display`` frame first (the LEDGER + the state
         channel — the node states are ledger-derived, never stream-derived:
         the progress-lie fence), then ``progress`` frames in seq order
         (``id:`` the seq — the browser ``EventSource``'s reconnect contract),
         and — when the ring pruned past the reconnecting cursor — the NAMED
-        ``resync`` frame (the partial mode + the state payload) BEFORE the
+        ``resync`` frame (the partial mode + the state payload) before the
         tail, never a silent empty-success.
 
-        THE IMPORT LAW (the import law): the workflows imports are lazy — this module
+        The workflows imports are lazy — this module
         never imports ``taskq.workflows`` at module scope.
         """
         from sse_starlette.event import ServerSentEvent
@@ -1063,7 +1063,7 @@ def register(router: APIRouter) -> None:
         from taskq.workflows._progress_read import progress_stream_generator
         from taskq.workflows.engine import render_workflow_sql
 
-        # The cursor: the header wins (WHATWG SSE §9.2.1 — the browser sends
+        # The cursor: the header wins (whatwg SSE §9.2.1 — the browser sends
         # it on reconnect); the query param is the curl/debugging convenience.
         header_val = request.headers.get("Last-Event-ID")
         cursor = 0
@@ -1090,13 +1090,13 @@ def register(router: APIRouter) -> None:
 
         wsql = render_workflow_sql(schema)
 
-        # THE CAP: each stream pins a poll loop + a socket for as long as
-        # the client holds it — the uncapped scan's guard (the SSE-cap
-        # law) refuses an endpoint without this, and a burst of open
-        # streams would exhaust exactly what the cap bounds. The slot is
-        # taken here (after the cheap 400 guards) and ownership transfers
-        # to the wrapped generator on the success path only; release_after
-        # releases exactly once, in the generator's own finally.
+        # each stream pins a poll loop + a socket for as long as the client
+        # holds it — the uncapped scan's guard (the SSE-cap law) refuses an
+        # endpoint without this, and a burst of open streams would exhaust
+        # exactly what the cap bounds. The slot is taken here (after the cheap
+        # 400 guards) and ownership transfers to the wrapped generator on the
+        # success path only; release_after releases exactly once, in the
+        # generator's own finally.
         sse_slot = await acquire_sse_slot(
             "flow-progress-stream", settings.admin_max_sse_connections, surface="admin"
         )
@@ -1106,14 +1106,13 @@ def register(router: APIRouter) -> None:
         # the raw pool the BoundedPool wraps: the bound stays on every
         # handler-side checkout, the stream's own poll acquire is its own.
         #
-        # THE PUSH PRIMARY, THE POLL BELT: the ProgressListener (the
-        # HitlListener's sibling) rides the
-        # SAME LISTEN/NOTIFY transport — the write's own knock wakes the
-        # replay, sub-poll latency; the 1s poll stays as the fallback
-        # belt. THE CAPACITY TAX (the listener's own docstring): this
-        # stream now holds TWO connections for its life — the poll/belt
-        # checkouts + the listener's dedicated LISTEN connection; the SSE
-        # cap above bounds both faces.
+        # the ProgressListener (the HitlListener's sibling) rides the same
+        # LISTEN/NOTIFY transport — the write's own knock wakes the replay,
+        # sub-poll latency; the 1s poll stays as the fallback belt. the
+        # capacity tax (the listener's own docstring): this stream now holds
+        # two connections for its life — the poll/belt checkouts + the
+        # listener's dedicated LISTEN connection; the SSE cap above bounds both
+        # faces.
         async def _frames() -> AsyncGenerator[ServerSentEvent, None]:
             from taskq.workflows.api._progress_listen import ProgressListener
 

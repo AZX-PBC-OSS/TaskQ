@@ -76,13 +76,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Every worker image repository starts with this prefix. It is also the
 # entry taskq.testing._shared_containers._SWEEP_IMAGE_PREFIXES uses to treat
-# worker CONTAINERS as sweep candidates - a property pinned by
+# worker containers as sweep candidates - a property pinned by
 # test_image_hygiene.py (worker_image_target keeps the prefix).
 WORKER_IMAGE_PREFIX = "taskq-e2e-worker"
 
 # Stable, content-addressed cache for the wheels the worker image installs
 # (populated by _build_wheel in conftest; gitignored via the existing
-# ``dist-e2e-*/`` pattern). One SUBDIR per content digest, the canonical
+# ``dist-e2e-*/`` pattern). One subdir per content digest, the canonical
 # wheel filename inside - pip validates wheel filenames against the wheel's
 # own metadata, so the digest cannot ride in the filename. Entries carry no
 # owner identity - identical content is legitimately reusable by any
@@ -111,7 +111,7 @@ def should_sweep_stale_worker_image(*, repository: str, created: datetime, now: 
     pid suffix IS the owner identity, so sweep iff that pid is dead, with
     the 24 h age backstop against pid recycling.
 
-    Legacy exact-name repositories and any other name shape are NEVER
+    Legacy exact-name repositories and any other name shape are never
     auto-swept: a legacy name records no owner, and a concurrent checkout
     running pre-ownership code can still be building into it -
     ``make clean-e2e`` owns those instead.

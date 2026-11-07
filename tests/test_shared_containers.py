@@ -1,7 +1,7 @@
 """Unit tests for the shared-container machinery in ``taskq.testing._shared_containers``.
 
-That module exists to keep ONE Postgres + ONE Dragonfly across all xdist workers
-of ONE pytest invocation (a ``-n 4`` run previously booted four of each, and the
+That module exists to keep one Postgres + one Dragonfly across all xdist workers
+of one pytest invocation (a ``-n 4`` run without this boots four of each, and the
 contention was the measured cause of heavy PG tests tripping pytest-timeout
 intermittently). Its keep/remove and holder-registry decisions are pure file/OS
 state, so the whole contract is testable without Docker: the Docker I/O wrappers
@@ -35,10 +35,10 @@ if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
 _NOW = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
-# The HARNESS's configured image, not a literal: the sweep prefixes are derived
+# The harness's configured image, not a literal: the sweep prefixes are derived
 # from ``_shared_containers._PG_IMAGE`` (``TASKQ_TEST_PG_IMAGE``-overridable, the
 # CI version matrix's seam), so a pinned literal here would disagree with the
-# module under test on every overridden run. Under the default env this IS
+# module under test on every overridden run. Under the default env this is
 # ``postgres:18-alpine``, which is the value these tests pin.
 _PG_IMAGE = sc._PG_IMAGE
 _DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.0"
@@ -116,7 +116,7 @@ def test_creator_labels_record_this_process_and_its_parent() -> None:
 def test_owner_pid_label_re_matches_any_project_shape() -> None:
     """Cross-repo courtesy on a shared daemon: any project may label with the same
     ``.test.(creator|controller)-pid`` suffix shape, and every repo's sweep
-    must honor ANY of them so one checkout's sweep never kills another's live run."""
+    must honor any of them so one checkout's sweep never kills another's live run."""
     assert sc.OWNER_PID_LABEL_RE.match("taskq.test.creator-pid")
     assert sc.OWNER_PID_LABEL_RE.match("otherproject.test.controller-pid")
     assert sc.OWNER_PID_LABEL_RE.match("anotherapp.test.creator-pid")
@@ -128,7 +128,7 @@ def test_owner_pid_label_re_matches_any_project_shape() -> None:
 
 
 def test_labeled_pids_collects_parseable_pids_across_all_owner_labels() -> None:
-    """All parseable pid values across ours AND any other project's labels; an
+    """All parseable pid values across ours and any other project's labels; an
     unparseable value cannot have come from a real labeling site (all write
     ``str(pid)``), protects no live run, and is dropped."""
     labels = {
@@ -390,7 +390,7 @@ class _BasetempFactory:
 def test_a_serial_shaped_basetemp_resolves_to_itself(tmp_path: Path) -> None:
     """A serial run's basetemp IS the invocation dir (``pytest-N``). Resolving to
     its parent instead (the old ``basetemp.parent`` computation) landed on
-    ``/tmp/pytest-of-<user>`` - one state dir shared by EVERY serial invocation
+    ``/tmp/pytest-of-<user>`` - one state dir shared by every serial invocation
     of the user, which is how two repos ended up reusing each other's pair."""
     serial = tmp_path / "pytest-41"
     serial.mkdir()
@@ -478,7 +478,7 @@ def test_later_acquires_reuse_the_running_pair_without_starting(
     tmp_path: Path, pair_fakes: dict[str, list[object]]
 ) -> None:
     """While any reference is held, later acquire/release cycles (workers joining
-    and finishing at different times) reuse the running pair; only the LAST
+    and finishing at different times) reuse the running pair; only the last
     release stops it. Two full sequential lifecycles with nothing held in
     between would rightly tear down and restart."""
     with sc.shared_service_pair(tmp_path):
@@ -518,7 +518,7 @@ def test_a_recorded_pair_nobody_holds_and_nobody_owns_is_removed_not_reused(
     tmp_path: Path, monkeypatch: MonkeyPatch, pair_fakes: dict[str, list[object]]
 ) -> None:
     """The dead-run case, reachable within one invocation when every labeled pid
-    is dead (the creating worker exited AND the xdist controller died - e.g. the
+    is dead (the creating worker exited and the xdist controller died - e.g. the
     controller was killed while a worker still wound down): the holders it left
     behind are dead pids, pruned on read. Blindly reusing the pair would hand a
     NEW run containers a concurrent sweep would remove mid-session, so it is
@@ -623,7 +623,7 @@ def test_a_corrupt_info_file_starts_fresh(
 
 
 def test_redis_db_allocation_is_unique_and_monotonic(tmp_path: Path) -> None:
-    """Every consumer (module or test function) across EVERY xdist worker draws
+    """Every consumer (module or test function) across every xdist worker draws
     from one file-backed counter, so two workers can never collide on the same
     logical DB in the shared Dragonfly - a collision would let one consumer's
     FLUSHDB wipe another's mid-run state."""
@@ -802,7 +802,7 @@ class _FakeSweepContainer:
         created: datetime | None = None,
         container_id: str = "fake-sweep-id",
     ) -> None:
-        # Relative to the REAL clock, not to _NOW. These fakes are read by
+        # Relative to the real clock, not to _NOW. These fakes are read by
         # cleanup_stale_testcontainers(), which stamps `now` from
         # datetime.now(UTC); a _NOW-derived default is a time bomb that arms
         # SWEEP_AGE_LIMIT after _NOW, when the age backstop starts firing
@@ -956,7 +956,7 @@ def test_two_invocations_state_dirs_yield_independent_pairs(
 ) -> None:
     """Per-invocation scoping, end to end over the pair machinery: invocation
     B's state dir sees neither A's recorded pair nor A's holder references, so
-    B boots its OWN pair, and A's teardown cannot touch B's - no invocation can
+    B boots its own pair, and A's teardown cannot touch B's - no invocation can
     find or reuse another's pair, whatever repo's suite is running next to it."""
     started: list[sc.SharedServices] = []
     stopped: list[sc.SharedServices] = []
@@ -988,7 +988,7 @@ def test_two_invocations_state_dirs_yield_independent_pairs(
         assert _holders(dir_a) == {"pg-id-0": [os.getpid()], "redis-id-0": [os.getpid()]}
         assert _holders(dir_b) == {}
         with sc.shared_service_pair(dir_b) as services_b:
-            # B found nothing reusable in ITS state dir: its own fresh pair.
+            # B found nothing reusable in its state dir: its own fresh pair.
             assert services_b.pg_container_id == "pg-id-1"
             assert len(started) == 2
             assert (

@@ -43,8 +43,8 @@ TOTAL_JOBS = NUM_ACTORS * JOBS_PER_ACTOR
 LOCK_LEASE_S = 90
 # Gate: best-round p50. Generous headroom by design - healthy p50 is
 # single-digit ms even on a modest container, so the budget only trips on a
-# regression that changes the statement's cost CLASS (the ~1s/round
-# JIT-compile trap, a Seq-Scan plan), never on scheduler or co-tenant noise.
+# regression that changes the statement's cost class (the ~1s/round
+# jit-compile trap, a Seq-Scan plan), never on scheduler or co-tenant noise.
 P50_BUDGET_MS = 50
 
 

@@ -19,7 +19,7 @@ What is pinned and why:
   ``lock_expires_at`` in place (they are the audit trail of which worker was
   abandoned), so a zombie actor's stale abandon can still name the row; only
   this clause stops it from writing a second terminal state over an
-  already-terminal row (a cancelled, crashed, failed or previously-abandoned
+  already-terminal row (a cancelled, crashed, failed or earlier-abandoned
   one alike).
 * ``cancel_phase = 2`` -- abandon applies only once the cooperative protocol
   has escalated to phase 2. Below that the row's live holder still owns the
@@ -28,10 +28,10 @@ What is pinned and why:
   no-exit cell (running x NULL lease x dead holder); the template's own
   comment documents why that arm abandons directly.
 
-What is deliberately NOT pinned: the absence of a worker fence. The statement
-probes the row's OWN ``locked_by_worker`` (the ``holder`` CTE reads it back
+What is deliberately not pinned: the absence of a worker fence. The statement
+probes the row's own ``locked_by_worker`` (the ``holder`` CTE reads it back
 from ``upd``), so the caller-side cancel-poll predicate
-(``locked_by_worker = $1 AND cancel_requested_at IS NOT NULL AND
+(``locked_by_worker = $1 and cancel_requested_at IS not NULL and
 status = 'running'``) is the worker fence; a future defense-in-depth worker
 id guard added to this statement is a welcome tightening, not a red test.
 """

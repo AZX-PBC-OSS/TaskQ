@@ -26,25 +26,25 @@ async def test_get_redis_pool_yields_pingable_client(private_redis_url: str) -> 
     )
 
     async for client in get_redis_pool(settings):
-        # The contract under test: the factory yields a WORKING client -
+        # The contract under test: the factory yields a working client -
         # config correctness, not broker latency. The ping rides the
         # product's own production socket budget (deliberately not
         # opted out - get_redis_pool is the worker-loop's real client),
         # so the broker under the ping must be one whose latency the
-        # test OWNS: a PRIVATE per-test Dragonfly (``private_redis_url``,
-        # ~1s boot, no co-tenants). On the SHARED pair a single ping is a
+        # test owns: a private per-test Dragonfly (``private_redis_url``,
+        # ~1s boot, no co-tenants). On the shared pair a single ping is a
         # lottery - the leg's co-tenancy stall band (historically
-        # test_attack478_conserve's ``CLIENT PAUSE 6000 ALL`` issued on
+        # test_attack478_conserve's ``client pause 6000 all`` issued on
         # the shared broker, plus ordinary -n 2 container churn)
         # measurably pushed every 5s-budget ping past its read deadline
         # when a band landed on the ping (measured 2026-09-27 on a
         # v1.39.0 Dragonfly replica: consecutive 5s-budget pings turned
-        # into TimeoutError-at-read, the exact CI signature). The DURABLE
+        # into TimeoutError-at-read, the exact CI signature). The durable
         # fix is the private broker, not a bigger window - every
         # budget-stretch fix found the next exposed ping in the next
         # leg (this pin, then test_worker_deps's). The retry window is
-        # RETAINED as belt-and-braces for the private container's first
-        # handshake under runner load; it is DERIVED (the dd4572ff
+        # retained as belt-and-braces for the private container's first
+        # handshake under runner load; it is derived (the dd4572ff
         # doctrine, not a guess) from the measured co-tenancy stretch -
         # 20x (test_cancel_storm's _STORM_DEADLINE_SECS derives from the
         # same band), applied to the ping's 5s production budget => ~100s
@@ -52,16 +52,16 @@ async def test_get_redis_pool_yields_pingable_client(private_redis_url: str) -> 
         # pays nothing on a healthy broker (first ping wins).
         #
         # The catch below is the load-bearing part and it once was the
-        # defect: redis-py does NOT raise the builtin TimeoutError on a
+        # defect: redis-py does not raise the builtin TimeoutError on a
         # timed-out read - its read path converts the raw asyncio timeout
         # into ``redis.exceptions.TimeoutError``, which subclasses
-        # ``RedisError`` (-> ``Exception``), NOT ``builtins.TimeoutError``
-        # (redis-py 8.1.0 MRO; connection.py's ``raise TimeoutError(f
+        # ``RedisError`` (-> ``Exception``), not ``builtins.TimeoutError``
+        # (redis-py 8.1.0 mro; connection.py's ``raise TimeoutError(f
         # "Timeout reading from {host_error}")``). A bare
-        # ``except TimeoutError`` resolved to the BUILTIN, so every
+        # ``except TimeoutError`` resolved to the builtin, so every
         # redis-py timeout escaped the catch on attempt one and this
         # derived window never ran a single retry: CI's 2026-09-27 leg
-        # red was ONE >=5s stall (the traceback walks
+        # red was one >=5s stall (the traceback walks
         # on_connect_check_health -> read_response straight out of the
         # loop), not an exhausted ~104s - the leg's whole wall was
         # 81.32s. Both classes are caught: redis-py's converted class on

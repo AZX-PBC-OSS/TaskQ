@@ -125,7 +125,7 @@ class Pod:
         *,
         actor_config: StubActorConfig,
     ) -> asyncio.Task[object]:
-        """Start one claimed job through the production attempt path WITHOUT
+        """Start one claimed job through the production attempt path without
         awaiting it to completion.
 
         ``Pod.run`` awaits ``consume_one_job``, so no scenario built on it

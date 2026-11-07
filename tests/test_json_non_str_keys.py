@@ -99,7 +99,7 @@ def test_dumps_str_keys_still_serialize() -> None:
 
 def test_encode_result_rejects_int_keyed_result() -> None:
     """An actor returning {1: ...} fails the attempt with TypeError where
-    OPT_NON_STR_KEYS previously coerced to {'1': ...}."""
+    without OPT_NON_STR_KEYS the keys coerce to {'1': ...}."""
     with pytest.raises(TypeError):
         _encode_result({1: "x"})
 
@@ -185,7 +185,7 @@ def test_pydantic_dict_field_rejects_int_keys() -> None:
 # ── mirror value normalization: PG's jsonb read-back shapes ────────────
 #
 # The rejection contracts above pin what both backends refuse; these pin
-# what they READ BACK. PG persists every caller dict through jsonb (the
+# what they read back. PG persists every caller dict through jsonb (the
 # orjson text at bind time, loads at read), so a value whose orjson
 # encoding differs from the Python object comes back morphed - NaN and
 # Infinity as null, UUIDs as their string form, tuples as arrays. The

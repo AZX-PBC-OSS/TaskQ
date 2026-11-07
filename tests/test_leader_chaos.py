@@ -177,6 +177,12 @@ async def test_tc1_kill_leader_pod_mid_sweep(pg_dsn: str) -> None:
                 winner_task.cancel()
                 with suppress(asyncio.CancelledError, ExceptionGroup):
                     await winner_task
+                # The abrupt cancel can land inside the sweep's shielded
+                # pool release; the pool's graceful close waits for the
+                # holders, so the detached release cannot outlive the
+                # test.
+                with suppress(Exception):
+                    await asyncio.wait_for(winner_deps.dispatcher_pool.close(), timeout=10.0)
 
                 failover_bound = (
                     loser_deps.settings.resolved_leader_lease
@@ -200,11 +206,21 @@ async def test_tc1_kill_leader_pod_mid_sweep(pg_dsn: str) -> None:
                 assert row is not None
                 assert UUID(str(row["worker_id"])) == loser_wid
             finally:
+                # Graceful stop first: shutdown so the loops exit on their
+                # own (their periods are ~1s), cancel only if the grace
+                # expires; a mid-tick cancel can detach asyncpg's shielded
+                # pool release.
                 shutdown.set()
-                winner_task.cancel()
-                loser_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await asyncio.gather(winner_task, loser_task, return_exceptions=True)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(winner_task, loser_task, return_exceptions=True),
+                        timeout=30.0,
+                    )
+                except TimeoutError:
+                    winner_task.cancel()
+                    loser_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await asyncio.gather(winner_task, loser_task, return_exceptions=True)
 
 
 # ── Partition leader via pg_terminate_backend(leader_monitor_conn) ─
@@ -290,7 +306,7 @@ async def test_tc2_partition_leader_via_monitor_conn(pg_dsn: str) -> None:
                 deadline = asyncio.get_running_loop().time() + partition_timeout
                 # Why latch on the leadership_lost event instead of polling
                 # is_leader: both watchdog demote branches clear is_leader
-                # and drop the leader conn BEFORE logging, but the election
+                # and drop the leader conn before logging, but the election
                 # loop can re-claim the just-released lock within one
                 # heartbeat, so the is_leader=False window can close between
                 # 0.05s samples under load (observed under -n 4). The log
@@ -316,10 +332,16 @@ async def test_tc2_partition_leader_via_monitor_conn(pg_dsn: str) -> None:
                 )
                 assert deps.is_leader.is_set()
             finally:
+                # Graceful stop first; cancel only if the grace expires
+                # (a mid-tick cancel can detach asyncpg's shielded pool
+                # release).
                 shutdown.set()
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
+                try:
+                    await asyncio.wait_for(task, timeout=30.0)
+                except TimeoutError:
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
     finally:
         await stack.aclose()
 
@@ -369,7 +391,7 @@ async def test_tc3_pg_primary_failover() -> None:
     end), a fresh connection can acquire it, and the maintenance_leader
     row can be UPSERTed.
 
-    The cancel happens AFTER the container stop but BEFORE the restart
+    The cancel happens after the container stop but before the restart
     so that:
     1. The container stop kills the leader's connection (the event
        being tested), releasing the advisory lock.
@@ -438,16 +460,21 @@ async def test_tc3_pg_primary_failover() -> None:
                 await asyncio.to_thread(own_container.stop)
                 await asyncio.sleep(5)
 
-                # Cancel the leader DURING the downtime window - after
+                # Stop the leader during the downtime window - after
                 # the container stop killed its connection (releasing
                 # the advisory lock) but before the restart, so the
                 # election loop cannot reconnect and re-acquire the
-                # lock. The leader cannot reconnect to a stopped
-                # container, so the cancel completes cleanly.
+                # lock. Graceful stop first; cancel only if the grace
+                # expires (the leader cannot reconnect to a stopped
+                # container either way, so it is gone before the
+                # restart).
                 shutdown.set()
-                task.cancel()
-                with suppress(asyncio.CancelledError, ExceptionGroup):
-                    await task
+                try:
+                    await asyncio.wait_for(task, timeout=30.0)
+                except TimeoutError:
+                    task.cancel()
+                    with suppress(asyncio.CancelledError, ExceptionGroup):
+                        await task
 
                 for _attempt in range(3):
                     try:
@@ -522,13 +549,17 @@ async def test_tc3_pg_primary_failover() -> None:
                 finally:
                     await raw_lock_conn.close()
             finally:
-                # Defensive: task was cancelled during downtime, but
-                # ensure cleanup if an exception jumped past that point.
+                # Defensive: ensure cleanup if an exception jumped past
+                # the graceful stop above. Graceful first; cancel only if
+                # the grace expires.
                 if not task.done():
                     shutdown.set()
-                    task.cancel()
-                    with suppress(asyncio.CancelledError, ExceptionGroup):
-                        await task
+                    try:
+                        await asyncio.wait_for(task, timeout=30.0)
+                    except TimeoutError:
+                        task.cancel()
+                        with suppress(asyncio.CancelledError, ExceptionGroup):
+                            await task
         finally:
             await stack.aclose()
 
@@ -572,14 +603,17 @@ async def test_tc4_advisory_lock_release_on_graceful_shutdown(
                     await probe_conn.close()
 
                 shutdown.set()
-                # Give the leader a moment to observe shutdown, then cancel.
-                # The TaskGroup graceful-shutdown path can block on child
-                # task cancellation; for the purpose of this test we only
-                # need to verify the lock releases on connection close.
-                await asyncio.sleep(1)
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
+                # Graceful stop: the leader exits on shutdown (the
+                # TaskGroup's child-task cancellation can block the
+                # cancel path, and the lock release under test happens on
+                # connection close either way); cancel only if the grace
+                # expires.
+                try:
+                    await asyncio.wait_for(task, timeout=30.0)
+                except TimeoutError:
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
 
                 assert deps.leader_conn is not None
                 await deps.leader_conn.close()
@@ -603,11 +637,16 @@ async def test_tc4_advisory_lock_release_on_graceful_shutdown(
                 finally:
                     await fresh_conn.close()
             finally:
+                # Defensive: graceful stop first; cancel only if the
+                # grace expires.
                 if not shutdown.is_set():
                     shutdown.set()
-                    task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await task
+                    try:
+                        await asyncio.wait_for(task, timeout=30.0)
+                    except TimeoutError:
+                        task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await task
     finally:
         await stack.aclose()
 
@@ -623,7 +662,7 @@ async def test_tc5_lock_name_collision_never_blocks_election(pg_dsn: str) -> Non
     The lease row is the authority, so a session holding the schema's
     courtesy advisory lock - a stranger on the same name, or a dead peer's
     lingering session - must not stop a pod electing: acquires
-    pg_try_advisory_lock on a raw connection BEFORE starting the leader,
+    pg_try_advisory_lock on a raw connection before starting the leader,
     starts MaintenanceLeader.run, and the pod must still win within a
     heartbeat-scale window, with the courtesy miss logged rather than
     waited on. Releasing the stranger's lock afterwards changes nothing.
@@ -663,10 +702,16 @@ async def test_tc5_lock_name_collision_never_blocks_election(pg_dsn: str) -> Non
                             )
                         assert row is not None and UUID(str(row["worker_id"])) == worker_id
                     finally:
+                        # Graceful stop first; cancel only if the grace
+                        # expires (a mid-tick cancel can detach asyncpg's
+                        # shielded pool release).
                         shutdown.set()
-                        task.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await task
+                        try:
+                            await asyncio.wait_for(task, timeout=30.0)
+                        except TimeoutError:
+                            task.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await task
 
                 assert any(
                     e.get("event") == "leader-advisory-lock-unavailable" for e in captured

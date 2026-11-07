@@ -11,7 +11,7 @@ schema. One test per recent checkpoint (the last migration of versions
 * the chain applies cleanly with no ``INVALID`` index debris,
 * the ledger stays consistent (every bundled key recorded, checksums
   match the bundled files, ``use_transaction`` truthful),
-* rows created BEFORE the upgrade round-trip through it: a legacy
+* rows created before the upgrade round-trip through it: a legacy
   pending job is claimable post-upgrade (``claim_epoch`` 0 → 1 on the
   first post-migration claim), terminal-writable with the presented
   epoch, fenced against a stale epoch, cancellable, and the terminal
@@ -153,7 +153,7 @@ async def _legacy_rows_round_trip(conn: asyncpg.Connection, pg_dsn: str, schema:
     stale one.
     """
     # scheduled_at in the past by a margin: the claim CTE compares against
-    # the DATABASE clock, and the two clocks can diverge by fractions of a
+    # the database clock, and the two clocks can diverge by fractions of a
     # second (see conftest's clock-divergence probe).
     past = datetime.now(UTC) - timedelta(seconds=10)
     legacy_pending = await create_pending_job(conn, schema, scheduled_at=past)
@@ -215,7 +215,7 @@ async def _legacy_rows_round_trip(conn: asyncpg.Connection, pg_dsn: str, schema:
     finally:
         await stack.aclose()
 
-    # The terminal row the OLD build left behind archives cleanly: the
+    # The terminal row the old build left behind archives cleanly: the
     # prune carries claim_epoch 0 into jobs_archive (the column the
     # archive's widened uniqueness also gained).
     pruned = await prune_terminal_jobs(
@@ -294,7 +294,7 @@ async def test_pre_edit_ledger_refuses_then_recovers(pg_dsn: str) -> None:
     conn = await asyncpg.connect(pg_dsn)
     schema = f"atk_drift_{new_base62()}".lower()
     try:
-        # Build the checkpoint ledger, then corrupt ONE applied checksum
+        # Build the checkpoint ledger, then corrupt one applied checksum
         # to the shape a pre-edit ledger carries (a different sha-256 for
         # the same key: the file's rendered text was edited afterwards).
         await apply_pending(conn, schema=schema, target="01.00.14_01")
@@ -313,9 +313,9 @@ async def test_pre_edit_ledger_refuses_then_recovers(pg_dsn: str) -> None:
 
         recovered = await apply_pending(conn, schema=schema, allow_checksum_drift=True)
         assert [m.key for m in recovered]
-        # The end state is consistent EXCEPT the documented drift keep:
+        # The end state is consistent except the documented drift keep:
         # the ledger retains the stored (pre-edit) checksum and the drift
-        # stays visible, every OTHER key matches the bundled files.
+        # stays visible, every other key matches the bundled files.
         drifts = await checksum_drifts(conn, schema=schema)
         assert set(drifts) == {"01.00.14_01:pre"}
         all_migrations = discover()

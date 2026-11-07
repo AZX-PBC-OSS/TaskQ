@@ -9,7 +9,7 @@ reach the fairness_rank computation - starving it indefinitely regardless
 of how many dispatch rounds run.
 
 The fix partitions the oversample LIMIT by ``fairness_key`` (via an inner
-``ROW_NUMBER() OVER (PARTITION BY fairness_key ...)`` filter) so every
+``ROW_NUMBER() over (PARTITION BY fairness_key ...)`` filter) so every
 fairness_key contributes candidates up to the oversample bound.
 """
 

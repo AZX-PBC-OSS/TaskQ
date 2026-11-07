@@ -7,12 +7,12 @@ foreign key to jobs on purpose: its targets are exactly the rows routine
 maintenance prunes, archives, and deregisters, and an audit trail that
 dies with its target is not a trail.
 
-THE IMPORT LAW (the import law; the attack pins' Face C —
-``tests/test_wf_attack_cancel.py``): this module is CORE-DEPS-ONLY —
+the IMPORT LAW (the import law; the attack pins' Face C —
+``tests/test_wf_attack_cancel.py``): this module is CORE-DEPS-only —
 structlog, opentelemetry-api (a core dependency), and the taskq core;
 never the ``fastapi`` extra. The workflow engine's cancel/retry seams
 (the G4 law: "who cancelled this" is a ROW, not a log line) import FROM
-HERE and from nowhere else: ``taskq/workflows/`` must never import
+here and from nowhere else: ``taskq/workflows/`` must never import
 ``taskq.web.admin`` (whose package ``__init__`` imports the fastapi
 extra — a base ``taskq[flows]`` install would be unable to cancel).
 The admin surface's ``taskq.web.admin._audit`` is a COMPAT SHIM over
@@ -23,7 +23,7 @@ Two transactional shapes, per mutation kind:
 
 * Admin-owned SQL (schedule enable/disable/skip, actor deregister, the
   workflow engine's cancel/retry): the caller opens the transaction and
-  calls :func:`record_admin_action` on the SAME connection inside it, so
+  calls :func:`record_admin_action` on the same connection inside it, so
   the mutation and its audit row commit or roll back together -- a
   mutation that lands without its audit row is the defect this module
   exists to prevent.
@@ -32,7 +32,7 @@ Two transactional shapes, per mutation kind:
   rate-limit reset via the registry): the backend commits its own
   transaction, so the audit row is written on a separate checkout
   immediately after the backend call reports success, and a failure to
-  record is logged loudly (``admin-audit-record-failed``) AND counted on
+  record is logged loudly (``admin-audit-record-failed``) and counted on
   the ``taskq.admin.audit.record_failed`` metric -- alert on a nonzero
   rate, that is the only signal a silently-degrading trail gives --
   rather than failing a mutation that already landed. For cancel,
@@ -40,36 +40,33 @@ Two transactional shapes, per mutation kind:
   principal into the new ``cancel_request`` job_events row's detail, so
   the per-job event log carries the operator identity too.
 
-THE CAPABILITY SEAM (the one indirection, and why it exists): the
-engine's audit row and the admin surface's audit row are THE SAME row —
-one writer, one attribute surface. When the admin shim is ALREADY LOADED
-(a ``taskq[fastapi]`` install — its presence in ``sys.modules`` is the
-load-state registry's marker; this module NEVER imports it), the row
-resolves through the shim's CURRENT module attribute, so the admin
-surface's attribute seam stays the one seam — the test doubles (and any
-host's instrumentation) that rebind the shim's
-``record_admin_action`` bite every writer in the process, including the
-engine's. When the shim is not loaded (the base install) this module's
-own body is the writer. The resolution is a dictionary read, never an
-import: a base install never touches the fastapi extra.
+Both the engine's audit row and the admin surface's audit row are the same
+row: one writer, one attribute surface. When the admin shim is already
+loaded (a ``taskq[fastapi]`` install — its presence in ``sys.modules`` is
+the load-state marker; this module never imports it), the row resolves
+through the shim's current module attribute, so test doubles and host
+instrumentation that rebind the shim's ``record_admin_action`` bite every
+writer in the process, including the engine's. When the shim is not
+loaded (the base install) this module's own body is the writer. The
+resolution is a dictionary read, never an import: a base install never
+touches the fastapi extra.
 
-THE SEAM'S TWO DEFENSES (both born failing — the adversarial review's CHANGES-
-REQUIRED; the teeth pins in ``tests/test_wf_attack_cancel.py`` exercise
-each live): the FROZEN canonical identity (``_CANONICAL_RECORD`` — a
-module-attr rebind of this module's own ``record_admin_action`` cannot
-make the body route back to itself) and the RE-ENTRANCY guard (the
-``_routing`` contextvar — a delegating chain through the shim's attr
-terminates with EXACTLY ONE row per call chain). The MID-CALL WRITER-
-SWITCH boundary: the writer is resolved once at the seam's entry; a
-rebinding between the resolution and the write is observed by the NEXT
-call chain, never this one's row.
+Two defenses, both exercised live by the teeth pins in
+``tests/test_wf_attack_cancel.py``: the frozen canonical identity
+(``_CANONICAL_RECORD`` — a module-attr rebind of this module's own
+``record_admin_action`` cannot make the body route back to itself) and
+the re-entrancy guard (the ``_routing`` contextvar — a delegating chain
+through the shim's attr terminates with exactly one row per call chain).
+The writer is resolved once at the seam's entry; a rebinding between the
+resolution and the write is observed by the next call chain, never this
+one's row.
 """
 
 from __future__ import annotations
 
 import contextvars
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from opentelemetry.metrics import Counter
@@ -80,7 +77,7 @@ from taskq.obs import get_meter
 from taskq.obs._redact_exc import mask_credentials
 
 if TYPE_CHECKING:
-    # The pool type is the web package's bounded pool — an ANNOTATION
+    # The pool type is the web package's bounded pool — an annotation
     # only (the import law: the runtime path here is deps-free; the web
     # package's modules import the fastapi extra).
     from taskq.web._pool import BoundedPool
@@ -112,7 +109,7 @@ logger = structlog.get_logger("taskq.web.admin.audit")
 
 # Alertability for the degradation window: every failed audit record on the
 # backend-mediated paths increments this counter, so the degrade-to-warn
-# behavior is a METRIC (``taskq.admin.audit.record_failed``), not just a log
+# behavior is a metric (``taskq.admin.audit.record_failed``), not just a log
 # line. A log line is not alertable, and the window it reports can persist
 # indefinitely (a wedged pool, an unmigrated schema), so the compensating
 # control for warn-mode is an alert on a nonzero rate of this counter.
@@ -132,7 +129,7 @@ _record_failed_counter: Counter = get_meter().create_counter(
 # configured" with a row someone failed to attribute.
 ANONYMOUS_SUBJECT: str = "anonymous"
 
-# The principal_subject column's shape bound. The router accepts ANY auth
+# The principal_subject column's shape bound. The router accepts any auth
 # dependency a host passes, and its return value is untyped
 # (:func:`principal_subject` normalizes whatever arrives), so the subject's
 # shape is pinned here rather than trusted: an unbounded string (a bug, or
@@ -146,7 +143,7 @@ SUBJECT_MAX_LENGTH: int = 512
 # Control-character escapes for the subject: the same log-frame discipline
 # ops.py applies to caller-controlled log fields, applied at the audit
 # boundary. \n/\r/\t keep their letter escapes for readability; every other
-# C0 control and DEL renders as its hex escape. NUL is included (0x00):
+# C0 control and del renders as its hex escape. NUL is included (0x00):
 # asyncpg refuses \u0000 in a text bind, so an unescaped NUL would make
 # every same-transaction audit insert (and therefore the mutation itself)
 # fail, and every safe-path record degrade.
@@ -168,17 +165,17 @@ def _bound_subject(subject: str) -> str:
     return escaped[:SUBJECT_MAX_LENGTH]
 
 
-#: The reason column's shape bound — the OTHER free-text field this module
+#: The reason column's shape bound — the other free-text field this module
 #: writes (the cancel form's own ``maxlength`` on its reason input; the
-#: module docstring names the pair). THE AUDIT SEAM'S BOUNDS (finding 10's
-#: fix): ``admin_audit`` is the NEVER-PRUNED table — an unbounded reason
-#: was unbounded retention per row — and the reason rode the text bind RAW:
+#: module docstring names the pair). the audit seam's bounds (finding 10's
+#: fix): ``admin_audit`` is the never-pruned table — an unbounded reason
+#: was unbounded retention per row — and the reason rode the text bind raw:
 #: a NUL byte in an operator-supplied reason made asyncpg refuse the INSERT,
-#: and the audit leg's failure rolled back the WHOLE cancel (the same-tx
+#: and the audit leg's failure rolled back the whole cancel (the same-tx
 #: guarantee turned a poisoned free-text field into a failed mutation). The
-#: reason rides the SAME law the subject rides: the control escapes (NUL
-#: included — it renders as the ``\\x00`` ESCAPE, the bind survives) and
-#: the length cap applied at the LEAF, so every writer path (the engine's
+#: reason rides the same law the subject rides: the control escapes (NUL
+#: included — it renders as the ``\\x00`` escape, the bind survives) and
+#: the length cap applied at the leaf, so every writer path (the engine's
 #: cancel, the admin shim, the backend-mediated safe path) inherits it.
 REASON_MAX_LENGTH: int = 512
 
@@ -195,7 +192,7 @@ def bound_reason(reason: str | None, limit: int = REASON_MAX_LENGTH) -> str | No
 
     PUBLIC — the reason's OTHER write seats call THIS (never a second
     implementation): the cancel's root flip binds the reason into
-    ``jobs.error_message`` BEFORE the audit row exists, and a raw NUL
+    ``jobs.error_message`` before the audit row exists, and a raw NUL
     there refused the bind and rolled back the whole cancel (finding
     10's finding — the poisoned free-text field was a failed
     mutation). The audit leaf's own ``_bound_reason`` delegates here, so
@@ -217,14 +214,32 @@ def _bound_reason(reason: str | None) -> str | None:
 
 
 #: The detail column's shape bound — the jsonb free-text field's law
-#: ``admin_audit`` is the NEVER-PRUNED table
-#: and the detail rode the jsonb bind VERBATIM — a 5MB ``detail`` dict
+#: ``admin_audit`` is the never-pruned table
+#: and the detail rode the jsonb bind verbatim — a 5MB ``detail`` dict
 #: landed whole (unbounded retention per row). The serialized record
 #: above the bound is replaced by the house's named-truncation record:
 #: the ``__truncated__`` marker (the capture marker's own shape), the
 #: dropped-character count, and a bounded preview of the serialized
 #: original. The row never lies about being whole.
 DETAIL_MAX_LENGTH: int = 10_000
+
+#: The pointer column's bound: ``target_id`` is an INDEX key on the
+#: never-pruned table — a NUL byte fails the text bind and an oversized
+#: value exceeds the pointer index's btree shape (the same two failure
+#: modes the reason/detail bounds exist for).
+TARGET_ID_MAX_LENGTH: int = 200
+
+
+def _bound_target_id(target_id: str) -> str:
+    """The pointer column's law (the leaf's own discipline, the same one
+    the reason/detail bounds follow): the NUL byte rendered as its
+    VISIBLE escape (a deleted NUL can alias a different real key), the
+    value bounded to the pointer index's shape, the cut marked on the
+    row."""
+    cleaned = target_id.replace("\x00", "\\x00")
+    if len(cleaned) <= TARGET_ID_MAX_LENGTH:
+        return cleaned
+    return cleaned[:TARGET_ID_MAX_LENGTH] + "…"
 
 
 def _bound_detail(detail: dict[str, Any] | None) -> str:
@@ -233,8 +248,13 @@ def _bound_detail(detail: dict[str, Any] | None) -> str:
     row. The preview's escaping can expand under the serializer's
     control-escape pass, so the kept width halves until the marked
     record itself is under the bound — the bound is the promise, the
-    preview is the courtesy."""
-    text = dumps_jsonb_str(detail if detail is not None else {})
+    preview is the courtesy. The NUL law is the leaf's too: a caller-
+    supplied string inside the detail (a node key, an id fragment)
+    cannot ride the jsonb bind with a NUL byte — the string values are
+    NUL-escaped (visible, never deleted — a deleted NUL could alias a
+    different real key) before the serialize, so the refusal's own
+    audit write cannot be the 500 it exists to prevent."""
+    text = dumps_jsonb_str(_escape_nul_values(detail if detail is not None else {}))
     if len(text) <= DETAIL_MAX_LENGTH:
         return text
     kept = DETAIL_MAX_LENGTH - 256
@@ -253,6 +273,21 @@ def _bound_detail(detail: dict[str, Any] | None) -> str:
         kept //= 2
 
 
+def _escape_nul_values(value: Any) -> Any:
+    """Every string in the detail's shape (dicts, lists, nested) with
+    its NUL bytes rendered as the visible escape; non-strings ride
+    unchanged."""
+    if isinstance(value, str):
+        return value.replace("\x00", "\\x00")
+    if isinstance(value, dict):
+        typed = cast(dict[str, Any], value)
+        return {k: _escape_nul_values(v) for k, v in typed.items()}
+    if isinstance(value, (list, tuple)):
+        typed_list = cast(list[Any], value)
+        return [_escape_nul_values(v) for v in typed_list]
+    return value
+
+
 def _bound_untyped_subject(raw: str) -> str:
     """Redact-or-bind for the UNTYPED principal shapes (#463).
 
@@ -263,7 +298,7 @@ def _bound_untyped_subject(raw: str) -> str:
     the ``admin_audit`` table is deliberately never pruned, and the
     subject is rendered on the job detail page -- a stored token there is a
     durable, page-rendered credential disclosure. The house credential
-    mask chain (:func:`taskq.obs.mask_credentials`) runs BEFORE the shape
+    mask chain (:func:`taskq.obs.mask_credentials`) runs before the shape
     pin, so the token material leaves as ``***`` while any non-secret frame
     (``Bearer ``) survives and the row still attributes the action to a
     redacted marker. The mask fires loudly: a credential-shaped principal
@@ -275,7 +310,8 @@ def _bound_untyped_subject(raw: str) -> str:
     is by contract the identity field, and over-redacting identity is its
     own falsification -- but not the DETECTION: the same mask chain runs
     on the subject and a credential-shaped one is logged with the same
-    loud event, so the operator learns of the leak either way (#463). A
+    loud event, so the operator learns of the leak either way (the
+    redact-and-log binding). A
     HOSTILE ``.subject`` is still bounded and control-escaped by
     :func:`_bound_subject`.
     """
@@ -317,7 +353,7 @@ def _warn_typed_subject_credential_shaped(subject: str) -> None:
 # ── Closed-set action names ──────────────────────────────────────────────
 #
 # Kept as module constants (not an enum) so the routes stay plain-Python
-# and the SQL COMMENT on admin_audit.action documents the same set by hand;
+# and the SQL comment on admin_audit.action documents the same set by hand;
 # the unit tests pin the routes to exactly these strings.
 
 ACTION_JOB_CANCEL: str = "job.cancel"
@@ -340,8 +376,8 @@ _INSERT_SQL = (
     "VALUES ($1, $2, $3, $4, $5, $6::jsonb)"
 )
 
-# The cancel handler folds the operator principal into the NEWEST
-# cancel_request event of the job (id DESC: bigserial carries the stream
+# The cancel handler folds the operator principal into the newest
+# cancel_request event of the job (id desc: bigserial carries the stream
 # order). Escaped braces on the jsonb empty-object literal: this string
 # goes through str.format.
 _FOLD_CANCEL_PRINCIPAL_SQL = (
@@ -353,20 +389,20 @@ _FOLD_CANCEL_PRINCIPAL_SQL = (
     "ORDER BY id DESC LIMIT 1)"
 )
 
-#: The loaded admin surface's audit module — the CAPABILITY SEAM's read
-#: (the load-state registry: the shim's PRESENCE is the fastapi install's
-#: capability marker). NEVER an import: on a base install this answers
-#: None and this module's own body is the writer.
+#: The loaded admin surface's audit module — the capability seam's read
+#: (the shim's presence is the fastapi install's capability marker).
+#: Never an import: on a base install this answers None and this
+#: module's own body is the writer.
 _ADMIN_AUDIT_SHIM = "taskq.web.admin._audit"
 
-#: THE RE-ENTRANCY GUARD (the adversarial review's 1c fix): True while THIS call
-#: chain is routing through the loaded shim's writer. A CONTEXTVAR —
-#: the re-entrancy domain is the async call chain: asyncio copies the
-#: context per Task (and per thread), so two concurrent cancels never
-#: cross-see the flag (a threading.local would leak it across tasks
-#: interleaving on one loop; a sentinel attr on the wrapper fails on
-#: attribute-less callables and leaks the same way). The flag dies with
-#: the chain (the token reset) — no cleanup, no cross-talk.
+#: True while this call chain is routing through the loaded shim's
+#: writer. A contextvar — the re-entrancy domain is the async call
+#: chain: asyncio copies the context per Task (and per thread), so two
+#: concurrent cancels never cross-see the flag (a threading.local would
+#: leak it across tasks interleaving on one loop; a sentinel attr on the
+#: wrapper fails on attribute-less callables and leaks the same way).
+#: The flag dies with the chain (the token reset) — no cleanup, no
+#: cross-talk.
 _routing: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "taskq.audit.seam-routing", default=False
 )
@@ -381,7 +417,7 @@ def _loaded_admin_audit() -> Any:
 def _failed_counter() -> Counter:
     """The degradation counter through the capability seam: the loaded
     shim's ``_record_failed_counter`` attribute when the shim is loaded
-    (the admin redteams' patch surface stays the ONE seam), this
+    (the admin redteams' patch surface stays the one seam), this
     module's own otherwise."""
     mod = _loaded_admin_audit()
     if mod is not None:
@@ -398,7 +434,7 @@ def principal_subject(principal: Any) -> str:
     ``request.state.principal`` untyped: the shipped SSO dependencies
     return :class:`IdentityClaims` (read ``.subject``), but a host
     application may pass any dependency, and the dev path (no
-    ``auth_dependency``) has ``None``. The audit column is ``NOT NULL``,
+    ``auth_dependency``) has ``None``. The audit column is ``not NULL``,
     so every shape resolves to a string, with the explicit
     :data:`ANONYMOUS_SUBJECT` for the no-auth case rather than a crash or
     an empty string.
@@ -409,7 +445,7 @@ def principal_subject(principal: Any) -> str:
     reaches a text bind, a jsonb detail document, and rendered pages.
 
     The UNTYPED shapes (a bare string principal, and the ``str()``
-    fallback) additionally run the house credential mask chain BEFORE the
+    fallback) additionally run the house credential mask chain before the
     shape pin (:func:`_bound_untyped_subject`, #463): a bare credential-
     shaped string -- the shape the admin-ui guide's own worked example
     produces -- is redacted to the ``***`` marker and logged loudly
@@ -442,10 +478,10 @@ async def _record_admin_action(
     reason: str | None = None,
     detail: dict[str, Any] | None = None,
 ) -> None:
-    """THE LEAF: the audit row's INSERT itself (the body
+    """The audit row's INSERT itself (the body
     :func:`record_admin_action` routes to — never the module attr, which
-    a rebinding can flip mid-chain). The reason AND the detail are
-    shape-pinned HERE (the leaf — every writer path inherits the bound):
+    a rebinding can flip mid-chain). The reason and the detail are
+    shape-pinned here (the leaf — every writer path inherits the bound):
     the never-pruned table's per-row cap, the NUL byte escaped before
     the text bind, and the truncation NAMED on the row (an
     unbounded reason/detail was unbounded retention,
@@ -455,7 +491,7 @@ async def _record_admin_action(
         principal_subject(principal),
         action,
         target_type,
-        target_id,
+        _bound_target_id(target_id),
         _bound_reason(reason),
         _bound_detail(detail),
     )
@@ -481,49 +517,46 @@ async def record_admin_action(
     *detail* is bound as jsonb (:func:`taskq._json.dumps_jsonb_str`, the
     NUL-refusing serializer every other jsonb bind uses).
 
-    THE CAPABILITY SEAM (see the module docstring): when the admin shim
-    is already loaded, the row resolves through ITS current module
-    attribute — the shim's attribute surface is the ONE seam (a rebinding
-    there — a test double, a host's instrumentation — bites every writer
-    in the process).
+    When the admin shim is already loaded, the row resolves through its
+    current module attribute — a rebinding there (a test double, a
+    host's instrumentation) bites every writer in the process.
 
-    TWO DEFENSES, both born failing (the adversarial review's CHANGES-REQUIRED; the
-    teeth pins ``test_wf_attack_cancel.py`` reject each, live):
+    Two defenses, both rejected live by the teeth pins in
+    ``test_wf_attack_cancel.py``:
 
-    * THE FROZEN IDENTITY (``_CANONICAL_RECORD``, bound once AFTER this
+    * The frozen identity (``_CANONICAL_RECORD``, bound once after this
       def): the fall-through guard compares the shim's attr against the
-      FROZEN function object, never the module global. The global IS
-      rebindable (the adversarial review's finding — the newcomer's natural patch
-      target: a delegating spy on ``taskq.audit.record_admin_action``);
-      a global comparison made the body route back to itself — unbounded
-      RecursionError poisoning the whole cancel.
-    * THE RE-ENTRANCY GUARD (``_routing``, a :class:`contextvars.ContextVar`):
-      while THIS call chain is routing through the loaded shim's writer,
-      a RE-ENTRY (the adversarial review's finding — a delegating wrapper on the shim's
-      attr calling the canonical body) lands its row DIRECTLY — no
+      frozen function object, never the module global. The global is
+      rebindable (a delegating spy on
+      ``taskq.audit.record_admin_action`` is the natural patch target);
+      a global comparison would let the body route back to itself — an
+      unbounded RecursionError poisoning the whole cancel.
+    * The re-entrancy guard (``_routing``, a :class:`contextvars.ContextVar`):
+      while this call chain is routing through the loaded shim's writer,
+      a re-entry (a delegating wrapper on the shim's
+      attr calling the canonical body) lands its row directly — no
       re-routing, no loop; the wrapper's call chain terminates with
-      EXACTLY ONE row. THE CONTEXTVAR IS THE CHOICE, deliberately: the
-      re-entrancy domain is the ASYNC CALL CHAIN — asyncio copies the
-      context per Task (and per thread), so two concurrent cancels never
-      see each other's routing state (a ``threading.local`` would leak
-      the flag ACROSS tasks interleaving on one loop — a mid-await
-      handoff would make the second cancel silently BYPASS the shim's
-      seam); a sentinel attribute on the wrapper fails on callables that
-      accept no attributes (``functools.partial``, builtins) and leaks
-      the same way across tasks sharing one wrapper.
+      exactly one row. The re-entrancy domain is the async call chain:
+      asyncio copies the context per Task (and per thread), so two
+      concurrent cancels never see each other's routing state (a
+      ``threading.local`` would leak the flag across tasks interleaving
+      on one loop — a mid-await handoff would make the second cancel
+      silently bypass the shim's seam); a sentinel attribute on the
+      wrapper fails on callables that accept no attributes
+      (``functools.partial``, builtins) and leaks the same way across
+      tasks sharing one wrapper.
 
-    THE MID-CALL WRITER-SWITCH BOUNDARY (the honesty note): the writer
-    is resolved ONCE, at this seam's entry. A rebinding of the shim's
-    attribute (or the canonical global) BETWEEN the resolution and the
-    row's write is NOT observed by this call — the row routes to the
-    writer that was current AT RESOLUTION TIME. A mid-call switch takes
-    effect on the NEXT call chain; no call lands a row through a writer
-    that changed underneath it mid-flight.
+    The writer is resolved once, at this seam's entry. A rebinding of
+    the shim's attribute (or the canonical global) between the
+    resolution and the row's write is not observed by this call — the
+    row routes to the writer that was current at resolution time. A
+    mid-call switch takes effect on the next call chain; no call lands
+    a row through a writer that changed underneath it mid-flight.
     """
     if _routing.get():
-        # THE RE-ENTRY: this call chain is already routing through the
-        # shim's writer — land the row HERE (the leaf). The delegation
-        # chain terminates: exactly one row per call chain.
+        # This call chain is already routing through the shim's writer —
+        # land the row here (the leaf). The delegation chain terminates:
+        # exactly one row per call chain.
         await _record_admin_action(
             conn,
             schema=schema,
@@ -566,12 +599,11 @@ async def record_admin_action(
     )
 
 
-#: THE FROZEN CANONICAL IDENTITY — bound ONCE, after the def (the
-#: the adversarial review's fix): the routing guard compares the shim's attr
-#: against THIS object, never the module global (which any rebinding
-#: flips). A delegating spy patched over the module global terminates:
-#: the body sees the shim's attr still carrying THIS object and falls
-#: through to the leaf.
+#: Bound once, after the def: the routing guard compares the shim's
+#: attr against this object, never the module global (which any
+#: rebinding flips). A delegating spy patched over the module global
+#: terminates: the body sees the shim's attr still carrying this object
+#: and falls through to the leaf.
 _CANONICAL_RECORD = record_admin_action
 
 
@@ -594,13 +626,13 @@ async def record_admin_action_safe(
     change is done; a fake-failure response would invite a retry of an
     already-applied action), so any failure here (``admin_audit`` not
     migrated yet, pool wedged) is logged as
-    ``admin-audit-record-failed`` AND counted on the
+    ``admin-audit-record-failed`` and counted on the
     ``taskq.admin.audit.record_failed`` OTel counter, and swallowed.
     Warn-mode is deliberate rather than an oversight: post-commit there is
     no fail-closed option that tells the truth -- the only alternative is
     lying about a landed mutation -- so the compensating control is the
     counter. ALERT ON IT: any nonzero rate means mutations are landing
-    un-attributed right now. The admin-owned-SQL paths do NOT get this
+    un-attributed right now. The admin-owned-SQL paths do not get this
     wrapper -- there the audit row is in the mutation's own transaction
     and must fail it (fail-closed, where fail-closed is possible).
     """

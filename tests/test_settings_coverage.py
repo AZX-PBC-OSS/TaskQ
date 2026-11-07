@@ -6,11 +6,9 @@ nowhere. One pin per field, each asserting the field's value AT its
 consumer, not merely that the field parses:
 
 * ``WorkerSettings.dispatch_scope_by_home_queue`` -- finding first: this
-  flag is a DEPRECATED NO-OP. The per-actor-capacity dispatch scoping it
-  used to apply no longer exists (dispatch is assignment-routed; see the
-  field's own description and the bootstrap's startup-warning block), so
-  the "resolved-scope difference" an older audit describes is gone by
-  design. Its only remaining consumer is the bootstrap's
+  flag is a DEPRECATED no-OP. Dispatch is assignment-routed; the flag
+  applies no scoping (see the
+  field's own description and the bootstrap's startup-warning block). Its only remaining consumer is the bootstrap's
   ``deprecated-setting-ignored`` warning, which is what the pin below
   holds: flag on warns (naming the env var to delete), flag off is silent.
 * ``watchdog_loop_lag_startup_grace`` / ``watchdog_dump_after_fraction``
@@ -49,7 +47,7 @@ from taskq._ids import new_base62, new_uuid
 from taskq.actor import ActorRef
 from taskq.actor import actor as _actor
 from taskq.cli import (
-    _build_sso_bundle,  # pyright: ignore[reportPrivateUsage]  # Why: the SSO bundle builder is the seam the settings value rides.
+    _build_sso_bundle,  # pyright: ignore[reportPrivateUsage]  # Why: the sso bundle builder is the seam the settings value rides.
     _load_redis_credential_provider,  # pyright: ignore[reportPrivateUsage]
 )
 from taskq.cli import (
@@ -96,7 +94,7 @@ _PROVIDER = _RedisProvider()
 
 
 class TestDispatchScopeByHomeQueue:
-    """The flag's ONLY consumer is the bootstrap's startup warning.
+    """The flag's only consumer is the bootstrap's startup warning.
 
     The audit's premise ("the flag changes the bootstrap's scope
     resolution") describes the pre-assignment-routing code. Today
@@ -321,7 +319,7 @@ class TestProgressSseCapFromSettings:
             pool,  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub at the erased Any boundary.
             redis,
             schema="taskq",
-            # max_sse_connections left UNSET: the settings read is the seam under test.
+            # max_sse_connections left unset: the settings read is the seam under test.
         )
         endpoint = next(
             route.endpoint
@@ -469,7 +467,7 @@ class TestRedisCredentialProviderSettingsFallback:
         assert loaded == [], f"no ref, no resolution: {loaded}"
 
 
-# ── 1e. SAMLSettings.sp_x509_cert reaches the SP config ────────────────
+# ── 1e. SAMLSettings.sp_x509_cert reaches the sp config ────────────────
 
 
 class TestSamlSpX509Cert:

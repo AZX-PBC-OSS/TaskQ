@@ -25,7 +25,7 @@ the same "no stub registered for actor" contract it already had for a
 non-terminal work for an actor nothing registered. An actor that can
 never be dispatched because it has no registered stub/config is a
 strictly worse failure mode than one that dispatches and then
-immediately errors, and previously produced no signal at all. The raise
+immediately errors, never silently producing no signal at all. The raise
 DETECTS, it does not mutate: the stranded row stays ``pending`` (nothing
 ran it, and a fabricated terminal write would be its own lie - and would
 corrupt retry bookkeeping if the actor is registered later).
@@ -103,7 +103,7 @@ async def test_run_until_drained_does_not_silently_strand_unregistered_actor_job
     backend = InMemoryBackend(clock=clock)
     client = JobsClient(backend)
 
-    # Deliberately do NOT call backend.register_stub(...) or
+    # Deliberately do not call backend.register_stub(...) or
     # backend.register_actor_config(...) for _unregistered_actor -- this
     # is the state a first-time adopter following testing.md's own
     # "Registering actor stubs" section reaches for any actor they
@@ -182,7 +182,7 @@ async def test_denied_but_recoverable_job_does_not_trip_the_unregistered_raise()
 
 @pytest.mark.asyncio
 async def test_mixed_drain_raises_only_for_the_never_registered_actor() -> None:
-    """The sharp composition pin: one drain holding BOTH a denied
+    """The sharp composition pin: one drain holding both a denied
     registered job and a never-registered job must raise - and the raise
     must name the never-registered actor only. A denied job sharing the
     drain must not be swept into the failure (a false positive would

@@ -143,7 +143,7 @@ async def test_zero_max_concurrent_is_rejected_before_any_db_write(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """0 is not a queue cap: NULL is the uncapped state, and the table's
-    CHECK (``max_concurrent IS NULL OR max_concurrent >= 1``) rejects 0
+    CHECK (``max_concurrent IS NULL or max_concurrent >= 1``) rejects 0
     only after the round trip - as a raw asyncpg CheckViolationError
     traceback. The ops layer must reject it first, with nothing written."""
     with pytest.raises(ValueError, match="max_concurrent"):
@@ -166,7 +166,7 @@ async def test_invalid_queue_name_writes_no_row(
     rest of TaskQ rejects.
 
     A ":" name is inert today -- the cap bootstrap matches
-    ``WHERE name = ANY($1)`` against the validated ``settings.queues`` --
+    ``WHERE name = any($1)`` against the validated ``settings.queues`` --
     so the row would never match anything: a trap for whoever
     finds it later, not an exploit. It must never be written.
     """

@@ -1,20 +1,20 @@
-# Observability example - OTel setup with Jaeger or any OTLP collector.
+# Observability example - otel setup with Jaeger or any otlp collector.
 #
 # This script demonstrates how to wire OpenTelemetry exporters for TaskQ
-# workers and clients. TaskQ emits spans and metrics via the OTel API
+# workers and clients. TaskQ emits spans and metrics via the otel API
 # (opentelemetry-api, a core dependency). The SDK and exporter require
 # the [otel] extra:
 #
 #   uv add "taskq-py[otel]"
 #
-# Then point the standard OTel environment variables at your collector:
+# Then point the standard otel environment variables at your collector:
 #
 #   export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 #   export OTEL_SERVICE_NAME=my-app-worker
 #   export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=production"
 #
-# TaskQ does NOT override any OTel environment variables. The setup below
-# is the standard OTel SDK initialization - it works identically for
+# TaskQ does not override any otel environment variables. The setup below
+# is the standard otel SDK initialization - it works identically for
 # Jaeger, Grafana Tempo, Datadog, Sentry, Azure Monitor, etc.
 #
 # Quick local Jaeger setup:

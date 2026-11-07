@@ -66,7 +66,7 @@ async def drain_monitor_loop(
      If max_runtime is set and exceeded, triggers shutdown with exit code 4.
 
      Returns after creating the orchestrate_shutdown task. Spawns with
-     may_return=True in the sibling spawner. Does NOT set shutdown_event
+     may_return=True in the sibling spawner. Does not set shutdown_event
     , orchestrate_shutdown's finally block sets it at the correct point
      (after all phase work completes), exactly as the SIGTERM signal
      handler does.
@@ -94,7 +94,7 @@ async def drain_monitor_loop(
         worker_id=str(worker_id),
     )
 
-    # Worst-case seconds ONE iteration can consume: the count bound plus
+    # Worst-case seconds one iteration can consume: the count bound plus
     # the trailing poll sleep. A slow-but-recovering count_active_jobs
     # that spends the whole bound is a transient this loop rides out
     # (TRANSIENT_PG_ERRORS below), so the liveness tick period, and the
@@ -219,7 +219,7 @@ async def _trigger_drain_shutdown(
     """Create the orchestrate_shutdown task with a drain exit code.
 
     Mirrors the SIGTERM signal handler exactly: create the wrapper task,
-    append to orchestrator_holder, and do NOT set shutdown_event ,
+    append to orchestrator_holder, and do not set shutdown_event ,
     orchestrate_shutdown's finally sets it at the correct point (after
     all phase work completes).
 

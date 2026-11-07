@@ -1,63 +1,45 @@
-"""THE TIMER-FIXES LANE'S PINS — the timer attack front's five
-recorded findings + the doc-deep gap, each fixed WITH its failing-first pin (the
-recorded finding's live repro is the red receipt BEFORE the fix).
+"""The timer machinery's pins — the reserved ``__timer__`` prefix, the
+approval-broadcast split, the explorer's timer face, the expiry drain,
+the redeploy wedge's status surface, and the naive-datetime doc.
 
-The six fixes, and what each pin holds shut:
+What each pin holds shut:
 
-* FIX 1 — THE ``__timer__`` TROJAN PREFIX: a HITL payload model named
-  ``__timer__Approval`` (pre-fix) minted a hold every reader
-  mis-identified as the CLOCK's — invisible to ``HitlClient.list()``,
-  unanswerable (the boundary refuses the human's own answer as a timer
-  forgery), never fail-closing (the expiry arm never abandons the
-  prefix), and fired at the deadline into a ``SignalPayloadError``
-  death. The live scenario (``scripts/_timer_cures_red_drill.py``, capture
-  ``.measurements/timer-fixes-mutation pin-pre.txt``) reproduced all four
-  legs at the base tree. THE FIX: the refusal is at the MINT —
+* the ``__timer__`` TROJAN PREFIX: a HITL payload model named
+  ``__timer__Approval`` must never mint a hold readers mistake for the
+  CLOCK's. The refusal is at the MINT —
   ``wait_signal`` (and ``wait_until``'s key) raise the typed
-  E17-reserved-timer-prefix error naming the fix, no row is written.
-* FIX 2 — THE TIMER LEAK INTO THE APPROVAL BROADCAST: the T26
-  create-broadcast fired unconditionally and the listener's backfill had
-  no prefix filter — every SSE/cowork-UI consumer saw every timer as a
-  pending approval. THE FIX: ONE mechanism — the reserved-prefix split
-  the faces already read BY LAW — applied at the two unfiltered faces:
-  the create broadcast skips a timer hold (the leg is the APPROVAL
+  E17-reserved-timer-prefix error naming the rule, no row is written.
+* the TIMER LEAK into the APPROVAL BROADCAST: the expiry-as-value
+  create-broadcast skips a timer hold (the leg is the APPROVAL
   broadcast; the wake's RESOLVED leg already announces the fire), and
   the backfill's snapshot excludes the prefix (mirroring
   ``HitlClient.list``'s exclusion). No second marker (a kind flag) is
   introduced: the prefix IS the row's own kind-truth, and two markers
   would be two mechanisms.
-* FIX 3 — THE EXPLORER'S TIMER TEMPLATE: the run explorer rendered a
-  Resolve form on a timer hold (refuse-only — the boundary would refuse
-  the submission). THE FIX: the template branches — a timer renders AS
-  a timer (the key, the scheduled instant, the fired_by) with NO resolve
+* the EXPLORER'S TIMER TEMPLATE: the run explorer renders a timer AS
+  a timer (the key, the scheduled instant, the fired_by) with no resolve
   affordance; the CLI's why-stuck line gets the same branch (the same
   one mechanism, the same prefix).
-* FIX 4 — THE 10K-TIMER TAIL: batch 100 x drain=False x the 30 s
-  cadence measured ~50 minutes worst-case late (the scenario's arithmetic:
-  100 passes x 30 s); the due-scan was a seq scan + sort every tick.
-  THE FIX: the sweep DRAINS due timers until empty per tick
+* the 10K-TIMER TAIL: the sweep DRAINS due timers until empty per tick
   (batch-bounded per iteration, cap-bounded per drain) + the PARTIAL
-  index the reads chose: ``(expires_at, id) WHERE status = 'held' AND
+  index the reads chose: ``(expires_at, id) WHERE status = 'held' and
   starts_with(signal_name, '__timer__')`` — the EXPLAIN receipt is an
   Index Only Scan (no sort, the prefix consumed by the index predicate;
   the full ``(status, expires_at)`` index measured strictly worse: a
   Bitmap Heap Scan + Sort + residual filter).
-* FIX 5 — THE VERSIONING WEDGE'S SURFACE: rename/remove a node in a
-  redeploy → in-flight runs at that node zombie forever, and ``flows
-  status`` showed NOTHING. THE FIX (the surface, not the semantics —
-  the registry-is-truth contract entails the mixing): the docs' §6
+* the VERSIONING WEDGE'S SURFACE: rename/remove a node in a
+  redeploy and in-flight runs at that node zombie — the registry-is-truth
+  contract entails the mixing, so the surface carries it: the docs' §6
   carries the wedge paragraph, and ``flows status --app`` compares the
   run's node inventory against the CURRENT registry and NAMES the
   stranded nodes.
-* FIX 6 — THE NAIVE-DATETIME DOC: the silent UTC coercion is documented
-  AT THE API FACE (the ``wait_until`` docstring + the guide's timer
+* the NAIVE-DATETIME DOC: the silent UTC coercion is documented
+  AT the API FACE (the ``wait_until`` docstring + the guide's timer
   section) — one paragraph, exact.
 
-Failing-first evidence: the pins ran against the BASE tree 08dccb92d (the
-timers lane's head) BEFORE the fixes — the captures ride
+The mutation reds for these pins ride
 ``.measurements/timer-fixes-pin-reds-pre.txt`` and the scenario's
-``.measurements/timer-fixes-mutation pin-pre.txt``; the fixes flipped them
-green.
+``.measurements/timer-fixes-mutation pin-pre.txt``.
 """
 
 from __future__ import annotations
@@ -137,10 +119,9 @@ async def _c5_renamed(ctx: StepContext, params: str) -> str:
     return "renamed:v2"
 
 
-# THE TROJAN'S OWN NAME (fix 1): the recorded finding is the name itself — a
-# hand-facing mint whose payload model collides with the reserved
-# namespace. Module level: no name mangling.
-class __timer__Approval(BaseModel):  # noqa: N801  # Why: the NAME IS THE RECORDED FINDING — a payload model colliding with the reserved __timer__ namespace is the mint the fix refuses.
+# the defect is the name itself — a hand-facing mint whose payload model
+# collides with the reserved namespace. Module level: no name mangling.
+class __timer__Approval(BaseModel):  # noqa: N801  # Why: the name is the defect — a payload model colliding with the reserved __timer__ namespace is the mint the refusal owns.
     verdict: str
 
 
@@ -164,7 +145,7 @@ async def trojan_body(ctx: StepContext, params: TrojannParams) -> str:
 
 class MintProbe(CtxWaitOps, CtxTimerOps):
     """A minimal WaitHost: enough context for the mint paths — the E17
-    refusal fires BEFORE any pool use, so the probe proves the refusal's
+    refusal fires before any pool use, so the probe proves the refusal's
     ORDER (at the mint, pre-pool)."""
 
     def __init__(self, pool: asyncpg.Pool, schema: str) -> None:
@@ -176,13 +157,16 @@ class MintProbe(CtxWaitOps, CtxTimerOps):
         self.attempt = 1
         self._is_loop = False
         self._ledger_id = None
-        # THE MAP SIBLING'S IDENTITY (the holdmap lane's F2 fix — the
-        # WaitHost protocol's identity leg): a PLAIN step's probe carries
-        # map_index None (the pre-fix identity's exact shape).
+        # a plain step's probe carries map_index None (the identity the refusal
+        # answers).
         self._map_index = None
         self._workflow_name = "timer_cures_probe_flow"
         self._redact = None
         self._runtime = {}
+        # the wait machinery's per-attempt call counter (the WaitHost
+        # protocol's field — the probe never reaches the mint paths, but
+        # it implements the host's shape).
+        self._wait_call_seq = 0
 
 
 @pytest.fixture(autouse=True)
@@ -210,8 +194,8 @@ def demo_app_module() -> Iterator[types.ModuleType]:
         gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=30.0)
         return build(step(human_body, Nudge(), key="human_node", gates=(gate,)))
 
-    # THE CURRENT REGISTRY'S GRAPH (fix 5's --app face): the redeployed
-    # code — 'second' RENAMED away, the node the in-flight run sits at.
+    # fix 5's --app face. the redeployed code — 'second' renamed away, the node
+    # the in-flight run sits at.
     @app_obj.workflow("c5_zombie_flow")
     def c5_zombie_flow() -> Promise[object]:
         p = step(_c5_first, Nudge(), key="first")
@@ -225,7 +209,7 @@ def demo_app_module() -> Iterator[types.ModuleType]:
 
 def _make_admin_app(pool: asyncpg.Pool, schema: str) -> Any:
     """The admin app (the [fastapi] extra's surface): the imports live
-    HERE — the module must import clean on the non-fastapi legs (the
+    here — the module must import clean on the non-fastapi legs (the
     vault/aad extras suites run this file too; only the explorer test
     consumes fastapi, and it importorskips)."""
     from fastapi import FastAPI
@@ -239,20 +223,19 @@ def _make_admin_app(pool: asyncpg.Pool, schema: str) -> Any:
     return app
 
 
-# ── FIX 1: the trojan prefix is refused at the MINT ────────────────────
+# ── the trojan prefix is refused at the mint ──────────────────────────
 
 
 async def test_e17_the_trojan_prefix_is_refused_at_the_wait_signal_mint(
     wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
 ) -> None:
-    """FIX 1, the mint's direct face: a payload model whose NAME collides
+    """The mint's direct face: a payload model whose NAME collides
     with the reserved ``__timer__`` namespace is the typed E17 refusal at
-    the mint — LOUDLY, with the fix named, and NO hold row written (the
+    the mint — LOUDLY, with the fix named, and no hold row written (the
     invisible/unanswerable/unfail-closing/deadly hold is
     unrepresentable).
 
-    Failing-first: at the base tree the mint SUCCEEDED (the measured tail:
-    the hold minted, ``HitlClient.list()`` empty, the human's answer
+    The rejected shape: the hold minted, ``HitlClient.list()`` empty, the human's answer
     refused as a forgery, the run dead at the deadline)."""
     probe = MintProbe(wf_pool, wf_schema)
     with pytest.raises(ReservedTimerNamespaceError) as exc_info:
@@ -261,7 +244,7 @@ async def test_e17_the_trojan_prefix_is_refused_at_the_wait_signal_mint(
     assert "E17-reserved-timer-prefix" in message, message
     assert "__timer__Approval" in message, "the refusal must name the offending model"
     assert "rename" in message.lower(), "the refusal must name the fix"
-    # THE MINT WROTE NOTHING: no trojan hold exists to mis-read.
+    # no trojan hold exists to mis-read.
     rows = await wf_pool.fetch(
         render_sql("SELECT id FROM {schema}.wf_signals WHERE workflow_id = $1", wf_schema),
         probe.flow_id,
@@ -269,13 +252,13 @@ async def test_e17_the_trojan_prefix_is_refused_at_the_wait_signal_mint(
     assert not rows, f"the refusal is at the mint — no hold row may be written: {rows}"
     timer_cures_redlog.red(
         "e17-mint-refusal",
-        "the PRE-FIX mint (the scenario's live recorded finding): a payload model named "
+        "the mint without the reserved-prefix refusal: a payload model named "
         "__timer__Approval minted a hold invisible to HitlClient.list(), "
         "unanswerable, never fail-closing, fired at the deadline into a "
         "SignalPayloadError death",
         {
-            "recorded finding": "the shipped mint refuses the reserved prefix LOUDLY; "
-            "the scenario capture is the pre-fix red",
+            "recorded finding": "the shipped mint refuses the reserved prefix loudly; "
+            "the scenario capture records the refusal",
         },
     )
 
@@ -283,10 +266,10 @@ async def test_e17_the_trojan_prefix_is_refused_at_the_wait_signal_mint(
 async def test_e17_the_run_dies_named_and_no_trojan_hold_is_minted(
     wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
 ) -> None:
-    """FIX 1, the runner's face (the recorded finding's own shape): the trojan
+    """The runner's face: the trojan
     flow's node terminal-fails with the E17 class on the record — the
     run DIES NAMED (never silent, never hanging, never firing a trojan
-    wake), and NO trojan hold is ever minted."""
+    wake), and no trojan hold is ever minted."""
     app = WorkflowApp()
 
     @app.workflow("cures_trojan_flow")
@@ -295,7 +278,7 @@ async def test_e17_the_run_dies_named_and_no_trojan_hold_is_minted(
 
     runner = FlowRunner(app.get("cures_trojan_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    await runner.tick(flow_id)  # ONE tick: the claim + the E17 death
+    await runner.tick(flow_id)  # one tick: the claim + the E17 death
     node = await wf_pool.fetchrow(
         render_sql(
             "SELECT status, error_class, error_message FROM {schema}.jobs "
@@ -320,7 +303,7 @@ async def test_e17_the_run_dies_named_and_no_trojan_hold_is_minted(
     assert holds == 0, f"no trojan hold may ever be minted: {holds}"
     timer_cures_redlog.red(
         "e17-run-dies-named",
-        "the PRE-FIX run: the trojan mint succeeded, the wake fired at the "
+        "the mint without the refusal: the trojan mint succeeds, the wake fires at the "
         "deadline and the run died SignalPayloadError (UnabsorbedNodeFailure on "
         "the root) — the scenario's capture",
         {
@@ -333,7 +316,7 @@ async def test_e17_the_run_dies_named_and_no_trojan_hold_is_minted(
 async def test_e17_wait_until_refuses_a_key_in_the_reserved_namespace(
     wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
 ) -> None:
-    """FIX 1, the caller's key: ``wait_until(…, key='__timer__…')``
+    """The caller's key: ``wait_until(…, key='__timer__…')``
     collides with the reserved namespace the same way (the mint would
     double-prefix the row into a mis-named wake) — the same typed E17
     refusal, the fix named."""
@@ -344,25 +327,23 @@ async def test_e17_wait_until_refuses_a_key_in_the_reserved_namespace(
     assert "E17-reserved-timer-prefix" in message, message
     timer_cures_redlog.red(
         "e17-key-refusal",
-        "the PRE-FIX key face: wait_until accepted a key inside the reserved "
+        "the key face without the refusal: wait_until accepts a key inside the reserved "
         "namespace (a double-prefixed row the wake's key-strip mis-names)",
         {"recorded finding": "the shipped mint refuses the caller's key too"},
     )
 
 
-# ── FIX 2: the timer never rides the approval broadcast ────────────────
+# ── the timer never rides the approval broadcast ──────────────────────
 
 
 async def test_the_backfill_never_surfaces_a_timer_hold(
     wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
 ) -> None:
-    """FIX 2, the backfill's face: the listener's snapshot is the
+    """The backfill's face: the listener's snapshot is the
     pending-APPROVALS read — a standing timer hold is announced as
     NEITHER a ``HoldCreated`` NOR an open id in the ``Backfilled``
     reconcile; the HUMAN hold beside it is (the control: the filter
-    never ate the leg). Failing-first: at the base tree the backfill
-    surfaced the timer (the measured tail:
-    ``HoldCreated(signal='__timer__leak')``)."""
+    never ate the leg). The rejected shape: ``HoldCreated(signal='__timer__leak')``)."""
     compiled = WorkflowApp()
     # (bodies are module-level; the same names as the demo module)
 
@@ -382,7 +363,7 @@ async def test_the_backfill_never_surfaces_a_timer_hold(
     human_flow = (await human_runner.create_flow()).flow_id
     await human_runner.drive(human_flow, until="held")
 
-    # BOTH holds stand (the timer's and the human's).
+    # both holds stand (the timer's and the human's).
     timer_row = await wf_pool.fetchrow(
         render_sql(
             "SELECT id, signal_name FROM {schema}.wf_signals "
@@ -437,7 +418,7 @@ async def test_the_backfill_never_surfaces_a_timer_hold(
     assert not client_timer
     timer_cures_redlog.red(
         "c2-backfill-filter",
-        "the PRE-FIX backfill (the scenario's live recorded finding): the snapshot "
+        "the backfill without the prefix filter: the snapshot "
         "surfaced the timer hold as HoldCreated(signal='__timer__leak') — every "
         "SSE/cowork-UI consumer saw the timer as a pending approval",
         {
@@ -450,10 +431,10 @@ async def test_the_backfill_never_surfaces_a_timer_hold(
 async def test_the_create_broadcast_never_announces_a_timer_hold(
     wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
 ) -> None:
-    """FIX 2, the create leg's face: the T26 create-broadcast is the
-    APPROVAL broadcast — a timer hold minted UNDER a live listener
+    """The create leg's face: the create-broadcast is the
+    APPROVAL broadcast — a timer hold minted under a live listener
     announces NOTHING on it (the human control minted beside it does).
-    Failing-first: at the base tree the leg fired unconditionally."""
+    The rejected shape:"""
     listener = HitlListener(wf_pool, wf_schema)
     await listener.start()
     try:
@@ -493,7 +474,7 @@ async def test_the_create_broadcast_never_announces_a_timer_hold(
         human_runner = FlowRunner(compiled.get("c2_live_human_flow"), wf_pool, wf_schema)
         human_flow = (await human_runner.create_flow()).flow_id
         await human_runner.drive(human_flow, until="held")
-        # THE TIMER'S SILENCE IS THE ASSERTION (the human control below
+        # the timer's silence is the assertion (the human control below
         # names the leg's aliveness) — a TimeoutError here is the pass
         # face (the collector never got its one event: no HoldCreated
         # announced anything... the control's assert below speaks).
@@ -519,7 +500,7 @@ async def test_the_create_broadcast_never_announces_a_timer_hold(
         await listener.stop()
     timer_cures_redlog.red(
         "c2-create-broadcast-skip",
-        "the PRE-FIX create leg (the scenario's live recorded finding): register_hold "
+        "the create leg without the refusal: register_hold "
         "broadcast the timer's mint on the approval channel unconditionally",
         {
             "recorded finding": "the shipped leg skips the reserved prefix; the human "
@@ -528,19 +509,18 @@ async def test_the_create_broadcast_never_announces_a_timer_hold(
     )
 
 
-# ── FIX 3: the explorer renders a timer AS a timer ─────────────────────
+# ── the explorer renders a timer as a timer ───────────────────────────
 
 
 @pytest.mark.fastapi  # the admin surface is the [fastapi] extra's — the extras legs select by this
 async def test_the_explorer_renders_a_timer_as_a_timer(
     wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
 ) -> None:
-    """FIX 3: the run explorer's hold card branches — a timer hold
+    """The run explorer's hold card branches — a timer hold
     renders AS a timer (the key, the scheduled instant, the clock as the
-    resolver) with NO Resolve affordance (the boundary is refuse-only:
-    the form was a lie the operator answered into). Failing-first: at the
-    base tree the page rendered the Resolve form on the timer (the
-    recorded finding's template repro)."""
+    resolver) with no Resolve affordance (the boundary is refuse-only:
+    a Resolve form on a timer is a lie the operator answers into). The
+    rejected shape: the page renders the Resolve form on the timer."""
     pytest.importorskip("fastapi")
     app = WorkflowApp()
 
@@ -567,9 +547,9 @@ async def test_the_explorer_renders_a_timer_as_a_timer(
     assert "timer key: fixes-timer" in text or "fixes-timer" in text, (
         "the timer card must name the timer's key"
     )
-    # THE SCHEDULED INSTANT: the row's own wake time renders as the
-    # card's `scheduled:` line — never the placeholder dash (the dead
-    # face the page projection's double-_iso carried).
+    # the row's own wake time renders as the card's `scheduled:` line — never
+    # the placeholder dash (the dead face the page projection's double-_iso
+    # carried).
     row_expires_at = await wf_pool.fetchval(
         render_sql(
             "SELECT expires_at FROM {schema}.wf_signals "
@@ -590,7 +570,7 @@ async def test_the_explorer_renders_a_timer_as_a_timer(
     )
     timer_cures_redlog.red(
         "c3-explorer-timer-branch",
-        "the PRE-FIX template (the recorded finding's repro): workflow_detail.html "
+        "the template without the timer branch: workflow_detail.html "
         "rendered the Resolve form on a __timer__ hold",
         {
             "recorded finding": "the shipped template branches — the timer renders AS a "
@@ -599,23 +579,21 @@ async def test_the_explorer_renders_a_timer_as_a_timer(
     )
 
 
-# ── FIX 4: the drain + the partial index ───────────────────────────────
+# ── the drain + the partial index ─────────────────────────────────────
 
 
 async def test_the_drain_empties_the_due_set_in_one_tick(
     wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
 ) -> None:
     """FIX 4: the leader's signal-sweep arm DRAINS — 10k due timers
-    empty in ONE call (batch-bounded per iteration, cap-bounded per
-    drain), where the pre-fix one-batch-per-pass face measured
+    empty in one call (batch-bounded per iteration, cap-bounded per
+    drain). A one-batch-per-pass face measures
     100-fires-per-pass ⇒ 100 passes x the 30 s cadence ≈ 50 minutes
     worst-case late (the measured tail). The lateness is MEASURED for
     the report (the wall time printed, never a band-flake assert); the
     PINNED semantics are the drain-until-empty + the index's plan.
 
-    Failing-first: at the base tree ``sweep_due_timers`` had no ``drain=``
-    (the call is a TypeError — the surface did not exist) and one pass
-    fired exactly 100 of the 10k."""
+    The rejected shape:"""
     n = 10000
     await wf_pool.execute(
         render_sql(
@@ -641,9 +619,8 @@ async def test_the_drain_empties_the_due_set_in_one_tick(
     )
     assert due_before == n, f"the seed failed: {due_before}"
 
-    # THE INDEX'S PLAN (the EXPLAIN receipt): the due-scan is index-led —
-    # the partial index consumes the prefix + the status, orders by
-    # (expires_at, id) with NO sort and NO seq scan.
+    # the due-scan is index-led — the partial index consumes the prefix + the
+    # status, orders by (expires_at, id) with no sort and no seq scan.
     plan_rows = await wf_pool.fetch(
         render_sql(
             "EXPLAIN (COSTS OFF) SELECT s.id FROM {schema}.wf_signals s "
@@ -659,7 +636,7 @@ async def test_the_drain_empties_the_due_set_in_one_tick(
     assert "wf_signals_timer_due_idx" in plan, f"the due-scan is not index-led:\n{plan}"
     assert "Sort" not in plan, f"the due-scan still sorts (the index must own the order):\n{plan}"
 
-    # THE DRAIN: one call empties the due set.
+    # one call empties the due set.
     t0 = time.perf_counter()
     fired = await sweep_due_timers(wf_pool, schema=wf_schema, drain=True)
     elapsed = time.perf_counter() - t0
@@ -683,7 +660,7 @@ async def test_the_drain_empties_the_due_set_in_one_tick(
     )
     timer_cures_redlog.red(
         "c4-drain-until-empty",
-        "the PRE-FIX sweep (the scenario's live recorded finding): one pass fired 100 of "
+        "the sweep without the drain: one pass fires 100 of "
         "10000 due timers — 100 passes x the 30 s cadence = ~50 minutes worst-case "
         "tail; the due-scan EXPLAIN was a Seq Scan + Sort",
         {
@@ -694,7 +671,7 @@ async def test_the_drain_empties_the_due_set_in_one_tick(
     )
 
 
-# ── FIX 5: the versioning wedge's surface ──────────────────────────────
+# ── fix 5: the versioning wedge's surface ──────────────────────────────
 
 
 async def test_the_zombie_run_s_status_names_the_stranded_nodes(
@@ -707,21 +684,19 @@ async def test_the_zombie_run_s_status_names_the_stranded_nodes(
 ) -> None:
     """FIX 5: the wedge's surface. A run mid-flight at a node the
     CURRENT registry no longer declares (a rename/remove redeploy) is a
-    ZOMBIE: never terminal, nothing fails it — and the pre-fix ``flows
-    status`` showed NOTHING. The fix makes the drift VISIBLE: the
+    ZOMBIE: never terminal, nothing fails it, and the plain ``flows
+    status`` shows NOTHING — the surface makes the drift VISIBLE: the
     status names the stranded nodes, the zombie law, and the remedy.
 
-    Failing-first: at the base tree ``flows status`` took no ``--app`` (the
-    command exits 2 on the option — the surface did not exist) and no
-    drift line existed anywhere."""
+    The rejected shape:"""
     from taskq.cli import app as cli_app
 
     monkeypatch.setenv("TASKQ_PG_DSN", module_pg_schema.pg_dsn)
     monkeypatch.setenv("TASKQ_SCHEMA_NAME", module_pg_schema.schema_name)
 
-    # THE RUN: first → second; the first node runs v1, the second never
-    # claims (its parent's success re-pends it mid-run). The OLD compile
-    # (the create-time snapshot) declares 'second'.
+    # first → second; the first node runs v1, the second never claims (its
+    # parent's success re-pends it mid-run). The old compile (the create-time
+    # snapshot) declares 'second'.
     old_app = WorkflowApp()
     name = "c5_zombie_flow"
 
@@ -737,15 +712,15 @@ async def test_the_zombie_run_s_status_names_the_stranded_nodes(
     assert [r["step_key"] for r in rows] == ["first"], rows
     await runner._run_node(flow_id, rows[0])  # pyright: ignore[reportPrivateUsage]
 
-    # THE REDEPLOY: the registry carries the NEW code ('second' renamed
-    # away) — the versioning pins' own swap seam (a NEW process's
-    # registry holds only the new definition).
+    # the registry carries the new code ('second' renamed away) — the
+    # versioning pins' own swap seam (a new process's registry holds only the
+    # new definition).
     definition = WorkflowDef(name=name, bodies={"first": _c5_first, "renamed": _c5_renamed})
-    get_registry()._workflows[name] = definition  # pyright: ignore[reportPrivateUsage]  # Why: the redeploy simulation IS the registry map's replacement.
+    get_registry()._workflows[name] = definition  # pyright: ignore[reportPrivateUsage]  # Why: the redeploy simulation is the registry map's replacement.
 
-    # THE CLI's STATUS, WITH THE CURRENT REGISTRY (--app): the run's
-    # node 'second' is stranded — the current graph declares
-    # {'first', 'renamed'}. The drift is VISIBLE.
+    # the CLI's status, with the current registry (--app): the run's node
+    # 'second' is stranded — the current graph declares {'first', 'renamed'}.
+    # The drift is visible.
     result = await asyncio.to_thread(
         cli_runner.invoke,
         cli_app,
@@ -774,23 +749,23 @@ async def test_the_zombie_run_s_status_names_the_stranded_nodes(
     )
     timer_cures_redlog.red(
         "c5-zombie-status-drift",
-        "the PRE-FIX status (the recorded finding's repro): the zombie run's status "
+        "the status without the wedge surface: the zombie run's status "
         "showed NOTHING — no --app door, no stranded-node line, the drift "
         "invisible to the operator the docs teach",
         {"recorded finding": "the shipped status names the stranded nodes + the remedy"},
     )
 
 
-# ── FIX 6: the naive-datetime law at the API face ──────────────────────
+# ── the naive-datetime law at the API face ────────────────────────────
 
 
 def test_the_naive_datetime_law_is_documented_at_the_api_face(
     timer_cures_redlog: Any,
 ) -> None:
-    """FIX 6: the silent UTC coercion is documented AT THE API FACE —
+    """FIX 6: the silent UTC coercion is documented AT the API FACE —
     the ``wait_until`` docstring carries the exact law (a naive datetime
     is interpreted as UTC; the DB never re-bases it) and the guide's
-    timer section carries the same paragraph. Failing-first: at the base
+    timer section carries the same paragraph. The rejected shape: at the base
     tree the docstring carried a clause, not the law (the expanded
     paragraph is the fix)."""
     doc = " ".join((inspect.getdoc(CtxTimerOps.wait_until) or "").split())
@@ -807,13 +782,13 @@ def test_the_naive_datetime_law_is_documented_at_the_api_face(
     assert "never re-bases" in section
     timer_cures_redlog.red(
         "c6-naive-utc-doc",
-        "the PRE-FIX doc (the doc-deep gap): the coercion was a clause, not "
+        "the doc without the coercion paragraph: the coercion is a clause, not "
         "the law — the docstring and the guide carried no exact paragraph",
         {"recorded finding": "the shipped faces carry the exact one-paragraph law"},
     )
 
 
-# ── FIX 7: the timer hold GAINS THE MAP INDEX (the ruling's execution) ──
+# ── fix 7: the timer hold gains the map INDEX (the ruling's execution) ──
 
 
 class TimerItem(BaseModel):
@@ -833,17 +808,17 @@ class TimerNote(BaseModel):
 async def test_a_timer_hold_in_a_map_sibling_context_gets_its_own_identity(
     wf_pool: Any, wf_schema: str, wf_conn: Any, timer_cures_redlog: Any
 ) -> None:
-    """THE MERGE-ORDER RULING'S TIMER x HOLDMAP EXECUTION: the holdmap
+    """The merge-order ruling's timer x holdmap execution: the holdmap
     lane's map-index identity (``wf_signals_hold_identity_uniq`` gains
     ``COALESCE(map_index, -1)``) must reach the TIMER hold too —
-    ``ctx.wait_until`` inside a map item mints EACH sibling its OWN
+    ``ctx.wait_until`` inside a map item mints EACH sibling its own
     timer row (the clock never collides across siblings), and each
     sibling wakes on its own fire.
 
-    THE REJECTED VARIANT (the pre-fix tree, probed live): the timer
-    mint threaded NO map index — every sibling's timer hold landed on
+    REJECTED VARIANT (probed live): the timer
+    mint threaded no map index — every sibling's timer hold landed on
     the ``-1`` sentinel, and the second sibling's ``wait_until`` raised
-    ``UniqueViolationError`` (``wf_signals_hold_identity_uniq``) INTO
+    ``UniqueViolationError`` (``wf_signals_hold_identity_uniq``) into
     the ladder (worker mode) or wedged the run (the wake read one
     arbitrary sibling's row).
     """
@@ -871,7 +846,7 @@ async def test_a_timer_hold_in_a_map_sibling_context_gets_its_own_identity(
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
-    # BOTH siblings' timer holds exist as DISTINCT rows (the second
+    # both siblings' timer holds exist as DISTINCT rows (the second
     # sibling's mint must never collide on the -1 sentinel).
     rows: list[Any] = []
     for _ in range(20):
@@ -895,9 +870,9 @@ async def test_a_timer_hold_in_a_map_sibling_context_gets_its_own_identity(
     indexes = sorted(r["map_index"] for r in rows)
     assert indexes == [0, 1], indexes
 
-    # THE FIRES WAKE THEIR OWN SIBLINGS: drive past the deadline; the
-    # sweep fires both timers; the run completes with BOTH siblings'
-    # notes (a sibling that never woke is the wedged variant's face).
+    # drive past the deadline; the sweep fires both timers; the run completes
+    # with both siblings' notes (a sibling that never woke is the wedged
+    # variant's face).
     await asyncio.sleep(0.2)
     from taskq.workflows.api._hitl import sweep_due_timers
 
@@ -922,7 +897,7 @@ async def test_a_timer_hold_in_a_map_sibling_context_gets_its_own_identity(
     assert sorted(notes) == [0, 1], notes
     timer_cures_redlog.red(
         "c7-timer-hold-map-index",
-        "the PRE-FIX variant (probed live): the timer mint threaded no map "
+        "the variant: the timer mint threads no map "
         "index — the second map sibling's wait_until raised "
         "wf_signals_hold_identity_uniq INTO the ladder (the rejected "
         "collision); the fix threads the item's own index through "

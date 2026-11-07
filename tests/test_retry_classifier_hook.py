@@ -328,7 +328,7 @@ def test_hook_returning_dict_falls_back_to_default_and_logs() -> None:
 
 
 def test_hook_returning_non_retryable_dict_does_not_cause_immediate_fail() -> None:
-    """A hook returning a dict with kind='non_retryable' must NOT influence
+    """A hook returning a dict with kind='non_retryable' must not influence
     classification - the invalid return is discarded and the static policy
     governs the decision (transient → Retry on attempt 1 < max_attempts 3)."""
 

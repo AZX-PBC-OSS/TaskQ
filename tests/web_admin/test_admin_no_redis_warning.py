@@ -5,9 +5,9 @@ carries no client (``create_router`` called without ``redis_client``), the
 portal renders in polling mode and the progress stream answers 503
 ``redis_not_configured``: live SSE progress is silently absent while the
 dashboard keeps working. This pin holds the one link that names that
-wiring gap at startup, exactly ONE ``admin-ui-no-redis-client`` warning.
+wiring gap at startup, exactly one ``admin-ui-no-redis-client`` warning.
 
-The warning fires ONLY on the gap. A deployment with no TaskQ Redis
+The warning fires only on the gap. A deployment with no TaskQ Redis
 configured at all is the legitimate polling mode: the badge says so
 accurately, nothing is misconfigured, and no warning fires. The predicate
 is therefore ``settings.redis_url is not None and redis_client is None`` -
@@ -46,7 +46,7 @@ def test_wiring_gap_warns_exactly_once(
     stub_pool: _StubPool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Redis configured in settings (TASKQ_REDIS_URL set) + no client in
-    the app state -> exactly ONE ``admin-ui-no-redis-client`` warning
+    the app state -> exactly one ``admin-ui-no-redis-client`` warning
     carrying the degradation statement and a remedy that names the wiring
     that closes the gap."""
     monkeypatch.setenv("TASKQ_REDIS_URL", "redis://localhost:6379/0")
@@ -75,7 +75,7 @@ def test_no_redis_configured_is_legitimate_polling_and_does_not_warn(
     stub_pool: _StubPool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No TASKQ_REDIS_URL and no client is the documented polling mode:
-    the badge reads ``polling mode`` accurately and NO warning fires. A
+    the badge reads ``polling mode`` accurately and no warning fires. A
     warning here would be log noise on every legitimate deployment."""
     monkeypatch.delenv("TASKQ_REDIS_URL", raising=False)
 
@@ -102,8 +102,8 @@ def test_wired_client_does_not_warn(stub_pool: _StubPool, monkeypatch: pytest.Mo
 
 def test_create_router_wires_the_no_redis_warning_behind_the_exact_predicate() -> None:
     """Structural wiring pin: ``create_router`` must contain exactly one
-    ``admin-ui-no-redis-client`` warning call, guarded by BOTH halves of
-    the predicate - the settings expecting Redis AND the app state
+    ``admin-ui-no-redis-client`` warning call, guarded by both halves of
+    the predicate - the settings expecting Redis and the app state
     lacking the client.
 
     Adversarial review motivation: deleting the call leaves every helper-level
@@ -143,7 +143,7 @@ def test_create_router_wires_the_no_redis_warning_behind_the_exact_predicate() -
     )
 
     # The call must sit behind an If whose test is the two-half predicate:
-    # settings.redis_url is not None  AND  redis_client is None.
+    # settings.redis_url is not None  and  redis_client is None.
     # (ast.walk includes body and orelse; the only If around this call is
     # its guard.)
     guard = next(

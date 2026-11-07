@@ -3,7 +3,7 @@
 Six parity suites (the reclaim/retry-budget/cancel-state parity files and
 the unique-for window suite) grew byte-identical copies of this helper,
 each claiming to "mirror" another copy in its Why comments — the drift the
-shared module ends. The harness speaks to BOTH backends through the same
+shared module ends. The harness speaks to both backends through the same
 contract the differential corpus pins: the in-memory side reads the
 backend's canonical worker id, the PG side inserts a row the way a real
 worker's registration would.

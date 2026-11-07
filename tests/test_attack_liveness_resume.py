@@ -8,7 +8,7 @@ in the exact class-4 shape (an exception outside every loop's transient
 family: a malformed row's KeyError, a partial migration's AttributeError):
 
 1. ``progress_flush_loop``: before the fix, ``_flush_dirty_set`` was
-   awaited with NO backstop at the loop level, so any non-transient shape
+   awaited with no backstop at the loop level, so any non-transient shape
    escaping it killed the flush loop for the life of the process. The
    worker's progress telemetry then went silently dark (every later
    ``ctx.progress`` call still buffered in memory, never flushed) while
@@ -150,7 +150,7 @@ async def _stop_task_bounded(task: asyncio.Task[None]) -> None:
 async def test_progress_flush_loop_survives_an_unexpected_tick_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-transient shape escaping _flush_dirty_set must NOT kill the
+    """A non-transient shape escaping _flush_dirty_set must not kill the
     loop: the guard counts it loudly, the next tick RESUMES (the real
     flush runs, the buffer comes back clean), all within a cadence bound.
 
@@ -195,7 +195,7 @@ async def test_progress_flush_loop_survives_an_unexpected_tick_exception(
     finally:
         shutdown.set()
         try:
-            # No cancel: the loop must exit CLEANLY through its own while
+            # No cancel: the loop must exit cleanly through its own while
             # condition - a cancel here would mask the death assertion
             # below.
             async with asyncio.timeout(2.0):
@@ -273,7 +273,7 @@ def _sweep_settings() -> WorkerSettings:
 class _AcquireBrokenPool:
     """Pool double whose acquire raises a NON-transient shape: a managed PG
     revoking the advisory-lock grant (the revoked-grant class-4 surprise).
-    Statement/pool errors the loops already classify transient are NOT this
+    Statement/pool errors the loops already classify transient are not this
     shape; InsufficientPrivilegeError is permanent until the grant lands."""
 
     def __init__(self, attempts: list[int]) -> None:
@@ -403,7 +403,7 @@ async def test_daily_sweep_is_fatal_at_the_unexpected_budget(
     with pytest.raises(asyncpg.InsufficientPrivilegeError):
         async with asyncio.timeout(5.0):
             await loop_fn(ctx, shutdown)
-    # Reaching here IS the assertion: the guard re-raised at the cap
+    # Reaching here is the assertion: the guard re-raised at the cap
     # instead of retrying the permanent fault forever.
 
 
@@ -502,7 +502,7 @@ async def test_dispatch_poll_keeps_polling_through_a_read_only_window(
                 backend=backend,
                 worker_id=_WORKER_ID,
                 # Why: uniform is for poll-timing jitter, not cryptography; the same
-                # non-crypto use the production module RNG has.
+                # non-crypto use the production module rng has.
                 rng=random.Random(1234),  # noqa: S311
             ),
             _stop_after_window(),

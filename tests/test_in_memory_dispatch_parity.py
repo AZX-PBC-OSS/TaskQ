@@ -21,7 +21,7 @@ and behaviourally pinned by the tests in this file:
 2. A NULL ``fairness_key`` under ``round_robin``. InMemory synthesised a
    SINGLETON partition per unkeyed job (``f"__null__{r.id}"``), so every
    unkeyed job ranked 1 and crowded to the front of the interleave. PG uses
-   ``PARTITION BY COALESCE(j2.fairness_key, '__null__')`` - ONE shared
+   ``PARTITION BY COALESCE(j2.fairness_key, '__null__')`` - one shared
    partition, ranking 1, 2, 3…, which deliberately de-prioritises the
    unkeyed cohort behind the keyed ones. ``fairness_key`` is None by
    default, so this was the common case, and the in-memory shape was
@@ -32,7 +32,7 @@ and behaviourally pinned by the tests in this file:
    (``array_agg(id ORDER BY id)`` over ``ORDER BY id`` windows).
 
 PG is production: these tests assert the PG result and flag InMemory as
-the backend that diverged. The dispatch pins drive the SAME job set (same
+the backend that diverged. The dispatch pins drive the same job set (same
 ids, same ``fairness_key``s, same ``scheduled_at``) through both backends
 and compare WHICH jobs a bounded ``dispatch_batch`` claims. The comparison
 is on the claimed SET, not on the RETURNING sequence: ``UPDATE … RETURNING``
@@ -135,7 +135,7 @@ async def _make_in_memory(
     round_robin_queues: tuple[str, ...] = (),
 ) -> InMemoryBackend:
     backend = InMemoryBackend(clock=FakeClock(_IN_MEMORY_NOW))
-    # Dispatch candidates come FROM the actor_config registry on BOTH
+    # Dispatch candidates come FROM the actor_config registry on both
     # backends (PG's per_actor_capacity CTE - every caller of this helper
     # seeds the PG side's actor_config via _ensure_pg_actor): the twin's
     # registry must carry the same actors, or "no actors registered" would
@@ -159,8 +159,8 @@ async def test_claim_cursor_bounds_selection_identically_on_both_backends(
 ) -> None:
     """The claim cursor (backend/_claim_cursor.py) is a SELECTION change to
     the dispatch seam on both backends, so it owes the registry the same
-    answer: a below-cursor row strands on BOTH (the bounded-stranding
-    state), and the round-robin exemption un-strands on BOTH.
+    answer: a below-cursor row strands on both (the bounded-stranding
+    state), and the round-robin exemption un-strands on both.
 
     This is the parity pin the cursor's default-on posture rides: the
     twin must mirror the bound exactly, or the differential tests would
@@ -183,8 +183,8 @@ async def test_claim_cursor_bounds_selection_identically_on_both_backends(
         )
 
     # Round 1: three monotone rows; both backends claim all three and
-    # arm their cursors at the newest id. The cursor is OPT-IN (the
-    # settings default is 0): the pin enables it on BOTH backends - the
+    # arm their cursors at the newest id. The cursor is opt-in (the
+    # settings default is 0): the pin enables it on both backends - the
     # twin's knob mirrors the setting's.
     args_list = [_args(job_id=new_job_id(), actor=actor, queue="default") for _ in range(3)]
     for args in args_list:
@@ -197,14 +197,14 @@ async def test_claim_cursor_bounds_selection_identically_on_both_backends(
     mem_rows = await mem_backend.dispatch_batch(new_uuid(), ["default"], 10, _LEASE)
     assert len(pg_rows) == 3 and len(mem_rows) == 3
 
-    # The skewed insert: one row per backend whose uuid7 mints BELOW the
+    # The skewed insert: one row per backend whose uuid7 mints below the
     # cursors the rounds just armed.
     from datetime import datetime as _dt
 
     def _skewed() -> EnqueueArgs:
         from uuid import UUID as _UUID
 
-        minted = uuid_utils.uuid7(  # noqa: TID251  # Why: the skewed-mint NEEDS the explicit-timestamp uuid7 form (a behind-the-worker clock); new_job_id() is the now-minting seam.
+        minted = uuid_utils.uuid7(  # noqa: TID251  # Why: the skewed-mint needs the explicit-timestamp uuid7 form (a behind-the-worker clock); new_job_id() is the now-minting seam.
             nanoseconds=int(_dt.now(UTC).timestamp() * 1e9) - 60_000_000_000
         )
         return EnqueueArgs(
@@ -222,7 +222,7 @@ async def test_claim_cursor_bounds_selection_identically_on_both_backends(
     await pg_backend.enqueue(pg_skew)
     await mem_backend.enqueue(mem_skew)
 
-    # Round 2, cursors live: BOTH backends must strand the below-cursor
+    # Round 2, cursors live: both backends must strand the below-cursor
     # row (claim nothing) - the bounded state the jitter reset heals.
     pg_round2 = await pg_backend.dispatch_batch(new_uuid(), ["default"], 10, _LEASE)
     mem_round2 = await mem_backend.dispatch_batch(new_uuid(), ["default"], 10, _LEASE)
@@ -233,7 +233,7 @@ async def test_claim_cursor_bounds_selection_identically_on_both_backends(
         "to the jitter reset"
     )
 
-    # The RR exemption un-strands on BOTH: flip the mode on each backend
+    # The rr exemption un-strands on both: flip the mode on each backend
     # the way each backend's writers do (the queues table + the seam
     # invalidation for PG; set_queue_mode for the twin), and the
     # below-cursor row claims on both.
@@ -313,7 +313,7 @@ async def test_null_fairness_key_round_robin_selection_matches_pg(
     module_pg_schema: ModulePgSchema,
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Unkeyed (NULL ``fairness_key``) jobs must share ONE partition in
+    """Unkeyed (NULL ``fairness_key``) jobs must share one partition in
     both backends, so they rank 1, 2, 3… behind the keyed cohorts.
 
     Job set for a single actor on one ``round_robin`` queue: three unkeyed
@@ -514,7 +514,7 @@ async def test_handback_of_a_never_claimed_row_switches_to_assignment_routing_on
     clean_jobs_app: JobsApp,
 ) -> None:
     """A re-pended row must switch from label routing to assignment routing
-    on BOTH backends - and the switch must be visible even for a row that
+    on both backends - and the switch must be visible even for a row that
     was never claimed.
 
     The row below is cancelled while pending and handed back by an operator
@@ -547,7 +547,7 @@ async def test_handback_of_a_never_claimed_row_switches_to_assignment_routing_on
     await mem_backend.enqueue(args)
 
     # Producer placement governs while the row has never been handed back:
-    # the assignment queue's consumer must NOT claim the labelled row (a
+    # the assignment queue's consumer must not claim the labelled row (a
     # router that ignored the label would claim it here).
     pg_before = await pg_backend.dispatch_batch(new_uuid(), [assignment_queue], 10, _LEASE)
     mem_before = await mem_backend.dispatch_batch(new_uuid(), [assignment_queue], 10, _LEASE)

@@ -1,4 +1,4 @@
-"""THE WF ERROR-EXPORT CONVENTION PIN: every workflow error class the
+"""The wf error-export convention pin: every workflow error class the
 docs teach is importable from the package root (``taskq.workflows``) —
 the convention the sibling classes ride (``ChildFlowLostError``,
 ``ChildWorkflowUnknownError``, ``SpawnDepthExceededError``,

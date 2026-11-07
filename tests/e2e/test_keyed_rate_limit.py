@@ -139,7 +139,7 @@ async def test_keyed_rate_limit_per_tenant_independence(
         f"{', '.join(f'{j}:{a}/{w}' for j, (a, w) in sorted(a_per_job.items()))}"
     )
 
-    # Step 5: tenant B's jobs face a FRESH capacity-3 bucket - 0 denials.
+    # Step 5: tenant B's jobs face a fresh capacity-3 bucket - 0 denials.
     # Tenant B's bucket is materialized lazily on first acquisition and
     # starts at full capacity (3 tokens). All 3 jobs should succeed
     # immediately. This proves per-tenant independence: tenant A's drain
@@ -181,7 +181,7 @@ async def test_keyed_rate_limit_per_tenant_independence(
     # primary guard - it proves tenant A's measured jobs faced a depleted
     # bucket. A spread threshold on only 2 measured jobs with a 1/s refill
     # rate is unreliable (the bucket can fully refill during the
-    # wait+enqueue cycle), so we do NOT assert tenant A's spread. Tenant
+    # wait+enqueue cycle), so we do not assert tenant A's spread. Tenant
     # B's spread is still checked: a fresh capacity-3 bucket should not
     # pace 3 jobs (spread < 0.5s).
     a_delivered = [row for row in a_effects if json.loads(row["detail"])["tenant_id"] == _TENANT_A]

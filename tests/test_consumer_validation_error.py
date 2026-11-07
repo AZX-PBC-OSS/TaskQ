@@ -61,12 +61,12 @@ async def _test_actor(_payload: _SimplePayload) -> None:
     pass
 
 
-# ── pydantic.ValidationError is NOT PayloadValidationError ──────────────
+# ── pydantic.ValidationError is not PayloadValidationError ──────────────
 
 
 class TestPydanticValidationErrorNotCaught:
     """Prove that pydantic.ValidationError leaking from model_validate is
-    NOT caught by the retry classifier's PayloadValidationError check."""
+    not caught by the retry classifier's PayloadValidationError check."""
 
     def test_pydantic_validation_error_is_not_payload_validation_error(self) -> None:
         """pydantic.ValidationError is a different class from
@@ -101,7 +101,7 @@ class TestPydanticValidationErrorNotCaught:
         assert decision.retryable is False
 
 
-# ── PayloadValidationError IS non-retryable ─────────────────────────────
+# ── PayloadValidationError is non-retryable ─────────────────────────────
 
 
 class TestPayloadValidationErrorNonRetryable:
@@ -149,11 +149,11 @@ class TestDispatchConvertsValidationError:
             validate_actor_payload(_test_actor.payload_type, bad_payload, _test_actor.name)
 
         exc = exc_info.value
-        # Actor context IS preserved - the piece of caller text the
+        # Actor context is preserved - the piece of caller text the
         # message is allowed to carry.
         assert _test_actor.name in str(exc)
         assert exc.actor == _test_actor.name
-        # The raw payload and its input values are NOT:
+        # The raw payload and its input values are not:
         assert _CANARY not in str(exc)
         assert "12345" not in str(exc)
         assert "Raw payload" not in str(exc)
@@ -216,7 +216,7 @@ class TestDispatchConvertsValidationError:
 
 class TestConsumerPathUsesTheSanitizedConversion:
     """``consume_one_job``'s pre-acquire fallback (``validated_payload=None``)
-    drives the SAME sanitized ``validate_actor_payload`` conversion - this
+    drives the same sanitized ``validate_actor_payload`` conversion - this
     pins the wiring, not just the helper: replacing that call with an
     inline ``model_validate`` plus a message embedding the raw payload
     would fail here.
@@ -252,7 +252,7 @@ class TestConsumerPathUsesTheSanitizedConversion:
         assert all(_CANARY not in str(err) for err in exc.validation_errors)
 
 
-# ── The consumer threads the ROW's stored payload_schema_ver ────────────
+# ── The consumer threads the row's stored payload_schema_ver ────────────
 
 
 class TestConsumerThreadsStoredSchemaVer:

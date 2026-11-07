@@ -1,8 +1,8 @@
-"""The multi-tenant workflow demo's definitions: TWO tenants' runs, ONE
-keyed rate limit, ONE round_robin queue.
+"""The multi-tenant workflow demo's definitions: TWO tenants' runs, one
+keyed rate limit, one round_robin queue.
 
 The keyed ref is declared on the map (`rate_limits=`): each item body's
-row carries ITS OWN tenant's concrete bucket name
+row carries ITS own tenant's concrete bucket name
 (`tenant-api:<tenant>`), resolved from the item's payload at the fork.
 At claim, the per-key bucket serializes each tenant's items while the
 tenants run beside each other, and the round_robin queue interleaves
@@ -65,7 +65,7 @@ tenant_app = WorkflowApp()
 
 
 async def source(ctx: StepContext) -> list[Item]:
-    # The RUN'S OWN INPUT (create_flow's `input=`) names this run's
+    # The run's own input (create_flow's `input=`) names this run's
     # tenant — two runs of the one graph, one tenant each.
     params = TenantRun.model_validate(ctx.input)
     return [Item(tenant_id=params.tenant, seq=i) for i in range(ITEMS_PER_TENANT)]

@@ -1,11 +1,11 @@
-"""T21 — THE EMISSION OP PINS: ``ctx.progress``, the coalesce, the
+"""The progress emission's pins: ``ctx.progress``, the coalesce, the
 asymmetry.
 
-The provenance: the PoC's PROOF (PROOF 1/2/4) — the chain, the fan-out,
+The obligations: the chain, the fan-out,
 the chatty body — ported onto the BUILT surface. Each pin's REJECTED
 VARIANT is named; the unfenced variants stay RED FOREVER (the failure log).
 
-THE LAW (T21 decision e): observability degrades FIRST, never
+Observability degrades first, never
 correctness. The emission is best-effort — never in the finalize path
 (the zero-finalize-changes probe, ``test_wf_progress_persistence.py``),
 never raised into the body on infrastructure failure, never blocking the
@@ -53,7 +53,7 @@ class Ingest(BaseModel):
     doc_id: str
 
 
-# ── THE CHAIN (PROOF 1): the body's emission → the rows → the replay ────
+# ── the chain (proof 1): the body's emission → the rows → the replay ────
 
 
 async def test_the_chain_body_emission_lands_in_both_channels(
@@ -61,11 +61,11 @@ async def test_the_chain_body_emission_lands_in_both_channels(
     wf_schema: str,
     wf_pool: asyncpg.Pool,
 ) -> None:
-    """THE CHAIN, end-to-end on the built runner: a body's
-    ``ctx.progress`` calls land in the STREAM ring (class='user') AND the
+    """The chain, end-to-end on the built runner: a body's
+    ``ctx.progress`` calls land in the STREAM ring (class='user') and the
     STATE channel (latest-wins), and the engine's auto projections
-    (started + terminal) interleave in the SAME seq space — ONE stream,
-    ONE cursor. The occurrence counter is HONEST: it counts every
+    (started + terminal) interleave in the same seq space — one stream,
+    one cursor. The occurrence counter is HONEST: it counts every
     emission, coalesced or not."""
     app = WorkflowApp()
     seen: dict[str, Any] = {}
@@ -77,11 +77,11 @@ async def test_the_chain_body_emission_lands_in_both_channels(
         seen["emitted"] = 6
         return {"ok": True}
 
-    @app.workflow("t21_chain")
-    def t21_chain() -> Promise[object]:
+    @app.workflow("progress_chain")
+    def progress_chain() -> Promise[object]:
         return build(step(work, Ingest(doc_id="d1"), key="work", progress_schema=Page))
 
-    runner = FlowRunner(app.get("t21_chain"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_chain"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
@@ -107,8 +107,8 @@ async def test_the_chain_body_emission_lands_in_both_channels(
         node,
     )
     kinds = [(r["class"], r["kind"]) for r in stream]
-    # the auto STARTED first, the user emissions, the auto TERMINAL last —
-    # ONE interleaved range. The STREAM ring receives the COALESCED
+    # the auto started first, the user emissions, the auto terminal last —
+    # one interleaved range. The stream ring receives the coalesced
     # snapshots (one per flush — the cadence's, not the emissions'), while
     # the occurrence counter keeps the honest total (6, above): the
     # emitted-vs-delivered pair is the design, never a loss hidden in the
@@ -127,9 +127,9 @@ async def test_declared_schema_door_refuses_wrong_shape(
     wf_schema: str,
     wf_pool: asyncpg.Pool,
 ) -> None:
-    """THE TYPED DOOR (decision a — the TypedGate-door pattern): a node
+    """The typed door (decision a — the TypedGate-door pattern): a node
     that declared ``progress_schema=Page`` refuses a wrong-shaped data
-    emission with :class:`ProgressRefusedError` — raised INTO the body,
+    emission with :class:`ProgressRefusedError` — raised into the body,
     which is the authoring error's place. The refusal ladders like any
     body failure (the node's correctness path owns it)."""
     app = WorkflowApp()
@@ -138,11 +138,11 @@ async def test_declared_schema_door_refuses_wrong_shape(
         await ctx.progress(50, "m", {"not_a_page": True})
         return {"ok": True}
 
-    @app.workflow("t21_lying")
-    def t21_lying() -> Promise[object]:
+    @app.workflow("progress_lying")
+    def progress_lying() -> Promise[object]:
         return build(step(lying_body, Ingest(doc_id="d1"), key="lying", progress_schema=Page))
 
-    runner = FlowRunner(app.get("t21_lying"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_lying"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
     status = await wf_conn.fetchval(
@@ -179,7 +179,7 @@ async def test_typed_gates_pct_and_data(
 
 
 async def test_data_cap_truncates_with_the_marker(wf_pool: asyncpg.Pool, wf_sql: Any) -> None:
-    """T18's D5 shape on the emission op: oversize ``data`` truncated WITH
+    """the retention coupling's D5 shape on the emission op: oversize ``data`` truncated WITH
     the ``__truncated__`` marker — never silently (the reader must know
     it read a truncation)."""
     from taskq.workflows._progress import DATA_MAX_BYTES
@@ -194,7 +194,7 @@ async def test_data_cap_truncates_with_the_marker(wf_pool: asyncpg.Pool, wf_sql:
     await emitter.aclose()  # the flush task must not outlive the test
 
 
-# ── THE COALESCE (PROOF 4): the chatty body held at the cadence ─────────
+# ── the COALESCE (proof 4): the chatty body held at the cadence ─────────
 
 
 async def test_chatty_body_coalesce_cadence_and_constant_rows(
@@ -203,7 +203,7 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
     wf_pool: asyncpg.Pool,
     progress_redlog: RedLog,
 ) -> None:
-    """THE CHATTY BODY on the BUILT op (the PoC's 10k-emission proof,
+    """The chatty body on the built op (the PoC's 10k-emission proof,
     re-proven): 10,000 emissions in a tight loop →
     * the flush count is the CADENCE's, not the emissions' (the coalesce
       holds; the storm shape — a write per emission — is the rejected
@@ -219,11 +219,11 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
             await ctx.progress(i % 101, f"e{i}", None)
         return {"ok": True}
 
-    @app.workflow("t21_chatty")
-    def t21_chatty() -> Promise[object]:
+    @app.workflow("progress_chatty")
+    def progress_chatty() -> Promise[object]:
         return build(step(chatty, Ingest(doc_id="d1"), key="chatty"))
 
-    runner = FlowRunner(app.get("t21_chatty"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_chatty"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     status = await runner.drive(flow_id)
     assert status == "terminal"
@@ -266,8 +266,8 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
 
 
 async def test_flush_failure_never_fails_the_body(wf_sql: Any, wf_schema: str) -> None:
-    """THE ASYMMETRY (decision e), unit-shaped: a flush that CANNOT write
-    (the pool is broken) is counted — ``write_errors`` — and NEVER raised
+    """The asymmetry (decision e), unit-shaped: a flush that CANNOT write
+    (the pool is broken) is counted — ``write_errors`` — and never raised
     into the body; the first loss is WARNED (the loudness half — the
     PoC's adversarial review note: a systematically failing flush must not look
     healthy). The all-dropped node still terminalizes: correctness is
@@ -287,7 +287,7 @@ async def test_flush_failure_never_fails_the_body(wf_sql: Any, wf_schema: str) -
     )
     await emitter.emit(50, "m", None)
     await emitter.emit(60, "m2", None)
-    await emitter.aclose()  # must NOT raise
+    await emitter.aclose()  # must not raise
     assert emitter.write_errors >= 1
     assert emitter.emitted == 2
     assert emitter.appended == 0
@@ -354,8 +354,8 @@ async def test_drop_counter_on_the_record(
 async def test_terminal_projection_lands_after_the_finalize(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE PROJECTION'S ORDER (the display-fence's substrate): the auto
-    TERMINAL event lands only AFTER the finalize applied (the ledger owns
+    """The projection's order (the display-fence's substrate): the auto
+    TERMINAL event lands only after the finalize applied (the ledger owns
     the state; the projection publishes it) — and a FAILING node's
     terminal carries the outcome, so the display can derive the failure
     from the stream too (the ledger remains the authority)."""
@@ -365,11 +365,11 @@ async def test_terminal_projection_lands_after_the_finalize(
         await ctx.progress(99, "almost done", None)
         raise ValueError("the body failed at 99%")
 
-    @app.workflow("t21_boom")
-    def t21_boom() -> Promise[object]:
+    @app.workflow("progress_boom")
+    def progress_boom() -> Promise[object]:
         return build(step(boom, Ingest(doc_id="d1"), key="boom", max_attempts=1))
 
-    runner = FlowRunner(app.get("t21_boom"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_boom"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
@@ -382,10 +382,10 @@ async def test_terminal_projection_lands_after_the_finalize(
         f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', node
     )
     assert status == "failed"
-    # THE LIE'S SUBSTRATE, on the record: the node's last progress said
-    # 99% — and the STATE row keeps it (advisory), while the LEDGER says
-    # failed. The display pins (the faces file) reject the liar that
-    # derives the state from HERE.
+    # the lie's substrate, on the record: the node's last progress said 99% —
+    # and the state row keeps it (advisory), while the ledger says failed. The
+    # display pins (the faces file) reject the liar that derives the state from
+    # here.
     state = await wf_conn.fetchrow(
         f"""SELECT pct, message FROM "{wf_schema}".wf_node_progress
             WHERE node_id = $1 AND channel = 'progress'""",

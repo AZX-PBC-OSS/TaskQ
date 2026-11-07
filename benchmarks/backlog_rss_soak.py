@@ -20,7 +20,7 @@ growth, the envelope a bounded loop may legitimately warm up inside:
 pool growth, caches with real eviction, JIT/code warm); a slope beyond
 the bound means retention proportional to jobs processed. This run's
 verdict is recorded in the artifact; the artifact is the pin (there is
-deliberately NO CI test asserting another machine's RSS: the number is
+deliberately no CI test asserting another machine's RSS: the number is
 load- and allocator-sensitive, and the campaign's contract is that the
 MEASURED slope is committed and traceable, per the house rule).
 
@@ -56,7 +56,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from taskq._ids import new_job_id  # pyright: ignore[reportPrivateUsage]
 from taskq.backend._enqueue import (  # pyright: ignore[reportPrivateUsage]
-    _enqueue_batch_fast,  # Why: the private function IS the COPY enqueue path; the seed must ride the production hot path.
+    _enqueue_batch_fast,  # Why: the private function is the COPY enqueue path; the seed must ride the production hot path.
 )
 from taskq.backend._protocol import EnqueueArgs  # pyright: ignore[reportPrivateUsage]
 from taskq.backend._sql_templates import render  # pyright: ignore[reportPrivateUsage]

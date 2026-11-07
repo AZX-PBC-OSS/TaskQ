@@ -203,7 +203,7 @@ async def test_plain_annotation_resolution() -> None:
     assert isinstance(kwargs["db"], _DBConn)
 
 
-# ── Generator-based provider with LIFO teardown ──────────
+# ── Generator-based provider with lifo teardown ──────────
 
 
 async def test_generator_lifo_teardown() -> None:
@@ -305,7 +305,7 @@ async def test_nested_resolution() -> None:
     assert client.graph.settings is settings_obj
 
 
-# ── LOOP cache hit ────────────────────────────────────────
+# ── loop cache hit ────────────────────────────────────────
 
 
 async def test_loop_cache_hit() -> None:
@@ -349,7 +349,7 @@ async def test_loop_cache_hit() -> None:
     assert kwargs_a["s"] is kwargs_b["s"]
 
 
-# ── TRANSIENT distinct per injection point ────────────────
+# ── transient distinct per injection point ────────────────
 
 
 async def test_transient_distinct_instances() -> None:

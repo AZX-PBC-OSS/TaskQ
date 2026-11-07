@@ -197,7 +197,7 @@ the terminal ModifyTable), round-robin at 200k (296k) — the round-robin 30k
 escape was shape luck, not a bound, exactly as the depth oracle's
 parametrization warned. NEW holds the estimate at ≤ ~10k — a ≥10× margin
 under the threshold — at every depth, for both variants, and the JIT block
-is simply absent. Under `plan_cache_mode = force_generic_plan` (bounds
+is absent. Under `plan_cache_mode = force_generic_plan` (bounds
 opaque) NEW stays at 4.1k / 9.7k with 0 ms JIT and ~2.5 ms exec at 30k/200k
 — and because the generic plan's cost never beats the custom plan's, the
 planner's own five-execution heuristic never switches a hot dispatcher to
@@ -377,7 +377,7 @@ within run-to-run noise of OLD (±0.3 ms across repetitions — the Seq
 Scan's pages are largely the same heap pages the round's own probes
 touch, which is also why buffers move only ~40). The 0-running shape is
 where the wall-clock win is cleanest: OLD paid the CTE machinery (empty
-scan + three hash joins against it) that NEW simply does not have
+scan + three hash joins against it) that NEW does not have
 (2.12 -> 1.64 ms round-robin).
 
 ### R2 — the capped branch: capped actor (cap=5, 2 own running), fleet running 0 -> 1000

@@ -246,7 +246,7 @@ async def test_transient_scoped_reporter_degrades_with_a_window_gated_warning() 
     assert outcome == "failed"
     row = await backend.get(job.id)
     assert row is not None
-    # The job failed for its OWN reason (the non-retryable outcome the test
+    # The job failed for its own reason (the non-retryable outcome the test
     # staged), not for the reporter misconfiguration: a config error must
     # never consume a job's outcome or retry budget.
     assert row.error_class != DIError.__name__

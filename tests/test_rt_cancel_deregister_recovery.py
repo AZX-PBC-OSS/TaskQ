@@ -83,7 +83,7 @@ class _InstrumentedConn:
       INSERT (N counts the deregister drain's one INSERT per batch), a
       statement-level failure arriving after that batch's driving
       UPDATE already mutated its rows inside the open transaction.
-    * ``gate_first_driving_fetch`` - hold the FIRST driving cancel
+    * ``gate_first_driving_fetch`` - hold the first driving cancel
       fetch open (after the running-check has executed, before any
       cancel UPDATE runs), which is exactly the check→drain window the
       TOCTOU docstring describes.
@@ -146,7 +146,7 @@ async def test_mid_drain_failure_leaves_batch1_committed_config_intact_and_rerun
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """A statement error on batch 2 of a 250-job force deregistration:
-    batch 1's 100 cancels committed, actor_config NOT deleted (finalize
+    batch 1's 100 cancels committed, actor_config not deleted (finalize
     never ran), the error propagates; a re-run cancels the remaining 150
     exactly once and deletes the config."""
     schema = module_pg_schema.schema_name

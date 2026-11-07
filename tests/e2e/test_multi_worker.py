@@ -6,7 +6,7 @@ succeed; each job_id appears exactly once in effects; both workers
 participate. Ground truth: ``e2e_effects`` distinctness + per-attempt
 worker attribution.
 
-Worker attribution is asserted on ``{schema}.job_attempts.worker_id``, NOT
+Worker attribution is asserted on ``{schema}.job_attempts.worker_id``, not
 ``{schema}.jobs.locked_by_worker``: every terminal write clears the lock
 column (``locked_by_worker = NULL`` in ``mark_succeeded`` / ``mark_failed``
 - backend/_sql_templates.py), while the terminal paths persist the executing
@@ -16,7 +16,7 @@ worker into ``job_attempts`` via ``_insert_attempt``
 lifetime, so the column is non-NULL for this run's attempts.
 
 Why a single-worker sweep cannot legitimately happen here: each jobs INSERT
-fires a NOTIFY that wakes BOTH workers; every dispatch CTE claims at most
+fires a NOTIFY that wakes both workers; every dispatch CTE claims at most
 ``max_concurrency`` (settings default 8 - e2e env does not override) rows
 via ``FOR UPDATE SKIP LOCKED``; one worker sweeping all 30 jobs needs ≥4
 sequential claim rounds at ≥0.1s of in-actor latency each (~0.4s+), while
@@ -24,7 +24,7 @@ the second worker's first claim lands within milliseconds of the first
 enqueue. Both workers claiming a disjoint subset is therefore near-certain.
 ``_JOB_COUNT`` was raised from 20 to 30 for more sweep margin under extreme
 Docker CPU starvation (F8); if this is ever observed flaky, raise it
-further - do NOT weaken the assertion.
+further - do not weaken the assertion.
 
 Every test requests ``e2e_worker`` explicitly: the worker container fixture
 is not autouse, so no worker (and no dispatch) exists unless a test pulls it

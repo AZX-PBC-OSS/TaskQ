@@ -20,12 +20,12 @@ ordinary deadline path.
 
 The settled contract these tests pin:
 
-1. A denial must NOT persist per-occurrence rows - it is counted on the
+1. A denial must not persist per-occurrence rows - it is counted on the
    job row and emitted to OTEL; history belongs to collectors.
-2. A denial must NOT raise ``max_attempts``, and must NOT consume the
+2. A denial must not raise ``max_attempts``, and must not consume the
    budget - the ceiling is a bound on executions, and a denial is not
    an execution.
-3. A denial must NOT terminalise a job. A job denied on every cycle
+3. A denial must not terminalise a job. A job denied on every cycle
    stays retryable forever; its only terminal exit is the deadline
    path, which requires an explicit ``schedule_to_close``.
 4. Contention stays observable through the aggregated denial counter on

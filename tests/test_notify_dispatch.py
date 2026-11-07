@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
+import structlog.testing
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import EnqueueArgs, JobRow
@@ -234,7 +235,7 @@ class TestSweepWakesSubscriber:
         worker_id = new_uuid()
 
         # Running job with retries left but non-retryable → will go to crashed
-        # condition: row.attempt < row.max_attempts AND row.retry_kind != "non_retryable"
+        # condition: row.attempt < row.max_attempts and row.retry_kind != "non_retryable"
         # attempt=0 < max_attempts=1 is True, but non_retryable → False → crashed
         job_id = new_job_id()
         expired_row = JobRow(
@@ -358,6 +359,17 @@ class TestPollFallback:
                 worker_id=new_uuid(),
             )
         )
+        # The loop stamps its cadence at start: with NOTIFY disabled the
+        # poll fallback is settings.poll_interval - a wiring that reads
+        # notify_poll_interval unconditionally (or vice versa) turns this red.
+        with structlog.testing.capture_logs() as start_logs:
+            await asyncio.sleep(0)
+        starts = [e for e in start_logs if e["event"] == "producer-loop-start"]
+        assert starts, f"the producer never announced its start: {start_logs!r}"
+        assert starts[0]["poll_interval"] == 0.1, (
+            f"the notify-disabled producer's poll cadence is not the "
+            f"poll_interval setting: {starts[0]!r}"
+        )
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
         await asyncio.wait_for(task, timeout=2.0)
 
@@ -425,6 +437,17 @@ class TestPollFallback:
                 backend=backend,
                 worker_id=new_uuid(),
             )
+        )
+        # The loop stamps its cadence at start: with NOTIFY enabled the
+        # fallback poll is notify_poll_interval (0.5), not poll_interval
+        # (0.05) - a wiring that ignores the notify flag turns this red.
+        with structlog.testing.capture_logs() as start_logs:
+            await asyncio.sleep(0)
+        starts = [e for e in start_logs if e["event"] == "producer-loop-start"]
+        assert starts, f"the producer never announced its start: {start_logs!r}"
+        assert starts[0]["poll_interval"] == 0.5, (
+            f"the notify-enabled producer's poll cadence is not the "
+            f"notify_poll_interval setting: {starts[0]!r}"
         )
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
         await asyncio.wait_for(task, timeout=2.0)
@@ -631,7 +654,7 @@ class TestEagerRecheck:
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
         await asyncio.wait_for(task, timeout=2.0)
 
-        # When queue is full, dispatch is NOT called
+        # When queue is full, dispatch is not called
         assert call_count == 0
 
 
@@ -640,7 +663,7 @@ class TestEagerRecheck:
 
 class TestNotifyDisabled:
     async def test_notify_disabled_no_wake_subscribe(self) -> None:
-        """When notify_enabled=False, the producer loop does NOT call
+        """When notify_enabled=False, the producer loop does not call
         subscribe_wake, using poll_interval exclusively."""
         from unittest.mock import AsyncMock, Mock
 
@@ -712,7 +735,7 @@ class TestNotifyDisabled:
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
         await asyncio.wait_for(task, timeout=2.0)
 
-        # subscribe_wake should NOT have been called
+        # subscribe_wake should not have been called
         assert not subscribe_called
 
 

@@ -17,7 +17,7 @@ Factory-shape chaos tests are preserved below (solver-level
 failure propagation), separate from the lifecycle chaos surface.
 
 All chaos tests assert teardown side effects via per-instance flags
-(__aexit_called, aclose_called, etc.) - NOT by monkeypatching internals.
+(__aexit_called, aclose_called, etc.) - not by monkeypatching internals.
 """
 
 from collections.abc import AsyncIterator
@@ -67,7 +67,7 @@ class _AcmOk:
         self.aexit_called = True
 
 
-# ── __aenter__ raises during LOOP scope bootstrap ──────────
+# ── __aenter__ raises during loop scope bootstrap ──────────
 
 
 async def test_aenter_raises_during_loop_bootstrap() -> None:
@@ -152,7 +152,7 @@ async def test_aenter_raises_during_loop_bootstrap() -> None:
     assert not b_aexit_called
 
 
-# ── __aexit__ raises during LOOP scope shutdown ────────────
+# ── __aexit__ raises during loop scope shutdown ────────────
 
 
 async def test_aexit_raises_during_loop_shutdown() -> None:

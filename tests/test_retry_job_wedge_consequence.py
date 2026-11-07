@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is the fixture's validated identifier throughout; every value is $-bound.
 
-"""CONTRACT UNDER ATTACK: the admin ``retry_job`` escape hatch leaves the
+"""CONTRACT under ATTACK: the admin ``retry_job`` escape hatch leaves the
 re-run job resolvable by the queue's own machinery.
 
 ``retry_job`` keeps ``attempt`` monotonic (never reset) and raises the

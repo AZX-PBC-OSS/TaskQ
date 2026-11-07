@@ -41,12 +41,12 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #:   ``ConnectionDoesNotExistError`` / ``ConnectionFailureError``).
 #: - ``InterfaceError`` / ``OSError``: the connection is unusable or the
 #:   socket died.
-#: - ``QueryCanceledError``: server-side 57014, a DBA ran
+#: - ``QueryCanceledError``: server-side 57014, a dba ran
 #:   pg_cancel_backend, or a server-side ``statement_timeout`` fired. Not
 #:   a client-side ``command_timeout`` (that raises ``TimeoutError``); kept
 #:   in the tuple because a server-side cancel is equally transient.
 #: - ``AdminShutdownError``: 57P01, PG restart/shutdown. An
-#:   OperatorInterventionError, NOT a PostgresConnectionError: notify.py
+#:   OperatorInterventionError, not a PostgresConnectionError: notify.py
 #:   learned this one the hard way.
 #: - ``CannotConnectNowError``: 57P03, server in crash recovery or still
 #:   starting. Same OperatorInterventionError family.
@@ -66,7 +66,7 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #:   dedicated conn; the conn-loss path rebuilds on the next tick.
 #: - ``InvalidCachedStatementError`` / ``OutdatedSchemaCacheError``: the
 #:   live-migration family, 0A000 + its decode-path companion. A schema
-#:   change that lands WHILE a fleet runs (the rolling-deploy window, or
+#:   change that lands while a fleet runs (the rolling-deploy window, or
 #:   any DDL another tool issues against the same tables) invalidates
 #:   prepared plans asyncpg cached per connection. The server answers the
 #:   next Bind of an affected statement with 0A000; asyncpg then drops
@@ -75,16 +75,16 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #:   transaction the error propagates and aborts the transaction - which
 #:   is pure infrastructure, not a bug: the very next tick re-prepares
 #:   against the new schema and succeeds. Measured (PG 18.6, pool warm,
-#:   ``ALTER COLUMN TYPE`` / ``DROP COLUMN`` under ``SELECT *``): the
+#:   ``alter column type`` / ``drop column`` under ``SELECT *``): the
 #:   in-transaction shape raises exactly this class and the next pooled
 #:   statement succeeds with no recycle. Retry-next-tick cannot livelock:
-#:   a schema change that actually broke the statement TEXT (a dropped or
-#:   renamed column old code still names) re-prepares into a DIFFERENT
+#:   a schema change that actually broke the statement text (a dropped or
+#:   renamed column old code still names) re-prepares into a different
 #:   class, 42703 ``UndefinedColumnError``, which stays outside this set
 #:   and remains loud and fatal - the expansion-then-contract contract
 #:   speaking.
 #:
-#: Deliberately NOT here: auth failures (``InvalidPasswordError`` et al.)
+#: Deliberately not here: auth failures (``InvalidPasswordError`` et al.)
 #: are not transient for static DSNs and must not retry silently (the
 #: credential-provider reopen path has its own deliberate broad catch);
 #: ``LockNotAvailableError`` (55P03) is raised by the bounded advisory
@@ -98,7 +98,7 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: loud and then deliberately fatal; statement-name errors (26000,
 #: 42P05) are bugs on a direct connection but pooler artifacts under
 #: transaction-mode pooling - see :data:`POOLED_TRANSIENT_PG_ERRORS`.
-#: The cached-plan errors (0A000) ARE here, unconditionally: unlike the
+#: The cached-plan errors (0A000) are here, unconditionally: unlike the
 #: statement-name family, a direct connection produces 0A000 in ordinary
 #: operation the moment a migration alters a table under a running pool
 #: (see the live-migration note above), and the driver has already
@@ -126,8 +126,8 @@ TRANSIENT_PG_ERRORS: tuple[type[BaseException], ...] = (
 #: moment. Deliberately disjoint from :data:`TRANSIENT_PG_ERRORS`, a
 #: refusal retried next tick re-fails identically forever, so classifying
 #: it as transient would livelock the retrying loop while logging like a
-#: blip. A site catching from this tuple must DEGRADE instead: skip the
-#: refused operation, log once at WARN naming what was refused, and keep
+#: blip. A site catching from this tuple must degrade instead: skip the
+#: refused operation, log once at warn naming what was refused, and keep
 #: working without it. Anything from this tuple that escapes a site's own
 #: handling still lands in the loop's :class:`UnexpectedLoopErrorGuard`,
 #: where a permanent fault is deliberately fatal after the budget, never
@@ -143,7 +143,7 @@ TRANSIENT_PG_ERRORS: tuple[type[BaseException], ...] = (
 PERMANENT_PG_REFUSALS: tuple[type[BaseException], ...] = (asyncpg.InsufficientPrivilegeError,)
 
 #: The pooled-context companion to :data:`TRANSIENT_PG_ERRORS`: errors a
-#: transaction-mode pooler (PgBouncer ``pool_mode=transaction``, RDS
+#: transaction-mode pooler (PgBouncer ``pool_mode=transaction``, rds
 #: Proxy, Supavisor) produces when its server-connection remap splits a
 #: prepared statement's Parse from its Bind - asyncpg caches prepared
 #: statements per connection, so after a remap the cached name names a
@@ -157,7 +157,7 @@ PERMANENT_PG_REFUSALS: tuple[type[BaseException], ...] = (asyncpg.InsufficientPr
 #:   ... already exists" - the re-Prepare hit a server connection that
 #:   still holds the original registration under the same name.
 #:
-#: Deliberately NOT folded into :data:`TRANSIENT_PG_ERRORS`: on a direct
+#: Deliberately not folded into :data:`TRANSIENT_PG_ERRORS`: on a direct
 #: connection neither error can be produced by the server without an
 #: asyncpg bug (the driver's own cache is the only author of statement
 #: names), so classifying them unconditionally as transient would convert

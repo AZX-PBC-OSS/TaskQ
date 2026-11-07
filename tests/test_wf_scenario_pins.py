@@ -1,24 +1,24 @@
-"""The two maintainer-ordered scenario pins (T07) — MAP-RETRY-BARRIER and
+"""The two maintainer-ordered scenario pins — MAP-RETRY-BARRIER and
 JOIN-FAILURE-POLICY — the integration tier, the real PG lane.
 
 MAP-RETRY-BARRIER: a list map over N=8 children; K=3 fail intermittently
 (each failing its first M attempts - DISTINCT M per child: 1, 2, 3 - then
 succeeding via the normal retry ladder); the other N-K succeed first try.
-Five assertions, each its own check: (a) NO EARLY FIRE, (b)
-ATTEMPT-FAILURE != NODE-FAILURE, (c) RETRY ISOLATION, (d) THE BARRIER, (e)
-THE COLLECT IS THE SUCCESSFUL PAYLOADS. The failing-first fingerprints (the
+Five assertions, each its own check: (a) no EARLY FIRE, (b)
+ATTEMPT-FAILURE != NODE-FAILURE, (c) RETRY ISOLATION, (d) the BARRIER, (e)
+the COLLECT IS the SUCCESSFUL PAYLOADS. The fingerprints (the
 rejected shapes, each pinned by its own scenario): the join firing on
 first-success-count mismatch (counting ATTEMPTS instead of CHILDREN); the
 over-eager parent-fail; the retry-storm contagion.
 
 JOIN-FAILURE-POLICY: the duality - TERMINALITY x POLICY. A join/collect
-fails ONLY on a child's TERMINAL state (the ladder exhausted, a terminal
-cancel, or the join's own timeout) - NEVER on an attempt-failure;
-required = fail-closed composing with T06's peer-cascade; maybe =
+fails only on a child's TERMINAL state (the ladder exhausted, a terminal
+cancel, or the join's own timeout) - never on an attempt-failure;
+required = fail-closed composing with the failed-parent propagation's peer-cascade; maybe =
 proceed-with-subset SURFACED (the envelope names the policy that
 absorbed it - it must not lie); the timeout arm rides the node-level
 deadline (the estate's deadline-exceeded sweep - this series gives the
-join NO separate timer), with the bound outliving the ladder's worst
+join no separate timer), with the bound outliving the ladder's worst
 case, computed in the pin.
 
 Driven through the REAL engine (the ladder simulated at the vanilla
@@ -99,7 +99,7 @@ async def _fail_attempt(
 ) -> None:
     """One ladder ATTEMPT failure (the vanilla mark_retry shape): the
     failed attempt lands on the ledger, the row goes back to scheduled —
-    NO workflow terminal (P3 decision 7)."""
+    no workflow terminal (P3 decision 7)."""
     meta = await wf_conn.fetchrow(
         f"SELECT (metadata->>'flow_id')::uuid AS flow_id, step_key, map_index "
         f'FROM "{wf_schema}".jobs WHERE id = $1',
@@ -129,7 +129,7 @@ async def _reclaim(
     wf_conn: asyncpg.Connection, wf_schema: str, child: JobId, *, attempt: int
 ) -> None:
     """The ladder's next claim: the promoted row re-claims (a new worker
-    view, attempt advanced) — the SAME row (retry-in-place)."""
+    view, attempt advanced) — the same row (retry-in-place)."""
     worker = new_uuid()
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'running', attempt = $2, "
@@ -213,7 +213,7 @@ async def _run_child_ladder(
     await _succeed_now(module_pg_pool, wf_sql, wf_conn, wf_schema, child, step_key)
 
 
-# ── MAP-RETRY-BARRIER ───────────────────────────────────────────────────
+# ── map-retry-barrier ───────────────────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -231,9 +231,9 @@ async def test_map_retry_barrier(
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id, children = await _seed_map_with_indexes(wf_conn, wf_schema, flow_id, policy="collect")
 
-    # (a) NO EARLY FIRE — after the FIRST child's first failure the
+    # (a) no early fire — after the first child's first failure the
     # join/parent is still pending with deps_pending > 0 (the join counts
-    # CHILDREN, not attempts): the first failure + the ledger's failed
+    # children, not attempts): the first failure + the ledger's failed
     # attempt row must not move the join at all.
     await _fail_attempt(wf_conn, wf_schema, children[0], attempt=1, err="boom-1")
     state_after_first_failure = await node_state(wf_conn, wf_schema, join_id)
@@ -250,13 +250,13 @@ async def test_map_retry_barrier(
         "no decrement mid-ladder: the join counts children, not attempts"
     )
     assert await fire_count(wf_conn, wf_schema, join_id) == 0, (
-        "the attempt-counting variant fires here (the recorded finding)"
+        "the attempt-counting variant fires here (the contract)"
     )
 
-    # (b) ATTEMPT-FAILURE != NODE-FAILURE — the parent does NOT fail when a
+    # (b) attempt-failure != node-failure — the parent does not fail when a
     # child fails an attempt (the retry ladder owns it; the asymmetry
     # doctrine's over-rejection applied to maps): the flow runs, the child
-    # is NOT terminal — its ladder owns the retry (scheduled, pending its
+    # is not terminal — its ladder owns the retry (scheduled, pending its
     # re-claim).
     assert flow_state["status"] == "running", (
         "the over-eager parent-fail: one child's attempt-failure must not "
@@ -267,8 +267,8 @@ async def test_map_retry_barrier(
     # The ladder re-claims the row (attempt 2 — the failure was attempt 1).
     await _reclaim(wf_conn, wf_schema, children[0], attempt=2)
 
-    # (c) RETRY ISOLATION — run c0's ladder to success; the SIBLINGS'
-    # rows must be untouched (their attempt counts AND outputs unchanged —
+    # (c) retry ISOLATION — run c0's ladder to success; the siblings'
+    # rows must be untouched (their attempt counts and outputs unchanged —
     # a retry must not restart, re-enqueue, or re-run its siblings).
     sibling_before = await node_state(wf_conn, wf_schema, children[7])
     await _run_child_ladder(
@@ -322,17 +322,17 @@ async def test_map_retry_barrier(
         "the barrier holds while any child is still mid-ladder"
     )
 
-    # (d) THE BARRIER — c6 (M=3, the LAST intermittent child) runs its
-    # ladder; once it succeeds through its retries, and ONLY then, the
-    # join fires and the gather collects ALL N results in child order.
+    # (d) the barrier — c6 (M=3, the last intermittent child) runs its
+    # ladder; once it succeeds through its retries, and only then, the
+    # join fires and the gather collects all N results in child order.
     await _run_child_ladder(
         module_pg_pool, wf_sql, wf_conn, wf_schema, children[6], "c6", m=INTERMITTENT[6]
     )
     assert await fire_count(wf_conn, wf_schema, join_id) == 1, (
         "the join fires once the LAST intermittent child succeeds"
     )
-    # THE GATHER (child order): the join's parents' results, ORDER BY
-    # map_index — the reduce's batch read shape.
+    # child order. the join's parents' results, ORDER BY map_index — the
+    # reduce's batch read shape.
     gather_rows = await wf_conn.fetch(
         f"""
         SELECT c.map_index, c.step_key, c.result
@@ -348,10 +348,10 @@ async def test_map_retry_barrier(
     )
     assert all(r["result"] is not None for r in gather_rows)
 
-    # (e) THE COLLECT IS THE SUCCESSFUL PAYLOADS — the failed attempts'
+    # (e) the collect is the successful payloads — the failed attempts'
     # errors appear nowhere in the join's record (at most in the
-    # ledger/debug surface): the join row carries NO failure item (nobody
-    # failed TERMINALLY) and no error text.
+    # ledger/debug surface): the join row carries no failure item (nobody
+    # failed terminally) and no error text.
     join_state = await node_state(wf_conn, wf_schema, join_id)
     propagation_redlog.red(
         "map-retry-barrier-(e)-errors-in-collect",
@@ -385,9 +385,9 @@ async def test_join_failure_policy_terminality_one_number_apart(
     wf_sql: WorkflowSql,
     propagation_redlog: RedLog,
 ) -> None:
-    """A. TERMINALITY: the barrier's companion cases, ONE NUMBER APART —
+    """A. TERMINALITY: the barrier's companion cases, one NUMBER APART —
     the child failing M-1 attempts then succeeding MUST still collect;
-    the SAME setup with the ladder exhausted (M+1 failures) MUST fail the
+    the same setup with the ladder exhausted (M+1 failures) MUST fail the
     collect. The pin says which number differs."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     collect_join, collect_children = await _seed_map_with_indexes(
@@ -402,15 +402,15 @@ async def test_join_failure_policy_terminality_one_number_apart(
         "M-1 attempt failures do not fail the collect (terminality): the "
         "map is not complete yet — and nothing failed"
     )
-    # Complete the collect map: the join FIRES (the M-1 child collected).
+    # Complete the collect map: the join fires (the M-1 child collected).
     for i in range(1, N_CHILDREN):
         await _succeed_now(module_pg_pool, wf_sql, wf_conn, wf_schema, collect_children[i], f"c{i}")
     assert await fire_count(wf_conn, wf_schema, collect_join) == 1, (
         "the child that failed M-1 attempts then succeeded MUST collect"
     )
 
-    # THE M+1 case, adjacent (a second map under the SAME flow): the
-    # child exhausts its ladder — the REQUIRED variant blocks + cascades.
+    # the M+1 case, adjacent (a second map under the same flow): the child
+    # exhausts its ladder — the required variant blocks + cascades.
     required_join, required_children = await _seed_map_with_indexes(
         wf_conn, wf_schema, flow_id, policy="fail_closed", prefix="r"
     )
@@ -427,7 +427,7 @@ async def test_join_failure_policy_terminality_one_number_apart(
         "collect fires where the policy says fail-closed)",
         {"required_join_fires": await fire_count(wf_conn, wf_schema, required_join)},
     )
-    # B. REQUIRED fan-in = FAIL-CLOSED, composing with T06's rule: the
+    # B. required fan-in = fail-closed, composing with the failed-parent propagation's rule: the
     # join blocks, the peers peer-cancel, the flow fails.
     assert await fire_count(wf_conn, wf_schema, required_join) == 0, (
         "a required child's terminal failure FAILS THE JOIN CLOSED"
@@ -439,7 +439,7 @@ async def test_join_failure_policy_terminality_one_number_apart(
         required_children[1],
     )
     assert peer is not None and peer["status"] == "cancelled", (
-        "T06's decided rule: a required-join failure peer-cancels the running peers"
+        "the failed-parent propagation's decided rule: a required-join failure peer-cancels the running peers"
     )
     peer_meta = (
         peer["metadata"]
@@ -460,17 +460,17 @@ async def test_join_failure_policy_maybe_surfaced_and_the_zero_collect(
     wf_sql: WorkflowSql,
     propagation_redlog: RedLog,
 ) -> None:
-    """C. MAYBE semantics: a maybe child's terminal failure does NOT fail
+    """C. MAYBE semantics: a maybe child's terminal failure does not fail
     the collect — the collect proceeds with the successful subset; the
     failure is SURFACED (the envelope marks the absent child + its
     terminal error, naming the policy that ran); the parent SUCCEEDS.
-    THE EDGE CASE N5: a maybe edge that is the join's ONLY parent — the
+    A maybe edge that is the join's only parent — the
     collect of ZERO -> the parent SUCCEEDS with the empty result + the
     envelope carrying the absence. The silently-failing variant (a
     zero-collect that wedges or fails the parent) reds."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id, children = await _seed_map_with_indexes(wf_conn, wf_schema, flow_id, policy="maybe")
-    # c0 succeeds; c1 (the maybe child) TERMINAL-fails.
+    # c0 succeeds; c1 (the maybe child) terminal-fails.
     await _succeed_now(module_pg_pool, wf_sql, wf_conn, wf_schema, children[0], "c0")
     await _fail_terminal_now(
         module_pg_pool,
@@ -506,8 +506,8 @@ async def test_join_failure_policy_maybe_surfaced_and_the_zero_collect(
     flow_state = await node_state(wf_conn, wf_schema, flow_id)
     assert flow_state["status"] == "running", "the parent SUCCEEDS (never failed)"
 
-    # N5: the maybe edge that is the join's ONLY parent — the collect of
-    # ZERO is a DEFINED OUTCOME: the parent SUCCEEDS with the empty
+    # N5: the maybe edge that is the join's only parent — the collect of
+    # zero is a defined outcome: the parent succeeds with the empty
     # result + the envelope carrying the absence.
     flow2 = await seed_flow(wf_conn, wf_schema)
     only_join = await seed_join(wf_conn, wf_schema, flow2, step_key="only_join", deps=1)
@@ -547,21 +547,20 @@ async def test_join_failure_policy_timeout_arm_both_policies(
     wf_sql: WorkflowSql,
     propagation_redlog: RedLog,
 ) -> None:
-    """D. THE TIMEOUT ARM: a child that never reaches terminality inside
+    """D. the TIMEOUT ARM: a child that never reaches terminality inside
     the join's bound — the bound is the NODE-LEVEL deadline
     (schedule_to_close; the estate's deadline-exceeded sweep — this
-    series gives the join NO separate timer) — resolves per the edge's
+    series gives the join no separate timer) — resolves per the edge's
     policy: required -> fail; maybe -> proceed-without. One test, both
-    arms. THE BOUND OUTLIVES THE LADDER'S WORST CASE (computed here): the
+    arms. the BOUND OUTLIVES the LADDER'S WORST CASE (computed here): the
     declared deadline must be >= the ladder's max backoff sum + the
     attempts' own runtime — a tighter deadline racing the retry ladder is
     the dragon (the timeout would fail a would-succeed child)."""
-    # THE COMPUTED BOUND: the retry curve (retry.py: base x 2^(attempt-1),
-    # capped at cap, with jitter) — the ladder's worst-case wall clock for
-    # M attempts is the SUM of its delays + each attempt's own runtime
-    # (start_to_close). A join's child carrying a deadline below this sum
-    # is the rejected race (the documented interaction, named in the
-    # docs): the deadline must be SET ABOVE it.
+    # the retry curve (retry.py: base x 2^(attempt-1), capped at cap, with
+    # jitter) — the ladder's worst-case wall clock for M attempts is the sum of
+    # its delays + each attempt's own runtime (start_to_close). A join's child
+    # carrying a deadline below this sum is the rejected race (the documented
+    # interaction, named in the docs): the deadline must be set above it.
     retry_base_s = 5.0
     retry_cap_s = 3600.0
     max_attempts_declared = 3
@@ -571,13 +570,12 @@ async def test_join_failure_policy_timeout_arm_both_policies(
         + max_attempts_declared * start_to_close_s
     )
     assert ladder_worst_case_s > 0
-    # THE PIN'S OPERATIONAL RULE: the join's children carry
-    # schedule_to_close >= ladder_worst_case_s (+ the join's own margin).
-    # The estate's deadline sweep does the rest: a child whose deadline
-    # elapses NEVER wedges the join.
+    # the join's children carry schedule_to_close >= ladder_worst_case_s (+ the
+    # join's own margin). The estate's deadline sweep does the rest: a child
+    # whose deadline elapses never wedges the join.
 
-    # ── THE REQUIRED ARM: the deadline sweep terminal-fails the stuck
-    # child -> the sweep's rederive resolves the fail_closed join (T06's
+    # ── the required arm: the deadline sweep terminal-fails the stuck
+    # child -> the sweep's rederive resolves the fail_closed join (the failed-parent propagation's
     # heal): blocked-with-reason, never fired.
     flow_id = await seed_flow(wf_conn, wf_schema)
     req_join, req_children = await _seed_map_with_indexes(
@@ -612,7 +610,7 @@ async def test_join_failure_policy_timeout_arm_both_policies(
         "required x timeout = fail-closed (the deadline-failed child IS a terminal failure)"
     )
 
-    # ── THE MAYBE ARM: the deadline-failed maybe child -> proceed-without.
+    # ── the maybe arm: the deadline-failed maybe child -> proceed-without.
     flow2 = await seed_flow(wf_conn, wf_schema)
     may_join, may_children = await _seed_map_with_indexes(wf_conn, wf_schema, flow2, policy="maybe")
     await wf_conn.execute(

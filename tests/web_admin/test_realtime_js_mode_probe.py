@@ -132,10 +132,10 @@ def _drive(scenario: str) -> list[str]:
 
 @requires_node
 def test_mode_probe_polls_the_sse_mode_endpoint_not_the_worker_health_route() -> None:
-    """The 30 s probe asks the admin router's own /sse/mode. It previously
-    fetched the worker health router's /jobs/health/ready, which a mounted
-    admin UI never serves, so the probe 404ed forever and a degraded page
-    never recovered."""
+    """The 30 s probe asks the admin router's own /sse/mode - never the
+    worker health router's /jobs/health/ready, which a mounted
+    admin UI never serves (the probe would 404 forever and a degraded page
+    would never recover)."""
     log = _drive("realtime-stays")
     assert "fetch:/taskq/sse/mode" in log
     assert not any("health/ready" in entry for entry in log)

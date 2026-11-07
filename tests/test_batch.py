@@ -635,7 +635,7 @@ class TestTI6SingleInsertStatement:
         assert handle.size == 500
 
 
-# ── GIN index used by metadata @> $1::jsonb ───────────────────
+# ── gin index used by metadata @> $1::jsonb ───────────────────
 
 
 def _find_index_in_plan(plan: dict[str, object], index_name: str) -> bool:
@@ -746,9 +746,9 @@ class TestTIGinIndexUsed:
         plan_data = _json_loads(explain_rows[0]["QUERY PLAN"])[0]["Plan"]
         assert _find_index_in_plan(plan_data, "jobs_metadata_gin_idx")
         exec_time = _extract_execution_time_ms(plan_data)
-        # Derived bound: the oracle is the PLAN (index scan, no seq scan)
+        # Derived bound: the oracle is the plan (index scan, no seq scan)
         # above; the 200 ms execution-time pin is the tripwire. The seed is
-        # 10k rows over a GIN index — a containment probe touches a handful
+        # 10k rows over a gin index — a containment probe touches a handful
         # of index pages, and the measured floor on the test-identical seed
         # is single-digit ms. 200 ms = ~20x that floor: PG's own ANALYZE
         # clock (not runner wall clock), so co-tenancy weather moves it by

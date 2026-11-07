@@ -1,26 +1,26 @@
-"""The per-attempt code-version record's canonical hash (T04, G8).
+"""The per-attempt code-version record's canonical hash.
 
 ``jobs.code_version`` is the "code-version hash per attempt": the deploy
 computes the module hash, or the decorator pins it — written at claim by the
 workflow claim path. It is a RECORD, not a cache (K3's ``cache_key`` /
 content-addressed machinery stays dead).
 
-THE HASH COMPUTES VIA THE TORS CONTENT HASH — the golden-tested canonical
+the HASH COMPUTES VIA the TORS CONTENT HASH — the golden-tested canonical
 serializer. ``docs/design/tors-adoption-map.md`` recorded ``content_hash`` as
-SKIP because "no canonical-hash call site exists"; T03's ``code_version``
+SKIP because "no canonical-hash call site exists"; the ``code_version``
 column CREATES that call site, voiding the skip verdict's premise (the
-adoption map's row updates at T14's maintenance tail; the rev's disposition
-is ADOPT on T03's landing).
+adoption map's row updates at the maintenance tail; the rev's disposition
+is ADOPT on the landing).
 
 Why tors and not a hand-rolled ``hashlib`` walk: the cores are GIL-free —
 the claim path runs on the worker's event loop, and a GIL-holding hash over
 module source is exactly the ``kind=gil_held``/``blocking_call`` stall the
 watchdog exists to attribute. Honest API note (verified on 0.16.0):
-``content_hash`` has NO ``tors.aio`` twin — it is sync-but-GIL-free, so the
+``content_hash`` has no ``tors.aio`` twin — it is sync-but-GIL-free, so the
 call stays short-input and loop-safe by construction.
 
 §12.7-5's hash-instability lesson applies even to a record: a
-dict-ordering/float-repr mutation must NOT change the hash (a false
+dict-ordering/float-repr mutation must not change the hash (a false
 invalidation is the silent failure). ``content_hash`` is
 verified canonical under dict ordering (the pin holds the door).
 """
@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Final
 from tors import content_hash
 
 if TYPE_CHECKING:
-    # Type-only export: JSONValue lives in tors' stubs, not its runtime
+    # Type-only export: jsonvalue lives in tors' stubs, not its runtime
     # module -- future annotations make the string-form uses safe.
     from tors import JSONValue
 
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 __all__ = ["code_version_payload", "compute_code_version"]
 
 #: The payload's schema tag, so a future payload-shape change invalidates
-#: cleanly (a tag bump IS a code-version change, by construction).
+#: cleanly (a tag bump is a code-version change, by construction).
 _PAYLOAD_VERSION: Final[str] = "wf-code-version/v1"
 
 
@@ -56,13 +56,13 @@ def code_version_payload(
     cannot matter), never a positional concat: adding a field changes every
     hash (a clean invalidation), reordering nothing.
     """
-    # Annotated as JSONValue (not dict[str, str]): the stub's dict shape is
+    # Annotated as jsonvalue (not dict[str, str]): the stub's dict shape is
     # invariant in its value type, and the literal contextualizes cleanly.
     payload: JSONValue = {
         "schema": _PAYLOAD_VERSION,
         "module": module,
         "qualname": qualname,
-        # None and "" fold to the SAME record (an absent source/pin is the
+        # None and "" fold to the same record (an absent source/pin is the
         # empty document — the hash covers the field either way).
         "source": source or "",
         "pinned": pinned or "",

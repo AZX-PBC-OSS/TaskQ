@@ -17,7 +17,7 @@ One run of ``examples/flows_demo/app.py``'s graph proves:
 * the CAPPED stage's terms ride the handle's declaration
   (``@app.actor(max_concurrent=1, …)``) into the node decl and the
   ``actor_config`` row, and the not-thread-safe resource's overlap
-  guard NEVER fires (the cap's tripwire stays silent for the whole
+  guard never fires (the cap's tripwire stays silent for the whole
   run);
 * the run leaves rows in every table the retention arms will sweep.
 
@@ -87,8 +87,8 @@ async def _drive_one_run(
     run_id = claim.flow_id
     assert claim.kind == "created"
 
-    # THE FIRST WALL: the drive stops at the review HOLD — the HITL
-    # gate minted its typed hold (the hold row is the truth).
+    # the drive stops at the review hold — the hitl gate minted its typed hold
+    # (the hold row is the truth).
     state = await runner.drive(run_id, until="held", max_ticks=500)
     assert state == "held", f"the drive ended {state!r} before the review hold"
 
@@ -97,8 +97,7 @@ async def _drive_one_run(
     assert len(holds) == 1, f"expected the review hold, got {holds}"
     assert holds[0].signal_name == "Approval", holds[0].signal_name
 
-    # THE RESOLVE (the admin Resolve form's rows): the typed payload
-    # delivers through the gate's declared model.
+    # the typed payload delivers through the gate's declared model.
     verdict = await client.resolve(
         holds[0].hold_id,
         {"verdict": "approve", "note": "ship it"},
@@ -106,12 +105,12 @@ async def _drive_one_run(
     )
     assert verdict.status == "delivered", verdict
 
-    # THE RESUME: the timer fires from the sweep's arm, the capped
-    # publish lands, the run terminalizes.
+    # the timer fires from the sweep's arm, the capped publish lands, the run
+    # terminalizes.
     state = await runner.drive(run_id, until="terminal", max_ticks=3000)
     assert state == "terminal", f"the resume ended {state!r} — a bounded stop is a defect"
 
-    # THE TERMINAL REPORT (the envelope is the truth).
+    # the terminal report (the envelope is the truth).
     digest = Digest.model_validate(await runner.result(run_id))
 
     join_row = await wf_pool.fetchrow(
@@ -138,12 +137,12 @@ async def test_demo_flow_end_to_end(
     wf_schema: str,
     wf_conn: asyncpg.Connection,
 ) -> None:
-    """ONE run: fan-out → the doomed item's collect → the HOLD → the
+    """one run: fan-out → the doomed item's collect → the HOLD → the
     typed resolve → the timer → the capped publish → the terminal
     report. The overlap guard never fires; the root COMPLETES."""
     run_id, digest, join_meta, nodes = await _drive_one_run(wf_pool, wf_schema)
 
-    # THE COLLECT'S WHOLE POINT: a failing item does NOT fail the flow.
+    # a failing item does not fail the flow.
     assert DOOMED_ITEM not in digest.published
     assert digest.published == sorted(digest.published)
     assert "approve" in digest.review_note and "ship it" in digest.review_note
@@ -155,10 +154,9 @@ async def test_demo_flow_end_to_end(
     )
     assert root == "succeeded", root
 
-    # THE COLLECTED FAILURE: the map join row's metadata.failures names
-    # the doomed item with the typed FailureInfo envelope — the policy
-    # marker reads 'collect' (the envelope never lies about which
-    # policy ran).
+    # the map join row's metadata.failures names the doomed item with the typed
+    # FailureInfo envelope — the policy marker reads 'collect' (the envelope
+    # never lies about which policy ran).
     assert join_meta.get("failures") is not None, join_meta
     failures = join_meta["failures"]
     assert len(failures) == 1, f"expected the doomed item's one collected failure, got {failures}"
@@ -168,9 +166,8 @@ async def test_demo_flow_end_to_end(
     assert envelope["error"]["error_class"] == "RuntimeError"
     assert DOOMED_ITEM in envelope["error"]["error_message"]
 
-    # THE DOOMED ITEM'S OWN ROW: terminal-failed at its ladder bound
-    # (the map's max_attempts=1 — one attempt, no retry storm); the
-    # SURVIVORS all succeeded.
+    # terminal-failed at its ladder bound (the map's max_attempts=1 — one
+    # attempt, no retry storm); the survivors all succeeded.
     doomed = nodes.get(("source.item", envelope["map_index"]))
     assert doomed is not None, sorted(nodes)
     assert doomed["status"] == "failed", doomed
@@ -181,8 +178,8 @@ async def test_demo_flow_end_to_end(
     assert len(survivors) == 4
     assert all(row["status"] == "succeeded" for row in survivors), survivors
 
-    # THE CAP'S TRIPWIRE: the not-thread-safe resource was never
-    # entered twice — the guard is silent for the whole run.
+    # the not-thread-safe resource was never entered twice — the guard is
+    # silent for the whole run.
     assert SERIAL_GUARD.tripped == [], SERIAL_GUARD.tripped
     assert SERIAL_GUARD.entries >= 5  # four enrich items + the publish
 
@@ -202,7 +199,7 @@ async def test_capacity_terms_declared(demo_env: None) -> None:
     assert reservation.name == PDF_RESERVATION_NAME
     assert reservation.slots == 1
 
-    # The queue placement: the capped stage is its OWN cohort (the
+    # The queue placement: the capped stage is its own cohort (the
     # one-queue-per-actor law's shape).
     assert (node.actor, node.queue) == ("flows-pub", "flows-pub")
 
@@ -214,7 +211,7 @@ async def test_capacity_terms_land_in_actor_config(
 ) -> None:
     """The capacity terms' ACTOR_CONFIG face: the boot projection
     carries the capped cohort's terms into the row (the seed-only law —
-    the declaration seeds, the operator owns thereafter). The SAME
+    the declaration seeds, the operator owns thereafter). The same
     two-phase upsert the worker boot runs lands the rows; the projection
     reads the app through the registry the autouse isolation clears —
     the demo's app re-registered for THIS test's projection."""
@@ -233,11 +230,11 @@ async def test_capacity_terms_land_in_actor_config(
     assert pub.max_concurrent == 1
     assert (
         pub.max_pending is None
-    )  # the: max_pending is off the wf surface — the row seeds it UNSET
+    )  # the: max_pending is off the wf surface — the row seeds it unset
     assert pub.result_ttl == 3600.0
     assert pub.metadata.get("workflow_actor") is True, pub.metadata
 
-    # The row lands through the worker boot's own upsert (a CONNECTION —
+    # The row lands through the worker boot's own upsert (a connection —
     # the sync runs its own transactions).
     async with wf_pool.acquire() as conn:
         await sync_actor_config(conn, configs, schema=wf_schema)
@@ -250,7 +247,7 @@ async def test_capacity_terms_land_in_actor_config(
     assert row is not None, "the capped cohort's actor_config row is missing"
     assert row["queue"] == "flows-pub"
     assert row["max_concurrent"] == 1
-    assert row["max_pending"] is None  # the: the dead knob is off the surface — the row seeds UNSET
+    assert row["max_pending"] is None  # the: the dead knob is off the surface — the row seeds unset
     assert row["result_ttl"] == 3600.0
     meta = _decoded(row["metadata"])
     assert meta.get("workflow_actor") is True, meta
@@ -265,7 +262,7 @@ async def test_retention_arms_targets_exist(
     """The retention arms' TARGETS exist and the demo run fills them:
     the run leaves ``wf_edge`` / ``wf_step_ledger`` / ``wf_signals`` /
     ``wf_node_progress`` rows — the five bounded-batch sweeps' scan
-    targets — and ONE pass of the arms at the demo's DECLARED periods
+    targets — and one pass of the arms at the demo's DECLARED periods
     (7d) deletes NOTHING (the rows are fresh; the arms' age clocks have
     not run past the launch surface's values)."""
     run_id, _digest, _join_meta, _nodes = await _drive_one_run(wf_pool, wf_schema)
@@ -300,7 +297,7 @@ async def test_retention_arms_targets_exist(
         "the demo run left no node-progress rows — nothing for the wf_node_progress arm to sweep"
     )
 
-    # ONE PASS OF THE ARMS at the demo's declared periods: the leader's
+    # one pass of the arms at the demo's declared periods: the leader's
     # own sweep functions, the launch surface's values — a fresh run's
     # history is not aged out (the zero-means-off convention's positive
     # face: the arms run, nothing is old enough to die).
@@ -336,9 +333,8 @@ def test_retention_env_is_the_demo_launch_surface(monkeypatch: pytest.MonkeyPatc
         "TASKQ_WORKFLOW_NODE_PROGRESS_RETENTION_PERIOD",
     }
     for name in run_demo_module.RETENTION_ENV:
-        # THE HYGIENE LAW: the monkeypatch's undo owns the restore (a bare
-        # os.environ write has no teardown; the direct-mutation pin
-        # rejects exactly this shape).
+        # the monkeypatch's undo owns the restore (a bare os.environ write has
+        # no teardown; the direct-mutation pin rejects exactly this shape).
         monkeypatch.delenv(name, raising=False)
     run_demo_module._arm_env()
     for name, value in run_demo_module.RETENTION_ENV.items():

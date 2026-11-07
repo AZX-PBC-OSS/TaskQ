@@ -73,7 +73,7 @@ def test_stale_entries_are_refetched(monkeypatch: pytest.MonkeyPatch) -> None:
     cache = _OIDCMetadataCache(ttl_seconds=300)
     fetch = _FetchCounter([{"fresh": True}, {"rotated": True}])
     now = {"t": 1000.0}
-    # Patch where the name is LOOKED UP - the oidc module's own ``time``
+    # Patch where the name is looked up - the oidc module's own ``time``
     # binding - not through to the global time module (tests/_ns_patch.py).
     monkeypatch.setattr(oidc_module, "time", module_ns_proxy(time, monotonic=lambda: now["t"]))
 
@@ -113,7 +113,7 @@ def test_a_failed_discovery_refresh_on_a_stale_entry_leaves_nothing_cached(
     fetch = _FetchCounter([{"stale": True}, {"rotated": True}])
     issuer = "https://idp.invalid"
     now = {"t": 1000.0}
-    # Patch where the name is LOOKED UP - the oidc module's own ``time``
+    # Patch where the name is looked up - the oidc module's own ``time``
     # binding - not through to the global time module (tests/_ns_patch.py).
     monkeypatch.setattr(oidc_module, "time", module_ns_proxy(time, monotonic=lambda: now["t"]))
 

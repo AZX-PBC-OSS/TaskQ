@@ -119,11 +119,11 @@ async def test_two_subscribers_both_receive_event(pg_dsn: str) -> None:
         assert event_b.is_set(), "event_b should be set after NOTIFY"
 
 
-# ── LISTEN active before listener loop starts AND remains active after start
+# ── LISTEN active before listener loop starts and remains active after start
 
 
 async def test_listen_active_before_loop_and_remains_after(pg_dsn: str) -> None:
-    """LISTEN active before listener loop starts AND remains active after start.
+    """LISTEN active before listener loop starts and remains active after start.
 
     Phase 1: pg_listening_channels() after open_worker_deps but before
     notify_listener_loop verifies the contract.
@@ -183,12 +183,12 @@ async def test_listen_active_before_loop_and_remains_after(pg_dsn: str) -> None:
             shutdown.set()
 
 
-# ── UNLISTEN observable after shutdown ──────────────────────────
+# ── unlisten observable after shutdown ──────────────────────────
 
 
 async def test_unlisten_observable_after_shutdown(pg_dsn: str) -> None:
     """UNLISTEN observable after shutdown - subscriber opened after
-    shutdown does NOT receive a NOTIFY that was sent after shutdown.
+    shutdown does not receive a NOTIFY that was sent after shutdown.
 
     After notify_listener_loop exits, remove_listener has been called,
     and the PG-level LISTEN is removed. A NOTIFY sent from a second

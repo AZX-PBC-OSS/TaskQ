@@ -70,11 +70,11 @@ co-tenant load, the FACTORS are the stable quantity):
 | 90k | 110.2 ms | 110.5 ms |
 
 Degradation factors across five controlled runs: naive 2.8x – 13.2x
-(the spiral reproduces, robustly — the load-bearing gate), cursor
+(the spiral reproduces in every run — the load-bearing gate), cursor
 2.96x – 12.77x — **the cursor arm's full-path factor tracked the naive
 arm's in every run** (2.96 vs 3.53, 2.97 vs 2.80, 3.69 vs 3.85, 9.92 vs
-9.32). The bound's win is real on the isolated surface (below) but NOT
-robust end-to-end.
+9.32). The bound's win is real on the isolated surface (below) but does
+not reproduce end-to-end.
 
 The isolated candidates probe (the surface the bound provably fixes):
 on the id-carrying `jobs_unrouted_actor_dispatch_idx`, the bound joins

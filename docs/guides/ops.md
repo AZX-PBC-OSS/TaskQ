@@ -764,7 +764,9 @@ every trigger, not just one.
     - `identity_key` on the schedule + `unique_for` on the actor: fires inside the window dedup
       silently (no strike). The window must cover the cadence, and it single-flights the *root*
       only (see the dedup rule above).
-    - An app-level running-run guard is the robust option for chains that outrun their cadence.
+    - An app-level running-run guard is the option that survives a chain whose
+      runs outlast every suppression window: it checks the previous run's live
+      state (the run key or a ledger row), not the fire timing.
 - **Misses past the catch-up window are dropped, and counted.** A fire overdue by more than
   `TASKQ_CRON_CATCH_UP_WINDOW` is skipped: the recompute lands `next_fire_at` in the future and
   the dropped occurrences are never replayed. The drop is instrumented, not silent —
@@ -1415,7 +1417,7 @@ rules are [timescaledb.md](timescaledb.md)'s subject. This section is the **deci
 
 ### The mode dimension: three first-class storage modes
 
-Every trade in this section sits on a dimension the section used to leave implicit: the
+Every trade in this section sits on one dimension: the
 **detected storage mode**. TaskQ detects it from the connected server (never from settings) —
 `vanilla` (no extension installed), `timescale-apache` (extension installed, license `apache`),
 or `timescale-tsl` (extension installed, full Timescale-license feature set) — and

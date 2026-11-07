@@ -4,7 +4,7 @@ The terminal writes are fenced on ``(status='running', locked_by_worker,
 attempt)`` and the claim stamps the displayed counter with a saturating
 ``LEAST(attempt + 1, 32767)``. At the ceiling the value stops advancing, so
 a reclaim plus a redispatch to the same worker gives the stale execution and
-the live one the SAME fence: the stale ``mark_succeeded`` wins and the live
+the live one the same fence: the stale ``mark_succeeded`` wins and the live
 one reads ``WorkerOwnershipMismatch``, a failed job recorded as succeeded
 (reachable with ``retry_kind='indefinite'``, about 9.1 hours of tight
 retrying at the 1 s deferral floor).
@@ -169,7 +169,7 @@ class TestCeilingReproduction:
             # MIN_DEFERRAL_INTERVAL; wait it out on the server clock.
             await asyncio.sleep(1.1)
 
-            # Claim B: the SAME attempt number (the clamp), a NEW epoch.
+            # Claim B: the same attempt number (the clamp), a new epoch.
             b = await backend.dispatch_batch(
                 worker_id=worker_id,
                 queues=["default"],
@@ -182,7 +182,7 @@ class TestCeilingReproduction:
 
             # Stale A's terminal write carries the ceiling attempt and the
             # stale epoch: refused, exactly like a different worker's late
-            # write. (This is the write that USED to win and record the
+            # write. (This is the write that used to win and record the
             # failed job as succeeded.)
             landed = await backend.mark_succeeded(
                 job_id, worker_id, {"from": "STALE_A"}, attempt=_CEILING, claim_epoch=1
@@ -251,7 +251,7 @@ class TestCeilingReproduction:
             assert b[0].attempt == 7, "away from the ceiling the counter advances"
             assert b[0].claim_epoch == 2
 
-            # Stale A: stale attempt AND stale epoch, refused either way.
+            # Stale A: stale attempt and stale epoch, refused either way.
             assert (
                 await backend.mark_succeeded(
                     job_id, worker_id, {"from": "STALE_A"}, attempt=6, claim_epoch=1
@@ -355,7 +355,7 @@ async def _seed_and_claim(backend: Backend) -> tuple[JobId, UUID, tuple[int, int
     """Enqueue, claim, then reclaim + re-claim: the stale/live epoch shape.
 
     Returns ``(job_id, worker_id, stale_pair, live_pair)``: the stale pair
-    is the FIRST claim's (attempt, epoch), the live pair the second
+    is the first claim's (attempt, epoch), the live pair the second
     claim's. Both claims go through the backend's real dispatch, and the
     reclaim through its real sweep, so the epoch's advance is the shipped
     semantics, not a simulated mutation.

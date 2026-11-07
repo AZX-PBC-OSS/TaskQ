@@ -1,13 +1,13 @@
-"""The flows demo's workflow definitions — ONE graph, the whole story.
+"""The flows demo's workflow definitions — one graph, the whole story.
 
 The graph (``flows_demo``) demonstrates, on one run:
 
 1. **The SOURCE fan-out + the failing item's COLLECT** — the source step
-   emits a batch of items; the map fans each item out as its OWN job;
+   emits a batch of items; the map fans each item out as its own job;
    one item is ARMED to fail (every attempt); the map's edges declare
    ``on_failure="collect"`` so the failure fans in as a typed
    :class:`~taskq.workflows._types.FailureInfo` on the map join row's
-   ``metadata.failures`` and THE FLOW STILL COMPLETES (the surviving
+   ``metadata.failures`` and the FLOW still COMPLETES (the surviving
    items publish; the failure is REPORTED, never a cascade).
 2. **The HITL gate** — the review step waits on a typed
    :class:`Approval` payload (``ctx.wait_signal`` + a ``GateDecl``);
@@ -73,13 +73,13 @@ __all__ = [
     "flows_app",
 ]
 
-#: The demo's batch: SEVERAL items, one of them armed to fail every
+#: The demo's batch: several items, one of them armed to fail every
 #: attempt (the collect's demonstration — the surviving four publish,
 #: the failure is reported by the join row).
 DEMO_ITEMS: list[str] = ["item-alpha", "item-beta", "item-gamma", "item-delta"]
 
-#: THE DOOMED ITEM — the batch's one deliberate failure. Its fan-in IS
-#: the collect: a typed ``FailureInfo`` envelope on the map join row.
+#: the doomed item — the batch's one deliberate failure. Its fan-in is the
+#: collect: a typed ``FailureInfo`` envelope on the map join row.
 DOOMED_ITEM = "item-999-doomed"
 
 #: The demo's batch, doomed item included (the wiring's declared
@@ -87,11 +87,11 @@ DOOMED_ITEM = "item-999-doomed"
 #: one, the wired batch when it does not).
 ITEMS: list[str] = sorted([*DEMO_ITEMS, DOOMED_ITEM])
 
-#: The capped stage's reservation — the STRICT slot (one slot: the
-#: not-thread-safe resource has exactly one seat). The DECLARATION at
+#: The capped stage's reservation — the strict slot (one slot: the
+#: not-thread-safe resource has exactly one seat). The declaration at
 #: import binds the settings-default schema (no import-time settings —
 #: the admin_app doctrine); :func:`configure` rebinds the handle's
-#: declared reservation to the demo's schema BEFORE anything compiles —
+#: declared reservation to the demo's schema before anything compiles —
 #: the wiring, the projection and the bootstrap's ensure-slots filter
 #: all read the instance's own schema against the deployment's
 #: settings.
@@ -110,10 +110,10 @@ _pdf_gadget: ConcurrencyReservation | None = None
 
 def configure(schema: str) -> ConcurrencyReservation:
     """Bind the demo's schema-dependent pieces (the reservation's slot
-    rows live in the demo's schema). Call BEFORE ``flows_app.get(...)``
+    rows live in the demo's schema). Call before ``flows_app.get(...)``
     — the wiring compiles fresh on every ``get`` and reads the handle's
     declared terms at wiring time."""
-    global _pdf_gadget  # Why: the module IS the demo's config point; the schema is unknowable at import (no import-time settings — the admin_app doctrine).
+    global _pdf_gadget  # Why: the module is the demo's config point; the schema is unknowable at import (no import-time settings — the admin_app doctrine).
     _pdf_gadget = ConcurrencyReservation(
         name=PDF_RESERVATION_NAME,
         slots=1,
@@ -158,8 +158,8 @@ class Digest(BaseModel):
     cooldown: str
 
 
-#: The review gate's COMPILE declaration (the Mermaid face + the typed
-#: resolve door's registry entry). The RUNTIME deadline is the wait
+#: The review gate's compile declaration (the Mermaid face + the typed
+#: resolve door's registry entry). The runtime deadline is the wait
 #: site's own ``timeout_s`` — keep the two equal on purpose.
 APPROVAL_GATE = GateDecl(
     name="Approval",
@@ -183,7 +183,7 @@ class OverlapGuard:
         self.in_flight = 0
         #: The stages that ever overlapped (empty is the demo's law).
         self.tripped: list[str] = []
-        #: How many bodies entered (the README's counter observation).
+        #: How many bodies entered (the readme's counter observation).
         self.entries = 0
 
     async def enter(self, stage: str) -> None:
@@ -215,7 +215,7 @@ async def fanout_source(ctx: StepContext, params: BatchSpec | None = None) -> li
 
 
 async def enrich_item(ctx: StepContext, item: str) -> ItemOut:
-    """The map's per-item body — the doomed item fails EVERY attempt
+    """The map's per-item body — the doomed item fails every attempt
     (the map declares ``max_attempts=1``); the survivors enrich."""
     await SERIAL_GUARD.enter(f"enrich:{item}")
     if item == DOOMED_ITEM:
@@ -224,7 +224,7 @@ async def enrich_item(ctx: StepContext, item: str) -> ItemOut:
 
 
 async def await_approval(ctx: StepContext, ready: list[ItemOut]) -> str:
-    """THE HITL GATE: the node holds on a typed ``Approval``; the
+    """The node holds on a typed ``Approval``; the
     resolve (the admin's form or ``HitlClient.resolve``) delivers the
     payload and the body resumes with it. The expiry is a value (the
     fail-close arm finishes with what we have)."""
@@ -239,7 +239,7 @@ async def await_approval(ctx: StepContext, ready: list[ItemOut]) -> str:
 
 
 async def cooldown_body(ctx: StepContext, note: str) -> str:
-    """THE DURABLE TIMER: the node takes the HELD representation and the
+    """The node takes the HELD representation and the
     SWEEP's timer arm (``fired_by='timer'``) wakes it at the deadline —
     the clock is the resolver, not a process-local sleep."""
     wake = await ctx.wait_until(0.5, key="cooldown")
@@ -260,20 +260,19 @@ flows_app = WorkflowApp()
 @flows_app.actor(
     name="publish_capped",
     queue="flows-pub",
-    # THE CAPACITY SURFACE (the handle's own declaration): the capped
-    # stage guards a not-thread-safe resource — one body at a time
-    # (``max_concurrent=1``), a STRICT one-seat reservation, and a
-    # result that outlives the run by an hour. The terms flow from the
-    # handle into the node at wiring time; the boot projection carries
-    # them into the cohort's ``actor_config`` row (the seed-only law —
-    # the operator owns the row thereafter). The reservation's SCHEMA
-    # binding lands at :func:`configure` (the deployment's launch seam).
+    # the capped stage guards a not-thread-safe resource — one body at a time
+    # (``max_concurrent=1``), a strict one-seat reservation, and a result that
+    # outlives the run by an hour. The terms flow from the handle into the node
+    # at wiring time; the boot projection carries them into the cohort's
+    # ``actor_config`` row (the seed-only law — the operator owns the row
+    # thereafter). The reservation's SCHEMA binding lands at :func:`configure`
+    # (the deployment's launch seam).
     max_concurrent=1,
     reservations=[PDF_RESERVATION],
     result_ttl=3600.0,
 )
 async def publish_capped(ctx: StepContext, cooled: str, ready: list[ItemOut]) -> Digest:
-    """THE CAPPED STAGE: the not-thread-safe resource's sole gatekeeper
+    """The not-thread-safe resource's sole gatekeeper
     (the overlap guard screams if two bodies EVER overlap). The report
     derives from the wired collect — the survivors, named."""
     await SERIAL_GUARD.enter("publish")
@@ -286,10 +285,9 @@ async def publish_capped(ctx: StepContext, cooled: str, ready: list[ItemOut]) ->
 
 @flows_app.workflow("flows_demo")
 def flows_demo() -> Promise[object]:
-    # THE SOURCE + THE MAP FAN-OUT: each item is its OWN job (per-item
-    # ledger identity); the map's edges declare ``collect`` — the doomed
-    # item's failure fans in as the typed partial result, the flow
-    # completes.
+    # each item is its own job (per-item ledger identity); the map's edges
+    # declare ``collect`` — the doomed item's failure fans in as the typed
+    # partial result, the flow completes.
     source = step(
         fanout_source,
         BatchSpec(items=ITEMS),
@@ -305,7 +303,7 @@ def flows_demo() -> Promise[object]:
         max_attempts=1,
     )
 
-    # THE HITL GATE + THE DURABLE TIMER + THE SUNK NARRATION.
+    # the hitl gate + the durable timer + the sunk narration.
     review = step(
         await_approval,
         ready,
@@ -330,12 +328,10 @@ def flows_demo() -> Promise[object]:
         queue="flows-timer",
     )
 
-    # THE CAPPED STAGE (the capacity surface): the body is the
-    # ``@flows_app.actor`` handle — the terms flow from the HANDLE into
-    # the node (the wiring repeats nothing; the explicit step params
-    # would OVERRIDE, never the reverse). The placement stays the
-    # wiring's own decision (the handle's name is not the node's
-    # actor).
+    # the body is the ``@flows_app.actor`` handle — the terms flow from the
+    # handle into the node (the wiring repeats nothing; the explicit step
+    # params would override, never the reverse). The placement stays the
+    # wiring's own decision (the handle's name is not the node's actor).
     report = step(
         publish_capped,
         cooled,

@@ -1,4 +1,4 @@
-"""The ``taskq flows`` analysis engine (T12): one question, one surface.
+"""The ``taskq flows`` analysis engine: one question, one surface.
 
 Every function here is pure analysis — fetched rows in, report lines out.
 Nothing in this module touches Typer, a connection, or any CLI state: the
@@ -6,17 +6,16 @@ asyncpg fetchers and the ``typer.echo`` rendering live in ``taskq.cli``
 (the ``flows`` sub-app), which is this module's only importer. This is
 ``_doctor.py``'s seam, mirrored.
 
-THE ONE-DERIVATION LAW: the run status reported here is THE §17.5
+The run status reported here is the §17.5
 derivation (:func:`taskq.workflows._status.derive_workflow_status`) — the
 CLI never re-derives, it converts the fetched rows into the derivation's
 ``NodeView`` inputs and reads the shared output. One engine, many
 surfaces (backend, SSE, CLI — no mapping drift, PROPOSAL §13.4).
 
-THE WHY-STUCK SEAM (G10): :func:`stuck_lines` is the shared analysis a
+:func:`stuck_lines` is the shared analysis a
 future ``taskq explain <job_id>`` calls for the per-node why-stuck arm —
 ``flows status`` CALLS it; it is never re-implemented per surface.
 
-THE OUTPUT CONTRACT (the acceptance gates):
 * every number names its evidence source (``_doctor.py``'s report style);
 * every stuck finding names its REMEDY (the command that answers it);
 * an empty snapshot prints the honest degraded line — never a blank
@@ -30,7 +29,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from taskq._json import loads as _json_loads
 from taskq.workflows._status import NodeView, WorkflowStatus, derive_workflow_status
@@ -49,6 +48,7 @@ __all__ = [
     "parse_decision",
     "stranded_lines",
     "stuck_lines",
+    "validate_gate_payload",
 ]
 
 #: The flow root row's step_key — the run's linearization point, never
@@ -72,12 +72,11 @@ class FlowNodeRow:
     hold: HoldContext | None = None
     max_attempts: int = 3
     attempt: int = 0
-    # THE 3AM FIELDS (the observability lane's fixes; the ENGINE-FACES
-    # fix rides the engine query — WORKFLOW_NODES_SQL selects them at
-    # the source, ONE read): the node row's own id + started_at (the
-    # RUNNING face's age source) + the failed_parent stamp
-    # (metadata.failed_parent — the dead parent NAMED on the record) +
-    # the LEASE face's columns (the reclaim-requires-a-leader marker's
+    # The 3am fields (the engine query selects them at
+    # the source, one read): the node row's own id + started_at (the
+    # running face's age source) + the failed_parent stamp
+    # (metadata.failed_parent — the dead parent named on the record) +
+    # the lease face's columns (the reclaim-requires-a-leader marker's
     # derivation input). Optional with None defaults: every existing
     # constructor keeps its shape.
     job_id: str | None = None
@@ -87,7 +86,7 @@ class FlowNodeRow:
     last_heartbeat_at: datetime | None = None
 
     def view(self) -> NodeView:
-        """The derivation's input — THE ONE CONVERSION (no second
+        """The derivation's input — the one CONVERSION (no second
         derivation lives anywhere)."""
         return NodeView(
             status=self.status,
@@ -111,13 +110,13 @@ class FlowListRow:
 
 
 def derive_flow_status(nodes: Sequence[FlowNodeRow]) -> WorkflowStatus:
-    """The run's status — THE derivation's output (never a re-derivation
+    """The run's status — the derivation's output (never a re-derivation
     here; the row→NodeView conversion is the only CLI-side code)."""
     return derive_workflow_status(tuple(n.view() for n in nodes))
 
 
 def _bounded_line(text: object, limit: int = 120) -> str:
-    """THE DB-SOURCED TEXT'S DISCIPLINE (the F-CLI-4 fix, the class seat):
+    """
     anything the RENDER surfaces print from a DB-sourced string is
     whitespace-COLLAPSED (embedded newlines cannot forge a remedy line —
     an attacker-shaped error_message or hold reason writing its own
@@ -129,7 +128,7 @@ def _bounded_line(text: object, limit: int = 120) -> str:
         return ""
     import re as _re
 
-    # the ANSI escapes first (an ESC sequence is not whitespace — the
+    # the ansi escapes first (an esc sequence is not whitespace — the
     # collapse alone would carry the coloring/erasing bytes to the tty);
     # then the control-character strip; then the whitespace collapse.
     text = _re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", str(text))
@@ -143,24 +142,22 @@ def _bounded_line(text: object, limit: int = 120) -> str:
 
 
 def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
-    """THE WHY-STUCK ARM (the explain seam): what this node is waiting
-    on and the ONE command that answers it. A live (non-stuck) node
+    """What this node is waiting
+    on and the one command that answers it. A live (non-stuck) node
     yields an empty list — a running row is not a finding.
 
-    THE BLOCKED-BEFORE-JOIN-WAIT ORDER (attack-4 F-P4-WHYSTUCK-FALSE-
+    the BLOCKED-before-JOIN-WAIT ORDER (the false-remedy defect's
     the remedy's own fix): a row whose parent ALREADY finalized as a failure
-    carries ``blocking_reason='failed_parent'`` — the join can NEVER
+    carries ``blocking_reason='failed_parent'`` — the join can never
     fire. Reading the join-wait arm first promised "the join fires when
     its parents finalize" for a join that never will; the blocking
     REASON wins the read, and each reason's remedy derives from the
     reason (truthful per state), never from the shape it resembles."""
     if node.hold is not None:
-        # THE TIMER'S BRANCH (the timer hardening's fix 3 — the same
-        # reserved-prefix split the template keeps): a hold under the
-        # reserved ``__timer__`` prefix is the CLOCK's — the resolve
-        # remedy is a lie the boundary would refuse. The line names the
-        # timer AS a timer: the key, the scheduled instant, the wake's
-        # own face (no resolve, no expiry fail-close — the wake fires).
+        # a hold under the reserved ``__timer__`` prefix is the clock's — the
+        # resolve remedy is a lie the boundary would refuse. The line names the
+        # timer as a timer: the key, the scheduled instant, the wake's own face
+        # (no resolve, no expiry fail-close — the wake fires).
         if starts_with_timer(node.hold.signal_name):
             timer_key = node.hold.signal_name[len(TIMER_SIGNAL_PREFIX) :] or "(anonymous)"
             scheduled = (
@@ -189,9 +186,8 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
             f"       remedy: taskq flows resolve {node.hold.hold_id} '<decision json>'",
         ]
         if node.hold.reason:
-            # THE WAITING-ON STATE's why (the author's declared reason —
-            # the operator reads it without opening the code) — THROUGH
-            # THE DISCIPLINE: a DB-sourced reason cannot forge a line.
+            # the waiting-on state's why — through the discipline: a DB-sourced
+            # reason cannot forge a line.
             lines.insert(1, f"       reason: {_bounded_line(node.hold.reason)}")
         return lines
     if (
@@ -199,19 +195,18 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
         and node.blocking_reason != "join"
         and node.view().is_blocked_row
     ):
-        # THE 'join' EXCLUSION (the 3am false-remedy fix): the
-        # bare 'join' stamp is the HEALTHY join-wait shape every emitted
+        # the 'join' exclusion (the 3am false-remedy fix): the
+        # bare 'join' stamp is the healthy join-wait shape every emitted
         # join carries — it must fall through to the JOIN-WAIT arm below
         # (the honest "the join fires when its parents finalize"), never
         # into this arm's retry-the-failed-upstream remedy, which names a
         # failed node that does not exist.
         reason = node.blocking_reason
         if reason == "flow_dead":
-            # THE FENCE'S RECORD (the 3am wedge record): flow_dead
-            # means the FLOW died — the failure cascade flipped the root
-            # — and this join can never fire. The line says the path is
-            # DEAD first; the retry command alone would read as if a
-            # retry revives a dead path.
+            # flow_dead means the flow died — the failure cascade flipped the
+            # root — and this join can never fire. The line says the path is
+            # dead first; the retry command alone would read as if a retry
+            # revives a dead path.
             return [
                 f"  {node.step_key}: BLOCKED — flow_dead "
                 "(source: the row's metadata.blocking_reason stamp): the "
@@ -234,9 +229,9 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
                 "(or cancel the run: the path is dead)",
             ]
             if node.failed_parent:
-                # THE DEAD PARENT, NAMED ON THE RECORD (the 3am operator-truth
+                # the dead parent, named on the record (the 3am operator-truth
                 # gap: the cascade stamps metadata.failed_parent with the
-                # parent's id — the line must PRINT it, never send the
+                # parent's id — the line must print it, never send the
                 # operator hunting through the run's other nodes).
                 lines.insert(
                     1,
@@ -259,11 +254,10 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
             "       remedy: none — the join fires when its parents finalize",
         ]
     if node.status in ("failed", "crashed", "abandoned"):
-        # THE TERMINAL-CRASH FOLD'S FACE (the 3am operator-truth fix): the
-        # derivation folds crashed/abandoned into the failed class (the
-        # row-0), and the why-stuck face must fold with it — a
-        # '1 crashed' count with no line left the row's story (the
-        # WorkerCrashed class, the reclaim's death record) invisible.
+        # the derivation folds crashed/abandoned into the failed class (the
+        # row-0), and the why-stuck face must fold with it — a '1 crashed'
+        # count with no line left the row's story (the WorkerCrashed class, the
+        # reclaim's death record) invisible.
         headroom = node.max_attempts - node.attempt
         headroom_note = (
             f" · ladder headroom {headroom} attempt(s) left"
@@ -305,19 +299,19 @@ def stranded_lines(
     *,
     workflow: str,
 ) -> list[str]:
-    """THE VERSIONING WEDGE'S SURFACE (the timer hardening's fix 5 —
+    """the VERSIONING WEDGE'S SURFACE (the timer hardening's fix 5 —
     the surface, not the semantics): the run's node inventory vs the
     CURRENT registry's compiled graph — a run node the current registry
     does not declare can never claim a body again, so an in-flight run
     at it is a ZOMBIE (never terminal, nothing fails it — the
     rename/remove redeploy wedge). The lines NAME the stranded nodes,
-    state the zombie law AND the mid-map mixing read (a redeploy
+    state the zombie law and the mid-map mixing read (a redeploy
     mid-map provably mixes v1+v2 results in one run — the
     registry-is-truth contract; the per-node ``jobs.code_version``
     stamps name which side each attempt ran), and give the remedy (the
     cancel-then-restart path §6 teaches).
 
-    THE OUTPUT CONTRACT: every line names its evidence source (the run's
+    Every line names its evidence source (the run's
     node rows vs the --app module's compiled graph); the healthy zero is
     the EMPTY list (no line — a drift-free run renders no section)."""
     registry = set(registry_node_keys)
@@ -345,13 +339,13 @@ def stranded_lines(
 def code_version_drift_lines(
     stamps: Sequence[tuple[str, str | None]],
 ) -> list[str]:
-    """THE STAMPS' DRIFT FACE (the surface, the
+    """the STAMPS' DRIFT FACE (the surface, the
     stamps are the data): a run whose node rows carry >1 DISTINCT
     ``code_version`` was redeployed mid-flight — the run mixes pre- and
-    post-deploy attempts, and the operator sees it HERE, from the run's
-    OWN rows (no ``--app`` door needed: the stamps ride the rows).
+    post-deploy attempts, and the operator sees it here, from the run's
+    own rows (no ``--app`` door needed: the stamps ride the rows).
 
-    THE OUTPUT CONTRACT (the stranded face's own — one coherent drift
+    the OUTPUT CONTRACT (the stranded face's own — one coherent drift
     section): every line names its evidence source (the run's node rows'
     ``jobs.code_version``); the multi-hash nodes are named WITH their
     hashes (a map family whose rows straddle the deploy names both
@@ -394,9 +388,9 @@ def _running_lines(
     running_face_after_s: float,
     cap: int = 6,
 ) -> list[str]:
-    """THE RUNNING FACE (the 3am operator-truth stuck-vs-slow fix): a running
+    """A running
     row's AGE, named — a hung body (a long wait inside the step's own
-    code) produces NO stuck finding (a running row is not a finding), so
+    code) produces no stuck finding (a running row is not a finding), so
     without this face every surface read the hang as a bare '1 running'
     count. The face states the age FACTUALLY (source-named: the jobs
     row's started_at) and names the lease-check remedy that CAN
@@ -405,8 +399,8 @@ def _running_lines(
     *running_face_after_s* is live work, not a finding — its line would
     be noise on every progress report.
 
-    THE RECLAIM-REQUIRES-A-LEADER MARKER (the engine-faces lane's fix —
-    the dead-fleet face): a running row whose ``lock_expires_at`` has
+    The reclaim-requires-a-leader marker (the dead-fleet face): a running
+    row whose ``lock_expires_at`` has
     passed is the OPPOSITE verdict — the holder is presumed dead and the
     row is RECLAIMABLE, but the reclaim sweep runs only under a leader:
     with the fleet down nothing ever stamps the row (a sweep-stamp face
@@ -481,15 +475,15 @@ def format_flow_status(
 ) -> list[str]:
     """`flows status <run_id>`'s report lines.
 
-    The order is: the header (the run's identity + THE DERIVED status),
+    The order is: the header (the run's identity + the DERIVED status),
     the counts (with their source), the running face (each long-running
     row's age + the lease-check remedy — the stuck-vs-slow seam), the
-    stuck nodes' why-stuck lines (the explain seam), the ONE coherent
+    stuck nodes' why-stuck lines (the explain seam), the one coherent
     versioning-drift section — the stranded-node surface (only when
     *registry_node_keys* is given: the ``--app`` door) + the §22.1
     stamps' drift face (when the run's rows carry >1 distinct
     ``code_version`` — the stamps are the data, no ``--app`` needed) —
-    then the remedy footer. The root row's OWN status is reported as the
+    then the remedy footer. The root row's own status is reported as the
     cache it is (G7's law: the rows are the truth, the root row is a
     cache)."""
     derived = derive_flow_status(nodes) if nodes else "pending"
@@ -509,10 +503,9 @@ def format_flow_status(
         )
     if code_version_stamps:
         lines.extend(code_version_drift_lines(code_version_stamps))
-    # THE ONE COHERENT VERSIONING-DRIFT SECTION (the timer hardening's
-    # fix 5 + the stamps): the stranded-node surface (only when
-    # *registry_node_keys* is given: the --app door) + the stamps'
-    # drift face (the stamps are the data, no --app needed).
+        # the stranded-node surface (only when *registry_node_keys* is given: the
+    # --app door) + the stamps' drift face (the stamps are the data, no --app
+    # needed).
     if registry_node_keys is not None and nodes:
         lines.extend(
             stranded_lines(
@@ -526,8 +519,8 @@ def format_flow_status(
     if cancel_in_flight:
         lines.append("cancel: IN FLIGHT (the row's cancel_requested_at is set)")
     if not nodes:
-        # THE EMPTY SNAPSHOT (#673's rule): an honest degraded line, never
-        # a blank section that reads as a healthy zero.
+        # #673's rule. an honest degraded line, never a blank section that
+        # reads as a healthy zero.
         lines.append(
             "nodes: none yet (source: jobs rows by metadata.flow_id — the run "
             "was created but its nodes are not inserted, or the id names no run)"
@@ -536,15 +529,15 @@ def format_flow_status(
         return lines
     counts = ", ".join(f"{c} {s}" for s, c in _counts_by_status(nodes))
     lines.append(f"nodes: {len(nodes)} — {counts} (source: jobs rows by metadata.flow_id)")
-    # THE RUNNING FACE (the 3am operator-truth fix) — before the stuck lines:
-    # a hung body's row is 'running', which no stuck arm ever names.
+    # the running face — before the stuck lines: a hung body's row is
+    # 'running', which no stuck arm ever names.
     running_face = _running_lines(
         nodes,
         now=now if now is not None else datetime.now(UTC),
         running_face_after_s=running_face_after_s,
     )
     lines.extend(running_face)
-    # The stuck section is BOUNDED (the admin's timeline-truncation
+    # The stuck section is bounded (the admin's timeline-truncation
     # convention): a 1000-child map's 3 failures name themselves; a
     # 500-child stuck map would otherwise flood the operator's terminal —
     # the remainder is counted, never silently dropped.
@@ -563,7 +556,7 @@ def format_flow_status(
 
 def format_holds(holds: Sequence[HoldContext], *, run_id: str | None = None) -> list[str]:
     """`flows holds <run_id>`'s report lines — the operator's "what is
-    this run waiting on" answer. THE EMPTY SNAPSHOT: a run with zero
+    this run waiting on" answer. the EMPTY SNAPSHOT: a run with zero
     pending holds prints the honest line (a healthy zero is STATE — it
     must say so, not render blank)."""
     if not holds:
@@ -587,7 +580,7 @@ def format_holds(holds: Sequence[HoldContext], *, run_id: str | None = None) -> 
 
 def format_flow_list(rows: Sequence[FlowListRow]) -> list[str]:
     """`flows list`'s report lines — the recent runs with their DERIVED
-    statuses. THE EMPTY SNAPSHOT: no runs recorded yet → the honest line."""
+    statuses. the EMPTY SNAPSHOT: no runs recorded yet → the honest line."""
     if not rows:
         return [
             "runs: none yet (source: jobs rows where step_key = '__flow__')",
@@ -619,12 +612,72 @@ def parse_decision(raw: str) -> dict[str, object]:
 
 
 def gate_models_for(app: Any, workflow: str, node_key: str) -> tuple[type[BaseModel], ...]:
-    """The bound gates' payload models for ONE node (the typed door's
-    runtime half — T09's compile bound them at the gate; the CLI loads
-    the app and reads the SAME registry, never a second one)."""
+    """The bound gates' payload models for one node (the typed door's
+    runtime half — the compile bound them at the gate; the CLI loads
+    the app and reads the same registry, never a second one)."""
     compiled = app.get(workflow)
     decl = compiled.nodes[node_key]
     models: list[type[BaseModel]] = []
     for gate in decl.gates:
         models.extend(gate.payload_models)
     return tuple(models)
+
+
+def validate_gate_payload(
+    models: Sequence[type[BaseModel]],
+    signal_name: str,
+    payload: dict[str, object],
+    *,
+    fallback_all: bool = False,
+) -> tuple[dict[str, object] | None, str | None]:
+    """The typed door's shared core — the CLI's and the admin's one
+    validation body: split the hold's signal name on ``|``, take the
+    bound gate models that name it, and validate *payload* against the
+    candidates in turn; the first acceptance wins and its
+    ``model_dump(mode="json")`` is the delivered shape.
+
+    The candidate policy is the two surfaces' DELIBERATE divergence,
+    carried by *fallback_all*: the CLI resolves the gates for the run's
+    named workflow and REFUSES when no bound model names the signal (the
+    shapes cannot match is the operator's answer); the admin loops every
+    mounted workflow — it cannot know the run's — and FALLS BACK TO ALL
+    BOUND MODELS when none names the signal.
+
+    Returns ``(dump, None)`` on acceptance.  On refusal:
+    ``(None, refusal_text)`` — *refusal_text* is the full refusal
+    sentence the caller renders in its own error shape (the CLI's
+    ``typer.echo`` + exit 1, the admin's HTTP 422 detail, which its
+    audited wrapper records verbatim).  Each surface's established
+    wording rides the same flag as the policy it belongs to: the CLI's
+    pydantic refusal names the signal, the admin's does not.
+    """
+    members = signal_name.split("|")
+    candidates = [m for m in models if m.__name__ in members]
+    if not candidates:
+        if fallback_all:
+            candidates = list(models)
+        else:
+            return None, (
+                f"the hold declares signal {signal_name!r} but the node's bound gates are "
+                f"{[m.__name__ for m in models]} — the shapes cannot match"
+            )
+    errors: list[str] = []
+    for model in candidates:
+        try:
+            validated = model.model_validate(payload)
+        except ValidationError as exc:
+            errors.append(
+                f"{model.__name__}: "
+                + "; ".join(
+                    f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in exc.errors()
+                )
+            )
+            continue
+        dumped: dict[str, object] = validated.model_dump(mode="json")
+        return dumped, None
+    lead = (
+        "pydantic refused the payload"
+        if fallback_all
+        else f"pydantic refused the payload for signal {signal_name!r}"
+    )
+    return None, f"{lead}: " + " | ".join(errors)

@@ -1,5 +1,5 @@
 # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""THE COVERAGE-CLOSING PINS, part 2 (the estate floor): the capture
+"""The coverage-closing pins, part 2 (the estate floor): the capture
 module's pure functions (the truncation loop, the redact chain, the
 policy refusal), the reducer resolution's definition fallback, the
 engine's NodeSpec guards, the ctx.step's encode branches. Pure
@@ -121,7 +121,7 @@ async def test_insert_node_the_deps_guard(wf_conn: Any, wf_schema: str) -> None:
 
 
 def test_join_metadata_the_child_driven_shape_record() -> None:
-    """T07's shape record: the child-driven escape rides the ROW (the
+    """The fan-in bound's shape record: the child-driven escape rides the ROW (the
     rederive reads it; the record never guesses)."""
     from taskq.backend._protocol import JobId
     from taskq.workflows._types import ConsumerBinding, _join_metadata
@@ -154,13 +154,13 @@ def test_encode_step_result_the_model_and_the_plain_form() -> None:
 
 
 async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: str) -> None:
-    """THE ADAPTER'S DEFECT, FIXED AT THE SOURCE (the wedged-hold fix,
-    2026-10-09): the old adapter called the registry's body with ONE
+    """The adapter's defect, fixed at the source (the wedged-hold fix,
+    2026-10-09): the old adapter called the registry's body with one
     argument (``definition_body(None)``) — a step body (ctx + params)
     raised TypeError, the fire's tx rolled back, and the sweep re-fired
-    FOREVER (the wedged arm, the drive's max_ticks). THE FIX'S VERDICT:
+    FOREVER (the wedged arm, the drive's max_ticks). the VERDICT:
     the registry's bodies are STEP bodies — never reducers — so the
-    resolution returns NO body for a graph that resolves (the row's own
+    resolution returns no body for a graph that resolves (the row's own
     claim owns the execution, the wired args), and the LOUD face is
     reserved for the name that resolves NOWHERE (the R2-2 deployment
     defect). The RED evidence (the pin's own recorded history): the
@@ -181,17 +181,16 @@ async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: 
     def reducer_fallback() -> Promise[object]:
         return build(step(join_body, Ingest(doc_id="d"), key="solo"))
 
-    app.get("reducer_fallback_xf")  # the compile REGISTERS the bodies (D1)
+    app.get("reducer_fallback_xf")  # the compile registers the bodies (D1)
 
     from taskq.workflows._reducers import resolve_flow_reducer
 
     resolved = resolve_flow_reducer(
         "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f", "solo", workflow_name="reducer_fallback_xf"
     )
-    # THE FIX'S VERDICT: the registered STEP body is NEVER adapted to
-    # the reducer convention — no body (the claim's own execution), and
-    # the graph RESOLVED (the name is registered here) so the face is
-    # the healthy one, never the loud stamp.
+    # the registered step body is never adapted to the reducer convention — no
+    # body (the claim's own execution), and the graph resolved (the name is
+    # registered here) so the face is the healthy one, never the loud stamp.
     assert resolved.body is None, (
         "the resolution adapted a STEP body to the reducer convention — "
         "the TypeError machine is back"

@@ -422,7 +422,7 @@ async def test_heartbeat_excludes_disowned_jobs_from_lease_renewal() -> None:
     )
     assert "$3::uuid[]" in sql
     # The gated statement, with the threshold compared server-side
-    # (statement_timestamp(): STABLE, so the expiry arm's range bound is
+    # (statement_timestamp(): stable, so the expiry arm's range bound is
     # an index condition on jobs_running_lock_expires_idx).
     assert "lock_expires_at <= statement_timestamp() + $4::interval" in sql
 
@@ -685,11 +685,21 @@ async def test_disowned_row_lease_lapses_and_the_sweep_reclaims_it(
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name
     worker_id = new_uuid()
-    lease_end = datetime.now(UTC) + timedelta(seconds=1)
+    # the disowned row's lease is long (the skip law's window stays open across
+    # retried beats — a short lease would lapse mid-observation and the reclaim
+    # would fire while the pin is still holding the skip), the sibling's short
+    # (inside the gated renewal's floor, so every beat renews it — the
+    # sibling's continued renewal is the comparison's own arm).
+    disowned_lease_end = datetime.now(UTC) + timedelta(seconds=30)
+    sibling_lease_end = datetime.now(UTC) + timedelta(seconds=1)
     async with deps.worker_pool.acquire() as conn:
         await create_worker(conn, schema, worker_id)
-        disowned_id = await create_running_job(conn, schema, worker_id, lock_expires_at=lease_end)
-        sibling_id = await create_running_job(conn, schema, worker_id, lock_expires_at=lease_end)
+        disowned_id = await create_running_job(
+            conn, schema, worker_id, lock_expires_at=disowned_lease_end
+        )
+        sibling_id = await create_running_job(
+            conn, schema, worker_id, lock_expires_at=sibling_lease_end
+        )
     deps.disowned_jobs.add(disowned_id)
 
     await _one_tick(deps, worker_id)
@@ -703,14 +713,31 @@ async def test_disowned_row_lease_lapses_and_the_sweep_reclaims_it(
         assert isinstance(value, datetime)
         return value
 
-    assert await _lease(disowned_id) == lease_end, (
+        # poll-with-deadline. a tick whose command budget a contended statement
+
+    # burns renews nothing — the pin retries the honest one-tick until the
+    # sibling's renewal lands, then holds both laws against the same beats.
+    import time
+
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline and await _lease(sibling_id) <= sibling_lease_end:
+        await _one_tick(deps, worker_id)
+    assert await _lease(disowned_id) == disowned_lease_end, (
         "the heartbeat renewed the disowned row's lease - the sweep can never "
         "reclaim it while this worker lives"
     )
-    assert await _lease(sibling_id) > lease_end
+    assert await _lease(sibling_id) > sibling_lease_end
     assert deps.disowned_jobs == {disowned_id}
 
-    await asyncio.sleep(1.2)
+    # the disowned row's own lease stamp written past — the reclaim's premise
+    # is a row fact the pin sets, never a wall-clock race against the worker's
+    # own beats.
+    async with deps.worker_pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE \"{schema}\".jobs SET lock_expires_at = now() - interval '1 second' "  # noqa: S608  # Why: schema is the fixture's validated identifier; the value is $-bound.
+            "WHERE id = $1",
+            disowned_id,
+        )
     reclaimed = await backend.reclaim_expired_locks(
         timedelta(seconds=deps.settings.cancellation_grace_period),
         timedelta(seconds=deps.settings.cleanup_grace_period),

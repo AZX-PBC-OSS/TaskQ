@@ -1,17 +1,17 @@
 # ruff: noqa: S608, S603  # Why: the schema is a fixture-derived test identifier and the grep gate runs the system grep on repo-fixed paths; every value is $-bound.
-"""T13 — THE EXAMPLES' PINS: the doc-ingest example (docs/examples/
+"""The examples' pins: the doc-ingest example (docs/examples/
 doc-ingest.md's fence) is CODE THAT RUNS, not decoration.
 
-* THE FAST-TIER SMOKE (no containers): the fence compiles, the graph
+* the FAST-TIER SMOKE (no containers): the fence compiles, the graph
   compiles, ``wf.validate()`` reports ZERO findings, and the compiled
   Mermaid is byte-stable against the checked-in golden (a wiring change
   that alters the graph reds until the golden is updated — the
   docs-truth discipline).
-* THE EXAMPLES-MARKER LANE (the real engine): the fence executes
-  end-to-end; the barrier's join fires EXACTLY ONCE across 3 consecutive
-  rounds; the cron-slot run key's idempotency (the same slot twice → ONE
+* the EXAMPLES-MARKER LANE (the real engine): the fence executes
+  end-to-end; the barrier's join fires EXACTLY once across 3 consecutive
+  rounds; the cron-slot run key's idempotency (the same slot twice → one
   run) is asserted on a live run.
-* THE GREP GATE (the abstraction contract, measured): zero case-study
+* the GREP GATE (the abstraction contract, measured): zero case-study
   strings in the shipped tree.
 """
 
@@ -31,7 +31,7 @@ FENCE_PATH = "docs/examples/doc-ingest.md"
 
 #: The abstraction contract's forbidden strings (the ticket's own list;
 #: the shipped surfaces — docs/, examples/, src/taskq/workflows/, tests/
-#: — carry ZERO of them; any hit reds).
+#: — carry zero of them; any hit reds).
 _FORBIDDEN = (
     "capex",
     "cbre",
@@ -45,19 +45,19 @@ _FORBIDDEN = (
 
 @pytest.fixture(scope="module")
 def example_fence() -> str:
-    """The example's code (ONE source of truth — the fence IS the
+    """The example's code (one source of truth — the fence IS the
     module; the smoke renders it, the full run executes it).
 
-    THE BENCH'S ONE ACCOMMODATION (the registry-collision fix): the
+    The
     fence's workflow name is substituted ``doc_ingest`` →
-    ``doc_ingest_bench`` — the DEFINITIONS registry is ONE GLOBAL keyed
+    ``doc_ingest_bench`` — the DEFINITIONS registry is one GLOBAL keyed
     by workflow name, and the LIVE demo (``examples/workflows.py``) is a
     genuinely DIFFERENT definition under the same name (the demo's armed
     transient failure, the demo's status vocabulary — the doc's fence is
     the simplified teaching shape). One process registering both is the
     dispatch-ambiguity dragon the duplicate error exists for — the
     ROTATING xdist flake's true mechanism (two modules sharing a worker
-    reded whichever registered second, on BOTH the pre- and post-guard
+    reded whichever registered second, on both the pre- and post-guard
     trees). The substitution touches the REGISTRY KEY only: the wiring,
     the bodies, the graph — the doc's code as-written — run VERBATIM.
     """
@@ -70,38 +70,38 @@ def example_fence() -> str:
 
 @pytest.fixture(scope="module")
 def example_ns(example_fence: str) -> dict[str, Any]:
-    """The fence's ONE exec per process: the D1 body registry is exact —
+    """The fence's one exec per process: the D1 body registry is exact —
     a second exec mints new function objects and is the refused shadow.
-    Every test reads the SAME module namespace (the wiring, the app)."""
+    Every test reads the same module namespace (the wiring, the app)."""
     code = example_fence.replace("main_task = asyncio.run(main())", "")
     ns: dict[str, Any] = {"__name__": "doc_ingest_example"}
-    exec(compile(code, FENCE_PATH, "exec"), ns)  # noqa: S102  # Why: the example IS the under-test artifact; the fence's own namespace is the test bench.
+    exec(compile(code, FENCE_PATH, "exec"), ns)  # noqa: S102  # Why: the example is the under-test artifact; the fence's own namespace is the test bench.
     return ns
 
 
 def test_the_abstraction_contract_grep_gate() -> None:
-    """THE GREP GATE: zero case-study strings in the shipped tree. The
+    """The grep gate: zero case-study strings in the shipped tree. The
     same check the CI runs repo-wide (cited identically by 13/14/16/17);
     a hit reds."""
     hits: list[str] = []
-    # The scan EXCLUDES the gate's own definition sites (the forbidden
+    # The scan excludes the gate's own definition sites (the forbidden
     # list must live in the test tree; these two files are that
     # somewhere — the shipped surfaces proper are the scan's subject).
-    # The scan EXCLUDES its own definition sites (the forbidden list must
-    # live in the test tree) + THE PRE-EXISTING VOCABULARY ALLOWLIST: the
-    # estate's DI tests name a provider portfolio and a cap-exactness
+    # The scan excludes its own definition sites (the forbidden list must
+    # live in the test tree) + the pre-existing vocabulary allowlist: the
+    # estate's di tests name a provider portfolio and a cap-exactness
     # class spells CapEx — both predate the workflow series and neither
-    # is case-study content. The allowlist is CLOSED (five files,
+    # is case-study content. The allowlist is closed (five files,
     # enumerated once here and in the report); the shipped workflow
     # surfaces — docs/, examples/, src/taskq/workflows/ — are held to
-    # ZERO with no exclusions at all.
+    # zero with no exclusions at all.
     for root in ("docs", "examples", "src/taskq/workflows"):
         proc = subprocess.run(
             ["/usr/bin/grep", "-riE", "|".join(_FORBIDDEN), str(REPO_ROOT / root)],
             capture_output=True,
             text=True,
         )
-        if proc.returncode == 0:  # 0 = matches found = RED
+        if proc.returncode == 0:  # 0 = matches found = red
             hits.extend(proc.stdout.splitlines())
         assert proc.returncode != 0, (
             f"the abstraction contract is BROKEN in the SHIPPED workflow surfaces: {hits[:10]}"
@@ -135,9 +135,9 @@ def test_fast_tier_the_graph_compiles_and_validates_clean(
     example_ns: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE FAST-TIER SMOKE: the fence's DEFINITIONS exec without
-    containers; the app compiles the graph; THE ZERO-WARNING BUDGET,
-    ENFORCED AT BOTH SEVERITIES. ``validate()`` raises on ERROR severity
+    """The fast-tier smoke: the fence's DEFINITIONS exec without
+    containers; the app compiles the graph; the ZERO-WARNING BUDGET,
+    ENFORCED AT both SEVERITIES. ``validate()`` raises on ERROR severity
     only — a WARNING regression (W2-unknown-queue, W1-eternal-wait)
     sails a bare ``validate()`` green, so the budget reads the REPORT:
     zero diagnostics of EITHER severity. The fence's placement queues
@@ -154,7 +154,7 @@ def test_fast_tier_the_graph_compiles_and_validates_clean(
         f"severity reds: {[d.rule for d in diagnostics]}"
     )
     keys = set(compiled.node_keys())
-    # The nine shapes' node census (the graph carries them ALL).
+    # The nine shapes' node census (the graph carries them all).
     assert {
         "ingest",
         "ingest.join",
@@ -165,22 +165,22 @@ def test_fast_tier_the_graph_compiles_and_validates_clean(
         "review",
         "publish",
     } <= keys, keys
-    # The duality is IN the wiring: the barrier's REQUIRED edges + the
-    # MAYBE path's gather. The publish consumes the collect TOO (the
+    # The duality is in the wiring: the barrier's required edges + the
+    # maybe path's gather. The publish consumes the collect too (the
     # report derives from the run's rows).
     assert compiled.parents_of("publish") == ["review", "gather", "gather:1", "ingest.join"]
     assert compiled.nodes["ingest.join"].kind == "map_join"
     sinks = compiled.sunk
     assert "route" in sinks, "the router's fire-and-forget declaration is missing"
-    # THE ITEM LADDER'S KNOB, NAMED (shape 4): the map's max_attempts is
-    # declared in the wiring — the knob the shape table names EXISTS.
+    # shape 4. the map's max_attempts is declared in the wiring — the knob the
+    # shape table names EXISTS.
     assert compiled.nodes["ingest"].map_max_attempts == 3
 
 
 def test_fast_tier_the_mermaid_golden_is_byte_stable(
     example_ns: dict[str, Any],
 ) -> None:
-    """THE GOLDEN: the example's compiled Mermaid is byte-stable — a
+    """The golden: the example's compiled Mermaid is byte-stable — a
     wiring change that alters the graph reds until the golden is
     updated (the docs-truth discipline; the golden IS the reviewable
     diff of the graph's shape)."""
@@ -202,8 +202,8 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
     wf_conn: Any,
     example_ns: dict[str, Any],
 ) -> None:
-    """THE EXAMPLES-MARKER LANE: the example's flow runs on the REAL
-    engine; the barrier's join fires EXACTLY ONCE across 3 consecutive
+    """The examples-marker lane: the example's flow runs on the REAL
+    engine; the barrier's join fires EXACTLY once across 3 consecutive
     rounds; the hold resumes the loop toward publish; the terminal is
     the TYPED verdict."""
     import asyncpg
@@ -230,7 +230,7 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
         result = await client.resolve(hold.hold_id, {"verdict": "approve", "note": ""})
         assert result.status == "delivered"
         outcome = await runner.drive(run_id)  # the resume → the terminal
-        # NOT just terminal — the TERMINAL MUST BE SUCCESS (the
+        # not just terminal — the terminal must be success (the
         # corrupted-terminal probe's lesson: a failed run is terminal
         # too; asserting "terminal" alone was the vacuous assertion the
         # cursored fence's first green hid behind).
@@ -242,18 +242,16 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
             "must not look healthy)"
         )
 
-        # THE TERMINAL REPORT, PINNED AGAINST THE RUN (the envelope is
-        # the truth): the ghost NAMED in dead_lettered, every doc
-        # published ONCE (the gather's double fan-in, deduped), the
-        # failed list the batch's residual. A report carrying a
-        # hardcoded `[]` reds HERE.
+        # the ghost named in dead_lettered, every doc published once (the
+        # gather's double fan-in, deduped), the failed list the batch's
+        # residual. A report carrying a hardcoded `[]` reds here.
         report = example_ns["PublishReport"].model_validate(await runner.result(run_id))
         assert report.dead_lettered == ["doc-999"], report
         assert len(report.published) == len(set(report.published)), report
         assert sorted(report.published) == sorted(example_ns["_DOC_SOURCE"]), report
         assert report.failed == [], report
 
-        # THE EXACTLY-ONCE PIN: the join-fire ledger has ONE row per join.
+        # the join-fire ledger has one row per join.
         fires = await wf_conn.fetch(
             f'SELECT step_key, count(*) FROM "{schema}".wf_join_fire '
             "WHERE flow_id = $1 GROUP BY step_key",
@@ -273,11 +271,11 @@ async def test_full_run_the_callers_input_is_the_corpus(
     wf_conn: Any,
     example_ns: dict[str, Any],
 ) -> None:
-    """THE INPUT IS WIRED (the fence's first-hour fix c):
+    """The input is wired (the fence's first-hour fix c):
     ``create_flow(input=…)`` is CONSUMED — the map fans the CALLER's
     batch, not the wiring's declared default. The most natural first
     experiment (hand the flow YOUR documents) must enrich YOUR
-    documents; the accepted-and-ignored shape reds HERE."""
+    documents; the accepted-and-ignored shape reds here."""
     import asyncpg
 
     from taskq.migrate import apply_pending
@@ -312,8 +310,8 @@ async def test_full_run_the_callers_input_is_the_corpus(
 async def test_full_run_the_cron_slot_key_is_run_level_idempotent(
     module_pg_schema: Any, wf_pool: Any, example_ns: dict[str, Any]
 ) -> None:
-    """SHAPE 9, LIVE: the same cron slot twice → ONE run (the run-key's
-    arbiter); the second call returns the FIRST run's id."""
+    """SHAPE 9, LIVE: the same cron slot twice → one run (the run-key's
+    arbiter); the second call returns the first run's id."""
     import asyncpg
 
     from taskq.migrate import apply_pending

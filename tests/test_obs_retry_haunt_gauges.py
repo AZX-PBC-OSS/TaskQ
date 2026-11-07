@@ -5,7 +5,7 @@ siblings: ``taskq.jobs.retrying``, ``taskq.jobs.retry_headroom``,
 The blind spot audited: a job sitting at attempt 6 of 1000 was invisible
 in metrics — by_status counts it as a healthy pending row and
 taskq.jobs.attempt_failures last moved five attempts ago. The gauges are
-the cache-push observable pattern; the sampler-side shape (ONE grouped
+the cache-push observable pattern; the sampler-side shape (one grouped
 read producing both per-actor series) is pinned in the loops' own tests
 and the live review suite.
 """
@@ -94,7 +94,7 @@ def test_retry_headroom_gauge_carries_the_min_headroom(
 def test_retry_gauges_vanish_when_the_population_drains(
     gauge_reader: InMemoryMetricReader,
 ) -> None:
-    """An actor whose retrying rows all resolved must vanish from BOTH
+    """An actor whose retrying rows all resolved must vanish from both
     series rather than freeze — a frozen headroom would page on a ladder
     that already ended."""
     obs_mod.update_jobs_retrying_cache({"emailer": 2})

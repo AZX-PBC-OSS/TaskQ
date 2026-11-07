@@ -180,7 +180,7 @@ def ab_sync(
 
 
 def bench_ladder_idle(n_jobs: int) -> tuple[str, float, float, bool, str]:
-    """The heartbeat tick's cancel hook with a poll that returns NO rows.
+    """The heartbeat tick's cancel hook with a poll that returns no rows.
 
     A: the real run_in_tx - fetch, then the held walk over ALL n_jobs
        active entries (dict lookups and phase arithmetic per entry).

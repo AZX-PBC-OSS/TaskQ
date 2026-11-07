@@ -1,4 +1,4 @@
-"""THE HAPPY PATH: a batch flows ingest -> enrich -> branch ->
+"""A batch flows ingest -> enrich -> branch ->
 approve/clear -> report, and the typed receipt is EXACT.
 
 Clean profile (the world behaving); the human approval resolved through
@@ -33,12 +33,12 @@ async def test_happy_path_typed_receipt_exact(
     assert claim.kind == "created"
 
     raw = await await_terminal(pool, schema, str(claim.flow_id), timeout_s=180)
-    # the read face decodes ONCE (a dict); the TYPED receipt is the
+    # the read face decodes once (a dict); the typed receipt is the
     # declared model re-validated over it — a shape that fails is a
     # shape that is not the receipt.
     report = CompletionReport.model_validate(raw)
 
-    # THE TYPED RECEIPT, EXACT:
+    # the typed receipt, exact:
     assert report.batch_id == "B-happy"
     assert report.total == 6
     assert report.cleared == [
@@ -55,8 +55,8 @@ async def test_happy_path_typed_receipt_exact(
     all_ids = report.cleared + report.pending_review + report.failed
     assert len(all_ids) == len(set(all_ids)), "a transaction counted twice — a double-effect"
 
-    # THE HUMAN'S FACE: the review runs hold; the operator resolves
-    # through the typed door; the verdicts are typed.
+    # the review runs hold; the operator resolves through the typed door; the
+    # verdicts are typed.
     client = HitlClient(pool, schema=schema)
     review_ids = await _review_run_ids(pool, schema, "B-happy")
     review_txns = sorted(await _review_txn_ids(pool, schema, review_ids))

@@ -83,7 +83,7 @@ async def test_parity_children_count_matches_pg(clean_jobs_app: JobsApp) -> None
     assert mem_map == pg_map
 
     # Dangling parent: defined, harmless, empty on both. parent_id is a
-    # plain column (NO foreign key — per-child key-share locks would
+    # plain column (no foreign key — per-child key-share locks would
     # serialize the hottest table's inserts, and retention must never
     # block a parent's purge on pending children); a parent id that
     # never existed in this store is the same defined-empty state.

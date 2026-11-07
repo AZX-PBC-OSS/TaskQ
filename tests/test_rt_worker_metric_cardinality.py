@@ -131,7 +131,7 @@ def test_backlog_gauge_dimensions_are_the_status_enum_only() -> None:
 
 
 def test_oldest_due_age_gauge_is_label_free() -> None:
-    """``taskq.jobs.oldest_due_age_seconds`` carries NO dimensions - a
+    """``taskq.jobs.oldest_due_age_seconds`` carries no dimensions - a
     single process-level number; adding any label here multiplies series
     for no query."""
     obs_mod.update_oldest_due_age_cache(12.5)
@@ -144,7 +144,7 @@ def test_oldest_due_age_gauge_is_label_free() -> None:
 
 
 def test_scheduled_count_gauge_is_label_free() -> None:
-    """``taskq.jobs.scheduled_count`` carries NO dimensions either - the
+    """``taskq.jobs.scheduled_count`` carries no dimensions either - the
     backlog-growing alert joins it against the equally label-less
     oldest-due-age gauge with an unqualified vector ``and``, which pairs
     series only on identical label sets. Any label added here makes the
@@ -160,12 +160,12 @@ def test_scheduled_count_gauge_is_label_free() -> None:
 
 
 def test_leader_lease_gauge_is_label_free(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``taskq.maintenance_leader.lease_expires_in_seconds`` carries NO
+    """``taskq.maintenance_leader.lease_expires_in_seconds`` carries no
     dimensions - one series per pod, present only while that pod holds
     the lease. A ``worker_id`` label here is the exact identity-value
     cardinality failure the constitution forbids (fresh UUID per
     process), and any other label multiplies a single-pod signal for no
-    query. The empty-cache state yields NO observation - a demoted
+    query. The empty-cache state yields no observation - a demoted
     leader must go absent, not export a stale or zeroed TTL."""
     # A fresh cache per test so a stamp left by another test cannot widen
     # the assertion (the sweep_success precedent above); the writer is
@@ -347,7 +347,7 @@ def job_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
 
 
 def _series_attributes(reader: InMemoryMetricReader, name: str) -> list[dict[str, AttributeValue]]:
-    """Attribute dicts of every data point (counter OR histogram) for *name*."""
+    """Attribute dicts of every data point (counter or histogram) for *name*."""
     data = reader.get_metrics_data()
     assert data is not None
     return [
@@ -373,7 +373,7 @@ def test_queue_label_cap_and_overflow_label_are_pinned() -> None:
     sets (the same number the cardinality constitution cites), and the
     overflow label is the fixed ``_other_`` string - both are contract,
     not implementation detail."""
-    assert otel_mod._MAX_QUEUE_LABEL_VALUES == 100  # pyright: ignore[reportPrivateUsage]  # Why: the pin IS the point of the test.
+    assert otel_mod._MAX_QUEUE_LABEL_VALUES == 100  # pyright: ignore[reportPrivateUsage]  # Why: the pin is the point of the test.
     assert otel_mod._QUEUE_LABEL_OVERFLOW == "_other_"  # pyright: ignore[reportPrivateUsage]
 
 
@@ -457,10 +457,10 @@ def test_queues_within_the_cap_keep_their_real_names(
 # that survived the worker_id campaign.  Schedule rows are runtime-creatable
 # (``create_schedule`` is public client API; every row mints a fresh UUID),
 # so nothing the library ships bounds that value set.  The relabel
-# made the dimension ``actor`` - but the actor on THIS instrument is not
+# made the dimension ``actor`` - but the actor on this instrument is not
 # the registered set every other actor-labeled instrument enjoys: the
 # failure path emits the raw ``cron_schedules.actor`` string, and schedule
-# rows accept ANY string at creation time (validation is deferred to fire
+# rows accept any string at creation time (validation is deferred to fire
 # time by design), so a dangling, misspelled or tenant-generated name fails
 # every tick's planning loop and would mint one series per distinct string.
 # The pins below hold both halves of the contract: the dimension keys are
@@ -522,7 +522,7 @@ def test_cron_actor_label_cap_and_overflow_label_are_pinned() -> None:
     sets (the same number the queue cap cites), and the overflow label is
     the fixed ``_other_`` string - both are contract, not implementation
     detail."""
-    assert otel_mod._MAX_ACTOR_LABEL_VALUES == 100  # pyright: ignore[reportPrivateUsage]  # Why: the pin IS the point of the test.
+    assert otel_mod._MAX_ACTOR_LABEL_VALUES == 100  # pyright: ignore[reportPrivateUsage]  # Why: the pin is the point of the test.
     assert otel_mod._ACTOR_LABEL_OVERFLOW == "_other_"  # pyright: ignore[reportPrivateUsage]
 
 

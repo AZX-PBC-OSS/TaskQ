@@ -1,12 +1,12 @@
 """Static hygiene guards for the test suite itself.
 
 These are plain (non-PG, non-container) regression tests that grep the
-``tests/`` tree AND the published ``src/taskq/testing/`` package for
-anti-patterns which have previously caused cross-test and cross-worker
+``tests/`` tree and the published ``src/taskq/testing/`` package for
+anti-patterns which cause cross-test and cross-worker
 schema collisions under ``pytest-xdist``:
 
 - ``os.environ.get("PYTEST_XDIST_WORKER", ...)``-derived schema names give
-  NO real isolation - every test file within one xdist worker resolves to
+  no real isolation - every test file within one xdist worker resolves to
   the *same* string, so files sharing a worker mutually clobber each
   other's schema state. For the PUBLISHED testing package this is worse:
   a fixed per-worker default reaches consumer suites on shared-database
@@ -24,7 +24,7 @@ helpers) - those tests necessarily set and assert ``PYTEST_XDIST_WORKER``,
 which is the second reason the self-exemption exists. ``conftest.py``
 files are excluded from the ``tests/`` scan: the conftest db-name helper
 (``_module_db_name``) and the e2e schema helper use the worker id only as
-ONE input to a per-module hash - the sanctioned worker-qualified-hash
+one input to a per-module hash - the sanctioned worker-qualified-hash
 pattern. ``src/taskq/testing/fixtures.py`` is allowlisted from the
 worker-id scan for the same reason (``_schema_name_from_module`` /
 ``_schema_name_from_test`` hash the worker id together with the module
@@ -47,7 +47,7 @@ production never constructs. See the section comment there.
 # behaviour finished on this branch. Recorded here so the survivors are not
 # mistaken for ones nobody looked at.
 #
-# DELIBERATELY STATIC - codebase invariants with no runtime expression. A
+# deliberately static - codebase invariants with no runtime expression. A
 # running system cannot be asked "does this module import that one at import
 # time"; the property is structural, so the check is too. All are AST-based or
 # an inventory of an artifact, not substring greps:
@@ -62,10 +62,10 @@ production never constructs. See the section comment there.
 #   - test_scheduled_writers_audit.py - inventory of `mark_*` methods.
 #   - test_sse_connection_caps.py::test_no_uncapped_sse_endpoint_remains -
 #     inventory over the web package; it guards endpoints not yet written.
-#   - test_max_concurrent_docs_contract.py, and the README/deployment-guide
+#   - test_max_concurrent_docs_contract.py, and the readme/deployment-guide
 #     checks in test_migrate_on_start_worker.py - documentation contracts,
 #     reading docs rather than source. Same shape as test_ci_workflow.py.
-#   - this file - greps the TEST tree for anti-patterns, which is its job.
+#   - this file - greps the test tree for anti-patterns, which is its job.
 #
 # The rule that settled each case: if a scanner's protection was already
 # provided by behavioural tests, it was deleted rather than rewritten, and the
@@ -78,15 +78,19 @@ production never constructs. See the section comment there.
 import ast
 import asyncio
 import contextlib
+import gc
 import hashlib
 import inspect
+import itertools
 import os
 import re
+import textwrap
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
+import asyncpg
 import pytest
 
 from taskq.settings import WorkerSettings
@@ -99,6 +103,7 @@ from taskq.testing.fixtures import (
 from tests.conftest import (
     _call_window_leak_report,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra helper under test; mirrors the conftest imports above.
     _fail_on_leaked_asyncio_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: the autouse guard fixture under test; its raw async-gen function is driven manually below (a fixture cannot be re-entered through the real request).
+    _is_benign_release_tail,  # pyright: ignore[reportPrivateUsage]  # Why: the release-tail classifier under test; mirrors the conftest imports above.
     _leaked_pending_task_report,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra helper under test; mirrors the conftest imports above.
     _module_db_name,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra naming helper under test; mirrors tests/e2e's imports of conftest helpers.
     _reset_warn_once_stamps_reset,  # pyright: ignore[reportPrivateUsage]  # Why: the warn-once stamp reset under test; see the pin below.
@@ -115,7 +120,7 @@ from tests.test_rt_lost_job_soak import (
     stop_worker_and_reap_bootstrap,  # pyright: ignore[reportPrivateUsage]  # Why: same.
 )
 from tests.test_rt_lost_job_soak import (
-    test_lost_job_soak_grand_mixin as _soak_grand_mixin,  # pyright: ignore[reportPrivateUsage]  # Why: aliased with the underscore so importing it does not COLLECT the soak trial into this module's suite - only its timeout mark is read.
+    test_lost_job_soak_grand_mixin as _soak_grand_mixin,  # pyright: ignore[reportPrivateUsage]  # Why: aliased with the underscore so importing it does not collect the soak trial into this module's suite - only its timeout mark is read.
 )
 
 _TESTS_DIR = Path(__file__).parent
@@ -127,9 +132,9 @@ _TESTING_PKG_WORKER_ALLOWLIST = frozenset({"fixtures.py"})
 # tests/http_mock.py documents the retired bridge verbatim and is the one
 # module allowed to drive respx directly, so it is excluded alongside _SELF.
 _HTTP_MOCK = _TESTS_DIR / "http_mock.py"
-# tests/_prom_review.py's PORT PARTITION (the prom-harness's per-worker
+# tests/_prom_review.py's port PARTITION (the prom-harness's per-worker
 # band, 75b78c5f) is the worker-qualified-hash pattern's port twin: the
-# worker id is ONE input to a bounded per-worker port range (gw<N> ->
+# worker id is one input to a bounded per-worker port range (gw<N> ->
 # base + N * stride, modded within the stride), never a schema or an
 # identifier — the conftest hash's sanction, at the port seam.
 _PROM_REVIEW = _TESTS_DIR / "_prom_review.py"
@@ -174,7 +179,7 @@ def test_no_pytest_xdist_worker_derived_schema_names() -> None:
     database row remembers belongs NOWHERE in this list.
     """
     allowlist = {
-        "_prom_review.py",  # port-band partition ONLY (see above)
+        "_prom_review.py",  # port-band partition only (see above)
     }
     offenders = [
         str(p.relative_to(_TESTS_DIR))
@@ -268,7 +273,7 @@ def _testing_module_all_contract(module: str) -> tuple[set[str], set[str], set[s
 
     Public = ``def``/``class`` definitions and literal-constant assignments
     (``RUN_TOKEN_ENV_VAR = "..."``) that lack the underscore prefix. Imports
-    are NOT public surface of the importing module - except when spelled in
+    are not public surface of the importing module - except when spelled in
     ``__all__`` as a deliberate re-export (fixtures.py re-exports nothing
     today, but the declared-side check below tolerates one). Top-level
     ``if``/``else`` branches are scanned one level deep so the runtime
@@ -343,7 +348,7 @@ def test_testing_module_all_lists_public_surface_only(module: str) -> None:
 # ── Direct os.environ writes in the test tree ────────────────────────
 # The atk_iso incident: a test wrote ``os.environ["TASKQ_SCHEMA_NAME"] = ...``
 # directly (no restore on the failure path), and the value leaked into the
-# CLI's settings load in a LATER test - the schema name is read lazily, so
+# CLI's settings load in a later test - the schema name is read lazily, so
 # the write outlived the test that made it. ``monkeypatch.setenv`` is the
 # sanctioned seam: it restores on every exit path, including teardown
 # errors. For session-scoped fixtures, which have no ``monkeypatch``
@@ -360,7 +365,7 @@ def test_testing_module_all_lists_public_surface_only(module: str) -> None:
 
 def _all_test_tree_files() -> list[Path]:
     """Every file under tests/ - conftest.py files INCLUDED (unlike
-    ``_test_files``): the env pin's whole point is that NO file in the
+    ``_test_files``): the env pin's whole point is that no file in the
     tree, fixtures included, mutates the process environment directly."""
     return [p for p in _TESTS_DIR.rglob("*.py") if p != _SELF]
 
@@ -441,25 +446,25 @@ def test_no_test_file_writes_os_environ_directly() -> None:
 # ── Process-global stdlib-module patching ────────────────────────────
 # The asyncio.sleep incident: ``monkeypatch.setattr(run_mod.asyncio,
 # "sleep", fake)`` reads as if it scoped the fake to ``run_mod``, but
-# ``run_mod.asyncio`` IS the global ``asyncio`` module - the fake lands on
+# ``run_mod.asyncio`` is the global ``asyncio`` module - the fake lands on
 # the process-global module, and every coroutine in the process that
 # resolves ``asyncio.sleep`` during the patched window gets it, including
 # module-scoped fixture machinery and any leftover task on the shared
-# module loop. The failure then shows up in a LATER test - an ordering
+# module loop. The failure then shows up in a later test - an ordering
 # dependency, not a deterministic red.
 #
-# The fix this pin holds in place: patch the name where it is LOOKED UP -
+# The fix this pin holds in place: patch the name where it is looked up -
 # rebind the owning module's own ``<stdlib>`` binding to a delegation
 # proxy with the fake shadowed (``tests/_ns_patch.py``), leaving the
 # global module untouched for every other namespace.
 #
-# Two measured exemptions, both with NO working module-local seam:
+# Two measured exemptions, both with no working module-local seam:
 # - ``setattr(sys, "path"/"argv", ...)``: the import system and the CLI
 #   argument vector are genuinely process-global state; there is nothing
 #   module-local to rebind.
 # - ``setattr(builtins, "__import__", ...)`` (the simulated-missing-extra
 #   fakes in test_aws.py / test_aad.py): rebinding the module under
-#   test's ``__builtins__`` to a copied dict does NOT scope the lookup on
+#   test's ``__builtins__`` to a copied dict does not scope the lookup on
 #   CPython 3.13 - measured: the fake never fires for that module. The
 #   fakes delegate to the real ``__import__`` for every name but the one
 #   extra's module, and pytest runs tests single-threaded, so the
@@ -474,7 +479,7 @@ _SYS_SEAMLESS_ATTRS = frozenset({"path", "argv"})
 
 
 def _global_stdlib_setattrs(tree: ast.Module) -> list[str]:
-    """``setattr`` calls whose FIRST argument resolves to (or reaches
+    """``setattr`` calls whose first argument resolves to (or reaches
     through to) a stdlib module object - the two spellings of the incident:
     ``setattr(asyncio, "sleep", ...)`` and the disguised
     ``setattr(run_mod.asyncio, "sleep", ...)``."""
@@ -521,7 +526,7 @@ def test_no_test_file_setattrs_a_global_stdlib_module() -> None:
     for the length of the test - including module-scoped fixture machinery
     and leftover tasks on the shared module loop - so its failure mode is
     an ordering dependency in a LATER test (the asyncio.sleep incident).
-    Patch where the name is LOOKED UP instead: rebind the owning module's
+    Patch where the name is LOOKED up instead: rebind the owning module's
     own ``<stdlib>`` binding to a delegation proxy with the fake shadowed
     (``tests/_ns_patch.py``).
     """
@@ -541,23 +546,23 @@ def test_no_test_file_setattrs_a_global_stdlib_module() -> None:
 
 
 # ── The per-module-database discipline (pg_container/pg_dsn) ─────────
-# Every PG touch in the suite is scoped to the requesting module's OWN
+# Every PG touch in the suite is scoped to the requesting module's own
 # database: ``pg_dsn`` (tests/conftest.py) derives a per-module database
 # name from the module path + run-isolation token, creates it on the
-# invocation's ONE shared container, and ``DROP DATABASE ... WITH
-# (FORCE)``s it on module teardown - so schemas, tables and rows a test
+# invocation's one shared container, and ``drop database ... with
+# (force)``s it on module teardown - so schemas, tables and rows a test
 # leaves behind cannot outlive the module and cannot be observed by any
 # other module, worker, or invocation. ``module_pg_schema`` /
 # ``clean_pg_conn`` / ``clean_jobs_app`` layer per-module/per-test schema
-# isolation ON TOP of that database.
+# isolation on top of that database.
 #
-# The residue hazard is a test that reaches for the RAW container DSN
+# The residue hazard is a test that reaches for the raw container DSN
 # (the fixture ``pg_container``) without ``pg_dsn``: it would create
-# schemas/tables/rows in the container's DEFAULT database - shared with
+# schemas/tables/rows in the container's default database - shared with
 # every module and worker of the invocation - where a fixed schema name
 # collides across modules (the pre-per-module-database incident class)
 # and leftover rows are observable state for whoever runs later. The
-# ONLY sanctioned direct consumer is the ``pg_dsn`` fixture itself.
+# only sanctioned direct consumer is the ``pg_dsn`` fixture itself.
 
 
 def test_pg_container_is_only_consumed_through_pg_dsn() -> None:
@@ -597,13 +602,13 @@ def test_pg_container_is_only_consumed_through_pg_dsn() -> None:
 
 # ── pg_stat_activity database scoping ────────────────────────────────
 #
-# pg_stat_activity is CLUSTER-wide, and the invocation's ONE shared
+# pg_stat_activity is cluster-wide, and the invocation's one shared
 # Postgres container hosts every xdist worker's per-module database (see
 # the pg_dsn fixture's docstring): a lock-waiter gate that polls
 # pg_stat_activity without a database scope counts backends it has no
-# relationship with, and a statement-shape LIKE cannot fix that - every
+# relationship with, and a statement-shape like cannot fix that - every
 # bulk-cancel and deregister driving statement in the suite shares the
-# ``matching AS MATERIALIZED`` shape, so another worker's parked drain
+# ``matching as materialized`` shape, so another worker's parked drain
 # satisfies the gate as surely as our own. A false positive lands the
 # test's raced COMMIT early: test_rt_cancel_window_race.py's
 # deregistration preflight then saw the claimed row as committed
@@ -713,10 +718,10 @@ def test_pg_stat_activity_queries_are_scoped_to_the_current_database() -> None:
 
 
 # ── Two-HTTP-stack hygiene ──────────────────────────────────────────────
-# The `taskq[oidc]` extra ships ONLY httpx2 - nothing under src/taskq
+# The `taskq[oidc]` extra ships only httpx2 - nothing under src/taskq
 # imports httpx - but the dev group installs httpx as well, so the test
 # environment has two httpcore-backed stacks that cannot see each other's
-# mocks: src/taskq/web/admin/auth/oidc.py fetches discovery and JWKS over
+# mocks: src/taskq/web/admin/auth/oidc.py fetches discovery and jwks over
 # httpx2, and authlib's AsyncOAuth2Client (pinned >=1.8.0, which prefers
 # httpx2 whenever it is importable) performs the token exchange. Stock
 # respx patches httpcore only, so it sees one half. tests/http_mock.py
@@ -814,11 +819,11 @@ def test_mock_http_intercepts_every_installed_stack() -> None:
 # ── Run-isolation naming seam ──────────────────────────────────────
 #
 # Serial bare-``pytest`` runs share ``/tmp/pytest-of-<user>`` (the shared-pair
-# state dir) across ALL invocations and checkouts, and the pre-token hash
+# state dir) across all invocations and checkouts, and the pre-token hash
 # inputs were only ``(worker-or-"master", module)`` - invocation-invariant.
-# Two overlapping serial runs of the same module therefore landed on the SAME
-# database on the SAME shared pair, and each run's module teardown
-# ``DROP DATABASE ... WITH (FORCE)`` killed the other run's live pools
+# Two overlapping serial runs of the same module therefore landed on the same
+# database on the same shared pair, and each run's module teardown
+# ``drop database ... with (force)`` killed the other run's live pools
 # mid-test (redteam-reproduced: both runs rc=1 with pool-init failures on
 # tq_db_5a19dc6e3f4c). The run token mixes the invocation-unique basetemp
 # dir name into every hash input; under xdist the worker id already is
@@ -891,7 +896,7 @@ def test_session_publishes_run_isolation_token(
 ) -> None:
     """The session conftest publishes the token before any naming helper
     runs: the invocation-unique basetemp PATH (the numbered invocation dir
-    PLUS the xdist worker's own subdirectory - invocation-unique AND
+    PLUS the xdist worker's own subdirectory - invocation-unique and
     worker-distinct in one string, and distinct from any subprocess
     pytest's own fresh numbered dir - the mutual-drop class's root fix).
     The OLD token (the bare worker id, or the basetemp NAME alone) failed
@@ -913,7 +918,7 @@ def test_session_publishes_run_isolation_token(
 # asyncio task pending on the module event loop - a live loop keeps
 # writing shared state into later tests (module-scoped loops mean the
 # task advances at every later test's await points). This pin holds the
-# guard's classification to its contract: leaks are NAMED (task name and
+# guard's classification to its contract: leaks are named (task name and
 # coroutine), completed tasks and inherited baselines are not leaks.
 
 
@@ -946,7 +951,7 @@ def test_warn_once_stamp_reset_restores_the_global_stamps() -> None:
             "the warn-once stamp reset left a stale stamp behind - the "
             "warning-existence pins are order-dependent again"
         )
-    # In-place: the list above already holds the ORIGINAL dict objects
+    # In-place: the list above already holds the original dict objects
     # (no rebinding happened), which is the contract the fixture's
     # docstring promises value-importing callers.
 
@@ -1111,7 +1116,7 @@ async def test_watchdog_trip_does_not_kill_the_test_process(
             # process. Without the seam this force-exits the process
             # (exit code 2, zero output); with it the trip is recorded
             # and the test keeps running.
-            _time.sleep(0.8)  # noqa: ASYNC251  # Why: the blocking call IS the injection - a deliberate loop stall the detector must catch.
+            _time.sleep(0.8)  # noqa: ASYNC251  # Why: the blocking call is the injection - a deliberate loop stall the detector must catch.
         finally:
             watchdog.stop()
 
@@ -1131,11 +1136,11 @@ async def _hygiene_window_probe_coro() -> None:
 
 async def test_call_window_leak_report_names_test_end_residue() -> None:
     """The call-window snapshot's contract: a task that was pending when
-    the test's body finished is named - whether it is STILL pending by the
+    the test's body finished is named - whether it is still pending by the
     guard's teardown check (the live diff's case) or finished during the
     teardown window (the shape the live diff cannot see: a worker bootstrap
-    left mid-drain at test end, reaped by an awaiting teardown fixture,
-    the exact shape run 35648058316's leak report demanded land on the
+    left mid-drain at test end, reaped by an awaiting teardown fixture —
+    exactly the shape the leak report must land on the
     leaking test).  An empty window reports nothing."""
     window_dead: list[asyncio.Task[object]] = []
     finished = asyncio.create_task(_hygiene_noop(), name="hygiene-window-finished")
@@ -1145,7 +1150,7 @@ async def test_call_window_leak_report_names_test_end_residue() -> None:
     reaped.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await reaped
-    # `reaped` is done NOW, but the snapshot model is: it was pending at
+    # `reaped` is done now, but the snapshot model is: it was pending at
     # call end and done by teardown - so the pin feeds the done task list
     # the guard's teardown would hand the classifier.
     window_dead.append(reaped)
@@ -1167,20 +1172,25 @@ async def test_call_window_leak_report_names_test_end_residue() -> None:
 
 # ── Guard wiring, end to end ────────────────────────────────────────
 #
-# The pins above drive the CLASSIFIERS with hand-fed sets: deleting the
+# The pins above drive the classifiers with hand-fed sets: deleting the
 # pytest_runtest_call hook (or the guard's window wiring) leaves them
-# green.  These pins drive the REAL hook and the REAL guard fixture
-# through one simulated item lifecycle, so the WIRING is under test: the
+# green.  These pins drive the real hook and the real guard fixture
+# through one simulated item lifecycle, so the wiring is under test: the
 # hook must capture the call-end residue, and the guard's teardown must
 # turn it into a failure on the leaking test.
 
 
 class _GuardStubItem:
-    """The minimal item the guard and the snapshot hook touch: only the
-    stash (the loop key at setup, the call-window key at call end)."""
+    """The minimal item the guard and the snapshot hook touch: the stash
+    (the loop key at setup, the call-window key at call end) and the
+    report sections (the guard's drained-leak report lands there)."""
 
     def __init__(self) -> None:
         self.stash = pytest.Stash()
+        self.report_sections: list[tuple[str, str, str]] = []
+
+    def add_report_section(self, when: str, key: str, content: str) -> None:
+        self.report_sections.append((when, key, content))
 
 
 class _GuardStubRequest:
@@ -1201,23 +1211,31 @@ _GUARD_RAW_FIXTURE = cast(
 async def _drive_guarded_call(
     during_call: Callable[[], Awaitable[None]],
     during_teardown_window: Callable[[], Awaitable[None]] | None = None,
-) -> None:
+    during_setup: Callable[[], Awaitable[None]] | None = None,
+) -> _GuardStubItem:
     """Run the REAL guard fixture and the REAL call-end snapshot hook
     through one simulated item lifecycle:
 
-    guard setup (baseline) → call-start snapshot → *during_call* (the
-    test body) → call-end snapshot → *during_teardown_window* (the OTHER
-    fixtures' teardowns, which run the loop and can reap residue) →
-    guard teardown (raises the guard's failure on a leak, ends the async
-    generator cleanly otherwise).
+    guard setup (baseline) → *during_setup* (a function fixture's task,
+    minted after the guard's baseline and before the call) → call-start
+    snapshot → *during_call* (the test body) → call-end snapshot →
+    *during_teardown_window* (the OTHER fixtures' teardowns, which run
+    the loop and can reap residue) → guard teardown (raises the guard's
+    failure on a leak the drain could not clean, ends the async generator
+    cleanly otherwise).
 
     Raises whatever the guard's teardown raises (``pytest.fail.Exception``
-    on a leak; ``StopAsyncIteration`` on a clean loop) so each pin asserts
-    the outcome itself."""
+    on a leak the drain could not clean; ``StopAsyncIteration`` on a
+    clean loop) so each pin asserts the outcome itself. Returns the stub
+    item: the drain's report sections (the drained leaks, named) are
+    readable there.
+    """
     request = _GuardStubRequest()
     item = request.node
     guard = _GUARD_RAW_FIXTURE(request)
     await guard.__anext__()  # setup: stash the loop, snapshot the baseline
+    if during_setup is not None:
+        await during_setup()
     hook = cast(
         "Generator[object, None, object]",
         pytest_runtest_call(cast(pytest.Item, item)),
@@ -1227,15 +1245,25 @@ async def _drive_guarded_call(
     with contextlib.suppress(StopIteration):
         hook.send(None)  # the call phase ends: the call-end snapshot lands
     if during_teardown_window is not None:
-        await during_teardown_window()
+        # A fixture teardown's finalizer task runs in the context
+        # pytest-asyncio captured at the fixture's setup: unrooted (no
+        # call owner). The callback runs in an explicit fresh context so
+        # its tasks are unrooted too, matching the real machinery.
+        import contextvars as _cv
+
+        await asyncio.wait_for(
+            asyncio.create_task(during_teardown_window(), context=_cv.Context()),
+            timeout=30.0,
+        )
     with contextlib.suppress(StopAsyncIteration):
         await guard.__anext__()  # teardown: the guard's check and verdict
+    return item
 
 
 async def test_guard_catches_residue_reaped_in_the_teardown_window() -> None:
     """The wiring pin for the call-window snapshot: a task minted by the
     test body, still pending when the body finished, and REAPED by a
-    later fixture's teardown (the loop ran during teardown) must fail THE
+    later fixture's teardown (the loop ran during teardown) must fail the
     LEAKING test - the live diff alone scores it green (done tasks are
     filtered), so deleting the snapshot hook or the guard's window wiring
     turns this pin red."""
@@ -1262,25 +1290,415 @@ async def test_guard_catches_residue_reaped_in_the_teardown_window() -> None:
     assert "pending at test end" in message
 
 
+async def test_guard_allows_the_real_asyncpg_release_tail() -> None:
+    """The CI leak class, allowed by identity: a test body leaves the
+    installed asyncpg ``PoolConnectionHolder.release`` coroutine itself
+    pending at call end (created against a duck holder, so no pool is
+    needed and the body errors harmlessly when the drain steps it), and
+    the guard's quiescence drain completes it. The task's coroutine is
+    the installed release code object, so the classification allows it:
+    the test passes and the drained task is named in the report's
+    warnings section."""
+    import asyncpg.pool
+
+    duck_holder: Any = object()
+
+    async def body() -> None:
+        asyncio.create_task(  # noqa: RUF006  # Why: the task is the leak under test; the guard's drain is its reaper.
+            asyncpg.pool.PoolConnectionHolder.release(duck_holder, 5.0),
+            name="hygiene-release-tail",
+        )
+
+    item = await _drive_guarded_call(body)
+    sections = [
+        content for _, key, content in item.report_sections if key.startswith("leaked asyncio")
+    ]
+    assert sections and "hygiene-release-tail" in sections[0], (
+        f"the drained release tail must be named in the report: {item.report_sections}"
+    )
+
+
+async def test_guard_allows_a_release_completed_in_the_teardown_window() -> None:
+    """The allowlist covers the whole call-end residue: a real asyncpg
+    release that completes during a fixture's teardown, before the
+    guard's drain runs, is classified by the same predicate and allowed
+    (named in the warnings), not failed by the call-window report. The
+    same release is green whichever teardown hop completes it. The
+    duck holder errors the release, so its outcome is retrieved by the
+    guard: the loop's exception handler must see no unretrieved-task
+    report."""
+    loop_exception_reports: list[dict[str, Any]] = []
+
+    async def body() -> None:
+        asyncio.create_task(  # noqa: RUF006  # Why: the task is the leak under test; the teardown window, then the drain, is its reaper.
+            asyncpg.pool.PoolConnectionHolder.release(object(), 5.0),
+            name="hygiene-early-release",
+        )
+
+    async def teardown_window() -> None:
+        # The release completes here (the duck holder errors it instantly,
+        # which is still a completion), before the guard's drain runs.
+        await asyncio.sleep(0.02)
+
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda loop, context: loop_exception_reports.append(dict(context)))
+    item: object = None
+    try:
+        item = await _drive_guarded_call(body, during_teardown_window=teardown_window)
+        sections = [
+            content
+            for _, key, content in item.report_sections  # type: ignore[attr-defined]  # Why: the drive returns the stub item the guard reported through.
+            if key.startswith("leaked asyncio")
+        ]
+        assert sections and "hygiene-early-release" in sections[0], (
+            f"the early-completed release must be allowed and named: {item.report_sections}"  # type: ignore[attr-defined]
+        )
+        # The duck holder errored the release: the guard's retrieval owns
+        # the outcome. Drop the references and collect: the loop's
+        # exception handler must see no unretrieved-task report.
+        del item
+        gc.collect()
+        unretrieved = [
+            entry
+            for entry in loop_exception_reports
+            if "exception was never retrieved" in entry.get("message", "")
+        ]
+        assert not unretrieved, (
+            f"the guard must retrieve the completed residue's outcome: {unretrieved}"
+        )
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+
+async def test_guard_drains_a_child_created_by_a_done_callback() -> None:
+    """Callback-created descendants are call-owned: a call-owned parent
+    pending at call end registers a done callback that creates a child;
+    the parent finishes during the teardown window, and the callback
+    runs without a current task. The factory carries the registering
+    task into the callback, so the child descends from the parent and
+    the drain completes it; the failure names the tree. Without the
+    callback ownership the child's parent link is empty and the child
+    survives into later tests."""
+    children: list[asyncio.Task[None]] = []
+
+    async def _child() -> None:
+        await asyncio.sleep(3600)
+
+    async def body() -> None:
+        async def _parent() -> None:
+            # The callback registers on a call-owned TASK (whose
+            # add_done_callback carries the registering task into the
+            # callback's execution); the inner task completes during the
+            # teardown window, so the callback runs there, without a
+            # current task, after the call-end snapshot.
+            inner = asyncio.create_task(asyncio.sleep(0.01), name="hygiene-cb-inner")
+            inner.add_done_callback(
+                lambda _fut: children.append(asyncio.create_task(_child(), name="hygiene-cb-child"))
+            )
+            await asyncio.sleep(0.05)
+
+        asyncio.create_task(_parent(), name="hygiene-cb-parent")  # noqa: RUF006  # Why: the task is the leak under test; the guard's drain is its reaper.
+
+    async def teardown_window() -> None:
+        # The parent finishes and its callback spawns the child during
+        # the teardown window, after the call-end snapshot.
+        await asyncio.sleep(0.05)
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body, during_teardown_window=teardown_window)
+    assert children and children[0].done(), (
+        "the drain must follow a child created by a done callback"
+    )
+    assert "hygiene-cb-child" in str(exc_info.value), str(exc_info.value)
+
+
+async def test_guard_rejects_a_forged_asyncpg_shaped_release() -> None:
+    """The allowlist is an identity, not a shape: a coroutine compiled
+    under an asyncpg/pool.py filename with the same
+    ``PoolConnectionHolder.release`` qualname is not the installed code
+    object, so the guard fails the test (the detached-write policy) even
+    though the drain completed it. A shape heuristic would let the
+    forgery hide a late write."""
+    wrote_after_assertions = asyncio.Event()
+
+    release_source = textwrap.dedent(
+        """
+        import asyncio
+
+        class PoolConnectionHolder:
+            async def release(self, timeout):
+                await asyncio.sleep(0.05)
+                handler()
+        """
+    )
+    release_module: dict[str, Any] = {}
+    exec(  # noqa: S102  # Why: the exec'd module is the forgery the pin rejects: same filename and qualname as asyncpg's release, different code object.
+        compile(release_source, "/site-packages/asyncpg/pool.py", "exec"), release_module
+    )
+    release_module["handler"] = wrote_after_assertions.set
+    holder: Any = release_module["PoolConnectionHolder"]()
+
+    async def body() -> None:
+        asyncio.create_task(  # noqa: RUF006  # Why: the task is the leak under test; the guard's drain is its reaper.
+            holder.release(5.0), name="hygiene-forged-release"
+        )
+        assert not wrote_after_assertions.is_set()
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
+    assert wrote_after_assertions.is_set(), "the drain must have completed the forged task"
+    assert "hygiene-forged-release" in str(exc_info.value), str(exc_info.value)
+
+
+async def test_release_tail_classifier_accepts_only_the_installed_release() -> None:
+    """The classifier's unit pins, both directions: a coroutine created
+    from the installed release code object is allowed; the compiled
+    forgery (the same filename and qualname) is not."""
+    import asyncpg.pool
+
+    real_coro = asyncpg.pool.PoolConnectionHolder.release(object(), 5.0)
+    real_task = asyncio.create_task(real_coro, name="hygiene-classifier-real")
+    try:
+        assert _is_benign_release_tail(real_task) is True
+    finally:
+        real_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, BaseException):
+            real_task.result()
+
+    forged_source = textwrap.dedent(
+        """
+        class PoolConnectionHolder:
+            async def release(self, timeout):
+                await asyncio.sleep(0.01)
+        """
+    )
+    forged_module: dict[str, Any] = {}
+    exec(  # noqa: S102  # Why: the exec'd module is the forgery the classifier must reject.
+        compile(forged_source, "/site-packages/asyncpg/pool.py", "exec"), forged_module
+    )
+    forged_holder: Any = forged_module["PoolConnectionHolder"]()
+    forged_task = asyncio.create_task(forged_holder.release(5.0), name="hygiene-classifier-forged")
+    try:
+        assert _is_benign_release_tail(forged_task) is False
+    finally:
+        forged_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, BaseException):
+            forged_task.result()
+
+
+async def test_guard_fails_a_drained_leak_that_is_not_a_release_tail() -> None:
+    """The policy's negative direction at the guard level: a drained
+    call-end task that is not the installed asyncpg release fails the
+    test with its coroutine, even though the drain completed it."""
+    minted: list[asyncio.Task[None]] = []
+
+    async def body() -> None:
+        minted.append(
+            asyncio.create_task(_hygiene_leak_probe_coro(), name="hygiene-anonymous-leak")
+        )
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
+    smuggled = minted[0]
+    assert smuggled.done(), "the drain must have completed the leaked task"
+    message = str(exc_info.value)
+    assert "hygiene-anonymous-leak" in message, message
+
+
+async def test_guard_fails_a_detached_write_that_outlives_the_assertions() -> None:
+    """The drain is not a pass for every leak: a task that writes shared
+    state AFTER the test's assertions ran is the assertion-before-write
+    class, and the guard fails the test even though the drain completed
+    the task. A blanket drain-and-pass would hide exactly the late write
+    the assertions did not see."""
+    wrote_after_assertions = asyncio.Event()
+    minted: list[asyncio.Task[None]] = []
+
+    async def body() -> None:
+        async def _late_write() -> None:
+            await asyncio.sleep(0.05)
+            wrote_after_assertions.set()
+
+        minted.append(asyncio.create_task(_late_write(), name="detached-write"))
+        # The pre-write assertion: the state the test saw. The write lands
+        # after it, during the guard's drain.
+        assert not wrote_after_assertions.is_set()
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
+    assert wrote_after_assertions.is_set(), "the drain must have completed the late write"
+    assert "detached-write" in str(exc_info.value), str(exc_info.value)
+
+
+async def test_guard_drains_a_task_and_the_child_it_spawns() -> None:
+    """The drain follows the spawned tree and the failure names it: an
+    outliving task spawns a child during the drain's grace; both are
+    completed, and because neither is a release tail the guard fails the
+    leaking test and names the task it minted."""
+    child_done = asyncio.Event()
+    minted: list[asyncio.Task[None]] = []
+
+    async def _child() -> None:
+        await asyncio.sleep(0.005)
+        child_done.set()
+
+    async def _spawner() -> None:
+        await asyncio.sleep(0.005)
+        await asyncio.shield(_child())
+
+    async def body() -> None:
+        minted.append(asyncio.create_task(_spawner(), name="hygiene-spawner"))
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
+    assert child_done.is_set(), "the drain must follow the spawned child to completion"
+    assert "hygiene-spawner" in str(exc_info.value), str(exc_info.value)
+
+
+async def test_guard_leaves_an_unrelated_teardown_task_alone() -> None:
+    """The drain's ownership is causal: a call-owned leak drains (and
+    fails the test, not being a release tail) while an unrelated task
+    created by the teardown window runs untouched, because its ancestry
+    reaches none of the call-owned seeds."""
+    leak_done = asyncio.Event()
+    minted: list[asyncio.Task[None]] = []
+    teardown_tasks: list[asyncio.Task[None]] = []
+
+    async def body() -> None:
+        async def _leak() -> None:
+            await asyncio.sleep(0.01)
+            leak_done.set()
+
+        minted.append(asyncio.create_task(_leak(), name="detached-write"))
+
+    async def teardown_window() -> None:
+        async def _unrelated() -> None:
+            await asyncio.sleep(3600)
+
+        teardown_tasks.append(asyncio.create_task(_unrelated(), name="hygiene-unrelated-teardown"))
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body, during_teardown_window=teardown_window)
+    assert leak_done.is_set(), "the call-owned leak drains"
+    assert "detached-write" in str(exc_info.value), str(exc_info.value)
+    assert teardown_tasks, "the pin's premise: the teardown task exists"
+    assert not teardown_tasks[0].cancelled(), (
+        "the unrelated teardown task must not be drained or cancelled"
+    )
+    teardown_tasks[0].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await teardown_tasks[0]
+
+
+async def test_guard_drains_an_orphan_child_of_a_finished_call_task() -> None:
+    """The ownership is causal through finished parents: a call-owned
+    task pending at call end finishes during the teardown window and
+    leaves a live child; the child descends from the window's task, so
+    the drain completes it too, and the failure names the tree."""
+    children: list[asyncio.Task[None]] = []
+
+    async def _child() -> None:
+        await asyncio.sleep(3600)
+
+    async def body() -> None:
+        async def _parent() -> None:
+            await asyncio.sleep(0.01)
+            children.append(asyncio.create_task(_child(), name="hygiene-orphan-child"))
+
+        asyncio.create_task(_parent(), name="hygiene-orphan-parent")  # noqa: RUF006  # Why: the task is the leak under test; the guard's drain is its reaper.
+
+    async def teardown_window() -> None:
+        # Let the parent finish and spawn the child inside the teardown
+        # window, after the call-end snapshot.
+        await asyncio.sleep(0.05)
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body, during_teardown_window=teardown_window)
+    assert children and children[0].done(), (
+        "the drain must follow the finished parent's child to completion"
+    )
+    assert "hygiene-orphan-child" in str(exc_info.value), str(exc_info.value)
+
+
+async def test_guard_leaves_a_fixture_owned_task_alone() -> None:
+    """A task a function fixture started (after the guard's setup, before
+    the call) is in the call-start snapshot and the drain's ownership
+    excludes it: the guard neither drains nor cancels it, and the test
+    passes."""
+    fixture_tasks: list[asyncio.Task[None]] = []
+
+    async def _fixture_worker() -> None:
+        await asyncio.sleep(3600)
+
+    async def during_setup() -> None:
+        fixture_tasks.append(asyncio.create_task(_fixture_worker(), name="hygiene-fixture-owned"))
+
+    async def body() -> None:
+        await asyncio.sleep(0.001)
+
+    item = await _drive_guarded_call(body, during_setup=during_setup)
+    assert fixture_tasks, "the pin's premise: the fixture task exists"
+    assert not fixture_tasks[0].cancelled(), "the guard must not cancel a fixture's task"
+    assert not fixture_tasks[0].done()
+    sections = [
+        content for _, key, content in item.report_sections if key.startswith("leaked asyncio")
+    ]
+    assert not sections, f"the fixture task must not be named as a leak: {sections}"
+    fixture_tasks[0].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await fixture_tasks[0]
+
+
+async def test_guard_fails_a_survivor_within_the_drain_bound() -> None:
+    """A task that ignores cancellation survives the drain: the guard
+    fails the leaking test within the drain bound and names the
+    survivor. The task stays stubborn past the drain's budget but exits
+    on its own afterwards, so the module loop's teardown is not held."""
+    import time as _time
+
+    handles: list[asyncio.Task[None]] = []
+
+    async def body() -> None:
+        async def _stubborn() -> None:
+            deadline = asyncio.get_running_loop().time() + 12.0
+            while asyncio.get_running_loop().time() < deadline:
+                try:
+                    await asyncio.sleep(0.05)
+                except asyncio.CancelledError:
+                    continue
+
+        handles.append(asyncio.create_task(_stubborn(), name="hygiene-survivor"))
+
+    started = _time.monotonic()
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
+    elapsed = _time.monotonic() - started
+    assert "hygiene-survivor" in str(exc_info.value), str(exc_info.value)
+    assert elapsed < 20.0, f"the drain bound did not hold: {elapsed:.1f}s"
+    # The survivor dies on its own; await it so the module loop's
+    # teardown starts clean.
+    handles[0].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(handles[0], timeout=15.0)
+
+
 async def test_guard_catches_a_fixture_looking_task_name_smuggled_by_the_body() -> None:
     """The exemption is SET MEMBERSHIP (pending when the call phase
     started), never the task's NAME: a test body that mints a task with a
-    fixture-looking name and abandons it is named by the guard like any
-    other leak.  A name-based exemption would let a real leak sail past
-    wearing a trustworthy label."""
+    fixture-looking name and abandons it is drained and named by the
+    guard like any other leak. A name-based exemption would let a real
+    leak sail past wearing a trustworthy label: the drained-leak report
+    section must carry the smuggled task's name."""
     minted: list[asyncio.Task[object]] = []
 
     async def body() -> None:
         minted.append(asyncio.create_task(_hygiene_leak_probe_coro(), name="fixture-owned-fake"))
 
-    try:
-        with pytest.raises(pytest.fail.Exception) as exc_info:
-            await _drive_guarded_call(body)
-    finally:
-        smuggled = minted[0]
-        smuggled.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await smuggled
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body)
+    smuggled = minted[0]
+    assert smuggled.done(), "the drain must have completed the smuggled leak"
     message = str(exc_info.value)
     assert "fixture-owned-fake" in message, (
         f"a fixture-looking name smuggled a real leak past the guard: {message}"
@@ -1289,7 +1707,7 @@ async def test_guard_catches_a_fixture_looking_task_name_smuggled_by_the_body() 
 
 async def test_guard_passes_a_genuinely_fixture_owned_task() -> None:
     """The exemption's non-leak direction, through the real machinery: a
-    task pending BEFORE the call phase (a function fixture's long-lived
+    task pending before the call phase (a function fixture's long-lived
     worker, minted at setup) is in the guard's baseline and the hook's
     call-start snapshot, so the guard scores the test green even though
     the task is still pending at teardown - its owner reaps it.  Without
@@ -1315,9 +1733,9 @@ async def test_guard_passes_a_genuinely_fixture_owned_task() -> None:
 # ── The soak's teardown budget arithmetic ───────────────────────────
 #
 # The soak's outer 2700s pytest-timeout mark must cover the legitimate
-# worst case INCLUDING the two-stage teardown, and stage 1's stop bound
+# worst case including the two-stage teardown, and stage 1's stop bound
 # must exceed the worker's own exit bound - the invariant that keeps the
-# shutdown watchdog's os._exit (if it trips at all) INSIDE stage 1's
+# shutdown watchdog's os._exit (if it trips at all) inside stage 1's
 # wait, so stage 2's reaping never feeds an armed watchdog.
 
 
@@ -1328,11 +1746,11 @@ def test_soak_stage1_stop_bound_exceeds_the_worker_exit_bound() -> None:
     trip is observed and the bounded metrics flush before os._exit, 8s as
     the settings property models it).  The bound is what makes the
     disarm-skip shape unreachable: a drain parked at the tracked-actor
-    reap gate is bounded by the worker's OWN watchdog trip (whose
+    reap gate is bounded by the worker's own watchdog trip (whose
     ``os._exit`` lands inside stage 1's wait, killing a wedged process
     loudly); stage 2's awaits only run once the worker task is done and
     the watchdog disarmed.  If stage 1's bound ever dips below the
-    worker's, a stage-1 timeout delivers a second cancellation INTO
+    worker's, a stage-1 timeout delivers a second cancellation into
     _main's cleanup finally - skipping ``shutdown_watchdog.cancel()`` and
     ``lag_watchdog.stop()`` (they sit after the gate await) - and stage 2
     runs with the watchdog armed: the os._exit lands mid-reaping, the CI
@@ -1438,9 +1856,9 @@ async def test_soak_stage2_names_a_survivor_within_its_bound() -> None:
     await worker_task
     release = asyncio.Event()
     swallower = asyncio.create_task(_soak_reap_swallower(release), name="soak-reap-swallower")
-    # The residue stage's cancels land MID-AWAIT in the real bootstrap (a
+    # The residue stage's cancels land mid-await in the real bootstrap (a
     # wedged sibling is always mid-run): let the swallower reach its park
-    # point, because a cancel delivered before a task's FIRST step throws
+    # point, because a cancel delivered before a task's first step throws
     # into the coroutine at position 0 - before its try is entered - and
     # the task dies cancelled instead of swallowing.
     await asyncio.sleep(0)
@@ -1503,15 +1921,14 @@ async def test_soak_stage2_stays_silent_when_residue_honours_cancel() -> None:
 
 # ── xdist_group pins: the measured state-affinity map ──────────────────────
 #
-# The five chaos modules used to share ONE xdist_group ("chaos"), which held
-# all 15 of their tests for a single worker as a convoy under
-# --dist=loadgroup. Measured 2026-10-06 (the CI-runtime measurement): the
-# shared group cost the 5-module subset 62.1-72.6s of wall at -n 2 vs 46.1s
+# The five chaos modules share no single xdist_group: one shared group
+# holds all 15 of their tests for a single worker as a convoy under
+# --dist=loadgroup (measured: 62.1-72.6s of wall at -n 2 vs 46.1s
 # split per-module (41 passed both ways). The db-global mechanisms that
 # presumably motivated the shared group are all schema-qualified — the
 # advisory locks go through schema_lock_name(...) on per-test-unique schemas
 # (tc1_ .. tc5_{new_base62()}) and the NOTIFY channels are
-# wake_channel(schema_name) — so each module now pins its OWN group and the
+# wake_channel(schema_name) — so each module now pins its own group and the
 # pins below keep it that way.
 
 _CHAOS_GROUP_MEMBERS: dict[str, str] = {
@@ -1545,7 +1962,7 @@ def test_chaos_modules_carry_per_module_xdist_groups() -> None:
 
 def test_the_listen_group_stays_whole() -> None:
     """tests/web_admin/test_listen_coverage.py's ``listen`` group is the
-    chaos family's ONE genuine db-global affinity: fixed LISTEN channel
+    chaos family's one genuine db-global affinity: fixed LISTEN channel
     names on the shared pg_dsn, where two workers would receive each other's
     NOTIFYs (everything else in the family is schema-qualified). It must
     keep its group — whole and named ``listen``."""
@@ -1555,4 +1972,791 @@ def test_the_listen_group_stays_whole() -> None:
     groups = re.findall(r'xdist_group\(name="([^"]+)"\)', text)
     assert groups and set(groups) == {"listen"}, (
         f"test_listen_coverage.py: the listen group moved, renamed or split: {groups}"
+    )
+
+
+# ── The mock-subtraction law, part 1: the fakes fail closed ──────────────
+#
+# A fake connection class whose fetch/fetchrow/fetchval/execute answers an
+# unknown statement from a silent default (a literal, an unscripted
+# ``self._x_result`` attribute, a sequential ``.pop(0)`` script) is a liar
+# double: the recorded incident had the availability gate's probe eat a
+# scripted batch and the sweeps deleted 0 of 7 — the probe matched nothing,
+# the fake answered anyway, and every downstream assertion measured the
+# answer, not the database. Two cures exist:
+#
+#   1. fail closed — the method's fall-through raises AssertionError naming
+#      the statement fragment (every statement shape is a named match), and
+#      the sequential pop(0) script dies with it; a named-subclass match
+#      with an explicit raise-on-unmatched replaces it.
+#   2. count, don't answer — where the property is statement
+#      identity/order/count, the test wraps the real connection (the
+#      recording-proxy pattern:
+#      tests/test_cancel_where_bounded.py::_StatementRecordingPool); a fake
+#      answers only for fault injection.
+#
+# A fake whose remaining purpose is fault injection (a branch no real
+# database reaches deterministically — a driver raising mid-statement, a
+# trigger swallowing RETURNING) stays exempt, but must say so: the class
+# docstring carries the marker ``fail-closed-exempt:`` followed by the
+# fault-injection subject it exists to inject. A marker without a subject
+# is an offender like an unmarked class.
+
+_FAIL_CLOSED_EXEMPT_MARKER = "fail-closed-exempt:"
+_FAKE_CONN_METHOD_NAMES = frozenset({"fetch", "fetchrow", "fetchval", "execute"})
+
+
+def _class_docstring(node: ast.ClassDef) -> str:
+    body = node.body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        doc = body[0].value.value
+        return doc if isinstance(doc, str) else ""
+    return ""
+
+
+def _is_default_answer_value(value: ast.AST) -> bool:
+    """Whether *value* is the blind-default answer shape: a bare constant,
+    an unscripted private-attribute answer (``self._x_result``), or the
+    sequential pop(0) script's next page."""
+    if isinstance(value, ast.Constant):
+        return True
+    if isinstance(value, ast.List) and not value.elts:
+        return True  # the empty page the fake hands every unknown query
+    if isinstance(value, ast.Attribute):
+        return (
+            isinstance(value.value, ast.Name)
+            and value.value.id == "self"
+            and value.attr.startswith("_")
+        )
+    if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute):
+        # the sequential script: return self._results.pop(0)
+        func = value.func
+        return (
+            func.attr == "pop"
+            and isinstance(func.value, ast.Attribute)
+            and isinstance(func.value.value, ast.Name)
+            and func.value.value.id == "self"
+            and func.value.attr.startswith("_")
+        )
+    return False
+
+
+def _method_discriminates_on_sql(item: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether the method's control flow BRANCHES on the statement text:
+    the sql parameter (or a helper predicate called on it) participates in
+    a comparison or a call — the shape that can answer unmatched SQL from
+    a fall-through default. A method that never reads the statement (a
+    pure recorder: record + return the tag) cannot lie per-statement."""
+    params = {a.arg for a in item.args.args}
+    sql_names = params & {"sql", "query", "statement", "q"}
+    for n in ast.walk(item):
+        # `if "fragment" in sql` / `sql == ...` / `sql.startswith(...)`
+        if isinstance(n, ast.Compare):
+            for side in (n.left, *n.comparators):
+                for name in ast.walk(side):
+                    if isinstance(name, ast.Name) and name.id in sql_names:
+                        return True
+        # `if _is_lease_statement(sql)` / `sql.strip().upper()...`
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and "sql" in n.func.id.lower()
+            and n.args
+        ):
+            for a in n.args:
+                if isinstance(a, ast.Name) and a.id in sql_names:
+                    return True
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+            base = n.func.value
+            if isinstance(base, ast.Name) and base.id in sql_names:
+                return True
+    return False
+
+
+def _fake_conn_default_answer_sites(tree: ast.Module) -> list[str]:
+    """Every fake-class conn method that discriminates on the statement
+    text and whose fall-through answers from a silent default: the
+    method's final statement (the code an unmatched statement reaches)
+    is a ``return`` of a default answer shape — a constant, an empty
+    page, an unscripted private attribute, the next ``.pop(0)`` script
+    page. A raise buried in a conditional arm does not excuse the
+    fall-through: that raise fires only for the statements its arm
+    names, and the fall-through still answers everything else (the
+    recorded incident: the availability gate's probe matched nothing and
+    the fall-through fed it the next scripted batch anyway). A method
+    that never reads the statement text (a pure recorder — record +
+    return the tag) cannot lie per-statement; it is not an offender.
+    Returns offender descriptions."""
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for item in node.body:
+            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if item.name not in _FAKE_CONN_METHOD_NAMES:
+                continue
+            if not _method_discriminates_on_sql(item):
+                continue  # a pure recorder answers no "unmatched" SQL
+            body = item.body
+            if not body:
+                continue
+            last = body[-1]
+            if not isinstance(last, ast.Return):
+                continue  # the fall-through is not a return (a raise, a helper call)
+            value = last.value
+            if value is None or not _is_default_answer_value(value):
+                continue
+            offenders.append(
+                f"{node.name}.{item.name} (line {item.lineno}): the fall-through "
+                f"answers from a silent default"
+            )
+    return offenders
+
+
+def _fail_closed_exempt_subject(doc: str) -> str:
+    """The subject the class docstring's ``fail-closed-exempt:`` marker
+    names, or ``""`` when the marker is absent or bare (nothing after
+    it). The subject is the fault injection the fake exists to inject —
+    a marker without one excuses nothing."""
+    idx = doc.find(_FAIL_CLOSED_EXEMPT_MARKER)
+    if idx < 0:
+        return ""
+    return doc[idx + len(_FAIL_CLOSED_EXEMPT_MARKER) :].strip()
+
+
+def _fail_closed_offenders(tree: ast.Module) -> list[str]:
+    """The tree's fail-closed offenders after the exempt adjudication: a
+    site whose class docstring carries ``fail-closed-exempt:`` with a
+    non-empty subject stays exempt; an unmarked class, or one carrying
+    the bare marker, is an offender."""
+    sites = _fake_conn_default_answer_sites(tree)
+    if not sites:
+        return []
+    docstrings = {
+        node.name: _class_docstring(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+    }
+    offenders: list[str] = []
+    for site in sites:
+        class_name = site.split(".")[0]
+        doc = docstrings.get(class_name, "")
+        if _fail_closed_exempt_subject(doc):
+            continue
+        offenders.append(site)
+    return offenders
+
+
+def test_fake_connection_classes_fail_closed_on_unmatched_sql() -> None:
+    """No fake class under tests/ may answer an unmatched statement from a
+    silent default.
+
+    A conn double (any class defining ``fetch``/``fetchrow``/``fetchval``/
+    ``execute``) whose method's fall-through returns a literal, an
+    unscripted ``self._x_result`` attribute, an empty page, or the next
+    ``.pop(0)`` script is the shape that produced the probe-ate-a-batch
+    incident (the availability gate's probe consumed a scripted batch; the
+    sweeps deleted 0 of 7; every assertion downstream measured the fake's
+    answer, not the database). The fall-through must RAISE naming the
+    statement fragment, or the class docstring must carry
+    ``fail-closed-exempt: <subject>`` naming the fault injection the fake
+    exists to inject — a driver raising mid-statement, a trigger swallowing
+    RETURNING — the branches no real database reaches deterministically.
+    Where the property under test is statement identity/order/count, do not
+    answer at all: wrap the real connection in a recording proxy
+    (tests/test_cancel_where_bounded.py::_StatementRecordingPool).
+    """
+    offenders: list[str] = []
+    for path in _all_test_tree_files():
+        tree = ast.parse(path.read_text())
+        offenders.extend(
+            f"{path.relative_to(_TESTS_DIR)}: {site}" for site in _fail_closed_offenders(tree)
+        )
+    assert not offenders, (
+        "Found fake conn class(es) answering unmatched SQL from a silent default:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nThe fall-through must raise AssertionError naming the statement "
+        "fragment (every shape a named match), or the class docstring must "
+        "carry 'fail-closed-exempt: <subject>' naming the fault injection the "
+        "fake exists to inject. Where the property is statement identity/order/"
+        "count, wrap the real connection in a recording proxy instead "
+        "(tests/test_cancel_where_bounded.py::_StatementRecordingPool) - the "
+        "assertion counts real statements."
+    )
+
+
+# The fail-closed guard's adversarial self-checks: the guard's own walk,
+# exercised on synthetic classes this pack carries as source strings (the
+# guard scans this pack too, so the offenders must never exist as real
+# class definitions).
+
+_FAIL_CLOSED_SELF_SILENT_DEFAULT = '''
+class _SyntheticSilentDefault:
+    """Answers every unmatched statement from the next scripted page."""
+
+    def __init__(self) -> None:
+        self._results: list[list[object]] = []
+
+    async def fetch(self, sql: str) -> list[object]:
+        if "sweep" in sql:
+            return [{"deleted": 7}]
+        return self._results.pop(0)
+'''
+
+_FAIL_CLOSED_SELF_CONDITIONAL_RAISE_DEFAULT = '''
+class _SyntheticConditionalRaiseDefault:
+    """The shape that escaped the guard's first body: one arm raises,
+    the fall-through still answers."""
+
+    def __init__(self) -> None:
+        self._results: list[list[object]] = []
+
+    async def fetchrow(self, sql: str) -> object:
+        if "availability_gate" in sql:
+            raise AssertionError(f"unmatched statement: {sql}")
+        return self._results.pop(0)
+'''
+
+_FAIL_CLOSED_SELF_FAIL_CLOSED = '''
+class _SyntheticFailClosed:
+    """Every shape a named match; the fall-through raises."""
+
+    async def fetchrow(self, sql: str) -> object:
+        if "hold" in sql:
+            return {"hold_id": "h1"}
+        raise AssertionError(f"unmatched statement: {sql}")
+'''
+
+_FAIL_CLOSED_SELF_BARE_EXEMPT = '''
+class _SyntheticBareExempt:
+    """fail-closed-exempt:"""
+
+    def __init__(self) -> None:
+        self._answer: object = None
+
+    async def fetchval(self, sql: str) -> object:
+        if "lease" in sql:
+            raise RuntimeError("injected lease fault")
+        return self._answer
+'''
+
+_FAIL_CLOSED_SELF_SUBJECT_EXEMPT = '''
+class _SyntheticSubjectExempt:
+    """fail-closed-exempt: the driver raises mid-statement — a branch no
+    real database reaches deterministically."""
+
+    async def execute(self, sql: str) -> str:
+        if "swallow" in sql:
+            raise ConnectionError("injected mid-statement drop")
+        return "UPDATE 10"
+'''
+
+
+def test_fail_closed_guard_adversarial_self_check() -> None:
+    """The guard's five verdicts on its own synthetic estate: the same
+    AST walk the real guard runs must red the silent default, red the
+    conditional-raise-plus-default shape, pass the fail-closed class,
+    red the bare exempt marker, and pass the subject-carrying exempt."""
+    silent = ast.parse(_FAIL_CLOSED_SELF_SILENT_DEFAULT)
+    conditional = ast.parse(_FAIL_CLOSED_SELF_CONDITIONAL_RAISE_DEFAULT)
+    closed = ast.parse(_FAIL_CLOSED_SELF_FAIL_CLOSED)
+    bare = ast.parse(_FAIL_CLOSED_SELF_BARE_EXEMPT)
+    subject = ast.parse(_FAIL_CLOSED_SELF_SUBJECT_EXEMPT)
+    assert _fail_closed_offenders(silent), "(a) the silent-default fall-through must be an offender"
+    assert _fail_closed_offenders(conditional), (
+        "(b) the conditional-raise-plus-default shape must be an offender — "
+        "the raise lives in one arm; the unmatched statement still reaches "
+        "the answering fall-through"
+    )
+    assert not _fail_closed_offenders(closed), (
+        "(c) the fail-closed class (its fall-through raises) must pass"
+    )
+    assert _fail_closed_offenders(bare), (
+        "(d) a bare 'fail-closed-exempt:' marker with no subject must be an offender"
+    )
+    assert not _fail_closed_offenders(subject), "(e) a subject-carrying exempt marker must pass"
+
+
+# The mock-subtraction law, part 2: the patch-site registry.
+#
+# Part A's mock subtraction cured the unit packs whose modules-under-test
+# have real-PG sibling packs: the SQL-semantics arms died, and the
+# survivors are fault injection and wiring the siblings do not own. The
+# cured packs' — and only their — ``monkeypatch.setattr`` sites on
+# ``taskq.*`` attributes live in the registry below: each attribute gets
+# the reason it may stay patched (the real-PG sibling that owns the
+# behavior, or why no sibling can). A new patch site in a registered pack
+# must add its own entry with its own reason; the registry is the ledger,
+# and the failure message points at it. A patch site in an unregistered
+# pack is not this guard's business — whether that pack's module has a
+# real-PG sibling is a human judgment the registry records when the pack
+# is cured.
+
+_TASKQ_PATCH_EXEMPT: dict[str, dict[str, str]] = {
+    "test_leader.py": {
+        "open_dedicated_conn": (
+            "the dedicated-conn FACTORY seam: the unit pins the loop's wiring "
+            "of the factory; the connections themselves are the real-PG packs' "
+            "(tests/test_leader_prune.py, tests/test_postgres_sweeps.py)"
+        ),
+        "croniter": (
+            "the cron CLOCK: the loops' fire cadence is time; the real-PG packs "
+            "own what a fire DOES (tests/test_leader_prune.py), not when the "
+            "schedule wakes"
+        ),
+        "_PRUNE_RETRY_BACKOFF_INITIAL_SECS": (
+            "the retry ladder's tunable: the ladder's CADENCE is the unit's "
+            "subject; the real-PG packs own the retried attempt's SQL"
+        ),
+        "_PRUNE_RETRY_BACKOFF_CAP_SECS": "same ladder tunable, the cap arm",
+        "_otel_enabled": "the obs seam: the gauge/counter stamps are pinned on the OTel test stack (tests/test_obs.py), no PG involved",
+        "_leader_lease_expires_in_seconds_cache": "same obs seam: the lease gauge's cached value",
+        "asyncio": (
+            "patched where LOOKED UP (tests/_ns_patch.py): the module's own "
+            "asyncio binding, so the TEST's real sleeps keep their timing - "
+            "the delegation-proxy pattern, not a behavior patch"
+        ),
+        "revert_stale_auto_disables": (
+            "the takeover recovery's SEAM: the unit pins the assume-path's "
+            "wiring; the recovery itself is the cron ownership pack's"
+        ),
+        "record_election_attempt": "the OTel counter's stamp site on the unit path; the counter's contract is tests/test_obs.py's",
+        "CLOSE_TIMEOUT_SECS": (
+            "the bounded-close deadline's TUNABLE: the hang/close arms drive "
+            "the deadline deterministically on the fake clock; the close "
+            "path's real behavior is tests/test_worker_deps_teardown.py's"
+        ),
+        "apply_keepalive_to_conn": (
+            "the keepalive wiring's SEAM: the unit pins the factory path "
+            "applies it; the socket work itself is the deps module's"
+        ),
+    },
+    "test_cron_loop.py": {
+        "resolve_payload": (
+            "the payload-resolution SEAM: the unit pins the tick's planning "
+            "arms around it; the resolution itself is the factories' unit pack"
+        ),
+        "time": "the tick's budget CLOCK: the deadline arithmetic is time; the fires' SQL is tests/test_cron_integration.py's",
+        "record_cron_budget_deferral": "the deferral telemetry's seam: the wiring pin observes the call; the metric's contract is tests/test_obs.py's",
+        "_otel_enabled": "the obs seam (no PG)",
+        "croniter": "the schedule CLOCK (see test_leader.py's entry)",
+        "compute_next_fire_after": "the fire computation's seam for the DST arms; the real DST behavior is tests/test_cron_integration.py's DST tests",
+        "logger": "structlog capture seam: capture_logs cannot see through a frozen proxy; re-binding the module logger is the recorded workaround",
+        "record_cron_failure": "the failure telemetry's seam: the wiring pins observe the emit; the counter's contract is tests/test_obs.py's",
+    },
+    "test_ratelimit_token_bucket.py": {
+        "_acquire_pg": (
+            "the BACKEND-DISPATCH isolation pin: backend='postgres' must reach "
+            "_acquire_pg and never Redis - the dispatch shape is the unit's "
+            "subject; the PG arm's behavior is tests/test_ratelimit_token_bucket_pg.py's"
+        ),
+        "_bucket_label_values": "the label-cap's cache reset (no PG; the cap's contract is tests/test_rt_worker_metric_cardinality.py's)",
+    },
+    "test_ratelimit_reservation.py": {
+        "_probe_pg_lock_timeout_guc": "the lock-budget seam: the typed boundary arms; the real lock behavior is tests/test_rt_pools_ratelimit_lock_timeout_guc.py's",
+    },
+    "test_heartbeat.py": {
+        "_tick_duration": (
+            "the tick-completion WITNESS: the histogram's record call is the "
+            "event the waits synchronize on (the house no-sleeps pattern); the "
+            "histogram's own contract is tests/test_obs.py's"
+        ),
+        "update_heartbeat_consecutive_failures": "the failure-counter gauge's seam: the counter increments are the unit's subject (fault injection); the gauge's contract is tests/test_obs.py's",
+        "_otel_enabled": "the obs seam (no PG)",
+    },
+    "test_shutdown_orchestrator.py": {
+        "drain_local_queue_to_pending": (
+            "the ladder's SCAFFOLDING: the phase-ladder arms (budgets, "
+            "isolation, timeouts) need the ladder driven deterministically on "
+            "the fake clock; the DRAIN itself is tests/test_shutdown_integration.py's "
+            "(test_ti4_drain_to_pending, and the converted ordering pin "
+            "test_the_ladder_stops_dispatch_before_the_hand_back)"
+        ),
+        "_METRICS_FLUSH_TIMEOUT_SECS": "the exit-tail constant the hold arithmetic reads (no PG; the bound's proof is test_suite_hygiene's own soak-budget pins)",
+        "CLOSE_TIMEOUT_SECS": (
+            "the bounded-close deadline's TUNABLE: the ladder's close arms "
+            "drive the deadline deterministically; the close path's real "
+            "behavior is tests/test_worker_deps_teardown.py's"
+        ),
+        "asyncio": "patched where LOOKED UP (tests/_ns_patch.py): the module's own asyncio binding - the delegation-proxy pattern, not a behavior patch",
+    },
+    "test_enqueue_coverage.py": {
+        "NATIVE_TYPES": (
+            "the record-shape fault injection: the enqueue paths' jsonb decode "
+            "arms (a row the real driver cannot produce deterministically); "
+            "the enqueue SQL's behavior is tests/test_postgres_enqueue.py's"
+        ),
+    },
+    "test_postgres_dispatch.py": {},
+    "test_dispatch_queue_mode_cache.py": {},
+    "test_ratelimit_sliding_window.py": {},
+    "test_ratelimit_refund_fix.py": {},
+    "test_ratelimit_registry.py": {},
+    "web_admin/test_ops_mutations.py": {
+        "logger": "structlog capture seam (the audit-trail arms re-bind the module logger capture cannot see through)",
+        "_SCHEDULE_RUN_COOLDOWN_SECONDS": (
+            "the run-now cooldown's TUNABLE: the churn-bound arms drive the "
+            "map's growth deterministically (no PG; the cooldown's own "
+            "behavior is the ops route's)"
+        ),
+        "_last_schedule_run": (
+            "the run-now cooldown map's STATE reset: the arms isolate the "
+            "process-global map between tests (a per-test hygiene reset, "
+            "not a behavior patch)"
+        ),
+        "_rate_limits": (
+            "the registry's bucket MAP: the mutation arms seed/clear the "
+            "in-process registry the route reads (the reset's real row "
+            "behavior is tests/test_ratelimit_token_bucket_pg.py's "
+            "test_pg_reset_deletes_the_bucket_row)"
+        ),
+        "_reservations": "same registry-state hygiene for the reservations page's arms",
+        "reset": "the reset SEAM: the arm pins the route's delegation to the registry's reset; the reset's real behavior is the token-bucket _pg pack's",
+        "peek_all": "the peek-all SEAM: the arm pins the route's error wrapping around the registry's own aggregate",
+        "compute_next_fire_after": (
+            "the skip/run-now fire computation's SEAM: the arms pin the "
+            "route's wiring - the row's stored dst_strategy is what the "
+            "route forwards, and a computation that never advances past "
+            "the db clock (fault injection) must 400 before the skip "
+            "UPDATE runs; the computation's own real behavior, the DST "
+            "overlap included, is tests/test_cron_integration.py's DST "
+            "tests (the unit arithmetic: tests/test_cron.py)"
+        ),
+        "resolve_payload": (
+            "the payload-resolution FAULT-INJECTION seam: a factory "
+            "raising (a wrong-type return, a generic error) is a branch "
+            "the real factory path cannot reach deterministically; the "
+            "arms pin the route's redirect-with-error-code wrapping "
+            "around the raise, and the resolution's own behavior is "
+            "tests/test_cron.py's resolve_payload unit pack"
+        ),
+        "sync_slots": (
+            "the reservations page's sync SEAM: the success arm pins the "
+            "page's re-fetch of the held/free rows after a successful "
+            "sync, and the spy arm pins that foreign-schema reservations "
+            "never reach the sync; the sync's real row behavior "
+            "(reservation_slots insert/delete) is "
+            "tests/test_ratelimit_reservation_pg.py's"
+        ),
+        "_fetch_redis_rl_state": (
+            "the Redis-outage FAULT-INJECTION seam: the fetch returning "
+            "None is the broker-down shape (no real Redis here) - the arm "
+            "pins the page's visible degradation (redis_available flips "
+            "back to False); the fetch's own contract (key conventions, "
+            "decode, the one-pipeline round trip) is "
+            "tests/web_admin/test_ops.py's fetch_redis_rl_state pack - "
+            "no PG sibling can own a Redis read"
+        ),
+    },
+}
+
+
+def _taskq_module_aliases(tree: ast.Module) -> dict[str, str]:
+    """Local names bound to taskq.* modules/classes by the file's imports."""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.startswith("taskq"):
+                    aliases[a.asname or a.name.split(".")[0]] = a.name
+        elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("taskq"):
+            for a in node.names:
+                aliases[a.asname or a.name] = f"{node.module}.{a.name}"
+    return aliases
+
+
+def _setattr_site_target(node: ast.Call, aliases: dict[str, str]) -> tuple[str, str, bool] | None:
+    """The (taskq module path, attribute name, string-form flag) a
+    ``setattr`` call patches, when statically resolvable; ``None``
+    otherwise.
+
+    pytest's two spellings name the same (module, attribute) pair and the
+    guard must read both:
+
+    * the object form - ``monkeypatch.setattr(module, "attr", value)`` -
+      where the module comes from the file's ``taskq.*`` imports and the
+      SECOND positional argument is the attribute-name literal;
+    * the string form - ``monkeypatch.setattr("taskq.mod.attr", value)`` -
+      where the FIRST argument is the fully-qualified dotted path and the
+      second argument is already the replacement value: the attribute is
+      the path's last component, the module everything before it.
+    """
+    args = node.args
+    if len(args) < 2:
+        return None
+    target, second = args[0], args[1]
+    if isinstance(target, ast.Name) and target.id in aliases:
+        # The object form: the attribute name is the second argument's
+        # string literal; the second argument is NOT the replacement here.
+        if isinstance(second, ast.Constant) and isinstance(second.value, str):
+            # ``import taskq.worker.leader as leader_mod`` aliases the
+            # module; a ``from taskq.x import Thing`` alias binds a class
+            # - the attribute is patched on the class whose module the
+            # alias names.
+            return aliases[target.id], second.value, False
+        return None
+    if isinstance(target, ast.Constant) and isinstance(target.value, str):
+        dotted = target.value
+        if not dotted.startswith("taskq"):
+            return None
+        module_path, _, attr = dotted.rpartition(".")
+        if not module_path or not attr:
+            return None
+        return module_path, attr, True
+    return None
+
+
+def _taskq_patch_offenders(
+    tree: ast.Module, aliases: dict[str, str], allowed: set[str]
+) -> list[str]:
+    """The tree's unregistered ``taskq.*`` patch sites, one description
+    each; ``allowed`` is the pack's registered attribute names."""
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if not (node.func.attr == "setattr" and isinstance(node.func.value, ast.Name)):
+            continue
+        target = _setattr_site_target(node, aliases)
+        if target is None:
+            continue
+        module_path, attr, string_form = target
+        if attr in allowed:
+            continue
+        if string_form:
+            offenders.append(
+                f"line {node.lineno}: monkeypatch.setattr("
+                f'"{module_path}.{attr}", ...) is unregistered'
+            )
+        else:
+            offenders.append(
+                f"line {node.lineno}: monkeypatch.setattr({module_path}, "
+                f'"{attr}", ...) is unregistered'
+            )
+    return offenders
+
+
+def test_taskq_patch_sites_in_the_cured_packs_are_registered() -> None:
+    """Every ``monkeypatch.setattr`` on a ``taskq.*`` attribute inside a
+    pack the mock-subtraction cured must carry a registry entry with its
+    reason.
+
+    The registry (:data:`_TASKQ_PATCH_EXEMPT`) is the ledger: each entry
+    names the real-PG sibling pack that owns the patched attribute's
+    behavior, or the reason no sibling can (fault injection, the obs
+    seams, the delegation proxies). A NEW patch site in a registered pack
+    turns this guard red until it adds its own entry - the message says
+    exactly that. A patch site in an unregistered pack is not this guard's
+    business: whether THAT pack's module has a real-PG sibling is the
+    judgment the registry records when the pack is cured.
+    """
+    offenders: list[str] = []
+    registry_names = set(_TASKQ_PATCH_EXEMPT)
+    for name in sorted(registry_names):
+        path = _TESTS_DIR / name
+        if not path.exists():
+            offenders.append(f"{name}: a registry entry names a file that does not exist")
+            continue
+        tree = ast.parse(path.read_text())
+        aliases = _taskq_module_aliases(tree)
+        for site in _taskq_patch_offenders(tree, aliases, set(_TASKQ_PATCH_EXEMPT[name])):
+            offenders.append(f"{name}:{site}")
+    assert not offenders, (
+        "Found unregistered taskq.* patch site(s) in the mock-subtraction's "
+        "cured packs:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nThese packs' SQL-semantics arms were subtracted because real-PG "
+        "sibling packs own the behavior; a patch site here must say why it may "
+        "stay. Add the attribute to _TASKQ_PATCH_EXEMPT[<this pack>] with the "
+        "reason naming the real-PG sibling that owns the attribute's behavior "
+        "(or why no sibling can - fault injection, the obs seams, the "
+        "delegation proxies) - or delete the patch and drive the real seam. "
+        "Both pytest spellings count: the object form "
+        'monkeypatch.setattr(module, "attr", ...) and the string form '
+        'monkeypatch.setattr("taskq.mod.attr", ...) - in the string form the '
+        "second argument is the replacement, not the name."
+    )
+
+
+# The registry guard's adversarial self-check: pytest's string spelling
+# must resolve to the same (module, attribute) the object form names. The
+# synthetic sites live as source strings (the guard scans this pack too,
+# so the offenders must never exist as real call sites).
+
+_PATCH_GUARD_SELF_STRING_FORM_UNREGISTERED = """
+import pytest
+
+
+def _synthetic_string_form_patch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("taskq.web.admin.ops._synthetic_unregistered_attr", None)
+"""
+
+_PATCH_GUARD_SELF_STRING_FORM_REGISTERED = """
+import pytest
+
+
+def _synthetic_string_form_patch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "taskq.web.admin.ops.compute_next_fire_after", lambda *args: None
+    )
+"""
+
+
+def test_taskq_patch_guard_catches_the_string_form() -> None:
+    """The guard's two verdicts on pytest's string spelling: a
+    ``monkeypatch.setattr("taskq.mod.attr", value)`` site whose attribute
+    is unregistered must red the same walk the object form feeds, and the
+    same spelling over a registered attribute must pass."""
+    unregistered_tree = ast.parse(_PATCH_GUARD_SELF_STRING_FORM_UNREGISTERED)
+    registered_tree = ast.parse(_PATCH_GUARD_SELF_STRING_FORM_REGISTERED)
+    assert _taskq_patch_offenders(unregistered_tree, {}, set()), (
+        '(a) a string-form setattr("taskq.mod.attr", ...) over an '
+        "unregistered attribute must be an offender"
+    )
+    registered_attrs = set(_TASKQ_PATCH_EXEMPT["web_admin/test_ops_mutations.py"])
+    assert not _taskq_patch_offenders(registered_tree, {}, registered_attrs), (
+        "(b) a string-form setattr over a registered attribute must pass"
+    )
+    # And the object form's verdicts are unchanged by the shared walk.
+    object_form = ast.parse(
+        "import pytest\n"
+        "def _synthetic_object_form_patch(monkeypatch: pytest.MonkeyPatch) -> None:\n"
+        "    monkeypatch.setattr(ops, '_synthetic_unregistered_attr', None)\n"
+    )
+    assert _taskq_patch_offenders(object_form, {"ops": "taskq.web.admin.ops"}, set()), (
+        "(c) the object form over an unregistered attribute must still be an offender"
+    )
+
+
+# ── Long-running loop drivers go through the lifecycle supervisor ─────────
+# The leak class CI caught twice: a test cancels a long-running loop
+# mid-tick, detaching asyncpg's shielded PoolConnectionHolder.release onto
+# the module loop. tests/_loop_control.managed_loop owns the start and the
+# graceful stop for the modules on the supervisor list (the sweep-family
+# drivers converted to it). The list grows as the remaining real-PG
+# drivers convert (test_leader_integration.py, test_leader_chaos.py, the
+# fleet and heartbeat integration modules); their leaked tasks are
+# contained meanwhile by the conftest leak guard's teardown drain. The
+# deliberate mid-tick cancel driver in test_leader_sweeps_coverage.py is
+# the documented abrupt exemption: it cancels on purpose, over fakes, with
+# no pool to leak, and stays off the list.
+
+_LOOP_SUPERVISOR_MODULES = frozenset(
+    {
+        "test_leader_sweep_wiring_pg.py",
+        "test_leader_sweep_reclaim_drain_wiring.py",
+        "test_leader_sweep_rl_registry.py",
+        "test_leader_sweep_keyed_reclaim_wiring.py",
+        "test_leader_sweep_event_retention_wiring.py",
+        "test_keyed_rate_limit_bucket_reclamation.py",
+        "test_stale_batch_sweep_wiring.py",
+    }
+)
+
+_REGISTERED_LOOPS = frozenset(
+    {
+        "_sweep_loop",
+        "_scheduled_wake_loop",
+        "_cron_loop",
+        "_watchdog_loop",
+        "_election_loop",
+        "_prune_loop",
+        "heartbeat_loop",
+        "_health_check_loop",
+        "notify_listener_loop",
+    }
+)
+
+
+def _registered_loop_starts(path: Path) -> list[int]:
+    """Line numbers of ``create_task`` calls that start a registered
+    long-running loop (a named loop function, or a leader's ``run``)."""
+    tree = ast.parse(path.read_text())
+    starts = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = getattr(node.func, "id", "") or getattr(node.func, "attr", "")
+        if callee != "create_task" or not node.args:
+            continue
+        parts = set(re.split(r"[\s().,\[\]]", ast.unparse(node)))
+        if parts & _REGISTERED_LOOPS:
+            starts.append(node.lineno)
+            continue
+        target = node.args[0]
+        if (
+            isinstance(target, ast.Call)
+            and isinstance(target.func, ast.Attribute)
+            and target.func.attr == "run"
+            and "leader" in ast.unparse(target).lower()
+        ):
+            starts.append(node.lineno)
+    return starts
+
+
+def _adjacent_set_then_cancel(path: Path) -> list[int]:
+    """Line numbers of the legacy stop shape: a ``.set()`` call statement
+    immediately followed by a ``.cancel()`` call statement."""
+    tree = ast.parse(path.read_text())
+    lines = []
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):
+            continue
+        for first, second in itertools.pairwise(body):
+            first_set = (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Call)
+                and isinstance(first.value.func, ast.Attribute)
+                and first.value.func.attr == "set"
+            )
+            second_cancel = (
+                isinstance(second, ast.Expr)
+                and isinstance(second.value, ast.Call)
+                and isinstance(second.value.func, ast.Attribute)
+                and second.value.func.attr == "cancel"
+            )
+            if first_set and second_cancel:
+                lines.append(second.lineno)
+    return lines
+
+
+def test_long_running_loops_start_through_the_supervisor() -> None:
+    """Every registered long-running loop start in a supervisor-module
+    goes through tests/_loop_control.managed_loop, so no test there
+    hand-rolls a task whose cancel can detach asyncpg's shielded release."""
+    offenders = []
+    for path in _test_files():
+        if path.name not in _LOOP_SUPERVISOR_MODULES:
+            continue
+        for line in _registered_loop_starts(path):
+            offenders.append(f"{path.relative_to(_TESTS_DIR)}:{line}")
+    assert not offenders, (
+        "Registered long-running loop(s) started outside "
+        "tests/_loop_control.managed_loop:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nStart them through managed_loop so the graceful stop, the "
+        "grace bound, and the primary-exception preservation are owned in "
+        "one place."
+    )
+
+
+def test_no_legacy_stop_shape_in_supervisor_modules() -> None:
+    """No supervisor-module may hand-roll the legacy stop shape (a
+    ``shutdown.set()`` immediately followed by a ``task.cancel()``): the
+    adjacency is the mid-tick cancel that detaches asyncpg's shielded
+    release. The supervisor's stop waits for the loop's own exit first."""
+    offenders = []
+    for path in _test_files():
+        if path.name not in _LOOP_SUPERVISOR_MODULES:
+            continue
+        for line in _adjacent_set_then_cancel(path):
+            offenders.append(f"{path.relative_to(_TESTS_DIR)}:{line}")
+    assert not offenders, (
+        "Legacy stop shape (shutdown.set() immediately followed by "
+        "task.cancel()) in:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nStop the loop through tests/_loop_control.managed_loop: "
+        "shutdown first, a bounded grace, cancel only as a fallback."
     )

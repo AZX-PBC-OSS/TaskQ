@@ -6,7 +6,7 @@ The flake this file pins
 suite (green isolated, green on the re-run) - the order-dependent signature
 of process-global residue.  The mechanism, source-verified:
 
-* The production prune family stamps the batch-size gauges on EVERY batch,
+* The production prune family stamps the batch-size gauges on every batch,
   including an empty one (``worker/_leader_shared.py``:
   ``_record_prune_batch_size("prune"|"archive_expiry", ...)`` runs before
   the fetch), so any test that drives the real ``prune_terminal_jobs`` /
@@ -24,7 +24,7 @@ of process-global residue.  The mechanism, source-verified:
 The fix is the suite's established isolation doctrine (the autouse
 ``_reset_web_admin_caches`` family): every process-global in
 ``obs/_otel.py`` that a gauge observer reads is reset to construction
-state before AND after each test.  The polluter test below performs the
+state before and after each test.  The polluter test below performs the
 exact production writes; the entry-state test is the "next reader sees
 clean state" pin; the reset-coverage test holds the reset function to
 construction state for every gauge-read global.
@@ -51,7 +51,7 @@ async def test_prune_family_batch_size_stamps_are_process_global() -> None:
     obs_mod.record_sweep_batch_size("prune", 250)
     obs_mod.record_sweep_batch_size("archive_expiry", 125)
 
-    assert otel_mod._sweep_batch_size_cache["prune"] == 250  # pyright: ignore[reportPrivateUsage]  # Why: the cache IS the state under test - same seam the cardinality tests read.
+    assert otel_mod._sweep_batch_size_cache["prune"] == 250  # pyright: ignore[reportPrivateUsage]  # Why: the cache is the state under test - same seam the cardinality tests read.
     assert otel_mod._sweep_batch_size_cache["archive_expiry"] == 125  # pyright: ignore[reportPrivateUsage]
 
 
@@ -66,7 +66,7 @@ def test_gauge_caches_are_at_construction_state_for_each_reader() -> None:
     writer population can dirty.  It passes only if the between-tests
     reset exists.
     """
-    assert otel_mod._queue_depth_cache == {}  # pyright: ignore[reportPrivateUsage]  # Why: the isolation invariant IS the point of the test.
+    assert otel_mod._queue_depth_cache == {}  # pyright: ignore[reportPrivateUsage]  # Why: the isolation invariant is the point of the test.
     assert otel_mod._stranded_jobs_cache == {}  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._reservation_slots_cache == {}  # pyright: ignore[reportPrivateUsage]
     assert otel_mod._keyed_reclaim_pending == 0  # pyright: ignore[reportPrivateUsage]

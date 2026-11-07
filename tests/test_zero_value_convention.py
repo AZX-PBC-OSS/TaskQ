@@ -81,7 +81,7 @@ class _ZeroField:
     ``convention_polarity`` is the phrase the field's family row in the
     configuration.md convention table must carry; ``description_polarity``
     is the sentence the field's own settings description must carry. The
-    two phrases belong to the SAME family - a surface rewritten to a
+    two phrases belong to the same family - a surface rewritten to a
     different family's polarity drops its pinned phrase and fails.
     """
 
@@ -257,7 +257,7 @@ def test_runtime_zero_semantics_match_the_documented_polarity() -> None:
     """
     # Statement-cache family: 0 reaches asyncpg's create_pool as 0 -
     # statement_cache_size=0 disables the cache there (asyncpg's own
-    # contract), so the pass-through IS the documented "disabled".
+    # contract), so the pass-through is the documented "disabled".
     settings_cache_zero = _load(TASKQ_STATEMENT_CACHE_SIZE="0")
     cache_kwargs = statement_cache_kwargs(settings_cache_zero)
     assert cache_kwargs["statement_cache_size"] == 0
@@ -269,7 +269,7 @@ def test_runtime_zero_semantics_match_the_documented_polarity() -> None:
     assert statement_cache_kwargs(settings_lifetime_zero)["max_cached_statement_lifetime"] == 0
 
     # Lock-wait family: a 0 budget passes through bounded_lock_budget_ms
-    # UNCLAMPED - no client-side bound is derived for it - because 0 is
+    # unclamped - no client-side bound is derived for it - because 0 is
     # the operator asking for an unbounded server-side wait (the
     # lock_timeout GUC convention; the advisory acquire's timeout_ms <= 0
     # branch then runs one plain blocking acquire).

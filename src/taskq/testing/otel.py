@@ -193,10 +193,10 @@ def _otel_enabled_guard() -> Generator[None, None, None]:  # pyright: ignore[rep
 # writers leaves its values behind for every later test in the same
 # process, and under pytest-xdist "later in the same process" is whatever
 # the load balancer schedules next on that worker.  The prune family is
-# the proven polluter: it stamps the batch-size gauges on EVERY batch,
+# the proven polluter: it stamps the batch-size gauges on every batch,
 # empty ones included, so one prune-driving test leaves "prune" /
 # "archive_expiry" in ``_sweep_batch_size_cache`` forever, and the
-# sweep-batch-size cardinality test, which MERGES its eight production
+# sweep-batch-size cardinality test, which merges its eight production
 # names into that cache and asserts strict key-set equality, failed once
 # in a full xdist suite exactly that way (reproduced deterministically;
 # see tests/test_rt_otel_gauge_cache_test_isolation.py).  The reset below
@@ -231,7 +231,7 @@ def reset_otel_gauge_caches() -> None:
     occupancy source) plus the two label-admission sets and the cron
     failure-level ledger, emitter-side process globals the cardinality
     tests were already forced to pin per test because a prior test's
-    admissions widen a later test's boundary.  Deliberately NOT reset:
+    admissions widen a later test's boundary.  Deliberately not reset:
     ``_lazy_counters`` / ``_lazy_histograms`` (memoized per meter
     identity; a stale entry self-replaces on the first call after a meter
     swap, and clearing would undo the memoization under test),
@@ -290,14 +290,14 @@ def restore_logging_configured(saved: bool) -> None:
 #
 # ``setup_logging`` configures structlog with ``cache_logger_on_first_use=True``.
 # A module-level ``structlog.get_logger(...)`` proxy whose ``bind`` first runs
-# while that flag is in force gets an INSTANCE-LEVEL ``bind`` closure wrapping
+# while that flag is in force gets an instance-level ``bind`` closure wrapping
 # the assembled logger, the production processor chain frozen onto the proxy
 # (``structlog._config.BoundLoggerLazyProxy.bind``). ``structlog.reset_defaults()``
 # replaces the configuration but cannot reach those closures: the pinned proxy
 # keeps rendering through the frozen chain forever, so a later test's
-# ``structlog.testing.capture_logs``, which swaps only the CURRENT config's
+# ``structlog.testing.capture_logs``, which swaps only the current config's
 # processor list, captures none of its events. The victim test then fails on
-# an EMPTY capture with no hint why, and only when a polluter test happened to
+# an empty capture with no hint why, and only when a polluter test happened to
 # run earlier in the same process (the event still reaches stdlib handlers,
 # which is what makes the failure order-dependent rather than total).
 #
@@ -359,7 +359,7 @@ def _unpin_cached_loggers() -> None:
 def _logging_configured_guard() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture; referenced by pytest runner via reflection.
     """Reset structlog/logging global state around every test.
 
-    The sweep runs at BOTH ends: teardown so a test that configured logging
+    The sweep runs at both ends: teardown so a test that configured logging
     cannot leak frozen proxies forward, and setup as a backstop so a pin
     created outside this fixture's reach (a pytest plugin, a test that
     restores the configuration itself but cannot reach the proxies) can never
