@@ -17,7 +17,8 @@ The churn matrix (one scenario per row):
 
 1. sequential drains  - SIGTERM one pod at a time, each awaited; probes
    enqueued mid-drain must complete (no stall); the corpse owns nothing
-   on exit (no running row, no live slot).
+   after clean release, or nothing by the bounded lease/sweep reclaim
+   after a failed release (no running row, no live slot).
 2. overlapping pairs  - two pods drain at once, a second pair overlaps
    the first, the last pod carries the load alone; the cap sampler
    watches every running row the whole time.
@@ -50,12 +51,14 @@ import signal
 import time
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 import pytest
 import pytest_asyncio
 
+from taskq._ids import new_uuid
+from tests._wf_fixtures import seed_flow, seed_running_node
 from tests.system_e2e._harness import (
     BOOT_READY_BOUND_S,
     LOCK_LEASE_S,
@@ -606,28 +609,90 @@ class CapSampler:
 
 
 async def _assert_corpse_owns_nothing(
-    conn: asyncpg.Connection, schema: str, worker_id: str, label: str
+    conn: asyncpg.Connection,
+    schema: str,
+    worker_id: str,
+    label: str,
+    *,
+    bound: float | None = None,
 ) -> None:
     """No queue left owned by a corpse: no running row locked by it, and
-    no reservation slot (queue-cap or keyed) live-held by it."""
-    rows = await conn.fetchval(
-        f'SELECT count(*)::int FROM "{schema}".jobs '
+    no reservation slot (queue-cap or keyed) live-held by it.
+
+    The postcondition is eventual, not instant. A clean shutdown's
+    release writes clear the ownership and the immediate fast path
+    passes. The product also documents the fallback: a shutdown
+    release write can fail or be skipped, intentionally leaving
+    running/locked rows for lease-expiry reclaim (the shutdown
+    release's own error path), and probe settlement does not settle
+    corpse rows. The wait's bound is that fallback's own reclaim
+    arithmetic, the module's existing corpse-bound derivation: the
+    lock lease to lapse (8s), the leader lease to lapse for a survivor
+    to take the sweep (20s), one sweep tick (1s), the poll floor, the
+    re-claim cycle's lease guards, and the co-tenancy margins, all
+    stretched by the tier's load factor (_CORPSE_SLOT_BOUND). A
+    reserved slot's stale row may be reused by a survivor, so the slot
+    condition is a LIVE lease, never merely the row's existence. On the
+    bound's expiry the offending rows and slots are reported and the
+    assertion fails: the wait never masks a real leak."""
+    deadline = time.monotonic() + (bound if bound is not None else _CORPSE_SLOT_BOUND)
+    effective = bound if bound is not None else _CORPSE_SLOT_BOUND
+    while True:
+        rows, slots, _stamp = await _corpse_ownership(conn, schema, worker_id)
+        if rows == 0 and slots == 0:
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"{label}: the departed pod's ownership did not clear within "
+                f"{effective:.0f}s (the lock lease 8s + the leader "
+                f"lease 20s + one sweep tick + the poll floor + the reclaim "
+                f"cycle, x the tier's load stretch {TIER_LOAD_STRETCH}) - "
+                f"{await _corpse_ownership_report(conn, schema, worker_id)}"
+            )
+        await asyncio.sleep(0.2)
+
+
+async def _corpse_ownership(
+    conn: asyncpg.Connection, schema: str, worker_id: str
+) -> tuple[int, int, datetime]:
+    """One read of both ownership surfaces: the running rows the corpse
+    still locks, the reservation slots it still live-holds, and the
+    database clock the lease comparison ran on."""
+    row = await conn.fetchrow(
+        f'SELECT (SELECT count(*)::int FROM "{schema}".jobs '
+        "WHERE status = 'running' AND locked_by_worker = $1::uuid) AS running_rows, "
+        f'(SELECT count(*)::int FROM "{schema}".reservation_slots '
+        "WHERE held_by_worker_id = $1::uuid AND job_id IS NOT NULL "
+        "AND lease_expires_at >= statement_timestamp()) AS live_slots, "
+        "statement_timestamp() AS stamp",
+        worker_id,
+    )
+    assert row is not None
+    return int(row["running_rows"]), int(row["live_slots"]), row["stamp"]
+
+
+async def _corpse_ownership_report(conn: asyncpg.Connection, schema: str, worker_id: str) -> str:
+    """The timeout's evidence: every offending row and slot, named."""
+    rows = await conn.fetch(
+        f"SELECT id::text AS id, actor, status::text AS status, attempt, "
+        f"locked_by_worker::text AS holder, lock_expires_at, scheduled_at, "
+        f'interrupt_count FROM "{schema}".jobs '
         "WHERE status = 'running' AND locked_by_worker = $1::uuid",
         worker_id,
     )
-    assert rows == 0, (
-        f"{label}: the departed pod still owns {rows} running row(s) - "
-        "a queue left owned by a corpse"
-    )
-    slots = await conn.fetchval(
-        f'SELECT count(*)::int FROM "{schema}".reservation_slots '
-        "WHERE held_by_worker_id = $1::uuid AND job_id IS NOT NULL "
-        "AND lease_expires_at >= statement_timestamp()",
+    slots = await conn.fetch(
+        f"SELECT bucket_name, slot_index, job_id::text AS job_id, "
+        f"held_by_worker_id::text AS holder, acquired_at, lease_expires_at, "
+        f"lease_expires_at >= statement_timestamp() AS lease_live "
+        f'FROM "{schema}".reservation_slots '
+        "WHERE held_by_worker_id = $1::uuid AND job_id IS NOT NULL",
         worker_id,
     )
-    assert slots == 0, (
-        f"{label}: the departed pod still live-holds {slots} reservation slot(s) - "
-        "its capacity never came back to the fleet"
+    now = await _db_now(conn)
+    return (
+        f"the running rows still locked: {[dict(r) for r in rows]}; "
+        f"the reservation slots held (live or stale): {[dict(r) for r in slots]}; "
+        f"the database clock: {now}"
     )
 
 
@@ -1978,3 +2043,70 @@ async def test_cap_sampler_close_hang_guard_fallback_reaps_the_minted_cancel(
         )
     finally:
         await releaser
+
+
+async def test_corpse_ownership_wait_staged_reads(
+    clean_pg_conn: asyncpg.Connection, module_pg_schema: Any
+) -> None:
+    """The corpse-wait helper's staged reads: NOT a production
+    reproduction. The real-world red is CI run 42359203585's rolling
+    lane: worker 2 exited rc0, the probes settled, and one running row
+    was still locked by it at the immediate assert - the product's
+    shutdown release documents its own fallback (a failed or skipped
+    release write leaves running/locked rows for lease-expiry reclaim),
+    and probe settlement does not settle corpse rows. The stages drive
+    the helper against staged row states: the clean fast path, the
+    bounded timeout's evidence, and the eventual clearance once the
+    reclaim's lease lapse has passed (a stale slot row may survive the
+    corpse; the LIVE lease is the condition)."""
+    schema = module_pg_schema.schema_name
+    corpse = str(new_uuid())
+    flow_id = await seed_flow(clean_pg_conn, schema)
+    node_id = await seed_running_node(clean_pg_conn, schema, flow_id)
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".jobs SET locked_by_worker = $1::uuid, '
+        "lock_expires_at = statement_timestamp() + interval '60s' "
+        "WHERE id = $2::uuid",
+        corpse,
+        node_id,
+    )
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".reservation_slots '
+        "(bucket_name, slot_index, job_id, held_by_worker_id, acquired_at, lease_expires_at) "
+        "VALUES ('staged-cap', 0, $1::uuid, $2::uuid, statement_timestamp(), "
+        "statement_timestamp() + interval '60s')",
+        node_id,
+        corpse,
+    )
+
+    # The clean fast path first: a corpse with nothing staged passes at
+    # once.
+    await _assert_corpse_owns_nothing(clean_pg_conn, schema, str(new_uuid()), "the clean fast path")
+
+    # Stage A: the live ownership must not pass, and the bounded
+    # timeout's report must name the evidence (the row and the slot).
+    with pytest.raises(AssertionError) as staged_failure:
+        await _assert_corpse_owns_nothing(
+            clean_pg_conn, schema, corpse, "staged live corpse", bound=2.0
+        )
+    message = str(staged_failure.value)
+    assert "did not clear within 2s" in message, message
+    assert "the running rows still locked" in message, message
+    assert str(node_id) in message, message
+    assert corpse in message, message
+    assert "lease_live" in message, message
+
+    # Stage B: the reclaim's staged effect - the lease lapsed, the row
+    # requeued by the sweep. The stale slot row still names the corpse;
+    # the LIVE lease is the condition, so the wait passes.
+    await clean_pg_conn.execute(
+        f"UPDATE \"{schema}\".jobs SET status = 'pending' WHERE id = $1::uuid",
+        node_id,
+    )
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".reservation_slots '
+        "SET lease_expires_at = statement_timestamp() - interval '1s' "
+        "WHERE held_by_worker_id = $1::uuid",
+        corpse,
+    )
+    await _assert_corpse_owns_nothing(clean_pg_conn, schema, corpse, "staged reclaimed")
