@@ -217,7 +217,7 @@ _FLAP_PREMISE_BOUND_S = (_POLL_FLOOR + _SWEEP_INTERVAL) * _PROBE_STRETCH
 # ── Fixtures and fleet plumbing ──────────────────────────────────────────
 
 
-@pytest_asyncio.fixture(scope="module")
+@pytest_asyncio.fixture
 async def roll_capped_queue(
     pg_dsn: str, module_pg_schema: ModulePgSchema
 ) -> AsyncGenerator[None, None]:
@@ -235,6 +235,13 @@ async def roll_capped_queue(
             "ON CONFLICT (name) DO UPDATE SET max_concurrent = EXCLUDED.max_concurrent",
             "roll_capped",
             _QUEUE_CAP,
+        )
+        installed = await conn.fetchval(
+            f'SELECT max_concurrent FROM "{schema}".queues WHERE name = $1',
+            "roll_capped",
+        )
+        assert installed == _QUEUE_CAP, (
+            "the scenario's queue cap must be installed before every fleet boots"
         )
         yield
     finally:
@@ -1719,7 +1726,9 @@ async def _storm_limbo_report(
             f"w.pid AS worker_pid, statement_timestamp() AS db_now "
             f'FROM "{schema}".jobs j '
             f'LEFT JOIN "{schema}".workers w ON w.id = j.locked_by_worker '
-            "WHERE j.status = 'running' ORDER BY j.id"
+            "WHERE j.status = 'running' AND j.tags @> ARRAY[$1::text]"
+            " ORDER BY j.id",
+            _TAG,
         )
         evidence: list[dict[str, object]] = []
         for row in rows:
@@ -1788,7 +1797,9 @@ async def test_rolling_release_fleet_wide_storm_leaves_a_clean_empty_fleet(
         # The leaderless/empty-fleet end state: no running row, no live
         # slot, every requeue claimable, the ledger whole.
         limbo = await conn.fetchval(
-            f"SELECT count(*)::int FROM \"{schema}\".jobs WHERE status = 'running'"
+            f'SELECT count(*)::int FROM "{schema}".jobs '
+            "WHERE status = 'running' AND tags @> ARRAY[$1::text]",
+            _TAG,
         )
         limbo_report = await _storm_limbo_report(conn, schema, fleet) if limbo else ""
         assert limbo == 0, (
@@ -1799,8 +1810,10 @@ async def test_rolling_release_fleet_wide_storm_leaves_a_clean_empty_fleet(
             f'SELECT count(*)::int FROM "{schema}".jobs '
             "WHERE status NOT IN ('running') AND status::text NOT IN "
             "('succeeded','failed','cancelled','crashed') "
+            "AND tags @> ARRAY[$1::text] "
             "AND (scheduled_at IS NULL OR scheduled_at > statement_timestamp() + "
-            f"interval '{_LOCK_LEASE + 10:.0f} seconds')"
+            f"interval '{_LOCK_LEASE + 10:.0f} seconds')",
+            _TAG,
         )
         assert unclaimable == 0, (
             f"{unclaimable} requeued row(s) are not claimable within the hold/lease "
