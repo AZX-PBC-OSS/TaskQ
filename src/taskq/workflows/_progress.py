@@ -419,10 +419,11 @@ class ProgressEmitter:
                 )
 
     async def aclose(self) -> None:
-        """The attempt's last flush — BEST-EFFORT and BOUNDED: never
-        raises, never outlives its timeout, never blocks the finalize
-        (the caller runs this before the finalize tx1, never inside
-        it)."""
+        """The attempt's last flush, best-effort: ordinary flush failures
+        are logged and suppressed before finalization. Each wait allows
+        1.0s, and the cancellation's completion may add unwind time past
+        that bound. The caller's cancellation propagates. The caller
+        runs this before the finalize tx1, never inside it."""
         if self._flush_task is not None and not self._flush_task.done():
             try:
                 # No shield: the wait's timeout and the caller's

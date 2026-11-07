@@ -11,7 +11,9 @@ caller's cancellation now cancel and reap the cadence task itself (a
 task awaiting a task delivers its cancellation into the inner task and
 does not resume until the inner task has finished, so the flush task is
 always done when ``aclose`` returns or propagates), and the final
-``_flush_once`` is the only writer after the in-flight wait. The pins
+``_flush_once`` is the only writer after the in-flight wait (the bound
+covers each wait; the cancellation's completion may add unwind time
+past it). The pins
 use the real emitter with a fail-closed acquire fake, so no database is
 involved.
 """
@@ -80,7 +82,8 @@ async def _reap(emitter: ProgressEmitter, pool: _BlockedPool) -> None:
 async def test_aclose_timeout_cancels_and_reaps_the_inflight_flush() -> None:
     """The in-flight wait's timeout must cancel and reap the emitter's
     cadence task, not shield-detach it: when ``aclose`` returns after
-    its bounded wait, the flush task is done (cancelled), its outcome is
+    its bounded wait (the cancellation's completion may add unwind time
+    past the bound), the flush task is done (cancelled), its outcome is
     consumed, and no write ever landed without a connection. The final
     ``_flush_once`` stays the last writer; the bounded best-effort
     behavior (the timeout, the lost-flush accounting) is unchanged."""
