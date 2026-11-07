@@ -425,7 +425,13 @@ class ProgressEmitter:
         it)."""
         if self._flush_task is not None and not self._flush_task.done():
             try:
-                await asyncio.wait_for(asyncio.shield(self._flush_task), timeout=1.0)
+                # No shield: the wait's timeout and the caller's
+                # cancellation must reach the emitter's own cadence task
+                # (a task awaiting a task delivers the cancellation into
+                # the inner task and resumes only after it has finished),
+                # so a blocked flush can never outlive this close and
+                # write after the attempt's finalization.
+                await asyncio.wait_for(self._flush_task, timeout=1.0)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
