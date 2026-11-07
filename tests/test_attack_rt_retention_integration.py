@@ -1107,3 +1107,4 @@ async def test_loud_refusal_leaves_ledger_and_prune_untouched(pg_dsn: str) -> No
     finally:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
+

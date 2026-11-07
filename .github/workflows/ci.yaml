@@ -314,7 +314,11 @@ jobs:
       # so the lane runs ZERO-SKIP. The count floor + the no-skip assert
       # refuse the silent-collection regression: a green lane that
       # collected fewer probes than the estate holds, or skipped one, is
-      # the gate lying by omission.
+      # the gate lying by omission. The load-sensitive benchmark is
+      # explicitly EXCLUDED here ('not load_sensitive'): its 50ms band
+      # is a clean-box claim whose own comments record the co-tenancy
+      # failure mode, so it gates in the load-sensitive lane below, in
+      # its own serial explicit-node invocation.
       - name: Run the adversarial probes (explicit paths, serial, zero-skip)
         run: |
           set -euo pipefail
@@ -339,7 +343,7 @@ jobs:
           pg_ctl -D "$pgroot/data" -l "$pgroot/pg.log" -w start >/dev/null
           export ATTACK4_PG_DATA="$pgroot/data" ATTACK4_PG_PORT=5711
           rc=0
-          uv run --no-sync pytest tests/probes_*.py tests/progress_numbers_run.py --timeout=900 -q 2>&1 | tee "$RUNNER_TEMP/probes.log" || rc=$?
+          uv run --no-sync pytest tests/probes_*.py tests/progress_numbers_run.py -m "not load_sensitive" --timeout=900 -q 2>&1 | tee "$RUNNER_TEMP/probes.log" || rc=$?
           pg_ctl -D "$pgroot/data" stop -m fast >/dev/null || true
           passed="$(grep -oE '[0-9]+ passed' "$RUNNER_TEMP/probes.log" | grep -oE '[0-9]+' | head -1 || true)"
           skipped="$(grep -oE '[0-9]+ skipped' "$RUNNER_TEMP/probes.log" | grep -oE '[0-9]+' | head -1 || true)"
@@ -348,8 +352,8 @@ jobs:
             echo "::error::the probes lane ran red (rc=$rc) — a probe failed"
             exit 1
           fi
-          if [ "${passed:-0}" -lt 76 ] || [ "${skipped:-0}" -ne 0 ]; then
-            echo "::error::the probes lane expected 76 green zero-skip probes, saw ${passed:-0} passed / ${skipped:-0} skipped — a probe stopped being collected (the gate lying by omission) or could not run"
+          if [ "${passed:-0}" -lt 75 ] || [ "${skipped:-0}" -ne 0 ]; then
+            echo "::error::the probes lane expected 75 green zero-skip probes (the load-sensitive benchmark gates in its own lane), saw ${passed:-0} passed / ${skipped:-0} skipped — a probe stopped being collected (the gate lying by omission) or could not run"
             exit 1
           fi
 
@@ -571,6 +575,30 @@ jobs:
 
       - name: Run the load-sensitive suite serially
         run: uv run --no-sync pytest --system-e2e -m "load_sensitive and not timescale" --timeout=900
+
+      # The panel latency benchmark's OWN lane. The probe is
+      # collect-ignored (tests/conftest.py's collect_ignore_glob), so the
+      # marker lane above never collects it, and the probes lane now
+      # excludes load_sensitive work explicitly: this explicit-node
+      # invocation is the benchmark's ONLY gate. The summary parse
+      # requires EXACTLY one passed and zero skipped — a missing
+      # collection (the file renamed, the node id stale) cannot be green.
+      - name: Run the panel latency benchmark (serial, exactly one probe)
+        run: |
+          set -euo pipefail
+          rc=0
+          uv run --no-sync pytest "tests/probes_admin_actions_under_fire.py::test_the_panel_and_page_latency_on_a_200_child_map" --system-e2e --timeout=900 -q 2>&1 | tee "$RUNNER_TEMP/panel-bench.log" || rc=$?
+          passed="$(grep -oE '[0-9]+ passed' "$RUNNER_TEMP/panel-bench.log" | grep -oE '[0-9]+' | head -1 || true)"
+          skipped="$(grep -oE '[0-9]+ skipped' "$RUNNER_TEMP/panel-bench.log" | grep -oE '[0-9]+' | head -1 || true)"
+          echo "panel benchmark: ${passed:-0} passed, ${skipped:-0} skipped"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the panel latency benchmark ran red (rc=$rc) — the 50ms band failed or the probe could not run"
+            exit 1
+          fi
+          if [ "${passed:-0}" -ne 1 ] || [ "${skipped:-0}" -ne 0 ]; then
+            echo "::error::the panel latency benchmark expected exactly 1 passed / 0 skipped, saw ${passed:-0} passed / ${skipped:-0} skipped — the benchmark stopped being collected (the gate lying by omission)"
+            exit 1
+          fi
 
   coverage:
     # The coverage lane is the single longest CI job (the whole suite, one
