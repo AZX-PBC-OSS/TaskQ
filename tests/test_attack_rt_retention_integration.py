@@ -527,13 +527,23 @@ async def test_rearchive_racing_chunk_drop_folds_without_duplicates(
         await _schedule_policies(conn, ts_schema, next_start=datetime.now(UTC))
 
         for _ in range(3):
-            await prune_terminal_jobs(
-                conn,
-                retention_per_status={"succeeded": _FOLD_RETENTION},
-                archive_retention=_FOLD_ARCHIVE_RETENTION,
-                schema=ts_schema,
-                batch_size=3,  # small batches widen the race window
-            )
+            # The production loop classifies a deadlock as transient. This
+            # direct test call needs the equivalent retry on the idempotent
+            # batch after PostgreSQL resolves the policy/prune race.
+            for attempt in range(3):
+                try:
+                    await prune_terminal_jobs(
+                        conn,
+                        retention_per_status={"succeeded": _FOLD_RETENTION},
+                        archive_retention=_FOLD_ARCHIVE_RETENTION,
+                        schema=ts_schema,
+                        batch_size=3,  # small batches widen the race window
+                    )
+                    break
+                except asyncpg.exceptions.DeadlockDetectedError:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(0.05)
             for gid in gids:
                 facts = await _ghost_facts(conn, ts_schema, gid)
                 assert not (facts["live"] and facts["archived"]), (
