@@ -51,7 +51,7 @@ import logging
 import signal
 import sys
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -473,7 +473,11 @@ class CapSampler:
             self._record(f"worker:{holder}", n, 2 * _WORKER_CAP, rows)
 
     def _record(
-        self, cap: str, observed: int, bound: int, rows: list[asyncpg.Record] | None = None
+        self,
+        cap: str,
+        observed: int,
+        bound: int,
+        rows: Sequence[Mapping[str, object]] | None = None,
     ) -> None:
         key = f"peak.{cap}"
         if observed > self.peak.get(key, 0):
@@ -2383,23 +2387,29 @@ def test_worker_log_drain_joins_at_graceful_stop(tmp_path: Any) -> None:
     # Wait for the child's own first record: poll the file's existence
     # then its contents (the tee's reader opens the file in its own
     # thread, so existence precedes contents); the child's death breaks
-    # the wait loudly instead of polling forever. No blind sleeps.
+    # the wait loudly instead of polling forever. No blind sleeps. The
+    # whole post-spawn flow rides a finally: a readiness or assertion
+    # failure still kills and reaps the live child and joins the log
+    # reader.
     ready_deadline = time.monotonic() + 10.0
-    while not (log_path.exists() and "early" in log_path.read_text(errors="replace")):
-        if proc.poll() is not None:
-            raise AssertionError(
-                f"the probe subprocess died before its first record: rc={proc.returncode}"
-            )
-        if time.monotonic() > ready_deadline:
-            raise AssertionError("the probe subprocess never wrote its first record")
-        time.sleep(0.05)
-    graceful_stop(worker, timeout=10.0)
-    assert worker.log_drain is not None
-    assert not worker.log_drain.is_alive(), "the tee reader outlived the graceful stop"
-    assert "final-line" in log_path.read_text(), (
-        "the log's last stderr record is missing after the graceful stop: "
-        "the reader was not joined at its EOF"
-    )
+    try:
+        while not (log_path.exists() and "early" in log_path.read_text(errors="replace")):
+            if proc.poll() is not None:
+                raise AssertionError(
+                    f"the probe subprocess died before its first record: rc={proc.returncode}"
+                )
+            if time.monotonic() > ready_deadline:
+                raise AssertionError("the probe subprocess never wrote its first record")
+            time.sleep(0.05)
+        graceful_stop(worker, timeout=10.0)
+        assert worker.log_drain is not None
+        assert not worker.log_drain.is_alive(), "the tee reader outlived the graceful stop"
+        assert "final-line" in log_path.read_text(), (
+            "the log's last stderr record is missing after the graceful stop: "
+            "the reader was not joined at its EOF"
+        )
+    finally:
+        reap(worker)
 
 
 async def test_cap_sampler_tick_is_one_consistent_snapshot(
