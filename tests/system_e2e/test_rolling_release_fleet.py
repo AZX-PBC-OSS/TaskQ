@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import signal
 import sys
@@ -394,17 +395,30 @@ class CapSampler:
     async def _tick(self) -> None:
         if self._conn is None:
             self._conn = await asyncpg.connect(self._dsn)
-        rows = await self._conn.fetch(
-            f"SELECT actor::text AS actor, queue::text AS queue, "
-            f"payload->>'tenant' AS tenant, locked_by_worker::text AS holder "
-            f"FROM \"{self._schema}\".jobs WHERE status = 'running'"
-        )
-        slots = await self._conn.fetch(
+        # ONE statement = ONE observable state: the jobs' view and the
+        # slots' view are two subqueries of a single SELECT, so they read
+        # the same READ COMMITTED instant. The old pair of statements (an
+        # await between them) could see post-completion slots after
+        # pre-completion jobs and miss a real admission's receipt; a
+        # single statement's snapshot cannot tear, and a failed tick
+        # leaves no aborted transaction to poison the next one.
+        snapshot_row = await self._conn.fetchrow(
+            f"SELECT json_build_object("
+            f"'jobs', (SELECT coalesce(json_agg(json_build_object("
+            f"'actor', j.actor::text, 'queue', j.queue::text, "
+            f"'tenant', j.payload->>'tenant', 'holder', j.locked_by_worker::text"
+            f")), '[]'::json) FROM \"{self._schema}\".jobs j WHERE j.status = 'running'), "
+            f"'slots', (SELECT coalesce(json_agg(x), '[]'::json) FROM ("
             f"SELECT bucket_name::text AS bucket, count(*)::int AS held "
             f'FROM "{self._schema}".reservation_slots '
             f"WHERE job_id IS NOT NULL AND lease_expires_at >= statement_timestamp() "
-            f"GROUP BY 1"
+            f"GROUP BY 1) x)"
+            f") AS snapshot"
         )
+        assert snapshot_row is not None
+        snapshot = json.loads(snapshot_row["snapshot"])
+        rows = snapshot["jobs"]
+        slots = snapshot["slots"]
         self.samples += 1
         # hard: the slot surface. The queue-cap bucket's slot count is
         # the queues row's max_concurrent; a keyed tenant bucket's is
@@ -2366,12 +2380,16 @@ def test_worker_log_drain_joins_at_graceful_stop(tmp_path: Any) -> None:
         log_path=str(log_path),
         log_drain=_tee_stderr(proc, str(log_path)),
     )
-    # Wait for the child's own first record: the child is up, its
-    # stream flows, and its SIGTERM is now ignored (the script's first
-    # line). Stopping before that would kill it mid-startup and prove
-    # nothing about the drain's EOF join.
+    # Wait for the child's own first record: poll the file's existence
+    # then its contents (the tee's reader opens the file in its own
+    # thread, so existence precedes contents); the child's death breaks
+    # the wait loudly instead of polling forever. No blind sleeps.
     ready_deadline = time.monotonic() + 10.0
-    while "early" not in log_path.read_text(errors="replace"):
+    while not (log_path.exists() and "early" in log_path.read_text(errors="replace")):
+        if proc.poll() is not None:
+            raise AssertionError(
+                f"the probe subprocess died before its first record: rc={proc.returncode}"
+            )
         if time.monotonic() > ready_deadline:
             raise AssertionError("the probe subprocess never wrote its first record")
         time.sleep(0.05)
@@ -2382,3 +2400,76 @@ def test_worker_log_drain_joins_at_graceful_stop(tmp_path: Any) -> None:
         "the log's last stderr record is missing after the graceful stop: "
         "the reader was not joined at its EOF"
     )
+
+
+async def test_cap_sampler_tick_is_one_consistent_snapshot(
+    clean_pg_conn: asyncpg.Connection, module_pg_schema: Any, pg_dsn: str
+) -> None:
+    """One tick, one observable state: the cap receipt requires the
+    capped running row and the live cap slot in the SAME snapshot, so a
+    stale slot alone (the post-completion shape a torn two-statement
+    read could pair with an empty job view) records no receipt and no
+    violation, while the over-hold tooth still trips on any tick."""
+    schema = module_pg_schema.schema_name
+    sampler = CapSampler(pg_dsn, schema)
+    holder = str(new_uuid())
+    flow_id = await seed_flow(clean_pg_conn, schema)
+    job_id = await seed_running_node(clean_pg_conn, schema, flow_id)
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".queues (name, max_concurrent) VALUES ($1, $2) '
+        "ON CONFLICT (name) DO UPDATE SET max_concurrent = EXCLUDED.max_concurrent",
+        "roll_capped",
+        _QUEUE_CAP,
+    )
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".jobs SET queue = (SELECT name FROM "{schema}".queues WHERE name = $1) '
+        "WHERE id = $2::uuid",
+        "roll_capped",
+        job_id,
+    )
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".reservation_slots '
+        "(bucket_name, slot_index, job_id, held_by_worker_id, acquired_at, lease_expires_at) "
+        "VALUES ('taskq:global:queue:roll_capped', 0, $1::uuid, $2::uuid, "
+        "statement_timestamp(), statement_timestamp() + interval '60s')",
+        job_id,
+        holder,
+    )
+    try:
+        # The admitted pair, one snapshot: the receipt lands at sample 1.
+        await sampler._tick()
+        assert sampler.cap_receipt_at == 1, (
+            f"the admitted pair did not mint the receipt: {sampler.peak}"
+        )
+        assert sampler.peak["peak.capped_queue"] == 1
+        assert sampler.peak["peak.slots:taskq:global:queue:roll_capped"] == 1
+        assert not sampler.violations
+
+        # The torn shape's rejection: the job gone, the slot's lease
+        # still live. One snapshot sees the truth: no admission, no
+        # receipt, no violation.
+        await clean_pg_conn.execute(f'DELETE FROM "{schema}".jobs WHERE id = $1::uuid', job_id)
+        await sampler._tick()
+        assert sampler.cap_receipt_at == 1, "a stale slot minted a receipt"
+        assert sampler.samples == 2
+        assert not sampler.violations
+
+        # The tooth: a slot over-hold (held 2 at the cap of 1) trips on
+        # any tick, whatever the job view says.
+        await clean_pg_conn.execute(
+            f'INSERT INTO "{schema}".reservation_slots '
+            "(bucket_name, slot_index, job_id, held_by_worker_id, acquired_at, lease_expires_at) "
+            "VALUES ('taskq:global:queue:roll_capped', 1, $1::uuid, $2::uuid, "
+            "statement_timestamp(), statement_timestamp() + interval '60s')",
+            job_id,
+            holder,
+        )
+        await sampler._tick()
+        assert any("slots:taskq:global:queue:roll_capped" in v for v in sampler.violations), (
+            f"the over-hold tooth never tripped: {sampler.violations}"
+        )
+        assert sampler.cap_receipt_at == 1
+    finally:
+        if sampler._conn is not None:
+            with contextlib.suppress(Exception):
+                await sampler._conn.close()
