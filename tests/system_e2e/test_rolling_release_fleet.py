@@ -2423,10 +2423,15 @@ async def test_corpse_ownership_wait_staged_reads(
     # group: the helper waits while the staged reclaim clears both
     # rows, then passes with the stale slot row still naming the corpse
     # (the LIVE lease is the condition).
+    sibling_row = await clean_pg_conn.fetchrow(
+        f'SELECT started_at FROM "{schema}".jobs WHERE id = $1::uuid', sibling_id
+    )
+    assert sibling_row is not None and sibling_row["started_at"] is not None
+    sibling_line_stamp = sibling_row["started_at"].strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     log_path.write_text(
         claim_line_stamp
         + f" level=warning event=release-pg-write-failed job_id={node_id} error=boom\n"
-        + claim_line_stamp
+        + sibling_line_stamp
         + f" level=warning event=shutdown-release-failed job_id={sibling_id} error=boom\n"
     )
 
