@@ -1,6 +1,6 @@
-# The workflow engine's bands (T04) — the fan-out tx, the join fire, the sweep
+# The workflow engine's bands — the fan-out tx, the join fire, the sweep
 
-The three G11/G12 benches, measured on the landed branch through the REAL
+The three benches, measured on the landed branch through the REAL
 engine (`taskq.workflows.engine` / `._fork` / `._sweep`) against the test
 suite's own Postgres 18 testcontainer. The bands are SET from these
 measurements and pinned in the same files that measured them
@@ -17,7 +17,7 @@ regression past a band fails CI and must argue the bound in review.
 - Raw outputs: `.measurements/fanout-1000-tx-band.json`,
   `.measurements/join-fire-latency.json`.
 
-## The 1000-child fan-out transaction (G12)
+## The 1000-child fan-out transaction
 
 1000 child INSERTs + 1000 edge rows + the join row + the fenced terminal
 mark, ONE transaction (`finalize_node` tx1, chunked parallel-array inserts
@@ -74,7 +74,7 @@ added. (An earlier revision claimed "measured cost ~7 s per run warm" —
 no capture backs the figure; deleted — provenance or silence. Each
 band pin's own runtime in CI is the record.)
 
-## The hold→resume latency band (T10, G11c — the third workflow band)
+## The hold→resume latency band (the third workflow band)
 
 The deliver CAS (validate → the `'held' → 'delivered'` CAS → the node's
 resume write — ONE transaction, two statements) measured at the pin
@@ -91,7 +91,7 @@ milliseconds at the pin shape; 50 ms gives the fleet-lane headroom
 (the load-sensitive marker applies — the pin runs in the default lane,
 the band is wide enough to be deterministic-by-construction).
 
-## The workflow progress bands (T21)
+## The workflow progress bands
 
 The two-channel persistence's bands, re-proven on the BUILT code
 (`.measurements/t21-numbers.json`; the pins:
@@ -106,19 +106,18 @@ The two-channel persistence's bands, re-proven on the BUILT code
 | the read-side aggregate's fn time (200 children, mid-flight-capable) | **0.009 ms** (the numbers run's own measurement of the shipped shape; the read writes nothing) | the numbers run |
 | the finalize's blindness to emission (structural) | the terminal-mark statement touches NO progress table (the zero-finalize-changes probe); a 10k-emission node finalizes normally | `test_zero_finalize_changes_probe` |
 | the crash window | freshness-only loss: the display's STATE ledger-derived at every sample; the terminal heals | `test_crash_window_freshness_only_loss_then_the_terminal_heals` |
-## The click→panel latency band (T11, the admin workflow page)
+## The click→panel latency band (the admin workflow page)
 
 The node-detail panel's data path (the route's full read through the
 ASGI transport — the server half of the click→panel budget), measured
-on the local PG lane (the band's set-then-pin discipline — G11's
-method):
+on the local PG lane (the band's set-then-pin discipline):
 
 | metric | value | source |
 | --- | --- | --- |
 | the panel route's read (20 samples) | avg 1.205 ms · p95 3.238 ms | `.measurements/t11-latency-band.json` |
 | the PINNED band | **≤ 50 ms** (p95, the assert's headroom ×15) | `tests/web_admin/test_workflows_page.py::test_panel_latency_band` |
 
-## The vendored mermaid.min.js (T11 — the air-gap argument)
+## The vendored mermaid.min.js (the air-gap argument)
 
 The same argument alpine/htmx/lucide carry: an air-gapped ops
 deployment must not lose the graph to a CDN. The shipped file IS

@@ -89,7 +89,7 @@ async def test_sustained_happy_path_at_load_conserves_every_job(
         counts = await assert_balanced(conn, schema, _TAG)
         await assert_effects_balance(conn, schema, _TAG)
 
-        # Conservation: jobs-in == terminal-out. The exact terminal LABEL
+        # Conservation: jobs-in == terminal-out. The exact terminal label
         # of a deliberate failure is the reaper's business, not the
         # conservation contract's: an ordinary ladder exhaustion lands
         # 'failed'; a lease lost to a co-tenant load stall lands as the

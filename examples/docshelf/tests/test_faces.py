@@ -1,7 +1,7 @@
-"""THE FACES DRILL — the progress + admin + success faces:
+"""FACES DRILL — the progress + admin + success faces
 
 * the PUSHED event stream captured live (the admin run page's SSE
-  transport — revisioned full snapshots, mid-run AND terminal);
+  transport — revisioned full snapshots, mid-run and terminal);
 * the admin view mid-run + terminal: the runs list, the run pages, the
   child flows VISIBLE to the operator (the parent↔child links are
   rows — the app's own operator join);
@@ -56,9 +56,9 @@ async def test_progress_admin_success_faces(
     flow_id = flow_ids[0]
     await workers.spawn_ready(pool, tag="face-a", max_concurrency=8)
 
-    # THE PUSHED EVENT STREAM, captured LIVE mid-run: the admin's run
-    # SSE (revisioned full snapshots). The capture starts BEFORE the
-    # workers touch the run and drains until the terminal.
+    # the pushed event stream, captured live mid-run: the admin's run SSE
+    # (revisioned full snapshots). The capture starts before the workers touch
+    # the run and drains until the terminal.
     admin = build_admin_app(DOCSHELF_DSN, schema, auth=False)
 
     import socket
@@ -86,7 +86,7 @@ async def test_progress_admin_success_faces(
 
     try:
         async with (
-            # S113 Why: an unbounded READ is the SSE contract (the
+            # S113 Why: an unbounded read is the SSE contract (the
             # stream never ends); the connect/other budgets stay bounded.
             httpx.AsyncClient(base_url=base, timeout=httpx.Timeout(600.0, read=None)) as client,
             client.stream("GET", f"/admin/api/runs/{flow_id}/stream") as response,
@@ -107,11 +107,11 @@ async def test_progress_admin_success_faces(
 
         assert status == "succeeded"
 
-        # THE FRAMES: at least one MID-RUN revision + a terminal revision.
+        # at least one mid-run revision + a terminal revision.
         assert frames, "the SSE stream pushed nothing"
         terminal_frames = [f for f in frames if f.get("status") in ("succeeded", "failed")]
 
-        # THE ADMIN VIEW, terminal: the run page renders FROM THE ROWS.
+        # the admin view, terminal: the run page renders FROM the rows.
         async with httpx.AsyncClient(base_url=base) as client:
             page = await client.get(f"/admin/workflows/{flow_id}")
             assert page.status_code == 200, "the run explorer never rendered the run"
@@ -119,9 +119,9 @@ async def test_progress_admin_success_faces(
             runs_list = await client.get("/admin/workflows")
             assert runs_list.status_code == 200
 
-        # THE CHILD FLOWS, VISIBLE TO THE OPERATOR: the parent↔child links
-        # are ROWS (the run-key convention makes the runs findable; the
-        # link rows join them). Each child run ALSO renders on the explorer.
+        # the parent↔child links are rows (the run-key convention makes the
+        # runs findable; the link rows join them). Each child run also renders
+        # on the explorer.
         links = await store.child_links(pool, schema)
         mine = [lnk for lnk in links if lnk["parent_run_id"] == flow_id]
         assert mine, "no child flows were linked for this run"
@@ -138,7 +138,7 @@ async def test_progress_admin_success_faces(
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait_for(server_task, timeout=10)
 
-    # THE TYPED SUCCESS RECEIPT.
+    # the typed success receipt.
     runner = FlowRunner(SHELF_APP.get("docshelf_batch"), pool, schema)
     digest = ShelfDigest.model_validate(await runner.result(flow_id))
     assert digest.delivery_id == delivery_id
@@ -155,7 +155,7 @@ async def test_progress_admin_success_faces(
             "digest_total_docs": digest.total_docs,
             "child_links_note": (
                 "the parent↔child link is the app's own rows "
-                "(the child edge is invisible to the graph view — friction F3)"
+                "(the child edge is invisible to the graph view)"
             ),
         },
     )

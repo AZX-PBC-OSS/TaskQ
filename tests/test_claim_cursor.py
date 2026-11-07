@@ -18,14 +18,14 @@ Pinned here (fast tier, injected clock - no PG):
    ``advance()`` keeps the maximum (a round's rows arrive in claim order,
    the cursor is the high-water mark).
 2. **the jitter reset**: the bound cannot outlive the reset window - the
-   ONE knob (``reset_seconds``), expired bounds are forgotten and the
+   one knob (``reset_seconds``), expired bounds are forgotten and the
    next advance re-arms a fresh jittered window. This is the pin that
    reds if the jitter is broken: a cursor that never expires is a
    selection predicate that never heals.
 3. **per-queue isolation** (the store): each queue's bound is its own
    last-claimed id; advancing one queue never moves another queue's
    bound.
-4. **the disable**: ``reset_seconds=0`` is the documented OFF switch -
+4. **the disable**: ``reset_seconds=0`` is the documented off switch -
    the cursor is inert (never bounds, never stores).
 5. **the jitter bounds**: the effective window is the knob scaled by the
    injected jitter factor, so a fleet's resets desynchronize; the pin
@@ -110,7 +110,7 @@ def test_advance_keeps_the_maximum_not_the_last_write() -> None:
 
 
 def test_bound_cannot_outlive_the_reset_window() -> None:
-    """THE JITTER PIN - the mutation target. The bound is forgotten once
+    """The jitter pin - the mutation target. The bound is forgotten once
     the reset window (the only knob) has elapsed, so a cursor stranded by
     any divergence between claim order and id order heals within one
     window. A cursor that never expires (the jitter broken) reds this."""
@@ -216,7 +216,7 @@ def test_queues_reset_independently() -> None:
 
 
 def test_reset_seconds_zero_disables_the_cursor() -> None:
-    """``reset_seconds=0`` is the documented OFF switch: the cursor neither
+    """``reset_seconds=0`` is the documented off switch: the cursor neither
     stores nor bounds, the claim path runs the naive shape. The A/B
     harness and opting-out operators both ride this."""
     clock = _ManualClock()
@@ -262,7 +262,7 @@ def test_the_shipped_default_reset_is_the_documented_constant() -> None:
     default; the stranding bound the runbook quotes is this number). The
     SETTINGS default is 0 - the opt-in posture: the A/B harness measured
     the cursor's full-path win as plan-dependent on this codebase's
-    multi-surface claim CTE, so the bounded-stranding trade ships OFF
+    multi-surface claim CTE, so the bounded-stranding trade ships off
     (see the settings field's description and the perf-evidence record);
     the mechanism stays at brandur's cadence for the fleets that opt in."""
     assert CLAIM_CURSOR_RESET_SECONDS == 60.0

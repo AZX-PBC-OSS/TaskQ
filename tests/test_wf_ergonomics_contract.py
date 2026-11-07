@@ -1,6 +1,6 @@
-"""T17 — THE ERGONOMICS-CONTRACT PINS (the authoring session's paper cuts).
+"""The ergonomics-contract pins (the authoring surface's paper cuts).
 
-The BLOCKER/CRITICAL fixes landed with T09's flow API: these probes were
+The BLOCKER/CRITICAL fixes landed with the typed API's flow API: these probes were
 captured RED against the pre-API tree (strict-xfail — the cut IS the red;
 the red evidence: ``.measurements/t17-contract-first-run.txt``) and are
 GREEN here — the marker's removal in THIS commit is the flip. The bar-walk
@@ -15,7 +15,7 @@ the re-test — lives in ``.measurements/t17-dispositions.md``.
 from __future__ import annotations
 
 import inspect
-import subprocess  # Why: the abstraction check IS a grep over the tree; fixed argv, no user input.
+import subprocess  # Why: the abstraction check is a grep over the tree; fixed argv, no user input.
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -32,10 +32,10 @@ from taskq.workflows import (
 from taskq.workflows.api._runner import FlowRunner
 from taskq.workflows.api._validate import validate_compiled
 
-# ── the ABSTRACTION CONTRACT's banned vocabulary (the campaign domain) ──
+# ── the abstraction contract's banned vocabulary (the campaign domain) ──
 #: The repo-bound surfaces ship in the abstract ``doc_ingest`` domain; the
 #: authoring session's own campaign vocabulary must never leak into them.
-#: The same repo-wide check tickets 13/14/16 cite (T17's scope).
+#: The same repo-wide check tickets 13/14/16 cite (the API reference's scope).
 _BANNED_DOMAIN_TERMS: tuple[str, ...] = (
     "capex",
     "cbre",
@@ -48,7 +48,7 @@ _BANNED_DOMAIN_TERMS: tuple[str, ...] = (
 
 
 def test_shipped_surfaces_carry_no_campaign_vocabulary() -> None:
-    """THE ABSTRACTION CONTRACT (T17): grep the shipped surfaces for the
+    """The abstraction contract: grep the shipped surfaces for the
     campaign domain's terms — zero hits, the examples/docs/code live in
     the abstract doc_ingest domain."""
     repo = Path(__file__).resolve().parents[1]
@@ -56,7 +56,7 @@ def test_shipped_surfaces_carry_no_campaign_vocabulary() -> None:
     # workflow round's files): the estate's pre-existing tests carry
     # generic English names that collide with the banned list
     # (``test_di_solver.py``'s ``_PortfolioClient`` fixture predates the
-    # program); the contract binds what THIS round lands, not the tree's
+    # program); the contract binds what this round lands, not the tree's
     # history.
     surfaces = [
         "src/taskq/workflows",
@@ -144,7 +144,7 @@ async def _branch_b(ctx: StepContext, params: DocIngest) -> dict[str, int]:
 
 
 def test_bar_walk() -> None:
-    """THE BAR WALK (T17's failing-first 2): the authoring agent's original
+    """The bar walk (the API reference's 2): the authoring agent's original
     graph — the shapes the paper cuts were hit on — compiles with zero
     boilerplate: plain-type data, Promise wiring, a gather-join,
     sequencing, a consumed terminal, the input parameter on create_flow."""
@@ -155,23 +155,20 @@ def test_bar_walk() -> None:
         fetched = step(_fetch, DocIngest(doc_id="d1"))  # Promise[Report]
         embed_p = step(_embed, fetched)  # Promise[Vec] — sequenced
         sink(embed_p)  # the explicit fire-and-forget (recorded, never silent)
-        both = gather([fetched, fetched])  # the ALL-upstream join
+        both = gather([fetched, fetched])  # the all-upstream join
         return build(step(_summarize, both, key="summarize"))
 
     compiled = app.get("bar_walk_doc_ingest")
-    # THE REAL ASSERTS (the API RAISES on an unknown name — it never
-    # returns None, so `assert compiled is not None` was a dead check):
-    # the compiled graph's own properties — the node census, the edges,
-    # the terminal, the sunk declaration.
+    # the compiled graph's own properties — the node census, the edges, the
+    # terminal, the sunk declaration.
     assert compiled.name == "bar_walk_doc_ingest"
     keys = set(compiled.node_keys())
     assert {"_fetch", "_embed", "summarize"} <= keys, keys
     assert compiled.parents_of("_embed") == ["_fetch"], keys
     assert compiled.terminal == "summarize"
     assert "_embed" in compiled.sunk, "the fire-and-forget declaration is missing"
-    # THE ZERO-WARNING BUDGET, ENFORCED AT BOTH SEVERITIES: validate()
-    # raises on ERROR severity only — a WARNING regression (W1, W2)
-    # sails a bare validate() green. The budget reads the REPORT.
+    # validate() raises on error severity only — a warning regression (W1, W2)
+    # sails a bare validate() green. The budget reads the report.
     diagnostics = validate_compiled(compiled)
     assert diagnostics == (), (
         f"the zero-warning budget is VIOLATED: {[d.rule for d in diagnostics]}"
@@ -191,17 +188,15 @@ def test_paper_cut_1_join_user_body() -> None:
         return build(step(_tail, reducer, key="tail"))
 
     compiled = app.get("join_body_walk")
-    # THE REAL ASSERTS (the API raises, never returns None — the dead
-    # `is not None` check is gone): the reducer node fans in BOTH
-    # stages; `tail` consumes the reducer's promise — the cascade
-    # spelled in the wiring, the census closed.
+    # the reducer node fans in both stages; `tail` consumes the reducer's
+    # promise — the cascade spelled in the wiring, the census closed.
     assert compiled.name == "join_body_walk"
     assert set(compiled.node_keys()) == {"stage_a", "stage_b", "reducer", "tail"}
     assert compiled.parents_of("reducer") == ["stage_a", "stage_b"]
     assert compiled.parents_of("tail") == ["reducer"]
     assert compiled.terminal == "tail"
-    # THE ZERO-WARNING BUDGET at BOTH severities (a WARNING regression
-    # sails a bare validate() green — the budget reads the REPORT).
+    # the zero-warning budget at both severities (a warning regression
+    # sails a bare validate() green — the budget reads the report).
     diagnostics = validate_compiled(compiled)
     assert diagnostics == (), (
         f"the zero-warning budget is VIOLATED: {[d.rule for d in diagnostics]}"
@@ -218,8 +213,8 @@ def test_paper_cut_7_create_flow_takes_input() -> None:
         return build(step(_tail, step(_stage_a, DocIngest(doc_id="d"), key="a"), key="tail"))
 
     compiled = app.get("input_walk")
-    # THE REAL ASSERTS: the graph's own shape (the API raises on an
-    # unknown name — `is not None` could never fire).
+    # the graph's own shape (the API raises on an unknown name — `is not None`
+    # could never fire).
     assert compiled.name == "input_walk"
     assert set(compiled.node_keys()) == {"a", "tail"}
     assert compiled.parents_of("tail") == ["a"]
@@ -229,8 +224,8 @@ def test_paper_cut_7_create_flow_takes_input() -> None:
         f"the zero-warning budget is VIOLATED: {[d.rule for d in diagnostics]}"
     )
     # the signature exists and accepts the input (the runtime behavior is
-    # T09's runner pins; this walk pins the ERGONOMIC SHAPE: the parameter
-    # is there, IDE-discoverable).
+    # the typed API's runner pins; this walk pins the ergonomic shape: the parameter
+    # is there, ide-discoverable).
     assert "input" in inspect.signature(FlowRunner.create_flow).parameters
 
 
@@ -251,22 +246,21 @@ def test_paper_cut_4_dispatch_time_predicate() -> None:
                 == "b"
             ),
         )
-        sink(guarded)  # the skipped branch's drop is EXPLICIT (recorded)
+        sink(guarded)  # the skipped branch's drop is explicit (recorded)
         return build(step(_branch_b, pick, key="branch_b"))
 
     compiled = app.get("dispatch_guard_walk")
-    # THE REAL ASSERTS: the guard is stored as a CALLABLE on the node's
-    # definition — decided when the node dispatches, against the flow's
-    # state; the skipped branch's drop is EXPLICIT (sunk), the census
-    # and the edges named.
+    # the guard is stored as a callable on the node's definition — decided when
+    # the node dispatches, against the flow's state; the skipped branch's drop
+    # is explicit (sunk), the census and the edges named.
     assert compiled.name == "dispatch_guard_walk"
     assert set(compiled.node_keys()) == {"pick", "branch_a", "branch_b"}
     assert callable(compiled.skip_predicate("branch_a"))
     assert compiled.skip_predicate("branch_b") is None
     assert "branch_a" in compiled.sunk, "the skipped branch's explicit drop is missing"
     assert compiled.parents_of("branch_b") == ["pick"]
-    # THE ZERO-WARNING BUDGET at BOTH severities (a WARNING regression
-    # sails a bare validate() green — the budget reads the REPORT).
+    # the zero-warning budget at both severities (a warning regression
+    # sails a bare validate() green — the budget reads the report).
     diagnostics = validate_compiled(compiled)
     assert diagnostics == (), (
         f"the zero-warning budget is VIOLATED: {[d.rule for d in diagnostics]}"
@@ -283,10 +277,10 @@ def test_promise_type_story() -> None:
     def promise_types() -> Promise[object]:
         fetched = step(_fetch, DocIngest(doc_id="d"), key="fetch")
         assert fetched.key == "fetch"
-        # The DECLARATION is the annotation's spelling; the RESOLVED type
+        # The declaration is the annotation's spelling; the resolved type
         # is the validator's (the zero-false-positive compat rule reads
         # the resolved hints — under future-annotations the declaration
-        # arrives a string, and BOTH faces are the contract).
+        # arrives a string, and both faces are the contract).
         from taskq.workflows.api._hints import body_hints
 
         assert body_hints(_fetch)["return"] is Report

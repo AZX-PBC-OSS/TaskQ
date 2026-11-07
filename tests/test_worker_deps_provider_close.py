@@ -3,8 +3,8 @@
 ``open_worker_deps`` closes every pool and client built through a
 credential-provider factory; the provider itself - the Entra ID providers
 hold a lazily created credential session - stayed open after shutdown. These
-tests pin the wiring: closed ONCE (one provider may serve both the PG and
-the Redis role), AFTER every resource built through it, never for a factory
+tests pin the wiring: closed once (one provider may serve both the PG and
+the Redis role), after every resource built through it, never for a factory
 that declares no provider, and for the per-slot pool's provider only when
 the role factories do not already track it.
 
@@ -132,7 +132,7 @@ class _FakeRedisClient:
 
 
 async def test_provider_closes_once_after_every_resource_built_through_it() -> None:
-    """One provider behind the pg AND the redis role closes exactly once, and
+    """One provider behind the pg and the redis role closes exactly once, and
     only after the pool and the Redis client that authenticate through it."""
     events: list[str] = []
     provider = _FakeProvider("shared", events)
@@ -166,7 +166,7 @@ async def test_provider_closes_once_after_every_resource_built_through_it() -> N
     )
     # Caller-owned pools/conns are left alone by teardown (ownership rule);
     # the TaskQ-owned dispatcher pool and Redis client, both built through
-    # the shared provider, close BEFORE it.
+    # the shared provider, close before it.
     assert events.index("provider:shared") > events.index("pool:dispatcher")
     assert events.index("provider:shared") > events.index("redis"), (
         "the provider must close after the Redis client built through it"
@@ -198,7 +198,7 @@ async def test_a_factory_that_declares_no_provider_is_left_alone() -> None:
 
 
 async def test_slot_pool_provider_closes_after_the_slot_pool() -> None:
-    """A provider reachable ONLY through the per-slot pool closes after the
+    """A provider reachable only through the per-slot pool closes after the
     slot pool, on the same incremental stack that owns the pool's teardown."""
     events: list[str] = []
     provider = _FakeProvider("slot", events)
@@ -252,7 +252,7 @@ async def test_slot_pool_provider_closes_after_the_slot_pool() -> None:
 async def test_slot_pool_provider_already_tracked_by_the_role_factories_is_not_closed_twice() -> (
     None
 ):
-    """The documented worker path builds every role through ONE provider:
+    """The documented worker path builds every role through one provider:
     open_worker_deps already closes it after the role pools, so the slot
     pool's registration must not add a second close."""
     events: list[str] = []

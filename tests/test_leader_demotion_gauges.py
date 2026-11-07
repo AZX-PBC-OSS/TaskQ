@@ -2,7 +2,7 @@
 
 ``taskq.queue.depth``, ``taskq.queue.live_workers``,
 ``taskq.queue.utilization``, ``taskq.reservation.slots_used`` and
-``taskq.jobs.stranded`` are populated ONLY by the elected leader's sweep
+``taskq.jobs.stranded`` are populated only by the elected leader's sweep
 loops, and ``taskq.maintenance_leader.lease_expires_in_seconds`` is stamped
 only by the pod holding the leader lease.  A demoted worker that keeps its
 last cached values exports numbers it no longer has any authority over --
@@ -166,7 +166,7 @@ async def test_leader_only_gauges_are_absent_after_demotion(
     obs_mod.update_stranded_jobs_cache({("ghost_actor", "no_actor_config"): 2})
     obs_mod.record_leader_lease_expires_in_seconds("w1", 30.0)
 
-    # Sanity: while leading, the values ARE exported.
+    # Sanity: while leading, the values are exported.
     assert [p.value for p in _points(reader, "taskq.queue.depth")] == [7]
     assert [p.value for p in _points(reader, "taskq.queue.live_workers")] == [2]
     assert [p.value for p in _points(reader, "taskq.queue.utilization")] == [3.5]
@@ -182,7 +182,7 @@ async def test_leader_only_gauges_are_absent_after_demotion(
     leader._leader_monitor_conn = cast("object", _DeadConn())  # type: ignore[assignment]  # Why: test double for the leader-monitor conn; only fetchval/is_closed/close are exercised.
 
     shutdown = asyncio.Event()
-    task = asyncio.create_task(leader._watchdog_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the watchdog loop IS the demotion path under test.
+    task = asyncio.create_task(leader._watchdog_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the watchdog loop is the demotion path under test.
     try:
         await asyncio.wait_for(is_leader.demoted.wait(), timeout=5.0)
     finally:

@@ -7,7 +7,7 @@ connection, and roll back atomically when the parent raises.
 
 Scenarios:
   Transactional sub-job: parent succeeds, child visible
-  Transactional sub-job: parent raises, child NOT in PG
+  Transactional sub-job: parent raises, child not in PG
   Snooze: child re-enqueued outside tx; parent transitions to scheduled
   Autonomous fallback: child persists even if parent fails
   Explicit connection override: child enqueued independently
@@ -113,7 +113,7 @@ async def _enqueue_parent(backend: "PostgresBackend") -> JobRow:
             payload={"name": "parent"},
             max_attempts=3,
             retry_kind="transient",
-            # None = immediate, in the SERVER clock domain. An absolute
+            # None = immediate, in the server clock domain. An absolute
             # datetime.now() races the enqueue SQL's status boundary
             # (COALESCE($n, clock_timestamp()) > clock_timestamp()) -
             # with the testcontainer clock a fraction of a millisecond
@@ -225,13 +225,13 @@ async def test_ti1_parent_succeeds_child_visible(
     assert parent_status == "succeeded", "parent should have status='succeeded'"
 
 
-# ── Transactional sub-job: parent raises, child NOT in PG ──────
+# ── Transactional sub-job: parent raises, child not in PG ──────
 
 
 async def test_ti2_parent_raises_child_not_in_pg(
     jobs_app: JobsApp,
 ) -> None:
-    """Parent raises after enqueueing child; child NOT in PG (rolled back)."""
+    """Parent raises after enqueueing child; child not in PG (rolled back)."""
 
     deps = jobs_app.deps
     backend = jobs_app.backend
@@ -469,7 +469,7 @@ async def test_ti5_explicit_connection_override_child_persists(
     assert child_count >= 1, "child row should exist in PG (independent commit from explicit conn)"
 
 
-# ── Startup warning fires when no LOOP-scope DB connection registered ──
+# ── Startup warning fires when no loop-scope DB connection registered ──
 
 
 async def test_ti6_startup_warning_no_loop_scope_conn(pg_dsn: str) -> None:

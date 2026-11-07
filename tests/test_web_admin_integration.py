@@ -42,7 +42,7 @@ pytestmark = [pytest.mark.fastapi]
 pytestmark = pytest.mark.integration
 
 _SCHEMA_LABEL = f"twa_{new_base62()}".lower()
-# Bind-and-release port selection loses a TOCTOU race now and then under
+# Bind-and-release port selection loses a toctou race now and then under
 # parallel load; a child that exits early with "address already in use" gets
 # this many total attempts, each on a fresh port.
 _UI_SERVE_MAX_BIND_ATTEMPTS = 3
@@ -125,11 +125,10 @@ def _make_backend(pool: asyncpg.Pool) -> PostgresBackend:
 
 # ── Shared PG (session-scoped, via tests/conftest.py's pg_dsn) ────────────
 #
-# This module previously booted its OWN session Postgres - under the shared-
-# container topology that would be a second long-lived Postgres for the run
-# (and under the old per-worker topology it already was a redundant extra).
-# The module-scoped pg_dsn fixture gives this file its own database on the
-# ONE shared container, which is strictly better isolation than the previous
+# This module shares the session Postgres (the module-scoped pg_dsn
+# fixture gives this file its own database on the
+# one shared container) - a second long-lived session Postgres for the run
+# would be strictly worse isolation for more containers.
 # same-container-same-database setup.
 
 
@@ -137,7 +136,7 @@ def _make_backend(pool: asyncpg.Pool) -> PostgresBackend:
 #
 # Tests pass a pg_pool that was created inside the same event loop. The
 # lifespan mounts the router and populates app.state so route handlers can
-# resolve their dependencies. It does NOT create a new pool - the caller
+# resolve their dependencies. It does not create a new pool - the caller
 # owns the pool lifecycle.
 
 
@@ -564,11 +563,11 @@ async def test_leader_page_no_leader(pool: asyncpg.Pool) -> None:
     assert "No leader elected" in resp.text or "no leader" in resp.text.lower()
 
 
-# ── Leader watchdog badge is the DATABASE's freshness verdict ──────
+# ── Leader watchdog badge is the database's freshness verdict ──────
 #
 # last_seen_at is written by the server, so only the server can measure its
 # age without mixing the admin process's clock into the comparison.  These
-# two tests move the heartbeat relative to the SERVER clock and read the
+# two tests move the heartbeat relative to the server clock and read the
 # badge back off the rendered page; the admin process's own clock is never
 # consulted, and nothing here depends on how the predicate is spelled.
 
@@ -722,7 +721,7 @@ async def test_taskq_ui_serve_starts(pg_dsn: str, _migrated_schema_for_ui_serve:
                     f"taskq ui serve exited during startup on port {port} "
                     f"(rc={proc.returncode}).\nstderr: {stderr[:500]}"
                 )
-            # Still running but not responding: terminate it FIRST so stderr
+            # Still running but not responding: terminate it first so stderr
             # reaches EOF, then attach the drained logs to the failure -
             # reading from a live child's stderr would block.
             await _stop(proc)
@@ -802,12 +801,12 @@ async def test_polling_badge_no_redis(pool: asyncpg.Pool) -> None:
 # ── Real-time badge with Redis ────────────────────────────────────
 #
 # The badge's server-side probe (``get_realtime_mode``'s 0.5 s
-# ``wait_for(ping())``) races the SHARED, co-tenanted broker: under
+# ``wait_for(ping())``) races the shared, co-tenanted broker: under
 # ``-n 2`` leg load a ping that loses the race renders
 # "polling-degraded" and the "real-time mode" assertion reds. The mode
 # logic is therefore tested through its two deterministic seams - the
 # 5 s health cache and the client's own ``ping`` - never through the
-# shared broker's latency. The cache is MODULE-LEVEL (process-wide),
+# shared broker's latency. The cache is module-level (process-wide),
 # so every test that touches it pins both fields with monkeypatch,
 # which restores them at teardown: no cross-test leakage.
 
@@ -897,7 +896,7 @@ async def test_realtime_badge_repings_once_after_cache_expiry(
     re-warmed cache without another ping.
     """
     stub = _RedisPingStub()
-    # Cached-ok but expired: the stale ok=True must NOT short-circuit -
+    # Cached-ok but expired: the stale ok=True must not short-circuit -
     # expiry forces the probe to run again.
     monkeypatch.setattr(_redis_health_cache, "ok", True)
     monkeypatch.setattr(_redis_health_cache, "expires_at", 0.0)
@@ -1165,9 +1164,9 @@ async def test_cancel_button_visibility(pool: asyncpg.Pool, conn: asyncpg.Connec
 #
 # tests/test_retry_job_source_states_parity.py already pins the backend
 # contract (Backend.retry_job accepts succeeded/abandoned) against both
-# PostgresBackend and InMemoryBackend directly. Nothing in this suite
-# previously drove a POST to /admin/jobs/{id}/retry against real Postgres
-# for ANY source state - not even the already-supported 'failed' case -
+# PostgresBackend and InMemoryBackend directly. No other test in this suite
+# drives a POST to /admin/jobs/{id}/retry against real Postgres
+# for any source state - not even the already-supported 'failed' case -
 # so the admin route's own precheck (job.status not in _TERMINAL_STATUSES)
 # and its delegation to backend.retry_job were only ever exercised through
 # a StubBackend in tests/web_admin/test_backend_delegation.py, which never
@@ -1580,7 +1579,7 @@ async def test_schedule_run_now_enqueues_job(pool: asyncpg.Pool, conn: asyncpg.C
         parsed = loads(str(payload))
         assert parsed.get("key") == "val"
 
-    # "Run now" is immediate: the row lands pending with a SERVER-stamped
+    # "Run now" is immediate: the row lands pending with a server-stamped
     # scheduled_at (scheduled_at=None at enqueue → the backend's clock
     # stamps and decides), never an app-clock stamp.
     assert job["status"] == "pending", (

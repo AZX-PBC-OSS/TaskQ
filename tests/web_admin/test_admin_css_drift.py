@@ -28,7 +28,7 @@ pytestmark = [pytest.mark.fastapi]
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STATIC = _REPO_ROOT / "src" / "taskq" / "web" / "static"
 
-# Class-shaped tokens that are NOT Tailwind utilities and are therefore
+# Class-shaped tokens that are not Tailwind utilities and are therefore
 # not expected in the compiled css: the JS/DOM hooks and the hand-written
 # rules in _base.html's <style> block.
 _CUSTOM_CLASSES: frozenset[str] = frozenset(

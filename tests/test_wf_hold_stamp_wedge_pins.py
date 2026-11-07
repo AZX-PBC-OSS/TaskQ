@@ -1,9 +1,9 @@
-"""THE HOLD-STAMP WEDGE + THE OUTBOX TTL — the D2 soak's P1/P3 fixes'
+"""The hold-stamp wedge + the outbox TTL — the D2 soak's P1/P3 fixes'
 pins (integration: real PG, the real engine surfaces).
 
 The soak's evidence (REPORT-D2-soak): a SIGKILL during a HELD loop leaves
 a node row pending + ``metadata.hold`` stamped whose hold row is no longer
-``'held'`` — the claimable fence ``AND NOT metadata ? 'hold'`` then
+``'held'`` — the claimable fence ``and not metadata ? 'hold'`` then
 excludes it FOREVER; TWENTY runs sat wedged at close, unclaimable,
 undetected, unnamed. And the delivered ``wf_outbox`` population grew
 monotonically forever — no retention law touched it.
@@ -48,7 +48,7 @@ class Ingest(BaseModel):
 
 def _wedge_app(name: str) -> WorkflowApp:
     """A one-node workflow whose node HOLDS on an Approval — the demo's
-    review shape (the registry is exact: a unique name per app). T26'S
+    review shape (the registry is exact: a unique name per app). the expiry-as-value'S
     AMENDMENT: the wait's expiry face is the ``Expired`` MEMBER — the
     body converts it into the RAISED failure (the ladder's own use)."""
     from taskq.exceptions import SignalTimeoutError
@@ -137,13 +137,13 @@ async def _plant_wedge(
     assert stamped, "fixture broken: the wedge's node row is not pending+stamped"
 
 
-# ── the wedge's paths: every path lands in a NAMED state ────────────────
+# ── the wedge's paths: every path lands in a named state ────────────────
 
 
 async def test_delivered_hold_stamp_is_cleared_and_the_run_completes(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE DELIVERED PATH: the wedge (the signal delivered, the stamp
+    """The delivered path: the wedge (the signal delivered, the stamp
     standing) is reclaimed by the arm — the stamp cleared, the row
     re-claimed, the body's re-execution REPLAYS the delivered answer from
     the queue (the resume contract) — the run COMPLETES. The 20-wedge
@@ -154,7 +154,7 @@ async def test_delivered_hold_stamp_is_cleared_and_the_run_completes(
     )
     await _plant_wedge(wf_pool, wf_schema, node_id, hold_id, signal_status="delivered")
 
-    # RED shape on the ungated row: the claimable fence excludes it.
+    # red shape on the ungated row: the claimable fence excludes it.
     claimable = await wf_pool.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND status IN ('pending','scheduled') "
@@ -166,8 +166,8 @@ async def test_delivered_hold_stamp_is_cleared_and_the_run_completes(
     with structlog.testing.capture_logs() as captured:
         cleared = await sweep_hold_stamps(wf_pool, render_workflow_sql(wf_schema))
     assert cleared == 1
-    # THE LOUDNESS LAW: the heal is a NAMED event (nothing detects or
-    # names them — was the soak's half-complaint).
+    # the heal is a named event (nothing detects or names them — was the soak's
+    # half-complaint).
     assert any(e["event"] == "wf-hold-stamp-reclaimed" for e in captured)
 
     verdict = await runner.drive(flow_id, until="terminal", max_ticks=400, tick=0.01)
@@ -179,7 +179,7 @@ async def test_delivered_hold_stamp_is_cleared_and_the_run_completes(
 async def test_expired_hold_stamp_is_cleared_and_the_run_lands_the_named_timeout(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE EXPIRED PATH: the hold the expiry arm ABANDONED (the stamp
+    """The expired path: the hold the expiry arm ABANDONED (the stamp
     survived — the expiry sweep's two-statement shape is one wedge door)
     is reclaimed: the stamp cleared, the body re-executes, the wait site
     raises the typed timeout face, and the ladder terminal-fails the node
@@ -206,7 +206,7 @@ async def test_expired_hold_stamp_is_cleared_and_the_run_lands_the_named_timeout
 async def test_absent_hold_stamp_is_cleared_and_a_fresh_hold_resumes(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ABSENT-HOLD PATH: the stamp pointing at a hold row that no
+    """The absent-hold path: the stamp pointing at a hold row that no
     longer exists (a purge, a corruption) is a DEAD POINTER — cleared, the
     body re-executes, mints a FRESH hold (a NEW epoch — the multi-hold
     law), and a resolve on it completes the run."""
@@ -239,7 +239,7 @@ async def test_absent_hold_stamp_is_cleared_and_a_fresh_hold_resumes(
 async def test_live_hold_is_left_standing(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE HELD PATH (the hold is the truth): a stamp whose hold row is
+    """The held path (the hold is the truth): a stamp whose hold row is
     still 'held' is the LEGITIMATE held representation — the arm leaves
     it untouched, and the resume re-dispatches the run to completion."""
 
@@ -263,9 +263,9 @@ async def test_live_hold_is_left_standing(
 async def test_twenty_wedged_runs_all_land_named_terminal_or_resumed(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE 20-WEDGE REPRO (the soak's own receipt): twenty runs planted in
+    """The 20-wedge repro (the soak's own receipt): twenty runs planted in
     the exact wedged end state — mixed delivered (10) / abandoned (5) /
-    absent hold (5) — and ONE reconcile pass leaves ZERO of them in the
+    absent hold (5) — and one reconcile pass leaves ZERO of them in the
     wedge; every run then reaches its named state (resumed-and-completed,
     resumed-and-completed, terminal-failed) and nothing is left pending +
     stamped with a dead hold."""
@@ -286,8 +286,7 @@ async def test_twenty_wedged_runs_all_land_named_terminal_or_resumed(
     cleared = await sweep_hold_stamps(wf_pool, render_workflow_sql(wf_schema))
     assert cleared == 20, cleared
 
-    # THE WEDGE IS GONE: no row sits pending/scheduled + stamped with a
-    # dead hold.
+    # no row sits pending/scheduled + stamped with a dead hold.
     wedged = await wf_pool.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs j '
         "WHERE j.metadata ? 'hold' AND j.status IN ('pending','scheduled') "
@@ -296,11 +295,11 @@ async def test_twenty_wedged_runs_all_land_named_terminal_or_resumed(
     )
     assert wedged == 0, f"{wedged} run(s) remain wedged after the reconcile"
 
-    # EVERY run reaches its named state.
+    # every run reaches its named state.
     for fid, _nid, _hid, runner, kind in runs:
         if kind == "absent":
             # The absent-hold path re-mints: the body's re-execution
-            # registers a FRESH hold (a NEW epoch) — a resolve on it
+            # registers a fresh hold (a new epoch) — a resolve on it
             # resumes the run.
             verdict = await runner.drive(fid, until="held", max_ticks=400, tick=0.01)
             assert verdict == "held", (kind, fid)
@@ -316,7 +315,7 @@ async def test_twenty_wedged_runs_all_land_named_terminal_or_resumed(
         assert verdict == "terminal", (kind, fid)
         status = await wf_pool.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', fid)
         if kind == "abandoned":
-            assert status == "failed", (kind, status)  # the NAMED timeout face
+            assert status == "failed", (kind, status)  # the named timeout face
         else:
             assert status == "succeeded", (kind, status)  # resumed + completed
 

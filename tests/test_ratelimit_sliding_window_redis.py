@@ -106,7 +106,7 @@ async def test_log_burst_deny_wait_allows(redis_url: str) -> None:
         await client.aclose()
 
 
-# ── EVALSHA caching - register_script called exactly once ──────
+# ── evalsha caching - register_script called exactly once ──────
 
 
 async def test_log_evalsha_caching(redis_url: str) -> None:
@@ -189,7 +189,7 @@ async def test_log_sub_ms_collision(redis_url: str) -> None:
         await client.aclose()
 
 
-# ── PEXPIRE on Redis key - TTL within expected range ───────────
+# ── pexpire on Redis key - TTL within expected range ───────────
 
 
 async def test_log_pexpire_on_key(redis_url: str) -> None:
@@ -224,13 +224,13 @@ async def test_log_pexpire_on_key(redis_url: str) -> None:
         await client.aclose()
 
 
-# ── PEXPIRE refreshed on denial ───────────────────────────────
+# ── pexpire refreshed on denial ───────────────────────────────
 
 
 async def test_log_pexpire_refreshed_on_denial(redis_url: str) -> None:
     """fill window (60 acquires), wait 1s, acquire one more
     (denied). PTTL after denial is still close to 2*window_ms + 60_000 -
-    the denied path refreshed the TTL per it did NOT decay by 1s.
+    the denied path refreshed the TTL per it did not decay by 1s.
     """
     name = _unique_name()
     window = timedelta(seconds=60)
@@ -267,7 +267,7 @@ async def test_log_pexpire_refreshed_on_denial(redis_url: str) -> None:
         await client.aclose()
 
 
-# ── GCRA-style integration tests ───────────────────────────────────────
+# ── gcra-style integration tests ───────────────────────────────────────
 
 
 # ── Steady-state acceptance ────────────────────────────────
@@ -308,7 +308,7 @@ async def test_gcra_steady_state(redis_url: str) -> None:
         assert r.retry_after is not None
         assert r.remaining == 0.0
 
-        # GCRA retry_after = emission_interval (10 s) minus the real time
+        # gcra retry_after = emission_interval (10 s) minus the real time
         # elapsed during the burst's roundtrips.
         assert 0 < r.retry_after.total_seconds() <= 10.0
     finally:
@@ -351,7 +351,7 @@ async def test_gcra_even_spacing(redis_url: str) -> None:
 
         r = await sw.acquire(redis_client=client, clock=clock, settings=settings)
         assert r.allowed is True
-        # now < stored TAT here, so post = pre + exactly one emission
+        # now < stored tat here, so post = pre + exactly one emission
         # interval (1000 ms) - spacing, proven without any timing assumption.
         assert r.previous_state is not None
         pre_ms = float(str(r.previous_state["pre_acquire_tat_str"]))
@@ -371,7 +371,7 @@ async def test_gcra_even_spacing(redis_url: str) -> None:
         await client.aclose()
 
 
-# ── EVALSHA cached for GCRA script ────────────────────────
+# ── evalsha cached for gcra script ────────────────────────
 
 
 async def test_gcra_evalsha_caching(redis_url: str) -> None:
@@ -408,7 +408,7 @@ async def test_gcra_evalsha_caching(redis_url: str) -> None:
         assert r2.backend == "redis"
         assert register_count == 1
 
-        assert sw._redis_gcra_script is not None  # pyright: ignore[reportPrivateUsage] # Why: test introspects the cached GCRA script instance to verify stability
+        assert sw._redis_gcra_script is not None  # pyright: ignore[reportPrivateUsage] # Why: test introspects the cached gcra script instance to verify stability
         first_script = sw._redis_gcra_script
 
         await sw.acquire(redis_client=client, clock=clock, settings=settings)
@@ -417,12 +417,12 @@ async def test_gcra_evalsha_caching(redis_url: str) -> None:
         await client.aclose()
 
 
-# ── PEXPIRE refreshed on denial ────────────────────────────
+# ── pexpire refreshed on denial ────────────────────────────
 
 
 async def test_gcra_pexpire_refreshed_on_denial(redis_url: str) -> None:
     """burst 60, immediately attempt one more (denied). PTTL on
-    the key is close to window_ms + 60_000 (refreshed on the denied branch), NOT decayed.
+    the key is close to window_ms + 60_000 (refreshed on the denied branch), not decayed.
 
     window=600 s makes the denial deterministic: the immediate 61st is
     denied for any inter-await gap under ~10 s (one emission interval),
@@ -928,7 +928,7 @@ async def test_peek_log_after_window_expiry_not_exhausted(redis_url: str) -> Non
     happens in acquire, so once the window empties with no intervening
     acquire the sorted set still holds the aged-out entries - the peek
     must count only in-window entries (ZCOUNT against the store's TIME)
-    and report NOT exhausted, because the very next acquire IS allowed.
+    and report not exhausted, because the very next acquire IS allowed.
     A ZCARD-based peek (the whole key) overstates exhaustion.
     """
     name = _unique_name()
@@ -945,7 +945,7 @@ async def test_peek_log_after_window_expiry_not_exhausted(redis_url: str) -> Non
         state = await sw.peek(redis_client=client, clock=clock, settings=settings)
         assert state.is_exhausted is True
 
-        # Age the entry past the 5 s window with NO intervening acquire -
+        # Age the entry past the 5 s window with no intervening acquire -
         # the key is not evicted until the next acquire runs. (5 s, not
         # 1 s: the exhausted-peek above needs margin against scheduling
         # stalls under parallel load.)

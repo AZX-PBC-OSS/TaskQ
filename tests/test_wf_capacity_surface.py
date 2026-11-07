@@ -1,4 +1,4 @@
-"""THE CAPACITY-SURFACE PINS: the workflow actor's declared capacity
+"""The capacity-surface pins: the workflow actor's declared capacity
 terms (``max_concurrent`` / ``max_pending`` / ``reservations`` /
 ``result_ttl``) — the declaration→projection leg the engine's per-actor
 claim arithmetic already reads.
@@ -35,6 +35,7 @@ from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
 from taskq.workflows import (
     FlowRunner,
+    GateDecl,
     Promise,
     StepContext,
     WorkflowApp,
@@ -112,36 +113,177 @@ def test_handle_terms_flow_into_the_node_decl() -> None:
     assert node.reservations == (guard,)
 
 
-def test_explicit_step_params_override_the_handle_terms() -> None:
-    """The explicit step params OVERRIDE the handle's terms, never the
-    reverse; an unoverridden term still flows (the handle's reservations
-    ride when only ``max_concurrent`` is replaced)."""
+def test_handle_retry_terms_flow_into_the_node_decl() -> None:
+    """An ``@app.actor(max_attempts=…, retry_kind=…)`` handle wired via a
+    bare ``step()`` carries its retry terms into the node's decl — the
+    explicit step params override, never the reverse."""
     app = WorkflowApp()
-    guard = ConcurrencyReservation(name="pdfium-guard", slots=1, lease=30.0)
-    other = ConcurrencyReservation(name="other-guard", slots=2, lease=30.0)
 
-    @app.actor(max_concurrent=1, reservations=[guard], result_ttl=60.0)
-    async def guarded(
+    @app.actor(max_attempts=7, retry_kind="permanent")
+    async def seven(
         ctx: StepContext, params: Ingest
     ) -> Report:  # pragma: no cover - the runner drives real bodies
         return Report(ref=params.doc_id)
 
-    @app.workflow("overridden-flow")
-    def overridden_flow() -> Promise[object]:
+    @app.workflow("retry-terms-flow")
+    def retry_terms_flow() -> Promise[object]:
+        return build(step(seven, Ingest(doc_id="d"), key="probe"))
+
+    node = app.get("retry-terms-flow").nodes["probe"]
+    assert node.max_attempts == 7
+    assert node.retry_kind == "permanent"
+
+
+def test_undeclared_actor_retry_defaults_do_not_leak() -> None:
+    """An actor that declares no retry terms leaves the node's retry
+    shape byte-identical to the unwired form: ``max_attempts`` 3,
+    ``retry_kind`` None — the decorator's own defaults are not a
+    declaration and never fold into the node."""
+    app = WorkflowApp()
+
+    @app.actor(max_concurrent=2)
+    async def bare(
+        ctx: StepContext, params: Ingest
+    ) -> Report:  # pragma: no cover - the runner drives real bodies
+        return Report(ref=params.doc_id)
+
+    @app.workflow("retry-defaults-quiet")
+    def retry_defaults_quiet() -> Promise[object]:
+        return build(step(bare, Ingest(doc_id="d"), key="probe"))
+
+    node = app.get("retry-defaults-quiet").nodes["probe"]
+    assert node.max_attempts == 3
+    assert node.retry_kind is None
+
+
+def test_explicit_step_retry_terms_override_the_handle() -> None:
+    """The step's own retry terms beat the handle's — the fold only
+    fills what the step left unset."""
+    app = WorkflowApp()
+
+    @app.actor(max_attempts=7, retry_kind="permanent")
+    async def seven(
+        ctx: StepContext, params: Ingest
+    ) -> Report:  # pragma: no cover - the runner drives real bodies
+        return Report(ref=params.doc_id)
+
+    @app.workflow("retry-override")
+    def retry_override() -> Promise[object]:
         return build(
             step(
-                guarded,
+                seven,
                 Ingest(doc_id="d"),
-                key="guard",
-                max_concurrent=4,
-                reservations=[other],
+                key="probe",
+                max_attempts=2,
+                retry_kind="transient",
             )
         )
 
-    node = app.get("overridden-flow").nodes["guard"]
-    assert node.max_concurrent == 4
-    assert node.reservations == (other,)
+    node = app.get("retry-override").nodes["probe"]
+    assert node.max_attempts == 2
+    assert node.retry_kind == "transient"
+
+
+def test_duration_terms_accept_timedelta_or_seconds() -> None:
+    """Every second-denominated term accepts a timedelta or a bare
+    number of seconds; the node decl carries the seconds float either
+    way (one stored form, one normalizer)."""
+    from datetime import timedelta
+
+    app = WorkflowApp()
+
+    @app.actor(result_ttl=timedelta(seconds=45))
+    async def ttl_actor(
+        ctx: StepContext, params: Ingest
+    ) -> Report:  # pragma: no cover - the runner drives real bodies
+        return Report(ref=params.doc_id)
+
+    assert ttl_actor.result_ttl == 45.0
+
+    @app.workflow("duration-forms")
+    def duration_forms() -> Promise[object]:
+        return build(
+            step(
+                ttl_actor,
+                Ingest(doc_id="d"),
+                key="probe",
+                result_ttl=timedelta(seconds=60),
+                cache=True,
+                cache_ttl=timedelta(hours=1),
+            )
+        )
+
+    node = app.get("duration-forms").nodes["probe"]
     assert node.result_ttl == 60.0
+    assert node.cache_ttl == 3600.0
+
+
+def test_the_capture_policy_alias_is_accepted_on_both_decorators() -> None:
+    """``capture_policy=`` is the canonical name on ``@app.actor`` and
+    ``@app.workflow``; ``capture=`` rides as the alias on both — one
+    concept, one word, two accepted spellings, and a disagreement
+    between the two is refused."""
+    app = WorkflowApp()
+
+    @app.actor(capture="all")
+    async def by_alias(
+        ctx: StepContext, params: Ingest
+    ) -> Report:  # pragma: no cover - the runner drives real bodies
+        return Report(ref=params.doc_id)
+
+    assert by_alias.capture_policy == "all"
+
+    @app.workflow("capture-alias-flow", capture_policy="all")
+    def by_canonical() -> Promise[object]:
+        return build(step(by_alias, Ingest(doc_id="d"), key="probe"))
+
+    assert app.get("capture-alias-flow").nodes["probe"].body is by_alias
+
+    with pytest.raises(ValueError, match="capture policy is ONE value"):
+        app.actor(capture="none", capture_policy="all")(by_alias)
+
+
+def test_reservations_accept_list_tuple_or_none_on_every_face() -> None:
+    """The reservations term accepts a list, a tuple, or None on every
+    face (the actor, the step, the route arm); the node decl stores the
+    tuple either way, and None reserves nothing."""
+    from taskq.workflows.api._graph import RouteArm
+
+    guard = ConcurrencyReservation(name="alias-guard", slots=1, lease=30.0)
+    app = WorkflowApp()
+
+    @app.actor(reservations=[guard])
+    async def listed(ctx: StepContext, params: Ingest) -> list[Report]:
+        return [Report(ref=params.doc_id)]
+
+    @app.actor()
+    async def bare_actor(ctx: StepContext, params: Ingest) -> list[Report]:
+        return [Report(ref=params.doc_id)]
+
+    async def arm_body(ctx: StepContext, params: Report) -> Report:
+        return params
+
+    @app.workflow("reservations-shapes-flow")
+    def reservations_shapes() -> Promise[object]:
+        src = step(listed, Ingest(doc_id="d"), key="list", reservations=[guard])
+        none_form = step(bare_actor, Ingest(doc_id="d"), key="none_form", reservations=None)
+        fan = map_source(src, {Report: RouteArm(arm_body, reservations=[guard])})
+        return build(none_form, fan)
+
+    assert app.get("reservations-shapes-flow").nodes["list"].reservations == (guard,)
+    assert app.get("reservations-shapes-flow").nodes["none_form"].reservations == ()
+
+
+def test_explicit_step_params_override_the_handle_terms() -> None:
+    """The hold gate's deadline accepts a timedelta — the seconds number
+    is what arms the hold's expiry either way."""
+    from datetime import timedelta
+
+    gate = GateDecl(name="Approve", payload_models=(object,), timeout_s=timedelta(seconds=90))
+    assert isinstance(gate.timeout_s, timedelta)
+    from taskq.workflows._types import duration_seconds
+
+    assert duration_seconds(gate.timeout_s) == 90.0
 
 
 def test_handle_term_conflict_message_names_reservation_buckets_not_instances() -> None:
@@ -182,7 +324,7 @@ def test_handle_term_conflict_message_names_reservation_buckets_not_instances() 
 def test_the_collect_reads_the_recorded_graphs_not_a_recompile() -> None:
     """H-D1's teeth: the projection records the compiled graphs (the
     ``record_compiled`` cache); the reservations' collect READS the
-    recording — the build fn is NOT re-invoked (the compile+validate
+    recording — the build fn is not re-invoked (the compile+validate
     doubling: the boot paid every workflow's build fn twice, ~92us/node
     — 918ms at 10k nodes, paid again by the collect). The contract the
     collect keeps: the declared reservations still come back."""
@@ -216,8 +358,8 @@ def test_the_collect_reads_the_recorded_graphs_not_a_recompile() -> None:
 
 def test_actor_carrier_carries_the_caps() -> None:
     """The handle's F3 carrier (``actor_config``) — the REAL projection's
-    ONE vocabulary (H-A12), the same shape the config sync + the guards
-    consume — carries the declared caps (the reservations do NOT ride
+    one vocabulary (H-A12), the same shape the config sync + the guards
+    consume — carries the declared caps (the reservations do not ride
     it: no field; the ensure-slots pass owns their materialization)."""
     app = WorkflowApp()
     decorate = app.actor(max_concurrent=2, result_ttl=60.0, queue="gpu")
@@ -262,7 +404,7 @@ def test_projection_rows_carry_the_declared_caps() -> None:
 
     row = next(c for c in project_workflow_actor_configs() if c.actor == "wf-cap")
     assert row.max_concurrent == 2
-    assert row.max_pending is None  # the: the dead knob is off the surface — the row seeds it UNSET
+    assert row.max_pending is None  # the: the dead knob is off the surface — the row seeds it unset
     assert row.result_ttl == 60.0
     assert row.queue == "gpu"
     assert row.metadata == {"workflow_actor": True}
@@ -345,7 +487,7 @@ def test_across_apps_capacity_conflict_refuses_the_boot() -> None:
 
 def test_same_terms_across_apps_merge() -> None:
     """The refusal is for DIFFERENT terms: the same declared caps on two
-    apps' workflows of one actor name are the SAME declaration — the
+    apps' workflows of one actor name are the same declaration — the
     projection merges them into one row (the idempotent shape)."""
     app_a = WorkflowApp()
 
@@ -369,7 +511,7 @@ def test_same_terms_across_apps_merge() -> None:
 
 def test_collect_workflow_reservations_dedups_by_name_in_deterministic_order() -> None:
     """The collect walks the imported apps' compiled graphs' node decls:
-    the same instance declared on several nodes returns ONCE (dedup by
+    the same instance declared on several nodes returns once (dedup by
     name) and the return is NAME-SORTED — byte-stable regardless of the
     app registry's iteration order."""
     from taskq.workflows._worker_execution import collect_workflow_reservations
@@ -396,8 +538,9 @@ def test_collect_workflow_reservations_dedups_by_name_in_deterministic_order() -
         two = step(second, one, key="two")
         return build(two)
 
-    # THE COLLECT READS THE RECORDED GRAPHS (H-D1): project first — the
-    # boot's own order (the collect never re-invokes the build fn).
+        # project first — the boot's own order (the collect never re-invokes the
+
+    # build fn).
     project_workflow_actor_configs()
     assert collect_workflow_reservations() == ([guard_a, guard_b], [])
 
@@ -543,18 +686,18 @@ def test_empty_consumed_set_leaves_the_gate_silent() -> None:
     _fail_fast_on_unconsumed_workflow_queues(settings, cohorts)
 
 
-# ── the strict gate's SECOND FACE: the app-declared strictness ───────────
+# ── the strict gate's second face: the app-declared strictness ───────────
 
 
 def test_app_declared_strict_queues_refuse_the_boot() -> None:
-    """THE APP-DECLARED FACE of the strict gate: a WorkflowApp declaring
+    """The app-declared face of the strict gate: a WorkflowApp declaring
     ``queues_strict=True`` carries the contract in CODE — the boot
-    REFUSES with NO env set at all. The fleet that needs this face
+    REFUSES with no env set at all. The fleet that needs this face
     structurally cannot use the env var (its workgroup children each
     subscribe to a queue subset; fleet-wide env coordination is
     impossible), but every child already imports the app — the
     declaration rides the app registry the projection itself walks
-    (the OR-law's app-side arm)."""
+    (the or-law's app-side arm)."""
     from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
     from taskq.workflows._worker_execution import WorkflowQueueUnconsumedError
 
@@ -578,15 +721,15 @@ def test_app_declared_strict_queues_refuse_the_boot() -> None:
 
 
 def test_app_without_declaration_keeps_the_warning_arm() -> None:
-    """THE DEFAULT ARM, unchanged (the additive-only law): a registered
-    app with NO declaration and no env keeps the ONE aggregated warning;
+    """The default arm, unchanged (the additive-only law): a registered
+    app with no declaration and no env keeps the one aggregated warning;
     the boot proceeds. The declaration's absence is today's behavior —
     even with an app in the registry (the getattr default's face)."""
     import structlog.testing
 
     from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
 
-    app = WorkflowApp()  # registered, NOT strict — the default
+    app = WorkflowApp()  # registered, not strict — the default
     assert app.queues_strict is False
     settings = WorkerSettings.load_from_dict({"TASKQ_QUEUES": "etl"})
     cohorts = [
@@ -605,16 +748,16 @@ def test_app_without_declaration_keeps_the_warning_arm() -> None:
 
 
 def test_env_only_strict_still_refuses_with_an_undeclared_app() -> None:
-    """THE ENV FACE, preserved (today's behavior): ``TASKQ_QUEUES_STRICT``
-    refuses the boot even when a registered app did NOT declare strict —
+    """The env face, preserved (today's behavior): ``TASKQ_QUEUES_STRICT``
+    refuses the boot even when a registered app did not declare strict —
     the env can only ADD strictness, and the env-only fleet loses
     nothing."""
     from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
     from taskq.workflows._worker_execution import WorkflowQueueUnconsumedError
 
-    # The ref IS the keep-alive: the app registry is a WeakSet — an
+    # The ref is the keep-alive: the app registry is a WeakSet — an
     # unheld app drops out, and the pin stops testing its subject.
-    _app = WorkflowApp()  # registered, NOT strict
+    _app = WorkflowApp()  # registered, not strict
     settings = WorkerSettings.load_from_dict({"TASKQ_QUEUES": "etl", "TASKQ_QUEUES_STRICT": "1"})
     cohorts = [
         ActorConfig(
@@ -629,7 +772,7 @@ def test_env_only_strict_still_refuses_with_an_undeclared_app() -> None:
 
 
 def test_env_and_declaration_together_refuse_the_boot() -> None:
-    """BOTH faces set — the OR-law's intersection is the SAME refusal
+    """both faces set — the or-law's intersection is the same refusal
     (strict is strict; no face can soften the other)."""
     from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
     from taskq.workflows._worker_execution import WorkflowQueueUnconsumedError
@@ -697,7 +840,7 @@ def test_consumed_cohorts_boot_under_env_strict() -> None:
 
 
 def test_heterogeneous_fleet_child_keeps_the_warning_arm() -> None:
-    """THE HETEROGENEOUS FLEET's per-worker law: a child whose OWN
+    """The heterogeneous fleet's per-worker law: a child whose own
     cohorts are consumed, while a SIBLING worker serves another queue,
     stays on the WARNING arm when nothing declares strict — the check is
     per-worker over THIS worker's projected cohorts, and the sibling's
@@ -706,7 +849,7 @@ def test_heterogeneous_fleet_child_keeps_the_warning_arm() -> None:
 
     from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
 
-    # The ref IS the keep-alive: the app registry is a WeakSet — an
+    # The ref is the keep-alive: the app registry is a WeakSet — an
     # unheld app drops out, and the pin stops testing its subject.
     _app = WorkflowApp()  # no declaration, no env — the sibling case is the warning arm's subject
     settings = WorkerSettings.load_from_dict({"TASKQ_QUEUES": "etl"})
@@ -730,18 +873,18 @@ def test_heterogeneous_fleet_child_keeps_the_warning_arm() -> None:
     assert warnings[0]["cohorts"] == {"wf-sibling": "remote"}, warnings[0]
 
 
-# ── (f) the round-1 recorded findings' pins ────────────────────────────
+# ── the reservation/capacity contract's pins ────────────────────────────
 
 
 def test_shared_reservation_boots_clean_on_a_non_default_schema() -> None:
-    """H-A2: ONE module-level reservation, declared once, passed to BOTH
+    """H-A2: one module-level reservation, declared once, passed to both
     a vanilla ``@actor`` and a wf step — the boot registers it twice
-    (the vanilla pass AND the wf pass's rebind at the SAME registry) and
-    must stay CLEAN on a non-default schema: ONE rebind doctrine (the
+    (the vanilla pass and the wf pass's rebind at the same registry) and
+    must stay CLEAN on a non-default schema: one rebind doctrine (the
     vanilla pass rebinds too, the same ``rebind_schema`` at the same
-    phase). The pre-fix split (the vanilla pass registered the RAW
-    declaration, the wf pass the rebind) died in the registry's
-    ``_same_config`` schema comparison — the boot REFUSED."""
+    phase). A split registration (the vanilla pass registering the RAW
+    declaration, the wf pass the rebind) dies in the registry's
+    ``_same_config`` schema comparison — the boot REFUSES."""
     from datetime import timedelta
 
     from pydantic import BaseModel, TypeAdapter
@@ -794,16 +937,16 @@ def test_shared_reservation_boots_clean_on_a_non_default_schema() -> None:
     settings = WorkerSettings.load_from_dict(
         {"TASKQ_QUEUES": "default", "TASKQ_SCHEMA_NAME": live_schema}
     )
-    # THE VANILLA PASS (the real bootstrap function).
+    # the vanilla pass (the real bootstrap function).
     _di_registry, resolved = _bootstrap_guards_and_registries(
         settings, {"vanilla-sharer": vanilla_ref}, None, None, None
     )
-    # THE WF PASS's registration shape (the bootstrap's own two lines):
-    # the collect + the rebind + the register — the SAME registry.
+    # the wf pass's registration shape: the collect + the rebind + the register
+    # — the same registry.
     wf_collected, _wf_unknown = collect_workflow_reservations()
     for wf_res in wf_collected:
         resolved.register(wf_res.rebind_schema(settings.schema_name))
-    # Clean: ONE registration, bound to the DEPLOYMENT's schema (the
+    # Clean: one registration, bound to the deployment's schema (the
     # ensure-slots pass's own filter reads it).
     live = resolved.get_reservation("shared-guard")
     assert live.schema == live_schema
@@ -814,14 +957,14 @@ def test_collect_dedup_ignores_schema_but_heeds_keyed_and_lock_lease() -> None:
     """H-A9: the collect's dedup equality is the identity that SURVIVES
     the rebind — ``(name, slots, lease, keyed, lock_lease)``, the schema
     EXCLUDED (the boot's rebind owns it: two same-name same-config
-    differing-schema declarations are ONE registration). The differing
+    differing-schema declarations are one registration). The differing
     ``keyed``/``lock_lease`` refusals are the next pins' subject (one
     app per pin — the app registry is process-global)."""
     from datetime import timedelta
 
     from taskq.workflows._worker_execution import collect_workflow_reservations
 
-    # The SAME-CONFIG differing-schema pair: ONE registration.
+    # The same-config differing-schema pair: one registration.
     plain_a = ConcurrencyReservation(
         "rebind-guard", slots=2, lease=timedelta(seconds=30), schema="taskq"
     )
@@ -852,8 +995,8 @@ def test_collect_dedup_ignores_schema_but_heeds_keyed_and_lock_lease() -> None:
 def test_collect_dedup_refuses_differing_keyed_and_lock_lease() -> None:
     """H-A9's teeth: the dedup's identity HEEDS ``keyed`` — two same-name
     declarations differing on it are the refused defect (ValueError,
-    both configs named). The pre-fix dedup ignored it (and compared the
-    rebind-away schema)."""
+    both configs named). A dedup that ignored ``keyed`` (and compared
+    the rebind-away schema) admits the defect."""
     from datetime import timedelta
 
     from taskq.workflows._worker_execution import collect_workflow_reservations
@@ -886,7 +1029,7 @@ def test_collect_dedup_refuses_differing_keyed_and_lock_lease() -> None:
 
 def test_collect_dedup_refuses_differing_lock_lease() -> None:
     """H-A9's teeth, the lock_lease arm: two same-name declarations
-    differing ONLY on ``lock_lease`` are the refused defect — the lease
+    differing only on ``lock_lease`` are the refused defect — the lease
     the heartbeat extends by is part of the reservation's identity."""
     from datetime import timedelta
 
@@ -942,7 +1085,7 @@ def test_keyed_reservation_ref_admitted_at_the_wiring() -> None:
         return build(step(_plain_body, Ingest(doc_id="d-42"), key="one", reservations=[ref]))
 
     # The wiring accepts the keyed shape (the compile succeeds — the
-    # refusal was the OLD law); the row's own stamp carries the concrete
+    # refusal was the old law); the row's own stamp carries the concrete
     # name resolved from the run input.
     compiled = app.get("keyed-reservation-ref-flow")
     assert compiled is not None
@@ -1017,7 +1160,7 @@ def test_max_pending_is_off_the_wf_surface() -> None:
     passing it is the loud TypeError, never a silent accept."""
     app = WorkflowApp()
     with pytest.raises(TypeError, match="max_pending"):
-        # Why the ignore: the REMOVED parameter is the pin's subject —
+        # Why the ignore: the removed parameter is the pin's subject —
         # the checker's own refusal and the runtime TypeError agree.
         step(_plain_body, Ingest(doc_id="d"), key="one", max_pending=5)  # pyright: ignore[reportCallIssue]
     with pytest.raises(TypeError, match="max_pending"):
@@ -1025,7 +1168,7 @@ def test_max_pending_is_off_the_wf_surface() -> None:
 
 
 def test_actor_carrier_matches_the_projection_vocabulary() -> None:
-    """H-A12: the handle's F3 carrier speaks the REAL projection's ONE
+    """H-A12: the handle's F3 carrier speaks the REAL projection's one
     vocabulary — the ``ActorConfig`` field set (``actor`` named by the
     handle's own declared name, the ``workflow_actor`` metadata mark),
     never a second, workflow-namespaced scheme beside it."""
@@ -1045,10 +1188,10 @@ def test_actor_carrier_matches_the_projection_vocabulary() -> None:
 def test_equal_terms_different_reservation_instances_do_not_conflict() -> None:
     """H-A3: the one-cap law compares the ROW-CARRIED fields only — two
     nodes, one actor name, equal ``max_concurrent``/``result_ttl``,
-    DIFFERENT reservation instances of the SAME (name, slots, lease):
-    NO conflict (the reservation's identity is the collect's own
-    name-keyed law — one registration). The pre-fix law compared the
-    INSTANCES (no ``__eq__``): equal configs were false conflicts."""
+    DIFFERENT reservation instances of the same (name, slots, lease):
+    no conflict (the reservation's identity is the collect's own
+    name-keyed law — one registration). A law that compares the
+    INSTANCES (no ``__eq__``) reads equal configs as false conflicts."""
     from taskq.workflows._worker_execution import (
         collect_workflow_reservations,
         project_workflow_actor_configs,
@@ -1102,7 +1245,7 @@ def test_differing_row_fields_conflict_names_the_fields() -> None:
 
 
 def test_within_workflow_capacity_conflict_refuses_the_boot() -> None:
-    """H-A7: the within-workflow capacity conflict is NEVER skippable —
+    """H-A7: the within-workflow capacity conflict is never skippable —
     the skip stranded the workflow's rows forever (no cohort projected,
     nothing claims them) and blinded the queue-trap door. The
     across-apps arm's semantics apply within one workflow TOO: the boot
@@ -1227,7 +1370,7 @@ def test_route_arm_actor_override_refuses_a_capped_body() -> None:
 
 
 def test_route_arm_declares_its_own_terms() -> None:
-    """H-A4's fix: the arm's OWN declaration (the RouteArm passthrough)
+    """H-A4's fix: the arm's own declaration (the RouteArm passthrough)
     covers the capped handle's terms — no refusal, and the arm's terms
     RIDE: the projection carries them onto the arm's effective cohort
     and the reservations collect (the ensure-slots pass's input)."""
@@ -1276,7 +1419,7 @@ def test_route_arm_declares_its_own_terms() -> None:
 def test_map_queue_only_override_is_not_refused() -> None:
     """H-A4's same-actor arm: a capped handle wired as the MAP body —
     the map's placement keeps the source node's actor (the map spells no
-    actor override), so the terms are NOT dropped and NOT refused: they
+    actor override), so the terms are not dropped and not refused: they
     flow into the node's unset term slots (the handle-terms flow's own
     law) and ride the shared cohort."""
     from taskq.workflows._worker_execution import project_workflow_actor_configs
@@ -1291,7 +1434,7 @@ def test_map_queue_only_override_is_not_refused() -> None:
     @app.workflow("map-same-actor-flow")
     def map_same_actor_flow() -> Promise[object]:
         source = step(_route_source, Ingest(doc_id="d"), key="src")
-        mapped = map_source(source, capped_map_item)  # the SAME cohort — no override
+        mapped = map_source(source, capped_map_item)  # the same cohort — no override
         return build(mapped)
 
     compiled = app.get("map-same-actor-flow")
@@ -1362,12 +1505,12 @@ def test_escalation_cohort_projects() -> None:
 
 
 async def test_a_workflow_reservation_rebinds_its_schema_at_registration() -> None:
-    """THE SCHEMA-AT-IMPORT SEAM (the flows demo's recorded finding): a
+    """The schema-at-import seam: a
     workflow-declared reservation is constructed at module import —
     before settings exist — so its schema is the declaration's default,
     not the deployment's. The bootstrap's registration must rebind a
     COPY (the declaration never mutates — the same module-level instance
-    may be registered by many processes); the pre-fix shape filtered
+    may be registered by many processes); a schema-blind filter
     silently, the guard failing closed invisibly: registered, never
     slotted, every acquire denied forever."""
     from datetime import timedelta
@@ -1376,7 +1519,7 @@ async def test_a_workflow_reservation_rebinds_its_schema_at_registration() -> No
     from taskq.workflows import WorkflowApp
 
     res = ConcurrencyReservation("pdfium_extract", slots=1, lease=timedelta(minutes=20))
-    assert res.schema == "taskq"  # the declaration's default — NOT the deployment's
+    assert res.schema == "taskq"  # the declaration's default — not the deployment's
 
     app = WorkflowApp()
 
@@ -1392,7 +1535,7 @@ async def test_a_workflow_reservation_rebinds_its_schema_at_registration() -> No
     assert rebound is not res
 
 
-# ══ ROUND-2 ADVERSARIAL REVIEW'S RECORDED FINDINGS ═════════════
+# ══ the recorded findings' pins ═════════════
 
 
 # ── the registry's duplicate-name law ────────────────────────────────
@@ -1412,11 +1555,11 @@ def test_the_registry_duplicate_name_law_heeds_lock_lease() -> None:
     registry.register(
         ConcurrencyReservation("dup-law", slots=2, lease=30.0, lock_lease=timedelta(seconds=60))
     )
-    # THE IDENTICAL RE-REGISTER: idempotent (the debug no-op).
+    # idempotent (the debug no-op).
     registry.register(
         ConcurrencyReservation("dup-law", slots=2, lease=30.0, lock_lease=timedelta(seconds=60))
     )
-    # THE TRUE CONFIG DIFFERENCE: refused, the field NAMED.
+    # refused, the field named.
     with pytest.raises(ValueError, match="lock_lease") as excinfo:
         registry.register(
             ConcurrencyReservation("dup-law", slots=2, lease=30.0, lock_lease=timedelta(seconds=90))
@@ -1431,11 +1574,11 @@ def test_the_explicit_registry_door_boots_clean_on_the_docs_pattern() -> None:
     """The docs' blessed pattern — construct a ``RateLimitRegistry``,
     ``.register()`` the RAW import-time reservation on it, pass it to
     ``worker_main(..., rate_limit_registry=rl)`` — must BOOT CLEAN on a
-    non-default schema. ONE doctrine: the registration passes (the
-    vanilla pass AND the wf pass) register the REBOUND copy, and the
+    non-default schema. one doctrine: the registration passes (the
+    vanilla pass and the wf pass) register the REBOUND copy, and the
     pre-registered raw instance REBINDS at the register step — the
-    resolved registry's entries are ALWAYS settings-schema-bound. The
-    pre-fix shape died in ``_same_config``'s schema comparison (the raw
+    resolved registry's entries are always settings-schema-bound. The
+    schema-blind shape dies in ``_same_config``'s schema comparison (the raw
     instance's ``taskq`` default vs the deployment's ``acme``): the boot
     REFUSED — the docs' own pattern was a crash."""
     from datetime import timedelta
@@ -1454,9 +1597,9 @@ def test_the_explicit_registry_door_boots_clean_on_the_docs_pattern() -> None:
     class _VanillaResult(BaseModel):
         ok: bool = True
 
-    # THE DOCS' PATTERN: the explicit registry, the RAW declaration
-    # registered on it (the import-time default schema), the registry
-    # passed to worker_main.
+        # the explicit registry, the raw declaration registered on it (the
+
+    # import-time default schema), the registry passed to worker_main.
     explicit = RateLimitRegistry()
     raw = ConcurrencyReservation("stripe_concurrent", slots=8, lease=timedelta(seconds=30))
     explicit.register(raw)
@@ -1493,25 +1636,24 @@ def test_the_explicit_registry_door_boots_clean_on_the_docs_pattern() -> None:
     settings = WorkerSettings.load_from_dict(
         {"TASKQ_QUEUES": "default", "TASKQ_SCHEMA_NAME": "acme"}
     )
-    # THE VANILLA PASS (the real bootstrap function) against the EXPLICIT
-    # registry — the pre-fix shape raised ValueError here.
+    # the vanilla pass (the real bootstrap function) against the explicit
+    # registry — a schema-blind shape raises ValueError here.
     _di_registry, resolved = _bootstrap_guards_and_registries(
         settings, {"vanilla-sharer": vanilla_ref}, None, None, explicit
     )
-    # THE WF PASS (the bootstrap's own shape): the projection (the
-    # compile's recording — the collect reads it), then the collect + the
-    # rebind + the register — the SAME registry, the raw instance ALREADY
-    # in it.
+    # the projection (the compile's recording — the collect reads it), then the
+    # collect + the rebind + the register — the same registry, the raw instance
+    # already in it.
     project_workflow_actor_configs()
     wf_reservations, _wf_unknown = collect_workflow_reservations()
     for wf_res in wf_reservations:
         resolved.register(wf_res.rebind_schema(settings.schema_name))
-    # CLEAN: the boot's resolved entry is ALWAYS settings-schema-bound —
-    # the raw pre-registration was rebound AT the register step.
+    # clean: the boot's resolved entry is always settings-schema-bound —
+    # the raw pre-registration was rebound at the register step.
     live = resolved.get_reservation("stripe_concurrent")
     assert live.schema == "acme", "the resolved registry's entries are settings-schema-bound"
     assert live.name == "stripe_concurrent" and live.slots == 8
-    # THE DECLARATION OBJECT IS NEVER MUTATED (the rebind is a copy).
+    # the declaration object is never mutated (the rebind is a copy).
     assert raw.schema == "taskq"
     assert raw is not live
 
@@ -1528,7 +1670,7 @@ def test_the_collect_gathers_plain_str_reservation_names() -> None:
     from taskq.workflows._worker_execution import collect_workflow_reservations
     from taskq.workflows.api._graph import reservation_names
 
-    # THE ROW STILL STAMPS THE NAME (the wiring door's own passthrough —
+    # the row still stamps the name (the wiring door's own passthrough —
     # the claim-time fail-closed arm remains the enforcer).
     assert reservation_names(("typo-guard",), what="the step's reservations") == ("typo-guard",)
 
@@ -1554,7 +1696,7 @@ def test_the_collect_gathers_plain_str_reservation_names() -> None:
 
 def test_the_bootstrap_warns_unbacked_workflow_reservation_names() -> None:
     """The WARNING's twin: the bootstrap's reservation twin of
-    ``workflow-rate-limit-name-unregistered`` — a str name NO registry
+    ``workflow-rate-limit-name-unregistered`` — a str name no registry
     entry backs is the WARNING (the rate-limit twin's own shape: the
     names + the remedy); a name the registry (a vanilla actor's own
     registration) backs stays SILENT."""
@@ -1574,8 +1716,8 @@ def test_the_bootstrap_warns_unbacked_workflow_reservation_names() -> None:
     assert warnings[0]["names"] == ["typo-guard"], warnings[0]
     assert "park fail-closed" in str(warnings[0].get("remedy", "")), warnings[0]
 
-    # THE BACKED NAME: a vanilla actor's own registration (or the wf
-    # collect's) put the name in the registry — no warning.
+    # a vanilla actor's own registration (or the wf collect's) put the name in
+    # the registry — no warning.
     registry.register(ConcurrencyReservation("typo-guard", slots=1, lease=30.0))
     with structlog.testing.capture_logs() as logs:
         _warn_unregistered_workflow_reservations(log, ["typo-guard"], registry)
@@ -1595,9 +1737,9 @@ async def _loop_iter_body(ctx: StepContext, carry: None) -> object:
 
 
 def test_the_workflow_placement_declares_the_escalation_cohort() -> None:
-    """C6: ``@app.workflow(name, actor=…, queue=…)`` is THE PLACEMENT
+    """C6: ``@app.workflow(name, actor=…, queue=…)`` is the PLACEMENT
     FACE for the definition's own rows — the escalation consumer rows
-    (D1: ``escalation_bindings`` reads the definition) AND the loop
+    (D1: ``escalation_bindings`` reads the definition) and the loop
     node's fallback placement (the loop's rows fall back to the
     workflow's declared cohort instead of the hardcoded
     ``("wf", "default")``). The projection reads the WorkflowDef's
@@ -1614,30 +1756,30 @@ def test_the_workflow_placement_declares_the_escalation_cohort() -> None:
 
     app.get("placed-flow")  # the registration door (the D1 write)
 
-    # THE DEFINITION'S PLACEMENT (the escalation rows' own address).
+    # the definition's placement (the escalation rows' own address).
     definition = get_registry().get("placed-flow")
     assert (definition.actor, definition.queue) == ("wf-x", "heavy")
 
-    # THE LOOP'S FALLBACK PLACEMENT (the loop node's own rows).
+    # the loop's fallback placement (the loop node's own rows).
     node = app.get("placed-flow").nodes["retrying"]
     assert (node.actor, node.queue) == ("wf-x", "heavy")
 
-    # THE ESCALATION ROWS' BINDINGS (D1 — the enqueue's own face).
+    # the escalation rows' bindings (D1 — the enqueue's own face).
     bindings = escalation_bindings(
         "placed-flow", "retrying", flow_id=1, error_class=None, message=None
     )
     assert bindings is not None
     assert bindings["actor"] == "wf-x" and bindings["queue"] == "heavy"
 
-    # THE PROJECTION reads the WorkflowDef's placement: the cohort
-    # projects (the escalation rows' dispatch capacity exists).
+    # the projection reads the WorkflowDef's placement: the cohort projects
+    # (the escalation rows' dispatch capacity exists).
     rows = {(c.actor, c.queue) for c in project_workflow_actor_configs()}
     assert ("wf-x", "heavy") in rows, f"the declared escalation cohort projects: {rows}"
     assert ("workflow", "default") not in rows, "the default cohort is gone for the adopter"
 
 
 def test_the_workflow_placement_defaults_stay() -> None:
-    """the non-adopter law: NO placement declared — the definition's
+    """the non-adopter law: no placement declared — the definition's
     placement stays the CURRENT values ("workflow"/"default"), the loop
     node's fallback stays ("wf", "default"): no behavior change."""
     from taskq.workflows.definitions import get_registry
@@ -1656,7 +1798,7 @@ def test_the_workflow_placement_defaults_stay() -> None:
 
 
 def test_the_workflow_placement_joins_the_one_queue_law() -> None:
-    """the validation: the declared placement joins the SAME one-queue
+    """the validation: the declared placement joins the same one-queue
     law the node cohorts keep — a node on the declared actor's name at a
     DIFFERENT queue is the split placement, rejected by the projection's
     own law (the workflow skips LOUDLY, the conflict naming the actor and
@@ -1671,9 +1813,9 @@ def test_the_workflow_placement_joins_the_one_queue_law() -> None:
 
     @app.workflow("split-placement-flow", actor="wf-split", queue="heavy")
     def split_placement_flow() -> Promise[object]:
-        # THE ESCALATING LOOP registers the escalation body — the
-        # definition's declared placement is LIVE (the escalation rows'
-        # address); the node on the same actor at the DEFAULT queue is
+        # the escalating loop registers the escalation body — the
+        # definition's declared placement is live (the escalation rows'
+        # address); the node on the same actor at the default queue is
         # the split placement the law refuses.
         sink(loop("retrying", _loop_iter_body, initial=None, max_iterations=3))
         one = step(_plain_body, Ingest(doc_id="d"), key="one", actor="wf-split")  # "default"
@@ -1704,14 +1846,14 @@ def test_the_workflow_placement_refuses_non_string_values() -> None:
         app.workflow("bad-queue-flow", queue="")  # type: ignore[arg-type]
 
 
-# ── (r3) the collects' ONE base — the deleted workflow's ghost ───────────
+# ── (r3) the collects' one base — the deleted workflow's ghost ───────────
 
 
 def _declare_the_doomed_app() -> None:
     """Declare the doomed app in THIS frame: the projection records its
     compile (the D1 cache), and on return the app object itself dies
     (the registry is weak) — its graph survives in ``_compiled`` as the
-    ORPHAN the round-3 recorded finding names (the cache has no eviction)."""
+    ORPHAN shape (the cache has no eviction)."""
     from taskq.ratelimit.token_bucket import TokenBucket
 
     doomed = WorkflowApp()
@@ -1732,14 +1874,14 @@ def _declare_the_doomed_app() -> None:
 
 
 def test_the_dropped_workflows_ghost_stops_registering_the_boot_stays_clean() -> None:
-    """R3-THE SIBLINGS' ONE BASE: a workflow deleted from its app
+    """R3-the SIBLINGS' one BASE: a workflow deleted from its app
     in-process (the reload/redeploy story) leaves its compiled graph in
     the ``_compiled`` cache FOREVER (no eviction) — the rate-limit
     collect's old walk of that dict registered the ORPHAN's buckets
     beside the live estate's, and a surviving workflow re-declaring the
     same bucket name with a different config raised the registry's
-    conflict refusal at the unguarded register: THE GHOST REFUSED THE
-    BOOT. The fix: BOTH collects walk the LIVE apps' workflow names
+    conflict refusal at the unguarded register: the GHOST REFUSED the
+    BOOT. The fix: both collects walk the LIVE apps' workflow names
     (the reservations collect's own base) — the orphan's terms stop
     registering, and the same-bucket-different-config re-declaration
     boots clean."""
@@ -1755,9 +1897,9 @@ def test_the_dropped_workflows_ghost_stops_registering_the_boot_stays_clean() ->
     _declare_the_doomed_app()
     gc.collect()  # the doomed app's refcount is zero — the WeakSet drops it
 
-    # THE REDEPLOY: a LIVE app re-declares the same BUCKET name with a
-    # different config (and the same reservation name, differently
-    # sized) on a workflow that survived the reload.
+    # a live app re-declares the same bucket name with a different config (and
+    # the same reservation name, differently sized) on a workflow that survived
+    # the reload.
     live_app = WorkflowApp()
 
     @live_app.workflow("live-wf")
@@ -1774,9 +1916,9 @@ def test_the_dropped_workflows_ghost_stops_registering_the_boot_stays_clean() ->
 
     project_workflow_actor_configs()
 
-    # THE RATE-LIMIT COLLECT: no ghost refusal — the LIVE config is what
-    # registers (pre-fix red: the orphan's capacity-5 bucket registered
-    # first, the live capacity-9 raised the conflict ValueError).
+    # no ghost refusal — the live config is what registers (the orphan's
+    # capacity-5 bucket registers first, the live capacity-9 raised the
+    # conflict ValueError).
     registry = RateLimitRegistry()
     registered, _unknown = collect_workflow_rate_limits(registry)
     assert registered == ["ghost-bucket"], registered
@@ -1785,15 +1927,15 @@ def test_the_dropped_workflows_ghost_stops_registering_the_boot_stays_clean() ->
         "the LIVE config registered — the orphan's terms never reached the registry"
     )
 
-    # THE RESERVATIONS COLLECT: the ghost's guard is not gathered either
-    # (the same base — the sibling cannot drift).
+    # the ghost's guard is not gathered either (the same base — the sibling
+    # cannot drift).
     reservations, _res_unknown = collect_workflow_reservations()
     assert [r.name for r in reservations] == ["ghost-guard"], reservations
     assert reservations[0].slots == 3, "the LIVE slots, never the ghost's"
 
 
 def test_the_rate_limit_conflict_refusal_names_the_buckets_not_the_reprs() -> None:
-    """R3-THE CONFLICT'S RENDER (the reservation face's own fix,
+    """R3-the CONFLICT'S RENDER (the reservation face's own fix,
     mirrored): two LIVE workflows declaring one bucket name with
     different configs is the refused defect (the registry's own
     duplicate-name law) — but the refusal names the RESOLVED BUCKET and
@@ -1844,10 +1986,10 @@ def test_the_rate_limit_conflict_refusal_names_the_buckets_not_the_reprs() -> No
 
 
 def test_the_park_stamp_clears_the_stale_denied_bucket() -> None:
-    """R3-THE PARK'S ONE TRUTH: a row denied on bucket X (the denial's
-    snooze stamped ``released_bucket``) that is THEN fail-closed-parked
+    """R3-the PARK'S one TRUTH: a row denied on bucket X (the denial's
+    snooze stamped ``released_bucket``) that is then fail-closed-parked
     (an unknown bucket, a malformed metadata shape — the same row
-    re-claimed) must not read BOTH stamps: the snooze statement's
+    re-claimed) must not read both stamps: the snooze statement's
     metadata merge is jsonb concatenation (``metadata || update``), so
     the park's shape CLEARS ``released_bucket`` (None — jsonb null
     overwrites) and the row reads one truth: parked, with the arm's own
@@ -1870,10 +2012,9 @@ def test_the_park_stamp_clears_the_stale_denied_bucket() -> None:
     assert denial["released_reason"] == "flow-rate-limit-denied"
     assert denial["released_bucket"] == "guard-x"
 
-    # THE ROW after the denial's snooze (the merge's left side), then
-    # the re-claim's fail-closed PARK: the statement merges
-    # ``metadata || update`` (postgres.py's mark_snoozed) — dict |
-    # dict is that merge, in Python.
+    # the row after the denial's snooze , then the re-claim's fail-closed park:
+    # the statement merges ``metadata || update`` (postgres.py's mark_snoozed)
+    # — dict | dict is that merge, in Python.
     row_metadata: dict[str, object] = dict(denial)
     park = _flow_denial_snooze_metadata(None, parked_kind="flow-reservation-unknown-bucket")
     merged = row_metadata | park
@@ -1890,8 +2031,8 @@ def test_the_park_stamp_clears_the_stale_denied_bucket() -> None:
 def test_map_body_handle_flows_the_code_owner() -> None:
     """The review's blocker, the map arm: a ``capacity_owner="code"``
     handle wired as the MAP body flows its owner into the node's decl
-    under the SAME handle-terms law as the caps — the projected
-    ``ActorConfig`` for THAT cohort reads "code". The pre-fix shape
+    under the same handle-terms law as the caps — the projected
+    ``ActorConfig`` for THAT cohort reads "code". A shape without the sync
     honored the handle's ``max_concurrent`` and silently dropped the
     owner (the opt-in no-op with zero signal)."""
     app = WorkflowApp()
@@ -1917,7 +2058,7 @@ def test_route_arm_body_handle_flows_the_code_owner_per_arm() -> None:
     handle carries the owner onto THAT ARM's cohort — per-arm, never
     folded into the source node (the sibling arm and the join must not
     inherit it). The arm's own ``RouteArm.capacity_owner`` declaration
-    honors it (the priority surface's per-arm shape); WITHOUT it the
+    honors it (the priority surface's per-arm shape); without it the
     wiring refuses, NAMING the owner (the law's extension — the
     override would drop it)."""
     from taskq.workflows._worker_execution import project_workflow_actor_configs as project
@@ -1936,7 +2077,7 @@ def test_route_arm_body_handle_flows_the_code_owner_per_arm() -> None:
             route(
                 source,
                 {
-                    # The handle's owner is CARRIED by the arm's own
+                    # The handle's owner is carried by the arm's own
                     # declaration (the honor path — the other caps too).
                     ImageItem: RouteArm(
                         code_owned_image_arm,
@@ -1944,8 +2085,7 @@ def test_route_arm_body_handle_flows_the_code_owner_per_arm() -> None:
                         max_concurrent=4,
                         capacity_owner="code",
                     ),
-                    # THE SIBLING ARM: untouched — its own cohort stays
-                    # operator-owned.
+                    # untouched — its own cohort stays operator-owned.
                     AudioItem: RouteArm(_audio_arm, actor="wf-audio"),
                 },
             )
@@ -1956,8 +2096,8 @@ def test_route_arm_body_handle_flows_the_code_owner_per_arm() -> None:
     assert rows["wf-image"].max_concurrent == 4
     assert rows["wf-audio"].capacity_owner == "operator", "the sibling arm is untouched"
 
-    # THE DROP ARM: the same handle on an overriding arm WITHOUT the
-    # owner's re-declaration — the named refusal (never a silent drop).
+    # the same handle on an overriding arm without the owner's re-declaration —
+    # the named refusal (never a silent drop).
     app_two = WorkflowApp()
 
     @app_two.actor(max_concurrent=4, capacity_owner="code")
@@ -1983,7 +2123,7 @@ def test_route_arm_body_handle_flows_the_code_owner_per_arm() -> None:
 
 def test_the_join_node_stays_at_the_source_terms() -> None:
     """The review's per-arm law, the join's face: the map's derived join
-    node carries NO terms of its own — its cohort is the source's, so
+    node carries no terms of its own — its cohort is the source's, so
     the projected row for the shared actor IS the source's declaration
     (the handle's owner + caps), never a second vocabulary."""
     app = WorkflowApp()
@@ -2019,7 +2159,7 @@ def test_a_node_already_carrying_a_different_owner_conflicts() -> None:
     async def code_owned_source(ctx: StepContext, params: Ingest) -> list[ImageItem]:
         return [ImageItem(kind_id="i")]  # pragma: no cover - the runner drives real bodies
 
-    @app.actor()  # the DEFAULT owner face — a different declaration
+    @app.actor()  # the default owner face — a different declaration
     async def default_map_item(ctx: StepContext, item: ImageItem) -> Report:
         return Report(ref=item.kind_id)  # pragma: no cover - the runner drives real bodies
 
@@ -2033,15 +2173,15 @@ def test_a_node_already_carrying_a_different_owner_conflicts() -> None:
 
 
 def test_the_code_only_handle_is_never_silent() -> None:
-    """The review's code-only case: a handle carrying ONLY the owner (no
+    """The review's code-only case: a handle carrying only the owner (no
     caps) is a capacity declaration — wired as the MAP body (owner only,
     the caps' slots stay unset), refused NAMED at the route's placement
     override and the chain (the surfaces that would drop it). Never the
-    zero-signal no-op the pre-fix shape was."""
+    zero-signal no-op shape."""
     from taskq.workflows._worker_execution import project_workflow_actor_configs as project
     from taskq.workflows.api._graph import RouteArm, WorkflowBuildError
 
-    # (i) The MAP body: wired, owner only.
+    # (i) The map body: wired, owner only.
     app = WorkflowApp()
 
     @app.actor(capacity_owner="code")
@@ -2059,7 +2199,7 @@ def test_the_code_only_handle_is_never_silent() -> None:
     rows = {c.actor: c for c in project()}
     assert rows["wf"].capacity_owner == "code"
 
-    # (ii) The route's placement override: the NAMED refusal.
+    # (ii) The route's placement override: the named refusal.
     app_two = WorkflowApp()
 
     @app_two.actor(capacity_owner="code")
@@ -2106,7 +2246,7 @@ def test_the_code_only_handle_is_never_silent() -> None:
 
 
 def test_the_code_only_step_flows_the_owner_into_the_decl() -> None:
-    """The review's 4(c): the step() verb's own flow carries a CODE-ONLY
+    """The review's 4(c): the step() verb's own flow carries a CODE-only
     handle's owner into the decl (no caps involved) — the projection's
     row reads it. Locks the unconditional flow the blocker's fix
     relies on."""

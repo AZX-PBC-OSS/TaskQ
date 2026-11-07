@@ -4,14 +4,14 @@
 These attack the fix for what it missed, at the transaction boundary the
 unit stubs cannot reach:
 
-* same-transaction semantics (attack 5): an audit insert that fails AFTER
+* same-transaction semantics (attack 5): an audit insert that fails after
   the mutation's own statement must roll the mutation back (fail-closed),
-  and a COMMIT that fails after both statements succeeded must roll BOTH
+  and a COMMIT that fails after both statements succeeded must roll both
   back -- pinned with test-local triggers, one immediate (statement-time
   failure) and one deferred (commit-time failure);
 * principal integrity (attack 2): a hostile custom auth dependency whose
   subject carries control characters and unbounded length must still
-  produce a bounded, control-free audit row AND a successful mutation;
+  produce a bounded, control-free audit row and a successful mutation;
 * purge scope (attack 3): the destructive multi-row queue purge inside
   ``purge_queue=true`` deregistration is audited with its scope (which
   queue, how many rows), not just a boolean flag;
@@ -59,7 +59,7 @@ def _fixed_auth() -> Any:
 
 
 # Module-level singleton default (B008): a default of None means the
-# no-auth DEV router below, so "not provided" needs its own sentinel value.
+# no-auth dev router below, so "not provided" needs its own sentinel value.
 _AUTHENTICATED = _fixed_auth()
 
 
@@ -199,7 +199,7 @@ async def test_audit_insert_failure_rolls_back_the_mutation(
 
     app = _make_admin_app(module_pg_pool, schema, monkeypatch)
     resp = await _get_csrf_then_post(app, "/admin/schedules", f"/admin/schedules/{sid}/enable")
-    assert resp.status_code == 500  # the failure must NOT be laundered into success
+    assert resp.status_code == 500  # the failure must not be laundered into success
 
     enabled: bool | None = await clean_pg_conn.fetchval(
         f'SELECT enabled FROM "{schema}".cron_schedules WHERE id = $1', sid
@@ -223,7 +223,7 @@ async def test_commit_failure_after_successful_audit_insert_rolls_back_both(
     module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Commit-time failure: BOTH statements (the mutation and the audit
+    """Commit-time failure: both statements (the mutation and the audit
     insert) succeeded inside the transaction, then COMMIT itself failed.
     PostgreSQL commits atomically, so both roll back -- the audit row
     cannot survive a mutation it describes, and vice versa. Pinned with a
@@ -367,9 +367,9 @@ async def test_retry_writes_no_job_event_so_the_audit_row_is_the_attribution(
     module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Unlike cancel, ``Backend.retry_job`` writes NO job_events row (it is
+    """Unlike cancel, ``Backend.retry_job`` writes no job_events row (it is
     one UPDATE plus a wake NOTIFY), so there is nothing to fold the
-    principal into: the admin_audit row is the retry's ONLY attribution.
+    principal into: the admin_audit row is the retry's only attribution.
     Pinned so that if retry ever grows an event, the fold question is
     answered deliberately rather than by omission."""
     schema = module_pg_schema.schema_name

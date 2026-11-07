@@ -8,9 +8,9 @@ Two distinct dedup mechanisms, both exercised through the real client:
   inside the window → single execution; the second handle's
   ``was_existing`` is True.
 - Scoped idempotency: the ``(idempotency_scope, idempotency_key)`` unique
-  index dedupes retries/duplicates within a scope. Same key in the SAME
+  index dedupes retries/duplicates within a scope. Same key in the same
   scope → ``was_existing``; same key in DIFFERENT scopes → two distinct
-  jobs. ``idempotency_scope`` does NOT partition ``identity_key`` dedup -
+  jobs. ``idempotency_scope`` does not partition ``identity_key`` dedup -
   it is orthogonal to ``unique_for``.
 
 Dedup mechanics, verified against the library (not guessed):
@@ -18,9 +18,9 @@ Dedup mechanics, verified against the library (not guessed):
 - ``build_enqueue_args`` falls back to the actor-declared
   ``ref.unique_for``/``ref.unique_states`` when the call passes neither
   (``client/_args.py``), so the tests only supply ``identity_key``.
-- The backend preflight runs only when BOTH ``unique_for`` and
+- The backend preflight runs only when both ``unique_for`` and
   ``identity_key`` are set (``backend/_enqueue.py._enqueue_on_conn``); the SQL
-  matches the newest active row - ``status = ANY(unique_states)``, default
+  matches the newest active row - ``status = any(unique_states)``, default
   ``pending``/``scheduled``/``running`` - within
   ``created_at > clock_timestamp() - unique_for``
   (``backend/_sql_templates.py.enqueue_unique_for_preflight``).

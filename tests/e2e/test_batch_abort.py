@@ -127,7 +127,7 @@ async def test_batch_abort_with_finalizer(
     e2e_schema: E2ESchema,
     run_id: str,
 ) -> None:
-    """Abort policy + finalizer: batch aborts, finalizer is NOT cancelled
+    """Abort policy + finalizer: batch aborts, finalizer is not cancelled
     (it's not stamped with batch_id) and reaches a terminal *succeeded*
     state by catching BatchAbortedError inside the actor."""
     batch_id = new_uuid()
@@ -186,7 +186,7 @@ async def test_batch_abort_with_finalizer(
     batch_status = await fetch_batch_status(e2e_pg_pool, e2e_schema.schema_name, batch_id)
     assert batch_status == "aborted", f"batch row status={batch_status!r}, expected 'aborted'"
 
-    # Finalizer should NOT be cancelled by the abort - it's not stamped
+    # Finalizer should not be cancelled by the abort - it's not stamped
     # with batch_id. It should reach a terminal *succeeded* state (it
     # catches BatchAbortedError inside the actor).
     async def _finalizer_terminal() -> bool:

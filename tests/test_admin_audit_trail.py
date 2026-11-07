@@ -53,7 +53,7 @@ def _fixed_auth() -> Any:
 
 
 # Module-level singleton default (B008): a default of None means the
-# no-auth DEV router below, so "not provided" needs its own sentinel value.
+# no-auth dev router below, so "not provided" needs its own sentinel value.
 _AUTHENTICATED = _fixed_auth()
 
 
@@ -111,7 +111,7 @@ def _make_admin_app(
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true" if admin_actions_enabled else "false")
     # httpx will not store a Secure cookie delivered over http://testserver;
-    # without this the CSRF cookie never reaches the jar and every POST 403s.
+    # without this the csrf cookie never reaches the jar and every post 403s.
     monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
     backend = _make_backend(pool, schema)
     bundle = create_router(

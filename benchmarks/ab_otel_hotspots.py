@@ -5,7 +5,7 @@ Jobs 1/2/3/5 of the observability-cost hunt. Measured here:
   1. ``get_tracer()`` - per-call ``importlib.metadata.version("taskq-py")``
      (obs/_otel.py:77-86); cached-vs-uncached delta; whether the OTel API
      memoizes ``trace.get_tracer`` (it does not - evidence below).
-  2. Span bookkeeping per job with NO SDK configured (proxy tracer) vs
+  2. Span bookkeeping per job with no SDK configured (proxy tracer) vs
      ``_otel_enabled=False`` vs stripped, plus the
      ``trace.get_current_span`` contextvar read the structlog processor pays.
   3. ``record_consumed_message`` + ``record_process_duration`` per job:
@@ -14,7 +14,7 @@ Jobs 1/2/3/5 of the observability-cost hunt. Measured here:
   5. Attribute-dict churn: fresh-dict vs interned-dict share of the
      emission tax.
 
-Run order matters and is enforced: the no-provider phase runs BEFORE any
+Run order matters and is enforced: the no-provider phase runs before any
 provider is installed, because the OTel API forbids unsetting providers.
 
 Usage:
@@ -58,7 +58,7 @@ _QUEUES = [f"queue_{i}" for i in range(5)]
 _OUTCOMES = ("succeeded", "failed", "cancelled", "abandoned")
 
 # Same shape/values as dispatch.py:205-215 builds per job.
-_JOB_ID = uuid.uuid4()  # noqa: TID251  # Why: throwaway attribute payload for timing A/Bs; PK locality is not the variable under test.
+_JOB_ID = uuid.uuid4()  # noqa: TID251  # Why: throwaway attribute payload for timing A/Bs; pk locality is not the variable under test.
 _CONSUMER_ATTRS: dict[str, str | int] = {
     "messaging.system": "taskq",
     "messaging.destination.name": "default",
@@ -215,7 +215,7 @@ def bench_span_tax_no_provider() -> list[tuple[str, float, str]]:
     finally:
         otel_mod._otel_enabled = True
 
-    # enabled with NO SDK provider: ProxyTracer path, shipped uncached _version
+    # enabled with no SDK provider: ProxyTracer path, shipped uncached _version
     rows.append(
         (
             "safe_start_span + end, no SDK (proxy tracer, shipped)",
@@ -438,7 +438,7 @@ def bench_metric_tax_real_sdk(reader: object) -> list[tuple[str, float, str]]:  
         )
     )
 
-    # Cold series: a NEW label value (what a fresh queue costs per add).
+    # Cold series: a new label value (what a fresh queue costs per add).
     cold_i = 0
 
     def _emit_cold() -> None:
@@ -503,7 +503,7 @@ def bench_span_tax_real_sdk() -> list[tuple[str, float, str]]:  # type: ignore[n
     finally:
         _unpatch_version()
 
-    # structlog processor read WITH a valid current span (2 format() calls).
+    # structlog processor read with a valid current span (2 format() calls).
     tracer = trace.get_tracer("bench", "0")
     with tracer.start_span("ambient"):
         rows.append(

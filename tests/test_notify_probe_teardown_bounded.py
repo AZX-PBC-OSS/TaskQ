@@ -9,7 +9,7 @@ bound and no detector watching:
   caller-owned conn carries none, and the health-check loop is deliberately
   exempt from the watchdog's stale-loop detector (see its docstring); an
   unbounded probe on a wedged conn parks the health check forever. The
-  bound is ``settings.notify_listener_setup_timeout`` - the SAME bound the
+  bound is ``settings.notify_listener_setup_timeout`` - the same bound the
   file already applies to every bounded execute/registration in this loop
   family - and exhaustion is treated like any dead conn: the reconnect
   path runs.
@@ -178,7 +178,7 @@ async def test_health_check_probe_hang_is_treated_as_disconnected() -> None:
         try:
             await asyncio.wait_for(probe_entered.wait(), timeout=_TEST_BUDGET_SECS)
 
-            # RED unguarded: the loop is parked inside execute("SELECT 1") -
+            # red unguarded: the loop is parked inside execute("SELECT 1") -
             # the reconnect path never runs and this bounded wait fails by
             # name.
             await wait_for_condition(
@@ -220,7 +220,7 @@ async def test_health_check_error_path_unlisten_hang_is_bounded() -> None:
     old_conn = deps.notify_conn
     old_conn.execute = AsyncMock(side_effect=asyncpg.PostgresConnectionError("simulated failure"))
     remove_entered = asyncio.Event()
-    never = asyncio.Event()  # never set: the dead conn black-holes on UNLISTEN
+    never = asyncio.Event()  # never set: the dead conn black-holes on unlisten
 
     async def hanging_remove(channel: str, cb: object) -> None:
         remove_entered.set()
@@ -240,7 +240,7 @@ async def test_health_check_error_path_unlisten_hang_is_bounded() -> None:
     try:
         await asyncio.wait_for(remove_entered.wait(), timeout=_TEST_BUDGET_SECS)
 
-        # RED unguarded: the error path is parked inside remove_listener() -
+        # red unguarded: the error path is parked inside remove_listener() -
         # the reconnect path never runs and this bounded wait fails by name.
         await wait_for_condition(
             lambda: deps.notify_conn is new_conn,
@@ -254,7 +254,7 @@ async def test_health_check_error_path_unlisten_hang_is_bounded() -> None:
             await task
 
 
-# ── The listener teardown UNLISTEN must be bounded ─────────────────────
+# ── The listener teardown unlisten must be bounded ─────────────────────
 
 
 async def test_listener_teardown_unlisten_hang_is_bounded() -> None:
@@ -269,7 +269,7 @@ async def test_listener_teardown_unlisten_hang_is_bounded() -> None:
 
     conn = deps.notify_conn
     remove_calls: list[str] = []
-    never = asyncio.Event()  # never set: the conn black-holes on UNLISTEN
+    never = asyncio.Event()  # never set: the conn black-holes on unlisten
 
     async def hanging_remove(channel: str, cb: object) -> None:
         remove_calls.append(channel)
@@ -279,7 +279,7 @@ async def test_listener_teardown_unlisten_hang_is_bounded() -> None:
     conn.remove_listener = hanging_remove
 
     try:
-        # RED unguarded: the loop parks forever inside the FIRST
+        # red unguarded: the loop parks forever inside the first
         # remove_listener - this bounded wait raises TimeoutError.
         await asyncio.wait_for(
             notify_listener_loop(deps, backend, shutdown, _WORKER_ID),

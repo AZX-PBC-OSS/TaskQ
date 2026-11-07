@@ -5,17 +5,17 @@ Jobs are dispatched in priority-then-time order (``priority DESC,
 scheduled_at, id``). Every pending job competes freely - a deep queue of
 one actor can starve others if all candidates share high priority." Read
 plainly, that sentence tells an adopter
-that ``strict_fifo`` offers NO cross-actor fairness guarantee at all, and
+that ``strict_fifo`` offers no cross-actor fairness guarantee at all, and
 that they must reach for ``round_robin`` + ``fairness_key`` the moment more
 than one actor shares a queue.
 
 That is not what the dispatch SQL actually does. The claim statement's
 ``stamp`` CTE writes ``actor_config.last_claimed_at`` for every actor
 admitted in a round, and the cross-round tiebreak (after ``pending_rank``
-and ``priority``) is ``actor_claimed_at ASC NULLS FIRST`` - never-claimed
+and ``priority``) is ``actor_claimed_at ASC NULLS first`` - never-claimed
 actors first, then least-recently-claimed
 (src/taskq/backend/_dispatch_sql.py lines 78-95, 460-471, 505-513). This
-rotation applies in BOTH dispatch modes; nothing in its implementation is
+rotation applies in both dispatch modes; nothing in its implementation is
 conditional on ``queues.mode``. The module docstring even states the
 provable shape explicitly (lines 78-95): "a stable total order that
 re-elects the same prefix of actors every round once more actors hold due
@@ -33,7 +33,7 @@ only under generous slack. A single-connection probe against the raw SQL
 (tests/test_dispatch_cohort_rotation_tight_bound_scratch.py, pre-existing
 scratch work in this tree) already confirms the tight bound holds for both
 ``strict_fifo`` and ``round_robin`` at the SQL layer. This test confirms
-the SAME tight bound holds through the production fleet path - real
+the same tight bound holds through the production fleet path - real
 ``Pod.claim()`` calls (``backend.dispatch_batch``), real Postgres, the
 harness in ``tests/_fleet.py`` - so the contract is pinned at the layer an
 adopter actually calls, not only at the SQL layer underneath it.
@@ -49,7 +49,7 @@ is stronger than both: it is a hard, provable, per-round
 bound, not a probabilistic approximation or a documented-as-unbounded
 "strict" order. The finding here is not that TaskQ's engineering is
 lacking - it demonstrably is not - but that workers.md:214 describes the
-weaker strict-order behaviour TaskQ does NOT have, instead of the
+weaker strict-order behaviour TaskQ does not have, instead of the
 stronger, bounded behaviour it does. This test exists so that line can be
 rewritten against a machine-checked number instead of prose that
 undersells its own guarantee.
@@ -85,7 +85,7 @@ def _actor_names() -> list[str]:
 
 
 async def _first_round_served(fleet: Fleet, rounds: int) -> dict[str, int]:
-    """Map actor -> the 1-indexed round it was FIRST claimed in, via the
+    """Map actor -> the 1-indexed round it was first claimed in, via the
     real fleet claim path (Pod.claim -> backend.dispatch_batch), not raw
     SQL. Stops early once every actor has been served at least once.
     """

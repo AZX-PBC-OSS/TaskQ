@@ -15,7 +15,7 @@ next one fails on arrival instead of waiting to be found the same way:
    empty ``unnest`` in a ``CROSS JOIN LATERAL`` annihilates the candidate
    set).
 2. A NULL ``fairness_key`` got a SINGLETON partition per job in memory
-   (``f"__null__{r.id}"``) and ONE SHARED partition in PG
+   (``f"__null__{r.id}"``) and one SHARED partition in PG
    (``PARTITION BY COALESCE(j2.fairness_key, '__null__')``), so the
    unkeyed cohort consumed a whole bounded batch in the mirror while PG
    admits one job per cohort. ``fairness_key`` is None by default.
@@ -41,7 +41,7 @@ next one.
 What to do when the completeness check fails on a seam you added:
 
 * If the seam SELECTS or ORDERS rows (a dispatch, a filtered read, a bulk
-  mutation returning ids), add a behavioural parity test driving BOTH
+  mutation returning ids), add a behavioural parity test driving both
   backends through identical inputs - the shape lives in
   ``tests/test_in_memory_dispatch_parity.py`` - and register the pin here.
 * If the seam cannot diverge (it returns a scalar, or it has no in-memory
@@ -64,7 +64,7 @@ from typing import Any
 from taskq.backend.postgres import PostgresBackend
 from taskq.testing.in_memory import InMemoryBackend
 
-#: Seams whose result depends on SELECTION or ORDERING of rows, and which
+#: Seams whose result depends on selection or ordering of rows, and which
 #: therefore owe the two backends the same answer. Maps the method name to
 #: the file holding its behavioural parity pin.
 _SEMANTIC_SEAMS: dict[str, str] = {
@@ -76,7 +76,7 @@ _SEMANTIC_SEAMS: dict[str, str] = {
     "count_pending_children_by_queue": "tests/test_children_count_parity.py",
 }
 
-#: Seams that SELECT or ORDER rows and are NOT yet pinned by a parity test.
+#: Seams that SELECT or ORDER rows and are not yet pinned by a parity test.
 #: Every entry is a known gap, not an exemption: the two backends could
 #: answer differently here and nothing would notice.
 #:
@@ -164,7 +164,7 @@ def _public_methods(cls: type) -> dict[str, Callable[..., Any]]:
 
 
 def test_every_shared_seam_is_classified_for_semantic_parity() -> None:
-    """A seam present on BOTH backends is either pinned by a parity test or
+    """A seam present on both backends is either pinned by a parity test or
     registered as having no selection/ordering surface.
 
     This is the completeness half. It walks the intersection of the two

@@ -6,7 +6,7 @@ gets a fresh Python interpreter with clean import state, no ``importlib.reload()
 required.
 
 Layering: imports only stdlib, ``watchfiles`` (optional, imported inside function
-body), and ``taskq.obs`` (structlog). Does NOT import from ``taskq.worker.run``,
+body), and ``taskq.obs`` (structlog). Does not import from ``taskq.worker.run``,
 ``taskq.worker.deps``, or any backend.
 """
 

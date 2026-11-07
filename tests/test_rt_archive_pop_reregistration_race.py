@@ -129,7 +129,7 @@ async def test_reregistration_wins_when_the_archive_delete_is_in_flight(
     holder_id = await _seed_terminal_holder(clean_pg_conn, schema)
     sql = render(schema)
 
-    # The archive tx: locks the holder, moves, deletes, UNCOMMITTED.
+    # The archive tx: locks the holder, moves, deletes, uncommitted.
     tx = clean_pg_conn.transaction()
     await tx.start()
     await clean_pg_conn.execute(

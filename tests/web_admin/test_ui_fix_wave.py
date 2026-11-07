@@ -18,6 +18,10 @@ B2 - ``TASKQ_ADMIN_ACTIONS_ENABLED=false`` (the default) still rendered
      no forms.
 """
 
+# ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
+# identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
+# header's own rule for the real-PG seeding this file carries).
+
 from __future__ import annotations
 
 import json
@@ -26,9 +30,12 @@ import shutil
 import subprocess
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import asyncpg
+import httpx
 import pytest
 
 from taskq._ids import new_uuid
@@ -39,6 +46,7 @@ pytest.importorskip("jinja2")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import create_router, setup_admin_state
 
 from . import StubPool
@@ -51,114 +59,52 @@ requires_node = pytest.mark.skipif(
 
 _ACTIONS_BANNER = "Actions are disabled on this deployment (TASKQ_ADMIN_ACTIONS_ENABLED=false)"
 
-_JOB_ID = new_uuid()
+
+# ── the real-PG tier ─────────────────────────────────────────────────────
+#
+# The page pins drive the served pages over the module's real pool (the
+# tests/test_web_admin_integration.py pattern): the job rows, history
+# rows, bucket rows, event rows and audit rows they render are real rows.
 
 
-class _JobDetailPool(StubPool):
-    """A stub pool whose connection answers the job-detail page's reads.
-
-    The job fetch returns a pending live row (so the cancel form's
-    condition is met); every other read is empty, like :class:`StubPool`.
-    """
-
-    def __init__(self) -> None:
-        self.job: dict[str, Any] | None = {
-            "id": _JOB_ID,
-            "actor": "test_actor",
-            "queue": "default",
-            "status": "pending",
-            "created_at": "2026-01-01T00:00:00+00:00",
-            "scheduled_at": "2026-01-01T00:00:00+00:00",
-            "started_at": None,
-            "finished_at": None,
-            "attempt": 0,
-            "max_attempts": 3,
-            "retry_kind": "transient",
-            "priority": 0,
-            "identity_key": None,
-            "fairness_key": None,
-            "locked_by_worker": None,
-            "lock_expires_at": None,
-            "cancel_requested_at": None,
-            "progress_state": None,
-            "progress_seq": 0,
-            "payload": None,
-            "metadata": None,
-            "result": None,
-            "error_class": None,
-            "error_message": None,
-            "error_traceback": None,
-            "trace_id": None,
-            "span_id": None,
-            "tags": [],
-            "schedule_to_close": None,
-            "start_to_close": None,
-            "heartbeat_timeout": None,
-            "cancel_phase": 0,
-            "result_size_bytes": None,
-        }
-
-    async def _maybe_job(self, query: str, *args: object) -> dict[str, Any] | None:
-        if 'FROM "taskq".jobs WHERE id = $1' in query:
-            # The fetch binds the requested id: only THAT id resolves to
-            # the canned row, so a foreign uuid is a genuine miss.
-            return self.job if str(args[0]) == str(_JOB_ID) else None
-        return None
+async def _seed_pending_job(conn: asyncpg.Connection, schema: str) -> Any:
+    """One pending live job (the cancel form's condition is met)."""
+    jid = new_uuid()
+    await conn.execute(
+        f"""INSERT INTO "{schema}".jobs (
+                id, actor, queue, payload, payload_schema_ver, max_attempts,
+                retry_kind, status, priority, attempt, metadata,
+                created_at, scheduled_at)
+            VALUES ($1, 'test_actor', 'default', '{{}}'::jsonb, 1, 3,
+                'transient', 'pending', 0, 0, '{{}}'::jsonb, now(), now())""",
+        jid,
+    )
+    return jid
 
 
-class _JobDetailConnection:
-    """Connection stub routing each admin read to the right canned answer."""
-
-    def __init__(self, pool: _JobDetailPool) -> None:
-        self._pool = pool
-
-    def transaction(self) -> Any:
-        from . import StubTransaction
-
-        return StubTransaction()
-
-    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
-        return []
-
-    async def fetchrow(self, query: str, *args: object) -> dict[str, Any] | None:
-        return await self._pool._maybe_job(query, *args)
-
-    async def fetchval(self, query: str, *args: object) -> Any:
-        from datetime import UTC, datetime
-
-        if query.strip() == "SELECT clock_timestamp()":
-            # The clock-offset probe must see a datetime, the shape the
-            # real database answers with (see StubConnection.fetchval).
-            return datetime.now(UTC)
-        return None
-
-    async def execute(self, query: str, *args: object) -> str:
-        return ""
+def _admin_app(pool: asyncpg.Pool, schema: str, **router_kwargs: object) -> FastAPI:
+    bundle = create_router(pool, schema=schema, base_path="", **router_kwargs)
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    return app
 
 
-class _JobDetailAcquire:
-    def __init__(self, pool: _JobDetailPool) -> None:
-        self._pool = pool
+@asynccontextmanager
+async def _client(
+    pool: asyncpg.Pool, schema: str, **router_kwargs: object
+) -> AsyncGenerator[Any, None]:
+    app = _admin_app(pool, schema, **router_kwargs)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        yield c
 
-    async def __aenter__(self) -> _JobDetailConnection:
-        return _JobDetailConnection(self._pool)
 
-    async def __aexit__(self, *args: object) -> None:
-        pass
-
-
-def _make_job_detail_app(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    backend: object | None = None,
-    actions_enabled: bool | None = None,
-) -> TestClient:
-    """A TestClient serving the job-detail page from stubbed reads.
-
-    ``actions_enabled=None`` keeps the deployment default (the setting is
+def _actions_env(monkeypatch: pytest.MonkeyPatch, actions_enabled: bool | None) -> None:
+    """``actions_enabled=None`` keeps the deployment default (the setting is
     absent from the env) - the exact configuration every fresh deployment
-    ships with.
-    """
+    ships with."""
     if actions_enabled is None:
         monkeypatch.delenv("TASKQ_ADMIN_ACTIONS_ENABLED", raising=False)
     else:
@@ -166,44 +112,48 @@ def _make_job_detail_app(
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
 
-    pool = _JobDetailPool()
-    pool.acquire = lambda **kwargs: _JobDetailAcquire(pool)  # type: ignore[method-assign]
-
-    bundle = create_router(pool, backend=backend)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool; the admin router duck-types asyncpg.Pool.
-    app = FastAPI()
-    setup_admin_state(app, bundle)
-    app.include_router(bundle.router)
-    return TestClient(app)
-
 
 # ── B1: no backend on the bundle → the backend-mediated buttons must not render ─
 
 
-def test_job_detail_without_backend_renders_no_backend_buttons(
+async def test_job_detail_without_backend_renders_no_backend_buttons(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """backend=None (the shipped default): no Cancel/Retry forms at all.
 
     Every backend-mediated route answers 503 from that deployment, so a
     rendered button is a dead button - the templates must consult the
-    bundle the render context carries and hide them.
-    """
-    client = _make_job_detail_app(monkeypatch, backend=None)
-    resp = client.get(f"/jobs/{_JOB_ID}")
+    bundle the render context carries and hide them. Actions are ENABLED
+    here so the absence is attributable to the backend gate alone (the
+    disabled-actions case hides the buttons for a different reason)."""
+    _actions_env(monkeypatch, True)
+    schema = module_pg_schema.schema_name
+    jid = await _seed_pending_job(clean_pg_conn, schema)
+    async with _client(module_pg_pool, schema) as c:
+        resp = await c.get(f"/jobs/{jid}")
     assert resp.status_code == 200
     html = resp.text
     assert "Cancel Job" not in html, "a deployment with no backend rendered a dead Cancel button"
     assert "Retry Job" not in html, "a deployment with no backend rendered a dead Retry button"
 
 
-def test_job_detail_with_backend_renders_the_buttons(
+async def test_job_detail_with_backend_renders_the_buttons(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The control: with a backend (and actions enabled) the buttons render."""
     from . import StubBackend
 
-    client = _make_job_detail_app(monkeypatch, backend=StubBackend(), actions_enabled=True)
-    resp = client.get(f"/jobs/{_JOB_ID}")
+    _actions_env(monkeypatch, True)
+    schema = module_pg_schema.schema_name
+    jid = await _seed_pending_job(clean_pg_conn, schema)
+    async with _client(module_pg_pool, schema, backend=StubBackend()) as c:
+        resp = await c.get(f"/jobs/{jid}")
     assert resp.status_code == 200
     assert "Cancel Job" in resp.text
 
@@ -211,14 +161,20 @@ def test_job_detail_with_backend_renders_the_buttons(
 # ── B2: disabled actions → no forms, one banner, an actionable POST refusal ─
 
 
-def test_job_detail_with_actions_disabled_renders_no_forms_and_one_banner(
+async def test_job_detail_with_actions_disabled_renders_no_forms_and_one_banner(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Default settings: the deployment cannot act, so no action form
     renders and one banner says why (with the setting's name, so the
     operator knows the knob)."""
-    client = _make_job_detail_app(monkeypatch, backend=None)
-    resp = client.get(f"/jobs/{_JOB_ID}")
+    _actions_env(monkeypatch, None)
+    schema = module_pg_schema.schema_name
+    jid = await _seed_pending_job(clean_pg_conn, schema)
+    async with _client(module_pg_pool, schema) as c:
+        resp = await c.get(f"/jobs/{jid}")
     assert resp.status_code == 200
     html = resp.text
     assert "Cancel Job" not in html
@@ -227,15 +183,21 @@ def test_job_detail_with_actions_disabled_renders_no_forms_and_one_banner(
     assert html.count(_ACTIONS_BANNER) == 1, "the disabled-actions banner must render once"
 
 
-def test_disabled_actions_post_is_refused_actionably_before_csrf(
+async def test_disabled_actions_post_is_refused_actionably_before_csrf(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """POST to a mutation route on a disabled deployment: the refusal names
     the setting, and it wins over the CSRF check (a config state is safe
     to answer before any token validation; the token still guards when
     enabled)."""
-    client = _make_job_detail_app(monkeypatch, backend=None)
-    resp = client.post(f"/jobs/{_JOB_ID}/cancel", data={"reason": "nope"})
+    _actions_env(monkeypatch, None)
+    schema = module_pg_schema.schema_name
+    jid = await _seed_pending_job(clean_pg_conn, schema)
+    async with _client(module_pg_pool, schema) as c:
+        resp = await c.post(f"/jobs/{jid}/cancel", data={"reason": "nope"})
     assert resp.status_code == 403
     assert "TASKQ_ADMIN_ACTIONS_ENABLED" in resp.text, (
         f"the refusal must be the actionable config message, got: {resp.text[:200]}"
@@ -243,13 +205,21 @@ def test_disabled_actions_post_is_refused_actionably_before_csrf(
     assert "CSRF" not in resp.text, "the enabled-check must run BEFORE the CSRF check"
 
 
-def test_enabled_actions_post_still_requires_csrf(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_enabled_actions_post_still_requires_csrf(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The reorder must not weaken the token: with actions enabled, a POST
     without a token is still refused by the CSRF guard."""
     from . import StubBackend
 
-    client = _make_job_detail_app(monkeypatch, backend=StubBackend(), actions_enabled=True)
-    resp = client.post(f"/jobs/{_JOB_ID}/cancel", data={"reason": "nope"})
+    _actions_env(monkeypatch, True)
+    schema = module_pg_schema.schema_name
+    jid = await _seed_pending_job(clean_pg_conn, schema)
+    async with _client(module_pg_pool, schema, backend=StubBackend()) as c:
+        resp = await c.post(f"/jobs/{jid}/cancel", data={"reason": "nope"})
     assert resp.status_code == 403
     assert "CSRF" in resp.text
 
@@ -287,10 +257,10 @@ _REALTIME_JS = (
     Path(__file__).resolve().parents[2] / "src" / "taskq" / "web" / "static" / "realtime.js"
 )
 
-# Drives realtime.js under Node. The timeline is pre-seeded with ONE
+# Drives realtime.js under Node. The timeline is pre-seeded with one
 # server-rendered snapshot entry (the class string job_detail.html renders)
-# and the poll answers a CHANGED snapshot, so the first live event must
-# replace the snapshot entry (no stale twin) with nodes carrying the SAME
+# and the poll answers a changed snapshot, so the first live event must
+# replace the snapshot entry (no stale twin) with nodes carrying the same
 # Tailwind classes the template renders.
 _B3_HARNESS = r"""
 const fs = require("fs");
@@ -411,7 +381,7 @@ main();
 @requires_node
 def test_live_progress_entry_uses_the_server_templates_classes() -> None:
     """B3's styling half: the first live progress event renders with the
-    SAME Tailwind classes the server template renders the snapshot entry
+    same Tailwind classes the server template renders the snapshot entry
     with - the visible bar (track + fill), not an unstyled skeleton."""
     node = shutil.which("node")
     assert node is not None
@@ -512,7 +482,7 @@ def test_switch_tab_submits_the_clicked_tab_not_the_previous_one() -> None:
     assert log == ["submit:tab=archived:live=on"], log
 
 
-# ── D2: ONE source for the status colors ──────────────────────────────────
+# ── D2: one source for the status colors ──────────────────────────────────
 
 
 def test_status_classes_blob_is_served_from_the_single_python_source(
@@ -521,7 +491,6 @@ def test_status_classes_blob_is_served_from_the_single_python_source(
     """The chrome emits the status→class maps as JSON, from the same dict
     the status_badge macro renders badges from."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    from . import StubPool
 
     bundle = create_router(StubPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     html = bundle.templates.get_template("_base.html").render(
@@ -630,7 +599,6 @@ def test_status_combobox_carries_a11y_state(
     """The status combobox announces its state: aria-expanded tracks the
     Alpine `open` flag and the popup role is declared."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    from . import StubPool
 
     bundle = create_router(StubPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     source = bundle.templates.loader.get_source(bundle.templates, "jobs.html")[0]  # pyright: ignore[reportOptionalMemberAccess]  # Why: PackageLoader.get_source is not None for a bundled template.
@@ -644,7 +612,6 @@ def test_row_view_action_carries_an_accessible_name(
     """The jobs table's row-view action is an icon-only link: without an
     aria-label it reads as an empty link to a screen reader."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    from . import StubPool
 
     bundle = create_router(StubPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     source = bundle.templates.loader.get_source(bundle.templates, "_partials/job_table.html")[0]  # pyright: ignore[reportOptionalMemberAccess]  # Why: PackageLoader.get_source is not None for a bundled template.
@@ -710,12 +677,12 @@ def test_pg_down_json_routes_get_the_503_envelope(
     assert resp.headers.get("retry-after") is not None
 
 
-# ── The server boot order: the handlers must survive a REAL lifespan ─────
+# ── The server boot order: the handlers must survive a real lifespan ─────
 # TestClient drives a lifespan through the router's context before any
 # scope reaches ``app.__call__``, so the handlers registered by
 # ``setup_admin_state`` are in place when the middleware stack builds. A
-# real server (uvicorn) hands the app the LIFESPAN scope first, and
-# Starlette builds the middleware stack on the FIRST scope it sees --
+# real server (uvicorn) hands the app the lifespan scope first, and
+# Starlette builds the middleware stack on the first scope it sees --
 # the ExceptionMiddleware snapshot is taken before the host's lifespan
 # body (where the setup_admin_state contract puts these registrations)
 # has run one line. These tests boot the app in the server's order and
@@ -747,7 +714,7 @@ def _boot_like_a_server(app: FastAPI) -> None:
 
 def _make_server_ordered_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     """The wiring the embedding contract prescribes (docs + admin_app.py):
-    ``setup_admin_state`` runs INSIDE the host's lifespan."""
+    ``setup_admin_state`` runs inside the host's lifespan."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     app = FastAPI()
 
@@ -806,34 +773,39 @@ def test_the_branded_503_survives_the_server_boot_order(
 # ── U2: HTML-wanting requests get rendered error pages ───────────────────
 
 
-def test_missing_job_renders_a_404_page_not_a_json_wall(
+async def test_missing_job_renders_a_404_page_not_a_json_wall(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """U2: a job id that does not exist renders the error page for a
     browser; the JSON shape stays for the API-ish routes."""
 
-    client = _make_job_detail_app(monkeypatch, backend=None)
-    # _JobDetailPool answers no job for a DIFFERENT id (the fetch keys on
-    # the canned row's id): request a foreign uuid.
+    _actions_env(monkeypatch, None)
+    schema = module_pg_schema.schema_name
     missing = new_uuid()
-    assert missing != _JOB_ID
-    resp = client.get(f"/jobs/{missing}", headers={"Accept": "text/html"})
-    assert resp.status_code == 404
-    assert "TaskQ Admin" in resp.text
-    assert "Job not found" in resp.text
-    # The JSON contract is intact for non-HTML wants:
-    resp_json = client.get(f"/jobs/{missing}")
+    async with _client(module_pg_pool, schema) as c:
+        resp = await c.get(f"/jobs/{missing}", headers={"Accept": "text/html"})
+        assert resp.status_code == 404
+        assert "TaskQ Admin" in resp.text
+        assert "Job not found" in resp.text
+        # The JSON contract is intact for non-HTML wants:
+        resp_json = await c.get(f"/jobs/{missing}")
     assert resp_json.status_code == 404
     assert resp_json.json() == {"detail": "Job not found"}
 
 
-def test_bad_filter_renders_a_400_page_naming_the_accepted_values(
+async def test_bad_filter_renders_a_400_page_naming_the_accepted_values(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """U2: a bogus status filter renders the 400 page whose body carries
     the refusal's detail (which already names the accepted set)."""
-    client = _make_job_detail_app(monkeypatch, backend=None)
-    resp = client.get("/history", params={"status": "bogus"}, headers={"Accept": "text/html"})
+    _actions_env(monkeypatch, None)
+    schema = module_pg_schema.schema_name
+    async with _client(module_pg_pool, schema) as c:
+        resp = await c.get("/history", params={"status": "bogus"}, headers={"Accept": "text/html"})
     assert resp.status_code == 400
     assert resp.headers.get("content-type", "").startswith("text/html"), (
         "a browser's bad filter must render the error page, not a JSON wall"
@@ -842,27 +814,32 @@ def test_bad_filter_renders_a_400_page_naming_the_accepted_values(
     assert "succeeded" in resp.text, "the accepted status list must ride the page"
 
 
-def test_malformed_uuid_renders_a_422_page(
+async def test_malformed_uuid_renders_a_422_page(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """U2: a path parameter FastAPI cannot parse (a non-UUID job id) is a
     rendered 422 page for a browser, not the raw JSON validation dump."""
-    client = _make_job_detail_app(monkeypatch, backend=None)
-    resp = client.get("/jobs/not-a-uuid", headers={"Accept": "text/html"})
+    _actions_env(monkeypatch, None)
+    schema = module_pg_schema.schema_name
+    async with _client(module_pg_pool, schema) as c:
+        resp = await c.get("/jobs/not-a-uuid", headers={"Accept": "text/html"})
     assert resp.status_code == 422
     assert "TaskQ Admin" in resp.text
 
 
-def test_api_ish_routes_stay_json_on_validation_errors(
+async def test_api_ish_routes_stay_json_on_validation_errors(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """U2's boundary: the machine routes (/jobs/count, /jobs/api/*) never
     render HTML - a script's 422 stays JSON."""
-    client = _make_job_detail_app(monkeypatch, backend=None)
-    resp = client.get("/jobs/count", params={"tab": "bogus-tab-value"})
-    # tab is a free str... hit the 422 through a non-int last_event_id on
-    # the progress state route instead: it is under /api/.
-    resp = client.get("/jobs/api/job/not-a-uuid/state")
+    _actions_env(monkeypatch, None)
+    schema = module_pg_schema.schema_name
+    async with _client(module_pg_pool, schema) as c:
+        resp = await c.get("/jobs/api/job/not-a-uuid/state")
     assert resp.status_code == 422
     assert resp.headers.get("content-type", "").startswith("application/json")
 
@@ -870,90 +847,62 @@ def test_api_ish_routes_stay_json_on_validation_errors(
 # ── U3: the direction-aware prev/next pair on history + queue detail ─────
 
 
-class _HistoryRowsConnection:
-    """Connection stub answering the history walk's fetch with PAGE+1 rows."""
-
-    def __init__(self) -> None:
-        from datetime import UTC, datetime, timedelta
-
-        base = datetime(2026, 1, 1, tzinfo=UTC)
-        self.rows: list[dict[str, Any]] = [
-            {
-                "id": new_uuid(),
-                "actor": f"actor_{i}",
-                "queue": "default",
-                "status": "succeeded",
-                "finished_at": base + timedelta(minutes=i),
-                "created_at": base + timedelta(minutes=i),
-                "started_at": base + timedelta(minutes=i),
-                "duration_ms": 10.0,
-                "attempt": 1,
-                "max_attempts": 3,
-                "retry_kind": "transient",
-                "is_archived": i % 2 == 0,
-            }
-            for i in range(51)  # _PAGE_SIZE + 1: the overfetch marker
-        ]
-
-    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
-        # The list walk (and only it) is a wrapped UNION of full rows; the
-        # summary's UNION projects status/cnt only, so the shape check
-        # keeps them apart.
-        if query.startswith("SELECT * FROM (") and "jobs_archive" in query:
-            return self.rows
-        return []
-
-    async def fetchrow(self, query: str, *args: object) -> dict[str, Any] | None:
-        return None
-
-    async def fetchval(self, query: str, *args: object) -> Any:
-        from datetime import UTC, datetime
-
-        if query.strip() == "SELECT clock_timestamp()":
-            return datetime.now(UTC)
-        return 0
-
-    async def execute(self, query: str, *args: object) -> str:
-        return ""
-
-    def transaction(self) -> Any:
-        from . import StubTransaction
-
-        return StubTransaction()
+async def _seed_history_rows(conn: asyncpg.Connection, schema: str, count: int) -> None:
+    """*count* terminal rows for the history walk, half archived (the
+    union's two sides), finished minutes apart."""
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    for i in range(count):
+        archived = i % 2 == 0
+        table = "jobs_archive" if archived else "jobs"
+        row_ts = base + timedelta(minutes=i)
+        if archived:
+            sql = f"""INSERT INTO "{schema}".{table} (
+                    id, actor, queue, payload, max_attempts, retry_kind, status,
+                    attempt, metadata, created_at, scheduled_at, started_at,
+                    finished_at, archived_at, expire_at)
+                VALUES ($1, $2, 'default', '{{}}'::jsonb, 3, 'transient',
+                    'succeeded'::"{schema}".job_status, 1, '{{}}'::jsonb,
+                    $3, $3, $3, $3, $4, $5)"""
+            args: list[object] = [
+                new_uuid(),
+                f"actor_{i}",
+                row_ts,
+                base + timedelta(hours=2),
+                base + timedelta(days=365),
+            ]
+        else:
+            sql = f"""INSERT INTO "{schema}".{table} (
+                    id, actor, queue, payload, max_attempts, retry_kind, status,
+                    attempt, metadata, created_at, scheduled_at, started_at,
+                    finished_at)
+                VALUES ($1, $2, 'default', '{{}}'::jsonb, 3, 'transient',
+                    'succeeded'::"{schema}".job_status, 1, '{{}}'::jsonb,
+                    $3, $3, $3, $3)"""
+            args = [new_uuid(), f"actor_{i}", row_ts]
+        await conn.execute(sql, *args)
 
 
-class _HistoryRowsAcquire:
-    async def __aenter__(self) -> _HistoryRowsConnection:
-        return _HistoryRowsConnection()
-
-    async def __aexit__(self, *args: object) -> None:
-        pass
+def _make_history_app(pool: asyncpg.Pool, schema: str) -> FastAPI:
+    return _admin_app(pool, schema)
 
 
-class _HistoryRowsPool:
-    def acquire(self, **kwargs: object) -> _HistoryRowsAcquire:
-        return _HistoryRowsAcquire()
-
-
-def _make_history_app(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    bundle = create_router(_HistoryRowsPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    app = FastAPI()
-    setup_admin_state(app, bundle)
-    app.include_router(bundle.router)
-    return TestClient(app)
-
-
-def test_history_page_reached_by_a_cursor_renders_a_previous_link(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_history_page_reached_by_a_cursor_renders_a_previous_link(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """U3 (history): a paged-into page carries a Previous link that walks
     BACKWARD (cursor_dir=prev). The one-way pagination finding: the page
     only ever rendered Next, so an operator who paged deep had to walk
     the browser back button through stale filters to return."""
-    client = _make_history_app(monkeypatch)
-    cursor = f"cursor_at=2026-01-01T00%3A25%3A00%2B00%3A00&cursor_created=2026-01-01T00%3A25%3A00%2B00%3A00&cursor_id={new_uuid()}"
-    resp = client.get(f"/history?{cursor}&cursor_dir=next", headers={"Accept": "text/html"})
+    schema = module_pg_schema.schema_name
+    await _seed_history_rows(clean_pg_conn, schema, 51)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_history_app(module_pg_pool, schema)),
+        base_url="http://test",
+    ) as c:
+        cursor = f"cursor_at=2026-01-01T00%3A25%3A00%2B00%3A00&cursor_created=2026-01-01T00%3A25%3A00%2B00%3A00&cursor_id={new_uuid()}"
+        resp = await c.get(f"/history?{cursor}&cursor_dir=next", headers={"Accept": "text/html"})
     assert resp.status_code == 200
     assert "cursor_dir=prev" in resp.text, (
         "a paged-into history page must render a Previous link (the "
@@ -961,13 +910,22 @@ def test_history_page_reached_by_a_cursor_renders_a_previous_link(
     )
 
 
-def test_first_history_page_renders_previous_as_disabled(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_first_history_page_renders_previous_as_disabled(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """U3: the unpaged first page has no previous - the control renders
-    disabled, not absent (the pair's shape matches the jobs table's)."""
-    client = _make_history_app(monkeypatch)
-    resp = client.get("/history", headers={"Accept": "text/html"})
+    disabled, not absent (the pair's shape matches the jobs table's). The
+    page is paged-INTO-able (a full page of rows, a Next below it), so the
+    pair renders with Previous disabled."""
+    schema = module_pg_schema.schema_name
+    await _seed_history_rows(clean_pg_conn, schema, 51)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_history_app(module_pg_pool, schema)),
+        base_url="http://test",
+    ) as c:
+        resp = await c.get("/history", headers={"Accept": "text/html"})
     assert resp.status_code == 200
     assert 'aria-disabled="true"' in resp.text
 
@@ -975,39 +933,57 @@ def test_first_history_page_renders_previous_as_disabled(
 # ── U4: the jobs-table header counts the filtered set ────────────────────
 
 
-def test_jobs_header_shows_the_range_with_the_total(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_jobs_header_shows_the_range_with_the_total(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """U4: the header renders the "1-N of M" range server-side (the count
-    over the SAME filters the rows came from) instead of a bare page-row
-    number the footer duplicated."""  # Why: the header's own glyph is an en-dash; the docstring names it plainly.
-    client = _make_history_app(monkeypatch)
-    resp = client.get("/jobs", headers={"Accept": "text/html"})
+    over the same filters the rows came from) instead of a bare page-row
+    number the footer duplicated."""
+    schema = module_pg_schema.schema_name
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_history_app(module_pg_pool, schema)),
+        base_url="http://test",
+    ) as c:
+        resp = await c.get("/jobs", headers={"Accept": "text/html"})
     assert resp.status_code == 200
     assert "1\u20130 of 0" in resp.text, "the header must carry the 1-N of M range from the count"
 
 
-def test_jobs_footer_no_longer_duplicates_the_count(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_jobs_footer_no_longer_duplicates_the_count(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """U4: the pagination footer's page-only "Showing N results" is gone
     (the header owns the count; two numbers read as two contradicting
     counts)."""
-    client = _make_history_app(monkeypatch)
-    resp = client.get("/jobs", headers={"Accept": "text/html"})
+    schema = module_pg_schema.schema_name
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_history_app(module_pg_pool, schema)),
+        base_url="http://test",
+    ) as c:
+        resp = await c.get("/jobs", headers={"Accept": "text/html"})
     assert resp.status_code == 200
     assert "Showing 0 results" not in resp.text
 
 
-def test_jobs_count_route_applies_the_tag_filter(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_jobs_count_route_applies_the_tag_filter(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
-    """U4: /jobs/count honors EVERY filter the /jobs page honors - the
+    """U4: /jobs/count honors every filter the /jobs page honors - the
     header's "of N" must describe the filtered set. A NUL in a tag is the
     clean 400 the shared parser gives (before the route grew the filter,
     the parameter was dropped in silence)."""
-    client = _make_history_app(monkeypatch)
-    resp = client.get("/jobs/count", params={"tags": "\x00"})
+    schema = module_pg_schema.schema_name
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_history_app(module_pg_pool, schema)),
+        base_url="http://test",
+    ) as c:
+        resp = await c.get("/jobs/count", params={"tags": "\x00"})
     assert resp.status_code == 400, (
         "the count route dropped the tags filter (the header's 'of N' "
         "would have counted the UNFILTERED set)"
@@ -1069,7 +1045,7 @@ main();
 @requires_node
 def test_admin_js_refreshes_the_count_from_the_count_route() -> None:
     """U4's live half: after every table refresh the header's count comes
-    from /jobs/count with the SAME filter query string, and the range
+    from /jobs/count with the same filter query string, and the range
     text renders "1-N of M" from it."""
     node = shutil.which("node")
     assert node is not None
@@ -1109,49 +1085,47 @@ class _RLRedisPipeline:
 
 
 class _RLRedis:
-    """Redis stub whose every read comes back empty (the bucket-has-no-
-    live-state shape): redis_available stays true, redis_state empty."""
+    """Redis stub whose every read comes back empty — the
+    bucket-has-no-Redis-state shape. ``pipeline()`` hands back a
+    pipeline whose ``hgetall``, ``get`` and ``zcard`` all queue and whose
+    ``execute()`` answers one empty result per queued command, so every
+    bucket the rate-limits page reads resolves to no state at all (the
+    empty-state cell renders, not a leaked ``{}`` dict repr and not an
+    error). The Redis read itself has no PG sibling - no database can
+    answer a Redis read - so this stub is the honest stand-in for it."""
 
     def pipeline(self) -> _RLRedisPipeline:
         return _RLRedisPipeline()
 
 
-def _make_rate_limits_app(
-    monkeypatch: pytest.MonkeyPatch, *, allow_reset: bool, redis: object | None = None
-) -> TestClient:
+async def _seed_worker_published_bucket(
+    conn: asyncpg.Connection, schema: str, *, name: str
+) -> None:
+    """One worker-published bucket row (the registry in this process has
+    no primitive for it) - the dead-Reset-button shape."""
+    await conn.execute(
+        f"""INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state)
+            VALUES ($1, 'token_bucket', '"active"'::jsonb)""",
+        name,
+    )
+
+
+async def _rate_limits_client(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    allow_reset: bool,
+    redis: object | None = None,
+) -> Any:
     from taskq.ratelimit.registry import RateLimitRegistry
 
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", str(allow_reset).lower())
-    pool = _JobDetailPool()
-
-    class _RLConn(_JobDetailConnection):
-        async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
-            if "rate_limit_buckets" in query:
-                # A worker-published keyed bucket that exists ONLY as a PG
-                # row in this process (the registry has no primitive for
-                # it) - the dead-Reset-button shape.
-                return [
-                    {
-                        "bucket_name": "keyed:worker-published",
-                        "kind": "token_bucket",
-                        "state": "active",
-                        "updated_at": "2026-01-01T00:00:00+00:00",
-                    }
-                ]
-            return []
-
-    class _RLAcquire:
-        async def __aenter__(self) -> _RLConn:
-            return _RLConn(pool)
-
-        async def __aexit__(self, *args: object) -> None:
-            pass
-
-    pool.acquire = lambda **kwargs: _RLAcquire()  # type: ignore[method-assign]
-
     bundle = create_router(
-        pool,  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+        module_pg_pool,
+        schema=module_pg_schema.schema_name,
+        base_path="",
         rate_limit_registry=RateLimitRegistry(),
         backend=None,
         redis_client=redis,
@@ -1159,28 +1133,44 @@ def _make_rate_limits_app(
     app = FastAPI()
     setup_admin_state(app, bundle)
     app.include_router(bundle.router)
-    return TestClient(app)
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
-def test_rate_limit_reset_disabled_renders_no_reset_buttons(
+async def test_rate_limit_reset_disabled_renders_no_reset_buttons(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The reset gate itself: without TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET
     no Reset control renders at all (the regression control)."""
-    client = _make_rate_limits_app(monkeypatch, allow_reset=False)
-    resp = client.get("/rate-limits")
+    await _seed_worker_published_bucket(
+        clean_pg_conn, module_pg_schema.schema_name, name="keyed:worker-published"
+    )
+    async with await _rate_limits_client(
+        module_pg_pool, module_pg_schema, monkeypatch, allow_reset=False
+    ) as c:
+        resp = await c.get("/rate-limits")
     assert resp.status_code == 200
     assert "/reset" not in resp.text
 
 
-def test_registry_absent_bucket_renders_read_only_no_dead_reset(
+async def test_registry_absent_bucket_renders_read_only_no_dead_reset(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """U5: a bucket that exists only as worker-published PG state (the
     registry in THIS process has no primitive) renders read-only - the
     reset route answers 404 for it, so a rendered button is a dead one."""
-    client = _make_rate_limits_app(monkeypatch, allow_reset=True)
-    resp = client.get("/rate-limits")
+    await _seed_worker_published_bucket(
+        clean_pg_conn, module_pg_schema.schema_name, name="keyed:worker-published"
+    )
+    async with await _rate_limits_client(
+        module_pg_pool, module_pg_schema, monkeypatch, allow_reset=True
+    ) as c:
+        resp = await c.get("/rate-limits")
     assert resp.status_code == 200
     row = resp.text[resp.text.index("keyed:worker-published") :]
     assert "/reset" not in row[:2000], (
@@ -1193,14 +1183,22 @@ def test_registry_absent_bucket_renders_read_only_no_dead_reset(
 # ── U6: the empty redis-state cell is an em-dash ─────────────────────────
 
 
-def test_empty_redis_state_cell_renders_an_em_dash(
+async def test_empty_redis_state_cell_renders_an_em_dash(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """U6: a bucket with no Redis state renders an em-dash in the cell -
     the Python dict repr ({}) that leaked before is a debugging artifact,
     not a value."""
-    client = _make_rate_limits_app(monkeypatch, allow_reset=False, redis=_RLRedis())
-    resp = client.get("/rate-limits")
+    await _seed_worker_published_bucket(
+        clean_pg_conn, module_pg_schema.schema_name, name="keyed:worker-published"
+    )
+    async with await _rate_limits_client(
+        module_pg_pool, module_pg_schema, monkeypatch, allow_reset=False, redis=_RLRedis()
+    ) as c:
+        resp = await c.get("/rate-limits")
     assert resp.status_code == 200
     assert "Redis State" in resp.text, "the control: the redis column rendered"
     assert "{}" not in resp.text, "the raw dict repr must not render as a cell value"
@@ -1209,65 +1207,44 @@ def test_empty_redis_state_cell_renders_an_em_dash(
 # ── U7: the job-detail timestamps are humanized, absolute in title ────────
 
 
-class _EventsPool(_JobDetailPool):
-    """Adds event-log and audit-trail rows to the job-detail stub."""
-
-    async def _events(self, query: str) -> list[dict[str, Any]]:
-        if "job_events" in query:
-            return [
-                {"occurred_at": "2026-01-01T00:00:00+00:00", "kind": "state_change", "detail": None}
-            ]
-        if "admin_audit" in query:
-            return [
-                {
-                    "occurred_at": "2026-01-01T00:00:00+00:00",
-                    "principal_subject": "op@example.com",
-                    "action": "job.cancel",
-                    "reason": "operator",
-                    "detail": "{}",
-                }
-            ]
-        return []
-
-
-class _EventsConnection(_JobDetailConnection):
-    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
-        pool = self._pool
-        assert isinstance(pool, _EventsPool)
-        return await pool._events(query)  # pyright: ignore[reportPrivateUsage]  # Why: the stub's own canned rows.
+async def _seed_job_with_event_and_audit(conn: asyncpg.Connection, schema: str) -> Any:
+    """One pending job with a real ledger event and a real audit row - the
+    two timelines the detail page humanizes."""
+    jid = await _seed_pending_job(conn, schema)
+    occurred = datetime(2026, 1, 1, tzinfo=UTC)
+    await conn.execute(
+        f"""INSERT INTO "{schema}".job_events (job_id, occurred_at, kind, detail)
+            VALUES ($1, $2, 'state_change', '{{}}'::jsonb)""",
+        jid,
+        occurred,
+    )
+    await conn.execute(
+        f"""INSERT INTO "{schema}".admin_audit (
+                occurred_at, principal_subject, action, target_type, target_id,
+                reason, detail)
+            VALUES ($2, 'op@example.com', 'job.cancel', 'job', $1, 'operator',
+                '{{}}'::jsonb)""",
+        str(jid),
+        occurred,
+    )
+    return jid
 
 
-class _EventsAcquire(_JobDetailAcquire):
-    async def __aenter__(self) -> _EventsConnection:
-        return _EventsConnection(self._pool)  # pyright: ignore[reportArgumentType]  # Why: the stub's connection takes the pool.
-
-
-def _make_events_app(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    monkeypatch.delenv("TASKQ_ADMIN_ACTIONS_ENABLED", raising=False)
-    pool = _EventsPool()
-
-    class _Acq(_EventsAcquire):
-        pass
-
-    pool.acquire = lambda **kwargs: _Acq(pool)  # type: ignore[method-assign]
-
-    bundle = create_router(pool, backend=None)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    app = FastAPI()
-    setup_admin_state(app, bundle)
-    app.include_router(bundle.router)
-    return TestClient(app)
-
-
-def test_job_detail_humanizes_the_event_log_and_audit_trail(
+async def test_job_detail_humanizes_the_event_log_and_audit_trail(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """U7: the event log and the audit trail render the humanized age
     (the same time_ago filter the lists use) with the absolute instant in
     the title attribute - the two raw ISO columns read as noise where
     every other page says '9 months ago'."""
-    client = _make_events_app(monkeypatch)
-    resp = client.get(f"/jobs/{_JOB_ID}")
+    _actions_env(monkeypatch, None)
+    schema = module_pg_schema.schema_name
+    jid = await _seed_job_with_event_and_audit(clean_pg_conn, schema)
+    async with _client(module_pg_pool, schema) as c:
+        resp = await c.get(f"/jobs/{jid}")
     assert resp.status_code == 200
     html = resp.text
     assert html.count('title="2026-01-01T00:00:00') >= 2, (

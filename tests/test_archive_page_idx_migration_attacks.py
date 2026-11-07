@@ -1,5 +1,5 @@
 """Migration 01.00.21_01 under attack: the archive tab's page-keyset
-index (``jobs_archive_page_idx``, ``(finished_at DESC NULLS LAST,
+index (``jobs_archive_page_idx``, ``(finished_at DESC NULLS last,
 id DESC)``).
 
 The index is a plain (non-concurrent) ``CREATE INDEX`` — the 01.00.19_01
@@ -8,16 +8,16 @@ NOTE. The attacks here are the ones a live fleet actually runs into:
 
 * **idempotence** — the file's statement re-executed on an
   already-migrated schema must be a true no-op: same index, still valid,
-  no duplicate under the canonical name (the IF NOT EXISTS contract the
+  no duplicate under the canonical name (the IF not EXISTS contract the
   documented CONCURRENTLY pre-build escape hatch leans on);
 * **checksum honesty** — the ledger checksum recorded at apply time must
   be the bundled file's own render (``checksum_drifts`` empty), so an
   operator diffing a migrated schema against the repo sees no drift;
-* **the fleet path** — a schema migrated BEFORE this migration existed
+* **the fleet path** — a schema migrated before this migration existed
   (ledger complete through 01.00.20_03, index absent) must pick up
   exactly this one migration and land the index;
 * **the hypertable path** — an operator who converts ``jobs_archive`` to
-  a hypertable (``TASKQ_TIMESCALEDB_HYPERTABLES=true``) AFTER migrating:
+  a hypertable (``TASKQ_TIMESCALEDB_HYPERTABLES=true``) after migrating:
   ``create_hypertable(migrate_data => TRUE)`` must not choke on the new
   index, the index must carry to every chunk (chunks are where the
   archive tab's pages actually read), the page walk stays row-exact
@@ -61,7 +61,7 @@ from taskq.web.admin.jobs import (  # pyright: ignore[reportPrivateUsage]  # Why
 
 # ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's own throwaway schema identifiers (built from new_base62, validated by the migration runner's _IDENT_RE) or renders the admin builders' own SQL; all values are $n-bound.
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timescale]
 
 _MIGRATION_FILENAME = "01.00.21_01_pre_archive_page_keyset_index.sql"
 _INDEX = "jobs_archive_page_idx"
@@ -111,7 +111,7 @@ async def _index_defs(
 async def test_migration_file_rerun_is_a_true_noop(pg_dsn: str, migrated_schema: str) -> None:
     """The migration's statement, executed again on the migrated schema:
     no error, no duplicate index, still valid, definition unchanged — the
-    IF NOT EXISTS contract the documented CONCURRENTLY pre-build escape
+    IF not EXISTS contract the documented CONCURRENTLY pre-build escape
     hatch relies on (an operator who pre-built must be able to re-run)."""
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -292,10 +292,10 @@ async def test_hypertable_conversion_refuses_the_archives_null_tail(
     timescale_dsn: str,
 ) -> None:
     """The conversion REFUSES an archive that carries NULL finished_at
-    rows — loudly, BEFORE any DDL (fix/hypertable-null-archive's
+    rows — loudly, before any DDL (fix/hypertable-null-archive's
     contract): TimescaleDBUnavailableError naming the row count and both
     remediations, and the schema left byte-identical (the pre-refusal
-    failure was NOT atomic — it stranded a keyless archive mid-convert).
+    failure was not atomic — it stranded a keyless archive mid-convert).
 
     The debris rows are legacy (no archive write can produce them: every
     terminal transition stamps finished_at and the prune's COPY requires
@@ -362,7 +362,7 @@ async def test_hypertable_conversion_carries_the_page_index(timescale_dsn: str) 
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await migrate_mod.apply_pending(conn, schema=schema)
 
-        # A small adversarial population BEFORE conversion: valued rows
+        # A small adversarial population before conversion: valued rows
         # and a wide tie spanning a page boundary — migrate_data must
         # carry them through the conversion byte-exact.
         base = datetime.now(UTC) - timedelta(days=10)
@@ -376,7 +376,7 @@ async def test_hypertable_conversion_carries_the_page_index(timescale_dsn: str) 
         )
         assert "jobs_archive" in report.converted, report.converted
 
-        # The index must exist on the PARENT and on every chunk.
+        # The index must exist on the parent and on every chunk.
         parent = await _index_defs(conn, schema, "jobs_archive")
         assert any(
             name == _INDEX and "(finished_at DESC NULLS LAST, id DESC)" in d and valid
@@ -422,5 +422,44 @@ async def test_hypertable_conversion_carries_the_page_index(timescale_dsn: str) 
             for name, d, valid in vanilla
         ), f"the disable mirror's vanilla table lost the page index: {vanilla}"
     finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_enable_hypertables_busts_the_floor_availability_cache(
+    timescale_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The availability gate's bust is wired into the enable flow: the
+    run that confirms the extension and converts the tables calls the
+    floor's cache-bust exactly once, so a process that cached a vanilla
+    negative before the install re-asks on its next sweep. (The
+    refusal paths must not bust: above, the extension's absence is the
+    refusal — the cached negatives are correct there.)"""
+    import taskq.timescale as timescale_mod
+
+    schema = f"ts_bust_{new_base62()}".lower()
+    assert _IDENT_RE.match(schema)
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await migrate_mod.apply_pending(conn, schema=schema)
+        base = datetime.now(UTC) - timedelta(days=10)
+        await _seed_archive_rows(conn, schema, [base - timedelta(days=i) for i in range(4)])
+
+        busts: list[int] = []
+        monkeypatch.setattr(
+            timescale_mod, "clear_timescaledb_availability_cache", lambda: busts.append(1)
+        )
+
+        report = await enable_hypertables(
+            conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
+        )
+        assert "jobs_archive" in report.converted, report.converted
+        assert busts == [1], (
+            "the enable run must bust the floor's availability cache "
+            "exactly once — the wiring the staleness cure rests on"
+        )
+    finally:
+        monkeypatch.undo()
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()

@@ -11,7 +11,7 @@ write (its ``ABANDON_PENDING`` guard) and its unconditional ``finally``
 deregisters the job. If that tick's transaction then fails - another
 job's statement in the same tick, or the COMMIT itself - Postgres still
 reads ``cancel_phase = 1``, ``run_post_tx``'s ``mark_abandoned`` cannot
-match (its guard is ``cancel_phase = 2 OR lock_expires_at IS NULL``),
+match (its guard is ``cancel_phase = 2 or lock_expires_at IS NULL``),
 and the not-applied False arm's re-arm found no entry to re-arm: the
 consumer had already popped it. Every later tick's ladder iterates a
 registry that no longer holds the job, the heartbeat keeps renewing the
@@ -363,10 +363,10 @@ async def test_job_succeeding_in_delivery_window_abandon_noops(
 
     async def _consumer_body() -> None:
         # The natural-completion tail, modelled on _consumer.py: the
-        # body's mark_succeeded commits INSIDE the delivery window (after
+        # body's mark_succeeded commits inside the delivery window (after
         # the same-tick arm queued the abandon, before the drain runs),
         # then the consumer still owes its publish/deregister unwinding
-        # (it has NOT finished: the task is live and cancellable while
+        # (it has not finished: the task is live and cancellable while
         # the drain runs).
         await tick_done.wait()
         landed = await backend.mark_succeeded(job_id, worker_id, None, attempt=1, claim_epoch=1)
@@ -393,9 +393,9 @@ async def test_job_succeeding_in_delivery_window_abandon_noops(
     try:
         await deps.active_jobs.register(job_id, consumer_task, _make_ctx(job_id, worker_id))
 
-        # The same-tick abandon arm fires and the tick COMMITS: the row
+        # The same-tick abandon arm fires and the tick commits: the row
         # reads cancel_phase 2, the abandon is queued, the cancellation is
-        # NOT delivered (the fix defers it to the drain). The consumer is
+        # not delivered (the fix defers it to the drain). The consumer is
         # parked on tick_done for the arm's whole run.
         conn1 = await asyncpg.connect(dsn)
         try:
@@ -409,8 +409,8 @@ async def test_job_succeeding_in_delivery_window_abandon_noops(
         ), "fixture broken: the same-tick arm must have queued the abandon"
         tick_done.set()
 
-        # THE DELIVERY WINDOW: the consumer finishes naturally before the
-        # drain runs. Wait for the success write to be durable.
+        # the consumer finishes naturally before the drain runs. Wait for the
+        # success write to be durable.
         conn = await asyncpg.connect(dsn)
         try:
             await _wait_row_status(conn, schema, job_id, "succeeded")
@@ -461,7 +461,7 @@ async def test_drain_delivers_no_second_cancel_to_already_cancelling_task(
 ) -> None:
     """The first-delivery-only pin: the staggered path's phase-2 arm
     cancelled the task a tick before the drain (``cancelling() == 1``);
-    the drain's applied abandon must NOT deliver a second cancellation -
+    the drain's applied abandon must not deliver a second cancellation -
     the re-delivered CancelledError would interrupt the consumer's own
     unwinding mid-flight."""
     schema, dsn = rt_schema
@@ -510,7 +510,7 @@ async def test_drain_delivers_no_second_cancel_to_already_cancelling_task(
 
     try:
         await deps.active_jobs.register(job_id, consumer_task, _make_ctx(job_id, worker_id))
-        # The staggered path's phase-2 arm: FORCED locally, the task
+        # The staggered path's phase-2 arm: forced locally, the task
         # cancelled a tick before the drain, the observation timestamped
         # then too (the phase-3 arm's elapsed source).
         entry = deps.active_jobs.get(job_id)
@@ -525,7 +525,7 @@ async def test_drain_delivers_no_second_cancel_to_already_cancelling_task(
         )
 
         # The phase-3 arm (the staggered path's own queueing arm: local
-        # FORCED, db FORCED, both graces elapsed) queues the abandon; the
+        # forced, db forced, both graces elapsed) queues the abandon; the
         # commit is what makes the row read phase 2 for the drain.
         conn1 = await asyncpg.connect(dsn)
         try:
@@ -643,7 +643,7 @@ async def test_abandon_raise_requeue_then_landing_is_idempotent(
     try:
         await deps.active_jobs.register(job_id, consumer_task, _make_ctx(job_id, worker_id))
         # The staggered path's shape: the phase-2 arm is done (the row
-        # reads phase 2), the entry is FORCED with its observation
+        # reads phase 2), the entry is forced with its observation
         # timestamped; the phase-3 arm below is what queues the abandon.
         entry = deps.active_jobs.get(job_id)
         assert entry is not None
@@ -806,7 +806,7 @@ async def test_budget_cut_drain_whose_detached_write_lands_still_delivers(
         )
 
         # Tick 1: the same-tick arm escalates the row to phase 2, queues
-        # the abandon WITHOUT cancelling (the deferred delivery), and the
+        # the abandon without cancelling (the deferred delivery), and the
         # tick commits. The drain is then cut by the tick's leftover
         # budget while the shielded write is parked mid-flight.
         conn1 = await asyncpg.connect(dsn)
@@ -908,7 +908,7 @@ async def test_ladder_survives_repeated_rollbacks_and_lands_on_the_good_tick(
     honest state is the job still running, its entry registered and
     re-armed at FORCED each time, the handler live and uncancellable-by-
     surprise (the same-tick arm never delivers in-transaction) - and the
-    FIRST committing tick lands the abandon, once."""
+    first committing tick lands the abandon, once."""
     schema, dsn = rt_schema
     worker_id = new_uuid()
     job_id = new_job_id()

@@ -3,7 +3,7 @@
 Python's `$` matches immediately before a trailing newline, so the original
 `^[A-Za-z_][A-Za-z0-9_]*$` accepted `"taskq\\n"`.
 
-Scope, stated directly: this was NOT an injection path, and calling it one would
+Scope, stated directly: this was not an injection path, and calling it one would
 overstate it. Only a single trailing newline slipped through --
 `"taskq\\nDROP TABLE x"` was always rejected, because the remainder still has to
 match a charset that admits no whitespace, quote or SQL metacharacter. Every

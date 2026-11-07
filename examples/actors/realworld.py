@@ -95,7 +95,7 @@ def _render_digest(user_id: str, articles: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-# ── CSV upload ETL pipeline ────────────────────────────────────────────────
+# ── CSV upload etl pipeline ────────────────────────────────────────────────
 
 
 class CsvUploadPayload(BaseModel):

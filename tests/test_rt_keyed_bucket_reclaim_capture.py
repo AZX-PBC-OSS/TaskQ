@@ -1,23 +1,23 @@
 # ruff: noqa: S608  # Why: schema is a per-test fixture identifier, not user input; every value is $-bound.
 
 """Adversarial review pins: a keyed rate limit's ``rate_limit_buckets`` row must be
-recorded for reclamation by EVERY flow that can create it, not only by a
+recorded for reclamation by every flow that can create it, not only by a
 publish that happened to succeed.
 
 The eviction-drain landed for evicted keyed buckets
 (``evict_idle_keyed_rate_limits`` records the pending reclaim;
 ``drain_pending_reservation_reclaims`` deletes the row) - but the
 recording consults ``_keyed_rate_limit_row_schemas``, a capture written
-ONLY on the ``else`` arm of the materialisation publish
+only on the ``else`` arm of the materialisation publish
 (``registry.py::_resolve_rate_limit_name``): the capture lands when the
 best-effort publish succeeds, and never otherwise. Two row-creating
 flows therefore bypass the capture entirely:
 
 1. **The publish fails, the acquire still creates the row.** The publish
-   is best-effort by design (a publish failure "must NOT fail the
+   is best-effort by design (a publish failure "must not fail the
    acquisition"), but the acquisition itself creates the row it was
    supposed to annotate: a ``backend="postgres"`` keyed bucket's acquire
-   preseeds ``INSERT INTO rate_limit_buckets ... ON CONFLICT DO
+   preseeds ``INSERT into rate_limit_buckets ... ON CONFLICT DO
    NOTHING`` before reading state (``token_bucket.py::_acquire_pg``),
    and the redis backend's PG fallback does the same. The row exists,
    the capture does not, so the idle eviction proceeds *unrecorded*
@@ -135,7 +135,7 @@ async def test_publish_failure_row_created_by_acquire_is_still_reclaimed(
     try:
         reg = RateLimitRegistry()
 
-        # The publish seam is the MODULE taskq.ratelimit.registry; the
+        # The publish seam is the module taskq.ratelimit.registry; the
         # package's __init__ re-exports the `registry` singleton under the
         # name the submodule would bind, so `import ... as` hands back the
         # singleton - the module is reached through sys.modules, which the
@@ -210,7 +210,7 @@ async def test_poolless_materialisation_captures_on_pool_bearing_reuse(
     The publish today runs only in the first-materialisation branch; the
     reuse branch refreshes recency and never publishes. A worker that
     resolves the key pool-less (an in-process acquire) and later resolves
-    it with a pool therefore never surfaces the admin-UI row AND never
+    it with a pool therefore never surfaces the admin-UI row and never
     captures the schema - so the idle eviction records nothing while the
     acquire's preseed (PG backend) or the republish (metadata backends)
     stands the row up. Every pool-bearing resolution must own the row:

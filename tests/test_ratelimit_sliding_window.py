@@ -155,8 +155,8 @@ async def test_acquire_without_clock_raises() -> None:
 # ── clock contract: memory-only (unified with TokenBucket) ────────────
 #
 # ``clock`` drives the memory backend only. The redis/postgres backends
-# run on the store's own clock (Redis TIME / PG clock_timestamp()), so a
-# missing clock must surface the STORE guard - never a clock error.
+# run on the store's own clock (Redis time / PG clock_timestamp()), so a
+# missing clock must surface the store guard - never a clock error.
 
 
 @pytest.mark.parametrize("backend", ["redis", "postgres"])
@@ -331,7 +331,7 @@ async def test_logging_denied_includes_style() -> None:
     assert r.allowed is False
 
 
-# ── GCRA helpers ──────────────────────────────────────────────────────
+# ── gcra helpers ──────────────────────────────────────────────────────
 
 
 def _sw_gcra(
@@ -349,7 +349,7 @@ def _sw_gcra(
     )
 
 
-# ── GCRA: basic allow with spacing ─────────────────────────────
+# ── gcra: basic allow with spacing ─────────────────────────────
 
 
 async def test_gcra_basic_allow_with_spacing() -> None:
@@ -368,7 +368,7 @@ async def test_gcra_basic_allow_with_spacing() -> None:
     assert r2.retry_after == timedelta(0)
 
 
-# ── GCRA: deny when too soon ──────────────────────────────────
+# ── gcra: deny when too soon ──────────────────────────────────
 
 
 async def test_gcra_deny_when_too_soon() -> None:
@@ -387,7 +387,7 @@ async def test_gcra_deny_when_too_soon() -> None:
     assert abs(r.retry_after.total_seconds() * 1000 - expected_ms) <= 1
 
 
-# ── GCRA: burst-tolerance ──────────────────────────────────────
+# ── gcra: burst-tolerance ──────────────────────────────────────
 
 
 async def test_gcra_burst_tolerance() -> None:
@@ -404,7 +404,7 @@ async def test_gcra_burst_tolerance() -> None:
     assert r61.remaining == 0.0
 
 
-# ── GCRA: sustained rate ───────────────────────────────────────
+# ── gcra: sustained rate ───────────────────────────────────────
 
 
 async def test_gcra_sustained_rate() -> None:
@@ -436,7 +436,7 @@ async def test_gcra_sustained_rate() -> None:
     assert r_after.allowed is True
 
 
-# ── GCRA read-only properties ────────────────────────────────────────
+# ── gcra read-only properties ────────────────────────────────────────
 
 
 def test_gcra_read_only_properties() -> None:
@@ -455,7 +455,7 @@ def test_gcra_read_only_properties() -> None:
     assert sw.style == "gcra"
 
 
-# ── GCRA default TTL ─────────────────────────────────────────────────
+# ── gcra default TTL ─────────────────────────────────────────────────
 
 
 def test_gcra_default_ttl() -> None:
@@ -483,7 +483,7 @@ def test_gcra_explicit_ttl() -> None:
     assert sw.ttl == timedelta(minutes=5)
 
 
-# ── GCRA decision logging ────────────────────────────────────────────
+# ── gcra decision logging ────────────────────────────────────────────
 
 
 async def test_gcra_logging_allowed_includes_style() -> None:
@@ -830,13 +830,13 @@ async def test_refund_memory_gcra_raises_when_not_initialised() -> None:
         await sw._refund_memory_gcra(decision)
 
 
-# ── In-memory log/GCRA peek(): white-box retry_after loop branches ──────
+# ── In-memory log/gcra peek(): white-box retry_after loop branches ──────
 #
-# `_InMemorySlidingWindowLog.acquire` (and its GCRA counterpart) always
+# `_InMemorySlidingWindowLog.acquire` (and its gcra counterpart) always
 # gate `append` behind a `len(...) >= limit` check, so under normal use
 # the deque/log can never hold more than `limit` entries.  Combined with
-# `peek()` filtering on the exact same `ts > cutoff` predicate used to
-# compute `is_exhausted`, this makes it structurally impossible for the
+# `peek()` filtering on the exact same `ts > cutoff` predicate that
+# computes `is_exhausted`, this makes it structurally impossible for the
 # retry_after-scan loop to skip a non-matching entry while still being
 # "exhausted" -- whenever exhausted, *every* stored entry passes the
 # filter and the loop always breaks on its first iteration.  The tests
@@ -908,7 +908,7 @@ async def test_gcra_peek_exhausted_by_tat_alone_with_log_below_limit() -> None:
 async def test_refund_log_redis_propagates_connection_error() -> None:
     """Log-style refund propagates Redis ConnectionError instead of swallowing it.
 
-    Regression: _refund_redis_log previously caught and logged ConnectionError,
+    Regression: _refund_redis_log catching and logging ConnectionError (instead
     preventing the composition-level rollback loop from seeing the failure.
     """
     from unittest.mock import AsyncMock

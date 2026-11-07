@@ -1,12 +1,12 @@
-# The streaming source's bands (T20) — the emit tx, the chain dispatch, the routed fork
+# The streaming source's bands — the emit tx, the chain dispatch, the routed fork
 
-The three T20 bands, measured ON THE BUILT CODE through the REAL
+The three bands, measured ON THE BUILT CODE through the REAL
 surfaces (`taskq.workflows._emit.emit_batch`, the backend's own
 `_dispatch_batch` — the shipped claim SQL unchanged, `finalize_node`
 carrying the chain's one-child ForkSpec) against the `postgres:18.6`
 container on the repo's tuning (`jit=off`, `fsync=off`,
 `synchronous_commit=off`), 30 rounds each (the emit: 5 pages). The
-script: `scripts/measure_t20_streaming_bands.py`; raw output:
+script: `scripts/measure_streaming_bands.py`; raw output:
 `.measurements/t20-streaming-bands.json` (+ the timestamped capture
 beside it, per the capture law). THE TABLES BELOW CITE THE RANGE —
 EVERY captured run on disk, not the friendliest one (an earlier

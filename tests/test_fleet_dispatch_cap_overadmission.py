@@ -12,7 +12,7 @@ depth that dispatchers collide and the expansion loop is exercised.
 
 First cut of this test asserted a hard cap (``in_flight <= max_concurrent``)
 and failed ~60% of the time (3/5 runs), with in-flight reaching 4-5 against
-a cap of 3. That is NOT a regression from this fix: `_dispatch_sql.py`'s
+a cap of 3. That is not a regression from this fix: `_dispatch_sql.py`'s
 own module docstring documents `running_per_actor` as a best-effort,
 read-once-before-lock snapshot with a STATED bound of
 `(num_producers - 1) * max_concurrent` over-admission per round -- a

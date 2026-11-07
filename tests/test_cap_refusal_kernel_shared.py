@@ -5,7 +5,7 @@
 ``_batch_cap_refusals`` implementations agree on their outputs; parity of
 outputs is necessary but does not prove the DRY property the confirmed
 defect asks for: that the effective-cap resolution, the
-idempotency-pair discount, and the refusal comparison live in ONE pure
+idempotency-pair discount, and the refusal comparison live in one pure
 kernel (``taskq.backend._protocol.batch_cap_refusal_kernel``) so a
 future change to the cap logic is made once and both backends move
 together. Two hand-maintained copies can pass every output pin while the
@@ -14,7 +14,7 @@ next edit silently updates only one of them.
 This module pins the structural property itself, two ways:
 
 1. NEGATIVE CONTROL: monkeypatch a deliberately divergent kernel into
-   place and show BOTH implementations' refusals move together, in
+   place and show both implementations' refusals move together, in
    lockstep, away from their baseline. A backend still carrying inline
    cap arithmetic would be invisible to the patched kernel and would
    stay at baseline while the other moved - exactly the drift the defect
@@ -125,10 +125,10 @@ async def _capped_unicode_nfd_ref(_payload: _Payload) -> None:
     pass
 
 
-# Actor names are free-form text (no _IDENT_RE gate on them), so NFC/NFD
+# Actor names are free-form text (no _IDENT_RE gate on them), so nfc/nfd
 # twins are reachable in production data. Python dict keys and PG text
 # equality under a deterministic collation are both codepoint-exact, so
-# the two names are distinct actors on BOTH sides; the sweep pins that
+# the two names are distinct actors on both sides; the sweep pins that
 # neither side's grouping folds them together.
 _UNICODE_CAPPED = _capped_unicode_ref.name
 _UNICODE_NFD_CAPPED = _capped_unicode_nfd_ref.name
@@ -183,7 +183,7 @@ class TestKernelIsShared:
     ) -> None:
         """NEGATIVE CONTROL: replace the kernel with a deliberately
         divergent one (inflate every refusal's cap to 0, refuse every
-        capped actor when the real kernel would admit) and require BOTH
+        capped actor when the real kernel would admit) and require both
         implementations' refusals to move identically. An implementation
         still doing its own arithmetic ignores the patch and stays at
         baseline: the asymmetry this test turns red."""
@@ -216,8 +216,8 @@ class TestKernelIsShared:
                 for a in batch_cap_groups(args_list)
             ]
 
-        # One world where the true kernel ADMITS (1 item, cap 2, empty
-        # store) and one where it REFUSES (3 items, cap 2). Both are
+        # One world where the true kernel admits (1 item, cap 2, empty
+        # store) and one where it refuses (3 items, cap 2). Both are
         # driven through both backends twice: real kernel first
         # (baseline), divergent kernel second (injected).
         admit_args = [_args_for(_capped_ref, 0)]
@@ -289,7 +289,7 @@ class TestDifferentialSweep:
         }
         for scenario in range(_SWEEP_SCENARIOS):
             # Stored operator override for the capped actor: absent (no
-            # actor_config row), CLEARED (a row whose max_pending is NULL -
+            # actor_config row), cleared (a row whose max_pending is NULL -
             # the operator ran `actor-config clear` - which must resolve to
             # the carried literal exactly like absent, never to 0), or a
             # tighter/equal/looser stored value (2 is the carried literal).
@@ -316,7 +316,7 @@ class TestDifferentialSweep:
             stored_pairs = {("", f"stored-{rng.randint(0, 4)}") for _ in range(rng.randint(0, 3))}
             stored_keys = sorted(key for _, key in stored_pairs)
 
-            # Live pending+scheduled rows BEYOND the stored-pair rows
+            # Live pending+scheduled rows beyond the stored-pair rows
             # (each stored pair seeds one pending job for the capped
             # actor, which the PG total must include and the in-memory
             # net count must not - see _pg_refusals' docstring).
@@ -482,7 +482,7 @@ class TestAxesTheGridMissed:
         consumes none of ITS actor's capacity. Both backends must make
         that identical call. (At write time such a batch aborts with the
         typed actor-mismatch refusal - the preflight's job is to answer
-        identically BEFORE that, whatever the caller does with it.)"""
+        identically before that, whatever the caller does with it.)"""
         first = _args_for(_capped_ref, 0, cap=2, key="shared-k")
         # The same pair, a different actor, a different carried cap.
         second = _args_for(_capped_unicode_ref, 0, cap=3, key="shared-k")
@@ -495,7 +495,7 @@ class TestAxesTheGridMissed:
         )
         assert pg == mem
         # batch 1 discounted to 0 net for the second carrier: its actor
-        # must NOT be refused for the pair it dedupes onto.
+        # must not be refused for the pair it dedupes onto.
         assert all(actor_ != _UNICODE_CAPPED for actor_, _, _ in pg), (
             f"the second carrier of a duplicate pair was refused for "
             f"capacity it does not consume: {pg}"
@@ -504,7 +504,7 @@ class TestAxesTheGridMissed:
     async def test_unicode_actor_names_group_distinctly_on_both_backends(
         self,
     ) -> None:
-        """NFC and NFD spellings of the SAME visible name are two actors
+        """NFC and NFD spellings of the same visible name are two actors
         everywhere: no normalization, casefold, or strip may enter either
         backend's grouping, and one actor's over-cap refusal must not
         drag its lookalike in."""
@@ -520,7 +520,7 @@ class TestAxesTheGridMissed:
             f"lookalike unicode actor names collapsed in the grouping: {pg}"
         )
 
-        # ...and a cap breach on ONE of them leaves the other alone.
+        # ...and a cap breach on one of them leaves the other alone.
         pg_one, mem_one = await self._both_worlds(
             args_list,
             existing_counts={_UNICODE_CAPPED: 5, _UNICODE_NFD_CAPPED: 0},
@@ -598,7 +598,7 @@ class TestPgPreflightStatementShape:
         )
 
     async def test_kernel_inputs_are_the_fetched_rows_not_re_fetched(self) -> None:
-        """The three fetched record sets are the kernel's ONLY store view:
+        """The three fetched record sets are the kernel's only store view:
         the preflight must not issue extra round trips for data the kernel
         consumes (the override rows here are non-NULL and flow straight
         through, an int() coercion or a re-read would show up as shape

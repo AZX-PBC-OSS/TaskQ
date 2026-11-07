@@ -18,7 +18,7 @@ This pins the boot shape against a quiet re-add: every
 ``server_settings`` entirely. The slot pool's inherited
 ``search_path``/``role`` (``worker/_bootstrap.py``, built only when a
 LOOP-scope connection is registered) are the one deliberate exception and
-are NOT reached by this harness.
+are not reached by this harness.
 
 Docker-free: ``asyncpg.create_pool`` is monkeypatched with a recorder and
 the notify/leader roles are faked through ``WorkerConnections`` factories
@@ -120,7 +120,7 @@ async def test_worker_dsn_pools_boot_without_any_startup_params(
 
     # Three DSN pools: dispatcher, heartbeat, worker (the notify/leader
     # dedicated conns and the redis client are factory-faked or unset above,
-    # and the slot pool is not built: no LOOP-scope registration exists).
+    # and the slot pool is not built: no loop-scope registration exists).
     assert len(calls) == 3, f"expected the three DSN role pools; got {len(calls)}"
     for call in calls:
         assert "server_settings" not in call["kwargs"], (

@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide walks from a fresh install to a running worker dispatching its first job.
+From a fresh install to a running worker dispatching its first job.
 
 ---
 
@@ -362,7 +362,7 @@ await backend.run_until_drained()
 result = await handle.wait(timeout=30.0)  # now resolves
 ```
 
-Without a consumer, `wait()` simply times out after `timeout` seconds — a bare `TimeoutError` with no other signal.
+Without a consumer, `wait()` times out after `timeout` seconds — a bare `TimeoutError` with no other signal.
 
 `wait()` raises:
 

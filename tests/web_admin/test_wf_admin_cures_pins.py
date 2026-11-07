@@ -1,7 +1,6 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE ADMIN-SURFACE FIXES' PINS — the adversarial review's rejected findings,
-each fixed and pinned failing-first where the rig's red is reproducible in
-the fast lane:
+"""The admin surface's pins — the run explorer, the audit trail, the
+SSE streams:
 
 - Q1d THE DEAD MAP-COLLAPSE: the map progress read feeds the TRUE
   parents (the map-source nodes the fork/emit INSERT parented every
@@ -10,7 +9,7 @@ the fast lane:
   lines), and the §17.5 derivation still reads EVERY row (the collapse
   never hides a failure from the verdict).
 - Q3 THE INVISIBLE PROBE: the typed door's 422 refusal writes its
-  ``admin_audit`` row (refused + the reason) — the attacker's
+  ``admin_audit`` row (refused + the reason) — the hostile actor's
   shape-probing lands IN the trail the page claims covers every
   Resolve/deliver; the hold survives.
 - Q4 THE SSE SESSION-REVOCATION GAP: the run stream carries the SAME
@@ -49,6 +48,7 @@ pytest.importorskip("fastapi", reason="requires taskq[fastapi]")
 pytest.importorskip("jinja2")
 from fastapi import FastAPI, HTTPException, Request
 
+from taskq._ids import new_uuid
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import create_router, setup_admin_state
 from taskq.web.admin.auth._session import IdentityClaims
@@ -145,7 +145,7 @@ async def _seed_run(pool: asyncpg.Pool, schema: str, *, name: str = "cure_hold_f
     compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, pool, schema)
     flow_id = (await runner.create_flow()).flow_id
-    # THE HOLD FLOW stops at its hold (a drive to terminal would burn
+    # the hold flow stops at its hold (a drive to terminal would burn
     # max_ticks against the 120s hold deadline); the map flows run to
     # terminal.
     until = "held" if "hold" in name else "terminal"
@@ -161,7 +161,7 @@ async def test_map_hexagon_counter_feeds_from_the_true_parent(
     module_pg_schema: ModulePgSchema,
     cure_app_module: Any,
 ) -> None:
-    """THE RECORDED FINDING (Q1d): the map children are born parented at the
+    """The recorded finding (Q1d): the map children are born parented at the
     MAP SOURCE node; the old read passed the ROOT's id to
     ``parent_id = $1`` — no row ever parents at the root, every counter
     read zero, the hexagon could never fire. The fixed read aggregates
@@ -185,13 +185,13 @@ async def test_map_hexagon_counter_feeds_from_the_true_parent(
     kids = [n for n in view.nodes if n.key == "src.item"]
     assert len(kids) == 3
     assert all(k.map_child for k in kids), "the child rows must carry the collapse mark"
-    # THE ROOT'S COUNTER: the SUM across sources.
+    # the root's counter: the sum across sources.
     assert view.root_map_children == 3 and view.root_map_done == 3
-    # THE MERMAID: ZERO child boxes — the hexagon speaks for the fan-out.
+    # the mermaid: zero child boxes — the hexagon speaks for the fan-out.
     mermaid = rows_mermaid(view)
     assert "src.item" not in mermaid, "a collapsed child must render no line"
     assert '{{"' in mermaid or "{{" in mermaid, "the source renders the hexagon shape"
-    # THE SNAPSHOT: the frame's node list is the collapsed projection.
+    # the snapshot: the frame's node list is the collapsed projection.
     state = run_state_json(view, seq=1)
     keys = {n["key"] for n in state["nodes"]}
     assert "src.item" not in keys
@@ -201,7 +201,7 @@ async def test_map_hexagon_counter_feeds_from_the_true_parent(
 async def test_10k_fan_out_renders_one_hexagon_never_10k_lines(
     cure_app_module: Any,
 ) -> None:
-    """THE AMPLIFIER PIN (Q1d's server+client bound): a 10k-child
+    """The amplifier pin (Q1d's server+client bound): a 10k-child
     fan-out's view renders a BOUNDED mermaid text and a BOUNDED frame —
     the render does not scale with the fan-out (the red: 10k raw node
     lines — the admin-page brick). Synthetic rows: the read path is the
@@ -233,7 +233,7 @@ async def test_10k_fan_out_renders_one_hexagon_never_10k_lines(
             "absorbed": False,
             "error_class": None,
             "error_message": None,
-            # THE DEFERRAL FACES (the read's own row shape — the
+            # the deferral faces (the read's own row shape — the
             # assembly's KeyError is the corpus-matches-the-read guard):
             "attempt": 1,
             "scheduled_at": None,
@@ -276,7 +276,7 @@ async def test_the_collapse_never_hides_a_failure_from_the_derivation(
     module_pg_schema: ModulePgSchema,
     cure_app_module: Any,
 ) -> None:
-    """THE ROWS-ARE-TRUTH GUARD on the collapse: a FAILED map child
+    """The rows-are-truth guard on the collapse: a FAILED map child
     still derives the run FAILED (the §17.5 derivation reads every row)
     while the RENDER stays collapsed — the hexagon must not become a
     place for a failure to hide."""
@@ -306,11 +306,10 @@ async def test_wrong_shaped_resolve_writes_the_refused_audit_row(
     clean_pg_conn: asyncpg.Connection,
     cure_app_module: Any,
 ) -> None:
-    """THE RECORDED FINDING (Q3): the shape-refused resolves (the typed door's
-    422s) wrote ZERO audit rows while the page claims every
-    Resolve/cancel/deliver is audited — the attacker's probing was
-    INVISIBLE. THE FIX'S PIN: the wrong-shaped resolve → the audit row
-    EXISTS (refused + the reason) AND the hold survives."""
+    """A shape-refused resolve (the typed door's
+    422) writes its audit row (refused + the reason) BEFORE the refusal
+    propagates — the page's "every Resolve/cancel/deliver is audited"
+    claim holds for the refusals too, and the hold survives."""
     schema = module_pg_schema.schema_name
     run_id = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
     from taskq.workflows import HitlClient
@@ -337,8 +336,8 @@ async def test_wrong_shaped_resolve_writes_the_refused_audit_row(
         hold.hold_id,
     )
     assert audit is not None, (
-        "CONTRACT: the shape-refused resolve is AUDITED — the invisible-probe "
-        "recorded finding's fix (a 422 with zero audit rows reds)"
+        "CONTRACT: the shape-refused resolve is AUDITED — a 422 with zero "
+        "audit rows is the defect (the mutation reds)"
     )
     assert audit["action"] == "hitl.resolve"
     detail = audit["detail"]
@@ -346,12 +345,40 @@ async def test_wrong_shaped_resolve_writes_the_refused_audit_row(
         detail = json.loads(detail)
     assert detail.get("refused"), "the row records WHY the payload was refused"
     assert await client.list(run_id), "the refused resolve moved nothing — the hold survives"
-    # AND THE PAGE'S CLAIM IS NOW TRUE: the trail renders the row.
+    # the page's claim is now true: the trail renders the row.
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as http:
         page = await http.get(f"/workflows/{run_id}")
     assert "hitl.resolve" in page.text, "the refused probe is visible in the trail"
+
+    # the pointer's one spelling: the same refusal posted through a
+    # braced spelling of the id writes its audit pointer canonical —
+    # the strict target_id query finds every refused call's row under
+    # one spelling.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        await http.get("/queues")  # the CSRF cookie's set
+        braced = "{" + str(hold.hold_id).upper() + "}"
+        braced_bad = await http.post(
+            f"/api/runs/{run_id}/resolve",
+            data={
+                "hold_id": braced,
+                "decision": json.dumps({"verdict": 42, "smuggle": True}),
+                "csrf_token": _csrf_of(http),
+            },
+        )
+    assert braced_bad.status_code == 422
+    pointers = await clean_pg_conn.fetchrow(
+        f'SELECT count(*)::int AS rows FROM "{schema}".admin_audit '
+        "WHERE target_id = $1 AND detail->>'refused' IS NOT NULL",
+        hold.hold_id,
+    )
+    assert pointers is not None and pointers["rows"] >= 2, (
+        "the braced call's refusal is findable by the canonical id: the "
+        "audit pointer speaks one spelling"
+    )
 
 
 async def test_wrong_shaped_deliver_writes_the_refused_audit_row_too(
@@ -399,9 +426,8 @@ async def test_run_stream_ends_when_the_session_is_revoked_mid_stream(
     cure_app_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE RECORDED FINDING (Q4): the run stream lacked the mid-stream
-    session re-check ``/sse/{topic}`` got for #316 — a revoked admin
-    session kept receiving frames. THE FIX'S PIN: the revoked
+    """The run stream carries the mid-stream
+    session re-check ``/sse/{topic}`` has — a revoked admin
     session's stream TERMINATES at the next tick."""
     monkeypatch.setattr(
         "taskq.web.admin._wf_actions._STREAM_POLL_S", _TICK
@@ -428,7 +454,7 @@ async def test_run_stream_ends_when_the_session_is_revoked_mid_stream(
     setup_admin_state(app, bundle)
     app.include_router(bundle.router)
 
-    # THE RAW-ASGI READER (the #316 test's own shape): httpx's
+    # the raw-asgi reader (the #316 test's own shape): httpx's
     # ASGITransport buffers a streaming body to completion — a stream
     # that ends on revocation never returns to an aiter loop there.
     received: list[bytes] = []
@@ -463,7 +489,7 @@ async def test_run_stream_ends_when_the_session_is_revoked_mid_stream(
             break
         await asyncio.sleep(0.005)
     assert b"event: run_state" in b"".join(received), "the first frame arrived"
-    auth_state["valid"] = False  # THE REVOCATION mid-stream
+    auth_state["valid"] = False  # the revocation mid-stream
     await asyncio.sleep(_TICK * 3)
     deadline = asyncio.get_running_loop().time() + 5.0
     while not task.done() and asyncio.get_running_loop().time() < deadline:  # noqa: ASYNC110  # Why: bounded task-done poll - completion is observable on the task, not a signal this task can await.
@@ -545,13 +571,12 @@ async def test_refused_cancel_lands_on_the_banner_never_a_400_wall(
     module_pg_schema: ModulePgSchema,
     cure_app_module: Any,
 ) -> None:
-    """THE RECORDED FINDING (the extra): run_cancel's refusal redirects to
-    ``?error=cancel-not-applied`` but the detail page refused ALL query
-    params (400) — the operator landed on a wall. THE FIX'S PIN: the
+    """run_cancel's refusal redirects to
+    ``?error=cancel-not-applied`` and the detail page renders it: the
     redirect renders 200 WITH the refused-op banner; an undeclared
     param still 400s (the refuse-undeclared law keeps its teeth)."""
     schema = module_pg_schema.schema_name
-    # THE HONEST TERMINAL RUN: the map flow drives to terminal (the root
+    # the honest terminal run: the map flow drives to terminal (the root
     # row written by the engine, the G7 law intact) — the cancel then
     # refuses for real (an already-terminal run cancels nothing).
     run_id = await _seed_run(module_pg_pool, schema, name="cure_map_flow")
@@ -560,7 +585,7 @@ async def test_refused_cancel_lands_on_the_banner_never_a_400_wall(
         transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
     ) as http:
         await http.get("/queues")
-        # THE TERMINAL RUN: the cancel refuses (idempotent no-op) and
+        # the terminal run: the cancel refuses (idempotent no-op) and
         # redirects with the banner key.
         r = await http.post(
             f"/api/runs/{run_id}/cancel", data={"csrf_token": _csrf_of(http), "reason": "x"}
@@ -574,7 +599,7 @@ async def test_refused_cancel_lands_on_the_banner_never_a_400_wall(
             f"400 wall — got {followed.status_code}"
         )
         assert "Cancel not applied" in followed.text, "the refused-op banner renders"
-        # THE UNDECLARED PARAM still refuses (the law keeps its teeth).
+        # the undeclared param still refuses (the law keeps its teeth).
         wall = await http.get(f"/workflows/{run_id}?bogus=1")
         assert wall.status_code == 400
 
@@ -587,11 +612,11 @@ async def test_node_panel_error_fields_are_display_capped(
     module_pg_schema: ModulePgSchema,
     clean_pg_conn: asyncpg.Connection,
 ) -> None:
-    """THE RECORDED FINDING (Q5): the panel returned error_message/traceback/
-    metadata->>'error' WHOLE — a foreign row's 5MB fields made a 15MB
-    response. THE FIX'S PIN: the read is display-capped with the
+    """The panel's read is display-capped: error_message/traceback/
+    metadata->>'error' are capped with the
     dropped-count named (``error_truncated``); the ROW keeps the full
-    detail."""
+    detail — a foreign row's 5MB fields never make a 15MB
+    response."""
     from taskq._ids import new_uuid
 
     schema = module_pg_schema.schema_name
@@ -629,7 +654,7 @@ async def test_node_panel_error_fields_are_display_capped(
     )
     assert body["error_truncated"] is True, "the truncated marker rides the reply"
     assert "truncated" in (body["error_message"] or ""), "the dropped-count is named"
-    # THE ROW IS THE TRUTH: the full detail stays in the rows.
+    # the row is the truth: the full detail stays in the rows.
     row = await module_pg_pool.fetchval(
         f'SELECT length(error_message) FROM "{schema}".jobs WHERE id = $1', node_id
     )
@@ -654,8 +679,8 @@ def test_the_root_payload_is_off_the_read_path() -> None:
 
 
 def test_the_page_js_escapes_the_row_key_and_sanitizes_the_status_class() -> None:
-    """THE NITS' PINS: the poisoned-row defense in the source — the
-    querySelector escapes the attacker-controlled key (CSS.escape), and
+    """The nits' pins: the poisoned-row defense in the source — the
+    querySelector escapes the hostile-actor-controlled key (CSS.escape), and
     the status class is the legend's closed vocabulary (a space-bearing
     hostile status paints as pending, never throws)."""
     from pathlib import Path
@@ -675,7 +700,7 @@ def test_the_page_js_escapes_the_row_key_and_sanitizes_the_status_class() -> Non
 
 
 def test_the_status_chip_maps_carry_every_node_status() -> None:
-    """THE MAP'S COMPLETENESS PIN: _constants's own law — "a new status
+    """The map's completeness pin: _constants's own law — "a new status
     gains an entry HERE or nowhere" — is enforced, not just stated. The
     run page's node chips read ``status_chip_classes`` (a missing key
     SILENTLY falls back to the pending chip: exactly how ``skipped``
@@ -703,11 +728,11 @@ def test_the_status_chip_maps_carry_every_node_status() -> None:
 async def test_unknown_run_stream_is_a_404_at_subscribe(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
-    """THE RECORDED FINDING (Q7, LOW): an unknown run id streamed the empty
-    'unknown' snapshot forever — an existence oracle behind the auth
-    gate and a poll task per probe. THE FIX'S PIN: the 404 AT
+    """An unknown run id answers 404 AT
     SUBSCRIBE (the estate's own ``/sse/{topic}`` convention: an unknown
-    topic is refused at subscribe; the same law, one level up)."""
+    topic is refused at subscribe; the same law, one level up) — never
+    the empty 'unknown' snapshot streamed forever (an existence oracle
+    behind the auth gate and a poll task per probe)."""
     app = _make_admin_app(module_pg_pool, module_pg_schema.schema_name)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -716,3 +741,262 @@ async def test_unknown_run_stream_is_a_404_at_subscribe(
     assert resp.status_code == 404, (
         f"CONTRACT: an unknown run is a 404 AT SUBSCRIBE, got {resp.status_code}"
     )
+
+
+async def test_malformed_hold_id_is_an_audited_400_never_a_500(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    cure_app_module: Any,
+) -> None:
+    """A malformed hold id (unparseable, NUL-bearing, oversized) is the
+    door's own 400 — AUDITED (the refusal lands in the trail with a
+    SANITIZED pointer: the never-pruned row's index key carries no NUL
+    and no unbounded string) — never a 500, never an unwritten row."""
+    schema = module_pg_schema.schema_name
+    app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    for hostile in ("not-a-hold-id", "abc\x00def", "x" * 2700):
+        rows_before = await clean_pg_conn.fetchval(
+            f'SELECT count(*)::int FROM "{schema}".admin_audit '
+            "WHERE detail->>'refused' = 'the hold id is not a valid id'"
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            await http.get("/queues")  # the CSRF cookie's set
+            bad = await http.post(
+                f"/api/runs/{new_uuid()}/resolve",
+                data={
+                    "hold_id": hostile,
+                    "decision": json.dumps({"verdict": "approve"}),
+                    "csrf_token": _csrf_of(http),
+                },
+            )
+        assert bad.status_code == 400, f"the hostile id {hostile[:24]!r} must be a 400"
+        rows_after = await clean_pg_conn.fetchval(
+            f'SELECT count(*)::int FROM "{schema}".admin_audit '
+            "WHERE detail->>'refused' = 'the hold id is not a valid id'"
+        )
+        assert rows_after == rows_before + 1, (
+            f"the hostile id's refusal is AUDITED (the row exists for {hostile[:24]!r})"
+        )
+        pointer = await clean_pg_conn.fetchrow(
+            f'SELECT target_id FROM "{schema}".admin_audit '
+            "WHERE detail->>'refused' = 'the hold id is not a valid id' "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        assert pointer is not None
+        # the leaf's law: the NUL rendered as its visible escape (a
+        # deleted NUL could alias a different real key), the value
+        # bounded to the pointer index's shape, the cut marked.
+        assert "\x00" not in pointer["target_id"], "the pointer carries no NUL byte"
+        assert len(pointer["target_id"]) <= 201, "the pointer is bounded"
+        if hostile.startswith("abc"):
+            assert "\\x00" in pointer["target_id"], (
+                f"the NUL is ESCAPED, not deleted: {pointer['target_id']!r}"
+            )
+
+
+async def test_resolve_refuses_a_hold_from_another_run(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    cure_app_module: Any,
+) -> None:
+    """The resolve door's scope is the HOLD'S OWN RUN: the admin door
+    404s a hold whose run_id is not the path's run — the cross-run
+    resolve (the operator's typo, or a probe walking ids) moves
+    nothing."""
+    schema = module_pg_schema.schema_name
+    run_a = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
+    run_b = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
+    from taskq.workflows import HitlClient
+
+    client = HitlClient(module_pg_pool, schema=schema)
+    (hold_b,) = await client.list(run_b)
+    app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        await http.get("/queues")  # the CSRF cookie's set
+        cross = await http.post(
+            f"/api/runs/{run_a}/resolve",
+            data={
+                "hold_id": hold_b.hold_id,
+                "decision": json.dumps({"verdict": "approve"}),
+                "csrf_token": _csrf_of(http),
+            },
+        )
+    assert cross.status_code == 404, cross.text
+    still = await clean_pg_conn.fetchval(
+        f'SELECT status FROM "{schema}".wf_signals WHERE id = $1', hold_b.hold_id
+    )
+    assert still == "held", f"B's hold moved under A's door: {still}"
+
+
+async def test_hostile_node_key_is_an_audited_refusal_that_renders(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    cure_app_module: Any,
+) -> None:
+    """The node door's own shape check: a NUL-bearing node key is the
+    AUDITED refusal (the redirect + the row), never a 500 from the CAS
+    bind — and the row RENDERS on the run's trail (the detail carries
+    the run_id the page's query keys on)."""
+    schema = module_pg_schema.schema_name
+    run_id = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
+    app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        await http.get("/queues")  # the CSRF cookie's set
+        bad = await http.post(
+            f"/api/runs/{run_id}/nodes/abc%00def/retry",
+            data={"csrf_token": _csrf_of(http)},
+        )
+    assert bad.status_code == 303, bad.status_code
+    row = await clean_pg_conn.fetchrow(
+        f'SELECT detail FROM "{schema}".admin_audit '
+        "WHERE action = 'workflow.retry_node' ORDER BY id DESC LIMIT 1"
+    )
+    assert row is not None, "the hostile key's refusal is AUDITED"
+    detail = json.loads(row["detail"]) if isinstance(row["detail"], str) else row["detail"]
+    assert detail["refused"] == "the node key is not a valid key"
+    assert detail["run_id"] == str(run_id), detail
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        page = await http.get(f"/workflows/{run_id}")
+    assert "workflow.retry_node" in page.text, (
+        "the refusal renders on THE RUN's trail (the detail's run_id is "
+        "what the page's query keys on)"
+    )
+    # the refusal's fact is visible: the page renders what was refused
+    # (the amber badge), not just that a row exists.
+    assert "refused:" in page.text and "the node key is not a valid key" in page.text, (
+        "the trail's refused badge names the refusal"
+    )
+
+
+async def test_the_audit_leaf_bounds_the_pointer_for_every_writer(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The pointer column's law at THE LEAF (the single insert path —
+    every writer door inherits it): a NUL-bearing target_id lands with
+    the NUL as its visible escape (a deleted NUL could alias a
+    different real key), an oversized one lands bounded with the cut
+    marked; reverting the leaf's bound reds here (the raw bind
+    raises)."""
+    from taskq.audit import TARGET_ID_MAX_LENGTH, record_admin_action
+
+    schema = module_pg_schema.schema_name
+    for hostile in ("abc\x00def", "x" * 2700):
+        await record_admin_action(
+            clean_pg_conn,
+            schema=schema,
+            principal="ops",
+            action="hitl.resolve",
+            target_type="hold",
+            target_id=hostile,
+        )
+    rows = await clean_pg_conn.fetch(
+        f'SELECT target_id FROM "{schema}".admin_audit '
+        "WHERE action = 'hitl.resolve' AND target_type = 'hold' AND principal_subject = 'ops' "
+        "ORDER BY id"
+    )
+    assert len(rows) == 2
+    assert rows[0]["target_id"] == "abc\\x00def", rows[0]["target_id"]
+    assert len(rows[1]["target_id"]) <= TARGET_ID_MAX_LENGTH + 1
+    assert rows[1]["target_id"].endswith("…"), rows[1]["target_id"]
+    for r in rows:
+        assert "\x00" not in r["target_id"]
+
+
+async def test_a_long_declared_node_key_retries_through_the_door(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    cure_app_module: Any,
+) -> None:
+    """Length is not the door's business: a LEGAL node key (whatever the
+    workflow declared — 250 chars included) retries through the engine's
+    own verb; the pointer's bound is the audit leaf's law, never a
+    refusal of the call."""
+    from taskq.workflows import retry_workflow_node
+
+    schema = module_pg_schema.schema_name
+    long_key = "node_" + "n" * 245
+    run_id = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
+    applied = await retry_workflow_node(
+        module_pg_pool,
+        schema=schema,
+        flow_id=__import__("uuid").UUID(run_id),
+        node_key=long_key,
+        reason=None,
+    )
+    assert applied >= 0  # the verb answers; the length arm never refuses it
+    _ = clean_pg_conn, run_id
+
+
+async def test_hostile_inputs_on_every_door_are_typed_refusals(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    cure_app_module: Any,
+) -> None:
+    """The doors' last hostile shapes, walked: a map_index beyond the
+    smallint is the typed 400 (never the int2 codec's overflow 500); a
+    NUL node key on the READ door is a 404; the deliver door's audited
+    refusal with a NUL node key in its detail lands ITS OWN ROW (the
+    leaf's NUL law covers the detail's strings — the audited refusal
+    cannot be the 500 it exists to prevent)."""
+    schema = module_pg_schema.schema_name
+    run_id = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
+    app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        await http.get("/queues")  # the CSRF cookie's set
+        csrf = _csrf_of(http)
+        overflow = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 40000})
+        assert overflow.status_code == 400, (
+            f"the smallint overflow is a typed 400: {overflow.status_code}"
+        )
+        huge = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 10**20})
+        assert huge.status_code == 400
+        read_nul = await http.get(f"/api/runs/{run_id}/nodes/abc%00def")
+        assert read_nul.status_code == 404, read_nul.status_code
+        rows_before = await clean_pg_conn.fetchval(
+            f'SELECT count(*)::int FROM "{schema}".admin_audit '
+            "WHERE detail->>'refused' IS NOT NULL"
+        )
+        deliver_nul = await http.post(
+            f"/api/runs/{run_id}/deliver",
+            data={
+                "node": "a\x00b",
+                "payload": json.dumps({"verdict": "a\u0000b"}),
+                "csrf_token": csrf,
+            },
+        )
+        assert deliver_nul.status_code == 422, (
+            f"the deliver door's NUL payload is the audited 422: {deliver_nul.status_code} {deliver_nul.text}"
+        )
+        rows_after = await clean_pg_conn.fetchval(
+            f'SELECT count(*)::int FROM "{schema}".admin_audit '
+            "WHERE detail->>'refused' IS NOT NULL"
+        )
+        assert rows_after == rows_before + 1, (
+            "the deliver door's own refusal lands ITS audit row (the "
+            "leaf's NUL law covers the detail's strings)"
+        )
+        row = await clean_pg_conn.fetchrow(
+            f'SELECT target_type, target_id FROM "{schema}".admin_audit '
+            "WHERE detail->>'refused' IS NOT NULL ORDER BY id DESC LIMIT 1"
+        )
+        assert row is not None
+        assert row["target_type"] == "workflow_run", (
+            f"the deliver refusal targets THE RUN, not a phantom hold: {row}"
+        )
+        assert row["target_id"] == str(run_id), f"the pointer is the canonical run spelling: {row}"

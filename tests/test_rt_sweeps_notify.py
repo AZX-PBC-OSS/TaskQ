@@ -6,10 +6,10 @@ sweep 3's is not, and sweep 3 runs every second on the leader - a
 per-row notify regression there is a wake storm on the hottest cadence
 in the system.  This file pins:
 
-* sweep 3 fires exactly ONE notification per call that promotes at
+* sweep 3 fires exactly one notification per call that promotes at
   least one row, NONE on an empty call, on the schema-qualified
   ``wake_channel`` - the channel ``subscribe_wake`` consumers listen on;
-* sweep 2 fires NO notification at all: it is not a wake-channel writer
+* sweep 2 fires no notification at all: it is not a wake-channel writer
   today, and the channel's meaning ("new dispatchable work or something
   changed on job_events") is a documented semantic - bolting a notify
   onto the deadline sweep would wake every dispatch worker in the fleet
@@ -124,7 +124,7 @@ async def test_sweep2_fires_no_notifications(
 
     Observation hygiene: seeding the corpus inserts 'pending' jobs rows
     directly, and the schema's ``tr_notify_job_insert`` trigger (the wake
-    source for every insert, TaskQ's own or direct SQL) fires the SAME
+    source for every insert, TaskQ's own or direct SQL) fires the same
     wake channel for them - deduplicated by PostgreSQL to
     one delivery per transaction, since duplicate (channel, payload)
     notifications inside one transaction coalesce.  The seed's delivery

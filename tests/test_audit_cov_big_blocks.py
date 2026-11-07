@@ -1,6 +1,6 @@
 """Audit-coverage pins: the remaining >5-line uncovered blocks.
 
-Every test here was written failing-first against a specific uncovered block
+Every test here was written against a specific uncovered block
 (the audit-cov census, branch feat/audit-coverage); each documents the
 block it closes, and each was mutation-proven (flipping a target line
 makes the test fail).
@@ -50,7 +50,7 @@ runner = CliRunner()
 
 
 def test_nul_rejected_field_locates_a_nul_metadata_value() -> None:
-    """A NUL that reached the metadata dict AFTER construction (the
+    """A NUL that reached the metadata dict after construction (the
     chokepoint only guards construction) is located as 'metadata', the
     stream-boundary annotation's field."""
     args = make_enqueue_args(payload={})
@@ -74,7 +74,7 @@ def test_nul_rejected_field_answers_none_for_a_clean_item() -> None:
     assert _nul_rejected_field(args, idx=0) is None
 
 
-# ── the CLASS factory arm's lifecycle invariant ─────────────────────────
+# ── the class factory arm's lifecycle invariant ─────────────────────────
 
 
 class _Service:
@@ -161,7 +161,7 @@ def _patch_disable_cli(monkeypatch: pytest.MonkeyPatch, report: Any) -> AsyncMoc
     monkeypatch.setattr(
         migrate_mod,
         "migration_advisory_lock",
-        asynccontextmanager(_no_lock),  # pyright: ignore[reportDeprecated]  # Why: the stdlib CM factory is the double's shape
+        asynccontextmanager(_no_lock),  # pyright: ignore[reportDeprecated]  # Why: the stdlib cm factory is the double's shape
     )
     disable_mock = AsyncMock(return_value=report)
     monkeypatch.setattr(cli_mod, "disable_hypertables", disable_mock)

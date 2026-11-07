@@ -80,11 +80,11 @@ _SUMMER_EXPECTED = [33, 1033]
 
 @pytest.fixture(scope="module")
 def compose_schema() -> str:
-    """The deployed stack's OWN database/schema name - fixed by the deployment.
+    """The deployed stack's own database/schema name - fixed by the deployment.
 
     examples/docker-compose.yml sets ``POSTGRES_DB: taskq`` and no
     ``TASKQ_SCHEMA_NAME``, so every service resolves the library default: the
-    database AND the TaskQ schema are both the deployment's fixed ``taskq`` -
+    database and the TaskQ schema are both the deployment's fixed ``taskq`` -
     not a per-test marker. The value lives in this fixture rather than a
     module-level constant (the suite-hygiene pin bans shared schema
     constants) while staying the one honest source for the name the stack
@@ -218,7 +218,7 @@ def _override_file(path: Path, app_port: int, admin_port: int, pg_port: int) -> 
     both mappings and 8000/8001 stay published - this remap keeps the module
     collision-free under xdist/parallel runs); the creator labels MERGE into
     every service so the shared-daemon sweep rules recognize the stack as ours.
-    The postgres port is published ONLY for the test process's ``TaskQ`` client
+    The postgres port is published only for the test process's ``TaskQ`` client
     (the app.py client shape against the compose postgres); the base file
     publishes none.
     """
@@ -301,7 +301,7 @@ def compose_stack(
             lambda: _http_get_ok(stack.admin_url),
             timeout=120.0,
         )
-        #   3. BOTH composed workers heartbeat into the stack's own DB.
+        #   3. both composed workers heartbeat into the stack's own DB.
         _poll_until(
             "both composed workers to register in taskq.workers",
             lambda: (
@@ -377,7 +377,7 @@ async def completed_jobs(compose_stack: ComposeStack) -> CompletedJobs:
         rows = _terminal_rows()
         return rows if len(rows) == len(all_ids) and all("succeeded" in r for r in rows) else None
 
-    # THE deployment-level wait: the COMPOSED workers (not this process) must
+    # the deployment-level wait: the composed workers (not this process) must
     # drive every job to a terminal state in the stack's own database.
     rows = _poll_until(
         f"all {len(all_ids)} enqueued jobs to reach a terminal state in the stack's DB",
@@ -500,7 +500,7 @@ def test_a_job_cancels_live_through_the_admin_sidecar(
     stack = compose_stack
     with httpx.Client(timeout=30.0, follow_redirects=False) as http:
         # The multi-step actor runs ~4s: there is a real window where the
-        # job is RUNNING and cancellable.
+        # job is running and cancellable.
         enqueue = http.post(f"{stack.app_url}/enqueue/file_processor", data={})
         assert enqueue.status_code == 201, enqueue.text
         job_id = enqueue.json()["job_id"]
@@ -539,7 +539,7 @@ def test_a_job_cancels_live_through_the_admin_sidecar(
 def test_compose_project_holds_exactly_the_expected_objects_midrun(
     compose_stack: ComposeStack,
 ) -> None:
-    """Mid-run, docker holds ONLY this project's labeled objects (cleanup determinism)."""
+    """Mid-run, docker holds only this project's labeled objects (cleanup determinism)."""
     leftovers = _leftovers_for(compose_stack.project)
     assert set(leftovers) == {"containers", "volumes", "networks"}
     # 6 services + the compose default network + the pgdata volume; anything

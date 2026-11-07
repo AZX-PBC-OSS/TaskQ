@@ -1,6 +1,6 @@
 """The flows demo's admin sidecar — ``admin_app.py``'s shape, wired for
 the workflow demo: the admin UI (with the run explorer + the typed
-Resolve form) mounted over the SAME schema the in-process demo drove,
+Resolve form) mounted over the same schema the in-process demo drove,
 plus a background drive loop so runs continue past holds and timers
 while the UI is open.
 
@@ -38,13 +38,11 @@ from taskq.migrate import apply_pending_locked
 from taskq.settings import TaskQSettings
 from taskq.web.admin import create_router, setup_admin_state
 
-# THE LOCAL-HTTP DEV CASE (the settings' own carve-out for
-# TASKQ_ADMIN_UI_SECURE_COOKIES): this demo serves plain
-# http://localhost:8003, where the browser rejects a Secure cookie — the
-# admin CSRF cookie never lands and every action POST (the Resolve flow)
-# answers 403. The demo's own process defaults the flag off, before the
-# settings load; an explicit operator setting still wins (setdefault,
-# never a stomp).
+# this demo serves plain http://localhost:8003, where the browser rejects a
+# Secure cookie — the admin csrf cookie never lands and every action post (the
+# Resolve flow) answers 403. The demo's own process defaults the flag off,
+# before the settings load; an explicit operator setting still wins
+# (setdefault, never a stomp).
 os.environ.setdefault("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
 
 #: The drive loop's logger (one name, the demo's own).
@@ -91,7 +89,7 @@ async def _drive_loop(pool: asyncpg.Pool, schema: str) -> None:
             raise
         except Exception:
             # The loop must survive a bad tick; the rows are the truth
-            # and the next pass re-drives — but it says so LOUDLY.
+            # and the next pass re-drives — but it says so loudly.
             log.exception("flows-demo-drive-pass-failed")
         await asyncio.sleep(_DRIVE_TICK_S)
 
@@ -110,7 +108,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         assert pg_pool is not None, "asyncpg.create_pool returned None"
 
         # The demo's schema-bound pieces (the reservation's slot rows
-        # live in THIS schema) + the capacity terms' actor_config rows.
+        # live in this schema) + the capacity terms' actor_config rows.
         gadget = configure(settings.schema_name)
         await gadget.ensure_slots(pg_pool)
 
@@ -130,25 +128,22 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
             auth_dependency=None,
             base_path="/admin",
             backend=tq.backend,
-            # THE TYPED DOOR'S WITNESS: the demo's workflow definitions
-            # mount so the run page's Resolve form DELIVERS the typed
-            # Approval (a sidecar that cannot resolve is a demo that
-            # cannot perform its own central action).
+            # the demo's workflow definitions mount so the run page's Resolve
+            # form delivers the typed Approval (a sidecar that cannot resolve
+            # is a demo that cannot perform its own central action).
             workflow_app=flows_app,
         )
         setup_admin_state(application, bundle)
         application.include_router(bundle.router, prefix="/admin")
 
-        # THE DRIVE LOOP: the demo's runs continue past holds + timers
-        # while the UI is open.
+        # the demo's runs continue past holds + timers while the UI is open.
         loop_task = asyncio.create_task(_drive_loop(pg_pool, schema))
         try:
             yield
         finally:
             loop_task.cancel()
-            # THE AWAITED CANCEL (the shutdown discipline's shape): the
-            # loop's own cancellation is consumed by ITS raise, this
-            # await only observes the exit.
+            # the loop's own cancellation is consumed by its raise, this await
+            # only observes the exit.
             with contextlib.suppress(asyncio.CancelledError):
                 await loop_task
 

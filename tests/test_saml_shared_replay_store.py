@@ -7,7 +7,7 @@ re-POSTed to a SIBLING replica minted a second session (cross-replica replay),
 and a flood of accepted logins could evict a consumed record that was then
 re-accepted.
 
-These tests drive TWO auth bundles over the SAME Postgres schema -- the
+These tests drive TWO auth bundles over the same Postgres schema -- the
 deployment shape of two admin replicas (separate pools, one shared store) --
 and pin the shared semantics: the sibling refuses a consumed assertion, refuses
 a fresh assertion answering an already-answered request, and cannot evict a
@@ -41,7 +41,7 @@ from tests._sso_saml_crypto import (
     build_saml_response,
 )
 from tests.test_sso_saml import (
-    _TEST_BASE_URL,  # pyright: ignore[reportPrivateUsage]  # Why: shared fixture constant, the ACS base URL the fixture crypto is built for.
+    _TEST_BASE_URL,  # pyright: ignore[reportPrivateUsage]  # Why: shared fixture constant, the acs base URL the fixture crypto is built for.
     _assertion_id,  # pyright: ignore[reportPrivateUsage]  # Why: the fixture-XML assertion-ID extractor, shared so both suites read it identically.
     _correlation_cookie,  # pyright: ignore[reportPrivateUsage]  # Why: shared helper, same capture semantics as the single-bundle suites.
     _do_login,  # pyright: ignore[reportPrivateUsage]  # Why: shared helper (spies OneLogin's login to return the issued request ID).
@@ -55,7 +55,7 @@ _SESSION_SECRET = "s" * 32
 
 @pytest.fixture(scope="module")
 def saml_schema() -> str:
-    # This module gets its OWN database on the shared container (the
+    # This module gets its own database on the shared container (the
     # module-scoped pg_dsn fixture), so one fixed schema name cannot collide
     # with anything.
     return "taskq_saml_replay"
@@ -95,7 +95,7 @@ def migrated_dsn(pg_dsn: str, saml_schema: str) -> Iterator[str]:
 
 
 def _replica(config: SAMLAuthConfig, dsn: str, schema: str) -> FastAPI:
-    """One replica: its own pool over the SAME database and schema.
+    """One replica: its own pool over the same database and schema.
 
     The lifespan wires exactly the keys the admin app's ``setup_admin_state``
     sets (``pg_pool`` + ``schema``), which is the wiring the store resolution
@@ -144,7 +144,7 @@ def test_a_second_replica_cannot_accept_an_assertion_the_first_consumed(
     saml_schema: str,
 ) -> None:
     """The confirmed defect, as a test: bundle A consumes an assertion,
-    bundle B must NOT succeed on the same assertion.
+    bundle B must not succeed on the same assertion.
 
     Two bundles over one shared store, both replicas live at once. Replica A
     performs an honest login; the captured POST is then presented to replica
@@ -249,8 +249,8 @@ def test_a_flood_of_accepted_logins_cannot_evict_a_consumed_assertion(
     """
     import taskq.web.admin.auth.saml as saml_module
 
-    # Shrink BOTH in-process caps so the flood below would evict the first
-    # login's records IF the records were still process-local (the triage
+    # Shrink both in-process caps so the flood below would evict the first
+    # login's records if the records were still process-local (the triage
     # repro flooded the replay cache's 10k cap; shrinking both caps here
     # makes the same eviction reachable at test scale).
     monkeypatch.setattr(saml_module, "_REPLAY_CACHE_MAX_ENTRIES", 2)
@@ -266,7 +266,7 @@ def test_a_flood_of_accepted_logins_cannot_evict_a_consumed_assertion(
             "the honest login must be accepted; the repro is void otherwise"
         )
 
-        # The flood: only ACCEPTED logins write replay records, so each round
+        # The flood: only accepted logins write replay records, so each round
         # is a full /login + accepted assertion. Four more accepted logins
         # push five records through a cap-2 in-process set.
         for _ in range(4):
@@ -330,7 +330,7 @@ def test_an_expired_replay_row_neither_blocks_nor_lingers(
             assert not await store.already_answered("request-stale", now=now)
             assert not await store.already_answered("request-stale", now=now + 1)
 
-            # A LIVE claim of the same assertion ID succeeds: the expired row
+            # A live claim of the same assertion ID succeeds: the expired row
             # does not block it (and is reclaimed in place by the claim).
             await store.consume("assertion-stale", now + 600, now=now + 1)
             # The live record refuses a second presentation.
@@ -366,7 +366,7 @@ def test_store_selection_wires_postgres_only_when_the_admin_pool_is_present(
     A pool without a schema does not half-share: it stays in-process rather
     than guessing a schema.
     """
-    from taskq.web.admin.auth.saml import (  # pyright: ignore[reportPrivateUsage]  # Why: the selection under test IS the wiring; these are not public API.
+    from taskq.web.admin.auth.saml import (  # pyright: ignore[reportPrivateUsage]  # Why: the selection under test is the wiring; these are not public API.
         _InProcessSamlReplayStore,
         _PostgresSamlReplayStore,
         _replay_store_for,

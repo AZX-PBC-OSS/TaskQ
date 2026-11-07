@@ -504,7 +504,7 @@ TestJobStateMachine = JobStateMachine.TestCase  # type: ignore[reportUnknownVari
 
 
 def _illegal_pairs() -> list[tuple[JobStatus, JobStatus]]:
-    """Build every (from, to) pair where to is NOT in VALID_TRANSITIONS[from]."""
+    """Build every (from, to) pair where to is not in VALID_TRANSITIONS[from]."""
     pairs: list[tuple[JobStatus, JobStatus]] = []
     for from_status in _ALL_STATUSES:
         for to_status in _ALL_STATUSES:

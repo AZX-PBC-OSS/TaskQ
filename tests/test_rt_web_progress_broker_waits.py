@@ -264,7 +264,7 @@ async def test_wedged_broker_read_must_be_app_bounded() -> None:
     pubsub double that outlives the delegated ``timeout=`` parameter - must
     terminate the stream within a bounded window.
 
-    CURRENT VIOLATION: progress.py:184-187 delegates the ONLY bound to
+    CURRENT VIOLATION: progress.py:184-187 delegates the only bound to
     ``pubsub.get_message(..., timeout=heartbeat_secs)`` - nothing in this
     module cancels a read that never returns - so 15 heartbeat intervals
     later the generator task is still pending, holding the Redis
@@ -322,7 +322,7 @@ async def test_wedged_broker_read_must_be_app_bounded() -> None:
             "the asyncio task and the SSE slot."
         )
     finally:
-        # Bounded teardown so the RED state can never hang the test run.
+        # Bounded teardown so the red state can never hang the test run.
         task.cancel()
         with contextlib.suppress(BaseException):
             await task

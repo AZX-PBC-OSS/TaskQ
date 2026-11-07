@@ -44,7 +44,41 @@ class StubTransaction:
 
 
 class StubConnection:
-    """Minimal asyncpg.Connection duck type that returns empty results."""
+    """FAIL-CLOSED admin connection double (tests/test_suite_hygiene.py's
+    rule): the blind defaults the old stub answered — ``fetch`` → ``[]``,
+    ``fetchval`` → ``False``, ``execute`` → ``""`` — died there. A
+    statement reaching this double now needs a NAMED script: *scripts*
+    maps a distinctive SQL fragment to the answer (a list for ``fetch``,
+    a record or ``None`` for ``fetchrow``, a scalar for ``fetchval``, a
+    tag string for ``execute``); an unscripted statement raises
+    AssertionError naming the fragment. The server-clock probe stays a
+    named answer (Postgres answers it unconditionally).
+
+    The render-only surface (no execution) is a stub with no scripts: a
+    render that needs a row must script it, a render that queries
+    unscripted statements is not render-only - it is a route test whose
+    happy path belongs to the real-PG packs
+    (tests/test_web_admin_integration.py, tests/test_web_admin_actors.py,
+    tests/test_insights.py, tests/web_admin/test_batch_detail_pg.py).
+    """
+
+    def __init__(self, *, scripts: dict[str, object] | None = None) -> None:
+        # The render tier's page scripts are the default: a directly
+        # constructed stub renders the pages (empty) through the same
+        # named scripts the fixture uses - never blind defaults.
+        self._scripts: dict[str, object] = dict(RENDER_ONLY_SCRIPTS) if scripts is None else scripts
+        self.executed_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def _answer(self, query: str) -> object | None:
+        for fragment, answer in self._scripts.items():
+            if fragment in query:
+                return answer
+        raise AssertionError(
+            f"StubConnection: no script answers statement {query!r} - the "
+            "fail-closed rule (tests/test_suite_hygiene.py) forbids a blind "
+            "default. Script the statement (scripts={fragment: answer}), or "
+            "the happy path belongs to the real-PG admin packs."
+        )
 
     def transaction(self) -> StubTransaction:
         # The admin mutation routes wrap their writes in
@@ -54,10 +88,28 @@ class StubConnection:
         return StubTransaction()
 
     async def fetch(self, query: str, *args: object) -> list[StubRecord]:
-        return []
+        answer = self._answer(query)
+        if answer is None:
+            return []
+        if not isinstance(answer, list):
+            raise AssertionError(
+                f"StubConnection: the script for {query!r} is a scalar - "
+                "scalar scripts answer fetchval only; script a list for fetch"
+            )
+        return [row if isinstance(row, StubRecord) else StubRecord(dict(row)) for row in answer]  # type: ignore[arg-type]
 
     async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
-        return None
+        answer = self._answer(query)
+        if answer is None:
+            return None
+        if isinstance(answer, list):
+            return StubRecord(dict(answer[0])) if answer else None
+        if isinstance(answer, StubRecord):
+            return answer
+        raise AssertionError(
+            f"StubConnection: the script for {query!r} is neither a record "
+            "nor a list - script a record (or None) for fetchrow"
+        )
 
     async def fetchval(self, query: str, *args: object) -> object:
         if query.strip() == "SELECT clock_timestamp()":
@@ -66,27 +118,113 @@ class StubConnection:
             # admin factory's clock-offset probe a bool where the real
             # database hands it a datetime.
             return datetime.now(UTC)
-        return False
+        answer = self._answer(query)
+        if isinstance(answer, list | StubRecord):
+            raise AssertionError(
+                f"StubConnection: the script for {query!r} is a row shape - "
+                "row scripts answer fetch/fetchrow; script a scalar for fetchval"
+            )
+        return answer
 
     async def execute(self, query: str, *args: object) -> str:
-        return ""
+        self.executed_calls.append((query, args))
+        answer = self._answer(query)
+        return answer if isinstance(answer, str) else "UPDATE 0"
 
 
 class StubAcquireContext:
     """Async context manager yielding a StubConnection."""
 
     async def __aenter__(self) -> StubConnection:
-        return StubConnection()
+        return StubConnection(scripts=self._scripts)
 
     async def __aexit__(self, *args: object) -> None:
         pass
 
+    def __init__(self, scripts: dict[str, object] | None = None) -> None:
+        self._scripts = scripts if scripts is not None else {}
+
+
+# ── The render tier's named page scripts ────────────────────────────────
+#
+# The render-only tests (nav structure, table headers, pagination bars,
+# styling) drive pages that legitimately query: the render fixture scripts
+# each page's own list/count statement once, centrally, with the empty-page
+# answer — a named script per page, never a blind default (the fail-closed
+# rule). A render test needing rows scripts the page's fragment with them;
+# the page's happy-path data belongs to the real-PG packs
+# (tests/test_web_admin_integration.py, tests/test_web_admin_actors.py,
+# tests/test_insights.py, tests/web_admin/test_batch_detail_pg.py).
+
+RENDER_ONLY_SCRIPTS: dict[str, object] = {
+    # queues page: the per-queue census + the overview aggregates
+    "SELECT queue, count(*) FILTER (WHERE status": [],
+    "u.actor,": [],  # the per-actor/queue census join (the u.* aggregate)
+    "count(*) FILTER (WHERE job_id IS NOT NULL)": [],  # the reservations summary
+    # the pages' queue-filter dropdown: the distinct live-queue probe
+    "SELECT DISTINCT j.queue FROM": [],
+    # the queues page's stranded-queue census (the unserved-queue warning)
+    "SELECT r.routing_queue AS queue, count(*) AS stranded_count": [],
+    # the workers-per-queue census (the queues page's worker counts)
+    "SELECT q AS queue, count(*) AS worker_count": [],
+    # jobs page: the page-list union
+    "SELECT id, actor, queue, status, finished_at, created_at, started_at": [],
+    # history page: the page-list union
+    "SELECT id, actor, queue, status, created_at, scheduled_at": [],
+    # history page: the per-status summary (a row per status)
+    "SELECT status, count(*) AS cnt": [],
+    # batch detail: the member listing
+    "SELECT id, queue, actor, status, scheduled_at, attempt, max_attempts": [],
+    # reservations page: the slot listing
+    "SELECT bucket_name, slot_index, job_id, held_by_worker_id": [],
+    # job detail: no row scripted - the render tests script their own
+    # workers page: the fleet listing
+    "SELECT w.*, (ml.worker_id IS NOT NULL) AS is_leader": [],
+    # leader page: the lease row join
+    "SELECT ml.*, w.hostname, w.pid": [],
+    # schedules page: the schedule listing
+    "SELECT id, actor, cron_expr, timezone, enabled": [],
+    # rate-limits page: the bucket listing
+    'FROM "taskq".rate_limit_buckets ORDER BY bucket_name': [],
+    # batches page: the batch listing
+    "SELECT id, queue, status, expected_size": [],
+    # actors page: the actor census
+    "SELECT ac.actor, ac.max_concurrent": [],
+    # the workers EXISTS probe (the polling badge's live-worker check)
+    "SELECT EXISTS (": False,
+    # the exact status-count scalar probe (the templates' badge counters)
+    'SELECT COUNT(*) FROM "taskq".jobs WHERE status = ANY($1)': 0,
+    'SELECT COUNT(*) FROM "taskq".jobs_archive WHERE status = ANY($1)': 0,
+    # job detail's lookup: the render tier's default row set is empty -
+    # the detail page's 404 shape; a render test scripting its own row
+    # overrides this fragment with the record.
+    'SELECT * FROM "taskq".jobs WHERE id = $1': None,
+    'SELECT * FROM "taskq".jobs_archive WHERE id = $1': None,
+}
+
 
 class StubPool:
-    """Minimal asyncpg.Pool duck type for testing."""
+    """Minimal asyncpg.Pool duck type for testing.
+
+    *scripts* is the fail-closed stub's named-answer map (fragment →
+    answer), handed to every connection this pool yields. The ``stub_pool``
+    fixture builds the pool with the render tier's own page scripts
+    (``RENDER_ONLY_SCRIPTS``); a test needing its own rows mutates the
+    pool's ``scripts`` dict directly."""
+
+    def __init__(self, *, scripts: dict[str, object] | None = None) -> None:
+        # The render tier's page scripts are the default: a directly
+        # constructed pool renders the pages (empty) through the same
+        # named scripts the fixture uses - never blind defaults.
+        self._scripts: dict[str, object] = dict(RENDER_ONLY_SCRIPTS) if scripts is None else scripts
+
+    @property
+    def scripts(self) -> dict[str, object]:
+        """The pool's named-answer map (mutate to script a statement)."""
+        return self._scripts
 
     def acquire(self, *, timeout: float | None = None) -> StubAcquireContext:
-        return StubAcquireContext()
+        return StubAcquireContext(scripts=self._scripts)
 
 
 _StubPool = StubPool  # backward-compatible alias used by test modules
@@ -177,7 +315,7 @@ class StubBackend:
 # ── Redis pipeline transport double ───────────────────────────────────────
 #
 # The admin rate-limits fetch (taskq.web.admin.ops._fetch_redis_rl_state)
-# reads every bucket through ONE redis-py pipeline: N commands queued, a
+# reads every bucket through one redis-py pipeline: N commands queued, a
 # single execute() round trip. These doubles speak that transport, mirroring
 # the recording pattern in tests/test_sweepaudit_admin_redis_batch.py.
 
@@ -185,7 +323,7 @@ class StubBackend:
 class StubRedisPipeline:
     """redis-py pipeline double: queues reads, resolves them at execute().
 
-    Commands are recorded (not executed) as they are queued; ONE
+    Commands are recorded (not executed) as they are queued; one
     ``execute()`` call resolves them in order by replaying each read
     against the owning client's direct readers. A reader that raises
     therefore surfaces at the round trip - exactly where a live Redis

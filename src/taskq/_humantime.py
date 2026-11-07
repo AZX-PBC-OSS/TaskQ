@@ -2,15 +2,14 @@
 
 Three surfaces render elapsed time to an operator — the CLI's depth
 table (``taskq queues-depth``), the dashboard's ``/insights`` page, and
-the TimescaleDB report — and each used to carry its own ``divmod``
-cascade over the same three unit sizes (86 400 / 3 600 / 60).  Three
-hand-maintained copies of one cascade is the drift pattern this module
-exists to close: the unit sizes and the day/hour/minute/second split
-live here ONCE, and each surface's own presentation contract (spacing,
+the TimescaleDB report — and all three share this ``divmod``
+cascade over the same three unit sizes (86 400 / 3 600 / 60).  One
+split, three formatters: the unit sizes and the day/hour/minute/second split
+live here once, and each surface's own presentation contract (spacing,
 rounding, sub-minute floor, pluralisation) stays a small formatter on
 top of the shared split.
 
-Not one formatter with mode flags on purpose: the three surfaces'
+Not one formatter with mode flags: the three surfaces'
 outputs are pinned presentation contracts (tests assert the exact
 strings), so the variants stay separate named functions over one
 split, and a change to one surface's contract cannot silently move

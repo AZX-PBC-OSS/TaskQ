@@ -70,7 +70,7 @@ async def test_stale_attempt_exit_spares_the_live_attempts_progress_buffer() -> 
 
     1. Job J attempt 1 starts on this worker; its consumer installs
        buffer B1 at ``_progress_buffers[J]`` and its actor parks.
-    2. J's lease lapses; the SAME worker re-claims it (the issue-461
+    2. J's lease lapses; the same worker re-claims it (the issue-461
        premise) as attempt 2. Attempt 2's consumer overwrites the key
        with ITS buffer B2, and its actor parks too.
     3. Attempt 1's actor raises (every exit path reaches the consumer's
@@ -93,7 +93,7 @@ async def test_stale_attempt_exit_spares_the_live_attempts_progress_buffer() -> 
         raise RuntimeError("stale attempt dies late")
 
     async def actor2(_job: object, _ctx: JobContext[BaseModel]) -> object:
-        # Runs after attempt 2's consumer eagerly installed ITS buffer:
+        # Runs after attempt 2's consumer eagerly installed its buffer:
         # the key holds the live generation's buffer now.
         observed["live_buffer"] = buffers[job1.id]
         started2.set()
@@ -152,7 +152,7 @@ async def test_stale_cancel_exit_spares_the_live_attempts_progress_buffer() -> N
     Same interleaving as the generic-path pin, but attempt 1 exits
     through the ``CancelledError`` handler (a cancel delivered to a
     stale attempt unwinding after a re-claim). The handler reads the
-    buffer for its terminal seq/state override AND removes it; the
+    buffer for its terminal seq/state override and removes it; the
     unguarded bare pop hands it the LIVE attempt's buffer: the stale
     attempt consumed the live attempt's seq as its terminal override and
     evicted the live buffer besides.
@@ -229,7 +229,7 @@ async def test_stale_generation_resolve_spares_the_live_claim_intent() -> None:
     Deterministic interleaving:
 
     1. Loop iteration A takes job J: ``mark_claimed`` parks the intent.
-    2. A's attempt hangs; the row is re-claimed on the SAME worker and a
+    2. A's attempt hangs; the row is re-claimed on the same worker and a
        sibling iteration B takes it: B's ``mark_claimed`` overwrites the
        intent key.
     3. A unwinds and calls ``resolve_claim(J)`` - a bare-id discard in

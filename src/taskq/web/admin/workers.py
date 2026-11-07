@@ -40,7 +40,7 @@ _WORKERS_SQL = (
     f"LIMIT {_WORKERS_PAGE_SIZE}"
 )
 
-# The watchdog freshness verdict is computed by the SERVER, the same
+# The watchdog freshness verdict is computed by the server, the same
 # single-arbiter shape as queues.py's worker-liveness predicates
 # (last_seen_at is written by PG, so only PG can measure its age without
 # mixing the admin process's clock into the comparison).
@@ -120,11 +120,11 @@ def register(router: APIRouter) -> None:
         workers = [dict(r) for r in rows]
         for w in workers:
             md = decode_jsonb(w.get("metadata"))
-            # running_jobs counts the worker's own running ROWS (the same
+            # running_jobs counts the worker's own running rows (the same
             # population taskq.worker.active_jobs counts per process); the
             # max is the registered capacity those rows are bounded by.
             # Reserved-but-unclaimed capacity (rate-limit slots, in-flight
-            # dispatch probes) is deliberately NOT in either number.
+            # dispatch probes) is deliberately not in either number.
             if isinstance(md, dict):
                 md_map = cast("dict[str, object]", md)
                 w["max_concurrency"] = md_map.get("max_concurrency")

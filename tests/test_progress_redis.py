@@ -20,7 +20,7 @@ Actor calls ctx.progress() 100 times; the publish gate coalesces: the
         flush; status = 'succeeded'.
 Subscribe before enqueue; actor calls ctx.progress(step=1) then returns; events
         arrive in order: kind='progress', kind='state_change'(succeeded, terminal=True).
-First non-subscribe message is NOT a progress event (subscribe happens before job).
+First non-subscribe message is not a progress event (subscribe happens before job).
 Redis publish round trip raises after 1st; channel='per_job' label on
         taskq.progress.publish_failures counter.
 """
@@ -186,7 +186,7 @@ async def _enqueue_and_dispatch(
             priority=0,
             max_attempts=1,
             retry_kind="transient",
-            # None = immediate, in the SERVER clock domain. An absolute
+            # None = immediate, in the server clock domain. An absolute
             # datetime.now() races the enqueue SQL's status boundary
             # (COALESCE($n, clock_timestamp()) > clock_timestamp()) -
             # with the testcontainer clock a fraction of a millisecond
@@ -254,7 +254,7 @@ async def test_ti2_hundred_progress_events(
     Oracle: Redis subscriber on per-job channel receives at most 2
     kind='progress' events (the first call publishes; calls racing that
     in-flight publish latch on the buffer and the running task re-publishes
-    the latched latest event), the LAST event carries the final seq and
+    the latched latest event), the last event carries the final seq and
     step; the dispatch's running transition consumed seq 1, so the 100
     progress calls run 2..101 and the final publish carries 101; PG
     progress_seq == 101 after the terminal write consumed its own seq

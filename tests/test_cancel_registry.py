@@ -396,7 +396,7 @@ async def test_stale_attempt_exit_evicts_live_attempt() -> None:
 
     1. Job J is claimed and registered by attempt A (the consumer's
        register at the top of the attempt).
-    2. A's lease lapses, J is re-pended, and the SAME worker re-claims
+    2. A's lease lapses, J is re-pended, and the same worker re-claims
        it as attempt B. register() overwrites the J key with B's entry.
     3. A's finally (``_consumer.py``'s unconditional deregister, reached
        by every exit path: cancel delivery, timeout, reconnect) calls

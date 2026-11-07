@@ -21,12 +21,12 @@ Pins, one per hot path:
   depth: page 1 and a deep value-cursor page must both run on
   ``jobs_archive_page_idx`` (migration 01.00.21_01) as Index Scan seeks,
   never a Seq Scan or a Filter-only scan. This is the regression pin for
-  the campaign's finding: before 01.00.21_01 NO shipped index served the
-  tab's ``finished_at DESC NULLS LAST, id DESC`` ordering (every page
+  the campaign's finding: before 01.00.21_01 no shipped index served the
+  tab's ``finished_at DESC NULLS last, id DESC`` ordering (every page
   top-N sorted the whole archive — the committed sweep artifact's
   3.81 ms/page @ 10k → 135.82 ms/page @ 2M plain points; the 10M
   red/green legs in archive-scale.json's pagination_pathology: 690 ms
-  vs 0.47 ms), and before the builder's UNION split the OR-wrapped
+  vs 0.47 ms), and before the builder's UNION split the or-wrapped
   cursor predicate defeated index-condition extraction (23.9 ms per
   cursor page, 58k rows removed by filter, at a 100k archive; the bare
   row compare seeks at 0.13 ms —
@@ -93,7 +93,7 @@ _QUEUE = "scan_q"
 # oversample candidate rows + the locked/eligible stages at limit_n ≈ 150
 # rows on this module's single (actor, queue) seed; 4x headroom absorbs
 # bounded shapes' constant factors — only backlog-proportional work
-# exceeds it). Reused verbatim so the two pins state ONE contract.
+# exceeds it). Reused verbatim so the two pins state one contract.
 _NODE_ROW_BOUND = 600
 
 # The archive page pin's filter budget. The page fetch is _FETCH_SIZE
@@ -355,7 +355,7 @@ async def test_archive_first_page_is_index_served(
     the page index, no Seq Scan, no Sort, filter removals bounded.
 
     Before migration 01.00.21_01 no shipped index served the tab's
-    ``finished_at DESC NULLS LAST, id DESC`` ordering: every page — the
+    ``finished_at DESC NULLS last, id DESC`` ordering: every page — the
     first page included — top-N sorted the whole archive (16.6 ms at
     100k, the red probe in the campaign artifact; the committed sweep's
     3.81→135.82 ms/page over 10k→2M rows is this shape at scale).
@@ -389,11 +389,11 @@ async def test_archive_cursor_page_seeks_not_filters(
 
     This is the pin for the campaign's second finding: the builder's
     single-statement shape wrapped the keyset predicate as
-    ``(finished_at IS NULL OR row-compare)``; the OR defeated the
+    ``(finished_at IS NULL or row-compare)``; the or defeated the
     extraction and every cursor page filter-scanned from the index start
     (23.9 ms/page, 58k rows removed, at a 100k archive — measured in the
     campaign artifact's pagination_pathology). The shipped UNION shape
-    seeks both branches; a regression to the OR shape re-appears here as
+    seeks both branches; a regression to the or shape re-appears here as
     Rows Removed by Filter ~ the walked depth.
     """
     conn = await asyncpg.connect(pg_dsn)
@@ -440,14 +440,14 @@ async def test_archive_prev_page_seeks_not_filters(
     """A deep PREV-page fetch (both cursor seams) seeks the page index too.
 
     The backward fetch runs the ordering reversed (``finished_at ASC
-    NULLS FIRST, id ASC``) — exactly what a backward scan of
+    NULLS first, id ASC``) — exactly what a backward scan of
     ``jobs_archive_page_idx`` yields — and the bounded outer Sort re-sorts
     only the fetch's rows into forward display order. The regression this
     pins: the backward predicate losing the index (a seq scan or a
     filter-only walk of the archive's depth per prev page — the
     pre-01.00.21_01 pathology in the other direction). Pinned from a
     VALUE cursor deep in the walk and from a NULL-seam cursor (the
-    backward predicate's ``OR finished_at IS NOT NULL`` arm, whose filter
+    backward predicate's ``or finished_at IS not NULL`` arm, whose filter
     removals are bounded by the seed's NULL tail, not the archive's
     depth).
     """
@@ -466,7 +466,7 @@ async def test_archive_prev_page_seeks_not_filters(
             # bounded by the NULL population, plus the fetch's headroom.
             return nulls + _PAGE_FILTER_BOUND
 
-        # A VALUE cursor ~half the archive deep.
+        # A value cursor ~half the archive deep.
         first = await _page_rows(conn, scan_schema, None)
         assert len(first) == _FETCH_SIZE
         deep = first[len(first) // 2]

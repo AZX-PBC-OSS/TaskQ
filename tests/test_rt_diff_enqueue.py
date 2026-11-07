@@ -72,7 +72,7 @@ async def _unique_for_terminal_state_folded_in(side: DiffSide) -> None:
         "j2", identity_key="id-a", unique_for_s=3600.0, unique_states=("cancelled",)
     )
     side.record("terminal_state_returns", side.token_of(row2.id))
-    # And with the DEFAULT unique_states the terminal row must NOT dedupe:
+    # And with the default unique_states the terminal row must not dedupe:
     row3 = await side.enqueue("j3", identity_key="id-a", unique_for_s=3600.0)
     side.record("default_states_owner", side.token_of(row3.id))
 
@@ -129,7 +129,7 @@ async def test_diff_unique_for_succeeded_boundary_instant_admits(pg_dsn: str) ->
 
 async def _unique_for_abandoned_state_excluded_from_default(side: DiffSide) -> None:
     """'abandoned' must sit with the excluded terminal states (mirrors the
-    existing 'cancelled' coverage above): the work did NOT happen, so it
+    existing 'cancelled' coverage above): the work did not happen, so it
     must not be folded into the default set the way 'succeeded' is.
 
     Driving a real job through the phase-2-only abandon ladder is its own
@@ -299,7 +299,7 @@ async def _same_explicit_id_reinsert(side: DiffSide) -> None:
     try:
         await side.enqueue("j2", payload={"v": 2}, explicit_id=first.id)
         side.record("reinsert", "admitted")
-    except Exception as exc:  # Why: the differential records the typed outcome; the exception type IS the observable.
+    except Exception as exc:  # Why: the differential records the typed outcome; the exception type is the observable.
         side.record("reinsert", type(exc).__name__)
 
 

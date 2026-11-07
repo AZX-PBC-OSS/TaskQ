@@ -1,6 +1,6 @@
-"""THE OPERATOR'S MARCH (T15 — the system tier's composed walk).
+"""The operator's march (the system tier's composed walk).
 
-ONE scenario walks the operator's own path end to end (the deploy
+one scenario walks the operator's own path end to end (the deploy
 matrix scenarios the CELLS; this march walks the DAY):
 
 1. DEPLOY — the fleet boots to the joined-fleet standard (every pod
@@ -8,7 +8,7 @@ matrix scenarios the CELLS; this march walks the DAY):
 2. OBSERVE — the operator's reads while the march runs: the fleet's
    roster, the leader's seat, the run's derived status, the explorer's
    display — each read reconciled against the rows.
-3. INTERVENE — the operator cancels ONE run mid-flight (the cancel
+3. INTERVENE — the operator cancels one run mid-flight (the cancel
    cascade: the running node terminalised, the pending children
    resolved, the flow's flip the linearization point); the audit trail
    carries it (G4).
@@ -18,7 +18,7 @@ matrix scenarios the CELLS; this march walks the DAY):
    live workers) confirms.
 5. UPGRADE — the rolling second generation: a NEW pod joins the live
    fleet mid-run (the joined-fleet standard); the fleet serves the run
-   from BOTH generations; the per-attempt code_version record rides
+   from both generations; the per-attempt code_version record rides
    the claims.
 6. ROLLBACK — the vanilla pod (no workflow capability) joins: the
    fence never hands it a workflow row, the pod serves vanilla work,
@@ -78,13 +78,13 @@ async def test_the_operators_march_deploy_to_rollback(
     fleet: dict[str, WorkerProc] = {}
     extras: list[WorkerProc] = []
     try:
-        # ══ 1. DEPLOY ════════════════════════════════════════════════
+        # ══ 1. deploy ════════════════════════════════════════════════
         fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["op1", "op2"])
         roster = await conn.fetch(f'SELECT id::text FROM "{schema}".workers')
         assert len(roster) == 2, f"the deploy's roster is short: {len(roster)} pods"
 
-        # ══ 2. OBSERVE ═══════════════════════════════════════════════
-        # The leader's seat is TAKEN and its lease advancing.
+        # ══ 2. observe ═══════════════════════════════════════════════
+        # The leader's seat is taken and its lease advancing.
         leader = await conn.fetchrow(
             f'SELECT worker_id::text, expires_at FROM "{schema}".maintenance_leader'
         )
@@ -94,7 +94,7 @@ async def test_the_operators_march_deploy_to_rollback(
         seen_after = await conn.fetchval(f'SELECT last_seen_at FROM "{schema}".maintenance_leader')
         assert seen_after > seen_before, "the leader's beat is not advancing"
 
-        # The run goes live; the OBSERVE reads its derived status + the
+        # The run goes live; the observe reads its derived status + the
         # explorer's display against the rows.
         from taskq.backend._protocol import JobId as Jid
         from taskq.workflows._progress_read import run_display
@@ -122,10 +122,9 @@ async def test_the_operators_march_deploy_to_rollback(
         assert display, "the explorer's observe read is empty"
 
         # ══ 3. INTERVENE ═════════════════════════════════════════════
-        # THE OPERATOR'S CANCEL: the run is cancelled mid-flight — the
-        # cascade terminalises the running node, resolves the pending
-        # children, the flow's flip is the linearization point; the
-        # audit carries it.
+        # the run is cancelled mid-flight — the cascade terminalises the
+        # running node, resolves the pending children, the flow's flip is the
+        # linearization point; the audit carries it.
         from taskq.workflows.api._runner_exit import cancel_workflow_run
 
         await cancel_workflow_run(
@@ -142,9 +141,9 @@ async def test_the_operators_march_deploy_to_rollback(
         assert audit >= 1, "the intervention left no audit row (G4's trail)"
         await assert_balanced(sys_ledger, schema, _TAG)
 
-        # ══ 4. DEBUG ═════════════════════════════════════════════════
+        # ══ 4. debug ═════════════════════════════════════════════════
         # The drift read: a run whose downstream node sits on a queue
-        # NOTHING serves — LIVE-blocked, the reason NAMED, the alert's
+        # NOTHING serves — live-blocked, the reason named, the alert's
         # join confirmable.
         drift_runner = FlowRunner(MARCH_FLOWS["drift_target"], pool, schema)
         drift_id = (await drift_runner.create_flow(run_key="operator-march:debug")).flow_id
@@ -178,8 +177,8 @@ async def test_the_operators_march_deploy_to_rollback(
             f"the TaskQQueueUnserved join must hold: depth={depth}, live={live}"
         )
 
-        # ══ 5. UPGRADE ═══════════════════════════════════════════════
-        # The rolling second generation: a NEW pod joins the LIVE fleet
+        # ══ 5. upgrade ═══════════════════════════════════════════════
+        # The rolling second generation: a new pod joins the live fleet
         # (the joined-fleet standard); the run serves from both
         # generations; the per-attempt record rides the claims (the
         # §22.1 record).
@@ -288,8 +287,8 @@ async def _resolve_holds(pool: asyncpg.Pool, schema: str, flow_id: str) -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# THE UPGRADE PATH: the PRIOR RELEASE's schema → the FULL chain on
-# POPULATED data → the WORKFLOWS LIVE.
+# the prior release's schema → the full chain on populated data → the workflows
+# live.
 # ═════════════════════════════════════════════════════════════════════════
 
 
@@ -316,14 +315,14 @@ async def test_the_upgrade_path_prior_release_schema_then_the_workflows_live(
         PRE_WORKFLOW_TARGET,
     )
 
-    # THE PRIOR RELEASE'S SCHEMA (the pre-workflow tip), populated.
+    # the prior release's SCHEMA (the pre-workflow tip), populated.
     schema = module_pg_schema.schema_name + "_upg"
     await clean_pg_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
     await clean_pg_conn.execute(f'CREATE SCHEMA "{schema}"')
     await apply_pending(clean_pg_conn, schema=schema, target=PRE_WORKFLOW_TARGET)
     dsn = module_pg_schema.pg_dsn
-    # THE POPULATION: vanilla rows the old release wrote (the upgrade's
-    # data the chain must carry).
+    # vanilla rows the old release wrote (the upgrade's data the chain must
+    # carry).
     for i in range(3):
         await clean_pg_conn.execute(
             f"""INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts,
@@ -333,12 +332,11 @@ async def test_the_upgrade_path_prior_release_schema_then_the_workflows_live(
             f"upg-seed-{i}",
         )
 
-    # THE FULL CHAIN over the populated data.
+    # the full chain over the populated data.
     applied = await apply_pending(clean_pg_conn, schema=schema)
     print(f"[upgrade] the chain applied {len(applied)} migrations over the populated schema")
 
-    # THE WORKFLOWS LIVE: a real fleet on the UPGRADED schema runs the
-    # march to terminal.
+    # a real fleet on the upgraded schema runs the march to terminal.
     conn = await _asyncpg.connect(dsn)
     upg_conn = await _asyncpg.connect(dsn, server_settings={"search_path": f"{schema},public"})
     try:
@@ -348,7 +346,7 @@ async def test_the_upgrade_path_prior_release_schema_then_the_workflows_live(
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=4)
     fleet: dict[str, WorkerProc] = {}
     try:
-        # The march's fleet boots on the UPGRADED schema (the march
+        # The march's fleet boots on the upgraded schema (the march
         # helpers take the schema explicitly).
         from tests.system_e2e._wf_harness import spawn_wf_fleet as _spawn
 

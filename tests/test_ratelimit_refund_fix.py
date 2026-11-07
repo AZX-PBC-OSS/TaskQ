@@ -1,6 +1,6 @@
 """Tests for the SlidingWindow log-style refund fix (memory + postgres).
 
-Regression: ``refund()`` previously dispatched ``pass`` (no-op) for the
+Regression: ``refund()`` dispatching ``pass`` (no-op) for the
 ``("memory", "log")`` and ``("postgres", "log")`` cases, so a refunded
 slot was never freed -- capacity stayed artificially constrained until
 the timestamp slid out of the window.  These tests verify the slot is
@@ -8,7 +8,6 @@ actually released and that refunds are idempotent across both backends.
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import pytest
 
@@ -49,7 +48,7 @@ def _sw_log(limit: int = 2, window: timedelta = timedelta(seconds=60)) -> Slidin
 
 async def test_refund_log_memory_frees_slot() -> None:
     """Refunding an allowed memory-log decision releases the slot so a
-    previously-denied acquire succeeds immediately."""
+    denied acquire succeeds immediately after the refund."""
     sw = _sw_log(limit=2)
     clock = FakeClock(_START)
 
@@ -206,28 +205,12 @@ async def test_refund_pg_log_executes_delete_by_request_id() -> None:
     assert args == ("refund-pg-log-fix", rid)
 
 
-async def test_refund_pg_log_none_request_id_is_noop() -> None:
-    """Postgres log refund with request_id=None is a no-op (no pool needed)."""
-    sw = SlidingWindow(
-        name="refund-pg-log-none",
-        limit=10,
-        window=timedelta(seconds=60),
-        backend="postgres",
-        style="log",
-    )
-    pool = _FakePgPool()
-    decision = RateLimitDecision(
-        allowed=True,
-        remaining=9.0,
-        retry_after=timedelta(0),
-        bucket_name="refund-pg-log-none",
-        backend="postgres",
-        request_id=None,
-    )
-
-    await sw.refund(decision, pg_pool=pool, settings=_FakeSettings())
-
-    assert pool.execute_calls == []
+# NOTE (the mock-subtraction cure): the DELETE's text pin above stays (the
+# statement shape is the fault-injection-free contract this unit owns); its
+# behavior — the admitted row actually deleted, the window refilled —
+# converted to the real fixture in tests/test_ratelimit_sliding_window_pg.py
+# (test_refund_log_removes_the_admitted_row), and the none-request-id no-op
+# with it (test_refund_log_without_a_request_id_is_a_noop).
 
 
 async def test_refund_pg_log_raises_without_pool() -> None:
@@ -275,92 +258,11 @@ async def test_refund_pg_log_raises_without_settings() -> None:
 
 
 # ── Postgres log acquire propagates request_id (enables refund) ─────────
-
-
-class _NullAsyncCtx:
-    async def __aenter__(self) -> "_NullAsyncCtx":
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-
-class _FakePgConn:
-    def __init__(self, pool: "_FakeFullPgPool") -> None:
-        self._pool = pool
-
-    async def fetchrow(self, sql: str, *args: object) -> Any:
-        return self._pool.fetchrow_result
-
-    async def fetchval(self, sql: str, *args: object) -> object:
-        # The per-bucket advisory try-lock: uncontended in this fake -
-        # the fast-path try-lock acquires, so the locked window sequence
-        # runs and the contended tier is never entered.
-        if "pg_try_advisory_xact_lock" in sql:
-            return True
-        raise AssertionError(f"unexpected fetchval on the acquire path: {sql}")
-
-    async def execute(self, sql: str, *args: object) -> None:
-        self._pool.execute_calls.append((sql, args))
-
-    def transaction(self) -> _NullAsyncCtx:
-        return _NullAsyncCtx()
-
-
-class _FakeAcquireCtx:
-    def __init__(self, pool: "_FakeFullPgPool") -> None:
-        self._pool = pool
-
-    async def __aenter__(self) -> _FakePgConn:
-        return _FakePgConn(self._pool)
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-
-class _FakeFullPgPool:
-    """Fake asyncpg.Pool supporting ``acquire()`` + direct ``execute()``."""
-
-    def __init__(self, fetchrow_result: object = None) -> None:
-        self.fetchrow_result = fetchrow_result
-        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
-
-    def acquire(self) -> _FakeAcquireCtx:
-        return _FakeAcquireCtx(self)
-
-    async def execute(self, sql: str, *args: object) -> None:
-        self.execute_calls.append((sql, args))
-
-
-async def test_acquire_pg_log_decision_carries_request_id() -> None:
-    """PG log acquire stamps request_id onto the decision so refund can find it."""
-    from taskq.ratelimit._sliding_window_pg import _acquire_pg_log
-
-    sw = SlidingWindow(
-        name="acquire-pg-log-rid",
-        limit=10,
-        window=timedelta(seconds=60),
-        backend="postgres",
-        style="log",
-    )
-    rid = new_uuid()
-    pool = _FakeFullPgPool(
-        # The fused statement's row: the insert landed, everything
-        # else the decision reads from it.
-        fetchrow_result={
-            "inserted": True,
-            "count_in_window": 0,
-            "oldest_ts": None,
-            "server_now": None,
-        }
-    )
-
-    decision = await _acquire_pg_log(
-        sw,
-        pg_pool=pool,
-        settings=_FakeSettings(),
-        request_id=rid,
-    )
-
-    assert decision.allowed is True
-    assert decision.request_id == str(rid)
+#
+# NOTE (the mock-subtraction cure): the request_id carry fake arm is deleted,
+# with the fused-statement row double that existed only for it — the real
+# fixture owns the round trip now: the log acquire's stamped request_id is
+# what the real-PG refund deletes by
+# (tests/test_ratelimit_sliding_window_pg.py::
+# test_refund_log_removes_the_admitted_row asserts first.request_id is not
+# None on the real decision, then deletes that exact row).

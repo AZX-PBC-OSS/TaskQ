@@ -1,4 +1,4 @@
-"""The system tier's actor module: the one module BOTH sides import.
+"""The system tier's actor module: the one module both sides import.
 
 The test process imports it for the ActorRef handles and payload models
 (``tests.system_e2e.actors``); every worker subprocess imports the same
@@ -16,7 +16,7 @@ The effects ledger: each body appends ``(job_id, attempt, actor, kind)``
 rows to ``{schema}.sys_effects``. That table is the body-run evidence the
 system invariants reconcile against (never two runs per attempt for
 non-idempotent actors, never a run with no claim row behind it). It is
-created per module schema by the tier conftest, NOT by TaskQ migrations.
+created per module schema by the tier conftest, not by TaskQ migrations.
 """
 
 # ruff: noqa: S608  # Why: the schema identifier is operator-side (a fixture-validated name) and every value is $-bound; only the f-string interpolation of the schema name is flagged.
@@ -46,7 +46,7 @@ _FAST_RETRY = RetryPolicy(
     jitter=0.0,
 )
 
-#: Single-attempt policy for actors whose scenario wants NO retry ladder:
+#: Single-attempt policy for actors whose scenario wants no retry ladder:
 #: the first failure is terminal.
 _NO_RETRY = RetryPolicy(kind="transient", max_attempts=1)
 
@@ -253,8 +253,8 @@ async def sys_defiant(payload: SysPayload, ctx: JobContext[SysPayload]) -> None:
         try:
             await asyncio.sleep(min(0.25, max(0.0, deadline - _time.monotonic())))
         except asyncio.CancelledError:
-            # Absorb EVERY cancel the shutdown ladder delivers
-            # (CANCELLING's and FORCING's alike): the body outlasts the
+            # Absorb every cancel the shutdown ladder delivers
+            # (cancelling's and forcing's alike): the body outlasts the
             # graces, so the pod lingers at its grace edge with the
             # drain finished around it - the flap's premise.
             await _record("defied", "sys_defiant", ctx.job_id, ctx.attempt)
@@ -263,7 +263,7 @@ async def sys_defiant(payload: SysPayload, ctx: JobContext[SysPayload]) -> None:
 
 @actor(name="sys_winc", queue=_QUEUE, retry=_FAST_RETRY)
 async def sys_winc(payload: SysPayload, ctx: JobContext[SysPayload]) -> dict[str, float]:
-    """The drain-window workload: absorbs the FIRST cooperative cancel
+    """The drain-window workload: absorbs the first cooperative cancel
     and spends a wind-down interval before unwinding, so a pod SIGTERMed
     while holding one has a measurably long drain (the window the
     no-stall pins are bracketed in). A pod killed mid-drain interrupts
@@ -285,7 +285,7 @@ async def sys_winc(payload: SysPayload, ctx: JobContext[SysPayload]) -> dict[str
 
 
 # ── The operational-loop workloads (test_operational_loop.py) ────────────
-# The DEPLOY→OBSERVE→ACT→RECOVER loop drives a fleet an operator would
+# The deploy→observe→act→recover loop drives a fleet an operator would
 # recognise: a rate-limited actor (PG-backed bucket, fleet-shared without
 # Redis), an always-failing single-attempt actor (the admin retry's target),
 # an actor whose queue an operator moves, an actor an operator drains
@@ -298,7 +298,7 @@ class RatedPayload(SysPayload):
     tenant: str = "t0"
 
 
-#: One token, half a token per second: the SECOND and THIRD concurrent
+#: One token, half a token per second: the second and third concurrent
 #: enqueue are denied and re-scheduled, the deferral the insights layer's
 #: ``deferred`` wait segment counts.
 _RATED_BUCKET = KeyedRateLimitRef.typed(
@@ -318,8 +318,8 @@ async def sys_rated(payload: RatedPayload, ctx: JobContext[RatedPayload]) -> dic
 
 
 #: One token per twenty seconds: a denial's Retry-After hint prices the
-#: NEXT token, so the second and third concurrent enqueue are re-pended
-#: ~20s and ~40s out - a DEEP reprieve the compound-failure family's
+#: next token, so the second and third concurrent enqueue are re-pended
+#: ~20s and ~40s out - a deep reprieve the compound-failure family's
 #: cancel-during-a-hint-wait scenario can sit inside (the fast bucket's
 #: ~2s hint re-claims before the operator can act).
 _SLOW_RATED_BUCKET = KeyedRateLimitRef.typed(

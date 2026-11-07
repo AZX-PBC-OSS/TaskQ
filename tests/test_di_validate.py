@@ -2,7 +2,7 @@
 
 
 (idempotency), (seal enforcement), (plan cache),
-G13 (empty plans omitted), G11 (deterministic ordering), G5 (re-entrant guard).
+(empty plans omitted), (deterministic ordering), (re-entrant guard).
 """
 
 from datetime import timedelta
@@ -121,7 +121,7 @@ def test_dependency_cycle_on_circular_dep() -> None:
     assert len(exc_info.value.cycle_path) == 3
 
 
-# ── ScopeViolation on LOOP→TRANSIENT reverse edge ───────────────────────
+# ── ScopeViolation on loop→transient reverse edge ───────────────────────
 
 
 def test_scope_violation_loop_to_transient() -> None:
@@ -185,7 +185,7 @@ def test_valid_scope_direction() -> None:
     assert registry._sealed is True
 
 
-# ── PROCESS cannot depend on LOOP ──────────────────────────────────────
+# ── process cannot depend on loop ──────────────────────────────────────
 
 
 def test_process_cannot_depend_on_loop() -> None:
@@ -301,7 +301,7 @@ def test_plan_cache_populated() -> None:
     assert plan == [A, B, C]
 
 
-# ── Empty plans omitted (G13) ──────────────────────────────────────────────────
+# ── Empty plans omitted ────────────────────────────────────────────────────────
 
 
 def test_empty_plans_omitted() -> None:
@@ -320,7 +320,7 @@ def test_empty_plans_omitted() -> None:
     assert ("no_dep_actor", Scope.TRANSIENT) not in registry._plan_cache
 
 
-# ── Plan cache deterministic ordering (G11) ─────────────────────────────────────
+# ── Plan cache deterministic ordering ─────────────────────────────────────────
 
 
 def test_plan_cache_deterministic_ordering() -> None:

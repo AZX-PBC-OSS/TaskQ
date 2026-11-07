@@ -32,7 +32,7 @@ TEST_DSN = os.environ.get(
 RUN_STAMP = time.strftime("%Y%m%d-%H%M%S", time.gmtime()) + f"-{os.getpid() % 10000}"
 SCHEMA = f"lw_{RUN_STAMP.replace('-', '_')}"
 
-#: The env MUST be stamped before examples.ledgerwatch.app imports (the
+#: The env must be stamped before examples.ledgerwatch.app imports (the
 #: app's deps binding reads the env at import — the worker fleet and
 #: every trigger then agree on the estate).
 os.environ["TASKQ_PG_DSN"] = TEST_DSN
@@ -50,11 +50,11 @@ FLEET_TUNING: dict[str, str] = {
     "TASKQ_MAX_HEARTBEAT_FAILURES": "1",
     "TASKQ_LOCK_LEASE": "3",
     "TASKQ_LEADER_LEASE": "4",
-    # The watchdog, tuned ABOVE its own sampling cadence: a warn budget
+    # The watchdog, tuned above its own sampling cadence: a warn budget
     # below the check interval warns on every healthy beat, and each
-    # warn's task dump blocks the loop — a self-sustaining storm (the
-    # drill's finding F6; the values keep the invariants: warn < budget,
-    # budget > check, budget + heartbeat < lock lease).
+    # warn's task dump blocks the loop — a self-sustaining storm. The
+    # values keep the invariants: warn < budget,
+    # budget > check, budget + heartbeat < lock lease.
     "TASKQ_WATCHDOG_CHECK_INTERVAL": "1.0",
     "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "1.5",
     "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "2.0",
@@ -103,7 +103,7 @@ class Worker:
         return self._proc.wait(timeout=timeout)
 
     def sigkill(self) -> None:
-        """THE CRASH: SIGKILL — no drain, no cleanup, no goodbye."""
+        """SIGKILL — no drain, no cleanup, no goodbye."""
         self._proc.send_signal(signal.SIGKILL)
         self._proc.wait()
         self.alive = False
@@ -211,7 +211,7 @@ async def journal_rows(
     pool: asyncpg.Pool, schema: str, *, txn_prefix: str | None = None
 ) -> list[asyncpg.Record]:
     """The enrichment journal (the mock API's access log, durable),
-    optionally ONE batch's rows (the txn ids carry the batch id)."""
+    optionally one batch's rows (the txn ids carry the batch id)."""
     if txn_prefix is None:
         return await pool.fetch(
             f"SELECT txn_id, call_index, outcome, latency_s, started_at, finished_at"  # noqa: S608  # Why: the schema identifier only.
@@ -303,7 +303,7 @@ async def child_jobs(
 async def review_run_ids(
     pool: asyncpg.Pool, schema: str, *, batch_id: str | None = None
 ) -> list[str]:
-    """The txn_review runs (optionally ONE batch's — the run's own
+    """The txn_review runs (optionally one batch's — the run's own
     input carries the batch id)."""
     if batch_id is None:
         rows = await pool.fetch(

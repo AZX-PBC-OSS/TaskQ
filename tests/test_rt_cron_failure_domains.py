@@ -10,7 +10,7 @@ observable behaviour:
   from the violation's ``Key (cols)=(vals)`` detail line) inside a
   SAVEPOINT that keeps the tick's transaction alive, and the survivors
   retry as a batch and fire.  A transient failure of the INSERT
-  (TimeoutError - PG weather) strikes NO schedule and re-raises for the
+  (TimeoutError - PG weather) strikes no schedule and re-raises for the
   leader's transient handling.
 * **Client-side enqueue failure** (C2's contrast): the backend raises
   before any statement is sent - the transaction stays alive, so the
@@ -75,7 +75,7 @@ class TestServerSideEnqueueFailure:
     ) -> None:
         """A genuine jobs_pkey violation inside the batched enqueue → the
         colliding schedule takes exactly one strike (attributed from the
-        violation's ``Key (id)=…`` detail), the tick does NOT raise, and
+        violation's ``Key (id)=…`` detail), the tick does not raise, and
         the two unrelated schedules in the same batch retry and fire."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -158,7 +158,7 @@ class TestServerSideEnqueueFailure:
         """A TimeoutError from the batched enqueue (statement timeout, conn
         blip) is PG weather, not a schedule defect: the tick re-raises for
         the leader's transient handling, the caller's rollback discards the
-        tick, and NO schedule takes a strike - three seconds of degraded PG
+        tick, and no schedule takes a strike - three seconds of degraded PG
         must not auto-disable every schedule in the fleet."""
         from typing import NoReturn
 
@@ -215,7 +215,7 @@ class TestSingletonRaceBetweenPreflightAndInsert:
 
     The whole batch aborts on the ``jobs_singleton_uniq`` violation - and
     before per-plan attribution existed, that abort was converted into a
-    strike for EVERY schedule in the tick, auto-disabling unrelated
+    strike for every schedule in the tick, auto-disabling unrelated
     schedules three ticks in a row because one actor was busy."""
 
     async def test_race_strikes_only_the_colliding_schedule(
@@ -382,7 +382,7 @@ class TestClientSideEnqueueFailure:
 
 
 class TestFailuresUpdateGuard:
-    """C3: the ``AND s.enabled = true`` guard on the batched failure UPDATE."""
+    """C3: the ``and s.enabled = true`` guard on the batched failure UPDATE."""
 
     async def test_schedule_disabled_mid_tick_is_skipped_not_reenabled(
         self,
@@ -474,7 +474,7 @@ class TestHungPayloadFactory:
     ) -> None:
         """A factory sleeping past the 5s resolution timeout becomes a
         per-schedule failure (the tick is not wedged; the healthy schedule
-        in the same batch still fires) AND the failure is diagnosable:
+        in the same batch still fires) and the failure is diagnosable:
         ``last_fire_error`` and the span status must not be the empty
         string a bare ``TimeoutError`` renders to."""
         import time
@@ -586,7 +586,7 @@ class TestCallerDeadlineMidTick:
                     return await tick_cron(clean_pg_conn, settings, backend, schema, new_uuid())
 
         task = asyncio.create_task(_leader_shaped_tick())
-        await entered.wait()  # the tick is wedged inside its enqueue, past BEGIN
+        await entered.wait()  # the tick is wedged inside its enqueue, past begin
         with pytest.raises(TimeoutError):
             await task  # the deadline fires; the gate is never opened
 

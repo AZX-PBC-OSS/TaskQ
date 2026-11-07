@@ -1,69 +1,69 @@
-"""THE CHILD FLOWS (T28) — ``ctx.spawn_flow`` + the join hold: a step
+"""CHILD FLOWS — ``ctx.spawn_flow`` + the join hold: a step
 spawns a SUB-FLOW (a REAL flow — its own run rows; the run explorer sees
 it, the admin operates it, the CLI lists it) and JOINS its terminal (the
 HITL machinery's own shape: the wait IS a hold; the child's terminal
 event is the hold's resolver; the wake arm delivers + resumes; the sweep
 belt reaps the orphaned waiter).
 
-THE SPAWN = the child's ``create_flow`` INSIDE the parent's step — the
-create-seam's ONE-transaction law respected BY CONSTRUCTION (the child's
+the SPAWN = the child's ``create_flow`` inside the parent's step — the
+create-seam's one-transaction law respected BY CONSTRUCTION (the child's
 root + static nodes + edges + ROOT_START land in the child create's own
 transaction; the parent's step never wraps it in a second one).
 
-THE TWO-CLAIMS LAW AT THE FLOW LEVEL: the spawn's run key is
-``childflow:{parent_flow_id}:{node_key}:{slot}`` under the child's OWN
+The spawn's run key is
+``childflow:{parent_flow_id}:{node_key}:{slot}`` under the child's own
 ``workflow-run:<child name>`` scope — the G2 arbiter is the rememberer.
 The SLOT is the spawn site's identity, STABLE ACROSS RETRIES: the body
 re-executes from the top (the hold's resume, the retry's reclaim) and
-re-derives the SAME keys — the arbiter conflict ADOPTS the same child,
+re-derives the same keys — the arbiter conflict ADOPTS the same child,
 never a duplicate (the retry-completion census's law, at the flow
 boundary). A terminal child adopted as-is is the deterministic replay:
 the retried body re-decides off the same terminal child.
 
-THE SLOT'S SOURCE: the per-attempt spawn cursor on the executing node's
+The per-attempt spawn cursor on the executing node's
 row (``metadata.spawn_cursor_{attempt}`` — the hold-cursor's exact
 pattern: a fresh attempt restarts at 0, so the retry re-derives the same
-slots). The loop's iteration is ITS OWN node row (``<loop>.iter<i>``),
+slots). The loop's iteration is ITS own node row (``<loop>.iter<i>``),
 so one rule covers the fan-out in a loop body: distinct iteration rows
 carry distinct cursors. An explicit ``key=`` overrides the slot (the
 author's identity).
 
-THE RECEIPT (the identity, both directions): the parent's node row
+The parent's node row
 carries the child's flow id (``metadata.child_flows`` — the idempotent
 ensure-append, dedup'd: an adoption re-run never duplicates the
 receipt); the child's ROOT row carries the parent's
 (``parent_flow_id`` / ``parent_node_id`` / ``parent_step_key`` — riding
-the create's ONE transaction via ``create_flow(root_metadata_extra=…)``,
+the create's one transaction via ``create_flow(root_metadata_extra=…)``,
 never a post-create UPDATE that would re-open the orphan window).
 
-THE JOIN = the HOLD (T10's machinery, the ``Decision | Expired``
+the JOIN = the HOLD (the hold machinery, the ``Decision | Expired``
 pattern's sibling): the join site registers a hold on the PARENT's node
 (signal ``__child__:{child_flow_id}``, the declared result model as the
 payload contract — the contract is mandatory at hold time), marks the
 ledger ``awaited``, and raises :class:`NodeHeldError` — the held
-representation (pending + the deadline + the signal row as truth; NO
-terminal, NO ledger failure), the worker releases the slot. The child's
+representation (pending + the deadline + the signal row as truth; no
+terminal, no ledger failure), the worker releases the slot. The child's
 terminal is the hold's RESOLVER: :func:`sweep_child_joins` (a sweep arm,
 wired after the root-maintain leg) CAS-delivers the held join, resumes
-the parent node, and broadcasts :data:`CHILD_TERMINAL_CHANNEL` (the T26
+the parent node, and broadcasts :data:`CHILD_TERMINAL_CHANNEL` (the
 transport — the pointer-only payload). The resumed body re-executes from
-the top; the join site reads THE CHILD ROW FIRST (the row is the truth)
+the top; the join site reads the CHILD ROW first (the row is the truth)
 and returns the CLOSED UNION member:
 
 * ``ChildOk(result=…)`` — the child's typed result decoded into the
   parent's body (R3's face at the flow boundary);
 * ``ChildFailed`` — the child terminal-failed (or its rows are GONE —
-  the fail-close face; NEVER a silent swallow, never a raised error:
+  the fail-close face; never a silent swallow, never a raised error:
   the body's own arm decides);
 * ``ChildCancelled`` — the child was cancelled (the cascade: the
   parent's cancel walks the receipts and cancels each child —
   ``cancel_workflow_run``'s extension);
 * ``Expired`` — the JOIN's own patience expired (the hold's deadline,
-  armed by ``wait(timeout_s=…)``; the face fires ONCE per abandoned row
-  per attempt — the hold→expire→re-hold→∞ dragon's kill site, T26's
+  armed by ``wait(timeout_s=…)``; the face fires once per abandoned row
+  per attempt — the hold→expire→re-hold→∞ dragon's kill site, the
   amendment verbatim).
 
-THE CHECKER FORCES THE ARMS: the wait returns
+The wait returns
 ``ChildOutcome[M] | Expired`` — a body that matches only the ``ChildOk``
 arm falls through and reds against its declared return; a body that
 bare-unwraps reds the attribute.
@@ -101,7 +101,7 @@ __all__ = [
 
 from taskq.workflows.api._hitl import CHILD_JOIN_SIGNAL_PREFIX
 
-#: The verdict set the join reads as the child's TERMINAL (the state
+#: The verdict set the join reads as the child's terminal (the state
 #: machine's own vocabulary, re-read from the terminal-statuses door at
 #: call time — never a re-spelled literal drift).
 _TERMINAL = frozenset({"succeeded", "failed", "cancelled", "crashed", "abandoned"})
@@ -114,15 +114,15 @@ class ChildWorkflowUnknownError(RuntimeError):
 
 
 class ChildFlowLostError(RuntimeError):
-    """THE RETENTION-RESPAWN FAIL-CLOSE: the
+    """The retention-respawn fail-close: the
     parent's resume found a DANGLING child pointer — the parent's row
     still names a child flow whose rows are GONE (the retention purge's
-    own law: the purge must walk the parent links first).
+    own rule: the purge must walk the parent links first).
 
-    The pre-fix shape SILENTLY RE-MINTED a fresh child on the resume —
-    the child's side effects (emails, payments) ran twice while the
-    parent run SUCCEEDED (the worst face: the fabricated health). The
-    spawn now REFUSES: the dangling pointer is the failure, the run
+    A dangling pointer must fail the run, never respawn: re-minting a
+    fresh child would run the child's side effects (emails, payments)
+    twice while the parent run reads SUCCEEDED — the fabricated-health
+    face. The spawn REFUSES: the dangling pointer is the failure, the run
     terminal-fails with this class on the record — never a silent
     respawn. A DETERMINISTIC death (re-running cannot restore the
     purged rows — the deterministic-authoring-failure ladder's own
@@ -130,10 +130,10 @@ class ChildFlowLostError(RuntimeError):
 
 
 class SpawnDepthExceededError(ValueError):
-    """THE DEPTH BOUND (``FanInBoundExceededError``'s
+    """The depth bound (``FanInBoundExceededError``'s
     sibling): the spawn's ancestor walk (the rows' ``parent_flow_id``
     links, the cycle detection folded into the same walk) reached the
-    declared max depth — a self-spawning flow can no longer mint a
+    declared max depth — a self-spawning flow cannot mint a
     generation per sweep tick forever, and a corrupted (cyclic) parent
     link cannot run the walk forever either.
 
@@ -144,11 +144,10 @@ class SpawnDepthExceededError(ValueError):
     site, or flatten the recursion into a loop over a ledgered step)."""
 
 
-#: THE DECLARED MAX DEPTH (the spawn's default bound): the
-#: ancestor chain the spawn walks is bounded HERE; a deeper fan-out is
-#: the typed refusal's, never an unbounded generation machine. A spawn
-#: site that genuinely needs more depth declares ``max_depth=`` — the
-#: author's identity, recorded on the spawn.
+#: the ancestor chain the spawn walks is bounded here; a deeper fan-out is the
+#: typed refusal's, never an unbounded generation machine. A spawn site that
+#: genuinely needs more depth declares ``max_depth=`` — the author's identity,
+#: recorded on the spawn.
 DEFAULT_SPAWN_MAX_DEPTH: Final[int] = 32
 
 
@@ -240,7 +239,7 @@ class ChildHandle[G: BaseModel]:
         self._terminal_key = terminal_key
 
     async def wait(self, *, timeout_s: float | None = None) -> ChildOutcome[G] | Expired:
-        """THE JOIN (the wait IS the hold): a terminal child returns the
+        """A terminal child returns the
         typed member immediately (the row is the truth — the resume's
         pure row-replay face); a live child registers the join hold and
         raises :class:`NodeHeldError` (the held representation — the
@@ -248,17 +247,17 @@ class ChildHandle[G: BaseModel]:
 
         ``timeout_s=`` arms the hold's deadline (the DB clock): the
         expiry sweep abandons the hold, the body resumes, and THIS site
-        returns the :class:`Expired` member ONCE per abandoned row per
+        returns the :class:`Expired` member once per abandoned row per
         attempt (the face-marker pattern). ``None`` waits as long as the
         child lives — safe by the cascade (a cancelled parent cancels
         its children, so no join outlives its flow)."""
         site = self._site
         signal_name = f"{CHILD_JOIN_SIGNAL_PREFIX}{self.flow_id}"
         async with site.pool.acquire() as conn:
-            # THE ROW IS THE TRUTH: the child's terminal read FIRST — a
-            # terminal child needs no hold at all (this is the resume's
-            # pure row-replay face, and the crash-mid-wait's wake: the
-            # successor's body re-executes, reads, joins).
+            # the child's terminal read first — a terminal child needs no hold
+            # at all (this is the resume's pure row-replay face, and the
+            # crash-mid-wait's wake: the successor's body re-executes, reads,
+            # joins).
             root = await conn.fetchrow(
                 render_sql(_CHILD_ROOT_STATUS_SQL, site.wsql.schema), self.flow_id
             )
@@ -271,12 +270,15 @@ class ChildHandle[G: BaseModel]:
                 if status == "cancelled":
                     return ChildCancelled(flow_id=str(self.flow_id))
 
-            # THE JOIN'S OWN TIMEOUT FACE (the abandoned hold — the
-            # expiry sweep fired THIS site's hold): the Expired member,
-            # ONCE per abandoned row per attempt (the face marker).
+                    # the Expired member, once per abandoned row per attempt (the face
+            # marker). the door marker rides the read: the sweep's rows read
+            # 'timeout', the operator abandon's payload marker reads
+            # 'operator' (the same member either way — the fail-close).
             abandoned = await conn.fetchrow(
                 render_sql(
-                    "SELECT id, hold_epoch FROM {schema}.wf_signals "
+                    "SELECT id, hold_epoch, "
+                    "COALESCE(payload->>'abandoned_by', 'timeout') AS abandoned_by "
+                    "FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
                     "AND status = 'abandoned' ORDER BY hold_epoch DESC LIMIT 1",
                     site.wsql.schema,
@@ -309,11 +311,11 @@ class ChildHandle[G: BaseModel]:
                         signal=signal_name,
                         node_key=site.node_key,
                         hold_id=str(abandoned["id"]),
+                        abandoned_by=str(abandoned["abandoned_by"]),  # pyright: ignore[reportArgumentType]  # Why: the row's COALESCE vocabulary is the writer's own closed pair ('timeout'/'operator') — the member's Literal re-validates it.
                     )
 
-            # THE STANDING HOLD: this join already registered (the
-            # resume's re-execution BEFORE the wake) — idempotent, never
-            # a second registration of one wait.
+                    # this join already registered (the resume's re-execution before
+            # the wake) — idempotent, never a second registration of one wait.
             held_row = await conn.fetchrow(
                 render_sql(
                     "SELECT id FROM {schema}.wf_signals "
@@ -328,7 +330,7 @@ class ChildHandle[G: BaseModel]:
             if held_row is not None:
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=(signal_name,))
 
-            # REGISTER: the ledger 'awaited' (resume-not-retry), then the
+            # register: the ledger 'awaited' (resume-not-retry), then the
             # hold — the payload contract is the child's declared result
             # model (mandatory at hold time — the audit hole's law).
             from taskq.workflows.api._hitl import mark_awaited, register_hold
@@ -418,9 +420,9 @@ class CtxSpawnOps(_SpawnHost):
         key: str | None = None,
         max_depth: int | None = None,
     ) -> ChildHandle[G]:
-        """THE SPAWN (T28): ``handle = await ctx.spawn_flow("child_name",
+        """``handle = await ctx.spawn_flow("child_name",
         input=…, result=ChildResult)`` — the child is a REAL flow (its
-        own run rows; the create-seam's ONE-transaction law) and the
+        own run rows; the create-seam's one-transaction law) and the
         spawn's run key is the TWO-CLAIMS LAW at the flow level: the
         retry ADOPTS the same child, never duplicates.
 
@@ -434,18 +436,18 @@ class CtxSpawnOps(_SpawnHost):
         needs it — the bound's typed arm is
         :class:`SpawnDepthExceededError`.
 
-        THE SPAWN'S ATOMICITY FACE (the gather guard):
-        the default slot's read+write is ONE atomic claim at the row
+        The spawn's atomicity face (the gather guard):
+        the default slot's read+write is one atomic claim at the row
         (an ``UPDATE … RETURNING`` increment), so K CONCURRENT spawns
         (``asyncio.gather(*[ctx.spawn_flow(...) …])`` — the natural
         fan-out spelling) take K DISTINCT slots and mint K DISTINCT
-        children — the pre-fix shape raced the cursor's read and
-        write, all K spawns adopted the same slot (run key), minted ONE
-        child, and every caller received tenant-0's verdict wearing K
-        labels (the silent fabricated result). A SAME-key concurrent
+        children — a cursor read/write race would adopt the same slot
+        (run key) for all K spawns, mint one
+        child, and hand every caller tenant-0's verdict wearing K
+        labels (the silent fabricated result). A same-key concurrent
         spawn ADOPTS the same child (the arbiter's CAS — the run-key
         claim at the row) and every caller receives THAT child's
-        handle: the honest shared face, never a fabricated per-caller
+        handle: the shared face, never a fabricated per-caller
         verdict. A CONCURRENT fan-out that must join STABLY across the
         resume passes ``key=`` (the slot's allocation order is the
         scheduler's, the author's identity is the caller's)."""
@@ -468,12 +470,11 @@ class CtxSpawnOps(_SpawnHost):
                 "terminal-less child (the join could never read a result)"
             )
 
-        # THE FAIL-CLOSE: a dangling child pointer on the
-        # parent's own receipts — a receipt whose child rows are GONE —
-        # is the TYPED refusal, never a silent respawn. The pre-fix
-        # shape re-minted a fresh child on the resume (the purge took
-        # the arbiter's row with it): the child's side effects ran
-        # twice, the parent SUCCEEDED.
+        # The fail-close: a dangling child pointer on the
+        # parent's own receipts — a receipt whose child rows are gone —
+        # is the typed refusal, never a silent respawn (a respawn would
+        # run the child's side effects twice while the parent reads
+        # succeeded).
         async with self._pool.acquire() as conn:
             dangling = await conn.fetchval(
                 render_sql(_DANGLING_RECEIPT_SQL, self._wsql.schema), self.flow_id
@@ -489,9 +490,8 @@ class CtxSpawnOps(_SpawnHost):
                     "row and re-run the flow on the current code."
                 )
 
-        # THE DEPTH BOUND + THE CYCLE CHECK: the ancestor chain
-        # read from the rows' parent links — ONE walk serves both (a
-        # cycle's walk reaches the cap and fires the same bound).
+                # the ancestor chain read from the rows' parent links — one walk serves
+        # both (a cycle's walk reaches the cap and fires the same bound).
         bound = DEFAULT_SPAWN_MAX_DEPTH if max_depth is None else max_depth
         async with self._pool.acquire() as conn:
             chain_depth = await conn.fetchval(
@@ -507,13 +507,12 @@ class CtxSpawnOps(_SpawnHost):
                 "or declare max_depth= at the spawn site."
             )
 
-        # THE SLOT (the atomic face): the per-attempt spawn cursor
-        # is CLAIMED in one atomic statement — the increment and the
-        # returned slot are one row-CAS, so concurrent spawns take
-        # distinct slots. A fresh attempt re-derives the same slots (the
+            # the per-attempt spawn cursor is claimed in one atomic statement — the
+        # increment and the returned slot are one row-CAS, so concurrent spawns
+        # take distinct slots. A fresh attempt re-derives the same slots (the
         # cursor is per-attempt; the arbiter adopts).
         if key is not None:
-            # The author's identity IS the key: no slot claimed (the
+            # The author's identity is the key: no slot claimed (the
             # parent row's counter never moves for a keyed site).
             spawn_key = f"childflow:{self.flow_id}:{self.node_key}:{key}"
         else:
@@ -529,7 +528,7 @@ class CtxSpawnOps(_SpawnHost):
 
         from taskq.workflows.api._runner import FlowRunner
 
-        # NB: this runner only CREATES the child run's rows (the spawn +
+        # NB: this runner only creates the child run's rows (the spawn +
         # the join's receipts) — it executes no bodies. The child's rows
         # execute through the doors that own them (the fleet's
         # ``execute_flow_job``, the dev drive's ``_runner_for_flow``) —
@@ -560,8 +559,7 @@ class CtxSpawnOps(_SpawnHost):
             terminal_key=compiled_obj.terminal,
         )
 
-        # THE RECEIPT (the parent's row): the ensure-append is dedup'd
-        # (an adoption re-run never duplicates).
+        # the ensure-append is dedup'd (an adoption re-run never duplicates).
         async with self._pool.acquire() as conn:
             await conn.execute(
                 render_sql(_CHILD_RECEIPT_ENSURE_SQL, self._wsql.schema),
@@ -594,12 +592,11 @@ SET metadata = jsonb_set(
 WHERE id = $1
 """
 
-#: THE SPAWN'S ATOMIC SLOT CLAIM (the gather guard):
-#: the per-attempt cursor's read+write is ONE statement — the row's
-#: jsonb counter increments IN the UPDATE and the allocated slot
-#: RETURNS from it. Concurrent claims serialize on the row lock and
-#: each receives a DISTINCT slot; a same-key spawn never reaches this
-#: statement (the explicit key bypasses the slot).
+#: the per-attempt cursor's read+write is one statement — the row's jsonb
+#: counter increments in the UPDATE and the allocated slot returns from it.
+#: Concurrent claims serialize on the row lock and each receives a DISTINCT
+#: slot; a same-key spawn never reaches this statement (the explicit key
+#: bypasses the slot).
 _SPAWN_SLOT_CLAIM_SQL = """
 UPDATE {schema}.jobs
 SET metadata = jsonb_set(
@@ -611,11 +608,9 @@ WHERE id = $1
 RETURNING (metadata->>$2)::int
 """
 
-#: THE DANGLING-RECEIPT READ (the retention-respawn's
-#: fail-close): a receipt on the parent's rows whose child's ROOT row
-#: is gone. ONE id is enough to refuse the spawn (the purge's own law:
-#: it must walk the parent links — a purge that leaves a pointer is
-#: this read's catch).
+#: a receipt on the parent's rows whose child's root row is gone. one id is
+#: enough to refuse the spawn (the purge's own law: it must walk the parent
+#: links — a purge that leaves a pointer is this read's catch).
 _DANGLING_RECEIPT_SQL = """
 SELECT r.cid FROM (
     SELECT DISTINCT jsonb_array_elements_text(metadata->'child_flows') AS cid
@@ -630,12 +625,11 @@ WHERE NOT EXISTS (
 LIMIT 1
 """
 
-#: THE ANCESTOR WALK (the depth bound + the cycle check, ONE
-#: walk): the chain of the parent flow's OWN ancestors read from the
-#: rows' ``parent_flow_id`` links, capped at the declared bound (the
-#: cap is what makes a cycle's walk terminate — the bound fires on it).
-#: The result is the parent's ancestor count $depth$; the child would
-#: be depth+1, so a walk that reaches the bound IS the refusal.
+#: the chain of the parent flow's own ancestors read from the rows'
+#: ``parent_flow_id`` links, capped at the declared bound (the cap is what
+#: makes a cycle's walk terminate — the bound fires on it). The result is the
+#: parent's ancestor count $depth$; the child would be depth+1, so a walk that
+#: reaches the bound is the refusal.
 _ANCESTOR_DEPTH_SQL = """
 WITH RECURSIVE chain AS (
     SELECT 0 AS depth, (metadata->>'parent_flow_id')::uuid AS parent
@@ -668,18 +662,16 @@ LIMIT 1
 """
 
 #: The cancel cascade's collection (the receipts over the flow's rows —
-#: the reverse-edge walk's extension reads the parent's OWN receipt, the
+#: the reverse-edge walk's extension reads the parent's own receipt, the
 #: one direction that names the children).
 CHILD_RECEIPTS_SQL_TEMPLATE = _CHILD_RECEIPTS_SQL_TEMPLATE
 
-#: THE CANCEL CASCADE'S COLLECTION (the ROWS' LAW
-#: + the receipts' ACCELERATOR): the children of one run read BOTH
-#: directions — the crash-unsafe receipts (the parent's node rows'
-#: ``child_flows``) AND the crash-safe ``parent_flow_id`` direction the
-#: child's root rows carry from the CREATE transaction. The receipts
-#: accelerate the common case; the rows are the law: a child created
-#: but never receipted (the crash between create and receipt-write)
-#: is STILL collected — the orphan window is unrepresentable.
+#: the children of one run read both directions — the crash-unsafe receipts
+#: (the parent's node rows' ``child_flows``) and the crash-safe
+#: ``parent_flow_id`` direction the child's root rows carry from the create
+#: transaction. The receipts accelerate the common case; the rows are the law:
+#: a child created but never receipted (the crash between create and
+#: receipt-write) is still collected — the orphan window is unrepresentable.
 CHILD_FLOWS_OF_RUN_SQL_TEMPLATE = """
 WITH receipt_children AS (
     SELECT DISTINCT (e.val)::uuid AS cid
@@ -702,8 +694,8 @@ SELECT DISTINCT cid FROM (
 """
 
 #: The descendants' drive (the dev-loop driver's face — the child is a
-#: REAL flow and its rows need a claimer): the recursive CTE walks the
-#: receipts; the UNION's dedup terminates it; the seed itself is
+#: real flow and its rows need a claimer): the recursive CTE walks the
+#: receipts; the union's dedup terminates it; the seed itself is
 #: EXCLUDED (``fid <> $1`` — the parent's own claim pass is tick's
 #: first half, never the descendants' walk; re-including it would
 #: re-claim the parent's rows and the fork's fresh children in the

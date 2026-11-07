@@ -202,7 +202,7 @@ exclude-newer = "24 hours"
 # via the dev group's docs toolchain) pinned exactly by the lockfile and
 # audited on every bump, so the cooldown adds no protection while delaying
 # same-day security releases.
-# ty is T01's probe checker, pinned EXACTLY (0.0.85) by the typeprobe group —
+# ty is the second probe checker, pinned EXACTLY (0.0.85) by the typeprobe group —
 # the probe gate's reds are asserted against that release, so the quarantine
 # cutoff is waived for it the same way: the pin IS the review.
 exclude-newer-package = { dotenvmodel = "0d", tors = "0d", markupsafe = false, ty = "0d" }
@@ -309,12 +309,12 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
-# T01's probe GATE: it invokes the pinned checkers by name ("pyright"/"ty",
+# The typeprobe's GATE: it invokes the pinned checkers by name ("pyright"/"ty",
 # resolved from the venv) on the repo's own probe corpus — fixed argv, no
 # user input reaches a command line; the partial executable path and the
 # subprocess calls are the gate's whole job.
 "tests/typeprobe/_gate.py" = ["S603", "S607"]
-# T17's abstraction check: the same shape — a fixed-argv grep over the
+# The ergonomics abstraction check: the same shape — a fixed-argv grep over the
 # repo's own surface paths (no user input; the check IS the grep).
 "tests/test_wf_ergonomics_contract.py" = ["S603", "S607"]
 # The one sanctioned `uuid_utils.uuid7()` call site: `new_uuid()` is the seam
@@ -337,27 +337,29 @@ ignore = [
 # head-stamp law's provenance check; no user input reaches a command line).
 "scripts/check_wf_coverage.py" = ["S603", "S607"]
 "scripts/verify_evidence_heads.py" = ["S603", "S607"]
-# The T09 runner pins: the same shape — the f-string's ONLY interpolation
+# The runner pins' packs: the same shape — the f-string's ONLY interpolation
 # is the module fixture's schema identifier (module_pg_schema), values all
 # $N-bound.
 "tests/test_wf_runner_pins.py" = ["S608"]
 "tests/test_wf_loop_pins.py" = ["S608"]
-# The T10 hitl pins + the phase-3 cure pins + the attack-3 probes: the
+# The hitl pins + the phase-3 cure pins + the attack-3 probes: the
 # SAME shape — the f-strings' ONLY interpolation is the module fixture's
 # schema identifier (wf_schema / module_pg_schema), values all $N-bound.
-# The attack probes' dash-named modules (attack3-*) are the red team's
-# run-directly probes (pytest node ids, not import surfaces).
+# The adversarial probes' modules are the run-directly probes (pytest
+# node ids, not import surfaces): tests/conftest.py's collect_ignore_glob
+# keeps them out of the default collection, the same contract the old
+# dash-named files' N999 ignores carried.
 "tests/test_wf_hitl_pins.py" = ["S608"]
 # The hold/map cures lane's pins (the LedgerWatch F2/F3/F4/F6 cures): the
 # same shape — the f-strings' ONLY interpolation is the module fixture's
 # schema identifier (wf_schema / module_pg_schema), values all $N-bound.
 "tests/test_wf_holdmap_cures_pins.py" = ["S608"]
 "tests/test_wf_timer_cures_pins.py" = ["S608"]
-# The T26 broadcast pins: the same shape — the f-strings' ONLY
+# The hitl broadcast pins: the same shape — the f-strings' ONLY
 # interpolation is the module fixture's schema identifier (wf_schema),
 # every caller-controlled value $N-bound.
 "tests/test_wf_hitl_pubsub_pins.py" = ["S608"]
-# The T28 child-flow pins: the same shape — the f-strings' ONLY
+# The child-flow pins: the same shape — the f-strings' ONLY
 # interpolation is the module fixture's schema identifier (wf_schema),
 # every caller-controlled value $N-bound.
 "tests/test_wf_childflow_pins.py" = ["S608"]
@@ -372,9 +374,9 @@ ignore = [
 # interpolation, values all $N-bound).
 "tests/test_wf_retention_arms.py" = ["S608"]
 "tests/test_wf_phase3_cure_pins.py" = ["S608"]
-"tests/attack3-hitl.py" = ["S608", "N999"]
-"tests/attack3-loop.py" = ["S608", "N999"]
-"tests/attack3-validate.py" = ["N999"]
+"tests/probes_hold_identity.py" = ["S608"]
+"tests/probes_loop_machinery.py" = ["S608"]
+"tests/probes_validator_rules.py" = []
 # Same rationale as tests/e2e and migrate.py: only the schema identifier is
 # interpolated (a test-generated, fixture-owned name), and every
 # caller-controlled value uses $N parameter binding. The file's SQL is the
@@ -460,9 +462,9 @@ ignore = [
 "tests/test_wf_progress_persistence.py" = ["S608"]
 "tests/test_wf_progress_emission.py" = ["S608"]
 "tests/test_wf_progress_faces.py" = ["S608"]
-"tests/t21_numbers_run.py" = ["S608"]
-"tests/test_wf_t2021_gate_cures.py" = ["S608"]
-"tests/test_wf_t20_crashed_terminal_wedge.py" = ["S608"]
+"tests/progress_numbers_run.py" = ["S608"]
+"tests/test_wf_progress_gate_cures.py" = ["S608"]
+"tests/test_wf_crashed_terminal_wedge.py" = ["S608"]
 "tests/test_wf_finalize_pins.py" = ["S608", "S311"]
 "tests/test_wf_sweep_pins.py" = ["S608"]
 "tests/test_wf_fork_pins.py" = ["S608", "S311"]
@@ -472,14 +474,14 @@ ignore = [
 "tests/test_wf_propagation_pins.py" = ["S608"]
 "tests/test_wf_scenario_pins.py" = ["S608"]
 "tests/test_wf_status_pins.py" = ["S608"]
-# T20's streaming pins: only the schema identifier is interpolated
+# The streaming pins: only the schema identifier is interpolated
 # (validated by the test fixtures upstream); every caller-controlled
 # value uses $N parameter binding — the same rationale as the wf family
 # above.
-"tests/test_wf_t20_maintain_liveness.py" = ["S608"]
-"tests/test_wf_t20_emit_pins.py" = ["S608"]
-"tests/test_wf_t20_fence_probe.py" = ["S608"]
-"tests/test_wf_t20_router_pins.py" = ["S608"]
+"tests/test_wf_maintenance_liveness.py" = ["S608"]
+"tests/test_wf_emit_tx_pins.py" = ["S608"]
+"tests/test_wf_source_terminal_fence.py" = ["S608"]
+"tests/test_wf_router_pins.py" = ["S608"]
 "tests/test_wf_state_event_totality.py" = ["S608"]
 "tests/test_wf_pruner_pins.py" = ["S608"]
 "tests/test_wf_pre_workflow_tolerance_pins.py" = ["S608"]
@@ -487,9 +489,9 @@ ignore = [
 # evidence paths — name-frozen, dash-named): the same rationale as the wf
 # pin files above (the schema identifier is the only interpolation, and
 # it is validated at WorkflowSql.build).
-"tests/attack2-t06-cascade.py" = ["S608", "N999"]
-"tests/attack2-t07-t18.py" = ["S608", "N999"]
-"tests/attack2-probe-pin6.py" = ["S608", "N999"]
+"tests/probes_failed_parent_cascade.py" = ["S608"]
+"tests/probes_fanin_and_pruner.py" = ["S608"]
+"tests/probes_teardown_endstate.py" = ["S608"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "validation/**" = ["S608"]
@@ -706,7 +708,7 @@ include = ["src", "tests", "examples"]
 # harness's DiffSide) degrades to Unknown — "Type of parameter is unknown"
 # across every importing file while the defining file stays clean.
 # tests/typeprobe/ is excluded for the opposite reason: the probe corpus is
-# INTENTIONALLY full of checker errors (the T01 negative probes) — the
+# INTENTIONALLY full of checker errors (the negative type probes) — the
 # `type-probes` CI job owns it under its own pyrightconfig.json, the root
 # run would only re-flag what that gate already asserts.
 exclude = [".worktrees", "tests/typeprobe"]
@@ -841,6 +843,7 @@ filterwarnings = [
 markers = [
     "slow: marks tests as slow (skip with -m 'not slow')",
     "integration: marks tests requiring testcontainers",
+    "timescale: marks tests requiring a real TimescaleDB container (the serial test-timescale lane; excluded from the xdist matrix)",
     "redis: marks tests requiring the [redis] extra and a Redis container",
     "examples: marks tests for the example app (excluded from default CI run)",
     "docs_examples: executes docs code fences against the real package (requires TASKQ_DOCS_EXAMPLES=1 and Docker; see tests/test_docs_examples.py)",
@@ -903,7 +906,7 @@ paths = [
     "src/taskq/backend/_protocol.py",
     "src/taskq/backend/_sql_templates.py",
     "src/taskq/retry.py",
-    # 4. The workflow engine's guard statements (T04 G5): the terminal-mark
+    # 4. The workflow engine's guard statements: the terminal-mark
     #    CAS, the decrement's `deps_pending > 0`, the fire's flow-status
     #    leg, the rederive's missing-parent arm, the held-row exclusivity
     #    clause. Reproducible run (the pin files' REAL names — the killers
@@ -918,8 +921,8 @@ paths = [
     "src/taskq/workflows/engine.py",
     "src/taskq/workflows/_sweep.py",
     "src/taskq/workflows/_sql.py",
-    # 5. The phase-2 guard statements' surfaces (T06/T07/T08/T18 + the
-    #    phase-2 attack's M2): the fail-closed cascade's block/peers/flow
+    # 5. The phase-2 guard statements' surfaces: the fail-closed cascade's
+    #    block/peers/flow
     #    arms + the absorbed decrement's policy filter + the fan-in cap's
     #    three arms (_sql_finalize), the rederive's blocked_required +
     #    flow-fenced arms (_sql_sweep), the absorbed predicate +
@@ -993,7 +996,7 @@ dev = [
     "ruff>=0.16.5,<0.17",
     "testcontainers[postgres,redis]>=4.14.2",
 ]
-# T01's negative type-probe corpus checkers, pinned EXACTLY: the probes'
+# The negative type-probe corpus's checkers, pinned EXACTLY: the probes'
 # MUST_ERROR markers are asserted against specific checker releases (a
 # floating checker moves the corpus's reds under the gate's feet; the tests
 # executionEnvironment's reportArgumentType=false does NOT apply here — the

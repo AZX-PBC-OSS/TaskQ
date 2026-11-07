@@ -315,7 +315,7 @@ async def test_atomic_batch_enforces_cap_per_chunk(
     """``enqueue_batch_atomic`` chunks must admission-check against the shared txn.
 
     The autonomous atomic path consumes the iterable lazily in chunks
-    inside ONE transaction. Each chunk's carried caps are checked on the
+    inside one transaction. Each chunk's carried caps are checked on the
     transaction's connection, so chunk 1 (fits) commits nothing yet and
     chunk 2 (existing 2 + 2 new > cap 2) raises with the whole
     transaction rolled back: zero rows admitted, not a partial stream.

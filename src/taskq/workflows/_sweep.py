@@ -1,4 +1,4 @@
-"""The workflow sweep arms (T04): the lock-first re-derive + its fire arm,
+"""The workflow sweep arms: the lock-first re-derive + its fire arm,
 the outbox drain, the phantom-ledger reaper.
 
 Each arm is its own function on its own statement constants (concerns
@@ -8,27 +8,19 @@ they never touch reclaim-owned rows — and the P3 rule 1 held-row
 inertness invariant: a row whose ``scheduled_at`` is in the future (the
 signal deadline, the only live timer on it) is invisible to every arm.
 
-THE SWEEP = LOCK-FIRST RE-DERIVE: ``FOR UPDATE SKIP LOCKED`` the join-wait
-children FIRST, then count un-terminal parents from the edge ledger inside
-the same transaction. In-flight decrements are skipped this pass (the
-healthy worker wins); committed decrements are visible to the count. Stale
-writes impossible by construction — there is no snapshot-derived counter
-write. SET-BASED, NOT N+1: ONE batched statement (the per-join round-trip
-variant is the fanout proof's crime; its MEASURED cost curve —
-14.9 ms @ 200 joins, the unscoped seq-scan monster 83.7 ms @ 75k — is
-the CITED-IMPORT artifact
-(``.measurements/runs/sweep-cost-scale-curve-*.json``): the spike's
-session evidence directory is gone; the imported record IS the
-provenance. The scope pin
-rejects the unscoped shape. An earlier revision of this comment cited
-the per-join variant at a p50/p95 figure for which no
-capture exists; the dead figure is DELETED — provenance or
-silence).
+The sweep is a lock-first re-derive: ``FOR UPDATE SKIP LOCKED`` the
+join-wait children first, then count un-terminal parents from the edge
+ledger inside the same transaction. In-flight decrements are skipped this
+pass (the healthy worker wins); committed decrements are visible to the
+count. Stale writes impossible by construction — there is no
+snapshot-derived counter write. One batched statement, never one round
+trip per join: the per-join variant measures 14.9 ms @ 200 joins vs the
+unscoped seq-scan 83.7 ms @ 75k
+(``.measurements/runs/sweep-cost-scale-curve-*.json``).
 
-COUNTER-AS-CACHE / LEDGER-AS-TRUTH: the re-derive reconciles the CACHE
-(``jobs.deps_pending``) from THE EDGE LEDGER's truth — never from
-child-row presence (the empty-join defect: nested joins' children do not
-exist yet at count time).
+The re-derive reconciles the cache (``jobs.deps_pending``) from the edge
+ledger's truth, never from child-row presence (nested joins' children do
+not exist yet at count time).
 
 Missing parents (a MISNAMED-CHILD edge) never fire silently: the blocked
 arm stamps ``metadata.blocking_reason='orphan_parent'`` (the
@@ -100,17 +92,21 @@ __all__ = [
 
 #: The reap belt's grace (seconds): a nodeless root younger than this is
 #: an in-flight create of a buggy shape, not debris — the belt never reaps
-#: mid-flight. The clock comparison is PG's own (the DB-clock doctrine).
+#: mid-flight. The clock comparison is PG's own.
 NODELESS_ROOT_REAP_GRACE_S: Final[float] = 300.0
 
 #: The NULL-stamp observe-warning's re-warn cadence (seconds): a live
-#: stamping bug is a PERSISTENT condition — re-warning every pass would
-#: flood the log (the condition outlives the fix's deployment); never
-#: re-warning made the busy shape's silence permanent. The leader's warn
-#: cadence: the stranded-actor precedent's hourly re-warn. Module-level
-#: (not settings) so tests shrink it without threading a knob, the same
-#: contract ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS`` carries.
+#: stamping bug is a persistent condition, so re-warning every pass
+#: would flood the log while never re-warning makes the busy shape's
+#: silence permanent. The leader's warn cadence: the stranded-actor
+#: precedent's hourly re-warn. Module-level (not settings) so tests
+#: shrink it without threading a knob, the same contract
+#: ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS`` carries.
 _NULL_STAMP_REWARN_SECS: Final[float] = 3600.0
+
+#: The sweep arms' default batch: one call locks, re-derives, and
+#: writes at most this many rows per statement.
+DEFAULT_BATCH_SIZE: Final[int] = 200
 
 #: The cadence state: table → the monotonic time of the last warn.
 _null_stamp_last_warned: dict[str, float] = {}
@@ -125,10 +121,10 @@ class SweepResult:
     blocked: int
     reconciled: int
     firable: int
-    #: T06's heal: fail_closed joins whose parent terminal-failed while
+    #: The heal: fail_closed joins whose parent terminal-failed while
     #: their own tx2 never ran — blocked-with-reason by this pass.
     blocked_required: int = 0
-    #: The flow-fenced fix: never-fired join rows whose resolution the FLOW'S own
+    #: The flow-fenced fix: never-fired join rows whose resolution the flow's own
     #: death fenced (the fire's flow-status leg refuses a terminal flow) —
     #: stamped blocked-with-reason by this pass, never a hanging claimable
     #: join on a dead flow.
@@ -140,41 +136,40 @@ async def sweep_join_rederive(
     pool: asyncpg.Pool,
     wsql: WorkflowSql,
     *,
-    batch_size: int = 200,
+    batch_size: int = DEFAULT_BATCH_SIZE,
     orphan_blocking_reason: str = BLOCKING_REASON_ORPHAN_PARENT,
     failed_parent_blocking_reason: str = BLOCKING_REASON_FAILED_PARENT,
     flow_dead_blocking_reason: str = BLOCKING_REASON_FLOW_DEAD,
 ) -> SweepResult:
-    """The lock-first re-derive arm: ONE batched statement (lock the
+    """The lock-first re-derive arm: one batched statement (lock the
     join-wait children SKIP LOCKED → count un-terminal parents from the
     edge ledger → reconcile the cache → block the orphan-parent rows →
-    block the fail-closed joins whose parent terminal-failed (T06's heal)
+    block the fail-closed joins whose parent terminal-failed (the heal)
     → stamp the flow-fenced joins (the flow-fenced join fix: a never-fired join row on
     a TERMINAL flow can never fire again — the fence is not absorption,
     the arm resolves it blocked-with-reason) → report counts), then the
     set-based fire arm for the firable set
-    (the flow-status leg rides INSIDE the fire statement — a post-cancel
+    (the flow-status leg rides inside the fire statement — a post-cancel
     re-derive refuses; the unfenced variant is pin 5's red, kept forever).
 
-    The whole pass runs in ONE transaction: the rederive statement's row
+    The whole pass runs in one transaction: the rederive statement's row
     locks are held until the fire arm + outbox rows commit, so the fire's
     re-derivation of the firable set is deterministic.
 
-    THE FIRED JOIN'S REDUCER BODY (the tx1→tx2 crash window's fix, the
-    CROSS-PROCESS form): the winner's body resolves DURABLY — from the
-    REGISTERED DEFINITION of the workflow stamped on the flow root's
+    The fired join's reducer body resolves durably — from the registered
+    definition of the workflow stamped on the flow root's
     metadata (every process carries the same definitions; the healer is
     never the finalizer's process — the fire statement returns the stamped
     name), falling through to the process-local reducer cache (the
     finalize warmed it — workflows/_reducers.py) only for a flow the
-    registry cannot resolve. The body runs INSIDE this transaction — the
+    registry cannot resolve. The body runs inside this transaction — the
     same exactly-once boundary the finalize's tx2 states: a raising body
     rolls this tx back (the fire row and the outbox rows with it), the
-    next pass re-fires, the body RE-RUNS — at-least-once body execution
+    next pass re-fires, the body re-runs — at-least-once body execution
     survives the window between the engine's own two transactions. A fired
     join with no resolvable body delivers its declared consumers — and is
     stamped ``metadata.blocking_reason='body_unavailable'`` + warned (the
-    loudness asymmetry, R2-2: the delivery continues, the record is loud).
+    delivery continues, the record is loud).
     """
     async with pool.acquire() as conn, conn.transaction():
         summary = await conn.fetchrow(
@@ -197,12 +192,12 @@ async def sweep_join_rederive(
             winners = await conn.fetch(wsql.sweep_fire, fire_ids, batch_size)
             fired_joins: list[FiredJoin] = []
             for w in winners:
-                # THE BODY: the winner's reducer runs INSIDE this tx (the
-                # exactly-once boundary is the FIRE's, never the body's —
+                # The winner's reducer runs inside this tx (the
+                # exactly-once boundary is the fire's, never the body's —
                 # a raising body rolls the whole pass back and the
                 # re-derive re-fires; at-least-once body execution). The
-                # resolution is DURABLE: the flow root's stamped workflow
-                # name resolves the body from the REGISTERED DEFINITION —
+                # resolution is durable: the flow root's stamped workflow
+                # name resolves the body from the registered definition —
                 # a flow finalized in another process heals with its real
                 # body (the memo is a cache, never the source).
                 body = resolve_flow_reducer(
@@ -213,14 +208,14 @@ async def sweep_join_rederive(
                 if body.body is not None:
                     await body.body()
                 elif body.loud:
-                    # THE LOUDNESS ASYMMETRY (R2-2): a fired join whose
-                    # resolution went LOUD (the stamped name resolves to no
+                    # A fired join whose
+                    # resolution went loud (the stamped name resolves to no
                     # compiled graph here — the deployment-defect class)
                     # still delivers its declared consumers (the delivery
                     # contract — never a crash), but the record must not
                     # look healthy while the work was wrong: the join row is
                     # stamped ``blocking_reason='body_unavailable'`` and a
-                    # WARNING names it. An unresolvable name that fails the
+                    # warning names it. An unresolvable name that fails the
                     # registry resolution is the deployment defect class
                     # (the definitions not imported in this process — the
                     # fleet's every worker carries them); an anonymous root
@@ -254,8 +249,8 @@ async def sweep_join_rederive(
                     w["flow_id"],
                     c.step_key,
                     c.map_index,
-                    # THE TRACE RIDES THE OUTBOX: the join's own trace when
-                    # it has one, else the FIRE's id — the consumers of one
+                    # trace rides the outbox: the join's own trace when
+                    # it has one, else the fire's id — the consumers of one
                     # fire share one trace chain (§18.2).
                     _jsonb(
                         {
@@ -271,9 +266,9 @@ async def sweep_join_rederive(
             ]
             if outbox_rows:
                 await conn.executemany(wsql.outbox_insert, outbox_rows)
-        # THE DERIVATION'S MAINTENANCE LEG (T08): the reported status is
+        # The derivation's maintenance leg: the reported status is
         # the derivation's output — the sweep maintains each flow
-        # ROOT's status from the rows (the crash-window heals: a
+        # root's status from the rows (the crash-window heals: a
         # non-absorbed failure → failed; all-terminal → succeeded). Bounded
         # by the root batch; the per-root node scan rides the flow-nodes
         # expression index (01.00.26_02 — the uuid-cast expression, the
@@ -293,7 +288,7 @@ async def drain_outbox(
     pool: asyncpg.Pool,
     wsql: WorkflowSql,
     *,
-    batch_size: int = 200,
+    batch_size: int = DEFAULT_BATCH_SIZE,
     default_max_attempts: int = 3,
     default_retry_kind: str = "transient",
 ) -> int:
@@ -302,9 +297,9 @@ async def drain_outbox(
     Read undelivered outbox rows (lock-first), insert the consumer rows
     IDEMPOTENTLY on the consumer step key (the composite
     ``(idempotency_scope, idempotency_key)`` arbiter — ``ON CONFLICT DO
-    NOTHING``), flip the undelivered flag IN THE INSERT'S TRANSACTION. A
+    NOTHING``), flip the undelivered flag IN the INSERT'S TRANSACTION. A
     crash between fire-commit and consumer-insert re-drains: the drain
-    completes the dispatch EXACTLY ONCE (pin 20). The consumer's placement
+    completes the dispatch EXACTLY once (pin 20). The consumer's placement
     (actor/queue/payload) rides the outbox row's ``bindings`` — declared
     on the JoinSpec, stamped at fork, resolved at fire. The consumer's
     PRIORITY is the flow root's stamped per-call override (the wf-priority
@@ -325,8 +320,8 @@ async def drain_outbox(
             ids,
             [b.get("actor", "workflow") for b in bindings],
             [b.get("queue", "default") for b in bindings],
-            # THE PAYLOAD IS THE UNWRAPPED ONE: the consumer body receives
-            # the DECLARED payload, never the transport envelope it rode
+            # The payload is the unwrapped one: the consumer body receives
+            # the declared payload, never the transport envelope it rode
             # in on (the envelope's actor/queue are the placement columns
             # above; the payload key is the body's own contract).
             [_jsonb(b.get("payload")) for b in bindings],
@@ -335,7 +330,7 @@ async def drain_outbox(
             [r["join_job_id"] for r in rows],
             [r["map_index"] for r in rows],
             [r["consumer_step_key"] for r in rows],
-            # THE TRACE (the stamp-at-enqueue): the fire wrote the
+            # The trace (stamped at enqueue): the fire wrote the
             # join's trace — or the fire's own id — into the bindings;
             # the consumer row carries it, never a NULL.
             [b.get("trace_id") for b in bindings],
@@ -344,29 +339,29 @@ async def drain_outbox(
             [_jsonb(_metadata(JobId(r["flow_id"]), blocking_reason=None)) for r in rows],
             [f"workflow:{r['flow_id']}" for r in rows],
             [
-                # THE ARBITER'S KEY — the STATIC ROW's own convention
+                # The arbiter's key — the static row's own convention
                 # (``step_idempotency_key``): the map-join's downstream is
-                # a static row since create (the consumption fix), so the
-                # drain's consumer insert for it is the arbiter's CONFLICT
+                # a static row since create, so the
+                # drain's consumer insert for it hits the arbiter's conflict
                 # (the belt, never a second dispatch). The fired-join
-                # consumer rows that DO insert fresh (a fork's own
+                # consumer rows that do insert fresh (a fork's own
                 # item-shape consumer) keep the map-index leg.
                 f"wf:{r['consumer_step_key']}"
                 + (f":{r['map_index']}" if r["map_index"] is not None else "")
                 for r in rows
             ],
-            # THE RUN-PRIORITY STAMP'S RESOLUTION (the priority surface's
+            # The run-priority stamp's resolution (the priority surface's
             # drain leg): the fetch's SQL resolved the flow root's stamped
             # override with the fleet door's own arithmetic (parse +
             # degrade-on-malformed/out-of-domain) and COALESCEd it to the
-            # column default — the consumer row materializes at the RUN's
+            # column default — the consumer row materializes at the run's
             # priority (the loop escalation's interactive follow-up), the
             # unset case at the column default's own value (0).
             [r["priority"] for r in rows],
-            # THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close
-            # fix's drain leg): the fire's bindings carry the downstream
+            # The consumer's declared deadline (the drain leg of the
+            # start_to_close stamp): the fire's bindings carry the downstream
             # node's own resolution (the join row's metadata `consumers`
-            # array, serialized as SECONDS — the jsonb wire form); the
+            # array, serialized as seconds — the jsonb wire form); the
             # unset/malformed case binds NULL (the pre-fix row). A
             # deadline is a correctness input, but the binding's author
             # is the fork's own build (a typed timedelta's serialization)
@@ -377,7 +372,7 @@ async def drain_outbox(
                 _seconds_or_none(b.get("start_to_close_s"))  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the jsonb walk hands the Any-typed doc the drain decoded above; the helper is the parse.
                 for b in bindings
             ],
-            # THE CONSUMER ROW'S DISPATCH COHORT (the wf fairness stamp):
+            # The consumer row's dispatch cohort (the fairness stamp):
             # the run's flow_id — the same birth stamp every claimable wf
             # row of the run carries.
             [str(r["flow_id"]) for r in rows],
@@ -391,14 +386,14 @@ async def sweep_progress_ring_prune(
     wsql: WorkflowSql,
     *,
     ring_bound: int = PROGRESS_RING_BOUND,
-    batch_size: int = 200,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE PROGRESS RING'S PRUNE ARM (T21) — the STREAM channel's
+    """The progress ring's prune arm — the stream channel's
     backstop: every node whose retained ring grew past the ring bound is
     trimmed back to it, rank-based per node (the append statement's own
-    trim is the first fence — this arm prunes the LEAKED rings: nodes
+    trim is the first fence — this arm prunes the leaked rings: nodes
     whose emissions stopped before the trim could hold, and any future
-    writer bug's unpruned shape, the PoC's red world's 801-row leak
+    writer bug's unpruned shape; the PoC's measured 801-row leak
     pruned to the bound in one pass).
 
     Set-based and bounded twice: the over-bound owner set is LIMITed by
@@ -418,31 +413,31 @@ async def reap_nodeless_roots(
     grace_s: float = NODELESS_ROOT_REAP_GRACE_S,
     batch_size: int = 100,
 ) -> int:
-    """THE NODELESS-ROOT REAP (the create-seam's belt, the SECOND fence):
+    """The nodeless-root reap (the create seam's belt, the second fence):
     every root row (``step_key = '__flow__'``) with ZERO node rows, in
     ``pending`` or ``running``, past the grace — reaped ``failed`` with
     the LOUD ``NodelessRunReaped`` class, in one set-based bounded
     statement (the event leg rides it).
 
-    THE CREATE ATOMICITY is the first fence: root + nodes + edges +
-    ROOT_START are one transaction, so the orphan root is UNREPRESENTABLE
-    on the shipped create. THIS arm is what protects against any future
+    The create's atomicity is the first fence: root + nodes + edges +
+    ROOT_START are one transaction, so the orphan root is unrepresentable
+    on the shipped create. This arm is what protects against any future
     statement-order regression re-opening the window: the pre-fix
     debris shape (the root insert committed ALONE, the node pass killed)
     was a root the maintenance derivation can never develop (the rollup
     INNER-JOINS the node rows — a nodeless root never derives, never
-    terminalizes, never prunes: unbounded retention AND a run key
+    terminalizes, never prunes: unbounded retention and a run key
     squatted forever). The belt reaps it; the typed claim surface then
     answers the squatted key's replay ``existing-terminal`` LOUDLY (the
     caller's re-run is a new key — never a silent no-op).
 
     Returns the reaped count.
 
-    THE COUNT'S HONEST CAST: the statement answers
+    The count's cast is load-bearing: the statement answers
     ``count(*)`` (a bigint — the caller's ``fetchval`` reads the NUMBER),
-    never ``RETURNING f.id`` — a 128-bit uuid read through ``int()`` was
+    never ``RETURNING f.id`` — a 128-bit uuid read through ``int()`` is
     a hash fragment riding the sweep-rows metric (and a multi-row reap's
-    magnitude was lost with it). The ``int(...)`` cast stays: count(*)
+    magnitude is lost with it). The ``int(...)`` cast stays: count(*)
     arrives an int already, and the cast is the pin's contract — the
     metric never samples a non-int."""
     async with pool.acquire() as conn:
@@ -453,11 +448,11 @@ async def reap_nodeless_roots(
 
 
 async def reap_phantom_ledger(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
-    """The fenced-attempt sweep arm (the fenced-attempt arms): fence every
+    """The fenced-attempt sweep arm: fence every
     'running' ledger row whose FLOW is terminal — the rows-alone
     reconstruction reconciles (pin 15). Returns the reaped count.
 
-    THE MEMO'S BOUND rides the same pass: a terminal flow's joins can
+    The reducer memo's bound rides the same pass: a terminal flow's joins can
     never fire again (the fire's own flow-status leg refuses them), so its
     reducer-cache entry is dead weight — the reaper drops it
     (:func:`taskq.workflows._reducers.forget_flow_reducers`), bounding the
@@ -474,14 +469,14 @@ async def sweep_hold_stamps(
     pool: asyncpg.Pool,
     wsql: WorkflowSql,
     *,
-    batch_size: int = 200,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE HOLD-STAMP RECONCILE ARM — the SIGKILL-during-a-held-loop
+    """The hold-stamp reconcile arm — the SIGKILL-during-a-held-loop
     wedge's fleet-level fix (measured in the soak).
 
     The held representation is a THREE-ROW contract: the node
     (``pending`` + the ``metadata.hold`` stamp — the claimable fence
-    ``NOT metadata ? 'hold'`` excludes it), the ``wf_signals`` row (the
+    ``not metadata ? 'hold'`` excludes it), the ``wf_signals`` row (the
     hold's truth), and the resume (the deliver CAS's clear). A process
     death between the stamp and a resolution leaves the node pending +
     STAMPED with a hold that is no longer 'held' — the soak measured
@@ -489,7 +484,7 @@ async def sweep_hold_stamps(
     (the deliver/expiry arms only act when a signal TRANSITIONS; the
     transition had already happened).
 
-    THE HOLD'S STATE DECIDES (:data:`~taskq.workflows._sql_sweep.`
+    The hold's state decides (:data:`~taskq.workflows._sql_sweep.`
     ``HOLD_STAMP_RECONCILE_SQL``'s contract, restated): a hold still
     ``'held'`` leaves the row standing as the legitimate held
     representation — the resume re-dispatches it; a hold
@@ -506,9 +501,8 @@ async def sweep_hold_stamps(
         rows = await conn.fetch(wsql.hold_stamp_reconcile, batch_size)
     cleared_count = len(rows)
     if cleared_count:
-        # THE LOUDNESS LAW: a wedge the arm healed is a NAMED event, not a
-        # silent fix — the operator can correlate it with the process
-        # death that stamped it.
+        # a wedge the arm healed is a named event, not a silent fix — the
+        # operator can correlate it with the process death that stamped it.
         logger.warning(
             "wf-hold-stamp-reclaimed",
             kind="wf_hold_stamp_reconcile",
@@ -522,9 +516,9 @@ async def prune_delivered_outbox(
     wsql: WorkflowSql,
     *,
     retention: timedelta,
-    batch_size: int = 200,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE DELIVERED OUTBOX'S TTL ARM (measured in the soak): a delivered
+    """The delivered outbox's TTL arm (measured in the soak): a delivered
     outbox row is narration — the consumer rows exist (the drain's
     arbiter), ``wf_join_fire`` is the exactly-once ledger — and the soak
     measured the delivered population growing monotonically forever (no
@@ -543,9 +537,9 @@ async def prune_expired_step_cache(
     pool: asyncpg.Pool,
     wsql: WorkflowSql,
     *,
-    batch_size: int = 200,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE STEP CACHE'S RETENTION ARM (T25): an EXPIRED cache row is
+    """The step cache's retention arm: an EXPIRED cache row is
     dead weight — the lookup's freshness leg already refuses it (a
     miss; the body re-runs and the store's CAS re-fills the corpse on
     success), and without this arm the expired population grows
@@ -561,16 +555,16 @@ async def prune_expired_step_cache(
 
 
 def _warn_null_stamp(table: str, observed: int) -> None:
-    """THE STAMPING-BUG TRIPWIRE (R2's conservative shape): the
+    """The stamping-bug tripwire: the
     pass OBSERVED NULL-stamped terminal roots — terminal roots whose
-    ``finished_at`` stamp never landed. The fix's law: the DELETE is
+    ``finished_at`` stamp never landed. The rule: the DELETE is
     never eager (the roots are SKIPPED — no history is removed that has
-    no honest age; a seconds-old flow's history must not vanish under a
+    no age of its own; a seconds-old flow's history must not vanish under a
     30-day period because its stamp never landed) and the TRIPWIRE is
     always live — the named warning fires on the OBSERVATION, never
-    keyed on a deletion (the first cut's key starved it: the busy
-    estate's ``NULLS LAST`` tail put the class past the batch LIMIT,
-    never selected, never warned, forever).
+    keyed on a deletion (a deletion-keyed tripwire would starve: the busy
+    estate's ``NULLS last`` tail puts the class past the batch LIMIT,
+    never selected, never warned).
 
     Rate-limited to the leader's warn cadence (``_NULL_STAMP_REWARN_SECS``
     per table): a live stamping bug is a persistent condition — the
@@ -599,29 +593,30 @@ async def prune_wf_edge(
     wsql: WorkflowSql,
     *,
     retention: timedelta,
-    batch_size: int = 200,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE EDGE LEDGER'S RETENTION ARM — the
-    FLOWS-SIDE pass (the law): the TERMINAL-AGED ROOTS are selected
-    FIRST from the tiny jobs side (``step_key='__flow__'`` — the root
+    """The edge ledger's retention arm — the
+    flows-side pass: the terminal-aged roots are selected
+    first from the tiny jobs side (``step_key='__flow__'`` — the root
     identity — + a terminal status + ``finished_at`` past the
     period, ``jobs_finished_at_idx``-served), and each selected flow's
     edge rows delete through the table's flow_id index
     (``wf_edge_flow_idx``, 01.00.35_01), row-LIMITed to the batch. The
-    zero-doomed steady state is O(terminal flows), never the rejected
-    full-table walk with two jobs-probes per row (TimeoutError at 3M
-    rows — the arms permanently stopped pruning at exactly the scale
-    they exist for). wf_edge has NO timestamp column of its own (checked:
+    zero-doomed steady state is O(terminal flows), never a
+    full-table walk with two jobs-probes per row (that walk hit
+    TimeoutError at 3M
+    rows — permanent stall at exactly the scale the arms exist for).
+    wf_edge has no timestamp column of its own (checked:
     01.00.24_02 + 01.00.25_01), so the root's ``finished_at`` is the
-    flow's honest terminalization clock; a NULL-stamped terminal root is
-    SKIPPED — never doomed (R2's conservative shape: no history is
-    removed that has no honest age) — and the pass OBSERVES the class,
+    flow's terminalization clock; a NULL-stamped terminal root is
+    SKIPPED — never doomed (the conservative shape: no history is
+    removed that has no age of its own) — and the pass OBSERVES the class,
     firing the rate-limited ``wf-retention-null-finished-at`` warning
     (the stamping-bug tripwire, keyed on the observation, never on a
     deletion). ``retention``
     is the deletion-sweep family's zero-means-off sentinel: the caller's
     settings gate skips the arm entirely at ``timedelta(0)`` (these arms
-    default OFF — they prune FLOW HISTORY, not derived data). The
+    default off — they prune FLOW HISTORY, not derived data). The
     ROOTLESS class (a row whose pointee is not a flow root at all) is
     :func:`prune_wf_edge_rootless`'s own pass."""
     async with pool.acquire() as conn:
@@ -633,22 +628,21 @@ async def prune_wf_edge(
 
 
 async def prune_wf_edge_rootless(
-    pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size: int = 200
+    pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size: int = DEFAULT_BATCH_SIZE
 ) -> int:
-    """THE EDGE LEDGER'S ROOTLESS PASS (the second leg, the orphan identity's
-    identity): an edge whose pointee is NOT a flow root AT ALL — the
+    """The edge ledger's rootless pass (the orphan identity): an edge
+    whose pointee is not a flow root AT ALL — the
     root absent (archived or hard-pruned by the jobs retention), or a
     live NON-root job the link was corrupted into — can never match the
     flows-side pass's root selection, so it rides this SEPARATE bounded
     statement on a coarser cadence (the leader wiring runs it every Nth
     call): a PK-ordered walk visiting AT MOST the batch (the LIMIT
-    bounds the SCAN, not the result — the property the rejected
-    whole-table shape lacked), one jobs PK probe per visited row.
+    bounds the SCAN, not the result), one jobs PK probe per visited row.
     wf_edge has no timestamp column: the pointee's absence (or
     non-rootness) IS the age proof — a committed edge's flow column can
     only name a deleted or corrupted link.
 
-    THE WALK ADVANCES (the persisted-cursor fix): the statement seeks
+    The statement seeks
     strictly past the arm's persisted cursor (``wf_rootless_sweep_state``,
     01.00.36_01 — the job_events_prune_state watermark's precedent), the
     cursor riding the last VISITED row — visited, not deleted, so a live
@@ -670,9 +664,9 @@ async def prune_wf_join_fire(
     wsql: WorkflowSql,
     *,
     retention: timedelta,
-    batch_size: int = 200,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE FIRE LEDGER'S RETENTION ARM — the FLOWS-SIDE pass (the
+    """The fire ledger's retention arm — the flows-side pass (the
     law, :func:`prune_wf_edge`'s shape): the terminal-aged ROOTS
     selected first, the fires deleted through ``wf_join_fire_flow_idx``
     (01.00.35_01), row-LIMITed to the batch. The exactly-once ledger is
@@ -683,7 +677,7 @@ async def prune_wf_join_fire(
     NULL-stamped terminal root is SKIPPED (never doomed) and the
     observation fires the rate-limited ``wf-retention-null-finished-at``
     tripwire (the conservative shape, R2). ``retention`` is
-    the zero-means-off sentinel (default OFF — flow history prunes only
+    the zero-means-off sentinel (default off — flow history prunes only
     when the operator opts in). The rootless class is
     :func:`prune_wf_join_fire_rootless`'s own pass."""
     async with pool.acquire() as conn:
@@ -695,10 +689,14 @@ async def prune_wf_join_fire(
 
 
 async def prune_wf_join_fire_rootless(
-    pool: asyncpg.Pool, wsql: WorkflowSql, *, retention: timedelta, batch_size: int = 200
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    retention: timedelta,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE FIRE LEDGER'S ROOTLESS PASS (the second leg, the orphan identity's
-    identity): a fire row whose pointee is NOT a flow root at all,
+    """The fire ledger's rootless pass (the orphan identity):
+    identity): a fire row whose pointee is not a flow root at all,
     batch-bounded PK-ordered walk (one PK probe per visited row), the
     row's own ``fired_at`` clock aging it (a rootless row cannot ride a
     root's stamp). See :func:`prune_wf_edge_rootless` for the cadence
@@ -716,21 +714,21 @@ async def prune_wf_step_ledger(
     wsql: WorkflowSql,
     *,
     retention: timedelta,
-    batch_size: int = 200,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE STEP LEDGER'S RETENTION ARM (the family's fastest grower —
+    """The step ledger's retention arm (the family's fastest grower —
     one row per attempt) — the FLOWS-SIDE pass (the law,
     :func:`prune_wf_edge`'s shape): the terminal-aged ROOTS selected
     first, the ledger rows deleted through the CLAIM ARBITER's leading
     flow_id column (``flow_id, step_key, COALESCE(map_index,-1),
     attempt`` — the narrowest flow probe the table ships;
-    ``wf_step_ledger_flow_idx`` is deliberately NOT built — redundant
+    ``wf_step_ledger_flow_idx`` is not built — redundant
     write amplification on the hottest table), row-LIMITed to the
     batch. The per-row statuses need no guard: a terminal flow's
     'running' row is the phantom class the reap arm fences first —
     deleting it outright reconstructs the same (the row is gone, not
     lying; the flow stays reconstructible from rows alone).
-    ``retention`` is the zero-means-off sentinel (default OFF). The
+    ``retention`` is the zero-means-off sentinel (default off). The
     rootless class is :func:`prune_wf_step_ledger_rootless`'s own
     pass."""
     async with pool.acquire() as conn:
@@ -742,10 +740,14 @@ async def prune_wf_step_ledger(
 
 
 async def prune_wf_step_ledger_rootless(
-    pool: asyncpg.Pool, wsql: WorkflowSql, *, retention: timedelta, batch_size: int = 200
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    retention: timedelta,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE STEP LEDGER'S ROOTLESS PASS (the second leg, the orphan identity's
-    identity): a ledger row whose pointee is NOT a flow root at all,
+    """The step ledger's rootless pass (the orphan identity):
+    identity): a ledger row whose pointee is not a flow root at all,
     batch-bounded PK-ordered walk, the row's own ``created_at`` aging
     it. See :func:`prune_wf_edge_rootless` (the cadence, the persisted
     cursor's advance law). Returns the deleted count."""
@@ -761,9 +763,9 @@ async def prune_wf_signals(
     wsql: WorkflowSql,
     *,
     retention: timedelta,
-    batch_size: int = 200,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE SIGNAL LEDGER'S RETENTION ARM — the FLOWS-SIDE pass (the
+    """The signal ledger's retention arm — the flows-side pass (the
     law, :func:`prune_wf_edge`'s shape): the terminal-aged ROOTS
     selected first (the signal row's flow column is ``workflow_id``),
     the rows deleted through ``wf_signals_run_status_idx``'s leading
@@ -773,7 +775,7 @@ async def prune_wf_signals(
     them (the wait site is terminal) — they delete with the flow; a
     LIVE flow's holds are never touched (the deliver/resolve/expire
     arms own those). ``retention`` is the zero-means-off sentinel
-    (default OFF). The rootless class is
+    (default off). The rootless class is
     :func:`prune_wf_signals_rootless`'s own pass."""
     async with pool.acquire() as conn:
         summary = await conn.fetchrow(wsql.signals_retention, batch_size, retention)
@@ -784,10 +786,14 @@ async def prune_wf_signals(
 
 
 async def prune_wf_signals_rootless(
-    pool: asyncpg.Pool, wsql: WorkflowSql, *, retention: timedelta, batch_size: int = 200
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    retention: timedelta,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE SIGNAL LEDGER'S ROOTLESS PASS (the second leg, the orphan identity's
-    identity): a signal row whose pointee is NOT a flow root at all,
+    """The signal ledger's rootless pass (the orphan identity):
+    identity): a signal row whose pointee is not a flow root at all,
     batch-bounded PK-ordered walk, the row's own ``created_at`` aging
     it. See :func:`prune_wf_edge_rootless` (the cadence, the persisted
     cursor's advance law). Returns the deleted count."""
@@ -803,10 +809,10 @@ async def prune_wf_node_progress(
     wsql: WorkflowSql,
     *,
     retention: timedelta,
-    batch_size: int = 200,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE PROGRESS STATE'S RETENTION ARM — the FLOWS-SIDE pass through
-    the NODE rows (the law): the terminal-aged ROOTS selected first
+    """The progress state's retention arm — the flows-side pass through
+    the node rows: the terminal-aged roots selected first
     (the same jobs-side selection every arm shares), the flows' NODE ids
     taken from the flow-nodes expression index (01.00.26_02 — the
     uuid-cast expression the join spells letter for letter, the
@@ -815,12 +821,12 @@ async def prune_wf_node_progress(
     row-LIMITed to the batch. wf_node_progress has no flow column — the
     node's ``metadata.flow_id`` is the link.
 
-    THE SIXTH TABLE'S RIDE-ALONG (the round-2 R3's FOLD — the
+    the SIXTH TABLE'S RIDE-ALONG (the FOLD — the
     documented call): the same statement deletes the doomed flows'
     ``wf_node_stream`` rows too (the STREAM channel — a dead node's
     ring, nodes x 64 rows unbounded, had no pruner at all). The stream
     rows carry the flow_id column directly, so the leg is one
-    ``wf_node_stream_flow_seq_idx``-served join off the SAME doomed-flow
+    ``wf_node_stream_flow_seq_idx``-served join off the same doomed-flow
     selection, its own ``LIMIT $1`` — one pass, two batch-bounded
     deletes, the family's one-batch-per-pass law's documented allowance
     (the pass's cost stays O(terminal flows + 2x batch)). A LIVE node's
@@ -828,13 +834,13 @@ async def prune_wf_node_progress(
     trim owns the live side. The NULL-stamp tripwire rides the shared
     root selection (the conservative shape — the roots are SKIPPED,
     the observation warns). ``retention`` is the zero-means-off
-    sentinel (default OFF). The orphan classes — the node GONE, the
-    node WITHOUT the flow_id stamp, the pointee not a root at all, and
+    sentinel (default off). The orphan classes — the node GONE, the
+    node without the flow_id stamp, the pointee not a root at all, and
     the stream's own (the node gone, or the carried flow link not a
     root) — are :func:`prune_wf_node_progress_rootless`'s own pass.
 
     Returns the pass's TOTAL deleted count (the progress rows + the
-    stream rows — the metric's honesty: both deletes happened)."""
+    stream rows — both deletes happened)."""
     async with pool.acquire() as conn:
         summary = await conn.fetchrow(wsql.node_progress_retention, batch_size, retention)
     assert summary is not None
@@ -844,19 +850,23 @@ async def prune_wf_node_progress(
 
 
 async def prune_wf_node_progress_rootless(
-    pool: asyncpg.Pool, wsql: WorkflowSql, *, retention: timedelta, batch_size: int = 200
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    retention: timedelta,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """THE PROGRESS STATE'S ROOTLESS PASS (the second leg, the orphan identity's
-    identity): a progress row whose NODE does not ground a live flow
+    """The progress state's rootless pass: a progress row whose NODE does
+    not ground a live flow
     root — the node row GONE (pruned/archived: orphaned by the prune's
-    own hand), the node WITHOUT the flow_id stamp (a vanilla node — the
-    rejected unprunable class), or the node's pointee NOT a flow root
+    own hand), the node without the flow_id stamp (a vanilla node — the
+    unprunable class), or the node's pointee not a flow root
     at all — batch-bounded PK-ordered walk, the row's own ``updated_at``
     (the upsert's latest-wins stamp) aging it. A node whose pointee IS a
     live root survives; a node whose pointee is a TERMINAL root's rows
     are the flows-side pass's own.
 
-    THE FOLD'S SECOND WALK (the fold's second walk): the SAME statement
+    The same statement
     runs the stream's orphan walk — a ``wf_node_stream`` row whose NODE
     is GONE (a dead node's ring: nothing will ever trim or read it) or
     whose CARRIED flow link names a NON-root, aged by its own
@@ -877,27 +887,39 @@ async def sweep_loop_budget(
     *,
     batch_size: int = 100,
 ) -> int:
-    """THE BUDGET SWEEP ARM (T19) — the loop walls' enforcer: the BUDGET
+    """The budget sweep arm — the loop walls' enforcer: the BUDGET
     wall (a running loop whose ``budget_deadline`` is past PG's
     ``clock_timestamp()``) and the ITERATION CAP wall (a running loop at/
     over ``max_iterations`` — the crash-dead-worker path; a live worker's
     loop is terminated by the ADVANCE statement's own guard, atomically
-    with the carry). THE ARM'S HEART: ``AND NOT budget_paused`` — a loop
+    with the carry). the ARM'S HEART: ``and not budget_paused`` — a loop
     holding on a human is INVISIBLE to the wall even when its deadline is
     FORCED into the past (the CONSUME-BUDGET guard; the arm
     missing the leg is the mutation the pin exercises, kept red forever).
 
     Exhaustion = the NAMED state (``iteration_cap_exhausted`` /
     ``budget_exhausted`` in the loop's metadata + the typed failure
-    class) and the FLOW TERMINALIZES IN THE SAME TRANSACTION
-    (STRANDED-FLOW — the spike's cut 5: a wedged ``running`` flow that
-    ticks forever is the rejected variant). The escalation outbox row
+    class) and the FLOW TERMINALIZES IN the same TRANSACTION
+    (a wedged ``running`` flow that ticks forever is the shape this
+    refuses). The escalation outbox row
     (``on_exhausted="escalate"``) rides the same tx — no second delivery
     mechanism. §22.6's exclusivity: the arm never touches a reclaim-owned
-    row; the clock comparison is PG's own (the DB-clock doctrine).
+    row; the clock comparison is PG's own.
+
+    The pass is SET-BASED (the sweep_join_rederive fire arm's shape): the
+    driving statement selects the batch under lock WITH its wall columns
+    and the flow root's workflow name (one round trip), the exhaust runs
+    once over the batch's parallel arrays (the claim identity's fence
+    bound per row), the outbox rows are one ``executemany`` — three
+    statements per pass, never four per loop row.
 
     Returns the number of loops exhausted."""
     from taskq._ids import new_uuid
+    from taskq.workflows.api._loop import (
+        ESCALATION_STEP_KEY,
+        escalation_bindings,
+        registered_loop_policy,
+    )
     from taskq.workflows.api._sql_loop import (
         ITERATION_STATE_BUDGET_EXHAUSTED,
         ITERATION_STATE_CAP_EXHAUSTED,
@@ -905,77 +927,85 @@ async def sweep_loop_budget(
         LOOP_ERROR_BUDGET,
         LOOP_ERROR_CAP,
         LOOP_ESCALATION_OUTBOX_SQL,
-        LOOP_EXHAUST_SQL,
+        LOOP_EXHAUST_BATCH_SQL,
         LOOP_KIND_MARKER,
-        LOOP_NODE_WALL_SQL,
-        LOOP_WORKFLOW_NAME_SQL,
         render_loop_sql,
     )
 
-    exhausted = 0
     async with pool.acquire() as conn, conn.transaction():
         loops = await conn.fetch(render_loop_sql(LOOP_BUDGET_SWEEP_SQL, wsql.schema), batch_size)
+        if not loops:
+            return 0
+        # The batch's exhaust rows, in the driving query's order (the
+        # DISTINCT ON's ordinal keys the flow's first-writer-wins off
+        # this order). which wall (the named state's truth): the
+        # metadata's iteration counter vs max_iterations — the cap names
+        # ``iteration_cap_exhausted``, the budget its own state.
+        ids: list[object] = []
+        error_classes: list[str] = []
+        exhaust_metas: list[str] = []
+        messages: list[str] = []
+        workers: list[object] = []
+        attempts: list[int] = []
+        epochs: list[int] = []
+        error_class_of: dict[object, str] = {}
         for loop_row in loops:
-            loop_id = loop_row["id"]
-            # WHICH wall (the named state's truth): the metadata's
-            # iteration counter vs max_iterations — the cap names
-            # ``iteration_cap_exhausted``, the budget its own state.
-            state = await conn.fetchrow(
-                LOOP_NODE_WALL_SQL.replace("{schema}", wsql.schema), loop_id
-            )
-            assert state is not None
             cap_hit = (
-                state["max_iterations"] is not None
-                and (state["iteration"] or 0) >= state["max_iterations"]
+                loop_row["max_iterations"] is not None
+                and (loop_row["iteration"] or 0) >= loop_row["max_iterations"]
             )
             error_class = LOOP_ERROR_CAP if cap_hit else LOOP_ERROR_BUDGET
             iteration_state = (
                 ITERATION_STATE_CAP_EXHAUSTED if cap_hit else ITERATION_STATE_BUDGET_EXHAUSTED
             )
-            # THE CLAIM IDENTITY'S FENCE (the same legs the driver's
-            # exhaust carries): the identity is read under THIS arm's own
-            # row lock (FOR UPDATE — stable to statement end), so the
-            # exhaust lands exactly on the row the lock admitted — a
-            # stale identity is unrepresentable here by construction; the
-            # fence's refusal shape (a zombie driver) is the DRIVER's
-            # finding, and the legs make the statement ONE vocabulary.
-            result = await conn.fetchrow(
-                render_loop_sql(LOOP_EXHAUST_SQL, wsql.schema),
-                loop_id,
-                error_class,
-                f'{{"iteration_state": "{iteration_state}", "kind": "{LOOP_KIND_MARKER}"}}',
+            ids.append(loop_row["id"])
+            error_classes.append(error_class)
+            error_class_of[loop_row["id"]] = error_class
+            exhaust_metas.append(
+                f'{{"iteration_state": "{iteration_state}", "kind": "{LOOP_KIND_MARKER}"}}'
+            )
+            messages.append(
                 f"the loop's {'iteration cap' if cap_hit else 'budget'} wall fired "
-                f"(the sweep's arm; the named state: {iteration_state})",
-                loop_row["locked_by_worker"],
-                loop_row["attempt"],
-                loop_row["claim_epoch"],
+                f"(the sweep's arm; the named state: {iteration_state})"
             )
-            if result is None or not result["loop_exhausted"]:
-                continue  # another writer got there first — the CAS held
-            # THE COUNT IS THE EXHAUSTION'S (the exhaustion count's fix): the named
-            # state + the flow's terminalization COMPLETED at the exhaust
-            # statement — every CAS-held exhaustion is ONE exhaustion,
+            workers.append(loop_row["locked_by_worker"])
+            attempts.append(loop_row["attempt"])
+            epochs.append(loop_row["claim_epoch"])
+            # the identity was read under THIS arm's own row lock (FOR UPDATE —
+        # stable to statement end), so the exhaust lands exactly on the row the
+        # lock admitted — a stale identity is unrepresentable here by
+        # construction; the fence's refusal shape (a zombie driver) is the
+        # DRIVER's finding, and the legs make the statement ONE vocabulary. The
+        # refusals fall out of the RETURNING.
+        winners = await conn.fetch(
+            render_loop_sql(LOOP_EXHAUST_BATCH_SQL, wsql.schema),
+            ids,
+            error_classes,
+            exhaust_metas,
+            messages,
+            workers,
+            attempts,
+            epochs,
+        )
+        won_ids = {row["id"] for row in winners}
+        exhausted = len(won_ids)
+        outbox_rows: list[tuple[object, ...]] = []
+        for loop_row in loops:
+            if loop_row["id"] not in won_ids:
+                continue  # the CAS held — another writer got there first
+                # the named state + the flow's terminalization completed at the
+            # exhaust statement — every CAS-held exhaustion is one exhaustion,
             # whatever the policy does next (the escalate arm's enqueue is
-            # ADDITIONAL work; a fail-policy loop IS exhausted and the
-            # return must say so).
-            exhausted += 1
-            # THE POLICY (the policy fix — the sweep READS the
-            # registered declaration, D1): ``fail`` = the named state is
-            # the record, NO enqueue; ``escalate`` = the escalation
-            # enqueues through the SAME outbox IN THE SAME TX, addressed
-            # to the workflow's REGISTERED escalation step (the body
-            # resolves from the definition registry at claim — never the
-            # ``loop_escalation``-actor ghost).
-            from taskq.workflows.api._loop import (
-                ESCALATION_STEP_KEY,
-                escalation_bindings,
-                registered_loop_policy,
-            )
-
-            workflow_name = await conn.fetchval(
-                render_loop_sql(LOOP_WORKFLOW_NAME_SQL, wsql.schema),
-                loop_row["flow_id"],
-            )
+            # additional work; a fail-policy loop is exhausted and the return
+            # must say so).
+            error_class = error_class_of[loop_row["id"]]
+            # ``fail`` = the named state is the record, no enqueue;
+            # ``escalate`` = the escalation enqueues through the same outbox in
+            # the same tx, addressed to the workflow's registered escalation
+            # step (the body resolves from the definition registry at claim —
+            # never the ``loop_escalation``-actor ghost). The workflow name
+            # rode the driving query (the flow root's own metadata).
+            workflow_name = loop_row["workflow_name"]
             if registered_loop_policy(workflow_name, loop_row["step_key"]) != "escalate":
                 continue
             bindings = escalation_bindings(
@@ -987,12 +1017,17 @@ async def sweep_loop_budget(
             )
             if bindings is None:
                 continue  # no registered escalation body — never a ghost row
-            await conn.execute(
-                render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, wsql.schema),
-                new_uuid(),
-                loop_id,
-                loop_row["flow_id"],
-                ESCALATION_STEP_KEY,
-                _jsonb(bindings),
+            outbox_rows.append(
+                (
+                    new_uuid(),
+                    loop_row["id"],
+                    loop_row["flow_id"],
+                    ESCALATION_STEP_KEY,
+                    _jsonb(bindings),
+                )
+            )
+        if outbox_rows:
+            await conn.executemany(
+                render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, wsql.schema), outbox_rows
             )
     return exhausted

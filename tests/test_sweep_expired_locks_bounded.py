@@ -36,7 +36,7 @@ row shares ``kind`` and ``detail``.  Here the per-row values are all DISTINCT:
 ``started_at``, ``attempt``, ``duration_ms``, ``locked_by_worker``, and the
 event ``detail``'s ``to_state`` (a three-way CASE yielding
 ``pending``/``cancelled``/``crashed``).  The batch carries multi-column
-arrays AND a row cap - so Layer 1 asserts both properties independently.
+arrays and a row cap - so Layer 1 asserts both properties independently.
 
 Invariant the batching must preserve
 -------------------------------------
@@ -174,7 +174,7 @@ async def _seed_running_jobs(
     lock_expired_seconds_ago: float,
     started_seconds_ago: float = 30.0,
 ) -> None:
-    """Seed running jobs in ONE round trip via ``unnest``.
+    """Seed running jobs in one round trip via ``unnest``.
 
     Row-by-row seeding would itself take N round trips and would dominate the
     runtime of a 200-row test; it would also make the seed, rather than the
@@ -210,7 +210,7 @@ async def _seed_running_jobs(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# LAYER 1 - the boundedness contract these tests enforce.
+# layer 1 - the boundedness contract these tests enforce.
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -410,13 +410,13 @@ class TestSweepExpiredLocksIsBounded:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# LAYER 2 - CORRECTNESS PINNING.  These PASS TODAY and MUST STILL PASS
+# layer 2 - correctness pinning.  These pass today and must still pass
 # after the fix.  They are the safety net over the SQL rewrite.
 # ══════════════════════════════════════════════════════════════════════
 
 
 class TestSweepExpiredLocksBehaviourPinned:
-    """Layer 2: pins existing behaviour - must pass BEFORE AND AFTER the fix.
+    """Layer 2: pins existing behaviour - must pass before and after the fix.
 
     The fix rewrites SQL that mutates job state and writes audit rows, so
     every observable consequence of the sweep is pinned here: the three-way
@@ -438,7 +438,7 @@ class TestSweepExpiredLocksBehaviourPinned:
         explicitly in one run so a rewrite cannot quietly collapse the CASE
         into a two-way one:
 
-        * ``attempt < max_attempts AND retry_kind != 'non_retryable'``
+        * ``attempt < max_attempts and retry_kind != 'non_retryable'``
           → ``pending``, ``scheduled_at`` pushed ~5s out, ``finished_at``
           left NULL;
         * ``cancel_phase != 0`` (and retries not available)
@@ -468,7 +468,7 @@ class TestSweepExpiredLocksBehaviourPinned:
             cancel_phase=0,
             lock_expired_seconds_ago=10.0,
         )
-        # Branch 2: attempts exhausted AND a cancel was in flight → cancelled.
+        # Branch 2: attempts exhausted and a cancel was in flight → cancelled.
         # The lock must be expired past cancel_grace + cleanup_grace + 60s for
         # the cancel carve-out in the WHERE clause to admit it at all.
         await _seed_running_jobs(
@@ -571,7 +571,7 @@ class TestSweepExpiredLocksBehaviourPinned:
     ) -> None:
         """Pins the behaviour the bounded sweep must preserve.
 
-        Exactly one ``job_attempts`` row per swept job, on EVERY branch, with
+        Exactly one ``job_attempts`` row per swept job, on every branch, with
         ``outcome='crashed'`` and ``error_class='WorkerCrashed'`` regardless of
         the job's terminal label (that IS what happened to the attempt), the
         job's ``attempt`` number, the snapshotted ``worker_id``, and a
@@ -791,12 +791,12 @@ class TestSweepExpiredLocksBehaviourPinned:
     ) -> None:
         """Pins the behaviour the bounded sweep must preserve.
 
-        A running job whose lock has NOT expired must be left completely
+        A running job whose lock has not expired must be left completely
         untouched: same status, same lock holder, same lock expiry, same
         ``cancel_phase``, and no ``job_attempts`` or ``job_events`` row
         written for it.  Also pins the cancel carve-out: a job with
         ``cancel_phase != 0`` whose lock expired only moments ago is inside the
-        extra ``cancel_grace + cleanup_grace + 60s`` window and must NOT be
+        extra ``cancel_grace + cleanup_grace + 60s`` window and must not be
         swept yet.
 
         This is the predicate half of the rewrite risk: a fix that adds a LIMIT
@@ -968,7 +968,7 @@ class TestSweepExpiredLocksBehaviourPinned:
         additional ``job_attempts`` or ``job_events`` rows.
 
         Written as a drain loop rather than a single call so it holds for a
-        capped implementation too: the assertion is about the state AFTER the
+        capped implementation too: the assertion is about the state after the
         backlog is drained, not about how many calls draining took.  (Note the
         retry branch pushes ``scheduled_at`` ~5s out but leaves the job
         ``pending``, so it is no longer a sweep-1 candidate at all --

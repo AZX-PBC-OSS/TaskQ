@@ -11,7 +11,7 @@ own consumed queues, is the only fix surface.
 
 Adversarial review rework notes pinned by this file:
 
-- ONE aggregated event per boot, not one per actor: workgroup children
+- one aggregated event per boot, not one per actor: workgroup children
   each import the full actor registry while consuming a queue subset,
   so per-actor warnings would storm exactly the healthy heterogeneous
   fleets the issue blesses. The affected actor→queue mapping rides the
@@ -102,7 +102,7 @@ def _make_actor_ref(*, name: str, queue: str) -> ActorRef[_Payload, _Result]:
 
 
 def test_unconsumed_actors_aggregate_into_one_warning() -> None:
-    """Actor on a queue the worker does not consume → exactly ONE warning
+    """Actor on a queue the worker does not consume → exactly one warning
     carrying the actor→queue mapping and the worker's queues. Two
     consumed queues must not multiply the warning."""
     settings = _make_settings(queues_csv="default,batch")
@@ -192,7 +192,7 @@ def test_mixed_registry_names_only_the_unconsumed_actors() -> None:
 def test_multi_queue_worker_consuming_all_actor_queues_stays_silent() -> None:
     """Ported from the parallel agent's superseded suite: a worker
     consuming several queues with actors targeting each of them is the
-    legitimate split-queue topology on ONE worker - per-actor silence
+    legitimate split-queue topology on one worker - per-actor silence
     must hold, not just for the everything-on-default shape."""
     settings = _make_settings(queues_csv="default,cron")
     registry = {

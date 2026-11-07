@@ -83,7 +83,7 @@ async def test_sliding_window_pg_nodes_share_the_server_clock(
     )
 
 
-# ── PG sliding window (GCRA): the shared TAT is server-domain ────────
+# ── PG sliding window (gcra): the shared tat is server-domain ────────
 
 
 async def test_sliding_window_pg_gcra_tat_not_poisoned_by_skewed_caller(
@@ -92,7 +92,7 @@ async def test_sliding_window_pg_gcra_tat_not_poisoned_by_skewed_caller(
 ) -> None:
     """C8 pin (PG GCRA): limit=60/60s (emission 1s, tolerance 60s). A
     caller whose clock is 90s AHEAD acquires (allowed either way), then an
-    unskewed caller acquires immediately and must ALSO be allowed.
+    unskewed caller acquires immediately and must also be allowed.
 
     A TAT computed and stored in the caller's own
     Python epoch (server+90+1s) poisons the shared state - the next
@@ -165,10 +165,10 @@ async def test_token_bucket_pg_refill_measured_by_server_clock(
     )
 
 
-# ── Redis: the scripts read TIME, not the caller's clock ─────────────
+# ── Redis: the scripts read time, not the caller's clock ─────────────
 #
 # D5 (approved): the documented deviation ("client-supplied now instead of
-# TIME") is reversed - every script derives now from redis.call('TIME'),
+# time") is reversed - every script derives now from redis.call('time'),
 # so multi-node fleets share the Redis clock. These are the Redis analogs
 # of the PG pins above.
 
@@ -218,7 +218,7 @@ async def test_sliding_window_redis_gcra_tat_not_poisoned_by_skewed_caller(
 ) -> None:
     """C8 pin (Redis GCRA): limit=60/60s. A caller whose clock is 90s AHEAD
     acquires (allowed either way), then an unskewed caller acquires
-    immediately and must ALSO be allowed - the script's TAT is TIME-domain,
+    immediately and must also be allowed - the script's TAT is TIME-domain,
     so a skewed node cannot shove the shared admission boundary into
     another node's future."""
     settings = _redis_settings(redis_url)

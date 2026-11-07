@@ -386,7 +386,7 @@ async def test_health_request_times_out_after_connect(monkeypatch: pytest.Monkey
     async def _mock_open_unix_connection(_path: str) -> tuple[AsyncMock, MagicMock]:
         return mock_reader, mock_writer
 
-    # Patch where the name is LOOKED UP - the cli module's own ``asyncio``
+    # Patch where the name is looked up - the cli module's own ``asyncio``
     # binding - not through to the global asyncio module (tests/_ns_patch.py).
     monkeypatch.setattr(
         cli_mod,

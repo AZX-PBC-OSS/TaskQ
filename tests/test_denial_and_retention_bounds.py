@@ -32,7 +32,7 @@ The tests below assert the DESIRABLE behaviour so they go green when the
 implementation matches it.
 
 CRITICAL - crash-reclamation outbox.  ``job_events`` rows with
-``kind = 'state_change' AND detail->>'reason' = 'lock_expired'`` are the
+``kind = 'state_change' and detail->>'reason' = 'lock_expired'`` are the
 outbox consumed by ``poll_reclaim_events`` driving ``TaskQ.watch_reclaims()``.
 Any age-based retention MUST exempt that slice or crash reclamation silently
 stops.  ``test_lock_expired_reclaim_outbox_is_exempt_from_retention`` pins
@@ -66,7 +66,7 @@ _DENIAL_CYCLES = 12
 
 # The per-job durable-row budget a denial loop must respect.  A correct
 # implementation may keep a handful of rows (e.g. a first-denial event plus a
-# coalesced counter), but it must NOT grow linearly with the number of
+# coalesced counter), but it must not grow linearly with the number of
 # denials.  Anything at or below the cycle count proves coalescing; we allow a
 # generous constant so a reasonable fix is not over-constrained.
 _BOUNDED_ROW_BUDGET = 4
@@ -168,7 +168,7 @@ async def _drive_denial_loop(
             outcome="reservation_denied",
             # The attempt-epoch fence: _relock_for_next_dispatch replays
             # dispatch's attempt increment, so the write carries the row's
-            # CURRENT epoch, read fresh each cycle.
+            # current epoch, read fresh each cycle.
             attempt=await _current_attempt(conn, schema, job_id),
             claim_epoch=await _current_claim_epoch(conn, schema, job_id),
         )
@@ -381,7 +381,7 @@ async def test_denial_rows_are_reclaimable_by_retention(
 ) -> None:
     """CONTRACT: rows written by a denial loop must be reclaimable.
 
-    ``prune_terminal_jobs`` keys on ``status IN (terminal) AND finished_at
+    ``prune_terminal_jobs`` keys on ``status IN (terminal) and finished_at
     < cutoff`` - a standard reclaim shape (delete whole job rows keyed on
     a completion timestamp with a configurable retention window). A zero
     retention is the documented prune-terminal-now point, archiving all
@@ -433,7 +433,7 @@ async def test_denial_rows_are_reclaimable_by_retention(
                     _ZERO,
                     metadata_update={"awaiting": "reservation:test_bucket"},
                     outcome="reservation_denied",
-                    # The attempt-epoch fence: the row's CURRENT epoch,
+                    # The attempt-epoch fence: the row's current epoch,
                     # read fresh each cycle (the relock below increments it).
                     attempt=await _current_attempt(conn, schema, job_id),
                     claim_epoch=await _current_claim_epoch(conn, schema, job_id),
@@ -595,7 +595,7 @@ async def test_lock_expired_reclaim_outbox_is_exempt_from_retention(
     pg_dsn: str,
     settings: TaskQSettings,
 ) -> None:
-    """PIN: the crash-reclaim outbox slice must NEVER be aged out.
+    """PIN: the crash-reclaim outbox slice must never be aged out.
 
     ``job_events`` rows with ``kind = 'state_change'`` and
     ``detail->>'reason' = 'lock_expired'`` are not history - they are the

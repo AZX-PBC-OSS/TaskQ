@@ -82,7 +82,7 @@ def test_every_install_command_names_the_published_distribution() -> None:
             "redis",
             "taskq-py[redis]",
         ),
-        # The SSO session cookie serializer: shared by the oidc and saml backends.
+        # The sso session cookie serializer: shared by the oidc and saml backends.
         (
             "construct_session_manager",
             "itsdangerous",

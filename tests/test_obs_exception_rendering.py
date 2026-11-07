@@ -1,4 +1,4 @@
-"""Exception rendering in production JSON logs must be diagnostic AND redacted.
+"""Exception rendering in production JSON logs must be diagnostic and redacted.
 
 ``BoundLogger.exception`` puts ``exc_info=True`` into the event dict; TaskQ's
 processor chain had no exception renderer, so the JSON channel shipped a
@@ -125,7 +125,7 @@ def test_json_log_exception_renders_class_and_traceback_scrubbed() -> None:
 
 def test_foreign_stdlib_exc_info_log_line_renders() -> None:
     """A foreign stdlib record with a real ``exc_info`` tuple must render as a
-    JSON line (it was previously DROPPED by the orjson fallback TypeError),
+    JSON line (never DROPPED by the orjson fallback TypeError),
     with the exception scrubbed."""
     obs_mod.setup_logging(log_format="json")
     exc = _leaky_unique_violation()
@@ -179,7 +179,7 @@ def test_known_exception_string_fields_are_scrubbed_in_json_logs() -> None:
     output = buf.getvalue().strip()
     parsed = json.loads(output)
     assert canary not in output
-    # Message-style fields keep the diagnostic template, drop the DETAIL line.
+    # Message-style fields keep the diagnostic template, drop the detail line.
     assert (
         parsed["error"] == 'duplicate key value violates unique constraint "jobs_identity_key_key"'
     )
@@ -226,7 +226,7 @@ def test_terminal_write_failure_fields_are_scrubbed_in_json_logs() -> None:
     output = buf.getvalue().strip()
     parsed = json.loads(output)
     assert canary not in output
-    # Message-style fields keep the diagnostic template, drop the DETAIL line.
+    # Message-style fields keep the diagnostic template, drop the detail line.
     assert parsed["job_error_message"] == (
         'duplicate key value violates unique constraint "jobs_identity_key_key"'
     )
@@ -271,7 +271,7 @@ def test_repr_flattened_pg_detail_is_scrubbed_in_json_logs() -> None:
 
 def test_exception_object_field_renders_scrubbed_not_dropped() -> None:
     """An exception object passed as a field value must render as the scrubbed
-    safe message - previously the raw object hit the orjson fallback TypeError
+    safe message - the raw object must never hit the orjson fallback TypeError
     and the whole log line was dropped."""
     obs_mod.setup_logging(log_format="json")
     canary = "tenant-77-ssn-987654321"

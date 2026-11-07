@@ -17,7 +17,7 @@ Pins in this file (pure unit, no PG):
   accounting settles - without arming the claim cooldown (the cooldown
   only follows a ROUND; a skipped round arms nothing);
 * the claim size tracks the active count exactly;
-* the stub consumer's completion path wakes the producer AFTER the
+* the stub consumer's completion path wakes the producer after the
   deregister that frees the slot (the second slot-release point);
 * a saturated producer drains promptly as slots free one at a time.
 """
@@ -142,7 +142,7 @@ WorkerDepsLike = Any
 
 async def test_a_fully_busy_worker_claims_nothing_and_never_arms_the_cooldown() -> None:
     """Every consumer slot busy (active = max_concurrency), queue empty:
-    the producer must run NO claim round at all - the unguarded producer
+    the producer must run no claim round at all - the unguarded producer
     saw ``maxsize - qsize`` free slots here and locked a full extra
     batch. No round also means no short-round cooldown is armed, so the
     claim that follows a freed slot is immediate, not floored."""
@@ -162,7 +162,7 @@ async def test_a_fully_busy_worker_claims_nothing_and_never_arms_the_cooldown() 
             "availability accounting must subtract active jobs"
         )
         # The slot frees: accounting settles and the consumer-side wake
-        # fires. The claim that follows must NOT pay the short-round
+        # fires. The claim that follows must not pay the short-round
         # cooldown floor (no round ever ran to arm it): it lands within
         # a scheduler step, far inside the cooldown's jittered minimum.
         active.n = 0
@@ -268,7 +268,7 @@ class _RegistrySpy:
 
 async def test_stub_consumer_wakes_the_producer_after_the_deregister() -> None:
     """The completion-side slot release: the stub consumer sets the
-    shared slot-freed event AFTER its deregister (the point the active
+    shared slot-freed event after its deregister (the point the active
     count actually drops), so the producer the event wakes reads settled
     accounting - the claim is not delayed to the fallback poll and not
     answered with a stale count."""
@@ -348,7 +348,7 @@ async def test_stub_consumer_wakes_the_producer_after_the_deregister() -> None:
     # job registers (the queue slot freed, the active slot not yet
     # taken - both counts read 0, which is why the order rather than
     # the count is the assertion), and the completion-side wake fires
-    # AFTER the deregister that frees the active slot - never while the
+    # after the deregister that frees the active slot - never while the
     # finished job is still counted.
     assert events == ["wake", "register", "deregister", "wake"], (
         f"consumer event order was {events} (active counts at wakes "
@@ -413,7 +413,7 @@ async def test_a_consumer_in_the_take_register_window_over_admits_nothing() -> N
     along."""
     active = _Active(3, intents=1)  # three registered busy, one take in the window
     backend = _RecordingBackend(jobs=4)
-    # The queue is empty because the fourth slot's row was TAKEN: the
+    # The queue is empty because the fourth slot's row was taken: the
     # window is open, its consumer has not registered the row yet.
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=4)
     slot_freed = asyncio.Event()

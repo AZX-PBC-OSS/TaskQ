@@ -18,7 +18,7 @@ on the wrong stack, and an httpx2-only regression could not be caught here.
 respx has a documented extension point for exactly this - ``Mocker`` subclasses
 register themselves by name and ``respx.mock(using=...)`` selects one. This
 module registers a single mocker whose targets are httpcore's connection classes
-AND httpcore2's, so ONE router with ONE route table covers both stacks at once.
+and httpcore2's, so one router with one route table covers both stacks at once.
 That matters because the OIDC callback needs both mocked inside a single test.
 
 Two details the bare "add httpcore2 targets" recipe omits:

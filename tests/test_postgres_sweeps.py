@@ -241,7 +241,7 @@ class TestSweepExpiredLocks:
         assert row["status"] == "crashed"
         # Terminal job must have finished_at set
         assert row["finished_at"] is not None
-        # scheduled_at must NOT be advanced to now()+5s - the job is
+        # scheduled_at must not be advanced to now()+5s - the job is
         # not being re-queued
         assert row["scheduled_at"] == pre_scheduled_at
         # Both job_attempts and job_events rows must exist
@@ -378,7 +378,7 @@ class TestSweepExpiredLocks:
 
     async def test_cancel_phase_carve_out_not_touched(self, clean_jobs_app: JobsApp) -> None:
         """Running job with cancel_phase=1 and lock slightly past now
-        should NOT be swept - the cancel grace extension applies."""
+        should not be swept - the cancel grace extension applies."""
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name
         worker_id = new_uuid()
@@ -988,7 +988,7 @@ class TestPollReclaimEvents:
         """``job_events.id`` (bigserial) is allocated at INSERT time, but
         transactions can commit out of order under real contention (lock
         waits, a slower sweep pass, GC pauses): a transaction holding a
-        LOWER id can commit AFTER one holding a HIGHER id.
+        LOWER id can commit after one holding a HIGHER id.
 
         With ``visibility_delay=0`` (no protection - reproduces the bug
         directly against the real query, not a reverted copy of it),
@@ -1040,7 +1040,7 @@ class TestPollReclaimEvents:
         tx_a = conn_a.transaction()
         tx_b = conn_b.transaction()
         try:
-            # A inserts first, grabbing the LOWER event_id, then stays open.
+            # A inserts first, grabbing the lower event_id, then stays open.
             await tx_a.start()
             await conn_a.execute(
                 f'INSERT INTO "{schema}".'
@@ -1050,7 +1050,7 @@ class TestPollReclaimEvents:
                 detail_json,
             )
 
-            # B inserts second, grabbing the HIGHER event_id, and commits
+            # B inserts second, grabbing the higher event_id, and commits
             # immediately - out of order relative to A.
             await tx_b.start()
             await conn_b.execute(
@@ -1141,7 +1141,7 @@ class TestPollReclaimEvents:
             risky = await backend.check_reclaim_visibility_delay_risk(visibility_delay=tiny_margin)
             assert len(risky) == 1
             assert risky[0].xact_age_seconds >= tiny_margin.total_seconds()
-            # EXTRACT(EPOCH ...) returns numeric → asyncpg Decimal without
+            # extract(epoch ...) returns numeric → asyncpg Decimal without
             # the ::float8 cast; Decimal >= float compares fine (so the
             # assertion above can't catch it) but json.dumps(Decimal)
             # raises TypeError in the monitoring loop this diagnostic feeds.
@@ -1262,8 +1262,8 @@ class TestPollReclaimEvents:
         assert len(events) == 3
         cursor = events[0].event_id
 
-        # Operator prunes the two oldest rows - one AT the consumer's
-        # cursor, one AHEAD of it (simulating a too-aggressive prune).
+        # Operator prunes the two oldest rows - one at the consumer's
+        # cursor, one ahead of it (simulating a too-aggressive prune).
         async with deps.worker_pool.acquire() as conn:
             await conn.execute(
                 f'DELETE FROM "{schema}".job_events WHERE id = ANY($1::bigint[])',
@@ -1277,7 +1277,7 @@ class TestPollReclaimEvents:
         assert [e.event_id for e in remaining] == [events[2].event_id]
 
     async def test_single_pg_notify_per_sweep_with_rows(self, clean_jobs_app: JobsApp) -> None:
-        """The sweep fires exactly ONE pg_notify per call that reclaims at
+        """The sweep fires exactly one pg_notify per call that reclaims at
         least one row (not one per row), and none when nothing is swept -
         wake storms on a crash-reclaim of N jobs would punish every
         subscriber for a single sweep pass."""
@@ -1400,7 +1400,7 @@ class TestSweepDeadlineExceeded:
 
         # Exactly one job_attempts row
         # started_at uses COALESCE($3, now()) so never-dispatched jobs satisfy
-        # the NOT NULL constraint.
+        # the not NULL constraint.
         assert len(attempts) == 1
         attempt = attempts[0]
         assert attempt["outcome"] == "failed"
@@ -1594,7 +1594,7 @@ class TestSweepDeadlineExceeded:
         assert [j.id for j in claimed] == [job_id]
 
     async def test_running_job_not_touched(self, clean_jobs_app: JobsApp) -> None:
-        """Running jobs with schedule_to_close in the past are NOT
+        """Running jobs with schedule_to_close in the past are not
         swept - Sweep 2 only targets pending/scheduled."""
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name
@@ -2125,7 +2125,7 @@ class TestSweep4:
         assert row["lease_expires_at"] is None
 
     async def test_active_slot_not_touched(self, clean_jobs_app: JobsApp) -> None:
-        """Reservation slot with valid lease should NOT be swept."""
+        """Reservation slot with valid lease should not be swept."""
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name
         slot_job_id = new_uuid()

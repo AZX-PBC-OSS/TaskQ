@@ -15,13 +15,13 @@ The interleaving this file exercised, step by step:
 4. A's loop recovered and ticked.  A's poll stayed silent (the row was
    locked by B), but the phase-3 arm queued on A's stale local
    ``FORCED`` alone, and ``run_post_tx`` called ``mark_abandoned`` --
-   whose guard is ``status = 'running' AND cancel_phase = 2`` with no
+   whose guard is ``status = 'running' and cancel_phase = 2`` with no
    worker fence -- so A's abandon terminated B's live attempt.
 
 The shipped carve-out closes the interleaving at its source.  The
 reclaim's CASE now orders operator intent first: a row carrying
 ``cancel_phase != 0`` past the carve-out is terminalised 'cancelled',
-NEVER re-pended, and it keeps cancel_phase/cancel_requested_at as the
+never re-pended, and it keeps cancel_phase/cancel_requested_at as the
 audit trail of the honoured request.  A row whose holder observed a
 cancel can therefore never re-enter the claim/reclaim cycle, so the
 "new holder" of step 3 is unreachable: there is no attempt 2 for a
@@ -170,7 +170,7 @@ async def test_stale_entry_abandon_after_carveout_meets_a_terminalised_row(
         assert entry_a.cancel_phase == CancelPhase.FORCED
 
         # ── Stage 2: A's loop stalls; the lease lapses past the sweep's
-        # cancel carve-out (cg + cl + 60s). PR: the reclaim's cancel arm
+        # cancel carve-out (cg + cl + 60s). pr: the reclaim's cancel arm
         # outranks the retry budget, so the row terminalises 'cancelled' with
         # its cancel columns preserved. It never re-pends, so worker B's
         # dispatch finds nothing and no successor attempt can exist behind
@@ -214,8 +214,8 @@ async def test_stale_entry_abandon_after_carveout_meets_a_terminalised_row(
         )
 
         # ── Stage 3: A's loop recovers and ticks with its stale entry. The
-        # phase-3 arm queues on the stale local FORCED alone and run_post_tx
-        # calls mark_abandoned, whose guard is status='running' AND
+        # phase-3 arm queues on the stale local forced alone and run_post_tx
+        # calls mark_abandoned, whose guard is status='running' and
         # cancel_phase=2 with no worker fence. The guard matches nothing: the
         # row is terminal. ──
         entry_a.cancel_observed_at -= 100.0

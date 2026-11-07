@@ -131,7 +131,7 @@ async def test_backlog_sampler_row_work_is_depth_bounded(pg_dsn: str, backlog_sc
     conn = await asyncpg.connect(pg_dsn)
     try:
         # Reset the counter sequence for a clean read on this connection's
-        # role (RLS only fires for the counting role; see
+        # role (rls only fires for the counting role; see
         # install_row_visit_counter's docstring).
         counter = RowVisitCounter(_SinglePool(conn), backlog_schema, method="fetch")
 

@@ -241,9 +241,9 @@ async def test_isolate_heartbeat_loss_reaches_the_feed_and_the_tables(
                 "a job lands on, so job_attempts is the complete HeartbeatLost source"
             )
 
-            # The admin surface: the exact GET path the doc names, reading the
+            # The admin surface: the exact get path the doc names, reading the
             # same tables through the real pool the router queries with.
-            # The env vars arm the TaskQSettings.load() cascade inside
+            # The env vars arm the Taskqsettings.load() cascade inside
             # create_router (dev-environment fail-closed check + DSN); they
             # go through monkeypatch so nothing outlives this test in
             # os.environ -- a raw os.environ write here leaked the

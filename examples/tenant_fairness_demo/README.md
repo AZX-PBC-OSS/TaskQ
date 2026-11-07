@@ -1,8 +1,8 @@
 # Multi-tenant workflow demo
 
-Two tenants' runs of ONE workflow graph, ONE keyed rate limit
-(`tenant-api`, one token per tenant, refilling at 0.5/s), ONE
-`round_robin` queue — driven through the REAL fleet door (the
+Two tenants' runs of one workflow graph, one keyed rate limit
+(`tenant-api`, one token per tenant, refilling at 0.5/s), one
+`round_robin` queue — driven through the real fleet door (the
 production dispatch claim, the workflow intercept's rate-limit gate,
 the fleet execution door).
 
@@ -17,9 +17,9 @@ the fleet execution door).
    items claim through their own bucket — one tenant's saturation never
    gates the other. The round_robin queue interleaves the two runs'
    fairness cohorts (each run is born with its own `flow_id` cohort).
-   **THE TRACE ORDER IS CLAIM ORDER**: each round prints its claimed
+   **the trace ORDER is claim ORDER**: each round prints its claimed
    set, the rotation's interleave is what the round headers show, and
-   each DENY line carries both the denial hint and the APPLIED deferral
+   each deny line carries both the denial hint and the applied deferral
    (read back off the row — the backend's own deferral floor applies).
 3. **Both tenants' completion.** Both runs terminalize `succeeded`,
    the results read back through the typed door.

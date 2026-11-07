@@ -48,17 +48,17 @@ pytestmark = pytest.mark.integration
 
 runner = CliRunner()
 
-# Writing SQL verbs: any of these appearing as a WORD in a statement the
+# Writing SQL verbs: any of these appearing as a word in a statement the
 # command issued means `doctor` is no longer read-only.  Word-boundary
 # matched: a read selecting `updated_at` is not an UPDATE.
 _WRITE_VERBS = re.compile(r"\b(insert|update|delete|truncate|drop|alter|create)\b", re.IGNORECASE)
 
-# The findings list's no-destruction pin, STATEMENT-shaped like the
+# The findings list's no-destruction pin, statement-shaped like the
 # statement scan above: the defect class is a remedy that hands the
-# operator a destructive COMMAND (drop the table, truncate it, delete
+# operator a destructive command (drop the table, truncate it, delete
 # from it) - descriptive prose is not a remedy.  The storage-mode
-# family's TSL line honestly names Timescale's own policy-driven
-# "chunk-drop retention", a noun phrase for the SERVER's mechanism, so a
+# family's tsl line honestly names Timescale's own policy-driven
+# "chunk-drop retention", a noun phrase for the server's mechanism, so a
 # bare substring ban on "drop" outlaws true prose while catching no
 # defect the statement scan and this pattern miss.  Word-boundary
 # matched on the command shapes.
@@ -139,7 +139,7 @@ async def doctor_env(
 
 async def _run_doctor(monkeypatch: pytest.MonkeyPatch, pg_dsn: str, schema: str) -> tuple[int, str]:
     """Run the real CLI against the seeded schema; return (exit code, output)."""
-    # The env-var scan reads the REAL process environment; the developer's
+    # The env-var scan reads the real process environment; the developer's
     # ambient TASKQ_* variables must not decide what the report shows
     # (the same discipline test_cli_doctor._clean_taskq_env applies).
     for name in list(os.environ):
@@ -321,8 +321,8 @@ async def _seed_pathological(conn: asyncpg.Connection, schema: str) -> uuid.UUID
       depth's age sits past the persistence floor (an idle-capacity
       fleet's young burst reads a fictional eta off its demand-limited
       rate).
-    * a cron schedule — fires outran clearances in BOTH windows with a
-      16-fire outstanding backlog (runaway trending AND above the
+    * a cron schedule — fires outran clearances in both windows with a
+      16-fire outstanding backlog (runaway trending and above the
       catch-up window's demonstrated capacity).
     """
     await _seed_config(conn, schema, actor="pg_doctor_starved", queue="q_starved", max_concurrent=1)
@@ -410,32 +410,32 @@ async def test_doctor_renders_every_insight_finding_for_the_pathological_fleet(
 
     assert exit_code == 0, output
 
-    # IMBALANCE — starved, with the real capacity levers.
+    # imbalance — starved, with the real capacity levers.
     assert "q_starved" in output
     assert "STARVED" in output
     assert "max_concurrent" in output
-    # IMBALANCE — strand, against the queue's own p95.
+    # imbalance — strand, against the queue's own p95.
     assert "q_strand" in output
     assert "STRANDED WORK" in output
-    # OVERPROVISIONING — consolidation, never destruction.
+    # overprovisioning — consolidation, never destruction.
     assert "q_over" in output
     assert "OVERPROVISIONED" in output
     assert "consolidate" in output.lower()
     assert "workgroup" in output.lower()
     assert "nothing is deleted" in output.lower()
     assert "purge" not in output.lower()
-    # No destructive remedy-as-COMMAND (statement-shaped, module head) -
-    # not a substring ban: the TSL storage-mode line's "chunk-drop
+    # No destructive remedy-as-command (statement-shaped, module head) -
+    # not a substring ban: the tsl storage-mode line's "chunk-drop
     # retention" is prose about the server's own mechanism, and the
     # no-write-statements half of this contract is the recording-proxy
     # pin below.
     assert not _DESTRUCTIVE_REMEDY_COMMAND.search(output), output
-    # DRAIN — the eta and its confidence caveat.
+    # drain — the eta and its confidence caveat.
     assert "q_drain" in output
     assert "SLOW DRAIN" in output
     assert "4.0 days" in output
     assert "extrapolation" in output.lower()
-    # CRON LAG — the schedule, the backlog, both honest remedies.
+    # cron lag — the schedule, the backlog, both honest remedies.
     assert str(sid) in output
     assert "CRON LAG" in output
     assert "16 fire(s) outstanding" in output
@@ -488,7 +488,7 @@ async def test_doctor_renders_nothing_for_the_healthy_fleet(
 
     assert exit_code == 0, output
     # The storage-mode family (main's #574) is an informational line in
-    # every report — the healthy fleet's ONLY finding. Any other family
+    # every report — the healthy fleet's only finding. Any other family
     # phrase firing here is a false positive an operator stops reading.
     assert "findings (1):" in output, output
     assert "storage mode: " in output
@@ -550,7 +550,7 @@ async def test_doctor_is_silent_on_a_first_in_flight_cron_fire(
     monkeypatch: pytest.MonkeyPatch,
     doctor_env: tuple[asyncpg.Connection, str, str],
 ) -> None:
-    """The right-edge guard's own case: a brand-new schedule whose FIRST
+    """The right-edge guard's own case: a brand-new schedule whose first
     fire is running right now.  cleared_window = cleared_prior = 0, so
     the demonstrated clearance is zero - a zero capacity would read every
     in-flight fire as an uncatchable backlog.  The arm requires a

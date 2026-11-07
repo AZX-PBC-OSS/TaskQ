@@ -46,7 +46,7 @@ def test_untranslatable_character_error_matches_the_infra_tuple() -> None:
 
 
 class TestLoadsReturnsPlainTypes:
-    """loads must NOT convert UUID-like strings to UUID objects."""
+    """loads must not convert UUID-like strings to UUID objects."""
 
     def test_uuid_like_string_stays_str(self) -> None:
         """A string that looks like a UUID must remain a str after loads."""

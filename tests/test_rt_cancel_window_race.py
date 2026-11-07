@@ -61,7 +61,7 @@ from taskq.worker.startup import sync_actor_config
 pytestmark = pytest.mark.integration
 
 # A full window of 3 plus a tail of 4: the first batch's window is exactly
-# full (so a drain keyed on the window count MUST continue), and the tail
+# full (so a drain keyed on the window count must continue), and the tail
 # needs a second full batch plus a short one (so termination on the
 # exhausted set is still exercised).
 _BATCH = 3
@@ -183,9 +183,9 @@ async def test_short_batch_under_epq_contention_does_not_abandon_the_match_set_t
     job_ids = [new_uuid() for _ in range(_TOTAL)]
     await _seed_jobs(clean_pg_conn, schema, job_ids, status="pending", tags=["bulk"])
     drain_order = await _ids_in_drain_order(clean_pg_conn, schema, "bulk")
-    claim_target = drain_order[1]  # the MIDDLE windowed job
+    claim_target = drain_order[1]  # the middle windowed job
 
-    # The claimer takes the middle row's lock uncommitted BEFORE the drain
+    # The claimer takes the middle row's lock uncommitted before the drain
     # starts, so the first driving statement's snapshot still windows the
     # row and its UPDATE parks on the lock.
     claimer, claim_tx = await _claim_middle_window_job_uncommitted(
@@ -204,7 +204,7 @@ async def test_short_batch_under_epq_contention_does_not_abandon_the_match_set_t
         )
         await _wait_for_drain_parked_on_row_lock(clean_pg_conn)
 
-        # The commit lands the race: the parked UPDATE's EPQ re-check now
+        # The commit lands the race: the parked UPDATE's epq re-check now
         # sees the claimed row as running and drops it from the affected
         # count - batch 1 reports 2 of a full 3-row window.
         await claim_tx.commit()
@@ -249,7 +249,7 @@ async def test_short_batch_under_epq_contention_does_not_abandon_the_match_set_t
     )
     assert all(r["finished_at"] is not None for r in rows)
 
-    # Totals count AFFECTED rows only: the EPQ-dropped row was not
+    # Totals count affected rows only: the epq-dropped row was not
     # cancelled and must not be counted as one.
     assert result.cancelled_directly == _TOTAL - 1, (
         f"cancelled_directly={result.cancelled_directly} - the drain abandoned the "
@@ -298,7 +298,7 @@ async def test_deregister_claimed_in_window_row_does_not_stop_the_drain(
         schema=schema,
     )
     drain_order = sorted(job_ids)
-    claim_target = drain_order[1]  # the MIDDLE windowed job
+    claim_target = drain_order[1]  # the middle windowed job
 
     claimer, claim_tx = await _claim_middle_window_job_uncommitted(
         module_pg_schema.pg_dsn, schema, claim_target
@@ -314,7 +314,7 @@ async def test_deregister_claimed_in_window_row_does_not_stop_the_drain(
     finally:
         await claimer.close()
 
-    # Totals count AFFECTED rows only; the full drain retires the tail.
+    # Totals count affected rows only; the full drain retires the tail.
     assert result.jobs_cancelled == _TOTAL - 1, (
         f"jobs_cancelled={result.jobs_cancelled} - the drain broke on a short "
         f"AFFECTED count over a full window and abandoned the match-set tail"
@@ -328,7 +328,7 @@ async def test_deregister_claimed_in_window_row_does_not_stop_the_drain(
 
     # The claimed job: untouched - deregistration's force path refuses
     # running jobs, so the raced row stays running with no events (the
-    # documented TOCTOU, not a silent running-job cancellation).
+    # documented toctou, not a silent running-job cancellation).
     claimed = await clean_pg_conn.fetchrow(
         f"SELECT status::text AS status, cancel_phase, finished_at "  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
         f'FROM "{schema}".jobs WHERE id = $1',

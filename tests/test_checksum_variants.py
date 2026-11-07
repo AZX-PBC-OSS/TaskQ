@@ -6,7 +6,7 @@ were amended after first shipping, and databases that applied the earlier
 bytes carry that version's checksum in their ledger permanently. No
 single file can match two ledgers. The BEHAVIOR under contract:
 
-- a database whose ledger holds ANY published version's checksum upgrades
+- a database whose ledger holds any published version's checksum upgrades
   with zero drift refusals, through the same public surfaces every
   deployment uses (``apply_pending`` / ``taskq migrate status``);
 - a ledger checksum NOTHING published produced still refuses — the guard
@@ -85,7 +85,7 @@ def _published_versions(filename: str) -> list[bytes]:
 
 def _ledger_checksums(filename: str, schema: str) -> set[str]:
     """The checksums a database with schema ``schema`` could legitimately
-    hold for ``filename`` — computed HERE from the published bytes by an
+    hold for ``filename`` — computed here from the published bytes by an
     independent path (bytes → render → hash), never via the guard's
     internals."""
     template_text = [v.decode("utf-8-sig") for v in _published_versions(filename)]
@@ -148,12 +148,12 @@ class TestPublishedHistoryIsAccepted:
     ) -> None:
         await _point_ledger_at_a_published_version(pg_conn, settings, filename)
 
-        # The operator surface first: migrate status reports NO drift for a
+        # The operator surface first: migrate status reports no drift for a
         # database holding a published version's checksum.
         result = _migrate_status(settings)
         assert result.returncode == 0, result.stdout + result.stderr
-        # The verdict must be about THIS database's ledger: the schema line
-        # names it, and a checked row proves a POPULATED ledger was read (a
+        # The verdict must be about this database's ledger: the schema line
+        # names it, and a checked row proves a populated ledger was read (a
         # subprocess pointed elsewhere would also print no drift — over an
         # empty ledger, vacuously).
         assert f"schema: {settings.schema_name}" in plain_cli_output(result.stdout), result.stdout
@@ -217,7 +217,7 @@ class TestTheGuardKeepsItsTeeth:
         assert "drift" in plain_cli_output(result.stdout).lower(), (
             f"migrate status must surface the unknown checksum as drift: {result.stdout}"
         )
-        # The subprocess saw THIS database's ledger, not some other schema's:
+        # The subprocess saw this database's ledger, not some other schema's:
         # the tampered row's key and the distinctive d-digest must both be
         # named in the drift section (nothing published produces d*12).
         assert f"schema: {settings.schema_name}" in plain_cli_output(result.stdout), result.stdout

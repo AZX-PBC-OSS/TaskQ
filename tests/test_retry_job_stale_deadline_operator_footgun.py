@@ -132,10 +132,10 @@ async def test_retry_job_past_deadline_produces_a_dispatchable_row(
         )
         assert repended is not None and repended["status"] == "pending"
 
-        # THE ACTUAL CONTRACT: the retried row must be able to reach a
-        # worker. dispatch_batch is production dispatch's own claim
-        # query - if it refuses this row, the row can never run,
-        # regardless of what the admin UI's redirect implied.
+        # the retried row must be able to reach a worker. dispatch_batch is
+        # production dispatch's own claim query - if it refuses this row, the
+        # row can never run, regardless of what the admin UI's redirect
+        # implied.
         claimed = await backend.dispatch_batch(
             worker_id, ["default"], limit=1, lock_lease=timedelta(minutes=5)
         )

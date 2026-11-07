@@ -352,7 +352,7 @@ async def test_denial_past_the_close_deadline_fails_through_the_deadline_path() 
 async def test_retry_after_consume_true_on_non_retryable_at_budget_fails() -> None:
     """The consuming arm's exhaustion exit is enum-complete over
     ``retry_kind``: a ``non_retryable`` job at budget under
-    ``RetryAfter(consume_budget=True)`` must fail terminally - previously
+    ``RetryAfter(consume_budget=True)`` must fail terminally - otherwise
     the arm matched only ``retry_kind = 'transient'`` and the job fell
     through to a reschedule."""
     backend, job_id, worker_id = await _mem_job(max_attempts=1, retry_kind="non_retryable")
@@ -402,7 +402,7 @@ async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
     many cycles pass or how small the budget is.
 
     The budget is preserved by refunding the claim's attempt increment,
-    NOT by raising the ceiling: a transient job with ``max_attempts=1``
+    not by raising the ceiling: a transient job with ``max_attempts=1``
     and no close deadline, driven through many more deferral cycles than
     its budget, must still be rescheduled with ``attempt`` back at its
     pre-claim base and ``max_attempts`` untouched. A budget-gated deferral

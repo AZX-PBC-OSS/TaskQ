@@ -1,12 +1,12 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Adversarial review pin: the idempotency ON CONFLICT path with NO advisory-lock hit.
+"""Adversarial review pin: the idempotency ON CONFLICT path with no advisory-lock hit.
 
 The unique_for preflight serializes same-(actor, identity_key) enqueues with
 a transaction-scoped advisory lock keyed on
 ``taskq:unique_for:{schema}:{actor}:{identity_key}`` - pinned already by
 ``tests/test_postgres_unique_for_single_flight.py`` (100 racers).  But the
 idempotency arbiter is keyed on ``(idempotency_scope, idempotency_key)``
-with NO actor in it, so two enqueues from DIFFERENT actors sharing one
+with no actor in it, so two enqueues from DIFFERENT actors sharing one
 (scope, key) never touch the same advisory lock: there is no serialization
 before the INSERT.  What arbitrates instead is the composite partial unique
 index plus ON CONFLICT DO NOTHING's wait semantics - an INSERT that hits an
@@ -15,7 +15,7 @@ the loser's follow-up ``enqueue_select_by_key`` SELECT runs only after the
 winner committed, and must find the winner's row.
 
 ``tests/test_postgres_idempotency_scope.py`` pins the concurrent
-same-(scope,key) race only for ONE actor (the default ``test_actor``), so
+same-(scope,key) race only for one actor (the default ``test_actor``), so
 the cross-actor, no-lock-hit window is unpinned.  Green pin here: exactly
 one row, and the loser's follow-up SELECT finds the winner's committed
 row - which, being another actor's, it refuses with

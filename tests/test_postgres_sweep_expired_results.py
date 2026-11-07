@@ -120,7 +120,7 @@ class TestSweepExpiredResults:
         clean_pg_conn: asyncpg.Connection,
     ) -> None:
         """Succeeded job with result_expires_at in the future → result
-        is NOT cleared by sweep."""
+        is not cleared by sweep."""
         schema = module_pg_schema.schema_name
         job_id = new_uuid()
         future_time = datetime.now(UTC) + timedelta(hours=1)
@@ -154,7 +154,7 @@ class TestSweepExpiredResults:
         clean_pg_conn: asyncpg.Connection,
     ) -> None:
         """Succeeded job with result=NULL and result_expires_at in the
-        past → WHERE ``result IS NOT NULL`` excludes it, count=0."""
+        past → WHERE ``result IS not NULL`` excludes it, count=0."""
         schema = module_pg_schema.schema_name
         job_id = new_uuid()
         past_time = datetime.now(UTC) - timedelta(hours=1)
@@ -181,7 +181,7 @@ class TestSweepExpiredResults:
         clean_pg_conn: asyncpg.Connection,
     ) -> None:
         """Running job with result=NULL (no result_expires_at either) →
-        WHERE ``result IS NOT NULL`` excludes it, sweep returns 0."""
+        WHERE ``result IS not NULL`` excludes it, sweep returns 0."""
         schema = module_pg_schema.schema_name
         job_id = new_uuid()
 
@@ -225,7 +225,7 @@ class TestSweepExpiredResults:
             result_expires_at=past_time,
         )
 
-        # Non-expired: should NOT be cleared
+        # Non-expired: should not be cleared
         await _insert_job(
             clean_pg_conn,
             schema,
@@ -235,7 +235,7 @@ class TestSweepExpiredResults:
             result_expires_at=future_time,
         )
 
-        # No result: should NOT be affected
+        # No result: should not be affected
         await _insert_job(
             clean_pg_conn,
             schema,

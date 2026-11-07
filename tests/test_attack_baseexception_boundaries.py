@@ -480,7 +480,7 @@ async def test_lifecycle_hook_keyboardinterrupt_propagates_raw() -> None:
         await invoke_on_success(ki_hook, job, {"value": 1}, 5.0)  # type: ignore[arg-type]
 
 
-# ── DI: the provider factory seam ─────────────────────────────────────
+# ── di: the provider factory seam ─────────────────────────────────────
 
 
 async def test_provider_sync_callable_systemexit_is_carried() -> None:
@@ -589,7 +589,7 @@ async def test_provider_teardown_systemexit_is_logged_and_dropped() -> None:
 
 async def test_reload_loop_systemexit_is_outside_the_discipline() -> None:
     """The scoped claim, pinned: the reload family is the seam family the
-    discipline does NOT cover. A rebuild's ``SystemExit`` is not converted
+    discipline does not cover. A rebuild's ``SystemExit`` is not converted
     - it leaves ``run_reload_schedule`` raw, and no
     ``credentials-reload-failed`` verdict is recorded (the loop's
     survive-and-retry contract covers reload failures, never a
@@ -619,7 +619,7 @@ async def test_reload_loop_systemexit_is_outside_the_discipline() -> None:
     )
 
 
-# ── DI: the dispatch-level pin (worker survives, outcome recorded) ────
+# ── di: the dispatch-level pin (worker survives, outcome recorded) ────
 
 
 class _ScopeStack:
@@ -681,7 +681,7 @@ def _make_actor_ref(fn: object) -> ActorRef[_Payload, None]:
 
 async def test_provider_systemexit_is_an_attempt_level_failure_the_job_retries() -> None:
     """The dispatch-level pin: an actor whose TRANSIENT dependency's
-    factory raises ``sys.exit()`` is recorded through the SAME failure
+    factory raises ``sys.exit()`` is recorded through the same failure
     handler as any pre-actor failure (error_class is the factory's own
     SystemExit), the dispatch completes, and the worker survives. The
     failure is terminal for the ATTEMPT (no actor code ran), not for the

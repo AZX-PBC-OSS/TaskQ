@@ -164,7 +164,7 @@ class TestBatchFilter:
         assert names == {"queue", "active", "batch_id", "limit", "cursor"}
 
     def test_does_not_have_job_filter_fields(self) -> None:
-        """``cursor`` is deliberately NOT forbidden: pagination is one
+        """``cursor`` is deliberately not forbidden: pagination is one
         mechanism shared with JobFilter, not a job-only concept. The
         forbidden set is the job-shaped predicates that BatchFilter would
         silently ignore -- plus ``order_by``, which list_batches does not

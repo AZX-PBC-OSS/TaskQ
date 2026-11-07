@@ -4,7 +4,7 @@
 Production walks the upgrade with a fleet live: the applier can die at any
 statement boundary (OOM, container pause, an operator's
 ``pg_terminate_backend``). For each of the three newest migrations, at
-EVERY statement boundary of the file (before the first statement through
+every statement boundary of the file (before the first statement through
 after the last, before COMMIT):
 
 * a session holding the migration's transaction is terminated; the file's
@@ -53,7 +53,7 @@ NEWEST_MIGRATIONS: tuple[str, ...] = (
     "01.00.18_02:pre",
 )
 
-#: The migration each key's chain must stop BEFORE (its predecessor).
+#: The migration each key's chain must stop before (its predecessor).
 _PREDECESSOR_TARGET: dict[str, str | None] = {
     "01.00.17_01:pre": "01.00.16_01",
     "01.00.18_01:pre": "01.00.17_01",
@@ -220,7 +220,7 @@ async def test_kill_during_ledger_upgrade_releases_and_resumes(pg_dsn: str) -> N
     schema = f"atk_ledger_{new_base62()}".lower()
     try:
         await _drop_schema(conn_b, schema)
-        # A ledger WITHOUT use_transaction (the pre-upgrade shape).
+        # A ledger without use_transaction (the pre-upgrade shape).
         await apply_pending(conn_b, schema=schema)
         await conn_b.execute(
             f'ALTER TABLE "{schema}".schema_migrations DROP COLUMN use_transaction'
@@ -239,7 +239,7 @@ async def test_kill_during_ledger_upgrade_releases_and_resumes(pg_dsn: str) -> N
         )
         assert await conn_b.fetchval("SELECT pg_terminate_backend($1)", pid) is True
 
-        # The ALTER rolled back and the dead session's advisory lock went
+        # The alter rolled back and the dead session's advisory lock went
         # with it: the next applier takes both immediately.
         columns = await conn_b.fetch(
             "SELECT column_name FROM information_schema.columns "

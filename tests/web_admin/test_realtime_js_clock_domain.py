@@ -8,7 +8,7 @@ rendered sign or break the poll cadence. The driver's contract:
    meta line prints the snapshot's own timestamp (the server's instant), so a
    skewed client clock cannot produce a negative duration, an "in -3s", or a
    mis-ordering;
-2. a suspended tab's overdue poll is ONE catch-up request, not a burst: the
+2. a suspended tab's overdue poll is one catch-up request, not a burst: the
    browser coalesces a throttled ``setInterval`` to a single fire on resume,
    and one fire issues exactly one conditional GET that renders the fresh
    state exactly once (the stale-DOM discard);
@@ -335,7 +335,7 @@ def _segments(entries: list[str]) -> dict[str, list[str]]:
 @requires_node
 def test_a_suspended_tab_resumes_with_one_catchup_poll_and_one_render() -> None:
     """A tab the OS suspended (timers frozen for minutes) resumes with the
-    browser's single coalesced interval fire: exactly ONE conditional GET,
+    browser's single coalesced interval fire: exactly one conditional GET,
     carrying the pre-suspension sequence, that renders the fresh state
     exactly once - never a burst of overlapping requests, never a double
     render of the same snapshot - and the following fire is a 304 that
@@ -456,7 +456,7 @@ def test_sse_replays_and_stale_seqs_write_nothing_and_meta_has_no_relative_time(
 
     # Every rendered instant is the snapshot's own, locale-rendered by the
     # browser (the B3 structure renders it on its own span): no 'ago', no
-    # 'in ', no negative anything - nothing the browser's clock DERIVED
+    # 'in ', no negative anything - nothing the browser's clock derived
     # relative to now.
     meta_lines = [e.split("=", 1)[1] for e in log["dom"] if e.startswith("text:span9=")]
     assert meta_lines, f"the replay must have rendered the clock spans: {log['dom']}"

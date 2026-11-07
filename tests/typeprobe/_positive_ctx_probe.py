@@ -1,21 +1,21 @@
-"""POSITIVE TYPE PROBE — the typed context (the §7b hygiene round's
+"""positive type probe — the typed context (the §7b hygiene round's
 complement to the MUST_ERROR corpus): a workflow body declaring
-``ctx: StepContext`` and reading the DOCUMENTED surface must pyright
-CLEAN — zero errors, both faces (this file is run by
+``ctx: StepContext`` and reading the documented surface must pyright
+clean — zero errors, both faces (this file is run by
 ``tests/test_wf_ctx_annotation_pins.py::test_the_typed_ctx_type_checks``
-under THIS directory's strict pyrightconfig; it is deliberately NOT in
-``_gate.py``'s corpus — the gate asserts REDS, this probe asserts the
-GREEN door the docs promise).
+under this directory's strict pyrightconfig; it is deliberately not in
+``_gate.py``'s corpus — the gate asserts reds, this probe asserts the
+green door the docs promise).
 
 The reads the docs teach (every one must resolve against the real
 frozen dataclass, no ``Any`` laundering):
 
-* ``ctx.input`` — the run's carried input (cut #7);
+* ``ctx.input`` — the run's carried input;
 * ``await ctx.substep(name, fn, *args)`` — the ledger's replay contract;
-* ``await ctx.progress(pct, message, data)`` — the emission op (T21);
-* ``await ctx.wait_signal((Model,), timeout_s=...)`` — the typed wait (T10);
+* ``await ctx.progress(pct, message, data)`` — the emission op (the progress reporting op);
+* ``await ctx.wait_signal((Model,), timeout_s=...)`` — the typed wait (the hold machinery);
 * ``await ctx.cursor()`` + ``await ctx.emit_batch(children, cursor=...)``
-  — the streaming source's pair (T20).
+  — the streaming source's pair (the streaming router).
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ class Outcome(BaseModel):
 
 
 async def documented_body(ctx: StepContext, params: Params) -> Outcome:
-    """THE DOCS' BODY SHAPE — the annotation IS the type story."""
+    """The docs' body shape — the annotation is the type story."""
     carried: object = ctx.input
 
     async def side_effect(_carried: object) -> int:
@@ -54,7 +54,7 @@ async def documented_body(ctx: StepContext, params: Params) -> Outcome:
 
 
 async def streaming_source(ctx: StepContext) -> None:
-    """The T20 pair (the paged generator body's reads)."""
+    """The streaming router pair (the paged generator body's reads)."""
     from taskq.workflows._types import EmitChild
 
     cursor: dict[str, object] = await ctx.cursor()
@@ -62,4 +62,4 @@ async def streaming_source(ctx: StepContext) -> None:
     _ = await ctx.emit_batch(children, cursor=cursor)
 
 
-_ = Any  # the probe's surface is the ANNOTATED ctx — Any appears only here, unused
+_ = Any  # the probe's surface is the annotated ctx — Any appears only here, unused

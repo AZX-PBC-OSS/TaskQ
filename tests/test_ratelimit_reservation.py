@@ -9,7 +9,6 @@ instance required.
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import pytest
 
@@ -17,8 +16,6 @@ from taskq._ids import new_uuid
 from taskq.constants import DEFAULT_RESERVATION_BACKOFF, RESERVATION_RETRY_HINT_MARGIN
 from taskq.exceptions import ReservationUnavailable
 from taskq.ratelimit.reservation import (
-    _RELEASE_FENCED_SQL_TEMPLATE,
-    _RELEASE_SQL_TEMPLATE,
     ConcurrencyReservation,
     _InMemorySlotTable,
     _SlotState,
@@ -590,50 +587,10 @@ async def test_peek_in_memory_reports_free_total_held() -> None:
 # ── ConcurrencyReservation.peek: defensive PG-only branches ──────
 
 
-class _FakeConn:
-    def __init__(self, row: dict[str, int] | None) -> None:
-        self._row = row
-
-    async def fetchrow(self, _sql: str, _bucket_name: str) -> dict[str, int] | None:
-        return self._row
-
-
-class _FakeAcquireCtx:
-    def __init__(self, conn: _FakeConn) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> _FakeConn:
-        return self._conn
-
-    async def __aexit__(self, *exc_info: object) -> None:
-        return None
-
-
-class _FakePool:
-    def __init__(self, row: dict[str, int] | None) -> None:
-        self._row = row
-
-    def acquire(self) -> _FakeAcquireCtx:
-        return _FakeAcquireCtx(_FakeConn(self._row))
-
-
-async def test_peek_pg_row_none_falls_back_to_defaults() -> None:
-    """peek() with a PG pool whose query returns no row falls back to
-    ``free_count == total_slots`` and ``held_count == 0`` defaults."""
-    res = ConcurrencyReservation(name="gpu", slots=6, lease=_LEASE, schema="taskq")
-    fake_pool: Any = _FakePool(row=None)
-
-    result = await res.peek(pool=fake_pool)
-    assert result == {"free_count": 6, "total_slots": 6, "held_count": 0}
-
-
-async def test_peek_pg_row_present_returns_counts() -> None:
-    """peek() with a PG pool returning a row surfaces the row's counts."""
-    res = ConcurrencyReservation(name="gpu", slots=6, lease=_LEASE, schema="taskq")
-    fake_pool: Any = _FakePool(row={"free_count": 2, "total_slots": 6, "held_count": 4})
-
-    result = await res.peek(pool=fake_pool)
-    assert result == {"free_count": 2, "total_slots": 6, "held_count": 4}
+# NOTE (the mock-subtraction cure): the PG peek fake arms (a dict-configured
+# double answering the peek's row) converted to the real fixture in
+# tests/test_ratelimit_reservation_pg.py
+# (test_peek_counts_the_real_rows_after_acquires, and its no-row default).
 
 
 async def test_peek_invalid_mutated_schema_raises_value_error() -> None:
@@ -730,7 +687,7 @@ class _StarvablePool:
 async def test_ensure_slots_forwards_the_acquire_timeout() -> None:
     """ensure_slots must forward the caller's budget to pool.acquire.
 
-    The dispatcher pool's per-query command_timeout does NOT bound a pool
+    The dispatcher pool's per-query command_timeout does not bound a pool
     ACQUIRE, the bare acquire is the unbounded wait pinned. The
     forward is the whole bound; the kwarg's arrival is the contract.
     """
@@ -775,7 +732,7 @@ async def test_slot_rows_exist_starved_pool_is_bounded() -> None:
 
 # ── Release / denial arms: unit-level execution (hardening wave) ────────
 #
-# The release and denial arms below previously executed only inside the
+# The release and denial arms below execute only inside the
 # integration tier (test_ratelimit_reservation_fencing.py runs the
 # zombie-release pins against real PG, integration-marked) or only at
 # the _InMemorySlotTable level, never through ConcurrencyReservation's
@@ -847,83 +804,15 @@ async def test_stale_fence_release_returns_false_and_the_slot_stays_held() -> No
     assert table.release("gpu", live_lease, worker_id) is True
 
 
-class _CapturingReleaseConn:
-    """Connection double recording (sql, args) for the release statements."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, tuple[object, ...]]] = []
-
-    async def execute(self, sql: str, *args: object) -> str:
-        self.calls.append((sql, args))
-        return "UPDATE 1"
-
-
-class _CapturingReleasePool:
-    def __init__(self) -> None:
-        self.conn = _CapturingReleaseConn()
-
-    def acquire(self) -> Any:
-        conn = self.conn
-
-        class _Ctx:
-            async def __aenter__(self) -> _CapturingReleaseConn:
-                return conn
-
-            async def __aexit__(self, *exc_info: object) -> None:
-                return None
-
-        return _Ctx()
-
-
-async def test_pg_release_without_a_fence_uses_the_plain_release_sql() -> None:
-    """A plain ``int`` slot index releases UNFENCED: the statement is the
-    plain release template and the fence argument is absent.
-
-    Regression caught: a dispatcher that sent the unfenced release to the
-    fenced statement would either need a fence it cannot supply (the
-    acquired_at the caller never saw) or silently skip the release; the
-    plain-int form is the compat contract every pre-fence caller (and
-    the registry's plain-index paths) relies on.
-    """
-    res = ConcurrencyReservation(name="gpu", slots=2, lease=_LEASE, schema="taskq")
-    pool = _CapturingReleasePool()
-    worker_id = new_uuid()
-
-    await res.release(1, worker_id, pool)  # type: ignore[arg-type]  # Why: duck-typed pool double, the release dispatcher's actual input shape.
-
-    assert pool.conn.calls == [
-        (
-            _RELEASE_SQL_TEMPLATE.format(schema="taskq"),
-            ("gpu", 1, worker_id),
-        )
-    ]
-
-
-async def test_pg_release_with_a_slot_lease_uses_the_fenced_release_sql() -> None:
-    """A ``SlotLease`` release goes to the FENCED statement and carries the
-    lease's acquired_at as the fence argument — the zombie-unwind gate,
-    at the statement boundary.
-
-    Regression caught: swapping the arms (or dropping the fence argument)
-    turns every ordinary release into either a stale-fenced no-op (the
-    slot leaks until the reclaim drain finds it) or an unfenced one (the
-    zombie gate is gone, the fencing tests' corruption returns).
-    """
-    clock = FakeClock(_START)
-    res = ConcurrencyReservation(name="gpu", slots=2, lease=_LEASE, clock=clock, schema="taskq")
-    pool = _CapturingReleasePool()
-    worker_id, job_id = new_uuid(), new_uuid()
-
-    lease = await res.acquire(job_id, worker_id, pool=None)
-
-    await res.release(lease, worker_id, pool)  # type: ignore[arg-type]
-
-    assert pool.conn.calls == [
-        (
-            _RELEASE_FENCED_SQL_TEMPLATE.format(schema="taskq"),
-            ("gpu", int(lease), worker_id, _START),
-        )
-    ]
+# NOTE (the mock-subtraction cure): the release-statement template pins are
+# deleted — the behavior they re-derived at the statement boundary is owned
+# by the real-PG packs: tests/test_ratelimit_reservation_pg.py
+# (test_acquire_release_lifecycle + test_release_wrong_worker_id: the plain
+# release frees the slot; a wrong worker's release matches zero rows) and
+# tests/test_ratelimit_reservation_fencing.py
+# (test_zombie_release_cannot_free_a_live_slot_pg: the fenced release's
+# zombie no-op and the live attempt's release landing). The PG peek arms
+# converted to the real fixture in test_ratelimit_reservation_pg.py.
 
 
 async def test_denial_when_every_slot_is_held_carries_the_earliest_live_expiry() -> None:
@@ -960,7 +849,7 @@ async def test_denial_when_every_slot_is_held_carries_the_earliest_live_expiry()
 
 
 async def test_denial_with_no_live_expiry_falls_back_to_the_default_backoff() -> None:
-    """Denying when NO slot carries a live expiry (the anomalous
+    """Denying when no slot carries a live expiry (the anomalous
     job_id-set / lease-NULL shape the nullable schema permits): the hint
     is ``DEFAULT_RESERVATION_BACKOFF``, not a zero or negative draw.
 

@@ -56,8 +56,8 @@ _ANOMALY_REPRESENTATIVES = (
     "heartbeat-tick-failure",
     "heartbeat-tick-unexpected-error",
     "terminal-write-failed",
-    "isolate-self-complete",  # WARNING-level in production (the heartbeat's
-    # shutdown path emits it at .warning); survives warning BY NAME either way
+    "isolate-self-complete",  # warning-level in production (the heartbeat's
+    # shutdown path emits it at .warning); survives warning by name either way
     "rate-limit-dependency-failure",
     "worker-watchdog-trip",
     "cron-tick-failed",
@@ -84,7 +84,7 @@ def _capture_with_filter(level: str, events: tuple[str, ...]) -> list[dict[str, 
         with structlog.testing.capture_logs(processors=[obs_structlog._events_level_filter]) as cap:
             log = obs_structlog.get_logger("test")
             log.info(name, kind="x", job_id="j")
-            log.warning(name)  # the same name at WARNING method
+            log.warning(name)  # the same name at warning method
             log.error(name)
         if cap:
             entries.append({"event": name, "methods": [e.get("log_level") for e in cap]})
@@ -149,7 +149,7 @@ def test_filter_at_info_drops_only_debug_internals(events_level: object) -> None
 def test_default_rendered_stream_is_byte_identical(events_level: object) -> None:
     """A state-change line rendered through the configured chain at the
     default level is byte-identical to the same line rendered by the
-    chain WITHOUT the events filter."""
+    chain without the events filter."""
     rendered_with = _render_state_change(include_filter=True)
     rendered_without = _render_state_change(include_filter=False)
     # The TimeStamper runs per render; every other byte must match.
@@ -224,12 +224,12 @@ def test_filter_at_warning_keeps_anomalies(events_level: object) -> None:
     assert _captured_names(captured) == set(_ANOMALY_REPRESENTATIVES)
 
 
-# ── off: WARNING-and-above only ──────────────────────────────────────
+# ── off: warning-and-above only ──────────────────────────────────────
 
 
 def test_filter_at_off_drops_the_event_stream(events_level: object) -> None:
     """At off, the happy path is gone entirely, and an INFO-level anomaly
-    line goes too - while the SAME anomaly emitted at WARNING survives
+    line goes too - while the same anomaly emitted at WARNING survives
     (off never blinds the operator to failures)."""
     captured = _capture_with_filter("off", _HAPPY_REPRESENTATIVES)
     assert _captured_names(captured) == set()
@@ -240,13 +240,13 @@ def test_filter_at_off_drops_the_event_stream(events_level: object) -> None:
         log = obs_structlog.get_logger("test")
         log.info("isolate-self-complete")
     assert cap == []
-    # ...but its WARNING-method emission (the production shape - the
+    # ...but its warning-method emission (the production shape - the
     # heartbeat's shutdown path emits it at .warning) survives.
     with structlog.testing.capture_logs(processors=[obs_structlog._events_level_filter]) as cap:
         log = obs_structlog.get_logger("test")
         log.warning("isolate-self-complete")
     assert len(cap) == 1
-    # Real UNCLASSIFIED INFO events in the codebase today fail OPEN at
+    # Real unclassified info events in the codebase today fail open at
     # off (they pass): the contract is per-event-name, not just per the
     # test's synthetic name.
     for real_name in ("singleton-collision", "batch-aborted", "enqueue_deduplicated"):
@@ -257,7 +257,7 @@ def test_filter_at_off_drops_the_event_stream(events_level: object) -> None:
 
 
 def test_filter_at_off_keeps_warning_and_above(events_level: object) -> None:
-    """At off, the WARNING-and-above anomalies STILL emit: off never
+    """At off, the WARNING-and-above anomalies still emit: off never
     blinds the operator to failures."""
     obs_structlog.set_events_level("off")
     survivors: set[str] = set()
@@ -269,7 +269,7 @@ def test_filter_at_off_keeps_warning_and_above(events_level: object) -> None:
         if cap:
             survivors.add(name)
     # job-failed, heartbeat-tick-failure, watchdog trip: the failure
-    # stream - every one of these is WARNING+ in production.
+    # stream - every one of these is warning+ in production.
     assert {
         "job-failed",
         "heartbeat-tick-failure",
@@ -303,8 +303,8 @@ def test_internals_suppressed_at_non_debug_levels(level: str) -> None:
 
 @pytest.mark.parametrize("level", ["info", "warning", "off", "debug"])
 def test_unclassified_event_fails_open(level: str) -> None:
-    """A future event not in the classification table passes at EVERY
-    method and at EVERY level - a new event can never be silently
+    """A future event not in the classification table passes at every
+    method and at every level - a new event can never be silently
     suppressed by a stale table. (The method-level assertion is the
     load-bearing one: the filter's first cut dropped every INFO-method
     event at ``off``, classified or not, silently failing CLOSED on
@@ -371,7 +371,7 @@ def test_setup_logging_rejects_unknown_level(events_level: object) -> None:
 
 def test_shared_chain_includes_the_filter() -> None:
     """The filter sits in the shared chain immediately after the level
-    gate - the cheapest point BEFORE the serialization cost."""
+    gate - the cheapest point before the serialization cost."""
     chain = obs_structlog._shared_processors()
     filter_positions = [i for i, p in enumerate(chain) if p is obs_structlog._events_level_filter]
     assert len(filter_positions) == 1

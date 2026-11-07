@@ -44,7 +44,7 @@ async def redis_time_seconds(redis_client: "redis_async.Redis") -> float:
     cannot answer, so every downstream path treats it as the outage it
     indistinguishable from.
     """
-    t_raw = cast("object", await redis_client.time())  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py time() return type is untyped in the stub; returns (seconds, microseconds). The cast to object is the trust boundary itself: the stub's tuple[int, int] describes what an HONEST store sends, and a lying proxy's reply must reach the shape check un-narrowed.
+    t_raw = cast("object", await redis_client.time())  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py time() return type is untyped in the stub; returns (seconds, microseconds). The cast to object is the trust boundary itself: the stub's tuple[int, int] describes what an honest store sends, and a lying proxy's reply must reach the shape check un-narrowed.
     if not isinstance(t_raw, (list, tuple)):
         raise RateLimitStoreCorrupt(
             f"redis TIME reply violates the (seconds, microseconds) contract: {t_raw!r}"
@@ -70,9 +70,9 @@ async def redis_time_seconds(redis_client: "redis_async.Redis") -> float:
         raise RateLimitStoreCorrupt(f"redis TIME reply is not finite: {t_raw!r}")
     derived = seconds + micros / 1_000_000
     if not math.isfinite(derived):
-        # Why the DERIVED sum gets its own check: both fields finite does
+        # Why the derived sum gets its own check: both fields finite does
         # not bound the sum - seconds at 1.797e308 plus a micros field
-        # that survives the division overflow it to inf SILENTLY (float
+        # that survives the division overflow it to inf silently (float
         # addition never raises), and the consumers' millisecond
         # arithmetic runs on the lie. A clock no honest store can report
         # is the same verdict as a malformed one.
@@ -97,10 +97,10 @@ async def with_pg_fallback(
     :data:`RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS` attempts with the
     short backoffs of :data:`RATE_LIMIT_REDIS_TRANSIENT_RETRY_BACKOFFS_S`,
     because a sub-second connection blip (container co-tenancy, a proxy
-    restart) is weather: without the retry the same blip took the SAME
+    restart) is weather: without the retry the same blip took the same
     path as a persistent outage, straight to the fail-closed decision,
     and a redis-only deployment denied a legitimate request the store
-    would have served a quarter-second later. THE LINE: weather gets a
+    would have served a quarter-second later. the LINE: weather gets a
     bounded retry, lies get the sentinel.
 
     The extra siblings are pinned exactly (checked against redis-py 8.1.0's
@@ -108,7 +108,7 @@ async def with_pg_fallback(
     mid-flight answers writes with READONLY) and
     :class:`redis.OutOfMemoryError` (a maxmemory breach) are both direct
     ``ResponseError`` subclasses and both mean the store cannot serve - the
-    same outage class as a connection failure, but NOT blips (a promoted
+    same outage class as a connection failure, but not blips (a promoted
     replica does not demote back in a second, a maxmemory breach does not
     clear itself), so they skip the retry arm entirely. They must be named
     individually rather than catching the parent ``ResponseError``:
@@ -123,10 +123,10 @@ async def with_pg_fallback(
     re-run against the durable PG row. It subclasses
     :class:`RateLimitDependencyUnavailable` (so the acquire boundary's
     dependency-failure family recognises it when no fallback is wired)
-    and is deliberately NOT a redis ``ResponseError`` sibling: it marks
-    TaskQ's verdict, not redis's. A lie is NEVER retried: the reply
+    and is deliberately not a redis ``ResponseError`` sibling: it marks
+    TaskQ's verdict, not redis's. A lie is never retried: the reply
     arrived and is wrong, re-asking the liar buys nothing, so the
-    store-lie shapes fail closed on FIRST SIGHT while the connection
+    store-lie shapes fail closed on first SIGHT while the connection
     family weathers its bounded budget.
 
     The WARNING log is emitted **before** delegating to the PG path so that
@@ -166,7 +166,7 @@ async def with_pg_fallback(
         logger.warning("rate-limit-redis-fallback", **log_kwargs)
         return await pg_call()
 
-    # *redis_call* is a FACTORY (not an awaited coroutine) exactly so the
+    # *redis_call* is a factory (not an awaited coroutine) exactly so the
     # transient-retry arm below can re-invoke it; the acquire it wraps is
     # idempotent to re-enter (the script cache is, see ensure_redis_script).
     transient_retries_left = RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS - 1
@@ -177,19 +177,19 @@ async def with_pg_fallback(
             _redis_mod.ConnectionError,
             _redis_mod.TimeoutError,
         ) as exc:
-            # A CANCELLATION is never weather. redis's read wraps its wait
+            # A cancellation is never weather. redis's read wraps its wait
             # in async_timeout, which converts a task cancellation arriving
             # mid-read into this same TimeoutError (the CancelledError at
             # the stream reader becomes the timeout at the context's exit);
             # without this guard the retry loop re-arms against a task the
             # caller already gave up on, and the cancellation surfaces
             # later, mid-backoff, mislabelled. cancelling() is nonzero
-            # exactly when a cancellation was DELIVERED to this task; a
+            # exactly when a cancellation was delivered to this task; a
             # genuine socket read timeout never sets it.
             current_task = asyncio.current_task()
             if current_task is None or current_task.cancelling():
                 raise
-            # The WEATHER family: the connection to the server failed. A
+            # The weather family: the connection to the server failed. A
             # blip is allowed one bounded weathering before the decision.
             if transient_retries_left > 0:
                 backoff_s = RATE_LIMIT_REDIS_TRANSIENT_RETRY_BACKOFFS_S[
@@ -213,7 +213,7 @@ async def with_pg_fallback(
             _RedisOutOfMemoryError,
             RateLimitStoreCorrupt,
         ) as exc:
-            # The CANNOT-SERVE and LIE families: fail closed on first
+            # The cannot-serve and lie families: fail closed on first
             # sight, no retry (see the docstring for why neither is a
             # blip).
             return await _fail_closed(exc)

@@ -356,7 +356,7 @@ async def test_mark_retry_after_consume_budget_true_deadline_wins_over_budget(
     clean_jobs_app: JobsApp,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Arm arbitration when BOTH gates lapse at once: a consuming
+    """Arm arbitration when both gates lapse at once: a consuming
     RetryAfter whose delay lands past schedule_to_close on a job whose
     attempt is already at max_attempts. The max_attempts arm's own
     deadline conjunct (delay <= schedule_to_close) refuses it first, so
@@ -618,7 +618,7 @@ async def test_mark_retry_after_consume_budget_true_attempt_not_incremented(
             expected_attempt = before["attempt"]
             expected_epoch = before["claim_epoch"]
 
-        # The attempt-epoch fence: the write carries the row's CURRENT
+        # The attempt-epoch fence: the write carries the row's current
         # attempt (the re-dispatch below increments it every cycle).
         result = await backend.mark_retry_after(
             JobId(job_id),
@@ -969,7 +969,7 @@ async def test_admission_denial_never_terminally_fails_an_exhausted_job(
     assert row["error_class"] is None
     assert row["finished_at"] is None
     # The denial neither spends nor extends the budget: it refunds the
-    # claim's attempt increment (GREATEST(attempt - 1, 0)), returning the
+    # claim's attempt increment (greatest(attempt - 1, 0)), returning the
     # row to the attempt it held before this dispatch claimed it. The gap
     # `max_attempts - attempt` is exactly what it was before the claim, so
     # a job denied without bound never walks its attempt counter toward
@@ -1016,7 +1016,7 @@ async def test_repeated_admission_denials_reschedule_without_bound(
         )
 
     # Each cycle mirrors one real claim→denial round: mark_snoozed refunds
-    # the claim's attempt increment (GREATEST(attempt - 1, 0)), and the
+    # the claim's attempt increment (greatest(attempt - 1, 0)), and the
     # raw re-claim below plays the dispatcher's own increment before the
     # next denial - the attempt oscillates between N and N+1 and never
     # walks toward max_attempts or the smallint ceiling, however many

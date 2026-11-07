@@ -16,7 +16,7 @@ Verified against the library, not guessed:
 - The parent records the explicit ``batch_id`` on its ``dispatched`` effect
   (tests/e2e/actors.py), which is how the test correlates.
 - Range ground truth: the ``chunk_done`` effect detail carries ``chunk_id``
-  and ``rows_processed`` - NOT the ``[start_row, end_row)`` range. The range
+  and ``rows_processed`` - not the ``[start_row, end_row)`` range. The range
   lives in the chunk job's ``jobs.payload`` column, so the partition
   assertion joins effects to payloads by ``job_id``.
 

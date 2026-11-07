@@ -1,7 +1,7 @@
 # ruff: noqa: S608  # Why: schema is a test-fixture identifier, validated by render()/sweep_deadline_exceeded in every caller; every user-supplied value is $-bound.
 """Hunt-gap pin: sweep-2's row-lock order vs the bulk-cancel drain's.
 
-Two writers sweep the SAME overdue pending backlog with opposite row
+Two writers sweep the same overdue pending backlog with opposite row
 orders: ``sweep_deadline_exceeded`` windows its batch ``ORDER BY
 schedule_to_close`` (the partial-index key, its snap CTE takes ``FOR
 UPDATE SKIP LOCKED``), while ``_cancel_where``'s pending/scheduled arm
@@ -10,7 +10,7 @@ window that skips is a window that strands). Opposite orders over one
 row set is the classic lock-order inversion: the drain's in-flight batch
 holds low-id rows and waits on a high-id row the sweep's snap holds,
 and where the planner's lock acquisition order for the drain's
-``id = ANY`` array forms a cycle, PG's deadlock detector kills one side.
+``id = any`` array forms a cycle, PG's deadlock detector kills one side.
 Both sides own the transient retry that resolves it: the drain re-runs
 the deadlocked batch (its predicate no longer matches rows an earlier
 committed page terminalised, nothing counts twice), and the leader loop
@@ -20,7 +20,7 @@ tick.
 Two pins live here.
 
 The first is the concurrent race over a handful of bounded trials.  Its
-contract is conservation, not scheduling: BOTH operations complete, no
+contract is conservation, not scheduling: both operations complete, no
 lost update - every overdue job ends terminal exactly once, either
 'failed'/'DeadlineExceeded' (the sweep won the row) or
 'cancelled'/'CancelledBeforeStart' (the drain won it), never pending,
@@ -93,7 +93,7 @@ async def _seed_inverted_backlog(
         ids,
         tag,
     )
-    # rownum 1 is the GREATEST id; subtracting more time makes its
+    # rownum 1 is the greatest id; subtracting more time makes its
     # schedule_to_close the oldest, the sweep's first window row.
     await conn.execute(
         f'UPDATE "{schema}".jobs j '
@@ -187,10 +187,10 @@ class _BatchBoundaryPool:
         conn: _GatedConn,
         timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.release's own keyword; the checkout forwards it verbatim.
     ) -> None:
-        # The drain's checkout releases through THIS pool (the release is
+        # The drain's checkout releases through this pool (the release is
         # what returns the connection and carries the bounded reset).
         # Without the forwarding, asyncpg's checkout swallows the
-        # AttributeError as pool hygiene and every batch LEAKS its
+        # AttributeError as pool hygiene and every batch leaks its
         # connection from the inner module pool (max_size 4): the next
         # acquire wedges the drain, and pool.close() in the fixture
         # teardown hangs the pytest process with it.
@@ -351,8 +351,8 @@ async def test_the_drain_releases_its_batch_locks_so_the_sweep_always_gets_a_win
 
     # The drain's per-round sequence: the pending/scheduled arm drains
     # the match set as committed batches until its window comes back
-    # short, and ONLY then does the running arm start.  So the gate sits
-    # on the pending arm's statement and parks at its SECOND execution:
+    # short, and only then does the running arm start.  So the gate sits
+    # on the pending arm's statement and parks at its second execution:
     # batch one is committed (ten rows terminal, its locks left with
     # that transaction), the park is before batch two's candidate, and
     # the thirty rows beyond batch one are pending and unlocked.
@@ -397,7 +397,7 @@ async def _pin_the_no_monopoly_property(
     await asyncio.wait_for(pool.gate_entered.wait(), timeout=_RACE_BOUND_SECS)
 
     # Batch one is committed; the park is before batch two's candidate,
-    # so nothing is locked.  The sweep's SKIP LOCKED owns unlocked
+    # so nothing is locked.  The sweep's skip locked owns unlocked
     # overdue rows by construction.
     swept: int = await asyncio.wait_for(
         sweep_deadline_exceeded(clean_pg_conn, schema=schema, batch_size=_BATCH),

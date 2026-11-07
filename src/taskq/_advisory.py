@@ -77,7 +77,7 @@ def __getattr__(name: str) -> tuple[type[BaseException], ...]:
 #: would let a client-side deadline escape the move-queue CLI as a
 #: raw ``TimeoutError`` instead of its documented exit code.
 #:
-#: Annotation-only declaration: the VALUE materializes lazily through the
+#: Annotation-only declaration: the value materializes lazily through the
 #: module ``__getattr__`` above (a module-level ``import asyncpg`` would
 #: break this module's zero-dependency-leaf contract), while the bare
 #: annotation keeps the name visible to static tools and ``__all__``
@@ -99,11 +99,11 @@ _ADVISORY_BLOCKING_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1,
 
 #: Reads the session/transaction's current ``lock_timeout`` so the
 #: contended tier can restore it exactly, never clobbers a caller-set
-#: bound on a BYO transaction, never assumes the default is "0".
+#: bound on a byo transaction, never assumes the default is "0".
 _LOCK_TIMEOUT_READ_SQL = "SELECT current_setting('lock_timeout')"
 
 #: ``set_config(..., true)`` is SET LOCAL semantics with a bindable
-#: parameter (utility ``SET`` statements cannot take extended-protocol
+#: parameter (utility ``set`` statements cannot take extended-protocol
 #: parameters), so the budget value never has to be interpolated into
 #: SQL text.
 _LOCK_TIMEOUT_SET_SQL = "SELECT set_config('lock_timeout', $1, true)"
@@ -155,7 +155,7 @@ async def acquire_advisory_xact_lock_bounded(
        "current transaction is aborted" behind, and (b) undoes the GUC
        set above. The exception is caught OUTSIDE the context manager and
        converted to the False return.
-    4. On success, restore the saved ``lock_timeout`` BEFORE the
+    4. On success, restore the saved ``lock_timeout`` before the
        savepoint's RELEASE: ``SET LOCAL``/``set_config(local=true)``
        effects are undone by ROLLBACK TO SAVEPOINT but PERSIST through
        RELEASE, so skipping the restore would leak the wait bound onto
@@ -163,7 +163,7 @@ async def acquire_advisory_xact_lock_bounded(
        caller-set bound with the restore happening at all).
 
     Client-side backstop: the whole contended tier is wrapped in
-    ``asyncio.wait_for(..., budget + slack)``. Why BOTH layers: the
+    ``asyncio.wait_for(..., budget + slack)``. Why both layers: the
     server-side timeout is precise (it fires at the budget even under
     client-side event-loop stalls, keeps the transaction usable via the
     savepoint rollback, and generates no cancel traffic on healthy

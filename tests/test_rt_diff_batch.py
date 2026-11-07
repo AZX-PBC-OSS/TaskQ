@@ -3,7 +3,7 @@
 
 The shared policy hook runs against the Backend protocol on both sides, so
 the differential isolates the backend batch operations themselves:
-increment/reset counters, the NOT EXISTS completion guard, abort-wins-over-
+increment/reset counters, the not EXISTS completion guard, abort-wins-over-
 complete, the abort members' terminal fields, and the noop/snoozed neutral
 arms.
 """
@@ -72,7 +72,7 @@ async def _succeeded_completes(side: DiffSide) -> None:
 
 async def test_diff_batch_outcome_succeeded_completes(pg_dsn: str) -> None:
     """Success resets the failure counter and the last terminal member's
-    completion attempt lands (earlier attempts are vetoed by the NOT EXISTS
+    completion attempt lands (earlier attempts are vetoed by the not EXISTS
     guard)."""
     mem, pg = await run_differential(_succeeded_completes, pg_dsn=pg_dsn)
     assert pg["records"] == {"mid_complete_status": "active", "final_non_terminal": 0}
@@ -130,12 +130,12 @@ async def _failed_at_threshold_aborts(side: DiffSide) -> None:
     await side.create_batch("b1", expected_size=3, failure_threshold=1)
     await _member(side, "victim1", "b1", scheduled_in=-3.0, max_attempts=1)
     await _member(side, "runner", "b1", scheduled_in=-2.0)
-    # victim2 is enqueued LAST and never dispatched: it stays pending so the
+    # victim2 is enqueued last and never dispatched: it stays pending so the
     # abort's member-cancel arm has a row to act on.
     await _member(side, "victim2", "b1", scheduled_in=-1.0, max_attempts=1)
     await side.dispatch("w1", ["default"], limit=2)
     # The runner succeeds first: its completion attempt is vetoed (failures
-    # pending). Then one failure trips the threshold and ABORTS the batch -
+    # pending). Then one failure trips the threshold and aborts the batch -
     # abort wins over complete, and the pending member is cancelled.
     await side.mark_succeeded("runner", "w1", result={"v": 1})
     await side.apply_outcome("runner", "succeeded")
@@ -180,7 +180,7 @@ async def _terminal_batch_counter_writes(side: DiffSide) -> None:
     await side.batch_complete("b1")
     final_row = await side.batch_row("b1")
     side.record("complete_on_aborted", final_row.status if final_row is not None else None)
-    # Counter reads on a MISSING batch row.
+    # Counter reads on a missing batch row.
     side.record("increment_missing", list(await side.backend.increment_batch_failures(new_uuid())))
     side.record("reset_missing", await side.backend.reset_batch_failures(new_uuid()))
 

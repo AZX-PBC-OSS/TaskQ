@@ -89,11 +89,11 @@ async def pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 @pytest_asyncio.fixture
 async def redis_client(private_redis_url: str) -> AsyncIterator[aioredis.Redis]:
-    # PRIVATE broker (killable_redis_container + redis_url_for, db 0): the pin
+    # private broker (killable_redis_container + redis_url_for, db 0): the pin
     # asserts pub/sub fanout timing (the SSE stream's delivery windows), the
     # exact surface a shared-broker co-tenancy stall band reds without any
     # code defect - see web_progress/test_integration.py's redis_client note.
-    # socket_connect_timeout: the DNS/connect band (see
+    # socket_connect_timeout: the dns/connect band (see
     # TEST_REDIS_CONNECT_TIMEOUT_SECS).
     client = aioredis.from_url(
         private_redis_url,
@@ -173,9 +173,9 @@ async def _land_redispatched_terminal(pool: asyncpg.Pool, job_id: Any) -> None:
 # ``httpx.ASGITransport`` buffers the whole body before the response is
 # returned, so a stream that strands on keepalives (this cut's shape: no
 # terminal envelope ends it on a behind-cursor row) yields nothing at all.
-# The capture below consumes the REAL ASGI app directly - the same app, the
+# The capture below consumes the real ASGI app directly - the same app, the
 # same generator, the same Redis pub/sub - and cancels the reader the way a
-# client disconnect would, so the frames are captured LIVE off the stranded
+# client disconnect would, so the frames are captured live off the stranded
 # stream.
 
 
@@ -193,15 +193,15 @@ async def _collect_sse_frames(
     chunks: list[str] = []
 
     async def _receive() -> dict[str, object]:
-        # The request body never arrives; the stream is a GET.
+        # The request body never arrives; the stream is a get.
         await asyncio.sleep(3600)
         return {"type": "http.request", "body": b"", "more_body": False}
 
     async def _send(message: dict[str, object]) -> None:
         if connected is not None:
             # The first ASGI send is the observable "the handler body has
-            # completed" - the product subscribes to the broker AND
-            # resolves the catch-up query in the handler body, BEFORE
+            # completed" - the product subscribes to the broker and
+            # resolves the catch-up query in the handler body, before
             # EventSourceResponse is constructed and any byte is sent -
             # so a scenario's publisher may arm here instead of a blind
             # sleep that races the connect under runner load.
@@ -284,7 +284,7 @@ def _wire_event(job_id: Any, seq: int, percent: float) -> ProgressEvent:
 
 # ── The client harness (the test_realtime_js_mode_probe.py shape) ─────
 #
-# Driving the ASSEMBLED client: the poll is conditional (the request
+# Driving the assembled client: the poll is conditional (the request
 # carries ``If-None-Match`` once the page has a sequence; a 304 answer has
 # no body), the render is update-in-place (the entry is appended once,
 # every later tick patches nodes in place), and the DOM-write log is the
@@ -459,7 +459,7 @@ async def test_the_client_cursor_renders_the_durable_terminal_behind_the_wire_in
     app = _make_app(pool, redis_client)
     channel = progress_channel(SCHEMA_LABEL, job_id)
     captured = asyncio.Event()
-    # The wire arms on the OBSERVED stream establishment (the first ASGI
+    # The wire arms on the observed stream establishment (the first ASGI
     # send: the handler body - subscribe + catch-up query - has completed),
     # not a blind sleep: the 0.3s bet lost the connect race under runner
     # load and seqs 1-2 landed before the subscription existed - the wire

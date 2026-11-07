@@ -11,9 +11,9 @@ the docs' opt-in guidance actually gets acted on:
    ``(finished_at DESC, id DESC)`` keyset pages (``_build_paginated_sql``,
    51 rows per fetch). A full 10,000-page walk (510k rows deep) with the
    per-page latency recorded: page-1 p50 vs page-10000 p50 is the seam's
-   depth sensitivity. Engines interleaved page by page. THIS RUN ALSO
+   depth sensitivity. Engines interleaved page by page. THIS RUN also
    CARRIES A PATHOLOGY FINDING: before migration ``01.00.21_01`` no
-   shipped index served the tab's ``finished_at DESC NULLS LAST, id DESC``
+   shipped index served the tab's ``finished_at DESC NULLS last, id DESC``
    ordering, so every page top-N sorted the whole matching population —
    per-page cost linear in archive depth, the walk quadratic (the
    committed sweep artifact's plain points, 3.81 ms/page @ 10k rows →
@@ -33,7 +33,7 @@ the docs' opt-in guidance actually gets acted on:
    ``expire_at`` in the past) drained by the production sweep machinery
    (``_compose_expiry_sql`` / ``_run_prune_batch``) in 10k batches:
    - plain: the row-delete drain, the only mechanism plain has;
-   - ts: the SAME row-delete statement over the columnstore (the retention
+   - ts: the same row-delete statement over the columnstore (the retention
      policy is removed for the leg and re-armed after, and the server's
      decompression budget GUC is set to 0 = unlimited — at the shipped
      default 100k one 10k-row batch hard-errors, measured:
@@ -226,14 +226,14 @@ async def setup_engine(dsn: str, *, hypertables: bool) -> dict[str, Any] | None:
             validate=False,
         )
         report = await enable_hypertables(conn, schema=SCHEMA, settings=settings)
-        # The drain leg deletes from COMPRESSED chunks: the shipped default
-        # budget (100k decompressed tuples per DML transaction) hard-errors
+        # The drain leg deletes from compressed chunks: the shipped default
+        # budget (100k decompressed tuples per dml transaction) hard-errors
         # on a 10k-row batch at this scale (measured, see module docstring).
         # 0 = unlimited; the probe in enable_hypertables warned about this
         # exact configuration.
         await conn.execute("SET timescaledb.max_tuples_decompressed_per_dml_transaction = 0")
         # Stop the extension's background workers so the seeded chunks
-        # compress only when THIS bench forces it (measurement, not drift).
+        # compress only when this bench forces it (measurement, not drift).
         for stmt in (
             "SELECT _timescaledb_functions.stop_background_workers()",
             "SELECT _timescaledb_internal.stop_background_workers()",
@@ -395,15 +395,15 @@ def _rows_key(rows: list[dict[str, Any]]) -> list[tuple[str, ...]]:
 
 # ── The pathology legs: per-page cost vs depth, red and green ────────────
 #
-# The archive tab's keyset walk was QUADRATIC before migration
+# The archive tab's keyset walk was quadratic before migration
 # 01.00.21_01 (no shipped index served `finished_at DESC NULLS LAST,
-# id DESC` — every page top-N sorted the whole matching population; the
+# id desc` — every page top-N sorted the whole matching population; the
 # committed sweep artifact's plain points, 3.81 ms/page @ 10k → 135.82
 # ms/page @ 2M, were that linear-per-page growth misread as a hypertable
-# win). These legs pin BOTH shapes in one run: red = the index dropped,
+# win). These legs pin both shapes in one run: red = the index dropped,
 # green = the index present, same data, same cursors.
 
-#: Depth checkpoints for the per-page cost probes, in ROWS deep.
+#: Depth checkpoints for the per-page cost probes, in rows deep.
 #: 510,000 = page 10,000 of the 51-row page walk. Filtered to the seeded
 #: scale at run time (a checkpoint must leave rows behind it).
 PATHOLOGY_DEPTHS_TEMPLATE = [0, 51_000, 510_000, 5_100_000]
@@ -536,9 +536,9 @@ async def drain_expired(dsn: str, floor: datetime | None) -> dict[str, Any]:
     batches: list[float] = []
     deleted = 0
     try:
-        # Session-scoped, so it must ride THIS connection: the shipped
+        # Session-scoped, so it must ride this connection: the shipped
         # 100k-tuple decompression budget hard-errors a sweep batch on
-        # compressed chunks (measured: the ARMED sweep — which deletes
+        # compressed chunks (measured: the armed sweep — which deletes
         # nothing at this seed, the policy owns the cohort — still
         # decompressed the whole 10M table through its scan and died on
         # the budget; the same trap enable_hypertables' probe warns
@@ -750,7 +750,7 @@ async def main() -> None:
 
         # ── The pathology legs ───────────────────────────────────────────
         # Cursors are computed once (index-backed, cheap) and reused by
-        # both legs, so red and green time the SAME positions.
+        # both legs, so red and green time the same positions.
         print(
             f"[6b/8] per-page cost vs depth, red (index dropped) vs green "
             f"(depths {pathology_depths})",
@@ -774,15 +774,15 @@ async def main() -> None:
             print(
                 f"    {label} green (index)   : {[round(v, 2) for v in grn_ms]} ms/page", flush=True
             )
-            # The pinned shapes. RED: the per-page cost is the same O(n)
-            # full sort at EVERY cursor depth — flat in depth, linear in
+            # The pinned shapes. red: the per-page cost is the same O(n)
+            # full sort at every cursor depth — flat in depth, linear in
             # table size, which is what makes the n-page walk quadratic
             # (the sweep artifact's 3.81→135.82 ms/page over 10k→2M rows is
             # that linear-in-size curve; this 10M point continues it).
-            # GREEN on PLAIN: index-served pages stay sub-millisecond at
+            # green on plain: index-served pages stay sub-millisecond at
             # every depth — the walk's total is n_pages x O(log n), not
             # n_pages x O(n), and the red/green ratio is three orders of
-            # magnitude. GREEN on the COMPRESSED columnstore: the index
+            # magnitude. green on the compressed columnstore: the index
             # still serves the ordering (the plan-shape asserts below),
             # but each page's rows decompress out of segment storage and
             # the measured cost is decompression-bound — tens to hundreds
@@ -790,7 +790,7 @@ async def main() -> None:
             # at the deepest checkpoint. That coincidence is itself the
             # finding: on compressed chunks the page cost is the
             # columnstore's read trade-off, not a plan defect, so the ts
-            # leg pins the plan SHAPE and records the band (the red/green
+            # leg pins the plan shape and records the band (the red/green
             # ratio pin is a plain-only contract).
             if label == "plain":
                 assert red_ms[-1] > 100.0, (
@@ -805,7 +805,7 @@ async def main() -> None:
             else:
                 # The compressed-chunk read band, recorded: sub-second at
                 # every checkpoint (a sanity bound — the measured band is
-                # ~55-390 ms/page), and DECOMPRESSION-BOUND: red and green
+                # ~55-390 ms/page), and decompression-bound: red and green
                 # cost the same at every depth (measured, this artifact's
                 # red/green series agree within noise) — the storage
                 # layout, not the plan shape, sets the page cost on the
@@ -817,7 +817,7 @@ async def main() -> None:
                     f"ts green page cost beyond the compressed-chunk band: {grn_ms}"
                 )
 
-        # The seek's structural pin on PLAIN (the regression the migration
+        # The seek's structural pin on plain (the regression the migration
         # fixes): the green page plans no Sort and no Seq Scan of the
         # archive. The ts side's plan is recorded but not shape-asserted:
         # behind the columnstore the planner weighs an ordered decompress
@@ -842,11 +842,11 @@ async def main() -> None:
         for c in conns.values():
             await c.close()
 
-    # Drains. First the armed-policy sweep on ts ONLY (the per-tick cost
+    # Drains. First the armed-policy sweep on ts only (the per-tick cost
     # when the policy owns the aged end — the cohort is 370-399d old, every
     # row below the now-365d floor, so it deletes nothing; the tradeoffs
     # bench's finding, re-measured at 10M). Then the row-delete drain both
-    # engines run: the SAME statement (floor=None), ts with the policy
+    # engines run: the same statement (floor=None), ts with the policy
     # removed for the leg and re-armed after, so the decompression-backed
     # delete cost is engine-comparable. Plain goes last so its cohort is
     # intact for its own leg.

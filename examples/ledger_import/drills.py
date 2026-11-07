@@ -247,7 +247,7 @@ async def drill_resume(crash_at: int) -> bool:
     pre_terminal = {k: v for k, v in pre.items() if v[0] == "succeeded"}
     print(f"  at the crash: {len(pre_terminal)} nodes terminal-succeeded")
 
-    # Restart with the SAME run key — the arbiter's existing-running claim.
+    # Restart with the same run key — the arbiter's existing-running claim.
     # The drive re-executes the ready work idempotently, but the crashed
     # node's lease belongs to the dead process and only the worker-hosted
     # sweep reclaims it, so the receipt cannot land from a driver alone.
@@ -413,7 +413,7 @@ async def main() -> int:
         flush=True,
     )
 
-    # DRILL 1 — the cold import: throughput + the progress push
+    # drill 1 — the cold import: throughput + the progress push
     _banner("DRILL 1 — the cold import: throughput + the progress push")
     started = time.monotonic()
     receipt = await run_import(

@@ -1,4 +1,4 @@
-"""THE FLOW-HISTORY RETENTION MIGRATION'S PINS (H-B5, H-B6) — the
+"""The flow-history retention migration's pins (h-b5, h-b6) — the
 01.00.35 index round's shape, structurally and on real PG.
 
 the (the boot-time SHARE locks → the boot-race deadlock): the file
@@ -14,7 +14,7 @@ each new winner dies against the still-parked queue (7 of 8 lost in the
 measured race), INVALID index debris left each time. A transactional
 plain ``CREATE INDEX`` cannot cycle (its locks just queue behind the
 advisory waiter) and rolls back whole on failure. The pins hold the
-file to that law: NO no-transaction directive (``use_transaction is
+file to that law: no no-transaction directive (``use_transaction is
 True`` — the ledger records how the file RAN), no CONCURRENTLY
 statement anywhere, the re-run clean, and the by-hand CONCURRENTLY note
 for too-large deployments present (the maintenance-window escape that
@@ -58,7 +58,7 @@ def _migration() -> migrate_mod.Migration:
 
 
 def test_migration_is_transactional_no_directive() -> None:
-    """The file carries NO ``taskq:no-transaction`` directive and the
+    """The file carries no ``taskq:no-transaction`` directive and the
     runner applies it TRANSACTIONALLY: ``use_transaction is True`` — the
     no-transaction CONCURRENTLY form deadlocks the boot race
     (tests/test_attack_lifecycle_edges.py::test_boot_race_8_appliers_
@@ -81,10 +81,10 @@ def test_migration_is_transactional_no_directive() -> None:
 
 def test_migration_statements_are_the_plain_shape() -> None:
     """Every statement body is ``DROP INDEX IF EXISTS`` /
-    ``CREATE INDEX IF NOT EXISTS`` — NO ``CONCURRENTLY`` anywhere (the
+    ``CREATE INDEX IF not EXISTS`` — no ``CONCURRENTLY`` anywhere (the
     deadlock law: a CIC under apply_pending_locked's advisory lock
     cycles with the parked waiters; a plain build's locks just queue).
-    Transactional + IF NOT EXISTS stays idempotent: a re-run skips the
+    Transactional + IF not EXISTS stays idempotent: a re-run skips the
     built indexes, and the DROP-first fixes an INVALID HAND-built index
     (an interrupted by-hand CONCURRENTLY build's debris)."""
     sql = _migration_file().read_text()
@@ -111,7 +111,7 @@ def test_migration_statements_are_the_plain_shape() -> None:
 
 def test_migration_ships_exactly_the_two_flow_indexes() -> None:
     """H-B6: the file builds wf_edge_flow_idx + wf_join_fire_flow_idx
-    (the two tables with no flow_id-led index) and does NOT build
+    (the two tables with no flow_id-led index) and does not build
     ``wf_step_ledger_flow_idx`` — the claim arbiter's leading column
     serves the flow probe; the redundant index was pure write
     amplification on the hottest table."""
@@ -122,7 +122,7 @@ def test_migration_ships_exactly_the_two_flow_indexes() -> None:
         "wf_step_ledger_flow_idx is REDUNDANT (the claim arbiter's leading "
         "flow_id column serves the probe) — pure write amplification (H-B6)"
     )
-    # The by-hand note for the TOO-LARGE deployments stays.
+    # The by-hand note for the too-large deployments stays.
     assert "maintenance window" in sql.lower() or "by hand" in sql.lower(), (
         "the ops note for too-large deployments is gone"
     )
@@ -131,7 +131,7 @@ def test_migration_ships_exactly_the_two_flow_indexes() -> None:
 def test_migration_ops_note_carries_the_measured_lock_threshold() -> None:
     """R5: the ops note's too-large advice was UNMEASURED — an operator
     had no number to threshold the by-hand build on. The note now carries
-    the MEASURED figure (~1.0 s @ 3M rows on warm NVMe — the round-2's
+    the MEASURED figure (~1.0 s @ 3M rows on warm NVMe — the
     data; the boot's SHARE lock blocks ALL writes to the table for that
     span), states the cloud-volume multiple honestly (a multiple of the
     local number, measure yours), and gives the by-hand threshold's
@@ -147,7 +147,7 @@ def test_migration_ops_note_carries_the_measured_lock_threshold() -> None:
         "3m",  # the measured scale: ~1.0 s @ 3M rows
         "1.0",  # the measured span
         "share lock",  # the lock class the boot takes
-        "blocks all writes",  # what the SHARE lock does for the build's span
+        "blocks all writes",  # what the share lock does for the build's span
         "cloud",  # the honest multiple: cloud volumes are slower, measure yours
         "~1m",  # the by-hand threshold's shape
         "maintenance window",  # the by-hand build's venue
@@ -164,7 +164,7 @@ async def test_migration_ran_and_reruns_clean(wf_conn: asyncpg.Connection, wf_sc
     bundled set) with ``use_transaction = true`` recorded — the
     transactional shape the boot-race deadlock law demands. The file then
     RE-RUNS clean on the live schema (every statement re-executes
-    idempotently: IF NOT EXISTS skips the built indexes), and the
+    idempotently: IF not EXISTS skips the built indexes), and the
     indexes are VALID with the redundant one absent."""
     # Why: the f-string interpolates only the fixture's settings-validated schema identifier (the runner's _IDENT_RE); the version key is the module's own constant.
     row = await wf_conn.fetchrow(
@@ -184,7 +184,7 @@ async def test_migration_ran_and_reruns_clean(wf_conn: asyncpg.Connection, wf_sc
     migration = _migration()
     rendered = migration.render(wf_schema)
     statements = split_statements(rendered)
-    assert len(statements) >= 4  # two DROP + two CREATE
+    assert len(statements) >= 4  # two drop + two create
     for statement in statements:
         await wf_conn.execute(statement)
 

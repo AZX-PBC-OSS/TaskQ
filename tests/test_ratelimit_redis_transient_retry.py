@@ -2,13 +2,13 @@
 sentinel.
 
 The gap this pins: a TRANSIENT connection failure mid-burst (a blip of
-100ms to 1s, the container co-tenancy shape) took the SAME path as a
+100ms to 1s, the container co-tenancy shape) took the same path as a
 persistent outage, straight to the fail-closed decision (the PG fallback
 arm, then :class:`RateLimitDependencyUnavailable` when no pool is
 wired), so a redis-only deployment denied a legitimate request the
 store would have served a quarter-second later.
 
-The contract pinned here, on BOTH redis acquire surfaces (the token
+The contract pinned here, on both redis acquire surfaces (the token
 bucket and the sliding window, log and GCRA styles):
 
 * a CONNECTION-family error (``redis.ConnectionError``/``redis.TimeoutError``,
@@ -22,9 +22,9 @@ bucket and the sliding window, log and GCRA styles):
   the dependency-unavailable sentinel when not), and the attempt count
   is EXACTLY the budget, so a replay cannot loop;
 * the store-lie shapes (:class:`~taskq.exceptions.RateLimitStoreCorrupt`,
-  the container/type lies the redis-lies lineage pins) are NEVER
+  the container/type lies the redis-lies lineage pins) are never
   retried: the reply arrived and is wrong, re-asking the liar buys
-  nothing, so they fail closed on FIRST SIGHT, one script call, the
+  nothing, so they fail closed on first SIGHT, one script call, the
   sentinel.
 
 All pins are unit-level (duck-typed script seams on a real
@@ -160,7 +160,7 @@ async def test_token_bucket_one_shot_connection_blip_is_weathered() -> None:
     retried inside the bounded budget and the HONEST answer is used: the
     decision is ``backend="redis"``, never the fallback, never the
     dependency-unavailable sentinel. Red under the pre-retry code: the
-    blip went straight to the fail-closed decision on ONE script call.
+    blip went straight to the fail-closed decision on one script call.
     """
     script = _BlipThenHonestScript(_HONEST_TB_REPLY, errors=[redis_async.ConnectionError])
     client = _scripted_client(script)
@@ -186,7 +186,7 @@ async def test_token_bucket_one_shot_connection_blip_is_weathered() -> None:
 async def test_sliding_window_one_shot_connection_blip_is_weathered(
     style: str, honest_reply: list[object]
 ) -> None:
-    """The same one-shot blip on the sliding-window acquire (BOTH styles)
+    """The same one-shot blip on the sliding-window acquire (both styles)
     is weathered: the honest answer is used, the decision is
     ``backend="redis"``. Red under the pre-retry code on both surfaces.
     """
@@ -230,7 +230,7 @@ async def test_timeout_error_blip_is_weathered_too() -> None:
 
 
 async def test_blip_is_weathered_even_with_the_fallback_disabled() -> None:
-    """The retry arm sits BEFORE the fail-closed decision, both arms of
+    """The retry arm sits before the fail-closed decision, both arms of
     it: with the PG fallback disabled, a blip is still weathered and the
     honest answer still wins (the pre-retry code raised here)."""
     script = _BlipThenHonestScript(_HONEST_TB_REPLY, errors=[redis_async.ConnectionError])
@@ -328,12 +328,12 @@ async def test_retry_budget_backoffs_sum_to_the_blip_window() -> None:
     )
 
 
-# ── the store-lie pin: NEVER retried, fails closed on first sight ─────
+# ── the store-lie pin: never retried, fails closed on first sight ─────
 
 
 async def test_store_lie_is_never_retried_fails_closed_on_first_sight() -> None:
     """A store-lie reply (the negative-tokens lie, decode raises
-    ``RateLimitStoreCorrupt``) is NEVER retried: exactly ONE script call,
+    ``RateLimitStoreCorrupt``) is never retried: exactly one script call,
     then the fail-closed verdict. The retry arm exists for weather, a
     reply that arrived and is wrong is not weather, re-asking the liar
     buys nothing."""
@@ -359,7 +359,7 @@ async def test_store_lie_is_never_retried_fails_closed_on_first_sight() -> None:
 
 async def test_store_lie_routes_to_the_fallback_on_first_sight() -> None:
     """The lie's fail-closed verdict WITH the fallback wired: the PG arm
-    runs on the FIRST sight (one script call, no weathering), the
+    runs on the first sight (one script call, no weathering), the
     admission is re-run against the durable row exactly as the
     redis-lies pins contract."""
     script = _LyingScript(_THE_STORE_LIE)
@@ -392,7 +392,7 @@ async def test_store_lie_routes_to_the_fallback_on_first_sight() -> None:
 async def test_sliding_window_store_lie_is_never_retried(
     style: str, lie_reply: list[object]
 ) -> None:
-    """The sliding-window surface's lie verdict (BOTH styles): one script
+    """The sliding-window surface's lie verdict (both styles): one script
     call, the sentinel, never a retry."""
     script = _LyingScript(lie_reply)
     client = _scripted_client(script)

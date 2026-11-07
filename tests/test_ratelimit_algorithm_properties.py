@@ -28,12 +28,12 @@ properties could break, writes the experiment, and pins the survivor:
   bucket rolled over must all be no-ops capped at capacity (the Redis
   refund script's ``tokens == nil`` fence and the GCRA refund's
   compare-and-set are the two fences under attack).
-* **PG-fallback ledger** — a Redis reply lost AFTER the script's effects
+* **PG-fallback ledger** — a Redis reply lost after the script's effects
   landed (the classic partial-write shape) re-runs the script on each
   transient retry and then grants from Postgres: one caller-visible
   acquire can charge the REDIS ledger up to
-  ``RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS`` tokens AND the PG ledger
-  one admission. The caller still sees exactly ONE decision; this test
+  ``RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS`` tokens and the PG ledger
+  one admission. The caller still sees exactly one decision; this test
   pins the ledger-divergence BOUND (attempts, not unbounded) and proves
   the double-charge is real, so a future "fix" that makes the retry
   unbounded or lets the fallback re-enter the caller's admission loop
@@ -167,7 +167,7 @@ async def test_memory_log_concurrent_burst_conservation() -> None:
 
 async def test_memory_gcra_concurrent_burst_and_tat_chain() -> None:
     """Pinned invariant: under concurrent acquires at one timestamp the
-    in-memory GCRA twin grants at most ``limit`` admissions AND the allowed
+    in-memory GCRA twin grants at most ``limit`` admissions and the allowed
     acquires' post-TATs are distinct, strictly increasing, spaced by
     EXACTLY one emission interval (each allowance advances the TAT by
     ``quantity_ms``; denials leave it untouched).
@@ -194,7 +194,7 @@ async def test_memory_gcra_concurrent_burst_and_tat_chain() -> None:
     allowed = [r for r in results if r.allowed]
     assert len(allowed) == limit, f"conservation violated: {len(allowed)} granted"
 
-    posts = [float(r.previous_state["new_tat_ms"]) for r in allowed]  # type: ignore[index]  # Why: previous_state is dict[str, object] on the decision; the allowed GCRA arm always populates these keys
+    posts = [float(r.previous_state["new_tat_ms"]) for r in allowed]  # type: ignore[index]  # Why: previous_state is dict[str, object] on the decision; the allowed gcra arm always populates these keys
     assert len(set(posts)) == len(posts), "duplicate post-TATs: a TAT update was lost"
     assert posts == sorted(posts), "post-TATs not monotone in grant order"
     for a, b in pairwise(posts):
@@ -287,9 +287,9 @@ async def test_memory_gcra_backward_clock_step_tat_never_regresses() -> None:
     assert r.allowed is False
     assert r.retry_after is not None and r.retry_after > timedelta(0)
 
-    # TAT is internal; verify behaviorally: back at the original instant
-    # the twin must still deny (the log is full AND the TAT is in the
-    # future), proving neither the TAT nor the log regressed.
+    # tat is internal; verify behaviorally: back at the original instant
+    # the twin must still deny (the log is full and the tat is in the
+    # future), proving neither the tat nor the log regressed.
     clock.move_to(_START)
     r2 = await sw.acquire(clock=clock)
     assert r2.allowed is False
@@ -340,7 +340,7 @@ async def test_memory_log_backward_clock_step_denies_finitely() -> None:
 @pytest.mark.integration
 @pytest.mark.redis
 async def test_redis_token_bucket_concurrent_conservation(redis_url: str) -> None:
-    """Pinned invariant: 100 concurrent acquires against ONE Redis token
+    """Pinned invariant: 100 concurrent acquires against one Redis token
     bucket (capacity 25, refill 0) grant EXACTLY 25 admissions — the Lua
     script's atomicity holds; every reply's ``tokens_remaining`` stays in
     ``[0, capacity]``.
@@ -480,7 +480,7 @@ async def test_redis_gcra_concurrent_burst_boundary_and_tat_chain(
     # Why: redis_url_for resolves the mapped port via docker HTTP - off-loop.
     redis_url = await asyncio.to_thread(redis_url_for, killable_redis_container)
     client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
-    # REAL pg settings + the module pool: if the fallback fires, it lands
+    # real pg settings + the module pool: if the fallback fires, it lands
     # in the migrated module schema instead of the typed refusal.
     settings = WorkerSettings.load_from_dict(
         {
@@ -509,7 +509,7 @@ async def test_redis_gcra_concurrent_burst_boundary_and_tat_chain(
         redis_allowed = [r for r in results if r.allowed and r.backend == "redis"]
         fallback_allowed = [r for r in results if r.allowed and r.backend == "postgres"]
 
-        # The burst boundary is the REDIS ledger's conservation law:
+        # The burst boundary is the redis ledger's conservation law:
         # arrivals spread over the gather widen the window the boundary
         # cell lives in, never shrink it.
         calibrated_bound = int((window_ms + spread_ms) / emission_ms) + 1
@@ -518,7 +518,7 @@ async def test_redis_gcra_concurrent_burst_boundary_and_tat_chain(
             f"(bound={calibrated_bound}, spread={spread_ms:.1f}ms)"
         )
 
-        # The TAT chain is likewise the REDIS ledger's chain (string
+        # The tat chain is likewise the redis ledger's chain (string
         # echoes, milliseconds): a fallback decision's TATs live in the
         # PG ledger's chain and are asserted below in their own domain.
         posts: list[float] = []
@@ -532,14 +532,14 @@ async def test_redis_gcra_concurrent_burst_boundary_and_tat_chain(
 
         assert len(set(posts)) == len(redis_allowed), "duplicate post-TATs: a TAT write was lost"
         for a, b in zip(sorted(posts), sorted(posts)[1:], strict=False):
-            # tat = max(stored, now) can only WIDEN a gap between
+            # tat = max(stored, now) can only widen a gap between
             # consecutive allowances, never shrink it below one interval.
             assert b - a >= emission_ms * (1 - 1e-9)
 
-        # The fallback arm, bounded honestly by ITS ledger's own GCRA
-        # boundary (the same pure-GCRA math on the PG row; the gather's
+        # The fallback arm, bounded honestly by its ledger's own gcra
+        # boundary (the same pure-gcra math on the PG row; the gather's
         # arrivals spread its statement clock the same way): each
-        # fallback acquire is ONE PG admission, and with_pg_fallback
+        # fallback acquire is one PG admission, and with_pg_fallback
         # never re-enters the redis loop, so the fallback grants cannot
         # conspire with the redis grants past their own bound.
         emission_s = window_ms / limit / 1000.0
@@ -557,7 +557,7 @@ async def test_redis_gcra_concurrent_burst_boundary_and_tat_chain(
 
         for r in results:
             if not r.allowed:
-                # Both arms: a denial carries no TAT echo (the redis
+                # Both arms: a denial carries no tat echo (the redis
                 # script's denial branch and the PG arm's no-row path).
                 assert r.previous_state is None
     finally:
@@ -588,7 +588,7 @@ def _redis_decision(tb: TokenBucket) -> RateLimitDecision:
 @pytest.mark.redis
 async def test_redis_refund_without_acquire_mints_no_quota(redis_url: str) -> None:
     """Pinned invariant: a refund landing on a bucket key that does not
-    exist (no acquire ever ran, or the key expired) is a NO-OP — it must
+    exist (no acquire ever ran, or the key expired) is a no-OP — it must
     not create the key and must not mint quota; the next acquire starts
     from FULL capacity minus only its own spend.
 
@@ -624,7 +624,7 @@ async def test_redis_refund_without_acquire_mints_no_quota(redis_url: str) -> No
 @pytest.mark.integration
 @pytest.mark.redis
 async def test_redis_refund_after_ttl_rollover_mints_no_quota(redis_url: str) -> None:
-    """Pinned invariant: a refund arriving AFTER the bucket key's TTL
+    """Pinned invariant: a refund arriving after the bucket key's TTL
     expired (the bucket "rolled over") is a no-op; the re-materialized
     bucket starts at full capacity and the stale refund cannot stack on
     top of it.
@@ -695,7 +695,7 @@ async def test_redis_gcra_refund_double_refund_is_noop(redis_url: str) -> None:
         stored = await client.get(key)
         assert stored is not None and float(stored) == float(pre)
 
-        # Second refund of the SAME decision: CAS must reject it.
+        # Second refund of the same decision: CAS must reject it.
         await sw.refund(d, redis_client=client, settings=settings)
         stored = await client.get(key)
         assert stored is not None and float(stored) == float(pre)
@@ -706,7 +706,7 @@ async def test_redis_gcra_refund_double_refund_is_noop(redis_url: str) -> None:
 @pytest.mark.integration
 @pytest.mark.redis
 async def test_redis_gcra_refund_after_tat_advanced_is_noop(redis_url: str) -> None:
-    """Pinned invariant: a refund arriving AFTER another acquire advanced
+    """Pinned invariant: a refund arriving after another acquire advanced
     the TAT (the bucket "rolled over" in GCRA terms) is rejected by the
     CAS fence, and only the LATEST allowance's refund rewinds — refunds
     unwind in reverse acquire order, never clobbering a newer allowance.
@@ -733,14 +733,14 @@ async def test_redis_gcra_refund_after_tat_advanced_is_noop(redis_url: str) -> N
         assert d1.allowed and d2.allowed
         assert d1.previous_state is not None and d2.previous_state is not None
 
-        # Refund the OLDER allowance: the stored TAT is d2's post — the CAS
+        # Refund the older allowance: the stored tat is d2's post — the CAS
         # compare against d1's post fails and nothing is written.
         await sw.refund(d1, redis_client=client, settings=settings)
         stored = await client.get(key)
         assert stored is not None
         assert float(stored) == float(str(d2.previous_state["post_acquire_tat_str"]))
 
-        # Refund the LATEST allowance: CAS matches, the TAT rewinds to d2's
+        # Refund the latest allowance: CAS matches, the tat rewinds to d2's
         # pre (one interval back, exactly d1's post).
         await sw.refund(d2, redis_client=client, settings=settings)
         stored = await client.get(key)
@@ -754,7 +754,7 @@ async def test_redis_gcra_refund_after_tat_advanced_is_noop(redis_url: str) -> N
 @pytest.mark.redis
 async def test_redis_gcra_refund_on_absent_key_is_noop(redis_url: str) -> None:
     """Pinned invariant: the GCRA refund against a MISSING key (reset,
-    expired, or never written) is a no-op that does NOT re-create the key.
+    expired, or never written) is a no-op that does not re-create the key.
 
     Regression: the CAS script's ``if not existing then return {0}`` fence
     removed, the refund's unconditional SET would resurrect a reset bucket
@@ -808,7 +808,7 @@ class _LostReplyProbe:
 
             class _Script:
                 async def __call__(self, **kwargs: object) -> object:
-                    # The REAL script runs to completion: its effects land
+                    # The real script runs to completion: its effects land
                     # in the store before the reply is lost.
                     raw = await inner(**kwargs)  # type: ignore[operator]  # Why: inner is the untyped AsyncScript; the call shape (keys=/args=) is the bucket's own
                     probe.executions += 1
@@ -840,20 +840,20 @@ async def test_lost_redis_reply_charges_both_ledgers_within_a_bound(
     module_pg_pool: asyncpg.Pool,
     redis_url: str,
 ) -> None:
-    """THE double-admission hypothesis, answered: a Redis reply lost AFTER
+    """The double-admission hypothesis, answered: a Redis reply lost after
     the token-bucket script's effects landed, persisted through the whole
     transient-retry budget, ends in the PG fallback — one caller-visible
-    acquire whose effects landed in BOTH stores.
+    acquire whose effects landed in both stores.
 
     Pinned here (the accepted divergence and its bound):
 
-    * the caller sees EXACTLY ONE decision (the PG one, allowed);
+    * the caller sees EXACTLY one decision (the PG one, allowed);
     * the REDIS ledger was charged
       ``RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS`` tokens (every retry
       re-executed the script and its effects landed), proving the partial
       write is REAL — the "did the script run?" bit is lost with the
       reply;
-    * the PG ledger was charged ONE admission;
+    * the PG ledger was charged one admission;
     * the total ledger charge is BOUNDED by the retry budget — a future
       change that makes the retry unbounded or lets the fallback re-enter
       the caller's admission loop trips this assertion.
@@ -893,7 +893,7 @@ async def test_lost_redis_reply_charges_both_ledgers_within_a_bound(
         assert decision.backend == "postgres"
         assert decision.allowed is True
 
-        # Every retry re-executed the script and its effects LANDED: the
+        # Every retry re-executed the script and its effects landed: the
         # redis ledger is charged once per attempt, bounded by the budget.
         assert probe.executions == RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS
 
@@ -902,7 +902,7 @@ async def test_lost_redis_reply_charges_both_ledgers_within_a_bound(
         assert tokens_raw is not None
         assert float(tokens_raw) == pytest.approx(capacity - probe.executions)
 
-        # ...and the PG fallback ALSO granted: both stores hold a charge
+        # ...and the PG fallback also granted: both stores hold a charge
         # for this one logical acquire (the double-admission, bounded).
         row = await module_pg_pool.fetchrow(
             "SELECT (state->>'tokens')::float8 AS tokens, "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; the value is $1-bound
@@ -991,4 +991,4 @@ async def test_keyed_cap_never_exceeded_under_concurrent_materialization(
     assert len(resolved) + len(unavailable) == 100
     assert len(resolved) <= cap, f"cap violated: {len(resolved)} materialized"
     assert len(unavailable) == 100 - len(resolved)
-    assert len(reg._keyed_rate_limit_last_used) <= cap  # pyright: ignore[reportPrivateUsage]  # Why: the tracked dict IS the structure the cap bounds
+    assert len(reg._keyed_rate_limit_last_used) <= cap  # pyright: ignore[reportPrivateUsage]  # Why: the tracked dict is the structure the cap bounds

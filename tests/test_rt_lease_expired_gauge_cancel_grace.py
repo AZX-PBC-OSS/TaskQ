@@ -151,7 +151,7 @@ async def test_gauge_excludes_cancelling_rows_but_counts_genuinely_stuck_ones(
     (`cancel_phase = 0 OR lock_expires_at < now - cancel_grace - cleanup_grace - 60s`)
     proves it, so the gauge must not count it: an expired lease mid-cancel
     is the cancellation protocol working, not a stuck reclaim. A
-    genuinely-stuck row (cancel_phase = 0, lease past) in the SAME sample
+    genuinely-stuck row (cancel_phase = 0, lease past) in the same sample
     must still count, so the carve-out cannot hide the real zombies --
     and so this pin can never read 0 vacuously (a broken gauge reads 0 on
     both rows, an uncarved one reads 2). Both phases are covered:

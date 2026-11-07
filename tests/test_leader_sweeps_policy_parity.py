@@ -1,12 +1,12 @@
 """The parity pin for the prune-family leader sweeps' shared POLICY SCAFFOLD.
 
-``_prune_loop`` and ``_archive_expiry_loop`` are two instantiations of ONE
+``_prune_loop`` and ``_archive_expiry_loop`` are two instantiations of one
 policy: a once-per-successful-attempt-per-day date latch, a failure-only
 retry ladder, a batch-size circuit breaker sized from the dispatcher pool,
 a drain gate with a demotion clause, a leaderless-miss arm, a session
 advisory lock, and a backstop guard — each holding the same constants, in
 the same wiring order, at the same control-flow sites. The two loops
-differ ONLY in the sweep operation they drive (the retention delete vs
+differ only in the sweep operation they drive (the retention delete vs
 the archive expiry) and in that sweep's own preps and post-success
 cleanup, which are by design.
 
@@ -99,7 +99,7 @@ _ARCHIVE_STRINGS: dict[str, str] = {
 }
 
 # The single retry ladder both loops ride: 60 s doubling, capped at
-# 30 min, routed ONLY through _next_retry_backoff (the loops never touch
+# 30 min, routed only through _next_retry_backoff (the loops never touch
 # the constants directly). Pinned verbatim so a fork of the ladder into a
 # second function reds the parity pin too, not just the ladder pin.
 _LADDER_SOURCE = (
@@ -119,7 +119,7 @@ _SIZER_SOURCE = (
 
 # The shared gate wiring: the per-batch server-side bound derived from the
 # dispatcher pool's command timeout, then the gate whose liveness period
-# IS that bound, in that order.
+# is that bound, in that order.
 _TIMEOUT_SOURCE = (
     "statement_timeout_ms = "
     "_prune_statement_timeout_ms(ctx.deps.settings.dispatcher_command_timeout)"
@@ -239,8 +239,8 @@ def _flatten(
         elif isinstance(stmt, ast.For) and _norm(stmt.iter, renames, strings) == (
             "result.by_status.items()"
         ):
-            # The completed-log loop: its HEADER is scaffold (both loops
-            # log per-status counts on success); its detail FIELD is sweep-
+            # The completed-log loop: its header is scaffold (both loops
+            # log per-status counts on success); its detail field is sweep-
             # specific by design (prune reports per-status cutoffs, archive
             # a single expire_before), so the body is not compared.
             out.append(
@@ -278,10 +278,10 @@ def _find_call(fn: ast.AsyncFunctionDef, name: str) -> ast.Call:
 
 
 def test_prune_and_archive_expiry_loops_share_the_policy_scaffold() -> None:
-    """THE PARITY PIN. Both loops' scaffolds must be token-identical after
+    """The parity pin. Both loops' scaffolds must be token-identical after
     loop-specific renaming, except the whitelisted by-design segments (the
     sweep operation, its preps, its completed-log detail, prune's batch
-    cleanup). An edit to ONE loop that forks the shared policy — a changed
+    cleanup). An edit to one loop that forks the shared policy — a changed
     ladder arm, a dropped gate argument, a moved latch stamp — lands here
     as a first mismatch and reds."""
     prune, arch = _load_loops()
@@ -418,7 +418,7 @@ def test_both_loops_wire_the_drain_gate_identically() -> None:
 
 def test_both_loops_keep_the_date_latch_unstamped_on_a_demotion_cut() -> None:
     """The unfinished-day latch semantics, in both loops: the demotion-cut
-    arm arms the ladder and does NOT stamp the date latch; the success arm
+    arm arms the ladder and does not stamp the date latch; the success arm
     stamps it, clears the ladder, and resets the backstop streak; the
     day-gate clears a stale ladder. Forking any half of this turns a
     demotion cut into a done day (or a done day into a retry loop)."""
@@ -434,8 +434,7 @@ def test_both_loops_keep_the_date_latch_unstamped_on_a_demotion_cut() -> None:
             f"{label} lost the once-per-day date gate (the DAILY lane's — "
             "the check_lane bypass is the retention-cadence decoupling's "
             "own: a sub-daily schedule is a retention policy, checked "
-            "every tick, never latched — the D2 soak's at-most-daily "
-            "recorded finding)"
+            "every tick, never latched — the D2 soak's at-most-daily contract)"
         )
         gate_idx = lines.index(day_gate)
         # Invariants, not token shapes: a mirrored edit inside the gate
@@ -447,8 +446,8 @@ def test_both_loops_keep_the_date_latch_unstamped_on_a_demotion_cut() -> None:
             f"{label}'s date gate must clear the ladder and skip, in that "
             f"order, it does: {lines[gate_idx : gate_skip_idx + 1]}"
         )
-        # The demotion-cut If: ladder arm + drain-cut warn, NO latch stamp —
-        # checked over the arm's WHOLE body, not a leading window: the stamp
+        # The demotion-cut If: ladder arm + drain-cut warn, no latch stamp —
+        # checked over the arm's whole body, not a leading window: the stamp
         # is the bug wherever in the arm it lands (a mirrored stamp after the
         # warn line shipped green under the windowed check this replaced).
         cut_idx = lines.index("if not ctx.deps.leading():", gate_idx)
@@ -483,9 +482,9 @@ def test_both_loops_keep_the_date_latch_unstamped_on_a_demotion_cut() -> None:
 def test_no_await_between_the_gates_last_false_and_the_leading_read() -> None:
     """The race invariant, structurally: the demotion-cut check is the
     IMMEDIATE successor of the sweep await, and the cut arm is synchronous
-    UP TO THE LADDER WRITE — so no await can run between the gate's last
+    up TO the LADDER WRITE — so no await can run between the gate's last
     False (inside the drain) and the loop's ``leading()`` read, and a
-    re-election cannot flip leadership in between. (An await AFTER the
+    re-election cannot flip leadership in between. (An await after the
     ladder write is benign: the arm's only remaining work is the skip, and
     the armed ladder is already committed.) Reordering one await here
     passes every behavioural test and still breaks the contract; that is

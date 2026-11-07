@@ -392,8 +392,8 @@ def test_the_setup_action_pins_the_interpreter_for_the_whole_job() -> None:
 
     ``uv python install 3.12`` only downloads an interpreter; it does not select one. A later
     ``uv sync`` with no ``--python`` reads ``.python-version`` (3.13 here) and builds a 3.13
-    environment under a step labelled "Set up Python 3.12" -- several jobs used to advertise one
-    interpreter and use another.
+    environment under a step labelled "Set up Python 3.12" -- a job that advertises one
+    interpreter and uses another is the defect.
 
     A per-command ``--python`` is not enough either: it decides one command's interpreter and
     leaves every other uv call in the job free to disagree, and a ``uv run`` that disagrees
@@ -492,7 +492,7 @@ def test_a_postgres_version_matrix_job_feeds_the_matrix_into_the_test_harness() 
 
 # --- publish attestations gating ---------------------------------------------------------------
 #
-# `github.event_name` inside a called reusable workflow reflects the CALLER's triggering event,
+# `github.event_name` inside a called reusable workflow reflects the caller's triggering event,
 # not the literal string `workflow_call` -- release-please.yml triggers on `push`, so a guard
 # written as `github.event_name != 'workflow_call'` is always true there too, and would silently
 # re-enable attestations on the one path that must not have them. The fix is an explicit input
@@ -569,8 +569,26 @@ def test_every_job_that_runs_the_admin_js_tests_installs_node() -> None:
     offenders: list[str] = []
     for path in _WORKFLOWS:
         for job_name, job in _jobs(path).items():
-            scripts = _run_scripts(job)
-            if "pytest" not in scripts or "tests/e2e" in scripts or '-m "slow' in scripts:
+            step_scripts = [str(step.get("run", "")) for step in _steps(job)]
+            pytest_scripts = [s for s in step_scripts if "pytest" in s]
+            if not pytest_scripts or all(
+                "tests/e2e" in s or '-m "slow' in s for s in pytest_scripts
+            ):
+                continue
+
+            def _can_reach_web_admin(script: str) -> bool:
+                """A pytest invocation can collect tests/web_admin when
+                it binds no explicit paths (the whole-suite invocation)
+                or binds a path that is (or covers) web_admin."""
+                paths = re.findall(r"tests/[A-Za-z0-9_./-]+", script)
+                return not paths or any("web_admin" in p for p in paths)
+
+            # The node demand is per invocation: a job skips node only
+            # when every pytest invocation is path-bound away from
+            # tests/web_admin (the docs-examples job's shape) — one
+            # whole-suite invocation in the job demands node for the
+            # job.
+            if all(not _can_reach_web_admin(s) for s in pytest_scripts):
                 continue
             if not any("actions/setup-node" in str(step.get("uses", "")) for step in _steps(job)):
                 offenders.append(f"{path.name}:{job_name}")

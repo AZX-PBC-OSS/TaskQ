@@ -1,8 +1,8 @@
-"""The T08 totality PROPERTY ( F6a): the derivation table's
+"""The state totality property: the derivation table's
 totality is a tested property — a hypothesis-driven generator over RANDOM
 multisets of node views (including the two derived pending-row shapes —
 join-wait and held — and the ABSORBED-failure class, B2's clause) asserts
-the derivation yields EXACTLY ONE workflow status for every input. A new
+the derivation yields EXACTLY one workflow status for every input. A new
 node representation added without a derivation-table row reds the
 property: the totality is the test.
 
@@ -45,7 +45,7 @@ def _node_views(draw: st.DrawFn) -> NodeView:
             st.sampled_from(_BLOCKING_REASONS) if status == "pending" else st.just(None)
         ),
         held=draw(st.booleans()) if status == "pending" else False,
-        # B2's ABSORBED-FAILURE CLASS in the generator: the absorbed
+        # B2's absorbed-failure class in the generator: the absorbed
         # clause's inputs are exercised, not just the plain failed row.
         # The terminal-crash fold's absorption consistency: a
         # crashed/abandoned row with an absorbing edge reads through it
@@ -56,7 +56,7 @@ def _node_views(draw: st.DrawFn) -> NodeView:
 
 
 class TestDerivationTotality:
-    """THE TOTALITY IS A PROPERTY: exactly one workflow status per input,
+    """The totality is A property: exactly one workflow status per input,
     zero inputs uncovered."""
 
     @settings(max_examples=500, deadline=None, suppress_health_check=[HealthCheck.too_slow])
@@ -86,7 +86,7 @@ class TestDerivationTotality:
     def test_the_absorbed_class_never_derives_failed_from_its_parent(
         self, nodes: list[NodeView]
     ) -> None:
-        """B2's clause as a property: a multiset whose ONLY failures are
+        """B2's clause as a property: a multiset whose only failures are
         ABSORBED (collect/maybe) derives through the parent's outcome —
         never 'failed' (the flip: un-absorb → failed)."""
         unabsorbed_failure = any(
@@ -96,11 +96,11 @@ class TestDerivationTotality:
         if not unabsorbed_failure:
             assert derived != "failed", f"an all-absorbed multiset derived failed: {nodes}"
         else:
-            # THE PRECEDENCE: failed only ever loses to row 1 — genuine
-            # liveness (a RUNNING row — the reclaim arms' only input) or
-            # a cancel in flight. The terminal-crash class is NOT
-            # liveness (the crashed-terminal wedge's fix): a crashed
-            # row's failed-class verdict never loses to itself.
+            # failed only ever loses to row 1 — genuine liveness (a running row
+            # — the reclaim arms' only input) or a cancel in flight. The
+            # terminal-crash class is not liveness (the crashed-terminal
+            # wedge's fix): a crashed row's failed-class verdict never loses to
+            # itself.
             if derived != "failed":
                 assert any(n.status == "running" for n in nodes) or any(
                     n.cancel_in_flight for n in nodes

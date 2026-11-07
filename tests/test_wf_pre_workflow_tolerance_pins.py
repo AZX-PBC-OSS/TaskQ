@@ -1,13 +1,13 @@
 """The pre-workflow-schema tolerance pins (the phase-2 attack's M1 fix):
-the T18 workflow-liveness guard probes ``wf_edge`` — a schema the
-workflow round has NOT landed on has no such table, and an untolerated
+the retention coupling workflow-liveness guard probes ``wf_edge`` — a schema the
+workflow round has not landed on has no such table, and an untolerated
 miss is the leader's death (a non-transient error class fatal to the
 sweep loop).
 
 The shipped tolerance, pinned END-TO-END against a REAL pre-workflow
 schema (the migrations applied to target ``01.00.24_01`` — the workflow
 COLUMNS round: jobs + the archive pair with the mirror columns, the
-prune watermark; NO workflow tables — ``wf_edge`` lands one file later):
+prune watermark; no workflow tables — ``wf_edge`` lands one file later):
 
 * the result-expiry arm survives the missing tables by RUNNING — the
   unguarded fallback (semantically exact there: no join-wait rows to
@@ -31,16 +31,16 @@ import asyncpg
 import pytest
 
 from taskq.backend._sweeps import (
-    _SWEEP_RESULT_TTL_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the rejected variant IS the guarded statement run raw — the mutation is the scenario.
+    _SWEEP_RESULT_TTL_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the rejected variant is the guarded statement run raw — the mutation is the scenario.
     sweep_expired_results,
 )
 from taskq.migrate import apply_pending
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker._leader_shared import prune_terminal_jobs
 
-#: The crash window's own shape: the workflow round's COLUMN file applied
+#: The crash window's own shape: the workflow round's column file applied
 #: (01.00.24_01 — the jobs/jobs_archive column mirrors exist, so the
-#: archive write runs), the TABLE file pending (01.00.24_02 — NO wf_edge
+#: archive write runs), the TABLE file pending (01.00.24_02 — no wf_edge
 #: anywhere). The three files apply in one `migrate up --phase pre` run,
 #: each in its own transaction, so a crash between them leaves exactly
 #: this schema — the window the tolerances exist for.
@@ -57,7 +57,7 @@ async def _pre_workflow_schema(admin_conn: asyncpg.Connection, name: str) -> str
 async def _seed_expired_result(
     conn: asyncpg.Connection, schema: str, *, actor: str, key: str
 ) -> None:
-    # NOTE: a PRE-workflow jobs table has NO step_key column (the column
+    # NOTE: a pre-workflow jobs table has no step_key column (the column
     # lands with the workflow round, 01.00.24_01) — the seed uses the
     # schema's own columns only.
     await conn.execute(
@@ -76,7 +76,7 @@ async def _seed_expired_result(
 async def test_wf_pre_workflow_expiry_tolerance(
     clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema
 ) -> None:
-    """The result-expiry arm on a schema with NO workflow tables: the arm
+    """The result-expiry arm on a schema with no workflow tables: the arm
     RUNS (the unguarded fallback — exact there) and expires the row; the
     rejected variant (the guarded statement raw — the tolerance dropped)
     raises the leader-killing miss."""
@@ -84,7 +84,7 @@ async def test_wf_pre_workflow_expiry_tolerance(
     schema_name = await _pre_workflow_schema(clean_pg_conn, pre)
     await _seed_expired_result(clean_pg_conn, schema_name, actor="van", key="tol-1")
 
-    # THE SHIPPED ARM: tolerated — the expiry runs unguarded.
+    # tolerated — the expiry runs unguarded.
     expired = await sweep_expired_results(clean_pg_conn, schema=schema_name)
     assert expired >= 1, f"the tolerance must let the expiry RUN: {expired}"
     left = await clean_pg_conn.fetchval(
@@ -92,8 +92,8 @@ async def test_wf_pre_workflow_expiry_tolerance(
     )
     assert left == 0, "the unguarded fallback expires the row (exact on this schema)"
 
-    # THE REJECTED VARIANT (the tolerance dropped): the guarded statement
-    # run raw on this schema — the leader-killing miss, observed.
+    # the guarded statement run raw on this schema — the leader-killing miss,
+    # observed.
     with pytest.raises(asyncpg.UndefinedTableError):
         await clean_pg_conn.execute(_SWEEP_RESULT_TTL_SQL.format(schema=schema_name), 100)
 
@@ -102,7 +102,7 @@ async def test_wf_pre_workflow_expiry_tolerance(
 async def test_wf_pre_workflow_actor_prune_tolerance(
     clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema
 ) -> None:
-    """The per-actor prune arm on a schema with NO workflow tables and an
+    """The per-actor prune arm on a schema with no workflow tables and an
     actor_overrides entry: the arm survives (the per-batch unguarded
     fallback — the pre-tolerance shape was the leader's death) and prunes
     the actor's aged rows; the rejected variant (the guarded actor
@@ -121,8 +121,8 @@ async def test_wf_pre_workflow_actor_prune_tolerance(
     )
     assert result.total_deleted >= 1, f"the actor arm must survive and prune: {result}"
 
-    # THE REJECTED VARIANT (the tolerance dropped): the guarded ACTOR
-    # candidate run raw on this schema — the pre-tolerance leader-killer.
+    # the guarded actor candidate run raw on this schema — the pre-tolerance
+    # leader-killer.
     from taskq.worker._leader_shared import (
         _ARCHIVE_CANDIDATE_ACTOR_SQL,  # pyright: ignore[reportPrivateUsage]
     )

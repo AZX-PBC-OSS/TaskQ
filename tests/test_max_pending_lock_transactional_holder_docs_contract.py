@@ -69,7 +69,7 @@ def test_max_pending_lock_docs_disclose_transactional_holder_duration() -> None:
 
 def test_max_pending_lock_timeout_error_table_names_transactional_holder_cause() -> None:
     """The `MaxPendingLockTimeoutError` error-table row must not attribute
-    the timeout ONLY to "too many concurrent producers" - a single
+    the timeout only to "too many concurrent producers" - a single
     long-running transactional holder (e.g. an unbounded actor sub-enqueuing
     via ctx.jobs) is a distinct, currently-undocumented cause."""
     text = (_DOCS / "guides" / "jobs-clients.md").read_text()

@@ -11,7 +11,7 @@ cursor), never row existence, so the prediction is:
 * no error on any later page (the cursor's own row may be gone),
 * no surviving row skipped (the seam's strict tuple compare orders every
   survivor the same way with or without the deleted ones),
-* no row replayed (the prune's moved copy carries the SAME sort tuple, so
+* no row replayed (the prune's moved copy carries the same sort tuple, so
   the seam serves it exactly once),
 * page count may shrink, that is the honest answer.
 
@@ -124,7 +124,7 @@ async def _seed_corpus(conn: asyncpg.Connection, schema: str) -> dict[str, Any]:
         conn, schema, finished=_offset(9, 0), created=_offset(9, -10), expire=past_expire
     )
     # position 6 - the row page 2 would have served first, prune-moved
-    # (deleted from jobs, archived with the SAME sort tuple) mid-walk
+    # (deleted from jobs, archived with the same sort tuple) mid-walk
     rows["lf2"] = await _seed_live_row(
         conn, schema, finished=_offset(10, 0), created=_offset(10, -10)
     )
@@ -197,7 +197,7 @@ class TestHistoryKeysetDeleteTolerance:
         ), "the cursor row itself must be gone: that is the construct"
 
         # (b) The prune's committed effect on a live row: deleted from
-        # jobs, conserved into jobs_archive with the SAME sort tuple.
+        # jobs, conserved into jobs_archive with the same sort tuple.
         await clean_pg_conn.execute(f'DELETE FROM "{schema}".jobs WHERE id = $1', rows["lf2"][0])
         await clean_pg_conn.execute(
             f"""INSERT INTO "{schema}".jobs_archive (
@@ -230,7 +230,7 @@ class TestHistoryKeysetDeleteTolerance:
         assert page3 == []
 
         # The union-walk equivalence: page 1 survivors + later pages equals
-        # a post-delete full walk (an UNLIMITED render, the page limit is
+        # a post-delete full walk (an unlimited render, the page limit is
         # the walk's own), no dupes, no gaps.
         full_sql = _history_list_sql(schema, cursor=False, limit=100)
         full = await clean_pg_conn.fetch(full_sql, statuses, None, None)

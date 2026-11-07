@@ -125,7 +125,7 @@ async def test_apply_pending_refuses_on_checksum_drift_and_applies_nothing(pg_ds
         )
 
         # A pending migration added on top of the drifted ledger: the
-        # refusal must keep it PENDING, drift poisons the whole run.
+        # refusal must keep it pending, drift poisons the whole run.
         pending = _fake_migration(
             "50.00.00_01", "pre", f'CREATE TABLE "{schema}".drift_not_applied (id int);'
         )
@@ -293,7 +293,7 @@ async def test_apply_pending_target_stops_after_matching_version(
 
 
 async def test_apply_pending_rejects_unknown_target_loudly(pg_dsn: str) -> None:
-    """A target that names no discovered version must raise BEFORE
+    """A target that names no discovered version must raise before
     anything applies, not fall through the truncation loop and silently
     apply the whole stack.
 
@@ -311,12 +311,12 @@ async def test_apply_pending_rejects_unknown_target_loudly(pg_dsn: str) -> None:
         message = str(exc_info.value)
         assert "01.00.11_01" in message
         # The refusal must name the available range and the listing
-        # command, so the operator can see what the runner DOES bundle.
+        # command, so the operator can see what the runner does bundle.
         discovered = migrate_mod.discover()
         assert discovered[0].version in message
         assert discovered[-1].version in message
         assert "taskq migrate status" in message
-        # Loud BEFORE anything is applied: no schema, no ledger, no DDL.
+        # Loud before anything is applied: no schema, no ledger, no DDL.
         schema_exists = await conn.fetchval(
             "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
             schema,
@@ -362,7 +362,7 @@ async def test_apply_pending_max_steps_zero_still_applies_one(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Surprising boundary: the ``max_steps`` break check runs *after* a
-    migration is appended to ``applied_now``, so ``max_steps=0`` does NOT
+    migration is appended to ``applied_now``, so ``max_steps=0`` does not
     prevent the first pending migration from being applied - it merely
     stops immediately after applying exactly one (same as ``max_steps=1``).
     """

@@ -11,7 +11,7 @@ deadline retries forever; this classifier deliberately never returns
 
 The timeout NAME signals are a contract: the default factory matches
 EXACT curated names only (``DEFAULT_TRANSIENT_EXCEPTION_NAMES``) — a
-class name ending in ``Timeout``/``TimeoutError`` is claimed ONLY if the
+class name ending in ``Timeout``/``TimeoutError`` is claimed only if the
 exact name is listed. The suffix inference is opt-in
 (``infer_timeout_by_suffix=True``), documented with its counterexample:
 ``pymongo.errors.ExecutionTimeout`` is a deadline-exceeded that MEANS
@@ -84,7 +84,7 @@ class _AiohttpStyleError(Exception):
         super().__init__(f"HTTP {status}")
 
 
-class ReadTimeout(Exception):  # noqa: N818  Why: the exact class name IS the signal under test (httpx/requests shape)
+class ReadTimeout(Exception):  # noqa: N818  Why: the exact class name is the signal under test (httpx/requests shape)
     """httpx/requests-shaped timeout (name-matched, no import)."""
 
 
@@ -100,7 +100,7 @@ class VendorFlake(Exception):  # noqa: N818  Why: a consumer-defined name that i
     """A consumer-defined transient nobody's default set knows."""
 
 
-class ExecutionTimeout(Exception):  # noqa: N818  Why: the exact class name IS the signal under test (pymongo shape)
+class ExecutionTimeout(Exception):  # noqa: N818  Why: the exact class name is the signal under test (pymongo shape)
     """``pymongo.errors.ExecutionTimeout``-shaped: a deadline-exceeded that
     MEANS failure — the server killed the operation for exceeding
     ``maxTimeMS`` and a re-run of the same query re-fails deterministically.
@@ -108,7 +108,7 @@ class ExecutionTimeout(Exception):  # noqa: N818  Why: the exact class name IS t
     subclass: exactly the shape the suffix heuristic over-claims."""
 
 
-class QueryDeadlineExceeded(TimeoutError):  # noqa: N818  Why: the name must NOT be Error-suffixed/suffix-matched — the isinstance signal's shape under test
+class QueryDeadlineExceeded(TimeoutError):  # noqa: N818  Why: the name must not be Error-suffixed/suffix-matched — the isinstance signal's shape under test
     """A builtin-``TimeoutError`` subclass with a name that is neither an
     exact curated name nor suffix-matched: the isinstance signal's shape."""
 
@@ -172,12 +172,12 @@ def test_builtin_timeout_via_socket_alias_shape() -> None:
     assert hook(TimeoutError("timed out"), 1) == RetryOverride(kind="transient")
 
 
-# ── the suffix inference is OPT-IN: exact curated names by default ─
+# ── the suffix inference is opt-in: exact curated names by default ─
 
 
 def test_suffix_inference_is_opt_in_execution_timeout_shape_returns_none() -> None:
     """The adoption contract: the DEFAULT factory matches exact curated
-    names ONLY. ``ExecutionTimeout`` ends in ``Timeout`` but is not in the
+    names only. ``ExecutionTimeout`` ends in ``Timeout`` but is not in the
     curated set — a deadline-exceeded that MEANS failure (a re-run
     re-fails deterministically), so the suffix heuristic's transient claim
     burned retry budget on unwinnable work. Under default kwargs the
@@ -197,7 +197,7 @@ def test_property_suffix_names_not_in_the_curated_set_stay_unclaimed(
     prefix: str, suffix: str
 ) -> None:
     """Property: under default kwargs, a class name ending in
-    ``Timeout``/``TimeoutError`` is claimed ONLY if the exact name is in
+    ``Timeout``/``TimeoutError`` is claimed only if the exact name is in
     the curated set — the suffix alone is never a signal."""
     name = f"{prefix}{suffix}"
     exc = type(name, (Exception,), {})
@@ -248,7 +248,7 @@ def test_major_client_timeout_names_claim_transient_under_default(
     (requests' engine, the most-installed HTTP stack) and botocore (the
     AWS SDK) raise on a read/connect timeout. Neither is a builtin
     ``TimeoutError`` subclass (urllib3's own ``TimeoutError`` and
-    botocore's ``BotoCoreError`` bases), so ONLY the exact curated name
+    botocore's ``BotoCoreError`` bases), so only the exact curated name
     claims them — a set that dropped them would under-claim exactly the
     majors the constant's provenance comment promises, and the pre-#658
     suffix heuristic's only remaining real-world benefit would be lost
@@ -480,7 +480,7 @@ def test_include_names_extend_the_transient_set() -> None:
 def test_exclude_names_win_over_every_signal() -> None:
     """Precedence pin: an excluded name returns None even when the
     exception would be claimed by the builtin connection family, the
-    timeout name shape, AND the status band."""
+    timeout name shape, and the status band."""
     hook = failure_taxonomy_classifier(exclude_names={"MyConnError", "ReadTimeout"})
 
     assert hook(MyConnError("x"), 1) is None, "exclude wins over the isinstance signal"
@@ -490,7 +490,7 @@ def test_exclude_names_win_over_every_signal() -> None:
 
 def test_transient_status_set_replaces_the_default() -> None:
     """Status sets REPLACE the defaults entirely (documented): passing
-    transient_status={429} claims ONLY 429 — the 5xx band and 408/425 are
+    transient_status={429} claims only 429 — the 5xx band and 408/425 are
     no longer claimed transient."""
     hook = failure_taxonomy_classifier(transient_status={429})
 

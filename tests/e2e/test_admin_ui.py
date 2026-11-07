@@ -15,7 +15,7 @@ Endpoints asserted (verified in ``src/taskq/web/admin/``):
 - ``GET /admin/jobs/count?actor=...`` (jobs.py:412-435): JSON ``{"count": N}``
   over the live ``jobs`` table; the default live tab spans all statuses
   including ``succeeded`` (``_constants.py`` ``_ALL_STATUSES``). A completed
-  job is NOT archived mid-test: ``prune_terminal_jobs`` only moves rows with
+  job is not archived mid-test: ``prune_terminal_jobs`` only moves rows with
   ``finished_at < now() - retention`` (worker/_leader_shared.py:317-324) and
   the e2e worker env keeps the 30-day ``prune_retention_succeeded`` default.
 - The same route without the bearer token returns 401: ``token_auth`` is a
@@ -69,7 +69,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ADMIN_ENTRY = _REPO_ROOT / "tests" / "e2e" / "admin_entry.py"
 _READY_TIMEOUT = 30.0
 _SHUTDOWN_TIMEOUT = 10.0
-# Bind-and-release port selection loses a TOCTOU race now and then under
+# Bind-and-release port selection loses a toctou race now and then under
 # parallel load; a child that exits early with "address already in use" gets
 # this many total attempts, each on a fresh port.
 _MAX_BIND_ATTEMPTS = 3
@@ -290,7 +290,7 @@ async def test_admin_sse_realtime_events(
     async def _collect_events_until_state_change() -> list[str]:
         """Read the SSE stream until the first ``state_change`` event.
 
-        This frame is the ONE that breaks out of ``aiter_lines()``: the
+        This frame is the one that breaks out of ``aiter_lines()``: the
         stream never terminates on its own (the endpoint keepsalive loops
         forever), so consumption to exhaustion - the pattern that closes
         the httpx generator chain by itself - is impossible here, and the
@@ -401,7 +401,7 @@ async def test_admin_queue_overview(
 
     # Seed a second queue with a pending job via direct SQL so the
     # overview shows multiple queues. The jobs table requires several
-    # NOT NULL columns; this mirrors the minimal column set the
+    # not NULL columns; this mirrors the minimal column set the
     # enqueue path writes.
     from taskq._ids import new_job_id
 

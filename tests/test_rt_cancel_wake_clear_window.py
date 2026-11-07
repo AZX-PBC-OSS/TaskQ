@@ -16,7 +16,7 @@ only the wait until the next tick, bounded by one heartbeat interval.
 Pins:
 
 * unit (no PG): a wake that lands in the wait-to-clear window
-  deterministically - the wait ends by its timeout, the set lands, THEN
+  deterministically - the wait ends by its timeout, the set lands, then
   the clear runs - is swallowed by the clear, and the very next tick's
   ``run_in_tx`` still observes the cancel, within one heartbeat
   interval;
@@ -82,15 +82,15 @@ class _RecordingCancelController:
 
 
 class _ClearWindowWake:
-    """A wake event whose FIRST ``wait()`` reproduces the clear window.
+    """A wake event whose first ``wait()`` reproduces the clear window.
 
     Duck-typed to the loop's complete surface (``wait`` + ``clear``):
     ``heartbeat_loop`` never touches the event any other way.
 
     The heartbeat's bounded wait ends one of two ways: the event sets
     (wait returns) or the timeout fires (``wait_for`` raises). The
-    window is a set landing AFTER the timeout has already doomed the
-    wait but BEFORE the loop's unconditional ``clear()``. This stub
+    window is a set landing after the timeout has already doomed the
+    wait but before the loop's unconditional ``clear()``. This stub
     replays that order exactly: the test opens the gate once the loop is
     parked in the wake wait, the stub sets itself (the NOTIFY lands),
     then raises ``TimeoutError`` the way the expired ``wait_for`` does.

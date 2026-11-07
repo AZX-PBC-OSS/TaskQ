@@ -385,7 +385,7 @@ async def test_reclaim_delay_honours_a_non_default_backoff_ceiling(
 
 # ── Deterministic jitter: the fraction and its cross-backend parity ────────
 #
-# The reclaim delay's jitter fraction is DERIVED from the row, never drawn:
+# The reclaim delay's jitter fraction is derived from the row, never drawn:
 # ``md5(j.id::text || ':' || j.attempt::text)`` - first 8 hex digits as a
 # uint32 over 2**32 - computed byte-identically by ``_RECLAIM_DELAY_SQL`` in
 # the database and by ``taskq.retry._compute_reclaim_backoff`` in Python.
@@ -401,11 +401,11 @@ async def test_reclaim_delay_honours_a_non_default_backoff_ceiling(
 #: Fixed (job id, attempt) inputs for the formula pin - the pin draws
 #: nothing, so its inputs are fixed.  attempt=0 pins the
 #: direct-construction corner (the SQL floors the exponent with
-#: GREATEST(attempt - 1, 0) and hashes the raw attempt); attempt=1000
+#: greatest(attempt - 1, 0) and hashes the raw attempt); attempt=1000
 #: exercises the deep-exponent arm.  attempt=1024 pins the float8-overflow
 #: corner: with the exponent clamped only at power()'s domain ceiling,
 #: ``base * power(2.0, attempt - 1)`` overflowed float8 for base > ~2 and
-#: RAISED SQLSTATE 22003 where the Python twin saturated to the cap - the
+#: raised SQLSTATE 22003 where the Python twin saturated to the cap - the
 #: clamp must keep the multiply itself in range (the curve has long
 #: saturated against the cap there).  attempt=32767 is the smallint
 #: ceiling, the deepest attempt the column can stamp.
@@ -421,7 +421,7 @@ _FORMULA_ROWS: tuple[tuple[UUID, int], ...] = (
 
 #: The curve shapes the reclaim formula branches on: all three backoff
 #: kinds, zero / mid / full jitter, and a policy whose cap sits above the
-#: operator ceiling (exercising LEAST(retry_cap_seconds, max_retry_backoff)).
+#: operator ceiling (exercising least(retry_cap_seconds, max_retry_backoff)).
 #: The trailing entry pins the degenerate-row contract: a row stamped with
 #: base = 0 and cap = 0 by an earlier release (the policy boundary refused
 #: non-positive bases only after that release) draws zero from its own

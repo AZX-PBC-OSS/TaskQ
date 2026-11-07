@@ -48,7 +48,7 @@ async def revert_stale_auto_disable(
     a transient partial-DB blip (fires fail, strike writes commit) must not
     permanently halt recurring work until a human intervenes. ``'operator'``
     is a deliberate disable (schedule handle, CLI, admin UI, actor
-    deregistration) and is NEVER reverted by a boot, exactly the intent the
+    deregistration) and is never reverted by a boot, exactly the intent the
     create-only registration design guards.
 
     A disabled row with a NULL marker is read in two populations (issue #460).
@@ -101,7 +101,7 @@ async def revert_stale_auto_disables(
     pass has since matched, because no boot happens between the old
     leader's strike and the new leader's takeover. Without a takeover
     pass, the schedule the #467 recovery is written for stays disabled
-    until the NEXT full restart.
+    until the next full restart.
 
     So every leadership assumption re-runs the recovery over the code's
     declared specs: the new leader inherits the cron table and re-evaluates
@@ -111,7 +111,7 @@ async def revert_stale_auto_disables(
     alone), and an old leader cannot fight it: the lease row means at most
     one leader ticks at a time, and a strike that committed in the
     sub-second overlap before the old leader notices its loss is reverted
-    by the NEXT assumption (boot or takeover).
+    by the next assumption (boot or takeover).
 
     Returns the number of schedules re-enabled. Never raises for a per-spec
     recovery failure: a transient blip reverting one schedule must not

@@ -78,7 +78,7 @@ _VARIANTS = (
     ("strict_fifo", DISPATCH_STRICT_FIFO_SQL),
 )
 
-# The round's OWN fleet slice: two actors on two polled queues, each
+# The round's own fleet slice: two actors on two polled queues, each
 # holding a handful of due cohorts. Small and identical at every fleet
 # size, so any growth in row work comes from outside it.
 _POLLED_QUEUES = ("fleet_polled_a", "fleet_polled_b")
@@ -86,7 +86,7 @@ _POLLED_ACTORS = ("fleet_actor_a", "fleet_actor_b")
 _OWN_COHORTS_PER_QUEUE = 3
 _OWN_ROWS_PER_COHORT = 20
 
-# The REST of the fleet: queues this round never polls, actors it never
+# The rest of the fleet: queues this round never polls, actors it never
 # dispatches, each with its own cohorts and its own due backlog. Both
 # the cohort count and the row depth grow between the two fleet sizes,
 # so a plan that walks cohorts fleet-wide and one that scans rows

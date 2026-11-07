@@ -99,7 +99,7 @@ async def test_dsn_and_conn_factory_mutually_exclusive() -> None:
 
 
 async def test_caller_owned_conn_not_closed() -> None:
-    """A pre-constructed conn is NOT closed by apply_pending_locked."""
+    """A pre-constructed conn is not closed by apply_pending_locked."""
     conn = _FakeConn()
     # Patch apply_pending to avoid real migration logic
     with patch("taskq.migrate.apply_pending", new=AsyncMock(return_value=[])):
@@ -110,7 +110,7 @@ async def test_caller_owned_conn_not_closed() -> None:
     unlock_sqls = [sql for sql, _ in conn.executed if "pg_advisory_unlock" in sql]
     assert len(lock_sqls) == 1
     assert len(unlock_sqls) == 1
-    # NOT closed (caller-owned)
+    # not closed (caller-owned)
     assert not conn.closed
 
 

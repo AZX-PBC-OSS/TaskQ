@@ -22,14 +22,14 @@ _DEFAULTS: dict[str, str] = {
     "TASKQ_HEARTBEAT_INTERVAL": "0.5",
     # Lease 3.0 + the tiny command timeout satisfy the cascade floor
     # (max(0.5, 0.1) + (3 + 1) * (0.5 + 0.1) = 2.9 <= 3.0; the default
-    # max_heartbeat_failures of 3 means FOUR failed cycles) while keeping
+    # max_heartbeat_failures of 3 means four failed cycles) while keeping
     # lease-expiry waits in the seconds range the chaos/fast tiers assume.
     "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
     "TASKQ_LOCK_LEASE": "3.0",
     # Keeps the lag-lease invariant satisfied for these fast defaults
     # (1.2 + 0.5 < 3.0): a stalled loop dies before its 3s lease expires,
     # without the detector tripping on its own sampling cadence. The
-    # lag lattice (the LedgerWatch F6 fix included) pins ALL THREE
+    # lag lattice (the LedgerWatch F6 fix included) pins all three
     # gaps: the check interval 0.25 < the warn budget 0.6 (a warn at or
     # below the sampling cadence warns + dumps every healthy poll — the
     # warning storm) < the terminal budget 1.2 (a warn at or above it

@@ -42,7 +42,7 @@ class _FakeConn:
         return self._rows
 
 
-# ── dispatch creates INTERNAL span with correct name/attributes ──
+# ── dispatch creates internal span with correct name/attributes ──
 
 
 async def test_dispatch_creates_internal_span_with_correct_name(
@@ -318,7 +318,7 @@ async def test_dispatch_batch_still_passes_fetch_args() -> None:
     assert result == [{"id": 1}, {"id": 2}]
 
 
-# ── CONSUMER span with link (unit-level) ──────────────────────
+# ── consumer span with link (unit-level) ──────────────────────
 
 
 async def test_consumer_span_with_link(monkeypatch: pytest.MonkeyPatch) -> None:

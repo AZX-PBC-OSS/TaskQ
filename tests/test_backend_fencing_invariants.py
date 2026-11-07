@@ -1,7 +1,7 @@
 """Fencing-predicate invariants for the PG terminal writes and sweeps.
 
 Why: these contracts are carried entirely by predicates inside SQL string
-literals (``AND status = 'running'``, ``AND cancel_phase = 2``,
+literals (``and status = 'running'``, ``and cancel_phase = 2``,
 ``SKIP LOCKED``).  Nothing in the Python source changes when one is
 dropped, so they execute - and count as covered - with nothing asserting
 them.  Each test here pins an outcome a queue user can observe: a
@@ -15,7 +15,7 @@ deliberately leaves ``locked_by_worker`` and ``lock_expires_at`` in
 place (they are the audit trail of which worker was abandoned).  The
 zombie actor task that was abandoned therefore still holds a *matching*
 worker id, so the ownership fence alone does not stop it from writing a
-second terminal state - only ``AND status = 'running'`` does.
+second terminal state - only ``and status = 'running'`` does.
 """
 
 import asyncio

@@ -81,7 +81,7 @@ pytestmark = pytest.mark.integration
 _CANCEL_GRACE = timedelta(seconds=30)
 _CLEANUP_GRACE = timedelta(seconds=30)
 # Small enough that several batches run per drain, large enough that the
-# boundary (a final under-full window) is reached by BOTH drains.
+# boundary (a final under-full window) is reached by both drains.
 _BATCH = 8
 # 2 full batches + a partial tail: the last window both drains race on is
 # the under-full boundary.

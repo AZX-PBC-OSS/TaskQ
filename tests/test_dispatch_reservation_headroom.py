@@ -279,7 +279,7 @@ async def test_keyed_bucket_never_gates_its_holder_actor(pg_dsn: str) -> None:
         assert [job.id for job in first] == [holder_id]
         slot = await reservation.acquire(holder_id, pod.worker_id, pod.deps.worker_pool)
 
-        # Sibling rows of the SAME actor: at claim time these are
+        # Sibling rows of the same actor: at claim time these are
         # indistinguishable from the holder tenant's own extra rows, and
         # that is exactly why the keyed bucket must not gate them: the
         # other tenants' rows would be stranded behind a tenant they do
@@ -397,11 +397,11 @@ async def test_queue_cap_fold_covers_the_round_robin_arm(pg_dsn: str) -> None:
 # ── Consumer-level: the keyed cap still enforces post-claim ─────────────
 #
 # The claim-level exclusion above is only safe because the keyed limit
-# still bites somewhere the key IS known: the consumer's post-claim
+# still bites somewhere the key is known: the consumer's post-claim
 # acquire_for_actor resolves f"{base_name}:{key}" from the validated
 # payload and denies (snooze/reschedule) when that key's bucket is full.
 # This is the adversarial-review pin for that: one tenant saturates its keyed
-# bucket, and the OTHER tenant's jobs of the same actor complete anyway
+# bucket, and the other tenant's jobs of the same actor complete anyway
 # while the saturated tenant's extra jobs are denied by the acquire,
 # never by the claim.
 
@@ -452,7 +452,7 @@ async def _noop(payload: _TenantPayload, ctx: object) -> None:
 
 async def test_keyed_limit_enforces_post_claim_per_tenant(pg_dsn: str) -> None:
     """end-to-end: tenant A saturates its keyed session bucket (one
-    hog job holds the only slot); tenant B's jobs of the SAME actor
+    hog job holds the only slot); tenant B's jobs of the same actor
     complete (the claim never gated them on A's keyed occupancy), while
     A's further jobs are denied by the consumer's acquire, rescheduled,
     never run, so the per-key cap is enforced exactly where the
@@ -543,7 +543,7 @@ async def test_keyed_limit_enforces_post_claim_per_tenant(pg_dsn: str) -> None:
         finally:
             stop.set()
 
-        # Snapshot BEFORE cancelling the consumers, after a short drain
+        # Snapshot before cancelling the consumers, after a short drain
         # for in-flight denial writes to land: the hog job is parked
         # mid-actor-body and cancelling its consumer task terminalises
         # it (the production cancellation path), so the running-state
@@ -574,7 +574,7 @@ async def test_keyed_limit_enforces_post_claim_per_tenant(pg_dsn: str) -> None:
         # The keyed cap still bites for the saturated tenant: of A's
         # jobs, exactly one holds the session slot (running the hog);
         # every other A job was denied by the acquire and rescheduled,
-        # the claim-level exclusion above is safe BECAUSE this half holds.
+        # the claim-level exclusion above is safe because this half holds.
         a_running = [jid for jid in job_ids["a"] if states[jid] == "running"]
         assert len(a_running) == 1, (
             f"{len(a_running)} tenant-A jobs are running against a "

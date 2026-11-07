@@ -289,7 +289,7 @@ async def test_phase_2_rowcount_zero_skips_insert_and_cancel() -> None:
 @pytest.mark.asyncio
 async def test_phase_2_pg_error_propagates_no_task_cancel() -> None:
     """(a): When ``conn.execute`` raises PostgresConnectionError,
-    ``task.cancel()`` is NOT called; the exception propagates out of the hook."""
+    ``task.cancel()`` is not called; the exception propagates out of the hook."""
     job_id = new_job_id()
     worker_id = new_uuid()
 
@@ -430,7 +430,7 @@ async def test_phase_3_abandonment() -> None:
     # mark_abandoned is worker-unfenced, so an abandon may only be queued
     # for a row this worker's own poll still returns (locked_by this
     # worker, cancel-requested, running). A silent poll with a local
-    # FORCED entry is a stale/reclaimed row whose abandon could terminate
+    # forced entry is a stale/reclaimed row whose abandon could terminate
     # another worker's re-dispatched attempt (the PG-level proof is
     # tests/test_rt_cancelwatch_cross_worker_abandon.py). This job is
     # still this worker's, escalated to phase 2.
@@ -550,7 +550,7 @@ async def test_pg_observation_fast_advance() -> None:
 
 @pytest.mark.asyncio
 async def test_wall_clock_skew_negative() -> None:
-    """Phase-2 escalation does NOT fire when cancel_observed_at is
+    """Phase-2 escalation does not fire when cancel_observed_at is
     still under the cancel grace period. Confirms ``loop.time()`` is
     used for the comparison, not ``time.time()``."""
     job_id = new_job_id()
@@ -644,7 +644,7 @@ async def test_forbidden_order_task_cancel_before_pg_write() -> None:
 
     # The controller issued two execute calls: escalation UPDATE then INSERT.
     # task.cancel() runs after both. Verifying that the recorder captured
-    # both calls AND that task.cancelling() is 1 confirms the correct
+    # both calls and that task.cancelling() is 1 confirms the correct
     # ordering: had the controller called task.cancel() before the UPDATE, the
     # escalation_sql would not appear in execute_calls[0].
     assert len(recorder.execute_calls) == 2

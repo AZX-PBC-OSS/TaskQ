@@ -1,18 +1,16 @@
 # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""THE API LANE'S FIX-ROUND PINS (the fresh reviewer's F3 findings):
+"""The API surface's pins (E9, E10, E5's signature order):
 
-* F3-1 → **E9-ctx-annotation**: a LYING ctx annotation (a fabricated
+* **E9-ctx-annotation**: a LYING ctx annotation (a fabricated
   stand-in) is the BUILD refusal (the PICKED door: the annotation is
   verification, not documentation — the docs' claim "the checker
-  verifies the body's ctx.* reads" is now unconditional). FAILING-FIRST:
-  the rejected shape validate()s clean on the pre-rule tree (the pin's
-  red is the base's behavior, the finding's receipt).
-* F3-2 → **E10-arity**: a body taking MORE params than wired is the
-  BUILD refusal (the mismatch rode the retry ladder mid-flow; the
-  ladder never sees it now). FAILING-FIRST: the same.
-* F3-4 → **E5's signature-ordered map**: the LEGITIMATE mixed signature
+  verifies the body's ctx.* reads" is unconditional).
+* **E10-arity**: a body taking MORE params than wired is the
+  BUILD refusal (the mismatch is caught at build, never riding the
+  retry ladder mid-flow).
+* **E5's signature-ordered map**: the LEGITIMATE mixed signature
   (``step(body, p, 3)`` for ``body(ctx, item: Report, page: int)``)
-  GREENS (the cross-product's false positive is dead) AND the genuine
+  GREENS (the cross-product's false positive is dead) and the genuine
   mismatch still refuses (both faces pinned).
 """
 
@@ -40,7 +38,7 @@ class Other(BaseModel):
 
 
 class _FabricatedCtx:
-    """THE LIE (F3-1's rejected stand-in): an anything-goes context —
+    """The lie (F3-1's rejected stand-in): an anything-goes context —
     the checker verifies the body's ctx.* reads against THIS, every face
     reports clean, nothing verified."""
 
@@ -49,20 +47,20 @@ class _FabricatedCtx:
 
 
 def test_e9_the_fabricated_ctx_annotation_is_the_build_refusal() -> None:
-    """THE LIE IS THE BUILD REFUSAL: a body whose ctx annotation is a
+    """The lie is the build refusal: a body whose ctx annotation is a
     fabricated stand-in never compiles (the docs' verification claim is
     unconditional now)."""
     app = WorkflowApp()
 
-    async def lying_body(ctx: _FabricatedCtx, params: Ingest) -> Report:  # type: ignore[reportInvalidTypeForm]  # Why: THE LIE ITSELF — the probe's subject.
+    async def lying_body(ctx: _FabricatedCtx, params: Ingest) -> Report:  # type: ignore[reportInvalidTypeForm]  # Why: the lie itself — the probe's subject.
         return Report(ref=params.doc_id)  # type: ignore[return-value]  # Why: the lie's body reads nothing.
 
     @app.workflow("e9_lying_ctx")
     def e9_lying_ctx() -> Promise[object]:
         return build(step(lying_body, Ingest(doc_id="d1"), key="solo"))
 
-    # the PROBE SEAM (app._compile): the door (app.get) raises on the
-    # graph's error — the pin's subject is the compiled graph's OWN
+    # the probe seam (app._compile): the door (app.get) raises on the
+    # graph's error — the pin's subject is the compiled graph's own
     # validate() report, so the probe compiles without the door.
     compiled = app._compile("e9_lying_ctx")
     from taskq.workflows.api._validate import _run_rules
@@ -70,7 +68,7 @@ def test_e9_the_fabricated_ctx_annotation_is_the_build_refusal() -> None:
     e9 = [d for d in _run_rules(compiled) if d.rule == "E9-ctx-annotation"]
     assert e9, "the fabricated ctx annotation was not rejected (the erasure ships)"
     assert "StepContext" in e9[0].message
-    # And the BUILD door refuses (the errors raise):
+    # And the build door refuses (the errors raise):
     with pytest.raises(WorkflowValidationError, match="E9-ctx-annotation"):
         compiled.validate()
 
@@ -95,7 +93,7 @@ def test_e9_the_honest_annotation_greens() -> None:
 
 
 def test_e10_the_over_arity_body_is_the_build_refusal() -> None:
-    """THE ARITY GAP'S FIX: a body taking MORE params than wired is the
+    """The arity gap's fix: a body taking MORE params than wired is the
     BUILD refusal — the mismatch never reaches the ladder."""
     app = WorkflowApp()
 
@@ -106,7 +104,7 @@ def test_e10_the_over_arity_body_is_the_build_refusal() -> None:
     def e10_over_arity() -> Promise[object]:
         return build(step(over_arity, Ingest(doc_id="d1"), key="solo"))
 
-    # the PROBE SEAM (app._compile): the door would raise — the pin's
+    # the probe seam (app._compile): the door would raise — the pin's
     # subject is the graph's own validate() report.
     compiled = app._compile("e10_over_arity")
     with pytest.raises(WorkflowValidationError, match="E10-arity"):
@@ -132,7 +130,7 @@ def test_e10_the_exact_arity_greens() -> None:
 
 
 def test_e5_the_legitimate_mixed_signature_greens() -> None:
-    """THE ZERO-FALSE-POSITIVE PIN: ``step(body, p, 3)`` for
+    """The zero-false-positive pin: ``step(body, p, 3)`` for
     ``body(ctx, item: Report, page: int)`` — the mixed promise/data
     signature GREENS (the cross-product rejected it before; the map is
     by signature order now)."""
@@ -149,13 +147,13 @@ def test_e5_the_legitimate_mixed_signature_greens() -> None:
         p = step(source_body, Ingest(doc_id="d1"), key="src")
         return build(step(mixed_body, p, 3, key="tail"))
 
-    app.get("e5_mixed").validate()  # the mixed signature: GREEN
+    app.get("e5_mixed").validate()  # the mixed signature: green
 
 
 def test_e5_the_genuine_mismatch_still_refuses() -> None:
     """The genuine mismatch still refuses (the signature-ordered
     comparison sees it): the consumer's param model is unrelated to its
-    OWN wired parent's product."""
+    own wired parent's product."""
     app = WorkflowApp()
 
     async def source_body(ctx: Any, params: Ingest) -> Report:
@@ -173,13 +171,13 @@ def test_e5_the_genuine_mismatch_still_refuses() -> None:
         app.get("e5_mismatch").validate()
 
 
-# ── finding 13: E10's message states the SIGNATURE's counts ─────────────
+# ── finding 13: E10's message states the signature's counts ─────────────
 
 
 def test_e10_the_message_states_the_signature_actually_declared() -> None:
-    """FINDING 13's PIN (de-slopped): the arity rule fires on the
+    """(de-slopped): the arity rule fires on the
     signature the body ACTUALLY declares — never the resolved-hints
-    count. The pre-fix message counted ANNOTATED params only: a
+    count. An annotated-only count misses: a
     partially-annotated body (``def body(ctx, params: Ingest, page)``)
     slipped the rule entirely (the runtime TypeError this rule exists to
     refuse). The contract is the RULE + the SUBJECT: E10-arity on the
@@ -188,8 +186,8 @@ def test_e10_the_message_states_the_signature_actually_declared() -> None:
     app = WorkflowApp()
 
     async def partial(ctx: Any, params: Ingest, page: object) -> Ingest:
-        # `page` is UNANNOTATED-in-kind on purpose: the pre-fix rule
-        # counted only the ANNOTATED params and skipped this body
+        # `page` is unannotated-in-kind on purpose: an annotated-only rule
+        # counted only the annotated params and skipped this body
         # entirely. `object` keeps pyright quiet without adding the
         # annotation the old message counted.
         return params
@@ -202,8 +200,8 @@ def test_e10_the_message_states_the_signature_actually_declared() -> None:
     with pytest.raises(WorkflowValidationError, match="E10-arity") as exc_info:
         compiled.validate()
     message = str(exc_info.value)
-    # THE RULE FIRES ON THE RIGHT SUBJECT: the signature's OWN
-    # identifiers — both params the body declares, annotated or not.
+    # the signature's own identifiers — both params the body declares,
+    # annotated or not.
     assert "params" in message and "page" in message, (
         f"the message omits the signature's own identifiers: {message}"
     )
@@ -212,10 +210,10 @@ def test_e10_the_message_states_the_signature_actually_declared() -> None:
 def test_e10_the_message_counts_the_wiring_actually_provided() -> None:
     """The provided-count face (de-slopped): a body of 4 declared params
     wired 2 sources is E10's class on the offending node — the rule
-    firing on the right subject is the contract. THE PARTITION (the E12
-    merge's ruling): exactly ONE param beyond the wiring is the deps
+    firing on the right subject is the contract. the PARTITION (the E12
+    merge's ruling): exactly one param beyond the wiring is the deps
     contract's opt-in (E12's class — it names the bind-or-drop fix);
-    TWO OR MORE beyond the wiring can never be a deps shape — the arity
+    TWO or MORE beyond the wiring can never be a deps shape — the arity
     mismatch is E10's."""
     app = WorkflowApp()
 
@@ -236,13 +234,13 @@ def test_e10_the_message_counts_the_wiring_actually_provided() -> None:
 
 
 def test_e12_owns_the_single_param_beyond_the_wiring() -> None:
-    """THE PARTITION'S OTHER FACE (the E12 merge's ruling, pinned from
+    """The partition's other face (the E12 merge's ruling, pinned from
     the boundary): a body of 3 declared params wired 2 sources — the
-    +1 shape — is E12's class, NOT E10's: the wiring never provides the
+    +1 shape — is E12's class, not E10's: the wiring never provides the
     third, so the deps contract owns it (refused here because the app
     binds no deps). A pin written against the pre-E12 world (this shape
-    expecting E10-arity) was the merge collision's recorded finding — the
-    partition is now pinned from BOTH sides."""
+    expecting E10-arity) — the
+    partition is now pinned from both sides."""
     app = WorkflowApp()
 
     async def three(ctx: Any, a: Ingest, b: Ingest, c: Ingest) -> Ingest:
@@ -260,16 +258,16 @@ def test_e12_owns_the_single_param_beyond_the_wiring() -> None:
     assert "'c'" in message, f"the refusal must name the deps param's own identifier: {message}"
 
 
-# ── finding 12: E11 walks the carry's STRUCTURE ──────────────────────────
+# ── finding 12: E11 walks the carry's structure ──────────────────────────
 
 
 def test_e11_the_nested_promise_carry_is_refused() -> None:
-    """FINDING 12's PIN (FAILING-FIRST): a promise handle NESTED inside the
+    """a promise handle NESTED inside the
     initial carry — a dict's value — died the same mid-flow death the
     bare handle does (the rehydration's walk passes the handle through
     unchanged into the jsonb write; the claim→crash→reclaim loop died
-    UnencodableValue AFTER the rows existed, untyped by any compile
-    rule). THE FIX: the validator walks the carry's STRUCTURE — the
+    UnencodableValue after the rows existed, untyped by any compile
+    rule). The validator walks the carry's STRUCTURE — the
     same walk the rehydration does — and refuses the nested handle at
     the construction door, E11 at any depth."""
     from taskq.workflows import loop

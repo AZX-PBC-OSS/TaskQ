@@ -3,7 +3,7 @@
 asyncpg sends ``BEGIN`` and ``COMMIT`` (and, nested, ``SAVEPOINT`` /
 ``RELEASE``) as their own round trips, so ``conn.transaction()`` around a
 single atomic statement triples its cost. The fake below records every
-statement AND every transaction boundary in order, so each pin below is
+statement and every transaction boundary in order, so each pin below is
 the exact wire conversation a path spends. A single-statement claim needs no transaction, so the equivalent fetch
 runs on the pool in autocommit and pays no BEGIN/COMMIT round trips.
 """
@@ -392,15 +392,15 @@ async def test_a_contended_cron_tick_issues_no_due_read() -> None:
 
 # ── PG rate-limit acquires (the fusion) ─────────────────────────────
 #
-# The pre-fused token-bucket acquire spent BEGIN + set_config + SAVEPOINT
+# The pre-fused token-bucket acquire spent begin + set_config + savepoint
 # + preseed + SELECT FOR UPDATE + RELEASE + upsert + COMMIT (8 round
-# trips, bounded mode); the log-style sliding window spent BEGIN +
+# trips, bounded mode); the log-style sliding window spent begin +
 # try-lock + DELETE + INSERT + COUNT (+ a retry SELECT on denial) +
 # COMMIT. The fused shapes:
 
 # * token bucket / GCRA: ONE ``INSERT … ON CONFLICT DO UPDATE …
 #   RETURNING`` doing the arithmetic in the conflict arm; the bounded
-#   mode wraps it in the enqueue path's pinned BEGIN + set_config +
+#   mode wraps it in the enqueue path's pinned begin + set_config +
 #   statement + COMMIT shape (no savepoint: a refusal aborts the
 #   transaction and the SET LOCAL dies with it), and the indefinite
 #   mode is the bare statement on autocommit.
@@ -463,7 +463,7 @@ async def test_indefinite_token_bucket_acquire_is_one_statement() -> None:
 async def test_log_window_acquire_is_lock_plus_one_statement() -> None:
     """BEGIN + try-lock + the fused window statement + COMMIT: the whole
     locked critical section (prune + admission insert + count + retry
-    inputs) is ONE statement under the advisory lock, the pre-fused
+    inputs) is one statement under the advisory lock, the pre-fused
     shape spent DELETE + INSERT + COUNT as three more round trips inside
     the lock (plus a retry SELECT on denial), so lock hold time, the
     contention tail the two-tier lock exists to bound, is now one
@@ -529,7 +529,7 @@ async def test_bounded_gcra_acquire_is_four_round_trips() -> None:
 
 
 async def test_gcra_denial_adds_exactly_one_retry_hint_read() -> None:
-    """A GCRA denial pays the fused statement plus ONE follow-up read
+    """A GCRA denial pays the fused statement plus one follow-up read
     (the retry hint's inputs and the kind-guard discriminator), the
     pre-fused denial already carried its hint from the locked SELECT;
     the fused denial's WHERE-gated upsert returns no row, so the hint
@@ -564,7 +564,7 @@ async def test_gcra_denial_adds_exactly_one_retry_hint_read() -> None:
         "SELECT set_config('lock_timeout', $1, tr",
         'INSERT INTO "taskq_fake".rate_limit_buck',
         "COMMIT",
-        # The deny read carries the standing TAT as TEXT: the guarded
+        # The deny read carries the standing tat as text: the guarded
         # Python conversion family (the PG state boundary) converts it, a
         # server-side ::float8 cast would crash the read with
         # NumericValueOutOfRangeError on a poisoned value.

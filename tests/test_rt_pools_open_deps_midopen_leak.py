@@ -164,7 +164,7 @@ async def test_listen_failure_closes_freshly_opened_notify_conn() -> None:
 async def test_redis_factory_failure_closes_notify_and_leader_conns() -> None:
     """A failure building the redis client must close both dedicated conns.
 
-    Redis is opened AFTER notify and leader; a failing redis factory
+    Redis is opened after notify and leader; a failing redis factory
     unwinds the exit stack, which today holds close callbacks only for
     the three pools - both TaskQ-owned dedicated conns leak. The pools'
     own teardown (already correct) is asserted alongside: the failure

@@ -54,11 +54,11 @@ class MockEnrichmentAPI:
         """One draw: the outcome + the latency this call charges.
 
         Deterministic in (txn_id, call_index): every worker process that
-        re-runs the same attempt sees the SAME world (the drills' story
+        re-runs the same attempt sees the same world (the drills' story
         is stable), while different calls see different draws (the
         ladder genuinely escapes the flake).
         """
-        rng = random.Random(f"ledgerwatch:{txn_id}#{call_index}")  # noqa: S311  # Why: the mock's draws are deliberately NON-cryptographic — deterministic per (txn, call), the drills' recorded world.
+        rng = random.Random(f"ledgerwatch:{txn_id}#{call_index}")  # noqa: S311  # Why: the mock's draws are deliberately non-cryptographic — deterministic per (txn, call), the drills' recorded world.
         roll = rng.random()
         p_flake, p_timeout = self._profile.flake_rate, self._profile.timeout_rate
         if roll < p_flake:
@@ -107,7 +107,7 @@ class MockEnrichmentAPI:
     # ── the API call ─────────────────────────────────────────────────────
 
     async def enrich(self, txn: TransactionRecord) -> HighRiskTxn | ClearableTxn:
-        """ONE enrichment call: the external API's full face — latency,
+        """one enrichment call: the external API's full face — latency,
         transient flakes, hangs past the declared timeout — and the
         typed risk verdict on success. Raises
         :class:`TransientEnrichmentError` (the ladder's target); a
@@ -118,15 +118,15 @@ class MockEnrichmentAPI:
         outcome, latency = self._draw(txn.txn_id, call_index)
         started = time.monotonic()
         try:
-            # THE JITTER IS EVERY CALL'S: 50-300 ms of realistic latency
-            # before ANY answer (ok, flake, or hang).
+            # 50-300 ms of realistic latency before any answer (ok, flake, or
+            # hang).
             await asyncio.sleep(latency)
             if outcome == "flake":
                 raise EnrichmentFlakeError(
                     f"enrichment upstream puffed (txn {txn.txn_id}, call {call_index})"
                 )
             if outcome == "hang":
-                # The server would finish PAST the declared timeout; the
+                # The server would finish past the declared timeout; the
                 # client's deadline cancels it — the timeout face.
                 try:
                     async with asyncio.timeout(self._profile.enrich_timeout_s):
@@ -140,9 +140,9 @@ class MockEnrichmentAPI:
         except TransientEnrichmentError as exc:
             await self._journal_finish(call_id, outcome, time.monotonic() - started, str(exc))
             raise
-        # THE VERDICT: the generic industry rule — large-amount
-        # transactions are the HIGH-risk class. The score is a
-        # deterministic stand-in for the API's model output.
+            # the generic industry rule — large-amount transactions are the
+        # high-risk class. The score is a deterministic stand-in for the API's
+        # model output.
         await self._journal_finish(call_id, "ok", time.monotonic() - started, "")
         score = _risk_score(txn)
         if txn.amount_cents >= HIGH_RISK_THRESHOLD_CENTS:

@@ -104,7 +104,7 @@ async def test_worker_boots_during_documented_pre_applied_post_pending_window(
         )
         try:
             # This is step 2 of the documented rollout: start the new
-            # worker release fleet-wide, BEFORE the post migration is
+            # worker release fleet-wide, before the post migration is
             # applied. Per the documented procedure this boot step must
             # succeed.
             await _refuse_boot_on_pending_migrations(deps, settings)

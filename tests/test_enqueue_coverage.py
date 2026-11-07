@@ -33,7 +33,6 @@ from taskq.backend._enqueue import (
 from taskq.backend._protocol import EnqueueArgs, IdentityKey, JobRow
 from taskq.backend._sql_templates import render as render_sql
 from taskq.exceptions import (
-    MaxPendingExceededError,
     PayloadValidationError,
     ScopedIdempotencyMigrationPendingError,
     SingletonCollisionError,
@@ -126,7 +125,16 @@ class _FakeTx:
 
 
 class _FakeEnqueueConn:
-    """asyncpg.Connection stand-in that routes calls by SQL substring."""
+    """asyncpg.Connection stand-in that routes calls by SQL substring.
+
+    fail-closed-exempt: FAULT-INJECTION harness for the enqueue error
+    arms this pack owns (the legacy-index violation retry ladder, the
+    poisoned-insert retry points, the injected UniqueViolationError/
+    InternalClientError raises) - branches a real PG cannot reach
+    deterministically. Its statement routing is not the assertion
+    surface: the SQL-semantics arms converted to the real-PG packs
+    (tests/test_postgres_unique_for.py, tests/test_singleton.py,
+    tests/test_postgres_enqueue.py, tests/test_postgres_enqueue_max_pending_lock.py)."""
 
     def __init__(
         self,
@@ -232,83 +240,20 @@ def _make_args(
 # ── _enqueue_on_conn: unique_for preflight dedup ─────────────────────────
 
 
-async def test_unique_for_preflight_returns_existing_row() -> None:
-    """When ``unique_for`` + ``identity_key`` are set and a matching row
-    exists, the existing row is returned without inserting."""
-    existing_id = new_job_id()
-    conn = _FakeEnqueueConn(
-        fetchrow_map={"identity_key = $2": _Record(_full_record(job_id=existing_id))}
-    )
-    args = _make_args(unique_for=timedelta(minutes=5), identity_key="dedup-key")
-    clock = FakeClock(_NOW)
-
-    row = await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    assert isinstance(row, JobRow)
-    assert row.id == existing_id
-
-
 # ── _enqueue_on_conn: singleton preflight collision ──────────────────────
-
-
-async def test_singleton_preflight_raises_collision() -> None:
-    """When ``metadata['singleton']`` is True and a blocking row exists,
-    ``SingletonCollisionError`` is raised with a retry_after when the
-    blocking job has a future ``schedule_to_close``."""
-    blocking_id = new_job_id()
-    future = _NOW + timedelta(minutes=10)
-    conn = _FakeEnqueueConn(
-        fetchrow_map={
-            "schedule_to_close FROM": _Record({"id": blocking_id, "schedule_to_close": future})
-        }
-    )
-    args = _make_args(singleton=True)
-    clock = FakeClock(_NOW)
-
-    with pytest.raises(SingletonCollisionError) as exc_info:
-        await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    err = exc_info.value
-    assert err.blocking_job_id == blocking_id
-    assert err.retry_after is not None
-    assert err.retry_after > timedelta(seconds=0)
-
-
-async def test_singleton_preflight_no_retry_after_when_no_deadline() -> None:
-    """A singleton collision with no ``schedule_to_close`` yields
-    ``retry_after=None``."""
-    conn = _FakeEnqueueConn(
-        fetchrow_map={
-            "schedule_to_close FROM": _Record({"id": new_job_id(), "schedule_to_close": None})
-        }
-    )
-    args = _make_args(singleton=True)
-    clock = FakeClock(_NOW)
-
-    with pytest.raises(SingletonCollisionError) as exc_info:
-        await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    assert exc_info.value.retry_after is None
 
 
 # ── _enqueue_on_conn: max_pending exceeded ───────────────────────────────
 
 
-async def test_max_pending_exceeded_raises() -> None:
-    """When the pending count reaches ``max_pending``, a
-    ``MaxPendingExceededError`` is raised."""
-    conn = _FakeEnqueueConn(fetchval_map={"count": 10})
-    args = _make_args(max_pending=10)
-    clock = FakeClock(_NOW)
-
-    with pytest.raises(MaxPendingExceededError) as exc_info:
-        await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    assert exc_info.value.max_pending == 10
-    assert exc_info.value.current_count == 10
-
-
-# ── _enqueue_on_conn: singleton UniqueViolationError catch ───────────────
+# NOTE (the mock-subtraction cure): the singleton preflight arms converted —
+# the layer-1 collision and the layer-2 UniqueViolation race are owned by
+# tests/test_singleton.py (test_singleton_enqueue_collision_layer1,
+# test_singleton_concurrent_race_layer2) on real PG; the retry_after arms
+# (deadline and no-deadline) converted to real PG there too. The max-pending
+# typed fields, the result_ttl stamp, and the idempotency dedup moved the
+# same way (tests/test_postgres_enqueue_max_pending_lock.py,
+# tests/test_postgres_enqueue.py).
 
 
 async def test_singleton_unique_violation_raises_collision() -> None:
@@ -332,44 +277,13 @@ async def test_singleton_unique_violation_raises_collision() -> None:
 
 
 # ── _enqueue_on_conn: result_ttl sets result_expires_at ──────────────────
-
-
-async def test_result_ttl_path_succeeds_without_an_app_side_notify() -> None:
-    """When ``result_ttl`` is set, the INSERT succeeds and the row is
-    returned; the wake is the INSERT trigger's, so no pg_notify statement
-    follows."""
-    rec = _Record(_full_record())
-    conn = _FakeEnqueueConn(fetchrow_map={"RETURNING": rec, "INSERT": rec})
-    args = _make_args(result_ttl=timedelta(hours=1))
-    clock = FakeClock(_NOW)
-
-    row = await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    assert isinstance(row, JobRow)
-    assert not any("pg_notify" in sql for sql in conn.execute_calls)
-
-
-# ── _enqueue_on_conn: idempotency-key ON CONFLICT dedup ──────────────────
-
-
-async def test_idempotency_key_conflict_returns_existing_row() -> None:
-    """When the INSERT returns no row (ON CONFLICT), the follow-up SELECT by
-    idempotency_key returns the existing row."""
-    existing_id = new_job_id()
-    existing_rec = _Record(_full_record(job_id=existing_id))
-    conn = _FakeEnqueueConn(
-        fetchrow_map={"idempotency_key = $2": existing_rec},
-        # INSERT RETURNING returns None (conflict) - default fetchrow returns None.
-    )
-    args = _make_args(idempotency_key="idem-1")
-    clock = FakeClock(_NOW)
-
-    row = await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
-
-    assert isinstance(row, JobRow)
-    assert row.id == existing_id
-    # No pg_notify for a deduplicated (not-new) row.
-    assert not any("pg_notify" in sql for sql in conn.execute_calls)
+#
+# NOTE (the mock-subtraction cure): the fake arm died; the result_ttl →
+# result_expires_at stamp converted to the real fixture
+# (tests/test_postgres_enqueue.py::test_result_ttl_stamps_result_expires_at).
+# The idempotency dedup arm died with it (owned by
+# test_postgres_enqueue.py::test_duplicate_enqueue_returns_same_job_id and
+# ::test_no_notify_on_conflict on real PG).
 
 
 # ── _enqueue_batch: empty args_list ──────────────────────────────────────
@@ -459,7 +373,7 @@ async def test_enqueue_accepts_clean_tags() -> None:
 
 # ── Batch serialization: per-item NUL attribution ────────────────────────
 #
-# The batch build loops serialize every item BEFORE any SQL runs, so a NUL
+# The batch build loops serialize every item before any SQL runs, so a NUL
 # in any item raised a bare ValueError(NUL_JSONB_ERROR) that named neither
 # the item nor the field. Pydantic validation failures get per-item
 # annotation via _item_payload_error in the client layer
@@ -547,7 +461,7 @@ async def test_enqueue_batch_fast_nul_payload_names_item_and_field() -> None:
 
 async def test_memory_enqueue_batch_nul_payload_annotated_and_atomic() -> None:
     """InMemoryBackend parity: the batch mirror rejects a NUL-bearing item
-    with the same per-item annotation AND the same all-or-nothing
+    with the same per-item annotation and the same all-or-nothing
     admission as PG. A per-item loop admits items 0..k-1
     before item k raised a bare, unattributed ValueError."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
@@ -777,17 +691,17 @@ async def test_enqueue_with_conn_legacy_violation_converts_without_retry() -> No
 
 # ── _enqueue under the dead-connection retry guard ────────────────
 #
-# The retry wrapper must absorb the dead-on-acquire race WITHOUT ever
+# The retry wrapper must absorb the dead-on-acquire race without ever
 # re-running a write that was already acknowledged. Three orderings:
 #
-# 1. The connection is poisoned BEFORE the INSERT is sent: the statement
+# 1. The connection is poisoned before the INSERT is sent: the statement
 #    fails locally (nothing reached the server), no write is durable, the
 #    retry runs and succeeds. The wrapper's original purpose.
-# 2. The INSERT is acknowledged (committed, autocommit) and the RELEASE's
+# 2. The INSERT is acknowledged (committed, autocommit) and the release's
 #    reset then fails (the parked-error-consume connection): the guard's
 #    checkout swallows the release failure, the caller gets the row, and
 #    no second INSERT is issued.
-# 3. The INSERT is acknowledged and a LATER statement of the same attempt
+# 3. The INSERT is acknowledged and a later statement of the same attempt
 #    (the keyed arm's follow-up SELECT) fails with InternalClientError:
 #    the guard's mark refuses the retry; the error propagates and the
 #    INSERT count stays one.
@@ -817,7 +731,7 @@ class _CountingInsertConn(_FakeEnqueueConn):
 
 class _ParkedBeforeInsertConn(_CountingInsertConn):
     """The dead-on-acquire case: the pooled connection was poisoned before
-    handout, so the FIRST statement (the plain arm's INSERT) fails locally
+    handout, so the first statement (the plain arm's INSERT) fails locally
     with the driver's state error -- nothing was sent, nothing committed."""
 
     async def fetchrow(self, sql: str, *args: object) -> object | None:
@@ -958,7 +872,7 @@ async def test_enqueue_batch_mid_transaction_error_allows_the_safe_retry() -> No
     batch rolled back server-side when the server died. The retry is
     therefore provably safe, and it MUST run: re-executing the batch
     atomically on a fresh connection is how the drain survives the
-    interruption. (Contrast the refused path: a failure AFTER the COMMIT
+    interruption. (Contrast the refused path: a failure after the COMMIT
     acknowledgement would propagate: that arm is pinned by the
     release-failure and post-INSERT tests above.)"""
 
@@ -1032,7 +946,7 @@ async def test_enqueue_batch_with_conn_legacy_violation_converts_without_retry()
 
 
 class _PoolCtx:
-    """asyncpg.PoolAcquireContext stand-in: BOTH awaitable and async-CM,
+    """asyncpg.PoolAcquireContext stand-in: both awaitable and async-CM,
     the real surface's documented dual shape (``await pool.acquire()`` /
     ``async with pool.acquire()``). The retry guard's checkout uses the
     await form plus an explicit ``pool.release(conn, timeout=...)``."""

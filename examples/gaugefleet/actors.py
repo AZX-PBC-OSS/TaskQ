@@ -3,7 +3,7 @@
 Reading map (TaskQ docs only — every mechanism here is a doc'd one):
 
 - **The durable cursor** — the tick reads ``gauge_cursor``, processes the
-  increment ``updated_at > cursor``, and advances the cursor in the SAME
+  increment ``updated_at > cursor``, and advances the cursor in the same
   transaction as the digest upserts (ops.md §5 Pattern A's discipline: "The
   cursor lives in the payload ... Your cursor is your data", with the
   per-cycle all-or-nothing commit boundary).
@@ -25,7 +25,7 @@ Reading map (TaskQ docs only — every mechanism here is a doc'd one):
   :class:`ApprovalWindowExpiredError` (listed in ``non_retryable_exceptions``), so
   the job terminal-fails at attempt one — the fail-close.
 
-Why the tick actor is NOT ``singleton=True``: a singleton cannot self-schedule
+Why the tick actor is not ``singleton=True``: a singleton cannot self-schedule
 its own successor — the currently-running tick IS an active job of the actor,
 so the successor's enqueue would deterministically collide with itself
 (docs: "Active" means ``pending``/``scheduled``/``running``). The chained
@@ -132,7 +132,7 @@ async def refresh_tick(payload: TickPayload, ctx: JobContext[TickPayload]) -> Ti
     run_token = str(new_uuid())
     ns = payload.run_ns
     if not await state.claim_cycle(db, run_token):
-        # PARKED, not stacked: a cycle is already running (or its claim is
+        # parked, not stacked: a cycle is already running (or its claim is
         # fresh). Skip the work, keep the chain alive, return honestly.
         await ctx.progress(step=2, percent=100.0, detail="parked: a cycle is already running")
         cursor = await state.read_cursor(db)
@@ -160,7 +160,7 @@ async def refresh_tick(payload: TickPayload, ctx: JobContext[TickPayload]) -> Ti
     breaches: list[str] = []
     fan_out = 0
     if len(increment) > state.FAN_OUT_THRESHOLD:
-        # WIDE increment: fan out one child per gauge (each child carries its
+        # wide increment: fan out one child per gauge (each child carries its
         # own data + a stable per-item idempotency key), then advance the
         # cursor. Crash-safe both ways per ops.md §5: before the enqueue the
         # cursor never moved; after it, the children are durable and the
@@ -209,7 +209,7 @@ async def refresh_tick(payload: TickPayload, ctx: JobContext[TickPayload]) -> Ti
         )
         processed = len(increment)
 
-    # HITL face: a threshold breach pauses for approval. The escalation job is
+    # hitl face: a threshold breach pauses for approval. The escalation job is
     # enqueued at the window's close — the timer arm the operator can watch
     # sitting in `scheduled`.
     for r in increment:
@@ -307,9 +307,9 @@ async def approval_escalate(
         # close — a snooze refunds the attempt, it does not consume one.
         raise Snooze(window_close - now)
 
-    # THE EXPIRED ARM: record the escalation durably first (the operator's
-    # audit trail must survive the raise), then fail close — the typed error
-    # is in non_retryable_exceptions, so attempt one is terminal.
+        # record the escalation durably first (the operator's audit trail must
+    # survive the raise), then fail close — the typed error is in
+    # non_retryable_exceptions, so attempt one is terminal.
     await state.record_escalation(
         db,
         payload.breach_id,

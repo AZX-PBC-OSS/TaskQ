@@ -264,8 +264,8 @@ def _handler_call_shape(fn: Callable[..., object]) -> tuple[bool, frozenset[str]
       context, any other named parameter is a DI dependency the fixture
       may fill from ``**deps``.
     - ``declared_deps`` is ``None`` when the callable cannot be
-      inspected; the fixture then injects no DI kwargs (the historic
-      shape) instead of guessing a signature it cannot see.
+      inspected; the fixture then injects no DI kwargs instead of
+      guessing a signature it cannot see.
     """
     wants_attr = getattr(fn, "wants_ctx", None)
     if isinstance(wants_attr, bool):
@@ -468,7 +468,7 @@ async def _open_pg_backend(
     # 3. DSN narrowing, direct DSN is guaranteed set after post_load
     assert settings.pg_dsn_direct is not None  # post-load guarantee
 
-    # 4. Open WorkerDeps via AsyncExitStack for proper LIFO teardown.
+    # 4. Open WorkerDeps via AsyncExitStack for proper lifo teardown.
     #    If PostgresBackend construction fails after entering the context,
     #    we close the stack before re-raising so asyncpg pools are not leaked.
     stack = AsyncExitStack()
@@ -514,7 +514,7 @@ async def _open_two_pg_workers(  # type: ignore[reportUnusedFunction]  # Why: mo
     Each pod gets an independent ``WorkerDeps`` + ``PostgresBackend``
     with its own pools, ``leader_conn``, ``is_leader`` event, and
     ``worker_id``. Both pods share the same migrated schema. The helper
-    does NOT start the leader loops, callers construct
+    does not start the leader loops, callers construct
     ``MaintenanceLeader`` themselves with different initial states.
 
     Teardown is LIFO: per-pod ``AsyncExitStack`` pools close first,
@@ -583,13 +583,13 @@ async def _open_two_pg_workers(  # type: ignore[reportUnusedFunction]  # Why: mo
         raise
 
     try:
-        # Create worker rows (both must exist before leader UPSERT, FK constraint)
+        # Create worker rows (both must exist before leader upsert, FK constraint)
         async with deps_a.dispatcher_pool.acquire() as conn_a:
             await _create_worker(conn_a, settings.schema_name, worker_id_a)
         async with deps_b.dispatcher_pool.acquire() as conn_b:
             await _create_worker(conn_b, settings.schema_name, worker_id_b)
 
-        # Shared schema-cleanup stack closes last (LIFO after per-pod stacks)
+        # Shared schema-cleanup stack closes last (lifo after per-pod stacks)
         shared_stack = AsyncExitStack()
 
         async def _drop_schema() -> None:
@@ -757,7 +757,7 @@ def redis_container(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Redis
 def killable_redis_container() -> Iterator[RedisContainer]:
     """Function-scoped disposable Dragonfly for chaos tests that stop/restart Redis.
 
-    Chaos tests must NEVER stop the shared container (``redis_container``) ,
+    Chaos tests must never stop the shared container (``redis_container``) ,
     every worker of the run shares it, and a slow restart leaks failures into
     unrelated tests. Each kill test gets its own container (~1s boot). The
     ownership labels (``creator_labels``) keep a crashed run's leftovers
@@ -796,9 +796,9 @@ def redis_url(redis_container: _RedisContainerShim) -> str:
     setup/teardown flushing is needed and no two tests can observe each other's
     keys. DB indices are drawn from the invocation's counter (see
     ``next_redis_logical_db``) so consumers on different xdist workers can never
-    collide inside the ONE shared Dragonfly.
+    collide inside the one shared Dragonfly.
 
-    Tenancy contract (what MAY run here, and what MUST NOT)
+    Tenancy contract (what MAY run here, and what MUST not)
     -------------------------------------------------------
     ``redis_url`` (and the SHARED Dragonfly behind it) is one broker for every
     redis-marked test of the invocation across all xdist workers. A test may
@@ -820,7 +820,7 @@ def redis_url(redis_container: _RedisContainerShim) -> str:
     same image and flags as the shared pair. The historical record: every
     cross/extras-leg "weather" red of this class (the subscriber wake, the
     ping pins, the attack478 ``CLIENT PAUSE``) was the shared broker's
-    co-tenancy, and every fix that patched ONE test's budget found the NEXT
+    co-tenancy, and every fix that patched one test's budget found the next
     exposed test in the following run. The durable fix is tenancy
     discipline, not budget inflation.
     """
@@ -849,10 +849,10 @@ def private_redis_url(killable_redis_container: RedisContainer) -> str:
 
 # ── Redis DB counter ──────────────────────────────────────────────────────
 
-# One logical DB per consumer (test module OR test function) across EVERY xdist
+# One logical DB per consumer (test module or test function) across every xdist
 # worker of the invocation; the shared container runs --dbnum 1024. Allocation and
 # the never-reuse rule live in ``taskq.testing._shared_containers.next_redis_logical_db``
-# (file-backed under the pair's lock, a per-process counter would hand the SAME
+# (file-backed under the pair's lock, a per-process counter would hand the same
 # DB to different workers' consumers on the shared container).
 
 
@@ -863,14 +863,14 @@ def _next_redis_db(container: _RedisContainerShim) -> int:
 
 # ── Per-run isolation token ────────────────────────────────────────────────
 
-RUN_TOKEN_ENV_VAR = "TASKQ_TEST_RUN_TOKEN"  # noqa: S105 # Why: env-var NAME, not a credential; the value it names carries a per-run isolation label (basetemp dir / xdist worker id).
+RUN_TOKEN_ENV_VAR = "TASKQ_TEST_RUN_TOKEN"  # noqa: S105 # Why: env-var name, not a credential; the value it names carries a per-run isolation label (basetemp dir / xdist worker id).
 
 
 def run_isolation_token() -> str:
     """The token mixed into every hashed per-module/per-test database and schema
     name: the conftest-published per-invocation token (the invocation-unique
     basetemp PATH - the numbered invocation dir plus the xdist worker's own
-    subdirectory, so it is invocation-unique AND worker-distinct AND distinct
+    subdirectory, so it is invocation-unique and worker-distinct and distinct
     from any subprocess pytest's own fresh numbered dir), ``master`` as a
     last-resort fallback (direct library use outside this repo's conftest).
 
@@ -878,7 +878,7 @@ def run_isolation_token() -> str:
     serves every xdist worker of it, and two workers hashing the same module
     or node id must not land the same database or schema on that one pair ,
     each worker's ``DROP DATABASE ... WITH (FORCE)`` / ``DROP SCHEMA ... CASCADE``
-    would kill the other's live pools mid-test. AND ACROSS sessions sharing
+    would kill the other's live pools mid-test. and ACROSS sessions sharing
     one cluster: a parent session and its own subprocess pytest (the scratch
     runs) both publish a token, and the basetemp path keeps the child's
     names off the parent's (the mutual-drop class's root fix - see
@@ -934,7 +934,7 @@ def _schema_name_from_module(request: pytest.FixtureRequest) -> str:
     The run token (see :func:`run_isolation_token`), the xdist worker id
     under xdist, the per-invocation token in serial runs, is incorporated
     into the hash input so that the same module never collides across
-    parallel workers OR concurrent serial invocations.
+    parallel workers or concurrent serial invocations.
     """
     import hashlib
 
@@ -978,15 +978,14 @@ async def module_pg_schema(
 
     yield ModulePgSchema(schema_name=schema_name, pg_dsn=pg_dsn)
 
-    # THE TEARDOWN TOLERANCE (the split-drop class's residue): the module
-    # database's lifecycle belongs to ``pg_dsn`` (tests/conftest.py), whose
-    # teardown may already have dropped it when this finalizer runs —
-    # pytest-asyncio defers async-module-fixture finalization to the module
-    # loop's teardown, which can land AFTER the sync pg_dsn teardown. A
-    # vanished database means the cleanup is already COMPLETE (the schema
-    # lived in the database); re-raising would only stain the worker's
-    # summary with an error that names no defect. Connect failures of any
-    # OTHER shape (the cluster is down, credentials rotated) still raise.
+    # the module database's lifecycle belongs to ``pg_dsn``
+    # (tests/conftest.py), whose teardown may already have dropped it when this
+    # finalizer runs — pytest-asyncio defers async-module-fixture finalization
+    # to the module loop's teardown, which can land after the sync pg_dsn
+    # teardown. A vanished database means the cleanup is already complete (the
+    # schema lived in the database); re-raising would only stain the worker's
+    # summary with an error that names no defect. Connect failures of any other
+    # shape (the cluster is down, credentials rotated) still raise.
     try:
         conn = await asyncpg.connect(pg_dsn)
     except asyncpg.InvalidCatalogNameError:
@@ -1005,8 +1004,8 @@ TEST_REDIS_CONNECT_TIMEOUT_SECS: float = 30.0
 redis-py 8 defaults ``socket_connect_timeout`` to 5s. On a loaded runner
 that budget is a red band, not a safety net: the testcontainer's address
 resolution (``getaddrinfo``, in the loop's executor) can out-run 5s and
-the first command dies with ``Timeout connecting to server`` — the
-rotating one-test-in-~12.7k red (PR #682's 3.13 leg). The connect phase
+the first command dies with ``Timeout connecting to server`` — one
+observed red in ~12.7k runs on Python 3.13's connect band. The connect phase
 is setup weather, never a pin's subject — the pins' own bounds are the
 tests' ``overall_timeout``s and the suite-wide pytest-timeout — so every
 fixture client dials with this budget instead: the tree's outside-system
@@ -1029,18 +1028,18 @@ def module_redis_url(
     import redis as redis_sync
 
     url = redis_url_for(redis_container, db=_next_redis_db(redis_container))
-    # socket_timeout=None: the setup/teardown flushes open a FRESH
+    # socket_timeout=None: the setup/teardown flushes open a fresh
     # connection per module, and redis-py 8's 5s default read budget loses
-    # the HELLO handshake race on a co-tenanted runner (the EEE setup-error
+    # the hello handshake race on a co-tenanted runner (the eee setup-error
     # class on the cross legs). A wedged connection is the suite-wide
     # pytest-timeout's job, not a fixture budget.
     # socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS: redis-py 8's
-    # 5s CONNECT default is its own band - on a loaded runner the
+    # 5s connect default is its own band - on a loaded runner the
     # testcontainer's address resolution (getaddrinfo in the loop's
     # executor) can out-run 5s and the first command dies with
-    # ``Timeout connecting to server`` (the red 3.13 leg of PR #682, one
-    # test in ~12.7k). The connect phase is setup weather, not a pin's
-    # subject: bound it at the tree's outside-system budget.
+    # ``Timeout connecting to server`` (one observed red in ~12.7k runs,
+    # Python 3.13's connect band). The connect phase is setup weather, not
+    # a pin's subject: bound it at the tree's outside-system budget.
     with redis_sync.from_url(
         url,
         decode_responses=False,
@@ -1050,7 +1049,7 @@ def module_redis_url(
         client.flushdb()
     yield url
 
-    # Teardown: FLUSHDB the module's DB via sync client (safe in any context).
+    # Teardown: flushdb the module's DB via sync client (safe in any context).
     with redis_sync.from_url(
         url,
         decode_responses=False,
@@ -1099,7 +1098,7 @@ async def module_jobs_app(module_pg_schema: ModulePgSchema) -> AsyncIterator[Job
 
     Pools are opened once per test module. Per-test isolation is handled by
     clean_jobs_app which truncates tables between tests against the same schema.
-    The backend instance is shared, callers should NOT cache or mutate backend
+    The backend instance is shared, callers should not cache or mutate backend
     state across test boundaries.
     """
     stack, deps, backend = await _open_pg_backend_on_schema(
@@ -1155,7 +1154,7 @@ async def _open_pg_backend_on_schema(
 ) -> tuple[AsyncExitStack, WorkerDeps, PostgresBackend]:
     """Open WorkerDeps + PostgresBackend on an already-migrated schema.
 
-    Unlike :func:`_open_pg_backend`, this does NOT drop or recreate the
+    Unlike :func:`_open_pg_backend`, this does not drop or recreate the
     schema, the caller must handle truncation/reset via :func:`reset_schema`.
     """
     from taskq.backend.clock import SystemClock
@@ -1227,10 +1226,10 @@ def clean_redis_url(module_redis_url: str) -> str:
     """
     import redis as redis_sync
 
-    # socket_timeout=None: same fresh-connection HELLO race as
+    # socket_timeout=None: same fresh-connection hello race as
     # module_redis_url above; the per-test flush must not inherit the 5s
     # read budget on a co-tenanted runner.
-    # socket_connect_timeout: the DNS/connect band (see module_redis_url).
+    # socket_connect_timeout: the dns/connect band (see module_redis_url).
     client = redis_sync.from_url(
         module_redis_url,
         decode_responses=False,
@@ -1257,7 +1256,7 @@ async def clean_redis_client(clean_redis_url: str) -> AsyncIterator[object]:
     # rides the shared co-tenanted broker for the test's whole life; the
     # suite-wide pytest-timeout owns wedged connections, not a 5s read
     # budget redis-py 8 started defaulting (the pre-8 behaviour).
-    # socket_connect_timeout: the DNS/connect band (see module_redis_url).
+    # socket_connect_timeout: the dns/connect band (see module_redis_url).
     client = redis_from_url(
         clean_redis_url,
         decode_responses=False,

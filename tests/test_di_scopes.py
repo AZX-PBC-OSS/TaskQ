@@ -5,7 +5,7 @@ Covers:
   - LIFO teardown order
   - Plain class: no teardown callback registered
   - ACM lifecycle: __aenter__ called at bootstrap; __aexit__ at shutdown
-  - ACM injected value is __aenter__() return, NOT instance
+  - ACM injected value is __aenter__() return, not instance
   - Per-scope caching
   - SyncCloseable lifecycle + asyncio.to_thread
   - TRANSIENT uncached
@@ -112,7 +112,7 @@ async def test_async_generator_teardown() -> None:
     assert teardown_ran
 
 
-# ── LIFO teardown order ────────────────────────────────────
+# ── lifo teardown order ────────────────────────────────────
 
 
 async def test_lifo_teardown_order() -> None:
@@ -191,7 +191,7 @@ async def test_per_scope_caching() -> None:
     await loop_scope.shutdown()
 
 
-# ── TRANSIENT uncached ────────────────────────────────────
+# ── transient uncached ────────────────────────────────────
 
 
 async def test_transient_uncached() -> None:
@@ -354,7 +354,7 @@ async def test_loop_scope_replace_value_raises_for_uncached_type() -> None:
     await loop_scope.shutdown()
 
 
-# ── LOOP-loop assertion ────────────────────────────────────────────
+# ── loop-loop assertion ────────────────────────────────────────────
 
 
 async def test_loop_scope_loop_assertion() -> None:
@@ -445,7 +445,7 @@ async def test_factory_shape_dispatch(shape: FactoryShape, impl: object) -> None
 _AllShapes: tuple[FactoryShape, ...] = tuple(FactoryShape)
 
 
-# ── INFO logging on bootstrap/shutdown ──────────────────────────────
+# ── info logging on bootstrap/shutdown ──────────────────────────────
 
 
 async def test_process_scope_logging() -> None:
@@ -486,7 +486,7 @@ async def test_loop_scope_logging() -> None:
     await loop_scope.shutdown()
 
 
-# ── Empty THREAD scope ──────────────────────────────────────────────
+# ── Empty thread scope ──────────────────────────────────────────────
 
 
 async def test_empty_thread_scope() -> None:
@@ -799,7 +799,7 @@ async def test_plain_class_no_teardown() -> None:
     await container.aclose()
 
 
-# ── ACM lifecycle - __aenter__ at bootstrap, __aexit__ at shutdown ──
+# ── acm lifecycle - __aenter__ at bootstrap, __aexit__ at shutdown ──
 
 
 class _AcmSvc:
@@ -844,7 +844,7 @@ async def test_acm_lifecycle() -> None:
     assert inst.exited
 
 
-# ── ACM injected value is __aenter__() return, NOT instance ──
+# ── acm injected value is __aenter__() return, not instance ──
 
 
 _SENTINEL = object()

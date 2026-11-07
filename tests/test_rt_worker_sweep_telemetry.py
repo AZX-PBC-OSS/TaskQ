@@ -8,9 +8,9 @@ Every awaited sweep call in the leader loops is attacked against that
 invariant here:
 
 - a deadline-aborted call must leave a duration sample, a
-  ``sweep_timeouts`` increment, NO row sample and NO success stamp;
+  ``sweep_timeouts`` increment, no row sample and no success stamp;
 - a NON-deadline transient (connection loss) must leave a duration sample
-  and NO timeout increment - the timeout counter counts aborted batches,
+  and no timeout increment - the timeout counter counts aborted batches,
   not dead sockets;
 - a call that COMPLETED must never be counted as timed out, even when a
   later await in the same deadline window (the wake NOTIFY) times out -
@@ -301,7 +301,7 @@ async def test_notify_timeout_after_completed_sweep_is_not_a_sweep_timeout(
     telemetry_reader: InMemoryMetricReader,
 ) -> None:
     """The sweep call returned 3 rows, then the wake-NOTIFY pool acquire
-    timed out: the sweep was NOT aborted, so ``sweep_timeouts`` must stay
+    timed out: the sweep was not aborted, so ``sweep_timeouts`` must stay
     0 - rows and the success stamp are recorded, the deadline casualty is
     the NOTIFY, and counting the same call as both completed (rows sample)
     and aborted (timeout increment) is a contradiction the
@@ -341,7 +341,7 @@ async def test_wake_loop_connection_loss_records_duration_not_timeout(
     telemetry_reader: InMemoryMetricReader,
 ) -> None:
     """A connection-loss transient (not the deadline family) in the wake
-    sweep must still leave a duration sample - but NO row sample and NO
+    sweep must still leave a duration sample - but no row sample and no
     ``sweep_timeouts`` increment: the timeout counter counts deadline-
     aborted batches, and a dead socket is a different failure family."""
     backend = _ScriptedBackend(
@@ -369,7 +369,7 @@ async def test_sweep_loop_reclaim_timeout_records_duration_and_timeout_without_r
     telemetry_reader: InMemoryMetricReader,
 ) -> None:
     """The sweep-1 call aborted by a server-side cancel: duration sample,
-    ``sweep_timeouts`` increment for ``expired_locks``, NO row sample -
+    ``sweep_timeouts`` increment for ``expired_locks``, no row sample -
     the finally-path discipline at the sweep loop's own call sites."""
     backend = _ScriptedBackend(
         reclaim=asyncpg.QueryCanceledError("canceling statement due to statement timeout")
@@ -397,7 +397,7 @@ async def test_sweep_loop_deadline_timeout_records_duration_and_timeout_without_
 ) -> None:
     """The deadline sweep aborted by a server-side cancel: a duration
     sample and a ``sweep_timeouts`` increment for ``deadline_exceeded``,
-    NO row sample - the same finally-path discipline as sweep 1, one call
+    no row sample - the same finally-path discipline as sweep 1, one call
     site down."""
     backend = _ScriptedBackend(
         deadline=asyncpg.QueryCanceledError("canceling statement due to statement timeout")
@@ -427,7 +427,7 @@ async def test_sweep_loop_expired_results_timeout_records_duration_and_timeout_w
     telemetry_reader: InMemoryMetricReader,
 ) -> None:
     """The result-TTL sweep aborted by a server-side cancel: a duration
-    sample and a ``sweep_timeouts`` increment for ``expired_results``, NO
+    sample and a ``sweep_timeouts`` increment for ``expired_results``, no
     row sample.  This call site runs on a dispatcher-pool connection, so
     the abort propagates through the acquire block - the wiring must still
     record it."""
@@ -460,7 +460,7 @@ async def test_sweep_loop_stale_workers_timeout_records_duration_and_timeout_wit
 ) -> None:
     """The stale-worker cleanup aborted mid-statement by a server-side
     cancel (the ``execute`` on the pooled conn raises): a duration sample
-    and a ``sweep_timeouts`` increment for ``stale_workers``, NO row
+    and a ``sweep_timeouts`` increment for ``stale_workers``, no row
     sample.  This site calls ``cleanup_stale_workers`` directly rather
     than a backend method, so the recording happens in the loop's own
     except/finally - the discipline this file exists to pin."""
@@ -497,7 +497,7 @@ async def test_leaked_slots_timeout_records_duration_and_timeout_without_rows(
 ) -> None:
     """A server-side cancel of the leaked-slots sweep must be recorded as
     an aborted call: a duration sample and a ``sweep_timeouts`` increment
-    for ``leaked_slots`` - NOT silence. Success-path-only instrumentation
+    for ``leaked_slots`` - not silence. Success-path-only instrumentation
     here would be the original invisibility, one call site down."""
     backend = _ScriptedBackend(leaked=asyncpg.QueryCanceledError("canceling statement"))
     settings = _settings()
@@ -684,7 +684,7 @@ async def test_cron_tick_timeout_records_duration_and_timeout_without_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The cron tick cut by its iteration deadline must record a duration
-    sample and a ``sweep_timeouts`` increment for ``cron`` - and NO row
+    sample and a ``sweep_timeouts`` increment for ``cron`` - and no row
     sample (``fired`` stayed unbound, so a 0-row sample would be
     indistinguishable from a healthy tick with nothing due).  This is
     the pin that the deadline path reports like every other leader loop
@@ -720,7 +720,7 @@ async def test_cron_tick_success_records_rows_and_duration_without_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A healthy tick firing 2 schedules records ``sweep_rows{cron} == 2``,
-    a duration sample, and a success stamp - and NO timeout increment."""
+    a duration sample, and a success stamp - and no timeout increment."""
 
     async def _two_fire_tick(*a: object, **k: object) -> int:
         return 2

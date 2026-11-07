@@ -102,7 +102,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "the same transaction (the split keeps the plancache off the "
         "generic plan; see _ARCHIVE_CANDIDATE_SQL's comment)",
     ),
-    # The PRE-BUDGET variant: the SAME write (the same candidate ids bound
+    # The pre-budget variant: the same write (the same candidate ids bound
     # as an array, the same LIMIT-ed candidate window) rendered against the
     # schema the budget columns have not landed on — the mirror-divergence
     # fallback's own statement. One write class, one reason, two renders.
@@ -241,7 +241,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "_UPSERT_CODE_OWNED_CAPACITY_SQL": (
         "ON CONFLICT",
-        "INSERT ... ON CONFLICT over the registered-actor set — C15's "
+        "INSERT ... ON CONFLICT over the registered-actor set — the "
         "code-owned capacity partition, the same statement shape in the "
         "same single boot transaction as _UPSERT_ACTOR_CONFIG_SQL; each "
         "row's DO UPDATE is bounded by the conflict key, so the write is "
@@ -296,11 +296,11 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     # ── Batch-scoped ──
     # ── Workflow engine (taskq.workflows._sql_*): every write below is
-    #    keyed to ONE flow-scoped entity (a parent id, an arbiter tuple, a
+    #    keyed to one flow-scoped entity (a parent id, an arbiter tuple, a
     #    row id) or to a caller-bound batch — the workflow code's write
-    #    sets are bounded by the FORK BATCH (the fan-out chunk, ≤ 500 rows
+    #    sets are bounded by the fork batch (the fan-out chunk, ≤ 500 rows
     #    per statement) and by one node's declared fan-out, never by the
-    #    jobs backlog. The bounded-writes walk first saw these when T04's
+    #    jobs backlog. The bounded-writes walk first saw these when the dispatch-claim band's
     #    package joined the audit's surface (the certification's R2-1).
     "TERMINAL_MARK_SQL": (
         "WHERE id = $1",
@@ -309,7 +309,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "STEP_CACHE_RECEIPT_SQL": (
         "WHERE id = $1",
-        "the cross-run cache's receipt merge (T25): a keyed single-row "
+        "the cross-run cache's receipt merge: a keyed single-row "
         "UPDATE — the HIT run's own node row (jobs.id = $1), the "
         "metadata provenance write; never a scan, never the backlog",
     ),
@@ -322,7 +322,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "STEP_CACHE_STORE_SQL": (
         "ON CONFLICT (content_address)",
-        "the cross-run cache's store (T25): an INSERT of exactly ONE row "
+        "the cross-run cache's store: an INSERT of exactly ONE row "
         "keyed by the content address (the table's PRIMARY KEY) — the "
         "CAS's ON CONFLICT resolves the concurrent writers; the write "
         "set is one row per terminal-succeeded body, never a scan",
@@ -335,20 +335,20 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "DECREMENT_ABSORBED_SQL": (
         "WHERE e.parent_id = $1",
-        "T06/T07's absorbed-side decrement — DECREMENT_SQL's shape scoped "
+        "the failed-parent/fan-in's absorbed-side decrement — DECREMENT_SQL's shape scoped "
         "to the ABSORBING edges (collect | maybe) of one parent; the same "
         "fan-out bound",
     ),
     "FAIL_CLOSED_CASCADE_SQL": (
         "WHERE e.parent_id = $1",
-        "T06's fail-closed peer-cascade: every arm's write set is keyed to "
+        "the fail-closed peer-cascade's: every arm's write set is keyed to "
         "ONE failed parent's edges (the blocked joins counting it, their "
         "still-non-terminal peer parents, the one flow root) — bounded by "
         "the join's declared fan-in, never the backlog",
     ),
     "COLLECT_FAN_IN_APPEND_SQL": (
         "WHERE j.id = $1",
-        "keyed single join row (T06's collect fan-in appends the failed child's FailureInfo item)",
+        "keyed single join row (the collect fan-in appends the failed child's FailureInfo item)",
     ),
     "FORK_JOIN_CONSUMERS_SQL": (
         "WHERE id = $1",
@@ -397,11 +397,11 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "so a second pass returns zero (the same self-draining shape "
         "_RECONCILE_LOST_CLAIMS_SQL_TEMPLATE registers for)",
     ),
-    # ── The workflow engine's per-run writes (T06..T21, the phase work):
-    # every write set below is ONE RUN's own rows — the compiled graph's
+    # ── The workflow engine's per-run writes (the failed-parent propagation..the progress reporting, the phase work):
+    # every write set below is one run's own rows — the compiled graph's
     # node count (a definition-time constant, never the jobs backlog) —
-    # or ONE keyed row (id / arbiter). The class this file guards is work
-    # proportional to an unbounded BACKLOG inside one transaction; a
+    # or one keyed row (id / arbiter). The class this file guards is work
+    # proportional to an unbounded backlog inside one transaction; a
     # statement whose row count is bounded by one workflow's graph cannot
     # grow with the backlog no matter how many runs exist (runs are
     # isolated rows; no statement here scans by anything broader than its
@@ -456,7 +456,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "AND result @> '{\"skipped\": true}'::jsonb",
         "the skip envelope's re-arm (H-C4): its write set is ONE run's "
         "exit-skipped rows (flow_id-bound, the engine's own "
-        "SKIPPED_RESULT containment predicate — the round-2 recorded finding "
+        "SKIPPED_RESULT containment predicate — the hold round's contract "
         'replaced bare key-existence so a foreign writer\'s {"skipped": '
         "false} is never matched or destroyed; the root excluded) — "
         "cannot grow with the backlog, only with the run's own fan-out",
@@ -489,6 +489,24 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single loop-node row + its flow's root row (the CTE pair)",
     ),
+    "LOOP_EXHAUST_BATCH_SQL": (
+        "$1::uuid[]",
+        "the budget sweep's set-based exhaust (the DRIVER keeps the keyed "
+        "LOOP_EXHAUST_SQL); its write set is the loop rows the LIMIT-ed "
+        "LOOP_BUDGET_SWEEP_SQL window locked in the same transaction, "
+        "bound as parallel arrays (the sweep_join_rederive fire arm's "
+        "shape), identity-fenced per row",
+    ),
+    "_FLUSH_UPDATE_SQL": (
+        "FROM unnest($1::uuid[]",
+        "the progress flush's batched UPDATE: its write set is the "
+        "tick's dirty-buffer rows, bound as parallel arrays and capped "
+        "by the caller's discipline (_FLUSH_BATCH_ROWS per statement, "
+        "_FLUSH_MAX_BATCHES_PER_TICK per tick - the incremental-commit "
+        "shape _drain_bounded uses), fenced per row (running + this "
+        "worker + this attempt); a fenced-off row neither updates nor "
+        "returns, so the write set cannot grow with the jobs backlog",
+    ),
     "LOOP_INIT_SQL": (
         "WHERE id = $1",
         "keyed single loop-node row (the budget deadline's stamp)",
@@ -497,8 +515,8 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single loop-node row (the budget read-back write)",
     ),
-    # ── The HITL machinery's writes (T10): every write set is ONE hold
-    # row or ONE resumed node row — the hold id is THE reply handle (the
+    # ── The hitl machinery's writes (the hold machinery : every write set is one hold
+    # row or one resumed node row — the hold id is the reply handle (the
     # mint's uuid7); a run's holds are its wait sites, not backlog rows.
     "_CANCEL_RUN_SIGNALS_SQL": (
         "AND status = 'held'",
@@ -514,7 +532,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single node row (the delivered hold's wake)",
     ),
-    # ── The child flows' writes (T28): both are the SPAWNING NODE's own
+    # ── The child flows' writes (the child flows : both are the spawning node's own
     # row — the body's attempt writes its own receipt, never a backlog.
     "_CHILD_RECEIPT_ENSURE_SQL": (
         "WHERE id = $1",
@@ -540,8 +558,13 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single hold row (the resolve CAS — the reply handle)",
     ),
-    # ── The progress channels (T21 decision d): the two-channel write set
-    # is nodes x channels — the node is the ONE row the attempt claims.
+    "_ABANDON_CAS_SQL": (
+        "WHERE id = $1",
+        "keyed single hold row (the operator abandon CAS: the reply handle; "
+        "the status leg gates the transition)",
+    ),
+    # ── The progress channels (the progress reporting decision d): the two-channel write set
+    # is nodes x channels — the node is the one row the attempt claims.
     "PROGRESS_STATE_UPSERT_SQL": (
         "ON CONFLICT (node_id, channel)",
         "the STATE channel's upsert: its write set is the ONE conflict "

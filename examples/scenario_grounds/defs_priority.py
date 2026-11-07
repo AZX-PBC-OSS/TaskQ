@@ -1,4 +1,4 @@
-"""Scenario 2's definitions: three tenants' runs on ONE actor, at three
+"""Scenario 2's definitions: three tenants' runs on one actor, at three
 priorities. The worker carries this module (the ``--actors`` reference);
 the scenario's own process creates the runs and reads the rows.
 

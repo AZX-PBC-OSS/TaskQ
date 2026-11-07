@@ -3,7 +3,7 @@
 The example's own tables (plain Postgres, outside TaskQ's schema):
 
 - ``gauge_readings``      the source: raw gauge readings with an ``updated_at``
-- ``gauge_cursor``        THE durable cursor — one row, the last refreshed instant
+- ``gauge_cursor``        the durable cursor — one row, the last refreshed instant
 - ``gauge_digest``        the materialized refresh target (one row per gauge)
 - ``gauge_cycle_log``     one row per tick attempt: the receipt (cursor before/after,
                           processed count, outcome) — the operator-facing run history
@@ -136,7 +136,7 @@ async def read_cursor(pool: asyncpg.Pool) -> Any:
 async def claim_cycle(pool: asyncpg.Pool, run_token: str) -> bool:
     """Atomically claim the guard row, or report the tick must park.
 
-    The claim condition covers both cases the docs name: the guard is idle, OR
+    The claim condition covers both cases the docs name: the guard is idle, or
     its claim is stale (a worker died holding it — the crash-sweep shape). The
     single UPDATE is the serialization point: two concurrent ticks cannot both
     see ``status='idle'`` and both win.
@@ -212,7 +212,7 @@ async def apply_increment(
     fan_out: int = 0,
 ) -> Any:
     """The all-or-nothing commit: digest upserts + cursor advance + receipt row
-    land in ONE transaction (the doc'd per-cycle commit boundary).
+    land in one transaction (the doc'd per-cycle commit boundary).
 
     ``processed`` is the receipt's count: the number of gauges THIS tick
     digested inline (the fan-out arm passes 0 — its children do the digesting).
@@ -293,7 +293,7 @@ async def approve(pool: asyncpg.Pool, breach_id: str) -> None:
 
 
 async def record_escalation(pool: asyncpg.Pool, breach_id: str, detail: str) -> None:
-    """The expired arm's durable escalation record — written BEFORE the typed
+    """The expired arm's durable escalation record — written before the typed
     error is raised, so the operator's audit trail survives the fail-close."""
     await pool.execute(
         "INSERT INTO gauge_escalations (breach_id, detail) VALUES ($1, $2) "

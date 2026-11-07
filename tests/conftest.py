@@ -1,7 +1,7 @@
 """Shared test fixtures.
 
-Container topology: ONE Postgres + ONE Dragonfly shared across ALL xdist
-workers of ONE pytest invocation (see :mod:`taskq.testing._shared_containers`
+Container topology: one Postgres + one Dragonfly shared across ALL xdist
+workers of one pytest invocation (see :mod:`taskq.testing._shared_containers`
 - the first session fixture to take the invocation's state-dir file lock
 starts the pair; every other worker of the invocation reuses it; it comes
 down when the last LIVE holder of the invocation releases; no other
@@ -39,6 +39,7 @@ import glob
 import inspect
 import os
 import signal
+import types
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 
@@ -124,10 +125,13 @@ from taskq.testing.settings import (
 )
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.health import HealthServer
+from tests._loop_control import (
+    _call_owner,  # pyright: ignore[reportPrivateUsage]  # Why: the ownership stamp the drain reads lives with the task factory that writes it.
+)
 
 # Fixture registration: pytest sees fixtures imported into conftest (the
 # web_admin/_fixtures.py pattern — pytest 9.1.1 drops nested-conftest
-# fixtures for non-adjacent argument lists). Only the FIXTURES register
+# fixtures for non-adjacent argument lists). Only the fixtures register
 # here; the pin files import the non-fixture helpers directly from
 # tests._wf_fixtures. The per-line ignores repeat: pyright does not
 # propagate the import block's first-line ignore.
@@ -139,7 +143,7 @@ from tests._wf_fixtures import (  # noqa: F401  # Why: fixture registration.
     loop_redlog,  # pyright: ignore[reportUnusedImport]
     progress_redlog,  # pyright: ignore[reportUnusedImport]
     propagation_redlog,  # pyright: ignore[reportUnusedImport]
-    t20_redlog,  # pyright: ignore[reportUnusedImport]
+    redlog,  # pyright: ignore[reportUnusedImport]
     timer_cures_redlog,  # pyright: ignore[reportUnusedImport]
     timer_redlog,  # pyright: ignore[reportUnusedImport]
     versioning_redlog,  # pyright: ignore[reportUnusedImport]
@@ -168,7 +172,7 @@ _WORKER_BASELINE_SIGNALS: list[tuple[object, object] | None] = [None]
 # WorkerSettings.health_socket_path defaults to the shared production path
 # /tmp/taskq_health.sock, and _main starts a real HealthServer. Under xdist,
 # two workers inside _main concurrently race on that one filesystem path -
-# the loser gets EADDRINUSE (TOCTOU window in create_unix_server's stale-file
+# the loser gets eaddrinuse (toctou window in create_unix_server's stale-file
 # removal), or silently steals the socket from the live winner.
 # unique_health_sock_path() mints per-test unique module-scoped paths for
 # settings factories; the autouse fixture below redirects any
@@ -182,7 +186,7 @@ def free_host_port() -> int:
     """An unused localhost TCP port, for pinning a container's host binding.
 
     Required by any test that stops and restarts a container and keeps
-    using its host-mapped DSN: Docker does NOT preserve a Docker-assigned
+    using its host-mapped DSN: Docker does not preserve a Docker-assigned
     ephemeral host port across stop/start - it allocates a fresh one on
     start (measured on Linux: 34252 → 34253), silently invalidating every
     host DSN derived before the restart. An explicitly published port is
@@ -203,6 +207,11 @@ def free_host_port() -> int:
 # the published path directly; only the redirect shim stays repo-specific.
 
 
+collect_ignore_glob = [
+    "probes_*.py"
+]  # the adversarial probes: run-directly by explicit path, never the default collection
+
+
 @pytest.fixture(autouse=True)
 def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
     monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
@@ -210,7 +219,7 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
     """Redirect HealthServer.start away from any path another server may hold.
 
     Rewrites the shared default path (the WorkerSettings default no test
-    should bind) AND any path this fixture already minted - the latter so a
+    should bind) and any path this fixture already minted - the latter so a
     settings object reused across two start() calls (e.g. a worker-restart
     test) still yields two distinct sockets instead of the second start
     stealing the first server's live socket.
@@ -238,10 +247,10 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
 def _isolate_workflow_app_registry() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
     """Clear the workflow app registry around every test.
 
-    THE LEAKED-PROJECTION CLASS (named and fixed 2026-10-08; ported to
+    the LEAKED-PROJECTION CLASS (named and fixed 2026-10-08; ported to
     this lane with the evidence-integrity round's executor tests): the
     boot projection (``project_workflow_actor_configs``) reads the
-    process-global app registry at EVERY in-process worker boot, so a
+    process-global app registry at every in-process worker boot, so a
     WorkflowApp one module constructed keeps projecting its cohorts into
     every later test's boot on the same xdist worker. Two observed
     victims of the same mechanism, rotating with pytest-randomly's seed:
@@ -250,13 +259,13 @@ def _isolate_workflow_app_registry() -> Iterator[None]:  # pyright: ignore[repor
       (``wf-demo-*`` from the imported ``examples.workflows`` app) next
       to the test's own two — ``assert len(rows) == 2`` saw 9.
     - ``test_health_lifecycle``: the doc fence's app (default-named
-      ``step`` actors — ``actor="wf"`` — landing on BOTH ``classify``
+      ``step`` actors — ``actor="wf"`` — landing on both ``classify``
       and ``cpu``) tripped the one-queue law at the boot's compile:
       ``WorkflowActorQueueConflictError`` before the test's own stubs ran.
 
     The registry is the src seam (``reset_app_registry_for_tests`` — the
     projection's only input); this fixture is the suite's law that a
-    test's projection sees only what IT registered. Cleared at BOTH ends:
+    test's projection sees only what IT registered. Cleared at both ends:
     setup clears another module's import residue, teardown clears this
     test's own constructions. A within-test app registered after setup
     survives until teardown — the projection sees it for the test that
@@ -279,12 +288,12 @@ def _host_signal_dispositions_restored() -> Iterator[None]:  # pyright: ignore[r
     member is ``worker_main``'s former trailing ``SIGTERM = SIG_IGN``: an
     ignored disposition survives ``exec`` (unlike a handler, which resets
     to default), so one in-process call in an xdist worker silently
-    re-armed EVERY later subprocess of that worker to ignore SIGTERM - a
+    re-armed every later subprocess of that worker to ignore SIGTERM - a
     sleeping child then ate the full 10s escalation budget of the
     shutdown-admin helper and died ``rc == -9`` (the moving-red class of
     2026-09-25/26). The leak itself is fixed at the entrypoints and pinned
     by ``test_worker_main_leaves_the_host_signal_disposition_alone``; this
-    fixture is the floor that keeps ANY future in-process mutation from
+    fixture is the floor that keeps any future in-process mutation from
     spilling into a subsequent test's subprocesses. Snapshot is taken once
     per worker (the dispositions a fresh pytest worker starts with are the
     baseline) and the restore is unconditional and cheap (two
@@ -384,7 +393,7 @@ def _reset_notify_module_globals() -> Iterator[None]:  # pyright: ignore[reportU
     listener set and the per-backend connected lookup - that production
     code writes whenever a real notify listener runs, and that five test
     files read directly.  Each of those files carried an identical
-    file-local copy of this reset; the copies are promoted here as ONE
+    file-local copy of this reset; the copies are promoted here as one
     shared fixture (the same promotion ``_reset_web_admin_caches`` made
     from tests/web_admin) so the globals are isolated for every test -
     including any future file that drives the real listener machinery
@@ -492,7 +501,7 @@ def _call_window_leak_report(window: list[asyncio.Task[object]]) -> str | None:
     the loop at guard-teardown time.  Between the test's last statement
     and that check, pytest tears the test's OTHER function fixtures down -
     and every teardown await runs the loop, giving residue a chance to
-    finish (or be finished by its reaper) BEFORE the guard looks.  A
+    finish (or be finished by its reaper) before the guard looks.  A
     worker bootstrap left mid-drain at test end is exactly that shape:
     it kept writing shared state into the teardown window - and would
     have kept going into the next test had the drain been slower - yet
@@ -500,7 +509,7 @@ def _call_window_leak_report(window: list[asyncio.Task[object]]) -> str | None:
     minted by a test body and reaped by an awaiting teardown fixture
     passed the guard untouched). The call-window snapshot is the guard's
     memory of test-end state; anything captured there is named, so a
-    leak fails THE LEAKING TEST even when it dies before the guard's
+    leak fails the LEAKING TEST even when it dies before the guard's
     check instant.
     """
     if not window:
@@ -525,6 +534,12 @@ _GUARD_LOOP_KEY: pytest.StashKey[asyncio.AbstractEventLoop] = pytest.StashKey()
 #: test-end residue snapshot (see ``_call_window_leak_report``).
 _GUARD_CALL_WINDOW_KEY: pytest.StashKey[list[asyncio.Task[object]]] = pytest.StashKey()
 
+#: Everything pending when the call phase started: the guard's baseline
+#: plus the function fixtures' tasks. The drain's ownership set is the
+#: call phase's own tasks (this snapshot minus the baseline), so a
+#: function fixture's task is never drained or cancelled by the guard.
+_GUARD_CALL_START_KEY: pytest.StashKey[set[asyncio.Task[object]]] = pytest.StashKey()
+
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item: pytest.Item) -> object:
@@ -545,6 +560,7 @@ def pytest_runtest_call(item: pytest.Item) -> object:
         result = yield
         return result
     pending_at_call_start = asyncio.all_tasks(loop)
+    item.stash[_GUARD_CALL_START_KEY] = pending_at_call_start
     try:
         result = yield
     finally:
@@ -556,6 +572,127 @@ def pytest_runtest_call(item: pytest.Item) -> object:
             # in both sets and exempt - their owner reaps them.
             item.stash[_GUARD_CALL_WINDOW_KEY] = list(pending_at_call_end - pending_at_call_start)
     return result
+
+
+#: The central drain's bounds: the whole drain is bounded by the budget
+#: (under the 300s per-test timeout); the natural-completion grace inside
+#: it sits at the dispatcher command timeout's 5s default, so a healthy
+#: release finishes naturally instead of being cancelled and detached.
+_DRAIN_BUDGET_SECONDS = 10.0
+_DRAIN_NATURAL_GRACE_SECONDS = 5.0
+
+#: The benign release-tail class is the real asyncpg pool release only:
+#: the task's coroutine must be the installed
+#: ``asyncpg.pool.PoolConnectionHolder.release`` code object itself. The
+#: identity survives the coroutine's completion, and a compiled forgery
+#: with the same filename and qualname does not pass it. If asyncpg
+#: cannot be imported, the allowlist is empty: every drained call-end
+#: task fails (loudly, never silently allowed).
+_asyncpg_release_code: "types.CodeType | None" = None
+_asyncpg_release_code_loaded = False
+
+
+def _asyncpg_release_code_object() -> "types.CodeType | None":
+    """The installed release code object, loaded once; ``None`` when
+    asyncpg cannot be imported."""
+    global _asyncpg_release_code, _asyncpg_release_code_loaded
+    if not _asyncpg_release_code_loaded:
+        _asyncpg_release_code_loaded = True
+        try:
+            import asyncpg.pool
+
+            _asyncpg_release_code = asyncpg.pool.PoolConnectionHolder.release.__code__
+        except Exception:  # Why: any import failure empties the allowlist; the drain then fails every drained leak loudly instead of allowing it.
+            _asyncpg_release_code = None
+    return _asyncpg_release_code
+
+
+def _is_benign_release_tail(task: asyncio.Task[object]) -> bool:
+    """Whether a drained call-end task is the known benign release-tail
+    class: the task's coroutine is the installed asyncpg
+    ``PoolConnectionHolder.release`` code object itself. The identity
+    survives the coroutine's completion, and a compiled forgery with the
+    same filename and qualname does not pass it. Without asyncpg the
+    allowlist is empty and nothing is benign."""
+    release_code = _asyncpg_release_code_object()
+    if release_code is None:
+        return False
+    code = getattr(task.get_coro(), "cr_code", None)
+    return code is release_code
+
+
+async def _drain_to_quiescence(
+    loop: asyncio.AbstractEventLoop,
+    tasks: set[asyncio.Task[object]],
+    *,
+    before: set[asyncio.Task[object]],
+    budget: float = _DRAIN_BUDGET_SECONDS,
+) -> tuple[list[asyncio.Task[object]], list[asyncio.Task[object]]]:
+    """Drain a leaked task tree to quiescence, bounded by *budget*.
+
+    First a natural-completion grace (no cancel: healthy finishing work,
+    like an in-flight pool release, is not interrupted), then
+    cancel-and-await, repeating for tasks the drained ones spawned, until
+    nothing is pending or the budget expires. Returns ``(drained,
+    survivors)``: the drained completed and are the caller's to classify
+    (the release tails are benign, the rest are the test's failure); the
+    survivors failed the bound and always fail the test.
+    """
+    deadline = loop.time() + budget
+    # The ownership seeds: the call-end window's tasks, done or pending.
+    # A seed's context carries the call owner (the root test task the
+    # loop's task factory stamped); every pending task whose context
+    # carries one of those owners is call-owned too, including an orphan
+    # whose parent finished before the guard ran, and a task created by a
+    # done callback (the callback runs in the registering task's context
+    # copy). A task whose context has none of the owners is not the
+    # test's and is never drained.
+    roots = {t.get_context().get(_call_owner) for t in tasks} - {None}
+    pending = {t for t in tasks if not t.done()} | {
+        t
+        for t in asyncio.all_tasks(loop)
+        if t not in tasks
+        and not t.done()
+        and t is not asyncio.current_task()
+        and t.get_context().get(_call_owner) in roots
+    }
+    processed: set[asyncio.Task[object]] = set(tasks)
+    drained: list[asyncio.Task[object]] = []
+
+    natural_grace = True
+    while pending and loop.time() < deadline:
+        if natural_grace:
+            await asyncio.wait(
+                pending, timeout=min(_DRAIN_NATURAL_GRACE_SECONDS, deadline - loop.time())
+            )
+            natural_grace = False
+        else:
+            for t in pending:
+                t.cancel()
+            await asyncio.wait(pending, timeout=min(1.0, deadline - loop.time()))
+        completed = {t for t in pending if t.done()}
+        for t in completed:
+            # The drain owns the tasks it completed: retrieve their
+            # outcome so asyncio never reports it unretrieved.
+            with contextlib.suppress(asyncio.CancelledError):
+                t.exception()
+        drained.extend(sorted(completed, key=lambda t: t.get_name()))
+        processed |= pending
+        # A task that swallowed its cancellation is still pending: it
+        # stays in the drain. A pending task carrying a call owner joins
+        # it; everything else (a fixture teardown's own task) is not the
+        # test's and is left alone.
+        pending = {t for t in pending if not t.done()} | {
+            t
+            for t in asyncio.all_tasks(loop)
+            if t not in processed
+            and not t.done()
+            and t is not asyncio.current_task()
+            and t.get_context().get(_call_owner) in roots
+        }
+    survivors = sorted(pending, key=lambda t: t.get_name())
+    drained = sorted(set(drained) - set(survivors), key=lambda t: t.get_name())
+    return drained, survivors
 
 
 @pytest.fixture(autouse=True)
@@ -572,6 +709,20 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
     task: cancel-and-await on every path is the suite's own loop-teardown
     doctrine (``_stop_loop`` in test_leader_sweeps_coverage.py, the
     leader_task finally blocks in test_otel_integration.py).
+
+    Before failing, the guard drains the call phase's own tasks: the
+    call-end residue and everything descended from it (the creator links
+    the loop's task factory records), with a natural-completion grace (a
+    pool release tail in flight finishes instead of being cancelled),
+    then cancel-and-await, bounded by ``_DRAIN_BUDGET_SECONDS``. A
+    drained leak is allowed only when it is the benign release-tail
+    class (the installed asyncpg pool release); it is named in the
+    report's warnings section. Any other task the test left pending at
+    call end fails the test even when the drain completed it: a task
+    that outlives the assertions can write shared state after they ran.
+    Tasks that survive the bound fail too. The drain is the class-wide
+    containment: a missed task cannot outlive its test and poison the
+    next one.
 
     Baseline-snapshot diff, not an absolute check: tasks that were already
     pending when the test started (a module-scoped fixture's long-lived
@@ -590,6 +741,9 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
         yield
         return
     request.node.stash[_GUARD_LOOP_KEY] = loop
+    from tests._loop_control import install_parent_link_factory  # the ownership factory
+
+    install_parent_link_factory(loop)
     before = asyncio.all_tasks(loop)
     try:
         yield
@@ -603,16 +757,81 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
         current = asyncio.current_task()
         if current is not None:
             after.discard(current)
-        report = _leaked_pending_task_report(before, after)
+        # The central quiescence drain. Ownership is the call phase's own
+        # tasks: minted during the call (the call-start snapshot minus the
+        # guard's baseline) and still pending at the guard's teardown. A
+        # task created after the call (a fixture teardown's) is not the
+        # test's and is never drained or failed here.
+        call_start = request.node.stash.get(_GUARD_CALL_START_KEY, set())
+        window_residue = [
+            t for t in request.node.stash.get(_GUARD_CALL_WINDOW_KEY, []) if t not in call_start
+        ]
+        # The drain's set: the residue still pending at the guard's check.
+        # A residue task already done here was reaped by the teardown
+        # window, not by the drain, and keeps its own failure below. The
+        # drain still runs on an all-done residue: its descendant scan is
+        # how an orphan child (spawned by a finished window task) is
+        # found.
+        pending_at_check = {t for t in window_residue if not t.done()}
+        drain_failed_report: str | None = None
+        drained_warning: str | None = None
+        # The rest of the residue: completed during the teardown window,
+        # before the drain ran. The same predicate classifies it: a
+        # benign release is allowed and named; anything else fails.
+        done_residue = [
+            t
+            for t in request.node.stash.get(_GUARD_CALL_WINDOW_KEY, [])
+            if t.done() and t not in pending_at_check and t not in call_start
+        ]
+        for t in done_residue:
+            # The guard owns the residue: retrieve the outcome of every
+            # completed task (early or drained), so a release that errored
+            # on its holder is not reported as an unretrieved exception.
+            with contextlib.suppress(asyncio.CancelledError):
+                t.exception()
+        benign = [t for t in done_residue if _is_benign_release_tail(t)]
+        early_failed = [t for t in done_residue if not _is_benign_release_tail(t)]
+        if window_residue:
+            drained, survivors = await _drain_to_quiescence(
+                loop, set(window_residue), before=call_start | before
+            )
+            benign += [t for t in drained if _is_benign_release_tail(t)]
+            not_benign = [t for t in drained if not _is_benign_release_tail(t)]
+            if benign:
+                drained_warning = "\n".join(
+                    f"  - task {t.get_name()!r} drained (release tail); coroutine: {t.get_coro()!r}"
+                    for t in benign
+                )
+            if not_benign:
+                drain_failed_report = (
+                    "test asserted before a task it left pending finished; "
+                    "the drain completed it and the write outlived the "
+                    "assertions:\n"
+                    + "\n".join(
+                        f"  - task {t.get_name()!r} drained; coroutine: {t.get_coro()!r}"
+                        for t in not_benign
+                    )
+                )
+            if survivors:
+                names = _leaked_pending_task_report(set(), set(survivors)) or ""
+                drain_failed_report = (
+                    (drain_failed_report + "\n" if drain_failed_report else "")
+                    + "the drain gave up on task(s) that ignored the bound:\n"
+                    + names
+                )
+        if drained_warning is not None:
+            request.node.add_report_section(
+                "warnings", "leaked asyncio tasks (drained)", drained_warning
+            )
+        report = drain_failed_report
         # The test-end residue: tasks minted during the call phase and
-        # still pending when the test's body finished.  A task still
-        # pending NOW is already named by the live diff above; the window
-        # adds the ones whose teardown-window finish would otherwise hide
-        # them (see ``_call_window_leak_report``).  Both land on the
-        # LEAKING test - never on the next one.
-        window_report = _call_window_leak_report(
-            [t for t in request.node.stash.get(_GUARD_CALL_WINDOW_KEY, []) if t.done()]
-        )
+        # still pending when the test's body finished. A task the drain
+        # completed is cleaned (it was in the live pending set above and
+        # is not named here); the window names the ones whose
+        # teardown-window finish would otherwise hide them (see
+        # ``_call_window_leak_report``). Both land on the leaking test -
+        # never on the next one.
+        window_report = _call_window_leak_report(early_failed)
         if window_report is not None:
             report = report + "\n" + window_report if report is not None else window_report
         if report is not None:
@@ -632,7 +851,7 @@ def _no_developer_dotfiles(  # pyright: ignore[reportUnusedFunction]  # Why: aut
 
     :meth:`TaskQSettings.load` defaults ``override=True``: dotenvmodel's
     cascade (``.env`` → ``.env.local`` → ``.env.{env}`` → ``.env.{env}.local``,
-    rooted at ``DOTENV_DIR`` or the CWD) is written INTO ``os.environ``,
+    rooted at ``DOTENV_DIR`` or the CWD) is written into ``os.environ``,
     overriding even ``monkeypatch.setenv`` values set earlier in the same
     test. ``.env.example`` tells developers to create exactly such a file with
     ``TASKQ_PG_DSN=postgresql://taskq:taskq@localhost:5432/taskq`` - so on a
@@ -650,7 +869,7 @@ def _no_developer_dotfiles(  # pyright: ignore[reportUnusedFunction]  # Why: aut
     ``monkeypatch`` fixture (which has no session scope): ``MonkeyPatch`` is
     the sanctioned env seam with correct undo semantics. ``DOTENV_DIR`` is the
     one variable that CANNOT flow through ``TaskQSettings`` - it is the input
-    that tells dotenvmodel where to look for dotfiles BEFORE any settings
+    that tells dotenvmodel where to look for dotfiles before any settings
     object exists. Setting it in the test process also makes subprocess
     children spawned with ``env={**os.environ, ...}`` (e.g. the
     ``taskq ui serve`` and e2e entry scripts, which call
@@ -724,7 +943,7 @@ def _publish_run_isolation_token(  # pyright: ignore[reportUnusedFunction]  # Wh
     ``_schema_name_from_module`` in :mod:`taskq.testing.fixtures`) via
     :func:`taskq.testing.fixtures.run_isolation_token`, keeping two xdist
     workers of this invocation from hashing the same module or node id to the
-    same database or schema on the invocation's ONE shared pair.
+    same database or schema on the invocation's one shared pair.
 
     Invocation-uniqueness of the token is defense-in-depth, not the isolation
     mechanism: the pair itself is per-invocation
@@ -733,16 +952,16 @@ def _publish_run_isolation_token(  # pyright: ignore[reportUnusedFunction]  # Wh
     regressed, distinct tokens would keep the runs' names from colliding on
     whatever they ended up sharing.
 
-    THE TOKEN IS THE FULL BASETEMP PATH (the mutual-drop class's root fix,
+    the TOKEN IS the FULL BASETEMP PATH (the mutual-drop class's root fix,
     2026-10-08): the invocation-unique numbered dir (``pytest-N``) PLUS the
-    xdist worker's own subdirectory (``popen-gwK``) - invocation-unique AND
+    xdist worker's own subdirectory (``popen-gwK``) - invocation-unique and
     worker-distinct in one string, which neither candidate alone is. The
-    plain worker id is NOT invocation-unique: ``gw7`` is identical in every
+    plain worker id is not invocation-unique: ``gw7`` is identical in every
     ``-n 8`` invocation on the box, so two overlapping invocations (or a
     parent session and its own subprocess pytest - the scratch scenarios) hashing
-    (worker, module) landed the SAME database name on one cluster, and each
+    (worker, module) landed the same database name on one cluster, and each
     side's ``DROP DATABASE ... WITH (FORCE)`` killed the other's live
-    connections mid-test - the round-4 ``InvalidCatalogNameError`` at the
+    connections mid-test - the hold round ``InvalidCatalogNameError`` at the
     fuzz pins, every victim green solo. A subprocess pytest also mints its
     own fresh ``pytest-M`` root (the lowest free number), so its basetemp
     path is distinct from its parent's by construction - the scratch child
@@ -955,7 +1174,7 @@ def pg_container(
     (per-invocation state-dir file lock + holder registry - see
     :func:`taskq.testing._shared_containers.invocation_state_dir`): the first
     worker to take the lock boots the tuned container (``max_connections=1000``
-    serving ALL workers of the invocation on ONE container, plus checkpoint
+    serving ALL workers of the invocation on one container, plus checkpoint
     tuning - see that module for the measured rationale), later workers reuse
     it, and the last worker to finish removes it. Tests that must
     STOP/PAUSE/MUTATE a Postgres (chaos, ALTER USER) get their own disposable
@@ -968,9 +1187,9 @@ def pg_container(
     databases are still created and dropped on it (the caller owns the
     cluster's lifecycle).
     """
-    # The LOCAL DEV LOOP's override (BUILD-PROTOCOL §7b: the dev loop is
+    # The local dev loop's override (build-protocol §7b: the dev loop is
     # local): an externally-provisioned cluster (e.g. the phase worktree's
-    # own warm container on a fixed port) is used AS-IS — no container boot,
+    # own warm container on a fixed port) is used as-is — no container boot,
     # no teardown sweep, the DSN is the whole contract. Default-inert: unset
     # (CI, the plain dev run), the shared per-invocation pair boots below.
     external_dsn = os.environ.get("TASKQ_TEST_PG_DSN")
@@ -1040,7 +1259,7 @@ def _pg_admin(base_dsn: str, *statements: str) -> None:
     t.start()
     # Why: a hang guard, not a performance budget. The 30s first tried here
     # failed four module teardowns on one congested CI runner - a
-    # ``DROP DATABASE ... WITH (FORCE)`` against the shared container,
+    # ``drop database ... with (force)`` against the shared container,
     # queued behind parallel modules' teardowns under CPU starvation, took
     # longer than 30s to land (the daemon thread completes it regardless;
     # the TimeoutError poisoned the leg). A true hang - a dead container
@@ -1062,7 +1281,7 @@ def _pg_clock_delta(base_dsn: str) -> float:
     are common causes). Same private-thread pattern as ``_pg_admin``.
 
     One-shot diagnostic, not a guard: it cannot see divergence that begins
-    AFTER session start (a mid-run VM pause steps the clocks with no
+    after session start (a mid-run VM pause steps the clocks with no
     follow-up probe) - same-statement single-domain comparisons (this
     suite's timing tests) are unaffected either way.
     """
@@ -1101,7 +1320,7 @@ def _pg_clock_delta(base_dsn: str) -> float:
 def pg_dsn(pg_container: _PgContainerShim, request: pytest.FixtureRequest) -> Iterator[str]:
     """Module-scoped database on the shared container; DSN pointing at it.
 
-    Every test module gets its OWN database on the invocation's ONE shared
+    Every test module gets its own database on the invocation's one shared
     container - schema-level isolation in a shared database still shares
     cluster-wide state (advisory locks, pg_stat_activity, connection
     pressure), which let modules clobber each other. The database name is
@@ -1168,7 +1387,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     schedules everything else (ungrouped items) individually via the
     default load-balancing strategy.
 
-    Grouping is defense-in-depth and efficiency, NOT a correctness
+    Grouping is defense-in-depth and efficiency, not a correctness
     requirement for the NAMES alone: every module-scoped name is already
     worker-qualified (``module_pg_schema`` / ``module_pg_pool`` /
     ``module_jobs_app`` hash the xdist worker id into the schema name,
@@ -1188,11 +1407,11 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     safe, per-file default. The e2e namespace prefix keeps an e2e module from
     ever sharing a group with a same-stem integration module.
 
-    THE SPLIT-DROP CLASS (named and fixed 2026-10-08, the recon run's 3
+    the SPLIT-DROP CLASS (named and fixed 2026-10-08, the recon run's 3
     failed + 3 errors): grouping IS a correctness requirement for every
     module-scoped FIXTURE LIFECYCLE, not just its names. A fast-tier module
     whose tests take the module-scoped PG fixtures (``pg_dsn`` et al.) but
-    carries no ``integration`` mark was NOT grouped — its tests split
+    carries no ``integration`` mark was not grouped — its tests split
     across THREE workers under load-scheduling, and each worker ran its
     own module-db lifecycle (create at first use, drop at scope end). The
     drops land while the module is still mid-flight elsewhere:
@@ -1204,9 +1423,9 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     integration modules have always had: any item requesting a
     module-scoped PG/Redis fixture joins its module's own group, so the
     whole module — one fixture lifecycle, one create/migrate/drop — runs
-    on ONE worker.
+    on one worker.
     """
-    # The module-scoped fixtures whose LIFECYCLE (not just their names)
+    # The module-scoped fixtures whose lifecycle (not just their names)
     # assumes the module's tests all land on one worker: the PG database
     # (``pg_dsn``), the schema/pool/jobs-app stack built on it, and the
     # per-process Redis DB. ``fixturenames`` is the transitive closure, so
@@ -1234,16 +1453,16 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
         item.add_marker(pytest.mark.xdist_group(name=group))
 
-    # G7's ALWAYS-ON registration (T08): every ASYNC test in the WORKFLOW
+    # G7's always-on registration (the typed node view : every async test in the workflow
     # pin files ends with the reported==reconstructed check (the fixture
-    # in tests/_wf_fixtures.py). THE WIRING (the phase-2 attack's H4
-    # fix): a ``usefixtures`` MARKER added here is INERT — the items'
-    # fixture closures are computed before this hook runs, so the marker
-    # never reached the fixture set (the attack's proof: two pins ended
-    # root-contradicts-rows and passed their teardowns). Appending to
-    # ``fixturenames`` IS the effective registration: the closure list is
-    # read at setup time. The scope is the wf pin files' own prefix, and
-    # only the ASYNC items: the check's fixtures need the PG connection,
+    # in tests/_wf_fixtures.py). the wiring: a ``usefixtures`` marker
+    # added here is inert — the items' fixture closures are computed
+    # before this hook runs, so the marker never reached the fixture set
+    # (the demonstration: two pins ended root-contradicts-rows and
+    # passed their teardowns). Appending to ``fixturenames`` is the
+    # effective registration: the closure list is read at setup time.
+    # The scope is the wf pin files' own prefix, and
+    # only the async items: the check's fixtures need the PG connection,
     # and a sync item would drag PG into a unit lane (the sync pins
     # assert the derivation table directly, in memory).
     for item in items:

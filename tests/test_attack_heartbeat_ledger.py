@@ -150,7 +150,7 @@ def _heartbeat_deps(pool: _ScriptedPool, max_heartbeat_failures: int) -> WorkerD
     deps = MagicMock(spec=WorkerDeps)
     deps.settings = _settings(max_heartbeat_failures)
     deps.heartbeat_pool = pool  # type: ignore[assignment]
-    # The REAL registry, not a Mock child: the tick's claim-loss reconcile
+    # The real registry, not a Mock child: the tick's claim-loss reconcile
     # probe reads active_jobs.held_ids() as the renewal's exclusion array,
     # and a Mock child's held_ids() return value poisons the probe - the
     # tick dies an AttributeError death and the ledger counts a recovery
@@ -265,7 +265,7 @@ async def test_unexpected_failures_alone_isolate_at_the_documented_tick() -> Non
 async def test_mixed_failure_classes_isolate_on_the_consecutive_run(
     label: str, script: list[str]
 ) -> None:
-    """The ledger is ONE threshold: (F) mixed failures isolate at tick F+1
+    """The ledger is one threshold: (F) mixed failures isolate at tick F+1
     whatever the class mix and order."""
     _ticks, isolated, at = await _run_script(script, max_heartbeat_failures=3)
     assert isolated, f"RED ({label}): the mixed run never isolated"
@@ -277,7 +277,7 @@ async def test_mixed_failure_classes_isolate_on_the_consecutive_run(
 
 async def test_a_successful_tick_resets_the_ledger() -> None:
     """A fully successful tick resets the consecutive run: two failures, a
-    recovery, two more failures must NEVER isolate (the longest run is 2
+    recovery, two more failures must never isolate (the longest run is 2
     against F=3), and the worker must still be beating."""
     script = [UNEXPECTED, TRANSIENT, SUCCESS, UNEXPECTED, TRANSIENT]
     ticks, isolated, _at = await _run_script(script, max_heartbeat_failures=3)
@@ -301,7 +301,7 @@ async def test_recovery_then_a_fresh_run_isolates_on_its_own_cadence() -> None:
 
 
 async def test_in_tx_hook_failures_count_once_per_tick() -> None:
-    """A failing cancel hook is a failed tick, counted ONCE: F consecutive
+    """A failing cancel hook is a failed tick, counted once: F consecutive
     hook failures must isolate on the (F+1)-th, not a tick early (a double
     count) and never at all (the old carve-out)."""
     import taskq.worker.heartbeat as hb_mod
@@ -392,7 +392,7 @@ async def _crash_a_sibling(deps: MagicMock, shutdown_event: asyncio.Event) -> No
 
 
 async def test_every_pre_stamp_claim_is_stamped_the_bound_holds() -> None:
-    """Looped: entries registered BEFORE the crash are always stamped
+    """Looped: entries registered before the crash are always stamped
     SHUTDOWN. This is the bounded-window claim: the exposure is bounded to
     claims racing the stamp, so claims that already landed must never be
     left origin-less (their teardown cancellation would phantom-cancel)."""
@@ -507,7 +507,7 @@ async def test_the_stamp_window_residual_admits_no_phantom_cancel() -> None:
             # stamp has run, the consumer's own cancellation has not been
             # observed yet. (The signature mirrors
             # ActiveJobRegistry.register's (job_id, task, ctx): a gate with
-            # the wrong arity kills the consumer AT registration - a
+            # the wrong arity kills the consumer at registration - a
             # TypeError before any claim - and this probe degenerates to
             # asserting nothing, the vacuous-green trap this fix closes.)
             await stamped.wait()

@@ -1,7 +1,7 @@
-"""The finalize-path statement constants (T04): the terminal-mark fence, the guarded decrement, the guarded fire, the outbox insert, the node/fork writes.
+"""The finalize-path statement constants: the terminal-mark fence, the guarded decrement, the guarded fire, the outbox insert, the node/fork writes.
 
-The schema identifier is the ONLY caller-controlled interpolated value
-(validated at WorkflowSql.build); the ONE further token
+The schema identifier is the only caller-controlled interpolated value
+(validated at WorkflowSql.build); the one further token
 (``{min_deferral_interval}`` — the deferral floor fragment, a constant
 rendered from ``backend/_sql_fragments.MIN_DEFERRAL_INTERVAL_SQL`` so the
 SQL and the in-memory twin cannot drift) is fixed vocabulary, never
@@ -13,20 +13,18 @@ from __future__ import annotations
 
 from typing import Final
 
-#: THE FAN-IN'S BYTE CAP (T18's UNBOUNDED-JSONB policy):
-#: the collect's ``failures`` jsonb truncates here — over the cap the
-#: join row COMPACTS to the bounded summary (the ``__truncated__`` marker
-#: + the ledger pointer); the full detail stays on the ledger/attempts.
-#: Sized to keep a 1000-child collect's row comfortably bounded while a
-#: normal collect's items never compact.
+#: the collect's ``failures`` jsonb truncates here — over the cap the join row
+#: compacts to the bounded summary (the ``__truncated__`` marker + the ledger
+#: pointer); the full detail stays on the ledger/attempts. Sized to keep a
+#: 1000-child collect's row comfortably bounded while a normal collect's items
+#: never compact.
 FANIN_FAILURES_BYTE_CAP: Final[int] = 64 * 1024
 
-#: THE TRUNCATION'S RECEIPT (the read-side reconciliation): the
-#: bounded collect's join row carries the ``__truncated__`` count in its
-#: METADATA (``wf_collect_truncated``) alongside the envelope's own
-#: markers — the decode unwraps the envelope at the consumer's typed
-#: boundary (the declared ``list[...]`` arrives), so the count must
-#: surface where the READS decide, never be swallowed by the unwrap.
+#: the bounded collect's join row carries the ``__truncated__`` count in its
+#: metadata (``wf_collect_truncated``) alongside the envelope's own markers —
+#: the decode unwraps the envelope at the consumer's typed boundary (the
+#: declared ``list[...]`` arrives), so the count must surface where the reads
+#: decide, never be swallowed by the unwrap.
 COLLECT_TRUNCATION_RECEIPT_SQL = """\
 UPDATE {schema}.jobs
 SET metadata = metadata || $2::jsonb
@@ -119,7 +117,7 @@ SELECT id, status, attempt FROM upd
 """
 
 
-# tx2's guarded decrement: ONE atomic statement, the decrement owned
+# tx2's guarded decrement: one atomic statement, the decrement owned
 # exclusively by this statement (the eighth rule: derived values are written
 # only by the statement that derives them). Guards, each load-bearing (the
 # pytest-gremlins mutation surface):
@@ -128,11 +126,11 @@ SELECT id, status, attempt FROM upd
 #   * the flow-status EXISTS leg — the fire guard's leg (P3 rule 4); the
 #     dispatch fence + the finalize fence + this leg — any two are
 #     insufficient.
-#   * the edge join — the edge ledger is the ONLY decrement authority
-#     (COUNTER-AS-CACHE / LEDGER-AS-TRUTH).
+#   * the edge join — the edge ledger is the only decrement authority
+#     (counter-as-cache / ledger-as-truth).
 #
 # A promoted nested map's reduce node finalizes through this same statement:
-# its edges point at the GRANDPARENT's join, so the grandparent's join
+# its edges point at the grandparent's join, so the grandparent's join
 # decrements in this same transaction — nested maps, hence a depth-N DAG,
 # stay expressible.
 DECREMENT_SQL = """\
@@ -156,9 +154,9 @@ RETURNING j.id, j.deps_pending
 
 # The guarded fire: exactly-once via UNIQUE(join_job_id); premature fires
 # refused by `j.deps_pending = 0` (the counter hit zero) + the join-wait
-# status + the flow-status EXISTS leg INSIDE the fire statement (pin 5: the
+# status + the flow-status EXISTS leg inside the fire statement (pin 5: the
 # sweep's fire carries the same leg — a post-cancel re-derive refuses, the
-# unfenced variant stays RED forever).
+# unfenced variant stays red forever).
 FIRE_SQL = """\
 WITH wins AS (
     INSERT INTO {schema}.wf_join_fire (id, join_job_id, flow_id, step_key, fired_by)
@@ -188,26 +186,26 @@ VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 """
 
 
-# The single-node insert (the workflow-row enqueue path's core write; T09's
+# The single-node insert (the workflow-row enqueue path's core write; the
 # API wraps it). A joined node is born with deps_pending = <declared parent
 # count> and blocking_reason='join' in metadata; vanilla enqueues never set
-# it (DEFAULT 0 — a semantic no-op for them). trace_id is stamped on the
+# it (default 0 — a semantic no-op for them). trace_id is stamped on the
 # same insert (the cheap survivor — one field, no extra write).
-# priority is the RESOLVED value the caller computed (per-call > the
+# priority is the resolved value the caller computed (per-call > the
 # declaration > the column default 0) — the priority surface's enqueue
 # face; the unset case binds the column default's own value, so the
 # pre-fix rows are byte-identical.
-# start_to_close is the row's DECLARED DEADLINE (the wf start_to_close
-# fix): the RESOLVED value the caller computed, stamped into the
+# start_to_close is the row's declared deadline: the resolved value the
+# caller computed, stamped into the
 # column the vanilla rows always had (01.00.00_01:85 — nullable, no
 # default); the unset case binds NULL — the pre-fix row byte-identical
 # (the enforcement falls to the worker's default_start_to_close at claim
 # time, the resolution chain's own tail).
-# fairness_key is the row's DISPATCH COHORT (the wf fairness stamp):
+# fairness_key is the row's dispatch cohort (the wf fairness stamp):
 # every claimable wf row is born with its run's flow_id as the value, so
-# the round-robin dispatch partitions the run's rows into ONE cohort per
+# the round-robin dispatch partitions the run's rows into one cohort per
 # run — a deep run's backlog cannot occupy the whole round against a
-# shallow run's. The flow ROOT stays unstamped (it is never work — the
+# shallow run's. The flow root stays unstamped (it is never work — the
 # dispatch fence's root-marker leg excludes it).
 NODE_INSERT_SQL = """\
 INSERT INTO {schema}.jobs
@@ -220,14 +218,14 @@ VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13,
 
 # The fork's child INSERT: parallel-array binds (one statement per chunk —
 # never one round trip per child, the 1000-child fan-out tx band's shape).
-# status is omitted — every child is born 'pending' (the column DEFAULT);
-# retry_kind rides the vanilla vocabulary. priority is the child's RESOLVED
+# status is omitted — every child is born 'pending' (the column default);
+# retry_kind rides the vanilla vocabulary. priority is the child's resolved
 # value (the builder's precedence arithmetic — the priority surface); the
 # unset case binds 0, the column default's own value (pre-fix identical).
-# start_to_close is the child's DECLARED DEADLINE (the wf start_to_close
-# fix — the column the vanilla rows always had); the unset case binds
+# start_to_close is the child's declared deadline (the column the
+# vanilla rows always had); the unset case binds
 # NULL (pre-fix identical).
-# fairness_key is the child's DISPATCH COHORT (the wf fairness stamp):
+# fairness_key is the child's dispatch cohort (the wf fairness stamp):
 # one cohort per run (the flow_id), so the round-robin dispatch
 # interleaves runs instead of draining them as one FIFO stream.
 FORK_CHILDREN_SQL = """\
@@ -250,25 +248,25 @@ SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
 """
 
 
-# ── T20: THE EMIT TX — the streaming source's per-page statement group ──
-# The certified fork shapes RE-BOUND (the children INSERT + the edge rows
+# ── the emit tx — the streaming source's per-page statement group ──
+# The certified fork shapes re-bound (the children INSERT + the edge rows
 # are byte-shape FORK_CHILDREN_SQL / FORK_EDGES_SQL — named separately so
-# the emit's call site and its pins grep THIS concern) + the ONE new leg:
-# the CURSOR CHECKPOINT on the source row's own metadata (no new table,
-# no new column), guarded by the FULL dispatch fence. ONE transaction
-# (the fork-atomicity law at page granularity): a kill at ANY statement
-# window — including AFTER the cursor write but before the commit — rolls
-# the children, the edges AND the cursor back together; the reclaim
+# the emit's call site and its pins grep this concern) + the one new leg:
+# the cursor checkpoint on the source row's own metadata (no new table,
+# no new column), guarded by the full dispatch fence. one transaction
+# (the fork-atomicity law at page granularity): a kill at any statement
+# window — including after the cursor write but before the commit — rolls
+# the children, the edges and the cursor back together; the reclaim
 # re-pends the source (it never finalized), the re-claim re-emits exactly
 # the lost page.
 #
-# THE REFUTED-CLAIM DISCIPLINE (the spike's 198 UniqueViolations — the
+# the refuted-claim discipline (the measured 198 UniqueViolations — the
 # design's proof the discriminator is load-bearing): the children's
-# idempotency keys are PARENT-SCOPED at the EMIT scope
+# idempotency keys are parent-scoped at the emit scope
 # (``wf:{flow}:emit:{map_index}:{step}``) and carry the per-child
 # ``map_index`` — the fork key's discipline (pin 18) at chain level, plus
 # the per-child trace_id the recorded failure-down reads.
-# fairness_key is the child's DISPATCH COHORT (the wf fairness stamp) —
+# fairness_key is the child's dispatch cohort (the wf fairness stamp) —
 # one cohort per run, the fork's own law at the emit's page inserts.
 EMIT_CHILDREN_SQL = """\
 INSERT INTO {schema}.jobs
@@ -289,7 +287,7 @@ SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
 """
 
 
-# THE CURSOR CHECKPOINT — the fence carrier. A ZOMBIE source (its claim
+# the cursor checkpoint — the fence carrier. A zombie source (its claim
 # superseded by the reclaim + re-claim) updates NOTHING → the emit
 # refuses (EmitFencedError) → the children above roll back with the tx.
 EMIT_CURSOR_SQL = """\
@@ -304,9 +302,9 @@ RETURNING id
 """
 
 
-# THE MAX-IN-FLIGHT BOUND'S COUNTER (T20): the run's non-terminal
-# row count (the ledger's truth), excluding the source's own claim row —
-# the admission's arithmetic input, read INSIDE the tx under the lock.
+# the run's non-terminal row count (the ledger's truth), excluding the source's
+# own claim row — the admission's arithmetic input, read inside the tx under
+# the lock.
 EMIT_IN_FLIGHT_SQL = """\
 SELECT count(*) FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
@@ -317,8 +315,8 @@ WHERE (metadata->>'flow_id')::uuid = $1
 """
 
 
-# THE ADMISSION LOCK: one run's emitters serialize on this transaction-scoped
-# advisory lock — the concurrent emitters' count+insert is atomic per run.
+# one run's emitters serialize on this transaction-scoped advisory lock — the
+# concurrent emitters' count+insert is atomic per run.
 EMIT_ADMISSION_LOCK_SQL = """\
 SELECT pg_advisory_xact_lock(hashtext($1::text))
 """
@@ -340,15 +338,13 @@ WHERE id = $1
 """
 
 
-#: THE FORK'S CONSUMER EDGES (the map-join consumption fix — the
-#: ecosystem mapper's defect): the join's DOWNSTREAM consumers are wired
-#: like any node — the consumer's dep was RESERVED at create (the runner's
-#: static insert counts the fork-spawned join's edge before the join's id
-#: exists), so THIS edge row is the ledger's truth that releases it: the
-#: consumer dispatches strictly after the JOIN'S OWN TERMINAL (the join
-#: row's claim + default packer writes the collected result), and the
-#: consumer's arg resolution reads the join's result through the SAME
-#: typed door as any node result (the parent-results query on the edge
+#: the join's downstream consumers are wired like any node — the consumer's dep
+#: was reserved at create (the runner's static insert counts the fork-spawned
+#: join's edge before the join's id exists), so this edge row is the ledger's
+#: truth that releases it: the consumer dispatches strictly after the JOIN'S
+#: own terminal (the join row's claim + default packer writes the collected
+#: result), and the consumer's arg resolution reads the join's result through
+#: the same typed door as any node result (the parent-results query on the edge
 #: ledger). The outbox's consumer insert stays as the belt (the arbiter's
 #: idempotency key conflicts with the static row — no double dispatch).
 FORK_CONSUMER_EDGES_SQL = """\
@@ -360,9 +356,9 @@ JOIN {schema}.jobs c ON c.step_key = p.key
 """
 
 
-# The PUBLIC edge writer (the fork's FORK_EDGES_SQL is the fork-internal
+# The public edge writer (the fork's FORK_EDGES_SQL is the fork-internal
 # one; this is the single-edge insert the public join path uses): a joined
-# node's incoming edges ARE the join counter's truth — a join declared
+# node's incoming edges are the join counter's truth — a join declared
 # without them is a stranded invisible join (the rederive arm diagnoses it
 # metadata.blocking_reason='orphan_parent'; the declarative API refuses it
 # at build time, definitions.validate_fork / validate_join_spec).
@@ -377,23 +373,23 @@ SELECT id, status FROM {schema}.jobs WHERE id = $1
 """
 
 
-# ── T06: the failed-parent propagation ──────────────────────────────────
+# ── The failed-parent propagation ──────────────────────────────────
 
-# The FAIL-CLOSED peer-cascade: a parent's TERMINAL failure resolves every
-# fail_closed join counting this parent by a FLOW-SCOPED transition set,
-# ONE statement (one snapshot, one tx — the cascade is the linearization,
+# The fail-closed peer-cascade: a parent's terminal failure resolves every
+# fail_closed join counting this parent by a flow-scoped transition set,
+# one statement (one snapshot, one tx — the cascade is the linearization,
 # the same shape cancel's flip is):
 #
 #   * the joined node → blocked: blocking_reason='failed_parent' + the
-#     failed parent NAMED on the record (metadata.failed_parent) — the
-#     joined node's side of the counter is resolved by THIS stamp (the
+#     failed parent named on the record (metadata.failed_parent) — the
+#     joined node's side of the counter is resolved by this stamp (the
 #     rederive arm locks blocking_reason='join' rows only, so a stamped
 #     row is never re-reconciled, never fired — it rests visible-blocked,
 #     never a hanging join);
-#   * the running peers (the blocked joins' OTHER parents, still
-#     non-terminal, NOT join-wait themselves — a nested join's own counter
+#   * the running peers (the blocked joins' other parents, still
+#     non-terminal, not join-wait themselves — a nested join's own counter
 #     is its ledger's truth and resolves through the sweep's recount once
-#     ITS parents terminal) are PEER-CANCELLED with the record:
+#     its parents terminal) are peer-cancelled with the record:
 #     error_class = the cancel-origin marker (the `by` leg, the same
 #     outcome reads the same way whichever path produced it) + the
 #     structured record in metadata.peer_cancel
@@ -403,7 +399,7 @@ SELECT id, status FROM {schema}.jobs WHERE id = $1
 #
 # Every write is guarded: the block only join-wait rows not already
 # stamped; the cancel only pending/scheduled/running rows; the flow flip
-# only a non-terminal root AND only when the cascade actually blocked a
+# only a non-terminal root and only when the cascade actually blocked a
 # join (no fail_closed edge → no cascade → the collect-only failure never
 # touches the flow). A re-run of this statement after a rolled-back tx is
 # idempotent — a fenced/terminal state updates nothing.
@@ -459,18 +455,18 @@ SELECT (SELECT count(*) FROM blocked) AS blocked,
 """
 
 
-# The ABSORBED fan-in (T06's collect / T07's maybe): a failed child whose
-# edge declared an ABSORBING policy does NOT cascade — its failure fans in
-# as the typed FailureInfo item APPENDED to each absorbing join's
+# The absorbed fan-in (the collect / maybe policies): a failed child whose
+# edge declared an absorbing policy does not cascade — its failure fans in
+# as the typed FailureInfo item appended to each absorbing join's
 # ``metadata.failures`` array (the full attempt history rides the item —
-# the ledger rows are read in THIS statement; the detail never leaves the
+# the ledger rows are read in this statement; the detail never leaves the
 # ledger/attempts). The join row's counters still resolve through the
-# decrement (the failed child IS resolved): the join fires when the LAST
+# decrement (the failed child is resolved): the join fires when the last
 # child terminalizes, strictly after every ladder attempt (the fan-in
 # lands in the same tx, before the fire's decrement reads 0). The
-# statement returns the HISTORY + THE EDGE'S OWN POLICY (the item names
+# statement returns the history + the edge's own policy (the item names
 # the policy that absorbed it — the envelope must not lie about which
-# policy ran, T07's C); the engine builds the typed item through the
+# policy ran); the engine builds the typed item through the
 # FailureInfo door — one wire shape, never a re-spelled envelope.
 COLLECT_FAN_IN_SQL = """\
 WITH history AS (
@@ -500,13 +496,13 @@ WHERE e.parent_id = $1::uuid
 
 
 # The fan-in's append (the absorbing join row's ``failures`` array grows
-# by THIS child's item) — keyed per join row (the fan-in read above
+# by this child's item) — keyed per join row (the fan-in read above
 # returns the joins; this write lands the item). Keyed single row; the
 # append is jsonb concat on the array.
-# The fan-in's append, BOUNDED (T18's UNBOUNDED-JSONB policy): the collect's ``failures`` array truncates at the
-# byte cap — over the cap, the row COMPACTS: the array is replaced by the
+# The fan-in's append, bounded (the unbounded-jsonb policy): the collect's ``failures`` array truncates at the
+# byte cap — over the cap, the row compacts: the array is replaced by the
 # bounded summary (the ``"__truncated__": N`` marker counting the items no
-# longer spelled on the row + the ledger pointer), and the FULL detail
+# longer spelled on the row + the ledger pointer), and the full detail
 # stays on the ledger/attempts (the record never loses it — the ledger is
 # the collector's source of truth, the join row the bounded summary).
 # Keyed per join row; the append is jsonb concat on the array. The three
@@ -554,22 +550,22 @@ RETURNING j.id
 """
 
 
-# The failed child's ABSORBED-side decrement (T06/T07): DECREMENT_SQL's
-# shape scoped to the ABSORBING policies (collect | maybe — the edges
+# The failed child's absorbed-side decrement (the absorbing policies): DECREMENT_SQL's
+# shape scoped to the absorbing policies (collect | maybe — the edges
 # whose declared policy absorbs the failure) — a fail_closed edge's side
 # is resolved by the cascade's block stamp (never by a decrement: the
 # join must not become firable over a failed parent).
 #
-# THE FLOW-ALIVE GUARD IS THE FENCE, NOT THE POLICY (the phase-2 attack's
-# flow-fenced arm): when the flow is ALREADY terminal (the fail_closed leg flipped it
-# in this same tx), the refusing decrement is a FENCED resolution — and a
-# fenced decrement is NOT absorption. The edge's declared POLICY alone
+# the flow-alive guard is the fence, not the policy (the phase-2 attack's
+# flow-fenced arm): when the flow is already terminal (the fail_closed leg flipped it
+# in this same tx), the refusing decrement is a fenced resolution — and a
+# fenced decrement is not absorption. The edge's declared policy alone
 # absorbs nothing: the sweep's flow-fenced arm (REDERIVE_SWEEP_SQL) gives
 # the join the blocked-with-reason terminal state, and the absorption
 # record (WORKFLOW_NODES_SQL / the maintenance leg's has_failed) reads
 # the join row's terminal-block stamp — never the edge's declaration —
 # so the derivation can say 'failed' for the failed-closed run (the
-# envelope never lies, T07's C).
+# envelope never lies).
 DECREMENT_ABSORBED_SQL = """\
 WITH flow_alive AS (
     SELECT 1 AS ok
@@ -590,30 +586,30 @@ RETURNING j.id, j.deps_pending
 """
 
 
-# ── THE DEFERRAL DISPOSITION'S STATEMENT (the wf face of the vanilla
+# ── the deferral disposition's statement (the wf face of the vanilla
 #    consumer's catch — the Snooze / RetryAfter row dispositions) ────────
 #
 # A workflow body raising the vanilla surface's typed control-flow signals
-# (``taskq.exceptions.Snooze`` / ``RetryAfter``) resolves to ONE of the
-# NAMED dispositions (``api/_runner_defer.DeferralDisposition``), and THIS
+# (``taskq.exceptions.Snooze`` / ``RetryAfter``) resolves to one of the
+# named dispositions (``api/_runner_defer.DeferralDisposition``), and this
 # statement is the disposition's whole row law — the vanilla
 # ``mark_snoozed`` / ``mark_retry_after_consume_{true,false}`` arms
 # (``backend/_sql_templates.py``) mirrored onto the wf finalize's own
 # fence vocabulary:
 #
 #   * the row re-schedules: ``scheduled_at = clock_timestamp() + delay``,
-#     status 'scheduled' ('pending' for a zero effective delay) — the SAME
+#     status 'scheduled' ('pending' for a zero effective delay) — the same
 #     live-row shape the ladder's own NODE_REPEND_SQL_TEMPLATE writes, so
 #     both doors re-claim it (the dev tick's claimable scan directly; the
 #     fleet through the leader's scheduled→pending promotion sweep 3);
-#   * the ATTEMPT ARM (the vanilla dispositions' refund law,
-#     ``ATTEMPT_REFUND_SQL``): a NON-consuming deferral did not execute —
-#     the claim's increment is REFUNDED (floored at 0), so ``max_attempts``
+#   * the attempt arm (the vanilla dispositions' refund law,
+#     ``ATTEMPT_REFUND_SQL``): a non-consuming deferral did not execute —
+#     the claim's increment is refunded (floored at 0), so ``max_attempts``
 #     is never exhausted by deferrals alone and the re-claim re-mints the
-#     SAME attempt ordinal (the ledger's arbiter row is re-used — the
-#     record never grows per snooze). A consuming ``RetryAfter`` KEEPS the
+#     same attempt ordinal (the ledger's arbiter row is re-used — the
+#     record never grows per snooze). A consuming ``RetryAfter`` keeps the
 #     increment — the burn is the budget's own charge (the vanilla
-#     mark_retry_after_consume_true's shape), bounded by THE BUDGET GATE
+#     mark_retry_after_consume_true's shape), bounded by the budget gate
 #     below;
 #   * the non-consuming delay carries the vanilla's deferral floor
 #     (``MIN_DEFERRAL_INTERVAL`` — the monopolisation guard: a zero/now
@@ -623,49 +619,49 @@ RETURNING j.id, j.deps_pending
 #     by the budget it spends;
 #   * the counters: ``snooze_count`` moves for the refunding arms only (a
 #     consuming retry is not a snooze — the vanilla's own accounting);
-#   * THE DEFERRAL STAMP (the run page's visibility — the operator's
+#   * the deferral stamp (the run page's visibility — the operator's
 #     "why is this step sitting here" answer): the signal, the budget
-#     face, and the disposition's OWN post-attempt ordinal, derived IN
+#     face, and the disposition's own post-attempt ordinal, derived in
 #     this statement (the eighth rule: derived values are written only by
 #     the statement that derives them). The stamp's ``attempt`` is the
 #     row-disposition discriminator the run page reads: the label renders
-#     only while the row still SITS at this deferral's own reschedule
-#     (status 'scheduled' AND attempt == the stamp's), so a later ladder
+#     only while the row still sits at this deferral's own reschedule
+#     (status 'scheduled' and attempt == the stamp's), so a later ladder
 #     repend — the one other 'scheduled' writer, at a strictly greater
 #     attempt — never reads as a live deferral;
 #   * the lease-clear trio + ``assignment_routed = true`` (the vanilla
-#     deferral arms' own SET): the claim is released, and the row routes
+#     deferral arms' own set): the claim is released, and the row routes
 #     by the actor's current assignment from here on (the routing
 #     contract in ``backend/_dispatch_sql.py``);
-#   * THE CANCEL FENCE (the vanilla deferral arms' own law — "an operator
-#     cancel in flight WINS over the deferral" — on EITHER carrier: the wf
+#   * the cancel fence (the vanilla deferral arms' own law — "an operator
+#     cancel in flight wins over the deferral" — on either carrier: the wf
 #     cancel's own mark vocabulary, ``CANCEL_NODES_SQL_TEMPLATE``'s
-#     ``metadata.cancel_phase``, AND the vanilla cancel's own COLUMN mark
+#     ``metadata.cancel_phase``, and the vanilla cancel's own column mark
 #     — the admin job-page cancel's ``cancel_running`` arm,
 #     ``cancel_requested_at = now, cancel_phase = 1`` on the running row —
-#     a mark a wf node row can carry like any job): a row carrying EITHER
+#     a mark a wf node row can carry like any job): a row carrying either
 #     mark must never match the deferral arm — the merge below would
 #     otherwise read as never-cancelled and the operator's request would
 #     be laundered mid-flight (and the vanilla arms' own
 #     ``cancel_phase = 0 / cancel_requested_at = NULL`` resets, mirrored
-#     into the SET below, would wash the column mark off the record). The
+#     into the set below, would wash the column mark off the record). The
 #     marked row answers the CANCEL_FENCED verdict (the runner
 #     terminalises it through the wf terminal door, the vanilla cancel
 #     ladder's own face), never a deferral; the resets are therefore only
-#     ever reachable on a CLEAN row — never laundry;
-#   * THE CLAIM FENCE (the finalize's own CAS vocabulary: status +
+#     ever reachable on a clean row — never laundry;
+#   * the claim fence (the finalize's own CAS vocabulary: status +
 #     worker + attempt + claim_epoch): a zombie's deferral matches
 #     NOTHING — no verdict row — and the runner records the attempt
 #     'fenced' on the ledger (never a running row left forever);
-#   * THE BUDGET GATE (the consuming arm's only vanilla exit —
+#   * the budget gate (the consuming arm's only vanilla exit —
 #     mark_retry_after_consume_true's max_attempts fence): a consuming
-#     retry past the budget answers the EXHAUSTED verdict — the runner
+#     retry past the budget answers the exhausted verdict — the runner
 #     routes it through the wf terminal door (the ledger's failed row +
-#     the T06 cascade ride finalize_node; the vanilla's own class +
+#     the failed-parent cascade ride finalize_node; the vanilla's own class +
 #     message). The refunding arms are unconditional here: a deferral
 #     that never ran spends nothing.
 #
-# Every write is keyed to the ONE claimed node row (never a scan); the
+# Every write is keyed to the one claimed node row (never a scan); the
 # two read CTEs (exhausted / cancel_fenced) write nothing — the verdict
 # is named, the wf terminal door owns every death.
 NODE_DEFER_SQL = """\

@@ -621,7 +621,7 @@ class TestInMemoryEnqueueBatchAtomic:
 
     async def test_enqueue_batch_atomic_cross_actor_in_batch_duplicate_rolls_back(self) -> None:
         """An in-batch cross-actor idempotency duplicate refuses the atomic
-        arm too: PG's arm runs every chunk through ONE transaction, so the
+        arm too: PG's arm runs every chunk through one transaction, so the
         refusal withdraws the member chunks already inserted, and the
         mirror's compensating rollback must leave the identical empty
         stored-row state - no member rows, no batch row."""
@@ -650,7 +650,7 @@ class TestEnqueueBatchAtomicRollbackSparesDedupHits:
     """The compensating rollback must withdraw only rows THIS call
     inserted, never rows a dedup hit returned.
 
-    Postgres' atomic arm runs every chunk in ONE transaction: a failure
+    Postgres' atomic arm runs every chunk in one transaction: a failure
     partway through rolls the TRANSACTION back, so a row that already
     existed (a dedup hit returning the holder row) is untouched and stays
     stored. A compensating rollback that pops every returned row id
@@ -659,7 +659,7 @@ class TestEnqueueBatchAtomicRollbackSparesDedupHits:
     """
 
     async def _failed_batch_after_dedup_hit(self, backend: InMemoryBackend) -> JobRow:
-        """Seed a stored keyed row, fail an atomic batch whose FIRST item
+        """Seed a stored keyed row, fail an atomic batch whose first item
         dedups onto it, and return the holder row."""
         holder = await backend.enqueue(make_enqueue_args(idempotency_key="k1", scheduled_at=_START))
         bid = new_uuid()
@@ -669,7 +669,7 @@ class TestEnqueueBatchAtomicRollbackSparesDedupHits:
             yield hit
             raise ValueError("generator exploded")
 
-        # chunk_size=1 lands the failure AFTER the hit: chunk one resolves
+        # chunk_size=1 lands the failure after the hit: chunk one resolves
         # the hit (returning the holder row), chunk two raises mid-stream.
         with pytest.raises(ValueError, match="generator exploded"):
             await backend.enqueue_batch_atomic(
@@ -724,7 +724,7 @@ class TestEnqueueBatchAtomicRollbackSparesDedupHits:
         assert await backend.get(holder.id) is not None
 
     async def test_in_batch_dedup_holder_still_withdrawn_on_rollback(self) -> None:
-        """The carve-out is only for rows this call NEVER inserted: an
+        """The carve-out is only for rows this call never inserted: an
         in-batch dedup holder (the first item's row) rides the rollback
         with the rest of the transaction's inserts, exactly PG's."""
         backend = _make_backend()

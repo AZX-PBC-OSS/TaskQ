@@ -6,11 +6,11 @@ client enqueues stamp ``metadata["singleton"]`` at build time
 ``ActorFirePolicy`` (``worker/cron_loop.py``, the parity comment in
 ``worker/_bootstrap.py``). The admin run-now handler (#411/#429) builds
 its ``EnqueueArgs`` directly from the stored ``actor_config`` row and
-stamps ONLY ``cron_schedule_id``, so a fire pressed from the admin UI
+stamps only ``cron_schedule_id``, so a fire pressed from the admin UI
 silently bypasses the ``jobs_singleton_uniq`` partial index and the
-singleton preflight in BOTH directions:
+singleton preflight in both directions:
 
-* a run-now job lands WITHOUT the flag, so while it lives the actor can
+* a run-now job lands without the flag, so while it lives the actor can
   take other concurrent jobs no singleton enqueue will consider it a
   blocker either (the preflight keys on the ROW's metadata);
 * when a live singleton job DOES exist, the backend raises

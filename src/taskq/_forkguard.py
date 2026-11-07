@@ -28,7 +28,7 @@ query on the shared stream failed with a protocol error (or worse, matched
 the wrong reply), the job's terminal write landed twice or not at all, and
 no log line anywhere said why.
 
-THE CONTRACT (fail loud at the wire, report loud in the parent):
+CONTRACT (fail loud at the wire, report loud in the parent)
 
 1. **Child side - refuse the inherited wire.** TaskQ-built resources record
    the process that created them. Every wire entry point (each query method
@@ -37,7 +37,7 @@ THE CONTRACT (fail loud at the wire, report loud in the parent):
    overrides - each Redis command and each pipeline execute, each
    long-lived worker loop) checks the creating pid first. In a forked
    child the check raises :class:`ForkedInheritedProcessError` naming what
-   was refused and what to do instead, BEFORE a single byte reaches the
+   was refused and what to do instead, before a single byte reaches the
    shared socket. The child that only ``exec``\\ s (``subprocess.Popen``,
    the default ``close_fds=True``) never runs Python again and is
    unaffected; a child that continues in Python gets a typed refusal
@@ -46,7 +46,7 @@ THE CONTRACT (fail loud at the wire, report loud in the parent):
    The negative scope, stated plainly: the guard rides only the resources
    TASKQ BUILDS (via its ``connection_class=``). A pool or connection the
    EMBEDDING APPLICATION built with plain ``asyncpg.create_pool()`` or
-   ``redis.asyncio.from_url()`` BEFORE calling :meth:`taskq.TaskQ.open` -
+   ``redis.asyncio.from_url()`` before calling :meth:`taskq.TaskQ.open` -
    without passing TaskQ's guarded connection class - carries no guard, no
    matter that the same process also opened a TaskQ. The guard cannot see
    sockets it did not create; the operator docs carry the remediation
@@ -56,12 +56,12 @@ THE CONTRACT (fail loud at the wire, report loud in the parent):
    And one boundary the ``connection_class=`` cannot close at any price:
    the guard's checks live on the CONNECTION's methods, evaluated at call
    time - but a cursor or prepared statement object the parent created
-   BEFORE the fork captured the wire at ITS creation (asyncpg's
+   before the fork captured the wire at ITS creation (asyncpg's
    ``PreparedStatement`` and cursor factories bind
    ``self._connection._protocol`` directly) and its calls bypass every
    connection-level check, guarded class or not. The remediation is the
    fork contract's own: a child that continues in Python works on
-   resources opened AFTER the fork - re-prepare and re-cursor there (on
+   resources opened after the fork - re-prepare and re-cursor there (on
    the child's own post-fork connection, which the fresh
    ``prepare()``/``cursor()`` call guards) - never reuse the parent's
    captured object.
@@ -87,7 +87,7 @@ parent's sockets are never touched by the hook.
 
 Why the guard does not kill the child: a prefork server's children are
 supposed to keep running (that is what they are for). The contract is that
-they run WITHOUT TaskQ's wire, and the refusal tells them so at the first
+they run without TaskQ's wire, and the refusal tells them so at the first
 touch, per resource, rather than a blanket ``os._exit`` that would surprise
 an embedding application that forked for reasons of its own.
 
@@ -121,7 +121,7 @@ class ForkedInheritedProcessError(RuntimeError):
     inherited shares its TCP stream with the parent. Using one is silent
     wire corruption (two protocol state machines, one socket); the guard
     refuses instead. The fix is structural: a child that needs its own
-    TaskQ opens one AFTER the fork (fresh sockets, its own event loop); a
+    TaskQ opens one after the fork (fresh sockets, its own event loop); a
     child that only runs another program should let ``subprocess``'s
     default ``close_fds=True`` drop the inherited descriptors.
     """
@@ -163,7 +163,7 @@ def _after_in_child() -> None:
     globals - no allocation beyond one int, no logging, no locks, no
     ``os.getpid()`` beyond the one read (getpid is async-signal-safe).
 
-    The child that forks AGAIN re-runs this hook in the grandchild, so the
+    The child that forks again re-runs this hook in the grandchild, so the
     cached pid stays truthful at any fork depth.
     """
     global _current_pid
@@ -174,7 +174,7 @@ def _after_in_parent() -> None:
     """``at-fork`` parent hook: stamp that this process forked.
 
     Runs in the PARENT right after the fork, where threads and locks are
-    intact, so it may freely read the clock. It deliberately does NOT log
+    intact, so it may freely read the clock. It deliberately does not log
     here: the hook's stack is mid-syscall inside arbitrary user code (the
     logging machinery's own locks are fine in the parent, but the fork may
     be happening inside a log flush); the worker's loops consume the stamp
@@ -262,7 +262,7 @@ def guarded_connection_class() -> "type[Any]":
     """The :class:`asyncpg.Connection` subclass guarding every wire entry.
 
     Passed as ``connection_class=`` to every pool and dedicated connection
-    TaskQ builds, so a forked child that reaches ANY query (a resumed
+    TaskQ builds, so a forked child that reaches any query (a resumed
     worker loop finishing an inherited job's terminal write included) is
     refused before the socket is touched. Subclassing ``Connection`` is
     asyncpg's documented ``connection_class`` extension point; every
@@ -307,7 +307,7 @@ def guarded_connection_class() -> "type[Any]":
 
         # ``fetchmany`` is its own wire entry, not a shape of ``fetch``:
         # asyncpg 0.31's body calls ``self._executemany`` ->
-        # ``_protocol.bind_execute_many`` DIRECTLY, never the public
+        # ``_protocol.bind_execute_many`` directly, never the public
         # ``executemany`` - so the executemany override above never sees
         # it, and without its own check a forked child's fetchmany writes
         # the inherited socket unrefused.
@@ -567,8 +567,8 @@ def guarded_connection_class() -> "type[Any]":
         # The teardown wire: ``close`` sends Terminate through
         # ``self._protocol.close`` and ``terminate`` aborts the protocol
         # directly - neither rides a query method, so a forked child's
-        # ``__aexit__`` or pool shutdown would put ITS Terminate on the
-        # shared stream and kill the PARENT's connection (exactly the
+        # ``__aexit__`` or pool shutdown would put its Terminate on the
+        # shared stream and kill the parent's connection (exactly the
         # corruption class this guard exists for). The refusal is the safe
         # disposition: the child's teardown does not reach the inherited
         # socket, the parent's connection survives its child's death, and
@@ -599,10 +599,10 @@ def guarded_redis_connection_class() -> "type[Any]":
 
     Passed as ``connection_class=`` to every Redis client TaskQ builds (the
     worker's terminal-publish and rate-limit clients, the jobs client, the
-    credential-provider factory). Two overrides because redis-py does NOT
+    credential-provider factory). Two overrides because redis-py does not
     funnel everything through one method: plain commands leave through
     ``send_command``, but a pipeline's ``execute`` packs every queued
-    command and writes them with ONE direct
+    command and writes them with one direct
     ``connection.send_packed_command(all_cmds)`` (``Pipeline
     ._execute_pipeline`` and ``._execute_transaction`` never call
     ``send_command``) - the shape TaskQ's own progress publisher rides

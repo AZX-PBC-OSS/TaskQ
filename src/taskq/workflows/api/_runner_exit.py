@@ -73,11 +73,11 @@ class ExitOps(_ExitHost):
         *,
         claim_epoch: int = 0,
     ) -> None:
-        """THE TYPED EARLY-EXIT (§17.1, attack-audit's Missing #1): the
+        """TYPED EARLY-EXIT (§17.1, attack-audit's Missing #1): the
         body returned ``Exit(payload)`` — the node TERMINAL-SUCCEEDS
         with the typed payload (the envelope records the exit — it never
         lies about what ran), and every non-terminal DOWNSTREAM node is
-        marked SKIPPED-WITH-THE-RECORD (``{"skipped": true,
+        marked SKIPPED-WITH-the-RECORD (``{"skipped": true,
         "exit_from": <node>}`` — zero ledger rows, a skip is not an
         attempt; the join-firing machinery never runs for rows the exit
         resolved). All rows terminal → the derivation reports the
@@ -97,11 +97,10 @@ class ExitOps(_ExitHost):
             result={"value": jsonable(exit_value.payload), "exit": True},
             map_index=row["map_index"],
         )
-        # THE DOWNSTREAM MARK: the compiled graph's descendants (the
-        # wiring's own edges — never a runtime guess), skipped with the
-        # record. Bounded by the graph's size; a downstream row that is
-        # already terminal (or does not exist — an unspawned map join)
-        # is untouched.
+        # the compiled graph's descendants (the wiring's own edges — never a
+        # runtime guess), skipped with the record. Bounded by the graph's size;
+        # a downstream row that is already terminal (or does not exist — an
+        # unspawned map join) is untouched.
         descendants = self._descendants_of(step_key)
         if descendants:
             async with self.pool.acquire() as conn:
@@ -137,16 +136,16 @@ class ExitOps(_ExitHost):
         principal: Any = None,
         reason: str | None = None,
     ) -> bool:
-        """THE COMPILED FACE'S DELEGATE (the round-2 finding 5a): the
-        id-addressed verb ``retry_workflow_node`` is the ONE manual-resume
+        """The
+        id-addressed verb ``retry_workflow_node`` is the one manual-resume
         implementation — this module's own parallel re-derivation (a
-        second CAS + closure + audit walk) was dead in production AND
+        second CAS + closure + audit walk) was dead in production and
         STALE (it lacked the FOR-UPDATE serialization, the exit-skip
         re-arm, and the cancelled-run refusal the verb carries —
         the exact drift a copy invites). The runner's historical call
         shape stays (the phase-3 pins compose it), riding the verb's
         law. The import is the LAZY PUBLIC-SEAM form (the routes' own
-        shape) so every caller patches ONE name. Returns ``True`` when
+        shape) so every caller patches one name. Returns ``True`` when
         the CAS granted the re-arm (the verb's row count > 0)."""
         from taskq.workflows import retry_workflow_node
 
@@ -161,11 +160,11 @@ class ExitOps(_ExitHost):
         return granted > 0
 
 
-# ── the run-operator verbs (the id-addressed forms — T12) ───────────────
+# ── the run-operator verbs (the id-addressed forms ) ───────────────
 #
-# The runner's methods own the rows work for a COMPILED flow; the CLI's
-# ``flows cancel`` / ``flows retry`` address a RUN BY ID (no compiled
-# definition to import) — these forms carry the SAME statements for the
+# The runner's methods own the rows work for a compiled flow; the CLI's
+# ``flows cancel`` / ``flows retry`` address a run by ID (no compiled
+# definition to import) — these forms carry the same statements for the
 # id-addressed caller. One engine, two surfaces: the rows work lives
 # once per shape.
 
@@ -178,7 +177,7 @@ async def _cancel_one_run(
     reason: str | None,
     principal: Any,
 ) -> int:
-    """ONE run's cancel (the tx the two verbs share): the root flip is
+    """one run's cancel (the tx the two verbs share): the root flip is
     the linearization point; every non-terminal node + held signal
     resolves in the same snapshot; terminal rows untouched; IDEMPOTENT.
     Returns the held signals cancelled (0 when the run was already
@@ -189,8 +188,7 @@ async def _cancel_one_run(
     bounded_reason = bound_reason(reason or "cancel_workflow", 500)
 
     async with pool.acquire() as conn, conn.transaction():
-        # THE AUDIT LEG (the same fix CANCEL_ROOT carries): the cancel's
-        # flip is a mutation — the event names it.
+        # the cancel's flip is a mutation — the event names it.
         flipped = await conn.fetchval(
             render_sql(CANCEL_ROOT_SQL_TEMPLATE, schema),
             flow_id,
@@ -198,12 +196,12 @@ async def _cancel_one_run(
         )
         if flipped is None:
             return 0  # already terminal — idempotent
-        # THE AUDIT LEG: only the rows THIS statement terminalised (the
-        # running row's cooperative phase-1 keeps it running — its own
-        # terminal write carries its event).
+        # only the rows this statement terminalised (the running row's
+        # cooperative phase-1 keeps it running — its own terminal write carries
+        # its event).
         await conn.execute(render_sql(CANCEL_NODES_SQL_TEMPLATE, schema), flow_id)
         held = await cancel_run_signals(conn, schema=schema, workflow_id=flow_id)
-        # THE AUDIT ROW (the caller owns the tx — the same-tx
+        # the audit row (the caller owns the tx — the same-tx
         # guarantee; the lazy import keeps the layering).
         from taskq.audit import record_admin_action
 
@@ -228,11 +226,11 @@ async def cancel_cascade(
     reason: str | None,
     principal: Any,
 ) -> int:
-    """THE CANCEL CASCADE: the WORKLIST WALK, never
+    """The WORKLIST WALK, never
     Python recursion (the pre-fix shape recursed per child — a
     1200-deep cascade raised ``RecursionError`` at the operator and
     left hundreds of runs running), and the children are read from the
-    ROWS' crash-safe ``parent_flow_id`` direction FIRST — the receipts
+    ROWS' crash-safe ``parent_flow_id`` direction first — the receipts
     are the accelerator, the rows the law (the pre-fix shape walked
     the receipts alone: a child created but never receipted — the crash
     between create and receipt-write — ESCAPED the cascade forever, the
@@ -260,10 +258,9 @@ async def cancel_cascade(
             ),
             principal=principal,
         )
-        # THE CHILDREN (both directions — the rows' law + the receipts'
-        # accelerator), collected AFTER the run's own cancel committed:
-        # the parent's cancel is the linearization point, the children's
-        # cancels follow it.
+        # both directions — the rows' law + the receipts' accelerator. ,
+        # collected after the run's own cancel committed: the parent's cancel
+        # is the linearization point, the children's cancels follow it.
         async with pool.acquire() as conn:
             child_rows = await conn.fetch(
                 render_sql(CHILD_FLOWS_OF_RUN_SQL_TEMPLATE, schema), current
@@ -280,7 +277,7 @@ async def cancel_workflow_run(
     reason: str | None = None,
     principal: Any = None,
 ) -> int:
-    """P3 rule 4's cancel (T10): the flow flip is the linearization
+    """P3 rule 4's cancel: the flow flip is the linearization
     point; every non-terminal node + held signal resolves in the same
     snapshot; the CASCADE walks the children ITERATIVELY (the worklist
     — depth 1200 cancels clean, no RecursionError) from the
@@ -288,7 +285,7 @@ async def cancel_workflow_run(
     the crash-safe direction is the law, the receipts the accelerator).
     Running children take the existing two-phase cooperative cancel;
     terminal rows untouched; IDEMPOTENT (cancel twice = one cancel — a
-    terminal root updates nothing). THE AUDIT (G4): "who cancelled
+    terminal root updates nothing). the AUDIT (G4): "who cancelled
     this" is a ROW, not a log line."""
     return await cancel_cascade(
         pool, schema=schema, flow_id=flow_id, reason=reason, principal=principal
@@ -304,17 +301,17 @@ async def retry_workflow_node(
     reason: str | None = None,
     principal: Any = None,
 ) -> int:
-    """THE MANUAL RESUME (T12), id-addressed: the ExitOps' own CAS
+    """MANUAL RESUME, id-addressed: the ExitOps' own CAS
     statements for the caller that addresses the run BY ID (no compiled
     definition to import). A cancelled run REFUSES (the cancel was
     deliberate — re-opening it is a second decision, not a resume).
-    THE AUDIT: the row.
+    The row.
 
-    * THE ROOT KEY IS NOT A NODE (H-C1): ``node_key='__flow__'`` matches
+    * the ROOT KEY IS not A NODE (H-C1): ``node_key='__flow__'`` matches
       nothing (the CAS's own guard) — returns 0, the root's bytes stay
       put; the run's own re-run is the RUN-rerun's concern (a fresh run,
       or the run-rerun composition — never the per-node CAS).
-    * THE CANCEL/RETRY SERIALIZATION: the root's status read
+    * the CANCEL/RETRY SERIALIZATION: the root's status read
       takes ``FOR UPDATE`` — a cancel committing between the read and
       the CAS can no longer strand a PENDING node under a CANCELLED
       root: the refusal is race-free (the read sees the cancel's flip),
@@ -322,7 +319,7 @@ async def retry_workflow_node(
       own commit (the cancel's cascade then flips the re-armed node —
       never a pending row under a cancelled root, the wedged-forever
       shape).
-    * THE EXIT-SKIPPED BRANCHES RE-ARM: the grant re-opens the
+    * the EXIT-SKIPPED BRANCHES RE-ARM: the grant re-opens the
       run's skip-envelope rows (``result @> '{"skipped": true}'`` — the
       engine's own SKIPPED_RESULT contract, the typed early-exit's
       downstream mark) — pending, the envelope CLEARED — so the resumed
@@ -331,20 +328,18 @@ async def retry_workflow_node(
 
     Returns the number of NODE ROWS the CAS re-armed (0 when nothing
     was resumable — the node is live, unknown, not terminal-failed, or
-    the run's own root key). THE ROW COUNT, NOT A GRANT BIT (the
-    round-2 finding): a MAP's failed children share one step key —
+    the run's own root key). the ROW COUNT, not A GRANT BIT: a MAP's failed children share one step key —
     one key's grant re-arms every failed row of the key at once, and
     the caller's applied-count counts ROWS (the audit row carries the
     count beside the key's)."""
     from taskq.audit import record_admin_action
 
     async with pool.acquire() as conn, conn.transaction():
-        # THE ROOT'S STATUS READ — FOR UPDATE: the lock is the
-        # serialization point. A cancel's root flip now either landed
-        # BEFORE this read (the refusal below sees it) or waits BEHIND
+        # the lock is the serialization point. A cancel's root flip now either
+        # landed before this read (the refusal below sees it) or waits behind
         # this transaction's commit (the cancel's cascade then flips the
-        # re-armed node). The bare read's gap was the wedge: a pending
-        # node under a cancelled root, forever.
+        # re-armed node). The bare read's gap was the wedge: a pending node
+        # under a cancelled root, forever.
         root = await conn.fetchval(
             render_sql("SELECT status FROM {schema}.jobs WHERE id = $1 FOR UPDATE", schema),
             flow_id,
@@ -361,19 +356,18 @@ async def retry_workflow_node(
         keys = [r["step_key"] for r in descendants]
         if keys:
             await conn.execute(render_sql(RETRY_REOPEN_CLOSURE_SQL_TEMPLATE, schema), flow_id, keys)
-        # THE SKIP ENVELOPE'S RE-ARM: the run's exit-skipped rows
-        # (the typed early-exit's downstream mark — the engine's own
-        # SKIPPED_RESULT contract, ``{"skipped": true}`` containment)
-        # return to pending with the envelope CLEARED — the resumed run
-        # re-runs the cut-short work (a skip is not an attempt; the
-        # envelope must never outlive the resume it would lie about).
-        # Same transaction as the grant: the run cannot re-open WITHOUT
-        # its skipped branches re-arming.
+        # the run's exit-skipped rows (the typed early-exit's downstream mark —
+        # the engine's own SKIPPED_RESULT contract, ``{"skipped": true}``
+        # containment) return to pending with the envelope cleared — the
+        # resumed run re-runs the cut-short work (a skip is not an attempt; the
+        # envelope must never outlive the resume it would lie about). Same
+        # transaction as the grant: the run cannot re-open without its skipped
+        # branches re-arming.
         skip_rows = await conn.fetch(render_sql(RETRY_SKIP_REARM_SQL_TEMPLATE, schema), flow_id)
         skips_rearmed = len(skip_rows)
         await conn.execute(render_sql(RETRY_FLOW_REOPEN_SQL_TEMPLATE, schema), flow_id)
-        # THE AUDIT ROW (the caller owns the tx — the same-tx guarantee);
-        # the ROWS count rides the detail (the map-key retry's census).
+        # the audit row (the caller owns the tx — the same-tx guarantee);
+        # the rows count rides the detail (the map-key retry's census).
         await record_admin_action(
             conn,
             schema=schema,

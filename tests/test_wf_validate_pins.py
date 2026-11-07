@@ -1,5 +1,5 @@
-"""T09 — THE VALIDATE PINS: the checker-independent validator's mutation
-matrix. A valid graph pins CLEAN; ONE mutation at a time flips EXACTLY
+"""The validate pins: the checker-independent validator's mutation
+matrix. A valid graph pins CLEAN; one mutation at a time flips EXACTLY
 the intended rule and nothing else (§15.6's discipline) — the
 zero-false-positive budget is the pin, not an aspiration.
 
@@ -29,7 +29,7 @@ from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._validate import WorkflowValidationError
 from tests._wf_fixtures import runtime_refusal_builder
 
-# ── the clean corpus (the SHARED graph — one mutation per pin) ──────────
+# ── the clean corpus (the shared graph — one mutation per pin) ──────────
 
 
 class Ingest(BaseModel):
@@ -63,8 +63,8 @@ def _clean_app() -> tuple[WorkflowApp, str]:
 
 
 def _compiled(name: str, app: WorkflowApp) -> CompiledWorkflow:
-    # The PROBE SEAM (app._compile): the door (app.get) validates — the
-    # mutation pins' subject IS the invalid graph's diagnostics, so the
+    # The probe seam (app._compile): the door (app.get) validates — the
+    # mutation pins' subject is the invalid graph's diagnostics, so the
     # probes compile without the door's raise.
     return app._compile(name)
 
@@ -75,7 +75,7 @@ def _rules(compiled: CompiledWorkflow) -> set[str]:
     return {d.rule for d in _run_rules(compiled)}
 
 
-# ── the mutation matrix: ONE mutation → EXACTLY one rule ────────────────
+# ── the mutation matrix: one mutation → exactly one rule ────────────────
 
 
 def test_clean_graph_validates_clean() -> None:
@@ -83,6 +83,26 @@ def test_clean_graph_validates_clean() -> None:
     diagnostics of either class."""
     app, name = _clean_app()
     assert _rules(_compiled(name, app)) == set()
+
+
+def test_validate_returns_the_diagnostics() -> None:
+    """The public door RETURNS the diagnostics: a graph with a warning
+    validates and the warning is the return value (empty when clean) —
+    the zero-warning budget a doc example claims is CHECKABLE through
+    the same call that runs the rules."""
+    app = WorkflowApp()
+
+    @app.workflow("warned")
+    def warned() -> Promise[object]:
+        produced = step(_annotated_body, Ingest(doc_id="d1"), key="produce")
+        consumed = step(_consumer_body, produced, key="consume")
+        return build(consumed)
+
+    compiled = app._compile("warned")
+    object.__setattr__(compiled, "known_queues", frozenset({"some-other-queue"}))
+    diagnostics = compiled.validate()
+    assert isinstance(diagnostics, tuple)
+    assert {d.rule for d in diagnostics} == {"W2-unknown-queue"}
 
 
 def test_cycle_mutation_flips_only_acyclicity() -> None:
@@ -97,7 +117,7 @@ def test_cycle_mutation_flips_only_acyclicity() -> None:
         return build(b)
 
     compiled = _compiled("cyclic", app)
-    # THE MUTATION: the back-edge — 'a' consumes 'b' (the wiring's cycle).
+    # the back-edge — 'a' consumes 'b' (the wiring's cycle).
     node = compiled.nodes["a"]
     node.parents = (*node.parents, "b")
     rules = _rules(compiled)
@@ -144,7 +164,7 @@ def test_unannotated_step_mutation() -> None:
     """E4: the return annotation IS the wiring — an unannotated body
     reds."""
 
-    async def unannotated(ctx: StepContext, params: Ingest):  # pyright: ignore[reportMissingTypeStubs, reportMissingParameterType, reportUnknownParameterType, reportReturnType]  # Why: THE PROBE — the unannotated body is the mutation under test; the root pyproject's tests relaxation would mute it.
+    async def unannotated(ctx: StepContext, params: Ingest):  # pyright: ignore[reportMissingTypeStubs, reportMissingParameterType, reportUnknownParameterType, reportReturnType]  # Why: the probe — the unannotated body is the mutation under test; the root pyproject's tests relaxation would mute it.
         return params
 
     app = WorkflowApp()
@@ -234,14 +254,13 @@ async def _duck_consumer(ctx: StepContext, words: str) -> dict[str, int]:
 
 
 def test_incompatible_list_element_mutation() -> None:
-    """E5's ELEMENT LAW (the E5 probe's recorded finding — the typed wiring's
+    """E5's ELEMENT LAW (the typed wiring's
     whole promise): a ``list[Word]`` producer wired into a
-    ``list[str]`` consumer passed BUILD-TIME VALIDATION and the run died
-    at RUNTIME with a pydantic ValidationError on every attempt — the
-    LIST level was checked (the bodyless-join arm), the ELEMENT level
-    was not. The law is absolute: a wiring that dies at runtime with a
-    type error is a BUILD-TIME recorded finding (the element compatibility is
-    the same totality discipline E1-E16 apply at the node level)."""
+    ``list[str]`` consumer is refused at BUILD — a wiring that would die
+    at RUNTIME with a pydantic ValidationError on every attempt (the
+    LIST level checked, the ELEMENT level not) must never validate. The
+    element compatibility is the same totality discipline E1-E16 apply
+    at the node level."""
     app = WorkflowApp()
 
     @app.workflow("list_elem")
@@ -285,7 +304,7 @@ def test_unrelated_list_element_models_mutation() -> None:
 def test_duck_list_element_is_the_skipped_face() -> None:
     """The zero-false-positive skip: ``list[Any]`` — the duck-shaped
     element consumes anything the codec delivers, unguessable, never a
-    recorded finding."""
+    refusal."""
     app = WorkflowApp()
 
     @app.workflow("list_elem_any")
@@ -328,7 +347,7 @@ def test_list_producer_into_single_model_param_mutation() -> None:
 def test_root_model_list_param_is_the_skipped_door() -> None:
     """The RootModel door: a consumer declaring
     ``RootModel[list[Word]]`` TAKES the list payload — the element law's
-    single-model recorded finding does not fire on it."""
+    single-model refusal does not fire on it."""
     app = WorkflowApp()
 
     @app.workflow("list_into_root")
@@ -342,7 +361,7 @@ def test_root_model_list_param_is_the_skipped_door() -> None:
 def test_list_producer_into_duck_param_is_the_skipped_face() -> None:
     """The duck-shaped param under a list producer (``str`` is no model,
     no list): unguessable — the zero-false-positive skip, never a
-    recorded finding."""
+    refusal."""
     app = WorkflowApp()
 
     @app.workflow("list_into_duck")
@@ -356,7 +375,7 @@ def test_list_producer_into_duck_param_is_the_skipped_face() -> None:
 def test_the_drills_runtime_death_is_real() -> None:
     """The runtime door the element law pre-empts: the codec's TypeAdapter
     reds the scenario's payload — the pydantic ValidationError the scenario hit
-    on every attempt. The recorded finding moves it to build; this pin holds
+    on every attempt. The build door pre-empts it; this pin holds
     the runtime's own red so the law's necessity is never arguable."""
     from pydantic import ValidationError
 
@@ -367,7 +386,7 @@ def test_the_drills_runtime_death_is_real() -> None:
 
 
 def test_fan_in_bound_mutation() -> None:
-    """E6: the T07 bound — past MAX_FAN_IN_PER_JOIN the compile refuses
+    """E6: the fan-in bound bound — past MAX_FAN_IN_PER_JOIN the compile refuses
     (the error names the bound)."""
     from taskq.workflows.definitions import MAX_FAN_IN_PER_JOIN
 
@@ -391,7 +410,7 @@ def test_eternal_wait_is_a_warning_never_a_refusal() -> None:
     from taskq.workflows.api._graph import GateDecl
 
     async def gated_body(ctx: StepContext, params: Ingest) -> object:
-        # E14's law: the declared gate's body WAITS on it (a declared
+        # E14's law: the declared gate's body waits on it (a declared
         # seat with no waiter is the E14 build refusal, not W1's subject).
         return await ctx.wait_signal((Report,), timeout_s=None)
 
@@ -410,14 +429,14 @@ def test_eternal_wait_is_a_warning_never_a_refusal() -> None:
     rules = _rules(_compiled("eternal", app))
     assert rules == {"W1-eternal-wait"}, rules
     compiled = _compiled("eternal", app)
-    compiled.validate()  # the WARNING does not refuse — the report passes
+    compiled.validate()  # the warning does not refuse — the report passes
 
 
-# ── the error REPORT is one-pass (tsc-style): every rule's verdict ──────
+# ── the error report is one-pass (tsc-style): every rule's verdict ──────
 
 
 def test_error_report_names_every_error() -> None:
-    """The report carries EVERY error, not the first alone."""
+    """The report carries every error, not the first alone."""
     app = WorkflowApp()
 
     def multi_error() -> None:
@@ -453,7 +472,7 @@ def test_differing_redefinition_refused() -> None:
         return build(step(shadow_body, Ingest(doc_id="d"), key="produce"))
 
     app2.get("shadow")
-    # A differing re-registration through the RAW registry:
+    # A differing re-registration through the raw registry:
     from taskq.workflows.definitions import DuplicateWorkflowError, WorkflowDef, get_registry
 
     with pytest.raises(DuplicateWorkflowError):

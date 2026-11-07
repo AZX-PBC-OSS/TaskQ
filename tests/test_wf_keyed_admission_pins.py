@@ -1,4 +1,4 @@
-"""THE KEYED ADMISSION TERMS ON THE WORKFLOW SURFACE — the declaration
+"""The keyed admission terms on the workflow surface — the declaration
 accepts a keyed ref, the fork/static-insert resolves each child's
 CONCRETE name (``f"{base_name}:{key}"``) from the child's own declared
 payload, and the claim path materializes the named bucket against the
@@ -119,14 +119,14 @@ def _keyed_job(n: int, tenant: str) -> JobRow:
     )
 
 
-# ── THE FORK RESOLVES PER CHILD ──────────────────────────────────────────
+# ── the fork resolves per child ──────────────────────────────────────────
 
 
 async def test_two_tenants_forks_stamp_distinct_concrete_buckets(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Two runs' map forks under ONE keyed rate limit: each child row's
-    metadata carries ITS OWN tenant's concrete bucket name — the
+    """Two runs' map forks under one keyed rate limit: each child row's
+    metadata carries ITS own tenant's concrete bucket name — the
     per-tenant buckets are per child, never per declaration."""
     app = WorkflowApp()
     keyed = _keyed_ref()
@@ -163,7 +163,7 @@ async def test_two_tenants_forks_stamp_distinct_concrete_buckets(
         names = meta.get("rate_limits")
         assert isinstance(names, list)
         stamped.setdefault(meta.get("flow_id", ""), []).append(str(names[0]))
-    # BOTH runs, BOTH tenants: the concrete names are DISTINCT per child.
+    # both runs, both tenants: the concrete names are DISTINCT per child.
     assert sorted(stamped[str(flow_one)]) == ["tenant-api:acme", "tenant-api:globex"]
     assert sorted(stamped[str(flow_two)]) == ["tenant-api:acme", "tenant-api:globex"]
 
@@ -200,8 +200,8 @@ async def test_a_child_whose_key_cannot_resolve_fails_the_fork_loudly(
 
     runner = FlowRunner(app.get("wf_keyed_unresolvable"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # THE STEP IS NAMED: the death carries the map source's own key (the
-    # `what`), never a diagnosis that cannot point at the child.
+    # the death carries the map source's own key (the `what`), never a
+    # diagnosis that cannot point at the child.
     with pytest.raises(Exception, match=r"'src'"):
         await runner.tick(flow_id)
     children = await wf_pool.fetchval(
@@ -238,7 +238,7 @@ async def test_a_keyed_term_on_a_non_entry_step_is_refused_at_the_wiring() -> No
         app.get("wf_keyed_non_entry")
 
 
-# ── THE CLAIM PATH DENIES PER KEY ────────────────────────────────────────
+# ── the claim path denies per key ────────────────────────────────────────
 
 
 def _settings(schema: str) -> WorkerSettings:
@@ -269,8 +269,8 @@ async def test_one_tenant_s_saturated_bucket_snoozes_only_that_tenant(
 ) -> None:
     """The claim path's per-key denial: tenant acme's saturated bucket
     denies acme's child (the budget-free snooze — the gate's held-claim
-    release), tenant globex's child claims through the SAME registry,
-    the SAME gate. The dispatch damper's own trade, verified against wf
+    release), tenant globex's child claims through the same registry,
+    the same gate. The dispatch damper's own trade, verified against wf
     rows: one saturated tenant must not gate the actor."""
     clock = FakeClock(_START)
     registry = RateLimitRegistry()
@@ -291,8 +291,8 @@ async def test_one_tenant_s_saturated_bucket_snoozes_only_that_tenant(
     assert other.dependency_failure is None and other.denied is None, (
         f"globex's child must claim: {other.dependency_failure} {other.denied}"
     )
-    # acme's SECOND child hits ITS OWN tenant's saturated bucket — the
-    # denial names the CONCRETE bucket and the snooze is budget-free
+    # acme's second child hits its own tenant's saturated bucket — the
+    # denial names the concrete bucket and the snooze is budget-free
     # (the recorded denials counter, the held claim's release).
     denials: list[str] = []
     with patch("taskq.worker.run.record_ratelimit_denial", side_effect=denials.append):
@@ -300,7 +300,7 @@ async def test_one_tenant_s_saturated_bucket_snoozes_only_that_tenant(
     assert second.denied is not None, "acme's saturated bucket must deny acme's second child"
     assert "tenant-api:acme" in str(second.denied)
     assert denials, "the deny is observable (the denials counter bumped)"
-    # And a THIRD tenant's child still claims after acme's denial (the
+    # And a third tenant's child still claims after acme's denial (the
     # denial is per key, never per actor — the saturated bucket gates
     # only its own key's children).
     newcomer = await _flow_rate_limit_gate(
@@ -314,7 +314,7 @@ async def test_one_tenant_s_saturated_bucket_snoozes_only_that_tenant(
 async def test_registry_growth_is_bounded_by_the_idle_eviction(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """The wf claims' keyed buckets ride the SAME growth bound as the
+    """The wf claims' keyed buckets ride the same growth bound as the
     vanilla keyed acquires: materialized concrete entries evict when
     idle, and re-materialize on the next claim. (A REFILLING bucket is
     the evictable shape: a memory fixed-quota bucket that consumed
@@ -348,16 +348,16 @@ async def test_registry_growth_is_bounded_by_the_idle_eviction(
     assert registry.has_rate_limit("tenant-api:t0")
 
 
-# ── THE RESERVATION FACE IS COHORT-SCOPED ────────────────────────────────
+# ── the reservation face is cohort-scoped ────────────────────────────────
 
 
 async def test_a_fan_out_source_s_keyed_reservation_rides_the_run_s_cohort(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The fan-out's RESERVATION face: the source's keyed reservation
-    resolves ONCE (from the run's input and the source step's declared
+    resolves once (from the run's input and the source step's declared
     args) onto the source row, and the children RIDE the source row's
-    already-resolved names — ONE concrete bucket for the run, never a
+    already-resolved names — one concrete bucket for the run, never a
     per-item re-derivation."""
     from taskq.ratelimit.refs import KeyedReservationRef
 
@@ -401,10 +401,9 @@ async def test_a_fan_out_source_s_keyed_reservation_rides_the_run_s_cohort(
             f"reservation cohort; got {meta.get('reservations')}"
         )
 
-    # THE FLEET DOOR'S OWN SHAPE: the second run's source claims through
-    # the production dispatch and executes through execute_flow_job —
-    # the fork's row read there carries the metadata DICT (the dispatch
-    # decode's), the same ride.
+        # the second run's source claims through the production dispatch and
+    # executes through execute_flow_job — the fork's row read there carries the
+    # metadata dict (the dispatch decode's), the same ride.
     from taskq.backend.clock import SystemClock
     from taskq.backend.postgres import PostgresBackend
     from taskq.workflows._worker_execution import execute_flow_job
@@ -537,7 +536,7 @@ def test_a_keyed_reservation_on_a_route_arm_is_refused() -> None:
         app.get("wf_keyed_res_arm_refused")
 
 
-# ── ONE BASE_NAME, ONE REF (the prefix-collision refusal) ────────────────
+# ── one BASE_NAME, one ref (the prefix-collision refusal) ────────────────
 
 
 def test_a_base_name_that_is_a_prefix_of_another_ref_s_is_refused() -> None:
@@ -591,7 +590,7 @@ def test_distinct_base_names_that_only_share_a_text_prefix_register_clean() -> N
     registry.register_keyed_rate_limit_ref(_keyed_ref("tenantx"))
 
 
-# ── THE ENTRY CAP PARKS, NEVER CRASHES ───────────────────────────────────
+# ── the entry cap parks, never crashes ───────────────────────────────────
 
 
 async def test_the_materialization_s_entry_cap_is_the_budget_free_park(
@@ -638,13 +637,13 @@ async def test_the_materialization_s_entry_cap_is_the_budget_free_park(
     assert second.dependency_failure is None, "the cap is not a dependency failure"
 
 
-# ── THE RUN'S INPUT PARTICIPATES IN A PARENTLESS STEP'S KEY ──────────────
+# ── the run's input participates in A parentless step's key ──────────────
 
 
 async def test_two_runs_with_different_inputs_get_distinct_concrete_buckets(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """A parentless step's keyed resolution reads the RUN'S OWN INPUT
+    """A parentless step's keyed resolution reads the RUN'S own INPUT
     first (the run's declared face): two runs of one workflow, two
     inputs, two concrete bucket names on the entry rows — one bucket
     per run."""
@@ -692,7 +691,7 @@ async def test_two_runs_with_different_inputs_get_distinct_concrete_buckets(
     assert stamps["globex"] == "tenant-api:globex", stamps
 
 
-# ── THE BOOT'S KEYED REGISTRATION IS LOAD-BEARING ────────────────────────
+# ── the boot's keyed registration is load-bearing ────────────────────────
 
 
 async def test_a_forged_row_s_concrete_name_resolves_through_the_boot_s_registry(
@@ -722,8 +721,9 @@ async def test_a_forged_row_s_concrete_name_resolves_through_the_boot_s_registry
         source = step(src, key="src")
         return build(map_source(source, item, rate_limits=[_keyed_ref()]))
 
-    # THE BOOT'S OWN ORDER (H-D1): register, project (the compile records),
-    # then the collects read the recorded cache.
+        # register, project (the compile records), then the collects read the
+
+    # recorded cache.
     register_app(app)
     project_workflow_actor_configs()
     registry = RateLimitRegistry()
@@ -743,7 +743,7 @@ async def test_a_forged_row_s_concrete_name_resolves_through_the_boot_s_registry
     )
 
 
-# ── THE FAN-OUT COHORT HOLDS AT DEPTH-N ──────────────────────────────────
+# ── the fan-out cohort holds at depth-n ──────────────────────────────────
 
 
 async def test_a_nested_map_s_depth_2_children_ride_the_run_s_cohort(
@@ -869,7 +869,7 @@ def test_an_actor_overriding_arm_refuses_the_source_s_keyed_reservation() -> Non
         app.get("wf_keyed_arm_override_refused")
 
 
-# ── THE ADOPTED JOIN RIDES THE COHORT (the depth-N induction's other face) ──
+# ── the adopted JOIN rides the cohort (the depth-N induction's other face) ──
 
 
 async def test_an_adopted_join_carries_the_stamp_and_feeds_depth_3(
@@ -918,12 +918,11 @@ async def test_an_adopted_join_carries_the_stamp_and_feeds_depth_3(
     runner = FlowRunner(app.get("wf_keyed_adopted_join"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
 
-    # THE ADOPTION IS NATURAL HERE: the nested map's join node
-    # ('src.join.join', kind map_join) is SKIPPED by the static insert,
-    # so the fired depth-1 join's outbox drain pre-creates it (the
-    # consumer row: the flow link + the cohort stamp, NO join-wait
-    # marker, the static-shape idempotency key). The depth-2 fork's
-    # adoption probe finds THAT row and adopts it.
+    # the nested map's join node ('src.join.join', kind map_join) is skipped by
+    # the static insert, so the fired depth-1 join's outbox drain pre-creates
+    # it (the consumer row: the flow link + the cohort stamp, no join-wait
+    # marker, the static-shape idempotency key). The depth-2 fork's adoption
+    # probe finds that row and adopts it.
     level3 = 0
     for _ in range(12):
         await runner.tick(flow_id)
@@ -940,8 +939,8 @@ async def test_an_adopted_join_carries_the_stamp_and_feeds_depth_3(
             break
     assert level3 >= 2, "the depth-3 fork created its children"
 
-    # THE ADOPTED JOIN'S SHAPE: exactly the non-adopted join's — the
-    # join-wait marker AND the run's cohort, ON THE ADOPTED ROW.
+    # exactly the non-adopted join's — the join-wait marker and the run's
+    # cohort, on the adopted row.
     adopted = await wf_pool.fetchrow(
         f"""SELECT metadata->'reservations' AS res, metadata->>'blocking_reason' AS reason
             FROM "{wf_schema}".jobs
@@ -959,7 +958,7 @@ async def test_an_adopted_join_carries_the_stamp_and_feeds_depth_3(
         f"join's shape); got {adopted['reason']!r}"
     )
 
-    # THE DEPTH-3 CHILDREN: the adopted join's own stamp feeds their ride.
+    # the adopted join's own stamp feeds their ride.
     depth3 = await wf_pool.fetch(
         f"""SELECT map_index, metadata->'reservations' AS reservations
             FROM "{wf_schema}".jobs
@@ -975,11 +974,11 @@ async def test_an_adopted_join_carries_the_stamp_and_feeds_depth_3(
         )
 
 
-# ── THE OVERRIDE'S CAP DOOR, THE ARM'S OWN NAMES FACE ────────────────────
+# ── the override's cap door, the arm's own names face ────────────────────
 
 
 def test_an_arm_with_its_own_reservation_names_refuses_over_a_keyed_source() -> None:
-    """A same-actor arm declaring its OWN reservation names drops the
+    """A same-actor arm declaring its own reservation names drops the
     source's keyed run cap (the arm's rows stamp the arm's static names,
     never the run's keyed bucket) — the same override law's face: the
     run's cap holds or the wiring refuses. The error states the two

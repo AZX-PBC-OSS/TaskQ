@@ -138,7 +138,7 @@ async def test_jobs_list_absolute_time_filter_binds(pg_dsn: str) -> None:
     asyncpg rejects a str for a timestamptz parameter with
     ``DataError … expected a datetime.date or datetime.datetime instance``
     (verified against PG 18 + this repo's pinned asyncpg), unhandled in
-    jobs_list → HTTP 500 for EVERY absolute-window request.
+    jobs_list → HTTP 500 for every absolute-window request.
     """
     async with asyncio.timeout(60):
         schema = await _migrated_schema(pg_dsn)

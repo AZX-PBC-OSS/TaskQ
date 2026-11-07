@@ -1,7 +1,7 @@
 """Pin: ``wait_terminal_with_diagnostics``'s timeout carries its evidence.
 
 The PG-restart chaos test's recovery wait (``handle.wait(timeout=180)``)
-failed once in CI (run 35748283472) as a bare ``TimeoutError`` from
+failed once in CI as a bare ``TimeoutError`` from
 ``JobHandle._fetch_row_bounded_by`` - and the failure carried nothing that
 could attribute it: no worker logs, no last observed row, so "the reclaim
 never happened", "the attempt starved mid-run", and "the replacement
@@ -58,7 +58,7 @@ def _handle(row: Any) -> JobHandle[None]:  # type: ignore[type-var]  # Why: JobH
 
 async def test_timeout_reports_last_observed_row_and_context() -> None:
     """RED contract: the RuntimeError must name the row the poll loop last
-    observed (status AND attempt - the reclaim-never-happened vs
+    observed (status and attempt - the reclaim-never-happened vs
     attempt-starved discriminator) and the caller's context dump."""
     handle = _handle(make_job_row(status="running", attempt=1))
 

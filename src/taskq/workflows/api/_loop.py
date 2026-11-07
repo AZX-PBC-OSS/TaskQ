@@ -1,43 +1,43 @@
-"""The loop machinery (T19): ``wf.loop`` — PROMOTED TO V1 by the
+"""The loop machinery: ``wf.loop`` — PROMOTED TO V1 by the
 maintainer's ruling (*"you do not cut must haves"*).
 
-THE SHAPE: ``wf.loop(name, body, carry, until, max_iterations, budget,
+``wf.loop(name, body, carry, until, max_iterations, budget,
 on_exhausted)``. Each iteration = FRESH jobs — the iteration-scoped step
 keys ``(workflow, loop_key, iteration, step)`` keep the idempotency
-ledger per-iteration (T05's contract unchanged; the keys are TEXT
+ledger per-iteration (the ledger's contract unchanged; the keys are TEXT
 business keys). The control union ``Done[DoneT] | Refine[FooT]`` is the
 body's return: ``Done`` stops the loop (its payload is the loop's
 result); ``Refine`` threads the carry.
 
-THE CARRY IS FROZEN AT SPAWN and advanced EXACTLY ONCE per iteration —
-in the ADVANCE STATEMENT, ONE atomic write shared with the CAP GUARD
+the CARRY IS FROZEN AT SPAWN and advanced EXACTLY once per iteration —
+in the ADVANCE STATEMENT, one atomic write shared with the CAP GUARD
 (``iteration < max_iterations`` is the same statement's WHERE leg): a
 carry advanced at hold/retry time is the optimistic-apply dragon (the
 double-apply/lost-apply variants) — the advance runs in the owning
 iteration's terminal tx, never earlier.
 
-THE TWO WALLS ARE DIFFERENT (the spike's cut 4): the ITERATION CAP
+The ITERATION CAP
 bounds total spawns regardless of time; the BUDGET (``budget_s``) is
 the TIME wall — and it is BLIND while the loop holds on a human
-(``budget_paused`` — the budget sweep's arm carries ``AND NOT
+(``budget_paused`` — the budget sweep's arm carries ``and not
 budget_paused``; the CONSUME-BUDGET dragon — the consume variant that
 killed a held loop and refused the operator's later approval — is the
 rejected alternative, kept RED forever by the mutation test).
 
-EXHAUSTION IS NAMED, NEVER SILENT: the cap or the budget wall terminates
+EXHAUSTION IS NAMED, never SILENT: the cap or the budget wall terminates
 the loop into the ``iteration_cap_exhausted`` state (the metadata's
 ``iteration_state`` + the node's typed failure) — and the FLOW
-TERMINALIZES in the SAME transaction (STRANDED-FLOW: a wedged
+TERMINALIZES in the same transaction (STRANDED-FLOW: a wedged
 ``running`` flow that ticks forever is the rejected variant).
 
-THE SEMANTICS DECISION, STATED ONCE: **infra fault ≠ body failure.**
+**infra fault ≠ body failure.**
 Connection-loss/reclaim-eligible faults route to RECLAIM (the ledger
-records ``crashed``; the ladder does NOT burn — the vanilla lease
+records ``crashed``; the ladder does not burn — the vanilla lease
 machinery re-claims from the ledger); the retry ladder burns for BODY
 failures only (the ledger's ``failed`` rows are the ladder's count).
 
 NAIVE-MEMO IS AUTHOR GUIDANCE, PINNED: the durable memo (one model
-invocation per iteration, never one per resume) is the ONE-TX shape —
+invocation per iteration, never one per resume) is the one-TX shape —
 read + write inside one transaction (the estate's claim statements ARE
 that shape; the loop's ledger claim is its loop face). The engine gives
 the carry + the TX boundary; the memo shape is author work (the don't-
@@ -48,11 +48,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel
 
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
+from taskq.workflows._types import duration_seconds
 from taskq.workflows.api._graph import (
     BodyFn,
     GateDecl,
@@ -74,17 +76,16 @@ __all__ = [
 #: The on-exhausted vocabulary (the named states, never a silent stop).
 ExhaustionPolicy = Literal["escalate", "fail"]
 
-#: The ESCALATION STEP KEY (the escalation fix): the workflow's registered
-#: escalation step — the outbox's ``consumer_step_key`` for EVERY
-#: ``on_exhausted="escalate"`` loop. The step's BODY resolves from the
-#: REGISTERED DEFINITION (D1 — ``_register_bodies`` puts it there at
+#: The escalation step key: the workflow's registered
+#: escalation step — the outbox's ``consumer_step_key`` for every
+#: ``on_exhausted="escalate"`` loop. The step's body resolves from the
+#: registered definition (D1 — ``_register_bodies`` puts it there at
 #: compile; the runner's ``_resolve_body`` reads it back at claim), so the
-#: drained consumer job is never the dead-letter ghost the hardcoded
-#: ``loop_escalation`` actor was.
+#: drained consumer job always resolves a body — never a dead letter.
 #:
-#: THE CONSTANT'S HOME is ``taskq.constants`` (backend and workflows read
-#: ONE constant): the dispatch fence's terminal-flow leg carries the
-#: ESCALATION-KIND exemption for THIS step key (a flow's death must not
+#: the constant's home is ``taskq.constants`` (backend and workflows read
+#: one constant): the dispatch fence's terminal-flow leg carries the
+#: escalation-kind exemption for this step key (a flow's death must not
 #: orphan its pages-a-human duty), so the loop's registration face and
 #: the fence's admission face cannot drift.
 ESCALATION_STEP_KEY: Final[str] = WF_LOOP_ESCALATION_STEP_KEY
@@ -102,7 +103,7 @@ class Done[T]:
 
 class Refine[T]:
     """The typed CONTINUE: the body's ``Refine(feedback)`` threads the
-    carry into the NEXT iteration (advanced once, in the terminal tx)."""
+    carry into the next iteration (advanced once, in the terminal tx)."""
 
     __slots__ = ("feedback",)
 
@@ -110,11 +111,10 @@ class Refine[T]:
         self.feedback = feedback
 
 
-#: The ``until=`` predicate's TYPE (the fanout proof's, hit live):
-#: ``Callable[[], Awaitable[bool]]`` — AWAITED by the driver. A bare sync
-#: closure returning a coroutine object is TRUTHY (the spike's cancel
-#: test cancelled an IDLE flow — proving nothing); the predicate is
-#: awaited, never trusted as a value.
+#: The ``until=`` predicate's type (the fanout proof's, hit live):
+#: ``Callable[[], Awaitable[bool]]`` — awaited by the driver. A bare sync
+#: closure returning a coroutine object is truthy — a value the
+#: driver must never trust; the predicate is awaited.
 UntilPredicate = Callable[[], Awaitable[bool]]
 
 
@@ -128,17 +128,17 @@ class LoopSpec:
     budget_s: float | None
     on_exhausted: ExhaustionPolicy
     carry_type: type[BaseModel] | None = None
-    #: THE CARRY'S TYPED SPLIT (the ergonomic tail's fix): the declared
-    #: CARRIER-TYPE (the model the body's ``Refine[Feedback]`` must
+    #: The carry's typed split: the declared
+    #: carrier-type (the model the body's ``Refine[Feedback]`` must
     #: match — the W-rules' subject); ``None`` = no model declared (the
-    #: type check is skipped, never guessed). DERIVED from ``initial``
+    #: type check is skipped, never guessed). derived from ``initial``
     #: when it is a model instance and this is left unset.
     initial_carry: object = None
-    #: The REGISTERED ESCALATION STEP's body (the escalation fix): the
+    #: The registered escalation step's body: the
     #: author's ``escalates_to=`` when declared; the framework default
     #: otherwise. Registered under :data:`ESCALATION_STEP_KEY` at compile
     #: (D1 — the registry is the only body source), so the outbox's
-    #: consumer job ALWAYS resolves a body — the escalation is never a
+    #: consumer job always resolves a body — the escalation is never a
     #: dead letter.
     escalation_body: BodyFn | None = None
 
@@ -146,7 +146,7 @@ class LoopSpec:
 async def default_escalation_body(ctx: Any, escalation: dict[str, object]) -> dict[str, object]:
     """The DEFAULT escalation step's body (the operator-facing arm of
     ``on_exhausted="escalate"``): the loop's exhaustion context lands as
-    the consumer job's OWN result — the job terminal-succeeds with the
+    the consumer job's own result — the job terminal-succeeds with the
     escalation record on it (the observable consequence: the outbox row
     drains, the consumer job runs, the record is readable from rows
     alone — no dead letter), and the structured WARNING names it for the
@@ -167,7 +167,7 @@ async def default_escalation_body(ctx: Any, escalation: dict[str, object]) -> di
 
 def registered_loop_policy(workflow_name: str | None, loop_key: str) -> str:
     """The REGISTERED DEFINITION's ``on_exhausted`` policy for one loop
-    (D1 — the sweep's arm reads the policy from HERE, never from the
+    (D1 — the sweep's arm reads the policy from here, never from the
     node row's metadata: a hand-crafted row has no policy face). A loop
     key the definition cannot resolve defaults to ``escalate`` only when
     the workflow registers an escalation body — the refusal of the
@@ -234,7 +234,7 @@ def loop(
     carry_type: type[BaseModel] | None = None,
     until: UntilPredicate | None = None,
     max_iterations: int | None = None,
-    budget_s: float | None = None,
+    budget_s: timedelta | float | None = None,
     on_exhausted: ExhaustionPolicy = "escalate",
     escalates_to: BodyFn | None = None,
     gates: tuple[GateDecl, ...] = (),
@@ -248,7 +248,7 @@ def loop(
     the Never-residual red (the API's E-rules); a body returning anything
     else is the shape error at run time.
 
-    THE CARRY'S TYPED SPLIT (the ergonomic tail's fix — one param, two
+    the CARRY'S TYPED SPLIT (the ergonomic tail's fix — one param, two
     meanings was the conflation): ``initial=`` is the initial carry
     VALUE (a JSON scalar or a model instance) — the first iteration's
     ``(ctx, carry)``. ``carry_type=`` is the DECLARED CARRIER-TYPE (the
@@ -257,7 +257,7 @@ def loop(
     from it (the instance carries its own type — no double declaration);
     an explicit ``carry_type=`` is for the type-only declaration (the
     initial carry is ``None``) or an honest override. A dict/list carry
-    declares NO model — the type check is skipped, never guessed (the
+    declares no model — the type check is skipped, never guessed (the
     old silent no-check is the named gap this split closes: the two
     meanings resolved by distant isinstance branches were a dict carry
     passing UNCHECKED).
@@ -268,27 +268,25 @@ def loop(
     unset ``until`` with both unset is the "waits forever" class — the
     validate warning.
 
-    ``gates=`` declares the body's HOLD gates (T16's addition — the
+    ``gates=`` declares the body's HOLD gates (the hold gate's addition — the
     typed door's compile visibility): a mid-loop ``wait_signal`` the
     body makes is INVISIBLE to the admin's resolve/deliver doors unless
     the gate is DECLARED on the node — the same law the step wiring's
     ``gates=`` keeps.
 
     ``on_exhausted="escalate"`` (the default) ENQUEUES the escalation
-    through the SAME outbox the fired joins use, addressed to THIS
-    WORKFLOW'S REGISTERED ESCALATION STEP (the escalation fix): the
+    through the same outbox the fired joins use, addressed to THIS
+    WORKFLOW'S REGISTERED ESCALATION STEP: the
     step's body is *escalates_to* when declared, the framework's
     :func:`default_escalation_body` otherwise — registered under
     ``loop.escalation`` at compile (D1), so the drained consumer job
     always resolves a body (never the ``loop_escalation``-actor ghost).
     ``on_exhausted="fail"`` terminal-fails the flow and enqueues
-    NOTHING — the policy is READ by the driver AND the sweep, both arms
+    NOTHING — the policy is READ by the driver and the sweep, both arms
     pinned end-to-end."""
     from taskq.workflows.api._graph import NodeDecl
 
-    # THE NAMING RULE (the API-compile face — the same refusal
-    # step() runs): the loop's derived keys (``<key>.iter<i>``) own the
-    # dot.
+    # the loop's derived keys (``<key>.iter<i>``) own the dot.
     if "." in name:
         raise WorkflowBuildError(
             f"loop key {name!r} carries a dot — the dot is the engine's "
@@ -299,7 +297,7 @@ def loop(
     spec = LoopSpec(
         loop_key=name,
         max_iterations=max_iterations,
-        budget_s=budget_s,
+        budget_s=duration_seconds(budget_s),
         on_exhausted=on_exhausted,
         carry_type=carry_type
         if carry_type is not None
@@ -309,11 +307,10 @@ def loop(
     )
     node = NodeDecl(
         key=name,
-        # THE LOOP'S FALLBACK PLACEMENT: the @app.workflow
-        # decorator's declared (actor, queue) when the workflow declares
-        # its own placement — the loop's rows ride the SAME cohort the
-        # definition's own rows (the escalation consumer rows) stamp;
-        # the hardcoded ("wf", "default") otherwise (the non-adopter
+        # the @app.workflow decorator's declared (actor, queue) when the
+        # workflow declares its own placement — the loop's rows ride the same
+        # cohort the definition's own rows (the escalation consumer rows)
+        # stamp; the hardcoded ("wf", "default") otherwise (the non-adopter
         # default, byte-identical).
         actor=graph.declared_actor or "wf",
         queue=graph.declared_queue or "default",

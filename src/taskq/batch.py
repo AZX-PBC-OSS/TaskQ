@@ -104,7 +104,7 @@ class EnqueueItem(BaseModel):
     before any INSERT.
 
     ``metadata`` is merged with the library-injected ``batch_id`` key
-    before the row is written; callers MUST NOT set ``metadata.batch_id``
+    before the row is written; callers MUST not set ``metadata.batch_id``
     manually.
     """
 
@@ -154,7 +154,7 @@ class BatchHandle(BaseModel):
     :class:`~taskq.client.JobHandle` per item in the original list
     (including idempotency-key collisions that returned existing rows).
     When a finalizer was enqueued, the finalizer handle is appended as
-    the **last** entry of ``job_handles`` AND set separately as
+    the **last** entry of ``job_handles`` and set separately as
     ``finalizer_handle``.  ``size`` is the number of non-finalizer items
     (i.e. ``len(job_handles) - (1 if finalizer_handle is not None else 0)``).
 
@@ -258,7 +258,7 @@ def decide_batch_status(
     ``expected_size > 0`` but zero jobs are found and none are pending
     (jobs pruned or never created).
 
-    When ``status.pending > 0`` and the batch is NOT aborted, returns
+    When ``status.pending > 0`` and the batch is not aborted, returns
     the status unchanged, the caller decides whether to raise
     :class:`~taskq.exceptions.Snooze` (exception mode) or block
     (polling mode).
@@ -299,12 +299,12 @@ def decide_batch_status(
     return status
 
 
-# Build the terminal-status NOT IN clause from the canonical
+# Build the terminal-status not in clause from the canonical
 # TERMINAL_STATUSES set so the SQL never drifts when a new status is
 # added to the state machine.
 # Duplicates _TERMINAL_NOT_IN in taskq.backend._batch_sql, kept separate
-# because _batch_sql wraps the clause in "NOT IN (...)" while here it is
-# interpolated into a FILTER expression that supplies its own "NOT IN (".
+# because _batch_sql wraps the clause in "not in (...)" while here it is
+# interpolated into a filter expression that supplies its own "not in (".
 _TERMINAL_NOT_IN_SQL = ",".join(f"'{s}'" for s in TERMINAL_STATUSES)
 
 # One statement per poll for wait_for_batch: the member counts and the
@@ -415,7 +415,7 @@ async def apply_batch_terminal_outcome(
       rescheduled (or was never this dispatch's to move), not terminal.
 
     Completion is self-arbitrating: every terminal outcome issues the
-    ``complete_batch`` attempt, and that statement's ``NOT EXISTS``
+    ``complete_batch`` attempt, and that statement's ``not EXISTS``
     guard decides against the live member set in its own snapshot.  The
     increment/reset count is advisory only, under READ COMMITTED two
     members terminating concurrently can each read the other as

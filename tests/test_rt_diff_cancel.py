@@ -112,7 +112,7 @@ async def _deferral_arms_fenced_by_in_flight_cancel(side: DiffSide) -> None:
 
 
 async def test_diff_deferral_arms_refuse_a_phase_carrying_row(pg_dsn: str) -> None:
-    """A snooze or retry-after landing mid-cancel must no-op on BOTH backends
+    """A snooze or retry-after landing mid-cancel must no-op on both backends
     and leave the row running with cancel_phase 1 + cancel_requested_at set:
     the deferral arms' cancel-column resets are fenced by cancel_phase = 0,
     exactly like mark_interrupted's release arm."""
@@ -155,13 +155,13 @@ async def _escalation_and_abandon(side: DiffSide) -> None:
     await side.write_cancel_request("guarded", "guard-probe")
 
     await side.write_cancel_request("job", "escalate-probe")
-    # Escalation by the WRONG worker refuses.
+    # Escalation by the wrong worker refuses.
     side.record("escalate_wrong_worker", await side.write_cancel_escalation("job", "wother"))
     # By the holder: phase 1 -> 2.
     side.record("escalate_owner", await side.write_cancel_escalation("job", "wholder"))
     # Re-escalation refuses (phase is already 2).
     side.record("escalate_again", await side.write_cancel_escalation("job", "wholder"))
-    # mark_abandoned lands ONLY on the phase-2 running row.
+    # mark_abandoned lands only on the phase-2 running row.
     side.record("abandon_escalated", await side.mark_abandoned("job"))
     side.record("abandon_phase1_only", await side.mark_abandoned("guarded"))
 

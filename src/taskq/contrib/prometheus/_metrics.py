@@ -123,7 +123,7 @@ def ensure_prometheus_meter_provider(
 
     Called by :func:`create_metrics_router` at router creation; embedding
     applications that serve their own scrape endpoint (no router) can call
-    it directly at process start, BEFORE the worker records anything,
+    it directly at process start, before the worker records anything,
     because pre-provider proxy measurements are dropped.
 
     Never replaces an operator-configured provider: a registry with an
@@ -151,7 +151,7 @@ def ensure_prometheus_meter_provider(
 
     provider = metrics.get_meter_provider()
     if isinstance(provider, _SdkMeterProvider):
-        # The operator configured the SDK (e.g. an OTLP pipeline) but no
+        # The operator configured the SDK (e.g. an otlp pipeline) but no
         # PrometheusMetricReader feeds this registry, so the scrape cannot
         # serve the taskq_* series. Readers cannot be attached to a
         # constructed provider through any public API, so the honest move
@@ -175,7 +175,7 @@ def ensure_prometheus_meter_provider(
     sdk_provider = _SdkMeterProvider(metric_readers=[reader])
     metrics.set_meter_provider(sdk_provider)
     if metrics.get_meter_provider() is not sdk_provider:
-        # The OTel set-once guard was already consumed by a non-SDK
+        # The otel set-once guard was already consumed by a non-SDK
         # provider (a custom API-level provider, or one loaded through the
         # OTEL_PYTHON_METER_PROVIDER entry point). Our provider is inert:
         # taskq's instruments follow the global provider, so the scrape

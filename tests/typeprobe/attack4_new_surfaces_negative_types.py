@@ -1,6 +1,6 @@
-"""ATTACK4 — the NEW surfaces' negative type-probes (the phase-4
-attacker's corpus): the admin's run-explorer + the CLI's analysis module
-under BOTH pinned checkers. Each MUST_ERROR marker names the rule-ids
+"""the NEW surfaces' negative type-probes (the phase-4
+the corpus): the admin's run-explorer + the CLI's analysis module
+under both pinned checkers. Each MUST_ERROR marker names the rule-ids
 the violation must red under (the gate's vocabulary). Run:
 
     cd tests/typeprobe && ../../.venv/bin/pyright --project pyrightconfig.json attack4_new_surfaces_negative_types.py
@@ -44,7 +44,7 @@ def probe_the_cli_rows() -> None:
     )
     print(lines)
 
-    # The list formatter fed a NON-sequence row type.
+    # The list formatter fed a non-sequence row type.
     format_flow_list([None])  # MUST_ERROR(reportArgumentType, invalid-argument-type)
 
 

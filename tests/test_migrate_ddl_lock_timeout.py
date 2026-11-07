@@ -164,7 +164,7 @@ async def test_zero_means_wait_indefinitely_and_is_stated_explicitly(monkeypatch
 
     await migrate_mod.apply_pending(conn, schema="taskq", ddl_lock_timeout=0)  # type: ignore[arg-type]
 
-    # 0 promises "wait indefinitely": the transaction must say so EXPLICITLY
+    # 0 promises "wait indefinitely": the transaction must say so explicitly
     # (SET LOCAL lock_timeout = 0). Skipping the SET would let a session-level
     # lock_timeout (a role default, a DSN options clause, server_settings) --
     # which SET LOCAL would otherwise override -- bound the wait after all,
@@ -175,7 +175,7 @@ async def test_zero_means_wait_indefinitely_and_is_stated_explicitly(monkeypatch
 @pytest.mark.parametrize("bound", [float("nan"), float("inf"), float("-inf")])
 async def test_non_finite_bounds_are_refused(monkeypatch: Any, bound: float) -> None:
     """NaN sails past both ``< 0`` and ``0 < x < 0.001`` and then fails the
-    ``> 0`` gate, silently setting NO bound -- the exact inversion the
+    ``> 0`` gate, silently setting no bound -- the exact inversion the
     sub-millisecond guard refuses, reached by ``--ddl-lock-timeout nan`` (the
     CLI's typer parses it) or ``ddl_lock_timeout=float('nan')``. Infinities
     die later, as an OverflowError from ``int(inf * 1000)`` mid-run after
@@ -191,7 +191,7 @@ async def test_non_finite_bounds_are_refused(monkeypatch: Any, bound: float) -> 
     assert conn.executed == [], "a refused bound must run nothing"
 
 
-# ── the advisory-lock WAIT bound (lock_timeout) gets the same checks ──────
+# ── the advisory-lock wait bound (lock_timeout) gets the same checks ──────
 
 
 class _AdvisoryConn:
@@ -215,7 +215,7 @@ async def test_advisory_wait_sub_millisecond_bound_is_refused() -> None:
     conn = _AdvisoryConn()
     with pytest.raises(ValueError, match="at least one millisecond"):
         async with migrate_mod.migration_advisory_lock(conn, 0.0005, schema="taskq"):
-            pass  # pragma: no cover  # Why: the CM must refuse before yielding.
+            pass  # pragma: no cover  # Why: the cm must refuse before yielding.
     assert conn.executed == [], "a refused bound must run nothing"
 
 
@@ -227,7 +227,7 @@ async def test_advisory_wait_non_finite_bound_is_refused(bound: float) -> None:
     conn = _AdvisoryConn()
     with pytest.raises(ValueError, match="finite"):
         async with migrate_mod.migration_advisory_lock(conn, bound, schema="taskq"):
-            pass  # pragma: no cover  # Why: the CM must refuse before yielding.
+            pass  # pragma: no cover  # Why: the cm must refuse before yielding.
     assert conn.executed == [], "a refused bound must run nothing"
 
 
@@ -238,7 +238,7 @@ async def test_advisory_wait_negative_bound_is_refused() -> None:
     conn = _AdvisoryConn()
     with pytest.raises(ValueError, match=">= 0"):
         async with migrate_mod.migration_advisory_lock(conn, -1.0, schema="taskq"):
-            pass  # pragma: no cover  # Why: the CM must refuse before yielding.
+            pass  # pragma: no cover  # Why: the cm must refuse before yielding.
     assert conn.executed == [], "a refused bound must run nothing"
 
 
@@ -351,7 +351,7 @@ async def test_held_table_lock_fails_the_migration_within_the_bound(
     migrator = await asyncpg.connect(pg_dsn)
     reader = await asyncpg.connect(pg_dsn)
     try:
-        # ACCESS SHARE on jobs, held open: the shape of an actor's open
+        # access share on jobs, held open: the shape of an actor's open
         # transaction connection mid-job or an admin snapshot.
         holder_tx = holder.transaction()
         await holder_tx.start()

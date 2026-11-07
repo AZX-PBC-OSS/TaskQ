@@ -120,7 +120,7 @@ _CASTS: Final[Mapping[ColumnKind, str]] = {
 class SortColumn:
     """One column of an ordering, together with how the cursor carries it.
 
-    ``nullable`` means the column participates in NULLS LAST placement:
+    ``nullable`` means the column participates in NULLS last placement:
     NULLs sort after every value in **both** directions, so that reversing
     the scan reverses one thing (the comparison) rather than two.
     """
@@ -173,7 +173,7 @@ class SortColumn:
 #: ``id`` is UUIDv7 and therefore time-ordered, so ordering it *with* the
 #: primary column reorders nothing in practice while making the seam a
 #: single row-wise comparison.  Ordering it against the primary column is
-#: what made a keyset cursor inexpressible for the DESC sorts.
+#: what made a keyset cursor inexpressible for the desc sorts.
 _ID_ASC: Final = SortColumn("id", "uuid", descending=False)
 _ID_DESC: Final = SortColumn("id", "uuid", descending=True)
 
@@ -245,9 +245,9 @@ class JobOrdering:
 
         ``null_tail=False`` drops the leading nullable column's NULL
         range from a FORWARD row-wise predicate (the
-        ``lead IS NULL OR tuple-compare`` union), leaving the bare tuple
+        ``lead IS NULL or tuple-compare`` union), leaving the bare tuple
         compare: the one form the planner extracts as an index condition
-        (the OR defeats the extraction -- measured, the wrapped shape
+        (the or defeats the extraction -- measured, the wrapped shape
         filter-scans from the index start, 58k rows removed per page at a
         100k archive, where the bare compare seeks;
         benchmarks/results/archive-scale-red-probe.json carries the full
@@ -285,7 +285,7 @@ class JobOrdering:
         Available exactly when every column runs the same way, which is
         what ordering ``id`` with the primary column buys.  A leading
         nullable column splits the scan into its NULL and non-NULL
-        ranges: under NULLS LAST the NULL range is wholly after the
+        ranges: under NULLS last the NULL range is wholly after the
         values, so it is a union with the tuple compare rather than a
         term inside it.  ``null_tail=False`` (see :meth:`sql_after`)
         returns the bare tuple compare alone -- the planner-extractable
@@ -349,9 +349,9 @@ class JobOrdering:
     def compare(self, left: tuple[CursorValue, ...], right: tuple[CursorValue, ...]) -> int:
         """Three-way compare two key tuples under this ordering.
 
-        The in-memory mirror of the SQL ORDER BY, including NULLS LAST:
+        The in-memory mirror of the SQL ORDER BY, including NULLS last:
         nullness is decided before direction is applied, because NULLS
-        LAST is absolute and does not flip with ``DESC``.
+        last is absolute and does not flip with ``DESC``.
         """
         for col, x, y in zip(self.columns, left, right, strict=True):
             if x is None or y is None:
@@ -386,7 +386,7 @@ def _strict_cmp(
 ) -> str | None:
     """Rows strictly past the cursor on *col* alone, or ``None`` if none can be.
 
-    Under NULLS LAST nothing follows a NULL going forwards, so a NULL
+    Under NULLS last nothing follows a NULL going forwards, so a NULL
     seam contributes no term at that position, the columns after it
     carry the seam.  Going backwards from a NULL, every non-NULL row
     precedes it.
@@ -411,8 +411,8 @@ _ROW_READERS: Final[Mapping[str, Callable[[JobRow], CursorValue]]] = {
 
 ORDERINGS: Final[Mapping[JobSortField, JobOrdering]] = {
     # Unchanged, and the one mixed-direction ordering: dispatch order is
-    # highest priority first, then oldest schedule first.  ``id ASC``
-    # already runs with ``scheduled_at ASC``, so its cursor was always
+    # highest priority first, then oldest schedule first.  ``id asc``
+    # already runs with ``scheduled_at asc``, so its cursor was always
     # expressible and its encoding is preserved byte for byte.
     JobSortField.SCHEDULED_AT_ASC: JobOrdering(
         (

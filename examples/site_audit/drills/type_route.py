@@ -1,8 +1,8 @@
 # ruff: noqa: S608  # Why: the SQL carries only value parameters or a drill-owned identifier — no untrusted text reaches any statement.
-"""DRILL — the type-route proof: each entity type's arm ran, and ONLY its arm.
+"""DRILL — the type-route proof: each entity type's arm ran, and only its arm.
 
 Six sites (three sensor stations, three solar panels) fan out through
-the typed route. The drill reads the ROUTED CHILDREN'S OWN ROWS — the
+the typed route. The drill reads the ROUTED CHILDREN'S own ROWS — the
 ``step_key`` names the arm that ran (``plan.item:…SiteSensor`` /
 ``plan.item:…SitePanel``) — and proves the receipts per type:
 

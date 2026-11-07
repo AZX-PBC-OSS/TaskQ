@@ -1,7 +1,7 @@
 # Agent loops: the five durable patterns
 
-> **Status: CURRENT** (was: the agent-loop parity lane's DRAFT — T30 and
-> T31 landed since, the sections rewritten to the landed faces). The
+> **Status: CURRENT** (was: the parity lane's draft; the durable timer and
+> the cross-run spawn landed since, the sections rewritten to the landed faces). The
 > pattern mapping, the agent-builder's guide, and the honest where-we-lack
 > list, written against the landed `feat/taskqflow` surface and the
 > frameworks' late-2026 docs (the receipts at the foot of the page). It is
@@ -20,7 +20,7 @@ and where we lack.
 The one-sentence orientation: **an agent loop is a workflow whose steps are
 LLM calls and tool calls, whose waits are rows, and whose progress is a
 stream an operator can replay** — TaskQflow has four and a half of the five;
-the tickets at the end name the missing half.
+the roadmap rows at the end name the missing half.
 
 ---
 
@@ -28,12 +28,12 @@ the tickets at the end name the missing half.
 
 | # | The pattern | Their face (the arrival point) | TaskQflow's landed face | The verdict |
 | --- | --- | --- | --- | --- |
-| 1 | **The LLM call is a step** | Inngest `step.run("think")` (memoized, retried per step); Temporal the activity-per-LLM-call (the retry policy rides the activity); Trigger.dev `chat` (every turn a span) | `step(llm_body, ..., rate_limits=[TokenBucket(...)], max_attempts=4, cache=True)` — the retry ladder, the ADMISSION cadence cap, and the cross-run cache (T25: same body + input → the same answer without re-billing tokens) | **Parity, one better face** (the cross-run cache + the rate-limit terms stamped on the ROW), one worse (no token accounting on the step face — the spend is the body's problem) |
+| 1 | **The LLM call is a step** | Inngest `step.run("think")` (memoized, retried per step); Temporal the activity-per-LLM-call (the retry policy rides the activity); Trigger.dev `chat` (every turn a span) | `step(llm_body, ..., rate_limits=[TokenBucket(...)], max_attempts=4, cache=True)` — the retry ladder, the ADMISSION cadence cap, and the cross-run cache (same body + input → the same answer without re-billing tokens) | **Parity, one better face** (the cross-run cache + the rate-limit terms stamped on the ROW), one worse (no token accounting on the step face — the spend is the body's problem) |
 | 2 | **The human-approval interrupt** | LangGraph `interrupt(value)` + `Command(resume=...)` (the checkpointer holds the thread); OpenAI `needs_approval` + `RunState.approve` (the state serialization is YOURS); Trigger.dev waitpoint tokens; Temporal Signals | `ctx.wait_signal((Approval,), timeout_s=...)` → the hold ROW (the payload schema declared, the context redacted before persist, the reply audited); `HitlClient.list/get/resolve` (the typed refusal, the idempotent CAS); `Expired` is a VALUE the checker forces the fail-close arm on | **Ours is better on the operator's face** (holds are rows any UI can list, resolve, audit — the frameworks hand you a state blob or a token and leave the store to your app), worse on the ecosystem's (no LangGraph Studio / Slack-in-a-box — the resolve UI is yours) |
-| 3 | **The sub-investigation (spawn/join)** | LangGraph subgraphs (a compiled graph as a node); Temporal child workflows (the handle, the cancellation cascade); Inngest `step.invoke()` (sync) / `sendEvent` (async); LlamaIndex sub-workflows | **Parity both faces**: the one-flow fan-out — `map_source(plan_step, investigate_one)` + the gather join (the fan-out's children ARE queue rows; the join fires exactly once in the finalize tx) — and the LANDED cross-run spawn: `ctx.spawn_flow(name, input=…, result=G)` → the typed `ChildOk[G] \| ChildFailed \| ChildCancelled \| Expired` join, the child a REAL run (its own holds, its own run key, the retry adopts the same child) | **Parity** — the cross-run spawn closed the gap (T31) |
-| 4 | **The streaming / progress push** | LangGraph `stream_mode="messages"` (token deltas); Trigger.dev realtime + the durable stream (resume from the last chunk); Temporal Workflow Streams (public preview, May 2026); LlamaIndex `handler.stream_events()` | `await ctx.progress(pct, message, data)` — best-effort by construction (the coalescing law: ~20 writes/s, the occurrences counter counts what coalesced), `progress_schema=` the typed door, the STATE channel (latest-wins) + the STREAM channel (the 64-row ring, replay with the named resync), `ProgressListener`/SSE over the same rows | **Worse on granularity** (coalesced latest-wins, not per-token — a token stream needs a different bound and face: T32), **better on honesty** (the progress-lie fence: the ledger's terminal state is never overwritten by a 99% message) |
-| 5 | **The durable wait / timer** | Temporal `sleep()`/`schedule_to_close` (the timer is an event in history); Inngest `step.sleep()` / `waitForEvent` (months); Trigger.dev `wait.for()` / waitpoint timeouts | **Both faces landed**: the general timer — `ctx.wait_until(when, key=…)` (the clock is the hold's resolver, the reserved `__timer__` prefix, the due-drain's partial index, the wake's receipt) — and the hold's `timeout_s=` (the expiry sweep abandons it, the wait site RETURNS `Expired` — the fail-close VALUE). The held representation: the worker releases the slot — **no sleeping worker** | **Better on the slot law** (a held node is zero occupancy — the queue's capacity is back); **at parity on generality** — the general timer closed the plain-sleep gap (T30); the wait-until-CONDITION form (the poll-shaped predicate) stays a recorded-not-built row |
-| 6 | **The state checkpointing** | LangGraph: the checkpointer saves the WHOLE state blob every superstep; `get_state(history)` + replay = time travel; CrewAI checkpointing (replay from a step, fork) | The rows ARE the state: the node row (status, attempt, claim epoch), the step ledger (`wf_step_ledger` — the exactly-once witness), the decoded payloads on the edges, the run-key arbiter (T-G2: the concurrent dedup with the typed claim verdict) | **Better on queryability** (an operator SQLs the run; LangGraph's blob is opaque to the operator), **worse on the declare-and-forget simplicity** (LangGraph never asks you to think about what survives — and gets time travel free; ours is explicit steps, no fork-from-history API: T34) |
+| 3 | **The sub-investigation (spawn/join)** | LangGraph subgraphs (a compiled graph as a node); Temporal child workflows (the handle, the cancellation cascade); Inngest `step.invoke()` (sync) / `sendEvent` (async); LlamaIndex sub-workflows | **Parity both faces**: the one-flow fan-out — `map_source(plan_step, investigate_one)` + the gather join (the fan-out's children ARE queue rows; the join fires exactly once in the finalize tx) — and the LANDED cross-run spawn: `ctx.spawn_flow(name, input=…, result=G)` → the typed `ChildOk[G] \| ChildFailed \| ChildCancelled \| Expired` join, the child a REAL run (its own holds, its own run key, the retry adopts the same child) | **Parity** — the cross-run spawn closed the gap |
+| 4 | **The streaming / progress push** | LangGraph `stream_mode="messages"` (token deltas); Trigger.dev realtime + the durable stream (resume from the last chunk); Temporal Workflow Streams (public preview, May 2026); LlamaIndex `handler.stream_events()` | `await ctx.progress(pct, message, data)` — best-effort by construction (the coalescing law: ~20 writes/s, the occurrences counter counts what coalesced), `progress_schema=` the typed door, the STATE channel (latest-wins) + the STREAM channel (the 64-row ring, replay with the named resync), `ProgressListener`/SSE over the same rows | **Worse on granularity** (coalesced latest-wins, not per-token — a token stream needs a different bound and face), **better on honesty** (the progress-lie fence: the ledger's terminal state is never overwritten by a 99% message) |
+| 5 | **The durable wait / timer** | Temporal `sleep()`/`schedule_to_close` (the timer is an event in history); Inngest `step.sleep()` / `waitForEvent` (months); Trigger.dev `wait.for()` / waitpoint timeouts | **Both faces landed**: the general timer — `ctx.wait_until(when, key=…)` (the clock is the hold's resolver, the reserved `__timer__` prefix, the due-drain's partial index, the wake's receipt) — and the hold's `timeout_s=` (the expiry sweep abandons it, the wait site RETURNS `Expired` — the fail-close VALUE). The held representation: the worker releases the slot — **no sleeping worker** | **Better on the slot law** (a held node is zero occupancy — the queue's capacity is back); **at parity on generality** — the general timer closed the plain-sleep gap; the wait-until-CONDITION form (the poll-shaped predicate) stays a recorded-not-built row |
+| 6 | **The state checkpointing** | LangGraph: the checkpointer saves the WHOLE state blob every superstep; `get_state(history)` + replay = time travel; CrewAI checkpointing (replay from a step, fork) | The rows ARE the state: the node row (status, attempt, claim epoch), the step ledger (`wf_step_ledger` — the exactly-once witness), the decoded payloads on the edges, the run-key arbiter (the concurrent dedup with the typed claim verdict) | **Better on queryability** (an operator SQLs the run; LangGraph's blob is opaque to the operator), **worse on the declare-and-forget simplicity** (LangGraph never asks you to think about what survives — and gets time travel free; ours is explicit steps, no fork-from-history API) |
 | 7 | **The tool-call idempotency** | Inngest `step.run()` memoization; Temporal the activity ID + the retry policy; Trigger.dev idempotency keys on waits | `ctx.substep(name, fn, ...)` — the step-ledger's exactly-once rows (replay returns the recorded result); the run-key arbiter for the CONCURRENT dedup; the cross-run cache for the LATER dedup | **Parity** — three dedup layers where they have one; the cost is the discipline (the body must ledger its side effects, the framework will not guess) |
 
 ---
@@ -105,7 +105,7 @@ def agent_draft() -> Promise[object]:
             key="draft",
             rate_limits=[llm_bucket],
             max_attempts=4,
-            cache=True,  # the cross-run cache (T25): terminal-SUCCEEDED stores only
+            cache=True,  # the cross-run cache: terminal-SUCCEEDED stores only
             cache_ttl=3600.0,
         )
     )
@@ -366,7 +366,7 @@ Verified output:
 outcome=terminal report={'findings': [{'sources': 3, 'question': 'q1'}, {'sources': 3, 'question': 'q2'}, {'sources': 3, 'question': 'q3'}]}
 ```
 
-**The spawn face is LANDED** (T31 is closed):
+**The spawn face is LANDED**:
 `ctx.spawn_flow(name, input=…, result=ChildResult)` is the sub-agent spawn/
 join across run identities — the child is a REAL flow (its own run rows; the
 run explorer, the admin and the CLI all see it), joined through the hold
@@ -619,7 +619,7 @@ the deadline — never promise a precise wall time; the fail-close is the
 guarantee). The deliberate re-wait is a NEW body decision (a NEW hold, a NEW
 epoch — hold → expire → re-hold → ∞ is the rejected shape the face refuses).
 
-**The general timer is LANDED** (T30 is closed):
+**The general timer is LANDED**:
 `ctx.wait_until(when, key=…)` is the plain durable timer — the clock is the
 hold's RESOLVER, no human and no payload model in the way. The wait is a ROW
 (the same held representation: pending + a deadline, the worker's slot
@@ -680,31 +680,31 @@ the same hold machinery underneath, the clock as the only resolver.
 1. **The token-stream granularity.** `ctx.progress` coalesces to ~20 writes/s
    latest-wins; the frameworks stream token deltas and resume byte-exact.
    For a cowork-agent UI that renders the agent's answer AS IT THINKS, the
-   coalesced face shows the shape of the work, not the words. (T32.)
+   coalesced face shows the shape of the work, not the words. (The roadmap's token-stream row.)
 2. **The checkpoint-the-whole-state simplicity.** LangGraph never asks the
    author what survives — every superstep checkpoints the whole state, and
    time travel (`get_state(history)`, replay/fork from any step) is free.
    TaskQflow's durability is explicit steps and edges; there is no declared
    whole-state snapshot and no fork-from-history API. The explicit face buys
-   the operator's queryability and pays in authoring discipline. (T34.)
+   the operator's queryability and pays in authoring discipline. (The roadmap's fork-from-history row.)
 3. **The HITL ecosystem.** The hold row is the better STORE, but the
    frameworks ship the surrounding product: LangGraph Studio's interrupt
    visualization, the Slack-in-a-box approval layers built on the SDKs. Our
    resolve UI is yours to build (the SSE topic and the CLI are the
    primitives).
 
-## Where we lack (the tickets, ranked by adoption impact)
+## Where we lack (the roadmap rows, ranked by adoption impact)
 
-Each ticket is design-first: the gap, the shape that closes it, the
+Each row is design-first: the gap, the shape that closes it, the
 adoption cost for the agent-builder who arrives from the framework that has it.
 
-| Ticket | The named pattern | The one-line gap | The arrival cost |
+| The named pattern | The one-line gap | The arrival cost |
 | --- | --- | --- | --- |
-| `tickets/T30-durable-sleep.md` | The durable sleep / wait-until | **LANDED — CLOSED**: `ctx.wait_until(when, key=…)` ships (the clock is the hold's resolver; the row is the truth; the map-index identity reaches the timer hold) — the guide's §Pattern 5 teaches it | — (was: an agent-builder from Temporal/Inngest reaches for the sleep on day one and finds nothing) |
-| `tickets/T31-nested-flow-spawn.md` | The sub-agent spawn/join across runs | **LANDED — CLOSED**: `ctx.spawn_flow(name, input=…, result=G)` ships (the child is a REAL run — its own holds, its own run key, the retry adopts the same child; the typed outcome union) — the guide's §Pattern 3 teaches it | — (was: the deep-research story with per-sub-agent approvals stalls at the one-flow boundary) |
-| `tickets/T32-token-stream-progress.md` | The token-stream progress class | Progress coalesces at ~20 writes/s; there is no fine-grained stream class for rendering the agent's answer as it thinks | The chat-shaped product shows the agent's shape, not its words |
-| `tickets/T33-agent-memory-store.md` | The cross-run agent memory | The cross-run cache dedups; it does not REMEMBER — no namespaced store a run reads and writes for the run after it | Agents that "know the customer from last week" have nowhere to put it |
-| `tickets/T34-time-travel-fork.md` | The time travel / fork-from-history | No declared API to replay/fork a run from an arbitrary node with new input | The "fix the prompt and re-run from step 3" debugging loop is a re-run from zero |
+| The durable sleep / wait-until | **LANDED — CLOSED**: `ctx.wait_until(when, key=…)` ships (the clock is the hold's resolver; the row is the truth; the map-index identity reaches the timer hold) — the guide's §Pattern 5 teaches it | — (was: an agent-builder from Temporal/Inngest reaches for the sleep on day one and finds nothing) |
+| The sub-agent spawn/join across runs | **LANDED — CLOSED**: `ctx.spawn_flow(name, input=…, result=G)` ships (the child is a REAL run — its own holds, its own run key, the retry adopts the same child; the typed outcome union) — the guide's §Pattern 3 teaches it | — (was: the deep-research story with per-sub-agent approvals stalls at the one-flow boundary) |
+| The token-stream progress class | Progress coalesces at ~20 writes/s; there is no fine-grained stream class for rendering the agent's answer as it thinks | The chat-shaped product shows the agent's shape, not its words |
+| The cross-run agent memory | The cross-run cache dedups; it does not REMEMBER — no namespaced store a run reads and writes for the run after it | Agents that "know the customer from last week" have nowhere to put it |
+| The time travel / fork-from-history | No declared API to replay/fork a run from an arbitrary node with new input | The "fix the prompt and re-run from step 3" debugging loop is a re-run from zero |
 
 ---
 

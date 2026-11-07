@@ -596,7 +596,7 @@ async def daily_report(payload: ReportPayload) -> None: ...
   this key manually; the library unconditionally overwrites it.
 - On collision, [`SingletonCollisionError`](jobs-clients.md#error-handling) is raised.
 
-**THE SELF-SCHEDULING COLLISION — a singleton cannot enqueue its own
+**The self-scheduling collision** — a singleton cannot enqueue its own
 successor.** The running tick IS an active job of the actor, and
 "active" means `pending`/`scheduled`/`running` — so a tick body that
 enqueues the NEXT tick of the same singleton actor deterministically

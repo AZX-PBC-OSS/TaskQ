@@ -330,7 +330,7 @@ async def deliver_webhook(
 
 
 # Import-time registration, mirroring the delivery bucket above. The
-# persistence test (test_rate_limit.py) needs a drained bucket to STAY
+# persistence test (test_rate_limit.py) needs a drained bucket to stay
 # drained across the uncontrolled drain-to-dispatch handoff: at 0.25
 # tokens/s the handoff refills under 1 token per 4 s, so the test's denial
 # count is a property of the bucket's persisted state, not of the handoff's
@@ -440,7 +440,7 @@ async def enrich_order(
 # Per-tenant token bucket: each tenant gets an independent capacity-3 /
 # 1-refill-per-second bucket materialized lazily on first acquisition.
 # The key_fn extracts tenant_id from the validated payload, so two tenants
-# share NO token budget - draining tenant A's bucket does not affect
+# share no token budget - draining tenant A's bucket does not affect
 # tenant B's bucket at all.
 
 
@@ -756,7 +756,7 @@ def sync_outlive_shutdown(payload: SyncOutliveShutdownPayload) -> None:
     ``tracked-actor-outlived-teardown`` reason, not a row it wrote.
     """
     del payload
-    time.sleep(60.0)  # Why: a sync actor body IS a thread; the block is the scenario under test.
+    time.sleep(60.0)  # Why: a sync actor body is a thread; the block is the scenario under test.
 
 
 # ── Short-lived job actor (shutdown drain short-job test) ─────────────────
@@ -849,7 +849,7 @@ async def batch_abort_worker(
     *,
     pool: asyncpg.Pool,
 ) -> None:
-    """Always fails - used to test batch abort policy."""
+    """Always fails - drives the batch abort policy's test."""
     await _record_effect(pool, ctx, "attempt", {"run_id": payload.run_id})
     raise RuntimeError("intentional failure for batch abort test")
 

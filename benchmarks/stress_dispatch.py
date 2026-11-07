@@ -26,7 +26,7 @@ import os
 import time
 from datetime import UTC, datetime, timedelta
 from uuid import (
-    uuid4,  # noqa: TID251  # Why: throwaway ids for scratch benchmark rows; PK B-tree locality is not the variable under test.
+    uuid4,  # noqa: TID251  # Why: throwaway ids for scratch benchmark rows; pk B-tree locality is not the variable under test.
 )
 
 import structlog
@@ -46,7 +46,7 @@ CRON_EXPR = "*/5 * * * *"
 CRON_TZ = "America/New_York"
 
 
-# ── DI test doubles (mimics tests/test_di_solver.py stubs) ────────────
+# ── di test doubles (mimics tests/test_di_solver.py stubs) ────────────
 
 
 class _StubRegistry:
@@ -80,7 +80,7 @@ class _CachedStubContainer:
             self.last_cache_hit = True
             return self._cache[type_]
         self.last_cache_hit = False
-        value = entry.impl  # FactoryShape.VALUE
+        value = entry.impl  # FactoryShape.value
         if self._scope is not Scope.TRANSIENT:
             self._cache[type_] = value
         return value
@@ -214,7 +214,7 @@ def _make_payload_4kb() -> dict[str, object]:
 
 
 async def main() -> None:
-    # A configured worker runs at INFO/WARNING: the solver's per-dep
+    # A configured worker runs at info/warning: the solver's per-dep
     # logger.debug call still happens but records below the level are
     # dropped before rendering. Mirror that so terminal-rendering I/O
     # doesn't dominate the profile.

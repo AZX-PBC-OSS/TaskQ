@@ -481,7 +481,7 @@ from those seeded runs.
 
 ---
 
-## The workflow-debug SQL recipes (T08)
+## The workflow-debug SQL recipes
 
 Per-run reads, bounded by the run's own node count; every read is
 index-driven (`jobs_wf_flow_nodes_idx`, 01.00.25_02 — the index

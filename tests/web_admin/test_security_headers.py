@@ -35,7 +35,7 @@ def test_html_response_forbids_being_framed(make_app: Callable[..., TestClient])
     """An admin page must not be loadable inside a third-party frame.
 
     CSRF is no defence: the framed page is the real, same-origin, already-
-    authenticated page, so a click the attacker tricks the user into carries
+    authenticated page, so a click an attacker's page tricks the user into carries
     both the session cookie and a valid CSRF token.
     """
     client = make_app()

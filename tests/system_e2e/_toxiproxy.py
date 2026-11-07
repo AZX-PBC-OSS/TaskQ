@@ -161,7 +161,7 @@ class PartitionProxy:
         self._toxics.append(name)
 
     def _add_pair(self, stem: str, toxic_type: str, attributes: dict[str, int]) -> None:
-        """One toxic per direction: toxiproxy applies a toxic to ONE link
+        """One toxic per direction: toxiproxy applies a toxic to one link
         direction only, and weather that only swallows server->client
         bytes is a different (kinder) fault than a full cut."""
         self._add_toxic(f"{stem}_up", toxic_type, "upstream", attributes)

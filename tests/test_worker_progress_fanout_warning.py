@@ -8,7 +8,7 @@ the worker side: ``context.py``'s per-call publish block keys on the
 resolved Redis client, so with ``WorkerDeps.redis_client`` ``None`` the
 publish is skipped quietly - the documented contract - and nothing at
 boot names the resulting fanout gap. This pin holds that last link:
-exactly ONE ``progress-fanout-unconfigured`` startup warning when the
+exactly one ``progress-fanout-unconfigured`` startup warning when the
 worker's progress publishes will not fan out in real time, none when
 they will.
 
@@ -41,7 +41,7 @@ _EVENT = "progress-fanout-unconfigured"
 
 def test_unresolved_client_warns_exactly_once() -> None:
     """``WorkerDeps.redis_client`` is ``None`` (no TASKQ_REDIS_URL, no
-    caller-owned client, no factory) -> exactly ONE
+    caller-owned client, no factory) -> exactly one
     ``progress-fanout-unconfigured`` warning carrying a remedy that names
     a fix which actually wires the publish client."""
     with structlog.testing.capture_logs() as logs:
@@ -70,7 +70,7 @@ def test_resolved_client_does_not_warn() -> None:
     TASKQ_REDIS_URL, a caller-owned ``WorkerConnections.redis_client``,
     or a ``redis_client_factory`` all land in the same
     ``WorkerDeps.redis_client`` slot the publish block tests. The
-    caller-owned shapes set NO url and register NO provider, so a
+    caller-owned shapes set no url and register no provider, so a
     predicate that re-checks the gate's (url-or-DI) conditions would
     warn on a working fanout."""
     with structlog.testing.capture_logs() as logs:
@@ -90,7 +90,7 @@ def test_main_wires_the_progress_fanout_warning() -> None:
     ``test_worker_unconsumed_queue_warning.py`` house pattern). The
     keyword binding is part of the pin: the predicate must be
     ``deps.redis_client``, the exact object context.py's publish block
-    tests. The rate-limit gate's registry-based predicate is NOT
+    tests. The rate-limit gate's registry-based predicate is not
     equivalent (a DI-only provider serves limiters while the fanout
     stays off; a caller-owned client fans out with no URL and no
     provider), so reverting to it must fail this pin.

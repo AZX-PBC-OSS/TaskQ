@@ -5,7 +5,7 @@ A failed attempt reports its exception on three channels -- the
 ``job_exception`` / ``job-failed`` log lines, and the durable ``ErrorInfo``.
 Rendering a traceback and scrubbing it are the dominant CPU cost of a failed
 job (a 27-frame traceback is ~0.8 ms to render and ~0.4-0.8 ms to scrub, all
-GIL-held), so the contract pinned here is that each happens ONCE per failed
+GIL-held), so the contract pinned here is that each happens once per failed
 job and every channel shares the result -- while every channel still emits
 exactly the bytes it always did.
 """
@@ -45,7 +45,7 @@ _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
 
 #: Shaped like the tenant identifiers TaskQ's idempotency keys carry; it lives
-#: only in the DETAIL line, so its presence is the leak and its absence is the
+#: only in the detail line, so its presence is the leak and its absence is the
 #: scrub.
 CANARY = "tenant-4417-SSN-078051120"
 
@@ -235,7 +235,7 @@ async def test_transactional_failure_renders_and_scrubs_once(
 async def test_log_channel_masks_a_credential_that_follows_a_nul(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """NUL escaping runs AFTER the scrub on the log channel.
+    """NUL escaping runs after the scrub on the log channel.
 
     The credential mask's keyword boundary is a lookbehind for a non-word
     character. Escaping a NUL first rewrites it to the four characters

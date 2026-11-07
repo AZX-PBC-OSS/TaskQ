@@ -1,7 +1,7 @@
 """The refund-then-reclaim ledger race: the counter and the ledger must
 move TOGETHER across the claim-loss reconcile's refund.
 
-The soak's grand mixin red on CI (run 36175331443, ``grand_mixin[1]``) at
+The soak's grand mixin red on CI (``grand_mixin[1]``) at
 the reconciliation pin: ``attempt counter 1 vs 2 attempt rows``. The
 mechanism, frozen here one writer at a time (the writers genuinely run
 concurrently in production - the heartbeat tick on the worker's loop, the
@@ -15,13 +15,13 @@ guard already covers):
 2. The consumer is lost (the #402 shape: the claim committed, the
    in-memory grip did not survive). The heartbeat's claim-loss reconcile
    finds the orphan - running, locked here, held by nothing, its stamp
-   aged past the lease - and its NOT EXISTS ledger guard passes (no
+   aged past the lease - and its not EXISTS ledger guard passes (no
    ``job_attempts`` row at the charged number), so the refund fires BY
    DESIGN: the counter rolls 1 -> 0 and ``started_at`` is un-stamped
    (issue 458: a claim that never reached an actor bought nothing, so it
    spends nothing). The row stays ``running`` and locked for Sweep 1.
-3. THE RACE: the reclaim path records the crash of the attempt it
-   reclaims AT THE ROW'S CURRENT COUNTER - the number the refund just
+3. the RACE: the reclaim path records the crash of the attempt it
+   reclaims AT the ROW'S CURRENT COUNTER - the number the refund just
    de-charged. The ledger gains a phantom row (attempt 0) for an
    execution that never happened, while the counter stands at 0.
 4. The re-claim charges 0 -> 1 (the refund's whole point: the number is
@@ -42,15 +42,15 @@ together.
 The same fence covers the sibling reclaim writer (``isolate_self``'s
 attempt INSERT, worker/heartbeat.py), whose stale-snapshot write carries
 the identical gap - and whose raw NULL stamp would additionally violate
-``job_attempts.started_at NOT NULL`` on the refunded shape, aborting the
+``job_attempts.started_at not NULL`` on the refunded shape, aborting the
 whole isolation transaction.
 
-THE FENCE'S GAP, precisely (worker/heartbeat.py, unguarded): the terminal
-writes are airtight - their JOB_FENCE carries ``attempt = $k`` AND
+FENCE'S GAP, precisely (worker/heartbeat.py, unguarded): the terminal
+writes are airtight - their JOB_FENCE carries ``attempt = $k`` and
 ``claim_epoch = $m`` and every dispatch claim bumps the epoch
 (backend/_dispatch_sql.py's ``claim_epoch = j.claim_epoch + 1``), so a
 stale consumer's terminal write no-ops on the re-minted epoch. The
-isolate's attempt INSERT had NO such fence: it bound the SELECT
+isolate's attempt INSERT had no such fence: it bound the SELECT
 snapshot's (attempt, started_at), and the arbiter UPDATE in front of it
 fenced only on ``(id, status='running', locked_by_worker)`` - a
 conjunction the REFUND leaves true (the de-charged row stays running and
@@ -202,13 +202,13 @@ async def test_reclaim_records_no_attempt_row_for_a_refunded_epoch(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """The race pin, frozen in the racing order: refund FIRST (the
+    """The race pin, frozen in the racing order: refund first (the
     reconcile's tick), reclaim SECOND (the leader's sweep). Red on main at
     the soak's own assert shape; green with the standing-claim fence.
 
     The claim's ledger row is written by the terminal write at the END of
     an attempt, never by the claim itself - which is exactly why the
-    reconcile's NOT EXISTS guard passes for a claim whose consumer was
+    reconcile's not EXISTS guard passes for a claim whose consumer was
     lost mid-flight: the ledger has had nothing to say about the epoch
     YET. The refund's de-charge and the reclaim's crashed-row INSERT are
     the two writers that must move together.
@@ -219,7 +219,7 @@ async def test_reclaim_records_no_attempt_row_for_a_refunded_epoch(
     job_id = await _seed_pending_job(clean_pg_conn, schema)
 
     # 1. The claim commits (autocommit): running, locked, attempt charged,
-    #    started_at stamped, LEDGER EMPTY (the terminal write owns that row).
+    #    started_at stamped, ledger empty (the terminal write owns that row).
     claimed = await _claim_via_real_dispatch_cte(clean_pg_conn, schema, worker_id)
     assert claimed["status"] == "running"
     assert claimed["attempt"] == 1, "the claim charges the attempt at claim time"
@@ -246,8 +246,8 @@ async def test_reclaim_records_no_attempt_row_for_a_refunded_epoch(
         f"fixture broken: the refund must de-charge the increment and un-stamp the claim, got {row}"
     )
 
-    # 3. THE RACE: the lease lapses and the leader's Sweep 1 reclaims the
-    #    refunded row. The reclaim must re-pend the row AND record NO
+    # 3. the race: the lease lapses and the leader's Sweep 1 reclaims the
+    #    refunded row. The reclaim must re-pend the row and record no
     #    attempt row: the refunded epoch carries no standing claim (the
     #    un-stamped started_at is the durable void marker), and a crashed
     #    row at that number would permanentise an epoch the counter no
@@ -264,7 +264,7 @@ async def test_reclaim_records_no_attempt_row_for_a_refunded_epoch(
     row = await _job_row(clean_pg_conn, schema, job_id)
     assert row["status"] == "pending", f"the reclaim must re-pend the row, got {row}"
 
-    # The reclaim EVENT still lands - the reclaim happened and is audited.
+    # The reclaim event still lands - the reclaim happened and is audited.
     events = await clean_pg_conn.fetchval(
         f'SELECT count(*) FROM "{schema}".job_events WHERE job_id = $1 '
         "AND kind = 'state_change' AND detail->>'reason' = 'lock_expired'",
@@ -309,7 +309,7 @@ async def test_reclaim_records_no_attempt_row_for_a_refunded_epoch(
     )
     assert applied is True, "fixture broken: the live attempt's terminal write must apply"
 
-    # 6. THE SOAK'S EXACT INVARIANT (tests/test_rt_lost_job_soak.py's
+    # 6. the soak's exact invariant (tests/test_rt_lost_job_soak.py's
     #    reconciliation pin, the assert shape the CI red carried): the
     #    attempt counter and the attempt ledger must agree at settle.
     lineage = await clean_pg_conn.fetchrow(
@@ -352,9 +352,9 @@ async def _open_isolate_deps(
         settings_overrides={
             "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "5.0",
             "TASKQ_LOCK_LEASE": "60.0",
-            # The isolate's dedicated connection binds THIS budget per
+            # The isolate's dedicated connection binds this budget per
             # statement (worker/heartbeat.py's connect call), and the lock
-            # dance below parks its arbiter UPDATE on the holder's FOR
+            # dance below parks its arbiter UPDATE on the holder's for
             # UPDATE for as long as the freeze needs: the blitz default's
             # per-query bound would kill the parked UPDATE before the
             # refund commits inside the window. The setting's own budget
@@ -370,7 +370,7 @@ async def _open_isolate_deps(
 async def _wait_for_lock_waiter(
     conn: asyncpg.Connection, holder_xid: str, *, timeout_secs: float = 20.0
 ) -> None:
-    """Poll until some session is queued on THE holder's row lock: the
+    """Poll until some session is queued on the holder's row lock: the
     isolate's arbiter UPDATE parked on the holder's FOR UPDATE. Waiting
     on a lock is a state, not a delay - once it is observable, the
     isolate's SELECT (which precedes the arbiter) is guaranteed to have
@@ -471,11 +471,11 @@ async def test_isolate_self_records_no_attempt_row_for_a_refunded_epoch(
             row = await _job_row(conn, schema, job_id)
             assert row["attempt"] == 0 and row["started_at"] is None
 
-            # 3. The REAL isolate_self walks this refunded state.
+            # 3. The real isolate_self walks this refunded state.
             shutdown = asyncio.Event()
             await asyncio.wait_for(isolate_self(deps, worker_id, shutdown), timeout=30.0)
 
-            # 4. THE LEDGER: no row at the refunded epoch - not a phantom
+            # 4. the ledger: no row at the refunded epoch - not a phantom
             #    'crashed', not a NotNullViolation aborting the transaction.
             row = await _job_row(conn, schema, job_id)
             assert row["status"] == "pending" and row["attempt"] == 0, (
@@ -485,7 +485,7 @@ async def test_isolate_self_records_no_attempt_row_for_a_refunded_epoch(
                 "the isolate must record NO attempt row for a refunded epoch: "
                 "the un-stamped started_at is the refund's void marker"
             )
-            # The reclaim EVENT still lands - audited either way.
+            # The reclaim event still lands - audited either way.
             events = await conn.fetchval(
                 f'SELECT count(*) FROM "{schema}".job_events WHERE job_id = $1 '
                 "AND kind = 'state_change' AND detail->>'cause' = 'isolate_self'",
@@ -494,7 +494,7 @@ async def test_isolate_self_records_no_attempt_row_for_a_refunded_epoch(
             assert events == 1
 
             # 5. Closure: the re-claim visits the number (the refund's whole
-            #    point) and the terminal write lands the ONE ledger row.
+            #    point) and the terminal write lands the one ledger row.
             await conn.execute(
                 f'UPDATE "{schema}".jobs SET scheduled_at = '
                 "clock_timestamp() - interval '1 second' WHERE id = $1",
@@ -514,7 +514,7 @@ async def test_isolate_self_records_no_attempt_row_for_a_refunded_epoch(
             )
             assert applied is True
 
-            # 6. THE SOAK'S EXACT INVARIANT.
+            # 6. the soak's exact invariant.
             lineage = await conn.fetchrow(
                 f"SELECT j.attempt, "
                 f'(SELECT count(*)::int FROM "{schema}".job_attempts a '
@@ -537,19 +537,19 @@ async def test_isolate_self_records_no_attempt_row_for_a_refunded_epoch(
 async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_window(
     pg_dsn: str,
 ) -> None:
-    """THE CI INTERLEAVING, frozen: the refund commits BETWEEN the
+    """The CI interleaving, frozen: the refund commits BETWEEN the
     isolate's SELECT and its arbiter UPDATE. The SELECT takes no row
     lock, so the reconcile's refund (the same worker's heartbeat pool,
     the shutdown drain's refund arm) serialises right there; the
     unguarded arbiter - fenced on (id, running, holder), every conjunct of
     which the refund leaves TRUE - then won the transition on the
     de-charged row and the INSERT minted the SNAPSHOT's epoch (attempt 1,
-    stamped) AFTER the refund rolled the counter to 0. The next claim
+    stamped) after the refund rolled the counter to 0. The next claim
     re-mints the number and the lineage closes with more rows than the
     counter: the soak's red.
 
     Frozen with a held row lock: the holder's uncommitted FOR UPDATE
-    parks the arbiter AFTER the snapshot is taken; the refund commits
+    parks the arbiter after the snapshot is taken; the refund commits
     inside that window; the COMMIT releases the arbiter onto the REFUNDED
     row version. The arbiter's RETURNING exposes the un-stamped
     row and no attempt row is recorded; a fence that read the SNAPSHOT
@@ -573,7 +573,7 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
             await _age_started_at(conn, schema, job_id)
 
             # 2. The snapshot, taken exactly as _inner takes it (the real
-            #    rendered SELECT): attempt 1, stamp PRESENT - the stale view
+            #    rendered SELECT): attempt 1, stamp present - the stale view
             #    the unguarded INSERT bound.
             snapshot = await conn.fetch(
                 _SELECT_RUNNING_JOBS_SQL_TEMPLATE.format(schema=schema),
@@ -587,11 +587,11 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
             )
 
             # 3. Freeze the window: the holder parks the job row's lock
-            #    uncommitted, the REAL isolate_self runs - its SELECT sees
-            #    the stamped row, its arbiter PARKS on the holder's lock.
+            #    uncommitted, the real isolate_self runs - its SELECT sees
+            #    the stamped row, its arbiter parks on the holder's lock.
             await holder.execute("BEGIN")
             await holder.execute(f'SELECT id FROM "{schema}".jobs WHERE id = $1 FOR UPDATE', job_id)
-            # The holder's own xid, read INSIDE the locking transaction:
+            # The holder's own xid, read inside the locking transaction:
             # FOR UPDATE stamps the tuple's xmax with it, so the parked
             # arbiter's queue entry (a transactionid lock on exactly this
             # xid) is the keyed poll's subject. The read allocates nothing
@@ -616,12 +616,12 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
                     "fixture broken: the reconcile must refund the lost claim"
                 )
             finally:
-                # 5. Release the arbiter onto the REFUNDED row version.
+                # 5. Release the arbiter onto the refunded row version.
                 await holder.execute("COMMIT")
 
             await asyncio.wait_for(isolate_task, timeout=30.0)
 
-            # 6. THE FENCE: the arbiter won (the re-pend stands - sweep
+            # 6. the fence: the arbiter won (the re-pend stands - sweep
             #    parity), but the attempt INSERT read the RETURNING - the
             #    refunded, un-stamped row - and recorded NOTHING. Unguarded
             #    the phantom (job, 1, 'crashed') stands here: the snapshot's
@@ -644,7 +644,7 @@ async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_wi
             assert events == 1, "the reclaim event lands either way - audited"
 
             # 7. Closure at the soak's exact invariant: the re-claim visits
-            #    the refunded number, the terminal write lands the ONE row.
+            #    the refunded number, the terminal write lands the one row.
             await conn.execute(
                 f'UPDATE "{schema}".jobs SET scheduled_at = '
                 "clock_timestamp() - interval '1 second' WHERE id = $1",

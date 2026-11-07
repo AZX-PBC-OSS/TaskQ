@@ -39,7 +39,7 @@ async def test_lock_contention_raises_instead_of_blocking_forever(pg_dsn: str) -
         await holder.execute(
             "SELECT pg_advisory_lock(hashtextextended($1, 0))",
             migrate_mod.migration_lock_name("lock_contention_test"),
-        )  # Why: pinning the exact key the migrator uses for THIS schema.
+        )  # Why: pinning the exact key the migrator uses for this schema.
 
         async with asyncio.timeout(20):
             with pytest.raises(SystemExit) as excinfo:

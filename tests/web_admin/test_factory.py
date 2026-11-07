@@ -160,7 +160,7 @@ def test_no_auth_dependency_routes_are_accessible(
     assert response.status_code == 302  # pyright: ignore[reportUnknownVariableType]
 
 
-# ── : WARNING when no auth in non-dev environment ──────────────────
+# ── : warning when no auth in non-dev environment ──────────────────
 
 
 def test_warning_logged_when_no_auth_non_dev(
@@ -487,13 +487,13 @@ def test_create_router_warns_once_when_auth_dependency_lacks_verifier(
 
     The fallback is honest on both ends: ``bundle.session_verifier`` is None
     (streams authenticate once -- we cannot safely re-invoke a dependency
-    that may need FastAPI DI) AND a one-per-router startup warning fires.
+    that may need FastAPI DI) and a one-per-router startup warning fires.
     Cardinality pinned: exactly one warning per create_router call, not one
     per request.
     """
 
     async def third_party_dep(request: Any) -> dict[str, str]:
-        # Realistic host shape: a plain closure over DI, no session_verifier.
+        # Realistic host shape: a plain closure over di, no session_verifier.
         return {"sub": "ops"}
 
     bundle = create_router(stub_pool, auth_dependency=third_party_dep)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.

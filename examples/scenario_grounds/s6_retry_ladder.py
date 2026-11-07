@@ -35,7 +35,7 @@ SCHEMA = "grounds_s6"
 #: The ladder's curve: the wait after failure N is 0.05 x 2^N seconds.
 CURVE_S = {1: 0.05, 2: 0.10}
 
-#: The reading margins: the stamp IS the applied value (written in the
+#: The reading margins: the stamp is the applied value (written in the
 #: re-pend's own statement), so the bounds are the curve's own truth
 #: with a hair of slack for the jsonb round-trip.
 LOWER_MARGIN_S = 0.02

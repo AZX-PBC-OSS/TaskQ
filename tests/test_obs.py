@@ -7,7 +7,13 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader, NumberDataPoi
 
 import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
-from taskq.testing.otel import collect_metrics, counter_data_points, counter_value, setup_tracer
+from taskq.testing.otel import (
+    collect_metrics,
+    counter_data_points,
+    counter_value,
+    histogram_points,
+    setup_tracer,
+)
 
 
 @pytest.fixture
@@ -227,10 +233,19 @@ def test_record_lock_expires_in_seconds(otel_reader: InMemoryMetricReader) -> No
     assert "taskq.lock.expires_in_seconds" in names
 
 
-def test_record_lock_expires_in_seconds_disabled() -> None:
+def test_record_lock_expires_in_seconds_disabled(otel_reader: InMemoryMetricReader) -> None:
+    """The disabled contract is a no-op: the instrument stays untouched
+    while disabled, and the +1 enabled control proves the reader was live
+    (an earlier shape of this test called the emitter and asserted
+    nothing, so a regression that recorded while disabled passed
+    vacuously)."""
     otel_mod.set_otel_enabled(False)
     obs_mod.record_lock_expires_in_seconds("worker-1", 30.0)
     otel_mod.set_otel_enabled(True)
+    assert histogram_points(otel_reader, "taskq.lock.expires_in_seconds") == []
+
+    obs_mod.record_lock_expires_in_seconds("worker-1", 30.0)
+    assert len(histogram_points(otel_reader, "taskq.lock.expires_in_seconds")) == 1
 
 
 # ── instrument 7: taskq.heartbeat.misses ──────────────────────────────────
@@ -245,10 +260,16 @@ def test_record_heartbeat_miss(otel_reader: InMemoryMetricReader) -> None:
     assert dps[0].attributes == {}
 
 
-def test_record_heartbeat_miss_disabled() -> None:
+def test_record_heartbeat_miss_disabled(otel_reader: InMemoryMetricReader) -> None:
+    """The disabled contract is a no-op (see the cron twin for the shape):
+    delta 0 while disabled, +1 enabled as the live-reader control."""
     otel_mod.set_otel_enabled(False)
     obs_mod.record_heartbeat_miss("worker-1")
     otel_mod.set_otel_enabled(True)
+    assert counter_data_points(otel_reader, "taskq.heartbeat.misses") == []
+
+    obs_mod.record_heartbeat_miss("worker-1")
+    assert counter_value(otel_reader, "taskq.heartbeat.misses") == 1
 
 
 # ── instrument 5: taskq.queue.depth ───────────────────────────────────────
@@ -293,10 +314,18 @@ def test_record_slot_pool_acquire_failure_fires_on_failure_path(
     assert all(dict(p.attributes or {}) == {"error_type": "TimeoutError"} for p in points)
 
 
-def test_record_slot_pool_acquire_failure_disabled() -> None:
+def test_record_slot_pool_acquire_failure_disabled(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """The disabled contract is a no-op (see the cron twin for the shape):
+    delta 0 while disabled, +1 enabled as the live-reader control."""
     otel_mod.set_otel_enabled(False)
     obs_mod.record_slot_pool_acquire_failure()
     otel_mod.set_otel_enabled(True)
+    assert counter_data_points(otel_reader, "taskq.worker.slot_pool.acquire_failures") == []
+
+    obs_mod.record_slot_pool_acquire_failure()
+    assert counter_value(otel_reader, "taskq.worker.slot_pool.acquire_failures") == 1
 
 
 def test_slot_pool_occupancy_gauge_reads_held_connections(
@@ -346,7 +375,7 @@ def test_slot_pool_occupancy_gauge_tolerates_a_broken_pool_source() -> None:
 
 
 def test_slot_pool_occupancy_gauge_is_label_free() -> None:
-    """``taskq.worker.slot_pool.connections_in_use`` carries NO dimensions -
+    """``taskq.worker.slot_pool.connections_in_use`` carries no dimensions -
     a single process-level number. The pool is named in the instrument and
     there is exactly one per worker process; adding a dimension here (the
     worker_id temptation especially - a fresh UUID per process on
@@ -407,10 +436,16 @@ def test_record_dispatch_failure_error_type_resolution_contract(
     assert by_error_type == {"TimeoutError": 1, "unknown": 1}
 
 
-def test_record_dispatch_failure_disabled() -> None:
+def test_record_dispatch_failure_disabled(otel_reader: InMemoryMetricReader) -> None:
+    """The disabled contract is a no-op (see the cron twin for the shape):
+    delta 0 while disabled, +1 enabled as the live-reader control."""
     otel_mod.set_otel_enabled(False)
     obs_mod.record_dispatch_failure("default")
     otel_mod.set_otel_enabled(True)
+    assert counter_data_points(otel_reader, "taskq.dispatch.failures") == []
+
+    obs_mod.record_dispatch_failure("default")
+    assert counter_value(otel_reader, "taskq.dispatch.failures") == 1
 
 
 # ── instrument 12: taskq.progress.publish_failures ────────────────────────
@@ -422,10 +457,18 @@ def test_record_progress_publish_failure(otel_reader: InMemoryMetricReader) -> N
     assert counter_value(otel_reader, "taskq.progress.publish_failures") == 1
 
 
-def test_record_progress_publish_failure_disabled() -> None:
+def test_record_progress_publish_failure_disabled(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """The disabled contract is a no-op (see the cron twin for the shape):
+    delta 0 while disabled, +1 enabled as the live-reader control."""
     otel_mod.set_otel_enabled(False)
     obs_mod.record_progress_publish_failure(channel="per_job", error_type="ConnectionError")
     otel_mod.set_otel_enabled(True)
+    assert counter_data_points(otel_reader, "taskq.progress.publish_failures") == []
+
+    obs_mod.record_progress_publish_failure(channel="per_job", error_type="ConnectionError")
+    assert counter_value(otel_reader, "taskq.progress.publish_failures") == 1
 
 
 # ── instrument 13: taskq.ratelimit.refund_failures ────────────────────────
@@ -444,10 +487,18 @@ def test_record_ratelimit_refund_failure(otel_reader: InMemoryMetricReader) -> N
     }
 
 
-def test_record_ratelimit_refund_failure_disabled() -> None:
+def test_record_ratelimit_refund_failure_disabled(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """The disabled contract is a no-op (see the cron twin for the shape):
+    delta 0 while disabled, +1 enabled as the live-reader control."""
     otel_mod.set_otel_enabled(False)
     obs_mod.record_ratelimit_refund_failure("my_bucket", "redis")
     otel_mod.set_otel_enabled(True)
+    assert counter_data_points(otel_reader, "taskq.ratelimit.refund_failures") == []
+
+    obs_mod.record_ratelimit_refund_failure("my_bucket", "redis")
+    assert counter_value(otel_reader, "taskq.ratelimit.refund_failures") == 1
 
 
 def test_record_ratelimit_refund_failure_bucket_label_capped(
@@ -552,10 +603,18 @@ def test_record_election_attempt_loss(otel_reader: InMemoryMetricReader) -> None
     assert failure_dps[0].value == 1
 
 
-def test_record_election_attempt_disabled() -> None:
+def test_record_election_attempt_disabled(otel_reader: InMemoryMetricReader) -> None:
+    """The disabled contract is a no-op (see the cron twin for the shape):
+    delta 0 on both election instruments while disabled, +1 enabled as the
+    live-reader control."""
     otel_mod.set_otel_enabled(False)
     obs_mod.record_election_attempt("worker-1", won=True)
     otel_mod.set_otel_enabled(True)
+    assert counter_data_points(otel_reader, "taskq.leader.election_attempts") == []
+    assert counter_data_points(otel_reader, "taskq.leader.election_failures") == []
+
+    obs_mod.record_election_attempt("worker-1", won=True)
+    assert counter_value(otel_reader, "taskq.leader.election_attempts") == 1
 
 
 # ── instrument 16: taskq.cron.consecutive_failures ─────────────────────────
@@ -609,6 +668,12 @@ def test_record_cron_failure_disabled(otel_reader: InMemoryMetricReader) -> None
     otel_mod.set_otel_enabled(True)
 
     assert counter_data_points(otel_reader, "taskq.cron.consecutive_failures") == []
+
+    # The enabled control: the same emitter, one call later, lands the
+    # +1 - proof the reader was live and the empty delta above was the
+    # disabled contract, not a dead reader (the vacuous direction).
+    obs_mod.record_cron_failure("actor-1", 1)
+    assert counter_value(otel_reader, "taskq.cron.consecutive_failures") == 1
 
 
 # ── instrument 17: taskq.cron.disabled_schedules ──────────────────────────
@@ -722,7 +787,7 @@ class _StubCounter:
 
 
 def test_get_meter_is_memoized() -> None:
-    """``get_meter`` must hand back ONE meter object for the process.
+    """``get_meter`` must hand back one meter object for the process.
 
     With no SDK installed (the default deployment - taskq never installs
     a MeterProvider), ``metrics.get_meter`` mints a fresh ``_ProxyMeter``
@@ -744,7 +809,7 @@ def test_get_meter_is_memoized() -> None:
 def test_lazy_recorder_memoizes_its_instrument_per_meter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A lazy recorder called N times must mint its counter ONCE, keyed on
+    """A lazy recorder called N times must mint its counter once, keyed on
     the CURRENT meter.
 
     The lazy recorders resolve their instrument at call time (see

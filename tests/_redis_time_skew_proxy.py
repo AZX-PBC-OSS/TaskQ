@@ -1,4 +1,4 @@
-"""A TCP proxy that shifts the Redis server's clock for ONE client.
+"""A TCP proxy that shifts the Redis server's clock for one client.
 
 The wire-level twin of :class:`tests._clock_skew.SkewedClock`: where
 ``SkewedClock`` offsets the injected Python clock, this proxy offsets the
@@ -10,7 +10,7 @@ What it can and cannot skew (this bounds what a test may claim):
 * CAN skew: the client-visible ``TIME`` reply -- the only store clock the
   non-script paths read (``taskq.ratelimit._redis_utils.redis_time_seconds``,
   the three peek paths).
-* CANNOT skew: ``redis.call('TIME')`` executed INSIDE a Lua script -- that
+* CANNOT skew: ``redis.call('TIME')`` executed inside a Lua script -- that
   runs on the server against the server's own clock and never touches the
   wire. The acquire scripts therefore always measure with the real server
   clock through the proxy, which is exactly the property the crossing pins
@@ -219,7 +219,7 @@ class _ConnectionPipe:
         self._client_writer = client_writer
         self._upstream_reader, self._upstream_writer = upstream
         self._skew_seconds = skew_seconds
-        self._pending: deque[bool] = deque()  # True when that reply belongs to TIME
+        self._pending: deque[bool] = deque()  # True when that reply belongs to time
 
     async def run(self) -> None:
         c2s = asyncio.create_task(self._pipe_client_to_server())
@@ -237,8 +237,8 @@ class _ConnectionPipe:
                     await writer.wait_closed()
 
     async def _pipe_client_to_server(self) -> None:
-        # Requests always pass through untouched; the parse only TAGS
-        # which requests are TIME so the reply pipe knows what to skew.
+        # Requests always pass through untouched; the parse only tags
+        # which requests are time so the reply pipe knows what to skew.
         parse_buf = bytearray()
         while True:
             chunk = await self._client_reader.read(65536)
@@ -275,7 +275,7 @@ class _ConnectionPipe:
                 raw = bytes(buf[:consumed])
                 del buf[:consumed]
                 if reply.kind == ">":
-                    # RESP3 out-of-band PUSH (the maintenance-notification
+                    # RESP3 out-of-band push (the maintenance-notification
                     # channel a redis-py 8.x pool enables on every live
                     # connection): not a reply to any queued request, so
                     # it must not consume a marker.
@@ -283,7 +283,7 @@ class _ConnectionPipe:
                     await self._client_writer.drain()
                     continue
                 # One reply per request, in order: every parsed reply pops
-                # its request's marker, TIME or not.
+                # its request's marker, time or not.
                 is_time = self._pending.popleft() if self._pending else False
                 if is_time and _is_time_reply_shape(reply):
                     self._client_writer.write(
@@ -340,7 +340,7 @@ class RedisTimeSkewProxy:
     def url(self) -> str:
         """A redis:// URL pointing at the skewed listener, same db as the
         upstream URL the caller passed (a proxied client must land in the
-        SAME database as the direct one, or the pins measure nothing)."""
+        same database as the direct one, or the pins measure nothing)."""
         return f"redis://{self._host}:{self._port}/{self._upstream_db}"
 
     def _accept(

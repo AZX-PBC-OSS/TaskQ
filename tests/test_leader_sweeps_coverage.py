@@ -264,7 +264,7 @@ async def test_sweep_loop_not_implemented_warns_only_once() -> None:
     backend = _NotImplBackend()
     # Short interval so several iterations actually run - with the default
     # 30s interval only one iteration fits in any bounded window and the
-    # "only once ACROSS iterations" pin would pass vacuously.
+    # "only once across iterations" pin would pass vacuously.
     leader = _make_leader(backend=backend, deps=_make_deps(is_leader=True, sweep_interval=0.01))
     shutdown = asyncio.Event()
     # Patch the module-level _err to count calls.
@@ -296,7 +296,7 @@ async def test_sweep_loop_backstop_tolerates_then_goes_fatal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Behavioral: a non-transient sweep error (a bug shape - e.g. the
-    constraint-violation class that used to crash the reclaim sweep) is
+    constraint-violation class that crashes the reclaim sweep unguarded) is
     ridden out loudly for a few consecutive iterations, then the loop dies
     deliberately: never an instant silent leader teardown (which leaves
     the cluster with no sweeper and orphans 'running' forever), never an
@@ -381,7 +381,7 @@ async def test_sweep_loop_mixed_fault_iteration_does_not_reset_streak() -> None:
     """Only a fully clean iteration resets the unexpected-error streak.
 
     An iteration that partially succeeds - reclaim clean while
-    ``deadline_sweep`` transiently fails - must NOT reset the guard's
+    ``deadline_sweep`` transiently fails - must not reset the guard's
     streak: every except clause in the work block clears
     ``iteration_clean`` precisely so a transient failure cannot buy an
     unexpected fault more time (a reset would let a persistent bug ride
@@ -500,7 +500,7 @@ async def test_sweep_loop_runs_pg_sweep_block() -> None:
     leader = _make_leader(backend=backend, deps=_make_deps(dispatcher_pool=pool, is_leader=True))
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
-    # Wait for both sweeps' initial call AND their drain-stopping call (the
+    # Wait for both sweeps' initial call and their drain-stopping call (the
     # fakes report a non-empty batch, then an empty window), so the call
     # counts are read after the drains have deterministically stopped.
     await wait_for_condition(
@@ -575,7 +575,7 @@ async def test_sweep_loop_results_error_continues_to_stale_workers() -> None:
 async def test_sweep_loop_drains_reclaim_and_deadline_within_one_tick() -> None:
     """The incident sites' drain wiring: when sweep 1 (expired-locks
     reclaim) or sweep 2 (deadline) returns a non-empty bounded batch, the
-    loop must call it again WITHIN THE SAME TICK - the shared
+    loop must call it again WITHIN the same TICK - the shared
     ``_drain_bounded`` helper is unit-tested, and the results sweep's
     wiring is loop-tested, but the ``rows_1``/``rows_2`` call sites are
     the ones the livelock lived on.  A scripted backend returning 3-then-0
@@ -599,7 +599,7 @@ async def test_sweep_loop_drains_reclaim_and_deadline_within_one_tick() -> None:
             return 2 if self.deadline_calls == 1 else 0
 
     backend = _DrainScriptBackend()
-    # A long interval so that a second TICK cannot be the source of the
+    # A long interval so that a second tick cannot be the source of the
     # second call: two calls before the interval elapses can only be the
     # initial bounded call plus the drain.
     leader = _make_leader(backend=backend, deps=_make_deps(is_leader=True, sweep_interval=60.0))
@@ -631,7 +631,7 @@ async def test_sweep_loop_stale_workers_drain_engages_and_respects_the_tick_cap(
     Sweeps 1/2 and the results sweep have loop-level drain tests; the
     stale-workers site - the one that matters in a whole-fleet crash - did
     not.  A conn whose every DELETE reports 2 rows keeps the stale set
-    non-empty, so the drain must re-invoke the sweep within the SAME tick
+    non-empty, so the drain must re-invoke the sweep within the same tick
     and stop at the per-tick cap: exactly ``sweep_drain_batches`` calls
     (1 initial + 7 drain), never one batch per ``sweep_interval``."""
     backend = _PgSweepBackend()
@@ -801,7 +801,7 @@ async def test_queue_depth_loop_invalid_schema_returns_early() -> None:
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._queue_depth_loop(shutdown))
     # The loop returns before ever entering its while body - awaiting the
-    # task IS the bounded wait for that return (a bare sleep + done-assert
+    # task is the bounded wait for that return (a bare sleep + done-assert
     # races under load and would pass even if the loop died of an error).
     await asyncio.wait_for(task, timeout=2.0)
 
@@ -879,7 +879,7 @@ async def test_reservation_slots_loop_invalid_schema_returns_early() -> None:
     leader._deps.settings.schema_name = "bad;schema"  # type: ignore[reportPrivateUsage]  # Why: test mutates the deps the leader was constructed with.
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._reservation_slots_loop(shutdown))
-    # Awaiting the task IS the bounded wait for its immediate return.
+    # Awaiting the task is the bounded wait for its immediate return.
     await asyncio.wait_for(task, timeout=2.0)
 
 
@@ -913,7 +913,7 @@ async def test_stranded_jobs_loop_invalid_schema_returns_early() -> None:
     leader._deps.settings.schema_name = "bad;schema"  # type: ignore[reportPrivateUsage]  # Why: test mutates the deps the leader was constructed with.
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._stranded_jobs_loop(shutdown))
-    # Awaiting the task IS the bounded wait for its immediate return.
+    # Awaiting the task is the bounded wait for its immediate return.
     await asyncio.wait_for(task, timeout=2.0)
 
 
@@ -1006,7 +1006,7 @@ async def test_stranded_jobs_loop_skips_when_not_leader(monkeypatch: Any) -> Non
 
     import taskq.worker._leader_sweeps as sweeps_mod
 
-    # Patch where the name is LOOKED UP - the sweeps module's own ``asyncio``
+    # Patch where the name is looked up - the sweeps module's own ``asyncio``
     # binding - so the test's own real `asyncio.sleep(0.05)` quiescence wait
     # below keeps its real timing instead of collapsing into the fake
     # (tests/_ns_patch.py).
@@ -1053,13 +1053,32 @@ async def test_loop_interval_sleep_is_shutdown_interruptible(
         clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
         worker_id=new_uuid(),
     )
-    shutdown = asyncio.Event()
+
+    class _WitnessedShutdown(asyncio.Event):
+        """Reports the park: *parked* sets the moment a waiter enters
+        ``wait()`` — the loop's own ``shutdown.wait()`` is the witness that
+        it reached the interval sleep, no fixed sleep-and-hope."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.parked = asyncio.Event()
+
+        async def wait(self) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]  # Why: the witness's wait returns whatever super() hands back; the override exists only to set the park witness.
+            self.parked.set()
+            return await super().wait()
+
+    shutdown = _WitnessedShutdown()
     loop_fn = getattr(_leader_sweeps, loop_name)
 
     task = asyncio.create_task(loop_fn(ctx, shutdown))
-    await asyncio.sleep(0.05)  # Let the loop reach its interval sleep.
+    # The parked-event witness: the loop is inside the interval wait.
+    await wait_for_condition(
+        shutdown.parked.is_set,
+        description="the loop must reach its interval park before shutdown",
+    )
     shutdown.set()
-    # Must return promptly - unguarded this sleeps the full 3600s.
+    # The shutdown-exit assert: must return promptly - unguarded this
+    # sleeps the full 3600s.
     await asyncio.wait_for(task, timeout=2.0)
 
 
@@ -1122,12 +1141,12 @@ async def test_sweep_loop_survives_transient_pg_errors() -> None:
 
 # ── _stranded_jobs_loop: repeat visibility (regression) ────────────────────
 #
-# The detector exists to catch jobs that can NEVER be dispatched: the dispatch
+# The detector exists to catch jobs that can never be dispatched: the dispatch
 # CTE derives candidates from `per_actor_capacity`, which is
 # `FROM actor_config`, so a job whose actor has no row there is stranded
 # forever. It warned exactly once per actor per process lifetime, from a
 # `warned: set[str]` that was only ever added to, and emitted no metric. An
-# operator got one WARN line at onset -- the moment nobody is looking -- and
+# operator got one warn line at onset -- the moment nobody is looking -- and
 # nothing thereafter, while the backlog grew unboundedly.
 
 
@@ -1139,7 +1158,7 @@ async def _run_stranded_loop_collecting(
     """Drive the loop over a scripted sequence of query results.
 
     Row shape mirrors the detector SQL's per-shape breakdown (see
-    ``_stranded_row`` below); the spies collect BOTH strand events, so a
+    ``_stranded_row`` below); the spies collect both strand events, so a
     test pins which shape warned, not just that something did.
     """
     import taskq.worker._leader_sweeps as sweeps_mod
@@ -1228,7 +1247,7 @@ async def test_stranded_jobs_rewarns_when_the_backlog_grows() -> None:
     counts = [w["pending_count"] for w in warnings]
     assert 5 in counts, "onset must warn"
     assert 50 in counts, "growth must re-warn -- unguarded this is silent forever"
-    # The unchanged middle tick must NOT re-warn (that would be per-tick noise).
+    # The unchanged middle tick must not re-warn (that would be per-tick noise).
     assert counts.count(5) == 1
 
 
@@ -1251,12 +1270,12 @@ async def test_stranded_jobs_clears_and_rewarns_on_recurrence() -> None:
 
 # ── _stranded_jobs_loop: the unserved-queue strand shape ──────────────────
 #
-# A pending row WITH an actor_config row on a queue no worker serves is as
+# A pending row with an actor_config row on a queue no worker serves is as
 # permanently undispatchable as the no-actor_config shape: dispatch probes
 # only the queues in a worker's subscription (the candidates lateral
 # annihilates every other pair), and with no schedule_to_close the deadline
 # sweep cannot fail the row either. The gauge must carry it, and its warning
-# must say WHICH condition held - an operator who sees a no-actor-config
+# must say which condition held - an operator who sees a no-actor-config
 # event and finds the actor_config row present concludes the detector lies,
 # which is the exact failure a per-shape event prevents.
 
@@ -1285,7 +1304,7 @@ async def test_stranded_jobs_unserved_queue_shape_counts_in_gauge_and_names_queu
 
 async def test_stranded_jobs_both_shapes_on_one_actor_fire_both_events() -> None:
     """An actor reported under both reasons publishes one gauge series per
-    reason and fires BOTH events - each names its own condition and its
+    reason and fires both events - each names its own condition and its
     own count. (The detector SQL makes the two shapes exclusive per row;
     per actor they can coexist across rows.)"""
     warnings, gauges = await _run_stranded_loop_collecting(
@@ -1343,7 +1362,7 @@ async def test_stranded_jobs_detector_disabled_logs_at_error() -> None:
     try:
         shutdown = asyncio.Event()
         task = asyncio.create_task(leader._stranded_jobs_loop(shutdown))
-        # Awaiting the task IS the bounded wait for its immediate return
+        # Awaiting the task is the bounded wait for its immediate return
         # (the disabled detector returns before entering its while body).
         await asyncio.wait_for(task, timeout=2.0)
     finally:
@@ -1442,7 +1461,7 @@ def test_sweep_loop_acquire_calls_pass_timeout_ast() -> None:
     physical line and would silently stop catching violations the moment
     a call was wrapped onto multiple lines (as every current call site
     already is). It exists alongside the behavioural test above because a
-    behavioural test only proves ONE call site is guarded; a future call
+    behavioural test only proves one call site is guarded; a future call
     site added without ``timeout=`` would hang just the same, and this
     catches that shape mechanically across every loop in the module
     without needing a dedicated behavioural test per call site.

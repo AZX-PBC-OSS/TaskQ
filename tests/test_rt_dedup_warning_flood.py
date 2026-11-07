@@ -27,17 +27,17 @@ from taskq.testing.fixtures import JobsApp
 
 pytestmark = pytest.mark.integration
 
-#: The batch size at which a per-item WARNING stops being a signal and
+#: The batch size at which a per-item warning stops being a signal and
 #: becomes channel noise an operator mutes - the claim's own scale.
 _FLOOD_N = 1000
 
 #: How many seeded targets are driven terminal before the attack batch:
-#: the WARNING-arm share of the flood. The rest stay pending, so the
-#: same batch also exercises the INFO per-hit arm at full scale.
+#: the warning-arm share of the flood. The rest stay pending, so the
+#: same batch also exercises the info per-hit arm at full scale.
 _TERMINAL_N = 500
 
 #: The bound the intended contract demands. The house precedent
-#: (one WARNING per window per error type) lands at 1; a per-batch
+#: (one warning per window per error type) lands at 1; a per-batch
 #: summary line lands at 1; 5 leaves headroom for either shape while
 #: staying a small constant - and stays falsified by any per-item
 #: emission at the seeded scale.

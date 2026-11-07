@@ -1,13 +1,13 @@
-"""THE PACKAGED RUN (the consumer report's ergonomic door — the
+"""the PACKAGED RUN (the consumer report's ergonomic door — the
 create-seam fix 4): ``taskq.workflows.run(flow, pool, schema,
-input=…, key=…)`` — the ONE-CALL surface that packages
+input=…, key=…)`` — the one-CALL surface that packages
 :meth:`FlowRunner.create_flow` + :meth:`FlowRunner.drive` (+ the decoded
 result read). The docs' pre-fix text taught
-``workflows.run(flow, input, key=…)`` — AN API THAT DID NOT EXIST (the
+``workflows.run(flow, input, key=…)`` — AN API THAT DID not EXIST (the
 doc lie). This is the REAL surface the docs now teach, and the pin runs
 it end to end.
 
-THE HONEST CLAIM RIDES IT: the returned :class:`WorkflowRunResult`
+The returned :class:`WorkflowRunResult`
 carries the typed :class:`~taskq.workflows.ledger.RunClaim` — ``created``
 / ``existing-running`` / ``existing-terminal`` — so a caller (the demo's
 trigger, a cron fire) states the 202-vs-409 distinction from the CLAIM,
@@ -40,7 +40,7 @@ from taskq.workflows._obs import (
     run_span_name,
 )
 from taskq.workflows.api._app import CompiledWorkflow
-from taskq.workflows.api._runner import FlowRunner
+from taskq.workflows.api._runner import FlowRunner, WorkflowRunError
 from taskq.workflows.ledger import RunClaim
 
 __all__ = ["WorkflowRunResult", "run"]
@@ -76,13 +76,14 @@ async def run(
     *,
     input: object = None,
     key: str | None = None,
+    run_key: str | None = None,
     until: Literal["terminal", "held"] = "terminal",
     max_ticks: int = 5000,
     execute: bool = True,
     deps: object | None = None,
     priority: int | None = None,
 ) -> WorkflowRunResult:
-    """THE ONE-CALL RUN: create the run (the typed claim — *key* is the
+    """Create the run (the typed claim — *key* is the
     run key, the G2 arbiter's rememberer), drive it to ``until``
     (``"terminal"`` by default; ``"held"`` stops at the human gate), and
     return the claim + the drive's outcome + the decoded result.
@@ -93,13 +94,13 @@ async def run(
     driver); ``execute=False`` is the orchestration-only pass — the
     fleet's workers execute the rows through the queue.
 
-    *deps* is THE DEPS SEAM'S binding (the DI capability): ``None`` (the
-    default) rides the compiled's own binding — the app's ONE instance,
+    *deps* is the DEPS SEAM'S binding (the DI capability): ``None`` (the
+    default) rides the compiled's own binding — the app's one instance,
     bound at ``WorkflowApp(deps=…)``; an explicit *deps* is the direct
     door's override (the runner-side binding upgrades the validation's
     view — the E12 contract reads the effective binding).
 
-    THE RUN SPAN: this door is the RUN span's owner (``run {workflow}``
+    This door is the RUN span's owner (``run {workflow}``
     — a root linked to the ambient trace, ended at the drive's stop;
     the contract and the attribute set in ``workflows/_obs.py``). The
     in-process drive's step executions are the span's children; a
@@ -107,7 +108,7 @@ async def run(
     correlated by the ``taskq.flow_id`` attribute. Telemetry off → no
     spans, the run unchanged.
 
-    *priority* is THE PER-CALL OVERRIDE (the priority surface — the
+    *priority* is the PER-CALL OVERRIDE (the priority surface — the
     enqueue-time face the vanilla ``enqueue(priority=…)`` always had):
     the run's rows land at the value in the ``jobs.priority`` column —
     the dispatch claim's ``priority DESC`` (the same ORDER BY the
@@ -122,15 +123,18 @@ async def run(
 
     if priority is not None:
         check_priority_domain(priority, what="the run's priority override")
+        # ``key=``; ``run_key=`` rides as the alias.
+    if key is None:
+        key = run_key
+    elif run_key is not None and run_key != key:
+        raise ValueError("run(): key= and run_key= are both given and disagree — pass key= only")
     runner = FlowRunner(flow, pool, schema, deps=deps if deps is not None else flow.deps)
-    # THE RUN SPAN (the wf's own face of the vanilla obs law — the
-    # contract lives in ``workflows/_obs.py``): a ROOT (``new_root=True``,
-    # the producer-link pattern — linked, never parented, to the ambient
-    # trace), created at the flow's FIRST claim — the run-key claim below
-    # rides the span — and ended at the run's terminal (the drive's
-    # stop). Telemetry off → the attributes' only reader is the span, so
-    # nothing is built (the vanilla's gated-allocation law) and the span
-    # is the non-recording no-op.
+    # a root (``new_root=True``, the producer-link pattern — linked, never
+    # parented, to the ambient trace), created at the flow's first claim — the
+    # run-key claim below rides the span — and ended at the run's terminal (the
+    # drive's stop). Telemetry off → the attributes' only reader is the span,
+    # so nothing is built (the vanilla's gated-allocation law) and the span is
+    # the non-recording no-op.
     current_span = trace.get_current_span()
     current_ctx = current_span.get_span_context()
     links = [trace.Link(current_ctx)] if current_ctx.is_valid else None
@@ -144,31 +148,45 @@ async def run(
         try:
             claim = await runner.create_flow(input=input, run_key=key, priority=priority)
         except asyncpg.exceptions.UndefinedTableError as exc:
-            # THE FIRST CONTACT'S TRANSLATION (the teardown fix):
-            # the packaged run on an unmigrated schema was the RAW driver
-            # traceback; the client arm's typed SchemaNotMigratedError names
+            # The first contact's translation: an unmigrated schema
+            # raises the client arm's typed SchemaNotMigratedError, which
+            # names
             # the remedy (the setup defect is actionable, not a raw
-            # asyncpg face) — the packaged door now uses it too, the
-            # original chained via __cause__.
+            # asyncpg face) — the original chained via __cause__.
             raise SchemaNotMigratedError(schema) from exc
         record_run_started(run_span, str(claim.flow_id))
-        outcome_raw = await runner.drive(
-            claim.flow_id, until=until, max_ticks=max_ticks, execute=execute
-        )
-        # The drive's label vocabulary IS the Literal (terminal/held/max_ticks —
+        try:
+            outcome_raw = await runner.drive(
+                claim.flow_id, until=until, max_ticks=max_ticks, execute=execute
+            )
+        except WorkflowRunError as exc:
+            # the replay's verdict rides the error — the replay face only: a
+            # terminal run's key replay re-raises the prior run's error at the
+            # read face, and the claim verdict attached tells the caller this
+            # raise is the refused-to-reuse face (existing-terminal), not a
+            # fresh failure. A first run's failure carries no verdict (the
+            # class contract: None on every raise that is not the replay face).
+            if claim.kind == "existing-terminal":
+                exc.claim_verdict = claim.kind
+            raise
+        # The drive's label vocabulary is the Literal (terminal/held/max_ticks —
         # drive's own docstring); the cast names the boundary, never a lie.
         outcome = cast("Literal['terminal', 'held', 'max_ticks']", outcome_raw)
-        # THE TERMINAL'S TRUTH ON THE SPAN (gated — its only reader is the
-        # span): the drive's label says the run terminalized, not WHICH
-        # verdict the root row carries; one bounded primary-key read (the
-        # same read the drive's own loop polled every tick) names it. A
-        # held or max_ticks stop is not a terminal — nothing is read, the
-        # outcome attribute below is the drive's own label.
+        # gated — its only reader is the span. the drive's label says the run
+        # terminalized, not which verdict the root row carries; one bounded
+        # primary-key read (the same read the drive's own loop polled every
+        # tick) names it. A held or max_ticks stop is not a terminal — nothing
+        # is read, the outcome attribute below is the drive's own label.
         if outcome == "terminal" and run_span.is_recording():
             terminal_state = await runner._flow_status(claim.flow_id)  # pyright: ignore[reportPrivateUsage]  # Why: the runner's own status read — the private seam is this package's, and the span's terminal verdict is the read's only consumer (the gated-allocation law).
             record_run_terminal(run_span, terminal_state)
         run_span.set_attribute("taskq.outcome", outcome)
         result: object | None = None
         if outcome == "terminal" and flow.terminal is not None:
-            result = await runner.result(claim.flow_id)
+            try:
+                result = await runner.result(claim.flow_id)
+            except WorkflowRunError as exc:
+                if claim.kind == "existing-terminal":
+                    exc.claim_verdict = claim.kind
+                raise
         return WorkflowRunResult(claim=claim, outcome=outcome, result=result)

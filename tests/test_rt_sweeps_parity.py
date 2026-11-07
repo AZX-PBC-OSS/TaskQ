@@ -8,7 +8,7 @@ leave the same per-row state and audit trail on both backends.
 Sweep 1 is the richest unpinned surface: a three-way CASE
 (pending/cancelled/crashed), an attempt row, an event row, and lock
 bookkeeping.  ``_SWEEP_1_SQL`` clears ``locked_by_worker`` and
-``lock_expires_at`` on EVERY branch (one SET clause list, all rows) -
+``lock_expires_at`` on every branch (one SET clause list, all rows) -
 the in-memory twin's terminal branch must match, because
 ``JobRow.locked_by_worker`` is observable through ``get()`` and a stale
 holder id on a terminal row is exactly the kind of divergence a
@@ -53,7 +53,7 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 # Per-branch corpus: (branch name, max_attempts, cancel_phase).
 # "cancel_retryable" is the pin: a cancel in flight outranks the
-# retry budget on BOTH backends: the unguarded budget-first CASE (and its
+# retry budget on both backends: the unguarded budget-first case (and its
 # twin) re-pended this row 'pending' with the operator's cancel wiped.
 _BRANCHES: list[tuple[str, int, int]] = [
     ("retry", 3, 0),
@@ -214,7 +214,7 @@ def _normalize(obs: dict[str, Any], holder: UUID, expected_status: str) -> dict[
     The event ``detail`` carries the holder as a string on PG (jsonb) and
     as a UUID in memory - a representation difference, not a behavioural
     one, so the holder is compared as ``str()`` on both sides.  Each
-    backend was seeded with its OWN holder id, so the holder identity is
+    backend was seeded with its own holder id, so the holder identity is
     normalized to a sentinel: parity is about the bookkeeping being
     cleared and consistently recorded, not about two backends sharing a
     uuid.
@@ -325,8 +325,8 @@ async def test_sweep1_double_reclaim_keeps_one_attempt_row_on_both_backends(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """A reclaim firing on an already-recorded (job_id, attempt) writes ONE
-    attempt row on both backends - and it is the FIRST record.
+    """A reclaim firing on an already-recorded (job_id, attempt) writes one
+    attempt row on both backends - and it is the first record.
 
     PG's batched sweep-1 attempt INSERT carries
     ``ON CONFLICT (job_id, attempt) DO NOTHING`` (keep-first-record): an

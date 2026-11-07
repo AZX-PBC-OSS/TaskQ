@@ -5,7 +5,7 @@ test.
 Original defect (fixed): ``InMemoryBackend.register_stub`` accepted an
 optional ``payload_type`` kwarg and, when omitted, fell back to
 ``PassthroughPayload`` (``model_config = {"extra": "allow"}``), which
-validates ANY dict shape. ``docs/guides/testing.md``'s own "Registering
+validates any dict shape. ``docs/guides/testing.md``'s own "Registering
 actor stubs" example called ``register_stub`` without ``payload_type``.
 The consequence: adding a required field to a payload model is a
 backward-incompatible payload-shape change (an old enqueued row, or any
@@ -40,7 +40,7 @@ Backend parity is a claimed contract (InMemoryBackend "simulates the
 full enqueue -> dispatch -> execute -> terminal-write cycle" --
 docs/guides/testing.md, "InMemoryBackend" section). A payload accepted
 by one backend and rejected by the actor's own declared model,
-inside THE SAME PROCESS, with no real Postgres required to prove it,
+inside the same PROCESS, with no real Postgres required to prove it,
 is a direct violation of that claim -- this test needs no
 testcontainers because ``RealPayload.model_validate()`` and
 ``consume_one_job``'s ``validate_actor_payload`` call are the same
@@ -96,7 +96,7 @@ async def real_actor(payload: _RealPayload) -> _RealResult:
 
 @pytest.mark.asyncio
 async def test_register_stub_default_payload_type_accepts_what_real_model_rejects() -> None:
-    """Proves the fidelity gap is closed: the SAME dict that
+    """Proves the fidelity gap is closed: the same dict that
     ``_RealPayload`` rejects must not run to ``succeeded`` when
     ``register_stub`` is called without an explicit ``payload_type`` --
     the runner resolves the actor's declared model from the passed
@@ -105,7 +105,7 @@ async def test_register_stub_default_payload_type_accepts_what_real_model_reject
     incomplete_payload = {"value": 21}  # missing required_new_field
 
     # Ground truth: the actor's real, declared payload model rejects
-    # this payload. Any real worker (or a stub registered WITH
+    # this payload. Any real worker (or a stub registered with
     # payload_type=_RealPayload) would fail this job the same way.
     with pytest.raises(ValidationError):
         _RealPayload.model_validate(incomplete_payload)
@@ -121,7 +121,7 @@ async def test_register_stub_default_payload_type_accepts_what_real_model_reject
 
     # The omitted-payload_type path, with the actor's declaration made
     # visible to the runner by passing the ActorRef itself. No
-    # StubPayloadTypeWarning may fire: the model IS resolvable here.
+    # StubPayloadTypeWarning may fire: the model is resolvable here.
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         backend.register_stub(real_actor, stub)
@@ -145,7 +145,7 @@ async def test_register_stub_default_payload_type_accepts_what_real_model_reject
     row = await backend.get(job_id)
     assert row is not None
 
-    # The pinned contract: an in-memory test run with the actor's REAL
+    # The pinned contract: an in-memory test run with the actor's real
     # payload model contract violated must fail the same way a real
     # worker would -- not silently succeed. Before the fix this was
     # row.status == "succeeded" with calls == [the incomplete dict],
@@ -159,7 +159,7 @@ async def test_register_stub_default_payload_type_accepts_what_real_model_reject
         "model. A payload-schema migration (adding a required field) "
         "must not pass the in-memory suite and fail only in production."
     )
-    # Stronger halves of the same contract: the job failed AS a payload
+    # Stronger halves of the same contract: the job failed as a payload
     # validation failure (not some unrelated error), and the stub body
     # never ran - validation happens before invocation, as on a worker.
     assert row.error_class == "PayloadValidationError"
@@ -170,7 +170,7 @@ async def test_register_stub_default_payload_type_accepts_what_real_model_reject
 async def test_register_stub_bare_name_without_payload_type_warns_loudly() -> None:
     """The unresolvable fallback: a bare actor name carries no declared
     model, so the permissive default survives (backward compatibility -
-    the suite's existing bare-name stubs keep working) but ONLY with a
+    the suite's existing bare-name stubs keep working) but only with a
     loud StubPayloadTypeWarning naming the actor and the consequences.
     """
     clock = FakeClock(start=_START)

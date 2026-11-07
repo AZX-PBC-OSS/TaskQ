@@ -185,7 +185,7 @@ async def test_postgres_never_touches_redis(
     assert r.backend == "postgres"
 
 
-# ── GCRA PG fallback - burst → denial → retry → row invariant ──────
+# ── gcra PG fallback - burst → denial → retry → row invariant ──────
 
 
 async def test_gcra_pg_fallback_burst_and_deny(
@@ -225,7 +225,7 @@ async def test_gcra_pg_fallback_burst_and_deny(
     assert r.retry_after > timedelta(0)
     assert r.remaining == 0.0
 
-    # GCRA retry_after = emission_interval - elapsed_during_burst.
+    # gcra retry_after = emission_interval - elapsed_during_burst.
     # With 60 PG roundtrips, elapsed time reduces retry below 1.0 s;
     # the invariant is 0 < retry_after <= emission_interval (1.0 s).
     assert r.retry_after.total_seconds() <= 1.0
@@ -362,11 +362,11 @@ async def test_acquire_and_peek_without_clock_on_postgres_backend(
 
 # ── Concurrency pins - first-use and at-limit races ──────────────────
 #
-# Both pins race two acquire transactions on two DEDICATED single-connection
+# Both pins race two acquire transactions on two dedicated single-connection
 # pools, each pre-warmed by a sacrificial acquire. Why the warm-up: asyncpg
 # plans a statement per connection on first use, and a cold plan costs
 # ~1.5 ms - enough to push the losing transaction's decisive statement past
-# the winner's commit and silently SERIALISE the very race these pins
+# the winner's commit and silently serialise the very race these pins
 # assert (observed: cold-second-connection gathers never overlap, warm
 # ones overlap 40/40). Pre-warming both connections makes the unguarded
 # failure deterministic; the guarded serialization (advisory lock / row
@@ -408,7 +408,7 @@ async def _warm_log_pool(pg_dsn: str, settings: WorkerSettings) -> asyncpg.Pool:
 async def test_gcra_pg_concurrent_first_use_admits_exactly_one(
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Two concurrent FIRST acquires on a brand-new GCRA bucket (limit=1):
+    """Two concurrent first acquires on a brand-new GCRA bucket (limit=1):
     exactly one is admitted.
 
     ``SELECT ... FOR UPDATE`` cannot lock a row that does not exist yet,
@@ -931,3 +931,76 @@ async def test_acquire_gcra_kind_collision_race_on_upsert() -> None:
 
     with pytest.raises(RuntimeError, match="collide_race"):
         await _acquire_pg_gcra(sw, fake_pool, _fake_settings())  # type: ignore[arg-type]
+
+
+# ── The mock-subtraction conversions (the fake arms' survivors) ────────
+
+
+async def test_refund_log_removes_the_admitted_row(
+    module_pg_schema: ModulePgSchema, module_pg_pool: asyncpg.Pool
+) -> None:
+    """A log-style refund deletes the admitted attempt's row by
+    request_id, on the real rows the fused acquire inserted - the window
+    refills and a fresh acquire sees the freed capacity.
+
+    (Converted from tests/test_ratelimit_refund_fix.py's fake arms in the
+    mock-subtraction cure: the fake pinned the DELETE's text; this pins
+    the row the DELETE must remove.)
+    """
+    schema = module_pg_schema.schema_name
+    settings = _settings(module_pg_schema)
+    name = _unique_name()
+    sw = SlidingWindow(
+        name=name, limit=2, window=timedelta(seconds=60), backend="postgres", style="log"
+    )
+
+    first = await sw.acquire(pg_pool=module_pg_pool, clock=SystemClock(), settings=settings)
+    second = await sw.acquire(pg_pool=module_pg_pool, clock=SystemClock(), settings=settings)
+    assert first.allowed and second.allowed, "fixture broken: the limit is 2"
+    assert first.request_id is not None, "the log acquire must stamp the request_id"
+    assert second.request_id is not None
+
+    third = await sw.acquire(pg_pool=module_pg_pool, clock=SystemClock(), settings=settings)
+    assert third.allowed is False, "fixture broken: the bucket must be exhausted"
+
+    await sw.refund(first, pg_pool=module_pg_pool, settings=settings)
+
+    stored = await module_pg_pool.fetchval(
+        f"SELECT count(*) FROM {schema}.rate_limit_window_entries "  # noqa: S608  # Why: schema is fixture-derived; bucket_name is $1-bound.
+        f"WHERE bucket_name = $1",
+        name,
+    )
+    assert stored == 1, "the refund must have deleted exactly the refunded row"
+
+    fourth = await sw.acquire(pg_pool=module_pg_pool, clock=SystemClock(), settings=settings)
+    assert fourth.allowed is True, "the refunded attempt must free its window slot"
+
+
+async def test_refund_log_without_a_request_id_is_a_noop(
+    module_pg_schema: ModulePgSchema, module_pg_pool: asyncpg.Pool
+) -> None:
+    """A log-style refund with request_id=None touches nothing: no DELETE
+    runs, no error, the stored rows are untouched."""
+    schema = module_pg_schema.schema_name
+    settings = _settings(module_pg_schema)
+    name = _unique_name()
+    sw = SlidingWindow(
+        name=name, limit=5, window=timedelta(seconds=60), backend="postgres", style="log"
+    )
+
+    decision = RateLimitDecision(
+        allowed=True,
+        remaining=4.0,
+        retry_after=timedelta(0),
+        bucket_name=name,
+        backend="postgres",
+        request_id=None,
+    )
+    await sw.refund(decision, pg_pool=module_pg_pool, settings=settings)
+
+    stored = await module_pg_pool.fetchval(
+        f"SELECT count(*) FROM {schema}.rate_limit_window_entries "  # noqa: S608  # Why: schema is fixture-derived.
+        f"WHERE bucket_name = $1",
+        name,
+    )
+    assert stored == 0, "the no-op refund must not have written anything"

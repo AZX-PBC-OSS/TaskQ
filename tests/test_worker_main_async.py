@@ -94,7 +94,7 @@ async def test_runs_to_completion_on_a_caller_owned_loop(pg_dsn: str) -> None:
         await conn.close()
 
     running_loop = asyncio.get_running_loop()
-    # Built BEFORE the worker starts, bound to the caller's loop - exactly the
+    # Built before the worker starts, bound to the caller's loop - exactly the
     # ordering constraint that forced the private import.
     caller_pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
     assert caller_pool is not None
@@ -112,7 +112,7 @@ async def test_runs_to_completion_on_a_caller_owned_loop(pg_dsn: str) -> None:
             idle_max_runtime=30.0,
         )
         assert code == 0
-        # The pool outlives the worker and is still usable on THIS loop -
+        # The pool outlives the worker and is still usable on this loop -
         # an asyncpg pool bound to a different (or finished) loop cannot be.
         assert asyncio.get_running_loop() is running_loop
         assert not caller_pool.is_closing()

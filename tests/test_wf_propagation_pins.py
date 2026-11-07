@@ -1,8 +1,7 @@
-"""The T06 failed-parent propagation pins — the FAIL-CLOSED peer-cascade and
-the COLLECT fan-in, failing-first per the doctrine (BUILD-PROTOCOL §2: every
-pin's red is a REAL mutation of the shipped rule, observed and recorded).
+"""The failed-parent propagation's pins — the FAIL-CLOSED peer-cascade and
+the COLLECT fan-in (each pin's red is a real mutation of the shipped rule,
+observed and recorded).
 
-THE PROPAGATION RULE (T06's two semantics, per the ticket):
 
 * **fail_closed (the default)** — a parent's TERMINAL failure (the ladder
   exhausted or a non-retryable class) fails the join CLOSED by a
@@ -12,14 +11,14 @@ THE PROPAGATION RULE (T06's two semantics, per the ticket):
   peers are PEER-CANCELLED with the record
   ``by='peer_failure', cascade_from=<node>`` (the cancel-origin marker +
   ``metadata.peer_cancel``). The record never shows a hanging join.
-* **collect** — child failures do NOT cascade: at exhaustion the failure
+* **collect** — child failures do not cascade: at exhaustion the failure
   fans in as the typed ``FailureInfo`` item (the estate's ``ErrorInfo``
   envelope embedded — never re-spelled) and the join FIRES with the typed
   partial result; a SKIP fans in with ZERO ledger rows (a skip is not an
   attempt).
 
 The composition invariant (P3 decision 7): ladder retries emit no
-terminal — the fan-in/cascade happens ONLY at exhaustion, strictly after
+terminal — the fan-in/cascade happens only at exhaustion, strictly after
 the last ladder attempt (the ts-ordered pin).
 
 Driven against a live Postgres through the REAL engine; the seed helpers
@@ -106,11 +105,11 @@ async def _ledger_rows(
     )
 
 
-# ── Pin 1: THE STRANDED JOIN (the fail-closed resolution) ───────────────
+# ── Pin 1: the stranded JOIN (the fail-closed resolution) ───────────────
 
 
 @pytest.mark.integration
-async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
+async def test_pin1_fail_closed_join_resolves_never_hangs(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -118,10 +117,10 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
     propagation_redlog: RedLog,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A fail_closed join whose parent TERMINALLY fails must NOT hang: the
+    """A fail_closed join whose parent TERMINALLY fails must not hang: the
     joined node's side of the counter is resolved by the flow-scoped
     transition (blocked-with-reason naming the parent), the flow fails.
-    THE REJECTED VARIANT (the pre-T06 shipped shape): the parent's failed
+    The parent's failed
     finalize plain-decrements (or never resolves), the join stays
     join-wait / fires silently over a partial — the record shows a hanging
     join. The mutation scenario: the cascade statement's block arm dropped —
@@ -138,22 +137,21 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
         worker_id=(await claim_view(wf_conn, wf_schema, children[0]))[0],
         attempt=1,
         claim_epoch=0,
-        outcome="failed",  # the ladder exhausted: a TERMINAL failure
+        outcome="failed",  # the ladder exhausted: a terminal failure
         error_class="ValueError",
         error_message="boom",
     )
     assert result.applied
 
-    # THE JOIN NEVER FIRES (the counter's side is resolved by the block,
-    # not by a decrement): no fire row, ever.
+    # no fire row, ever.
     assert await fire_count(wf_conn, wf_schema, join_id) == 0
 
-    # THE RESOLUTION: the joined node is blocked-with-reason NAMING the
-    # failed parent — never a hanging join-wait row.
+    # the joined node is blocked-with-reason naming the failed parent — never a
+    # hanging join-wait row.
     state = await node_state(wf_conn, wf_schema, join_id)
     propagation_redlog.red(
         "t06-pin1-stranded-join",
-        "the cascade's block arm dropped (the pre-T06 shipped shape: the "
+        "the cascade's block arm dropped (the block-arm-less shape: the "
         "join stays join-wait or fires over the failed parent)",
         {
             "status": state["status"],
@@ -168,18 +166,15 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
     assert state["metadata"].get("failed_step") == "c0"
     assert state["status"] == "pending", "blocked is a pending-row representation"
 
-    # THE FLOW FAILED (§17.2's cascade): the root's flip is the
-    # linearization point.
+    # §17.2's cascade. the root's flip is the linearization point.
     flow_state = await node_state(wf_conn, wf_schema, flow_id)
     assert flow_state["status"] == "failed", "the workflow fails closed"
 
-    # THE MUTATION TEST (the REAL engine mutation — the phase-2 audit's
-    # replacement for the broken RED1 evidence): the cascade's BLOCK ARM
-    # dead (``AND false``), rendered through the REAL engine's own
-    # finalize on a FRESH shape — the shipped tx2 runs the mutant, the
-    # join NEVER resolves (the rejected strand, observed in the row),
-    # and the flow fails with NO blocked join (the cascade's flow arm is
-    # gated on the block arm — the mutant's other recorded finding).
+    # the cascade's block arm dead (``and false``), rendered through the real
+    # engine's own finalize on a fresh shape — the shipped tx2 runs the mutant,
+    # the join never resolves (the rejected strand, observed in the row), and
+    # the flow fails with no blocked join (the cascade's flow arm is gated on
+    # the block arm — the mutant's other escape).
     import taskq.workflows._sql_finalize as finalize_sql_module
 
     mutated_cascade = finalize_sql_module.FAIL_CLOSED_CASCADE_SQL.replace(
@@ -199,7 +194,7 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
         "the mutation test did not arm"
     )
     # The bundle's build reads the constant from _sql.py's namespace (the
-    # bundle re-exports the statement constants) — the patch goes THERE,
+    # bundle re-exports the statement constants) — the patch goes there,
     # then the bundle re-renders (the finalize pins' own pattern).
     monkeypatch.setattr(sql_module, "FAIL_CLOSED_CASCADE_SQL", mutated_cascade)
     mutated_sql = render_workflow_sql(wf_schema)
@@ -222,7 +217,7 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
     propagation_redlog.red(
         "t06-pin1-block-arm-dropped",
         "the cascade's block arm dead in the REAL engine's tx2 — the join "
-        "never resolves (the pre-T06 shipped shape: the record shows a "
+        "never resolves (the gate-less shape: the record shows a "
         "hanging join) and the flow's flip never lands (the flow arm is "
         "gated on the block arm)",
         {
@@ -232,18 +227,18 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
         },
     )
     assert state2["metadata"].get("blocking_reason") == "join", (
-        f"the scenario's recorded finding is broken: the mutant's cascade left the "
+        f"the scenario's contract is broken: the mutant's cascade left the "
         f"join {state2} — the block arm must be load-bearing"
     )
     flow2_state = await node_state(wf_conn, wf_schema, flow2)
     assert flow2_state["status"] == "running", (
         f"the mutant's flow flip landed without a blocked join: {flow2_state} "
-        "(the flow arm's gate is part of the recorded finding)"
+        "(the flow arm's gate is part of the contract)"
     )
 
 
 @pytest.mark.integration
-async def test_t06_pin2_peer_cancel_record(
+async def test_pin2_peer_cancel_record(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -308,7 +303,7 @@ async def test_t06_pin2_peer_cancel_record(
         f"the record must name the failed node: {record}"
     )
 
-    # The third child (pending, never claimed) is ALSO peer-cancelled —
+    # The third child (pending, never claimed) is also peer-cancelled —
     # the cascade is set-based over every still-non-terminal peer.
     peer2 = await wf_conn.fetchval(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', children[2]
@@ -319,11 +314,11 @@ async def test_t06_pin2_peer_cancel_record(
     assert await fire_count(wf_conn, wf_schema, join_id) == 0
 
 
-# ── Pin 3: THE COLLECT FAN-IN (exhaustion → the typed partial) ──────────
+# ── Pin 3: the collect fan-in (exhaustion → the typed partial) ──────────
 
 
 @pytest.mark.integration
-async def test_t06_pin3_collect_exhaustion_fans_in_fires_partial(
+async def test_pin3_collect_exhaustion_fans_in_fires_partial(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -365,7 +360,7 @@ async def test_t06_pin3_collect_exhaustion_fans_in_fires_partial(
         children[2],
         new_uuid(),
     )
-    # The child's SECOND claim is the running row (attempt 2 — the ladder
+    # The child's second claim is the running row (attempt 2 — the ladder
     # burned once already); its finalize's fence reads this attempt.
     await wf_conn.execute(f'UPDATE "{wf_schema}".jobs SET attempt = 2 WHERE id = $1', children[2])
 
@@ -384,11 +379,11 @@ async def test_t06_pin3_collect_exhaustion_fans_in_fires_partial(
     )
     assert result.applied
 
-    # THE JOIN FIRED (the collect's counter resolved at exhaustion).
+    # the JOIN fired (the collect's counter resolved at exhaustion).
     assert await fire_count(wf_conn, wf_schema, join_id) == 1
 
-    # THE FAN-IN: the FailureInfo item is ON THE JOIN ROW, the full
-    # attempt history embedded, the estate's envelope shape.
+    # the FailureInfo item is on the JOIN row, the full attempt history
+    # embedded, the estate's envelope shape.
     state = await node_state(wf_conn, wf_schema, join_id)
     failures: list[dict[str, Any]] = state["metadata"].get("failures") or []
     propagation_redlog.red(
@@ -408,16 +403,16 @@ async def test_t06_pin3_collect_exhaustion_fans_in_fires_partial(
     assert [a["attempt"] for a in attempts] == [1, 2], f"the FULL attempt history: {attempts}"
     assert [a["error_message"] for a in attempts] == ["boom-1", "boom-2"]
 
-    # THE WORKFLOW SUCCEEDS with the failure report (the absorbed-failure
-    # clause T08's derivation reads): the collect is not a failure.
+    # the workflow succeeds with the failure report: the collect is not a
+    # failure.
     flow_state = await node_state(wf_conn, wf_schema, flow_id)
     assert flow_state["status"] == "running", (
         "a collect join's child failure does NOT cascade to the flow"
     )
 
-    # THE TS ORDERING: the fire is strictly after the last ladder attempt
-    # (the fan-in + fire ride the terminalizing tx; the ledger's last
-    # attempt row precedes the fire row).
+    # the fire is strictly after the last ladder attempt (the fan-in + fire
+    # ride the terminalizing tx; the ledger's last attempt row precedes the
+    # fire row).
     fire_row = await wf_conn.fetchrow(
         f'SELECT f.fired_at, (SELECT max(updated_at) FROM "{wf_schema}".wf_step_ledger '
         "WHERE flow_id = $1 AND step_key = 'c2') AS last_attempt "
@@ -428,12 +423,12 @@ async def test_t06_pin3_collect_exhaustion_fans_in_fires_partial(
     assert fire_row is not None
     fire_ts, last_attempt_ts = fire_row["fired_at"], fire_row["last_attempt"]
     assert fire_ts >= last_attempt_ts, (
-        "the fan-in fires strictly after the last ladder attempt (P3 spike3's verified ordering)"
+        "the fan-in fires strictly after the last ladder attempt (the verified ordering)"
     )
 
 
 @pytest.mark.integration
-async def test_t06_pin4_skip_fans_in_zero_ledger_rows(
+async def test_pin4_skip_fans_in_zero_ledger_rows(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -441,7 +436,7 @@ async def test_t06_pin4_skip_fans_in_zero_ledger_rows(
     propagation_redlog: RedLog,
 ) -> None:
     """A skipped child fans in with ZERO ledger rows — a skip is not an
-    attempt (P3 spike3's measured invariant): the item lands on the join
+    attempt (the measured invariant): the item lands on the join
     row with an empty attempt history, no attempt/terminal row anywhere.
     The mutation scenario: the skip helper made to write a ledger row (the
     rejected variant — a skip recorded as an attempt)."""
@@ -482,11 +477,11 @@ async def test_t06_pin4_skip_fans_in_zero_ledger_rows(
     assert job_rows == 0, "a skip writes no attempt/terminal job row"
 
 
-# ── Pin 5: THE COMPOSITION (retries emit no terminal → no cascade) ──────
+# ── Pin 5: the composition (retries emit no terminal → no cascade) ──────
 
 
 @pytest.mark.integration
-async def test_t06_pin5_mid_ladder_emits_no_cascade_and_no_decrement(
+async def test_pin5_mid_ladder_emits_no_cascade_and_no_decrement(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -502,8 +497,8 @@ async def test_t06_pin5_mid_ladder_emits_no_cascade_and_no_decrement(
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id, children = await _seed_map(wf_conn, wf_schema, flow_id, n=2, policy="fail_closed")
 
-    # Child 0 fails ATTEMPT 1 with retries remaining: the vanilla ladder
-    # marks it scheduled (pending) — NO workflow terminal, NO finalize.
+    # Child 0 fails attempt 1 with retries remaining: the vanilla ladder
+    # marks it scheduled (pending) — no workflow terminal, no finalize.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'scheduled', scheduled_at = now() "
         "+ interval '1 second' WHERE id = $1",
@@ -531,16 +526,16 @@ async def test_t06_pin5_mid_ladder_emits_no_cascade_and_no_decrement(
 
     # The peer is untouched (the D6 sentence: a child mid-ladder does not
     # trigger the peer-cascade — a fail-closed map with a long-ladder
-    # child keeps peers running until exhaustion, BY DESIGN).
+    # child keeps peers running until exhaustion, by design).
     peer_state = await node_state(wf_conn, wf_schema, children[1])
     assert peer_state["status"] == "running", "the peer keeps running"
 
 
-# ── Pin 6: THE SWEEP COMPOSES (the crash window with failures) ──────────
+# ── Pin 6: the sweep composes (the crash window with failures) ──────────
 
 
 @pytest.mark.integration
-async def test_t06_pin6_sweep_heals_fail_closed_join_after_crash(
+async def test_pin6_sweep_heals_fail_closed_join_after_crash(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -562,7 +557,7 @@ async def test_t06_pin6_sweep_heals_fail_closed_join_after_crash(
         wf_conn, wf_schema, flow_id, n=1, policy="collect", join_step="col_join"
     )
 
-    # BOTH children terminalize tx1-only (the crash window: no tx2).
+    # both children terminalize tx1-only (the crash window: no tx2).
     await _terminalize(wf_conn, wf_schema, fc_children[0], outcome="failed")
     await _terminalize(wf_conn, wf_schema, col_children[0], outcome="succeeded")
 
@@ -578,22 +573,22 @@ async def test_t06_pin6_sweep_heals_fail_closed_join_after_crash(
     )
     assert summary.blocked_required == 1, summary
 
-    # THE FAIL_CLOSED JOIN: blocked-with-reason, never fired.
+    # blocked-with-reason, never fired.
     fc_state = await node_state(wf_conn, wf_schema, fc_join)
     assert fc_state["metadata"].get("blocking_reason") == "failed_parent", (
         f"the sweep must resolve the fail_closed join: {fc_state}"
     )
     assert await fire_count(wf_conn, wf_schema, fc_join) == 0
 
-    # THE COLLECT JOIN: fired (the failed child's side resolved; the
-    # ledger carries its history for the collector).
+    # fired (the failed child's side resolved; the ledger carries its history
+    # for the collector).
     assert await fire_count(wf_conn, wf_schema, col_join) == 1
 
 
 # ── Pin 7: the validator refuses an unknown policy (build-time door) ────
 
 
-def test_t06_pin7_unknown_failure_policy_refused_at_build() -> None:
+def test_pin7_unknown_failure_policy_refused_at_build() -> None:
     """A fork declaring an unknown failure_policy is refused at build time
     (the runtime's split would silently take the default — the
     over-permission the asymmetry doctrine forbids). The mutation scenario:
@@ -609,33 +604,33 @@ def test_t06_pin7_unknown_failure_policy_refused_at_build() -> None:
         validate_fork(fork)
 
 
-# ── Pin 8: THE MIXED-POLICY NODE (the fence is not absorption) ──────────
+# ── Pin 8: the mixed-policy node (the fence is not absorption) ──────────
 
 
 @pytest.mark.integration
-async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
+async def test_pin8_mixed_policy_node_the_fence_is_not_absorption(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     propagation_redlog: RedLog,
 ) -> None:
-    """Node X feeds joinA (fail_closed) AND joinB (collect); X
-    terminal-fails. The cascade blocks A and fails the flow IN THE SAME
+    """Node X feeds joinA (fail_closed) and joinB (collect); X
+    terminal-fails. The cascade blocks A and fails the flow IN the same
     TX — the collect leg's decrement then reads the flow-alive guard and
-    is REFUSED. A FENCED DECREMENT IS NOT ABSORPTION: the edge declared
+    is REFUSED. A FENCED DECREMENT IS not ABSORPTION: the edge declared
     the collect POLICY, but the flow's death fenced the resolution — the
-    fan-in never delivered. THE TWO LIES THIS PIN FORBIDS (the phase-2
+    fan-in never delivered. the TWO LIES THIS PIN FORBIDS (the phase-2
     attack's H2):
-    * the hanging join: joinB must rest blocked-with-reason after ONE
+    * the hanging join: joinB must rest blocked-with-reason after one
       sweep pass — never a reconciled-to-0, never-fired, claimable join
       row on a failed flow;
     * the lying envelope: the derivation must say 'failed' for this
-      failed-closed run — X's failure is NOT absorbed (the edge's POLICY
+      failed-closed run — X's failure is not absorbed (the edge's POLICY
       declaration alone absorbs nothing; the record must show the
-      absorption RAN). T07's C: the envelope must not lie about which
+      absorption RAN). the fan-in bound's rule: the envelope must not lie about which
       policy ran.
-    THE REJECTED VARIANT (the scenario): the absorbed predicate without the
+    The absorbed predicate without the
     fence clause (EXISTS any absorbing edge) — the derivation flips to
     'blocked' and the envelope lie reproduces."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -671,13 +666,13 @@ async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
         error_message="the mixed node",
     )
 
-    # THE FAIL_CLOSED LEG RAN: the flow failed, joinA blocked-with-reason.
+    # the flow failed, joinA blocked-with-reason.
     root = await node_state(wf_conn, wf_schema, flow_id)
     assert root["status"] == "failed", "the fail_closed leg must fail the flow"
     a_state = await node_state(wf_conn, wf_schema, join_a)
     assert a_state["metadata"].get("blocking_reason") == "failed_parent"
 
-    # ONE SWEEP PASS: the flow-fenced join arm owns joinB's resolution.
+    # one sweep pass: the flow-fenced join arm owns joinB's resolution.
     summary = await sweep_join_rederive(module_pg_pool, wf_sql)
     assert summary.flow_fenced >= 1, f"the flow-fenced join must be stamped: {summary}"
 
@@ -695,7 +690,7 @@ async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
             "fires": fires_b,
         },
     )
-    # NO HANGING CLAIMABLE JOIN: joinB rests blocked-with-reason NAMING
+    # no hanging claimable JOIN: joinB rests blocked-with-reason naming
     # the failed parent (the direct path's cascade stamp — the fence
     # resolves the way the cascade would have), never fired.
     assert b_state["metadata"].get("blocking_reason") == "failed_parent", (
@@ -706,8 +701,8 @@ async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
     assert b_state["metadata"].get("failed_parent") == str(x), "the stamp names the failed parent"
     assert fires_b == 0, "the join never fires over the fenced flow"
 
-    # THE ENVELOPE IS HONEST: the derivation says 'failed' — X's failure
-    # is NOT absorbed (the fence refused the resolution), never 'blocked'.
+    # the derivation says 'failed' — X's failure is not absorbed (the fence
+    # refused the resolution), never 'blocked'.
     reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, flow_id)
     assert reconstructed == "failed", (
         f"THE ENVELOPE LIES: the rows reconstruct {reconstructed!r} for a "
@@ -716,9 +711,9 @@ async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
         "delivered), so the derivation can never say 'failed' here"
     )
 
-    # THE MUTATION TEST (live): the absorbed predicate WITHOUT the fence
-    # clause — the EXISTS-any-absorbing-edge lie — derives 'blocked': the
-    # rejected envelope lie reproduces against this very state.
+    # live. the absorbed predicate without the fence clause — the
+    # EXISTS-any-absorbing-edge lie — derives 'blocked': the rejected envelope
+    # lie reproduces against this very state.
     import dataclasses
 
     mutated_nodes = wf_sql.workflow_nodes.replace(
@@ -729,6 +724,6 @@ async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
     mutated_sql = dataclasses.replace(wf_sql, workflow_nodes=mutated_nodes)
     lied = await reconstruct_workflow_status(wf_conn, mutated_sql, flow_id)
     assert lied == "blocked", (
-        f"the scenario's recorded finding is broken: the mutant derived {lied!r} — "
+        f"the scenario's contract is broken: the mutant derived {lied!r} — "
         "the fence clause must be load-bearing in the absorbed predicate"
     )

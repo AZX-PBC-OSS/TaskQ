@@ -1,6 +1,6 @@
-"""THE WF-PRIORITY PINS — the workflow surface's priority law.
+"""The wf-priority pins — the workflow surface's priority law.
 
-THE RECORDED FINDING (the deepest downstream consumer — a 36+-actor deployment,
+the RECORDED FINDING (the deepest downstream consumer — a 36+-actor deployment,
 23 ``priority=`` enqueue-time call sites, a BACKLOG/interactive split):
 the vanilla surface carries priority end to end — the ``jobs.priority``
 smallint column (``migrations/01.00.00_01_pre_initial.sql``, DEFAULT 0),
@@ -11,7 +11,7 @@ column, so a flow step landed at the column default — an interactive step
 could not jump a 100k-deep sweep backlog. A regression on a shipped
 surface, fixed additively (the vanilla face byte-identical).
 
-THE PRECEDENCE LAW (per row, first non-None wins):
+PRECEDENCE LAW (per row, first non-None wins)
 
     explicit per-call (``run``/``create_flow`` ``priority=``)
   > the step's declaration (``step(priority=)`` / ``RouteArm(priority=)``)
@@ -218,7 +218,7 @@ async def test_run_priority_out_of_domain_refused() -> None:
 async def test_actor_declared_priority_lands_on_the_rows(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ACTOR DECLARATION'S RIDE: ``@app.actor(priority=5)`` wired via
+    """The actor declaration's ride: ``@app.actor(priority=5)`` wired via
     ``step()`` without its own priority — the node's rows land with the
     actor's declared priority in the ``jobs.priority`` COLUMN (asserted
     directly). The rejected variant: every wf INSERT omitted the column
@@ -245,9 +245,9 @@ async def test_actor_declared_priority_lands_on_the_rows(
 async def test_undeclared_priority_keeps_the_column_default_and_the_row_shape(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE BYTE-IDENTITY LAW (the fix's own non-negotiable): no
+    """The byte-identity law (the fix's own non-negotiable): no
     priority declared anywhere — the row's priority is the COLUMN DEFAULT
-    (0) and the row's metadata keeps the pre-fix shape exactly (the
+    (0) and the row's metadata keeps the unset shape exactly (the
     flow_id stamp, no new keys). The no-kwarg surface is today's surface,
     byte for byte."""
     app = WorkflowApp()
@@ -269,12 +269,12 @@ async def test_undeclared_priority_keeps_the_column_default_and_the_row_shape(
 
 @pytest.mark.integration
 async def test_the_precedence_law_all_four_levels(wf_schema: str, wf_pool: asyncpg.Pool) -> None:
-    """THE FOUR LEVELS, PINNED IN TWO RUNS of one workflow:
+    """The four levels, pinned in two runs of one workflow:
 
     * run A (no per-call): the actor-only step reads the ACTOR's 5; the
       step-declared step reads its own 7 (the step overrides the actor,
       never the reverse); the undeclared step reads the COLUMN DEFAULT 0.
-    * run B (per-call 8): EVERY step reads 8 — the explicit per-call
+    * run B (per-call 8): every step reads 8 — the explicit per-call
       overrides all declarations (the load-bearing face: the
       enqueue-time override wins).
 
@@ -315,7 +315,7 @@ async def test_the_precedence_law_all_four_levels(wf_schema: str, wf_pool: async
 async def test_the_packaged_run_carries_the_per_call_override(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE PACKAGED DOOR (the ergonomic face): ``run(...,
+    """The packaged door (the ergonomic face): ``run(...,
     priority=6)`` — the run's rows land at 6, the same law the
     create_flow face carries (the packaged run is create + drive, not a
     second enqueue semantics)."""
@@ -343,9 +343,9 @@ async def test_the_packaged_run_carries_the_per_call_override(
 async def test_map_children_carry_the_source_step_declaration(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE MAP'S RIDE: the map's children share the source node's cohort
+    """The map's ride: the map's children share the source node's cohort
     (the capacity law's own arithmetic) — the source step's declared
-    priority rides the children's rows AND the join's (the fork's rows
+    priority rides the children's rows and the join's (the fork's rows
     land at the fork's declared priority; the join is the source's own
     cohort, so the source's resolution)."""
     app = WorkflowApp()
@@ -371,9 +371,9 @@ async def test_map_children_carry_the_source_step_declaration(
 async def test_route_arm_priority_overrides_down_and_the_join_stays_the_sources(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ARM'S DOWN-OVERRIDE (the RouteArm placement law's own
-    arithmetic — an arm overrides DOWN from the source, never up): the
-    image arm's ``priority=9`` lands on the image rows ONLY; the bare
+    """The arm's down-override (the RouteArm placement law's own
+    arithmetic — an arm overrides down from the source, never up): the
+    image arm's ``priority=9`` lands on the image rows only; the bare
     audio arm keeps the source step's declared 2; the join (the SOURCE's
     cohort — the arm override does not retouch it) reads the source's 2.
     The rejected variant: the arm's override either dropped silently or
@@ -412,12 +412,12 @@ async def test_the_run_override_reaches_the_fleet_forks(
     wf_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """THE FLEET DOOR'S THREAD (production's own path): the run-level
+    """The fleet door's thread (production's own path): the run-level
     override stamps the ROOT row's metadata (``wf_priority``) at create;
-    the worker-hosted door's bounded read (the SAME round trip the
+    the worker-hosted door's bounded read (the same round trip the
     workflow-name stamp rides) resolves it, and the fork spawned at the
     claimed source's finalize lands its children at the OVERRIDE — the
-    per-call face governs rows materialized AFTER create too (the map
+    per-call face governs rows materialized after create too (the map
     children a fleet worker forks mid-run)."""
     app = WorkflowApp()
 
@@ -430,8 +430,7 @@ async def test_the_run_override_reaches_the_fleet_forks(
     runner = FlowRunner(app.get("fleet-prio-flow"), module_pg_pool, wf_schema)
     flow_id = (await runner.create_flow(priority=6)).flow_id
 
-    # THE ROOT STAMP: the override rides the root's metadata — the door's
-    # read leg.
+    # the override rides the root's metadata — the door's read leg.
     root = await wf_conn.fetchrow(
         f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1',  # noqa: S608
         flow_id,
@@ -440,7 +439,7 @@ async def test_the_run_override_reaches_the_fleet_forks(
     assert _meta(root["metadata"]).get("wf_priority") == 6, _meta(root["metadata"])
 
     # The fleet path: project the cohorts, stamp a capable worker, claim
-    # the source through the REAL dispatch, execute it through the door.
+    # the source through the real dispatch, execute it through the door.
     for config in project_workflow_actor_configs():
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".actor_config (actor, queue) VALUES ($1, $2) '  # noqa: S608
@@ -534,11 +533,11 @@ async def _stamp_capable_worker(conn: asyncpg.Connection, schema: str) -> UUID:
 async def test_the_claim_orders_the_high_priority_wf_row_first(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE RECORDED FINDING'S OWN SCENARIO, IN MINIATURE: a small pending
+    """The recorded finding's own scenario, in miniature: a small pending
     backlog (three vanilla rows, priority 0, older scheduled_at — they
-    win every tie today) and ONE wf step carrying priority 5 → the
-    dispatch's next round claims the wf row FIRST. The wf rows ride the
-    SAME claim statement's ``priority DESC`` the vanilla rows always
+    win every tie today) and one wf step carrying priority 5 → the
+    dispatch's next round claims the wf row first. The wf rows ride the
+    same claim statement's ``priority DESC`` the vanilla rows always
     obeyed — no wf-specific ordering exists; the column is the law. No
     100k simulation: four rows prove the ordering."""
     app = WorkflowApp()
@@ -548,7 +547,7 @@ async def test_the_claim_orders_the_high_priority_wf_row_first(
         return build(step(_plain_body, Ingest(doc_id="d"), key="solo", priority=5))
 
     # The cohorts' actor_config rows (the claim's inner-safe join) — the
-    # wf cohort AND the vanilla actor's.
+    # wf cohort and the vanilla actor's.
     for config in project_workflow_actor_configs():
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".actor_config (actor, queue) VALUES ($1, $2) '  # noqa: S608
@@ -562,7 +561,7 @@ async def test_the_claim_orders_the_high_priority_wf_row_first(
     )
     worker_id = await _stamp_capable_worker(wf_conn, wf_schema)
 
-    # The backlog: three vanilla rows, priority 0, one second OLDER —
+    # The backlog: three vanilla rows, priority 0, one second older —
     # scheduled_at would serve them first if priority did not dominate.
     past = datetime.now(UTC) - timedelta(seconds=1)
     for _ in range(3):
@@ -592,7 +591,7 @@ async def test_the_claim_orders_the_high_priority_wf_row_first(
 async def test_the_claim_orders_a_high_priority_vanilla_row_over_a_default_wf_row(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE NO-BIAS ARM: the wf surface adds no wf-favoring ordering — a
+    """The no-bias arm: the wf surface adds no wf-favoring ordering — a
     vanilla row at priority 5 beats a wf row at the column default (0)
     even though the wf row is NEWER. The column decides; the surface
     that declares it is irrelevant (the shared claim SQL's own law)."""
@@ -615,12 +614,12 @@ async def test_the_claim_orders_a_high_priority_vanilla_row_over_a_default_wf_ro
     )
     worker_id = await _stamp_capable_worker(wf_conn, wf_schema)
 
-    # The vanilla row: priority 5, one second OLDER.
+    # The vanilla row: priority 5, one second older.
     past = datetime.now(UTC) - timedelta(seconds=1)
     await _seed_vanilla_pending(
         wf_conn, wf_schema, actor="test_actor", priority=5, scheduled_at=past
     )
-    # The wf row: the column default, NEWER.
+    # The wf row: the column default, newer.
     runner = FlowRunner(app.get("claim-order-default-flow"), wf_pool, wf_schema)
     await runner.create_flow()
 
@@ -667,7 +666,7 @@ def test_the_vanilla_per_call_priority_law_is_untouched() -> None:
 async def test_the_loop_escalation_materializes_at_the_run_priority(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """FIX 1 (review 3a-ii — the reviewer's preferred remedy): the
+    """The declared-stamp door: the
     root's ``wf_priority`` stamp threads through the OUTBOX DRAIN —
     ``run(priority=10)`` whose loop exhausts enqueues the escalation
     through the outbox, and the drain's consumer INSERT lands the
@@ -676,7 +675,7 @@ async def test_the_loop_escalation_materializes_at_the_run_priority(
     the drain's insert omitted the priority column — the escalation, an
     interactive run's most latency-sensitive follow-up, materialized at
     the column default while the pin's own invariant ("the per-call face
-    governs rows materialized AFTER create too") held everywhere else."""
+    governs rows materialized after create too") held everywhere else."""
     from taskq.workflows import Refine, loop
     from taskq.workflows.api._loop import ESCALATION_STEP_KEY
     from taskq.workflows.api._runner_errors import WorkflowRunError
@@ -690,11 +689,12 @@ async def test_the_loop_escalation_materializes_at_the_run_priority(
     def escalation_prio_flow() -> Promise[object]:
         return build(loop("wall", never_done, max_iterations=2, initial=0))
 
-    # THE RUN FACE: the exhausted loop terminal-FAILS the flow, so the
-    # run's result face raises the failure's own error — AFTER the drive
-    # (the exhaust tx committed the escalation's outbox row, the tick's
-    # drain materialized the consumer). The per-call stamp rode the
-    # create; the escalation row is the subject.
+        # the exhausted loop terminal-fails the flow, so the run's result face
+
+    # raises the failure's own error — after the drive (the exhaust tx
+    # committed the escalation's outbox row, the tick's drain materialized the
+    # consumer). The per-call stamp rode the create; the escalation row is the
+    # subject.
     with pytest.raises(WorkflowRunError, match="IterationLimitExhausted"):
         await run(app.get("escalation-prio-flow"), wf_pool, wf_schema, priority=10)
     escalation_row = await wf_conn.fetchrow(
@@ -807,7 +807,7 @@ async def test_map_body_handle_priority_reaches_the_children(
     variant: the runner's only priority readers were the four
     ``_resolve_priority`` sites — a handle body's declaration dropped
     SILENTLY (the identical shape fails CLOSED for capacity terms —
-    H-A4's never-a-silent-drop law). The handle's value NEVER folds into
+    H-A4's never-a-silent-drop law). The handle's value never folds into
     the source node: the source's own row and the JOIN stay at the
     source's resolution."""
     app = WorkflowApp()
@@ -882,7 +882,7 @@ async def test_the_adoption_drive_resolves_the_run_priority_from_the_row(
     FRESH runner adopts the existing run — the per-call level resolves
     from the ROOT'S STAMP (one bounded PK read — the fleet door's own
     SELECT shape), so the fork's children land at 6. The re-drive passes
-    NO kwarg: the row is the law, never the echo. The rejected variant:
+    no kwarg: the row is the law, never the echo. The rejected variant:
     the echo was set only inside ``if complete:`` — the adoption drove
     with ``_run_priority = None`` and forked the children at the
     declarations while the root's stamp said 6 (one run, split cohort)."""
@@ -900,8 +900,8 @@ async def test_the_adoption_drive_resolves_the_run_priority_from_the_row(
         await first.create_flow(input=Ingest(doc_id="d"), run_key="adopt:prio", priority=6)
     ).flow_id
 
-    # THE MID-RUN ADOPTION: a fresh runner (the crashed process's echo is
-    # gone) adopts the existing run and drives it.
+    # a fresh runner (the crashed process's echo is gone) adopts the existing
+    # run and drives it.
     second = FlowRunner(compiled, wf_pool, wf_schema)
     claim = await second.create_flow(input=Ingest(doc_id="d"), run_key="adopt:prio")
     assert not claim.created, claim
@@ -919,10 +919,10 @@ async def test_the_adoption_drive_resolves_the_run_priority_from_the_row(
 async def test_the_adoption_drive_degrades_an_out_of_domain_stamp(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ADOPTION DOOR'S POST-PARSE DOMAIN CLAMP (the re-review's
+    """The adoption door's post-parse domain clamp (the re-review's
     one-line residual — fix 4's own law at the adopt door): a
     hand-crafted root stamp ``wf_priority="99999"`` — PARSEABLE, past the
-    smallint domain — degrades to NO override at the ADOPT door too, and
+    smallint domain — degrades to no override at the ADOPT door too, and
     the adopted drive PROCEEDS (the children + the join at the source's
     DECLARED 2, never parked). The rejected variant: the adopt door
     parsed with ``int()`` alone — the 99999 rode to the fork's smallint
@@ -939,16 +939,16 @@ async def test_the_adoption_drive_degrades_an_out_of_domain_stamp(
     compiled = app.get("adopt-clamp-prio-flow")
     first = FlowRunner(compiled, wf_pool, wf_schema)
     flow_id = (await first.create_flow(input=Ingest(doc_id="d"), run_key="adopt:clamp")).flow_id
-    # THE HAND-CRAFTED STAMP: parseable, out of the smallint domain (the
-    # create's own door refuses the kwarg — the corruption-only shape).
+    # parseable, out of the smallint domain (the create's own door refuses the
+    # kwarg — the corruption-only shape).
     await wf_conn.execute(
         f'UPDATE "{wf_schema}".jobs SET metadata = metadata || $2::jsonb WHERE id = $1',  # noqa: S608
         flow_id,
         json.dumps({"wf_priority": "99999"}),
     )
 
-    # THE ADOPTED DRIVE: a fresh runner adopts the existing run and
-    # drives it — the stamp's resolution degrades, the declarations speak.
+    # a fresh runner adopts the existing run and drives it — the stamp's
+    # resolution degrades, the declarations speak.
     second = FlowRunner(compiled, wf_pool, wf_schema)
     claim = await second.create_flow(input=Ingest(doc_id="d"), run_key="adopt:clamp")
     assert not claim.created, claim
@@ -969,7 +969,7 @@ async def test_the_fleet_door_degrades_an_out_of_domain_stamp(
 ) -> None:
     """FIX 4 (the review's recommended — the post-parse domain clamp):
     a hand-crafted root stamp ``wf_priority="99999"`` — PARSEABLE, past
-    the smallint domain — degraded to NO override (the declarations — or
+    the smallint domain — degraded to no override (the declarations — or
     the column default — speak) and the fork PROCEEDED. The rejected
     variant: the parse accepted 99999 and the fork's smallint bind
     WEDGED the door (the DataError mid-finalize — the fork never landed,
@@ -1016,8 +1016,8 @@ async def test_the_fleet_door_degrades_an_out_of_domain_stamp(
 
     from taskq.backend._records import _job_row_from_record
 
-    # THE DOOR PROCEEDS: no raise, the fork lands at the DECLARED 2 (the
-    # stamp degraded to no-override — the declaration speaks).
+    # no raise, the fork lands at the declared 2 (the stamp degraded to
+    # no-override — the declaration speaks).
     await execute_flow_job(
         pool=module_pg_pool,
         schema=wf_schema,

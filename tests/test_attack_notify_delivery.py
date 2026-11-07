@@ -1,6 +1,6 @@
 """Attack: NOTIFY wake delivery under loss, storms, and mid-round arrival.
 
-Three behaviour-level attacks on the wake transport, all holding ONE
+Three behaviour-level attacks on the wake transport, all holding one
 contract: the wake is an OPTIMIZATION. A job enqueued to an idle worker
 must be claimed by a deadline whether or not any single NOTIFY survives
 -- the LISTEN path delivers it promptly, the poll fallback delivers it
@@ -16,7 +16,7 @@ the row (a stall).
   notifications keep firing -- after every cycle, delivery still lands
   by deadline (the reconnect's synthetic wake or the poll fallback
   carries it).
-* Total wake loss: NO listener running at all -- the poll fallback alone
+* Total wake loss: no listener running at all -- the poll fallback alone
   must still claim within the notify poll cadence's bound. A construction
   where neither the wake nor the poll delivers is the stall this asserts
   cannot exist.
@@ -151,7 +151,7 @@ async def test_wake_landing_during_a_claim_round_is_claimed_by_a_prompt_followup
             if "at" not in first_wake:
                 first_wake["at"] = asyncio.get_running_loop().time()
                 backend.wake_event.set()
-                # The row the wake announces, claimable only by a LATER
+                # The row the wake announces, claimable only by a later
                 # round: round 1 is already past its snapshot.
                 backend.jobs.append(make_job_row(status="pending"))
 
@@ -184,7 +184,7 @@ async def test_wake_landing_during_a_claim_round_is_claimed_by_a_prompt_followup
 
 async def test_reconnect_storm_delivers_by_deadline_every_cycle(pg_dsn: str) -> None:
     """pg_terminate_backend lands repeatedly while notifications keep
-    firing. After EVERY cycle - kill, enqueue during the outage, reconnect
+    firing. After every cycle - kill, enqueue during the outage, reconnect
     - the wake is delivered by deadline: the synthetic wake on the
     reconnected connection or the poll fallback carries it. Zero missed
     wakes across the storm."""
@@ -231,9 +231,9 @@ async def test_reconnect_storm_delivers_by_deadline_every_cycle(pg_dsn: str) -> 
                         )
                     sentinel.clear()
 
-                    # The next cycle needs the reconnect DONE: wait for the
+                    # The next cycle needs the reconnect done: wait for the
                     # connection to be replaced before killing again. Default
-                    # args bind THIS cycle's pid (B023: the closure outlives
+                    # args bind this cycle's pid (B023: the closure outlives
                     # the loop iteration it was defined in).
                     async def _reconnected(_pid: int = pid) -> bool:
                         conn = deps.notify_conn
@@ -259,7 +259,7 @@ async def test_reconnect_storm_delivers_by_deadline_every_cycle(pg_dsn: str) -> 
 
 
 async def test_claim_by_deadline_when_every_wake_is_lost(pg_dsn: str) -> None:
-    """The stall construction: NO listener loop at all - no LISTEN is ever
+    """The stall construction: no listener loop at all - no LISTEN is ever
     registered, so every wake is lost by construction. A job enqueued to
     an idle producer must still be claimed within the notify poll cadence's
     bound. If neither the wake (absent) nor the poll (must run) delivers,
@@ -278,7 +278,7 @@ async def test_claim_by_deadline_when_every_wake_is_lost(pg_dsn: str) -> None:
     finally:
         await raw_conn.close()
 
-    # Deliberately NO notify_listener_loop: the backend's wake subscribers
+    # Deliberately no notify_listener_loop: the backend's wake subscribers
     # (if any subscribed) would never be set - every wake is lost.
     shutdown_event = asyncio.Event()
     stop_event = asyncio.Event()

@@ -141,7 +141,7 @@ async def test_identity_key_without_unique_for_is_not_deduplicated(
 
     Actors with no ``unique_for`` legitimately keep many active jobs under
     one identity_key (that is what jobs_identity_active_idx indexes, and it
-    is deliberately NOT unique). The second reason the guarantee cannot be
+    is deliberately not unique). The second reason the guarantee cannot be
     a unique index: it would reject every one of these.
     """
     deps, backend = clean_jobs_app

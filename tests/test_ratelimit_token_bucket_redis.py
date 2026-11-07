@@ -69,10 +69,10 @@ async def test_burst_acceptance(private_redis_url: str) -> None:
     broker's replies, and the tenancy contract reserves every
     broker-latency assert for a per-test private Dragonfly.
 
-    The denial hint is pinned STATE-NOT-TIME, not to a wall-clock
+    The denial hint is pinned STATE-not-TIME, not to a wall-clock
     window: the script computes the hint and the remaining count from
     the same reply (hint == (count - remaining) / refill, exactly), so
-    the pin relates the decision's own two fields and holds at ANY
+    the pin relates the decision's own two fields and holds at any
     runner speed. The retired ``±0.5s around 1.0`` window was the
     hope-timing member of this test: it priced the TEST's own
     round-trip gaps, and the coverage leg's stall band (CI run
@@ -121,8 +121,8 @@ async def test_burst_acceptance(private_redis_url: str) -> None:
         elapsed = time.perf_counter() - start
         mean_per_acquire = elapsed / 100
         # Smoke gate against catastrophic regressions only (e.g. one
-        # EVALSHA round trip accidentally becoming N sequential calls) -
-        # NOT a perf gate: under full-suite parallel load the Docker VM
+        # evalsha round trip accidentally becoming N sequential calls) -
+        # not a perf gate: under full-suite parallel load the Docker vm
         # is contended enough that a 1ms mean flakes. 10ms still catches
         # a 20x+ round-trip regression. Traced-guarded: the per-line
         # tracer tax is orders of magnitude above the gate.
@@ -136,7 +136,7 @@ async def test_burst_acceptance(private_redis_url: str) -> None:
             # The exhaustion premise: the bucket spent the whole burst
             # and ten round trips at ~1 token/s refill cannot earn one
             # back between them - on an untraced runner. Under the
-            # tracer a stall CAN legitimately refill a full token
+            # tracer a stall can legitimately refill a full token
             # mid-loop (correct arithmetic, void premise), so the
             # premise is held on the untraced lanes only; the hint
             # invariant below asserts on every denial either way.
@@ -145,7 +145,7 @@ async def test_burst_acceptance(private_redis_url: str) -> None:
             if r.allowed:
                 continue
             assert r.retry_after is not None
-            # STATE-NOT-TIME: the hint against the decision's own
+            # state-not-time: the hint against the decision's own
             # remaining, the exact arithmetic the script runs. refill=1
             # makes the deficit the hint in seconds; the equality is
             # exact up to the timedelta's microsecond round trip.
@@ -173,7 +173,7 @@ async def test_burst_acceptance(private_redis_url: str) -> None:
         await client.aclose()
 
 
-# ── EVALSHA caching - register_script called once ─────────────
+# ── evalsha caching - register_script called once ─────────────
 
 
 async def test_evalsha_caching(redis_url: str) -> None:

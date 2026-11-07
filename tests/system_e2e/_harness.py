@@ -3,7 +3,7 @@
 This is the subprocess harness pattern from the conservation chaos suite
 (tests/test_rt_conservation_chaos.py's ``_spawn_consv_worker`` /
 ``_wait_for_socket`` pair), lifted into the system tier's shared module so
-every lifecycle scenario drives workers through ONE spawn surface: real
+every lifecycle scenario drives workers through one spawn surface: real
 OS processes running the real bootstrap, env-configured like a pod, with
 a health socket as the readiness signal.
 
@@ -20,6 +20,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from typing import IO, TYPE_CHECKING, NamedTuple
 from urllib.parse import urlparse, urlunparse
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 
 _WORKER_ENTRY = "tests.system_e2e._worker_entry"
 
-#: Fleet constants: the SINGLE SOURCE the tier's scenarios import when a
+#: Fleet constants: the single source the tier's scenarios import when a
 #: bound must scale with the fleet's cadence (``test_rolling_release_fleet.py``'s
 #: drain/lease bounds, the reaping-window budget below). ``_BASE_ENV`` derives
 #: from these same names, so a scenario can never drift from the cadence its
@@ -90,10 +91,10 @@ def stale_worker_reap_window_s(
 #: The co-tenancy stretch between a fleet-progress bound's arithmetic and
 #: its observation on a shared runner (dd4572ff's stall band, the same
 #: measured runner weather test_cancel_storm's storm deadline derives
-#: from). A bound that budgets PROGRESS — a settle, a reclaim sweep, a
+#: from). A bound that budgets progress — a settle, a reclaim sweep, a
 #: re-pickup after a requeue — multiplies its derived arithmetic by this,
 #: so a loaded runner stretches the bound instead of voiding the
-#: scenario; a bound that catches a LEAK keeps its bite either way, the
+#: scenario; a bound that catches a leak keeps its bite either way, the
 #: failure mode is "never", and no finite stretch tolerates it.
 TIER_LOAD_STRETCH = 2.0
 
@@ -132,17 +133,23 @@ def scoped_dsn(pg_dsn: str, schema: str) -> str:
 class WorkerProc(NamedTuple):
     """A spawned worker subprocess plus the readiness socket it was given.
 
-    ``log_path``: when the spawn was given a ``log_sink``, the file BOTH
+    ``log_path``: when the spawn was given a ``log_sink``, the file both
     streams write to - the diagnostic surface a partitioned worker's own
     failure record needs, and the reason partition scenarios use the sink
     at all: a worker whose PG path is cut logs every failed tick, and a
     64KB PIPE nobody drains fills in seconds, blocking the worker's
-    logging write - a WEDGE THE HARNESS ITSELF would manufacture, exactly
-    the "hang" the partition contracts say must not happen."""
+    logging write - a WEDGE the HARNESS ITSELF would manufacture, exactly
+    the "hang" the partition contracts say must not happen.
+
+    ``log_drain``: the tee reader thread that owns the log's finality.
+    The harness joins it at the process's death, so a log read after
+    graceful_stop/reap is the worker's final stderr, never a mid-drain
+    snapshot; None for hand-built WorkerProcs that carry no reader."""
 
     proc: subprocess.Popen[bytes]
     sock_path: str
     log_path: str | None = None
+    log_drain: threading.Thread | None = None
 
     @property
     def returncode(self) -> int | None:
@@ -175,7 +182,7 @@ def spawn_worker(
     pipe, and an undrained 64K pipe can never block a chatty worker
     mid-write.
 
-    ``log_sink``: a file path to redirect BOTH streams into. Scenarios
+    ``log_sink``: a file path to redirect both streams into. Scenarios
     whose workers log continuously (chaos windows, failing heartbeats)
     MUST pass one: the default PIPE pair is sized for short-lived
     readiness-spawned workers, and a full pipe blocks the child's first
@@ -208,18 +215,23 @@ def spawn_worker(
         stderr=stderr,
         stdout=stdout,
     )
+    log_drain: threading.Thread | None = None
     if log_file is not None:
         # The child owns the dup'ed descriptors now.
         log_file.close()
     else:
         # No sink given: drain the PIPEs with the daemon tee so a chatty
-        # worker can never wedge on a full 64K pipe.
-        _tee_stderr(proc, f"{sock_path}.worker.log")
-    return WorkerProc(proc=proc, sock_path=sock_path, log_path=log_sink)
+        # worker can never wedge on a full 64K pipe. The reader thread
+        # rides the WorkerProc: the harness joins it at the process's
+        # death, so the log file is final at assertion time.
+        log_drain = _tee_stderr(proc, f"{sock_path}.worker.log")
+    return WorkerProc(proc=proc, sock_path=sock_path, log_path=log_sink, log_drain=log_drain)
 
 
-def _tee_stderr(proc: subprocess.Popen[bytes], log_path: str) -> None:
-    """Drain *proc*'s stderr into *log_path* for the process's whole life."""
+def _tee_stderr(proc: subprocess.Popen[bytes], log_path: str) -> threading.Thread:
+    """Drain *proc*'s stderr into *log_path* for the process's whole
+    life. Returns the started reader thread: its EOF is the log file's
+    finality, and the harness joins it after the process is gone."""
 
     def _pump() -> None:
         with open(log_path, "wb") as log:
@@ -232,9 +244,30 @@ def _tee_stderr(proc: subprocess.Popen[bytes], log_path: str) -> None:
                 log.write(chunk)
                 log.flush()
 
-    import threading
+    reader = threading.Thread(target=_pump, daemon=True)
+    reader.start()
+    return reader
 
-    threading.Thread(target=_pump, daemon=True).start()
+
+def _join_log_drain(worker: WorkerProc, *, fail_loud: bool) -> None:
+    """The log's EOF sync, structural: after the process is dead, the
+    reader reaches its own EOF and the file is final. A reader that
+    never reaches EOF inside the bound is a harness defect: named
+    loudly on a normal stop (an error), and named while cleanup still
+    completes on the reap path."""
+    drain = worker.log_drain
+    if drain is None:
+        return
+    drain.join(timeout=5.0)
+    if drain.is_alive():
+        note = (
+            "the worker's log reader never reached EOF within 5s: the log "
+            f"file at {worker.log_path or worker.sock_path + '.worker.log'} "
+            "may be partial"
+        )
+        if fail_loud:
+            raise RuntimeError(note)
+        print(f"[harness] {note}")
 
 
 async def spawn_joined_worker(
@@ -333,21 +366,29 @@ def wait_worker_ready(worker: WorkerProc) -> None:
 def graceful_stop(worker: WorkerProc, timeout: float = 60.0) -> int:
     """SIGTERM, then wait; a worker past its termination grace is SIGKILLed
     and the exit code reports that (the caller's invariant decides whether
-    a -9 is acceptable)."""
+    a -9 is acceptable). The log reader is joined at its own EOF before
+    the call returns, on the clean path and on the SIGKILL path alike,
+    so the log file is final the moment the caller reads it."""
     proc = worker.proc
     proc.terminate()
     try:
-        return proc.wait(timeout=timeout)
+        rc = proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait(timeout=10)
-        return proc.returncode if proc.returncode is not None else -9
+        rc = proc.returncode if proc.returncode is not None else -9
+    _join_log_drain(worker, fail_loud=True)
+    return rc
 
 
 def reap(worker: WorkerProc) -> None:
-    """Teardown: make sure nothing survives the test, however the body ended."""
+    """Teardown: make sure nothing survives the test, however the body
+    ended. The log reader is joined too; a reader stuck past its bound
+    is named in the output (never silently suppressed), but the reap
+    still completes."""
     proc = worker.proc
     if proc.poll() is None:
         proc.kill()
     with contextlib.suppress(subprocess.TimeoutExpired):  # reap of last resort
         proc.wait(timeout=10)
+    _join_log_drain(worker, fail_loud=False)

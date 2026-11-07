@@ -88,7 +88,7 @@ async def main() -> None:
 
         # While the seats are held, the step waits. Whatever face the
         # wait takes — the claim holding the row back, or a claim that
-        # was denied and parked — the row must NOT fail and must NOT
+        # was denied and parked — the row must not fail and must not
         # spend its attempt. The denial's stamp and the denied bucket
         # are read off the row itself, and the seats' occupancy is the
         # reservation table's own read — the evidence is the rows'

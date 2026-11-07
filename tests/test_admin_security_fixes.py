@@ -45,7 +45,11 @@ def _dev_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[report
 
 
 class _ScheduleRunConn:
-    """Fake asyncpg connection that returns configurable rows by query keyword."""
+    """Fake asyncpg connection that returns configurable rows by query keyword.
+
+    fail-closed-exempt: the schedule-run SECURITY refusal arms (auth/CSRF/gate
+    shapes scripted, no PG).
+    """
 
     def __init__(
         self,
@@ -356,7 +360,7 @@ def test_job_cancel_rejects_when_actions_disabled(
 # These three mutated `cron_schedules` directly behind CSRF plus the router
 # auth dependency and nothing else, while `run`, `retry` and `cancel` were all
 # gated on `admin_actions_enabled`. A missing gate rather than a bypassed one --
-# but DISABLING a production cron schedule is at least as damaging as running
+# but disabling a production cron schedule is at least as damaging as running
 # one, and it was reachable by any principal who could reach the admin UI,
 # including under the unauthenticated dev/air-gapped configuration the factory
 # supports. Silently stopping scheduled work is also far harder to notice than

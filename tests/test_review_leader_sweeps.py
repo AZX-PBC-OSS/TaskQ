@@ -13,7 +13,7 @@ Five shapes the existing suites had not pinned:
   arm is unconditional on liveness, so the two arms can both match the
   same lapsed row in the same instant. The upsert serialises on the row
   and exactly one candidate may win.
-* ``_drain_bounded``'s demotion clause for the EVERY-TICK sweeps: a
+* ``_drain_bounded``'s demotion clause for the every-TICK sweeps: a
   leader demoted mid-drain stops between committed batches (the prune
   family's gate has this pin; the shared runner's did not).
 * Spec isolation across ticks: one sweep's UNEXPECTED failure skips the
@@ -147,7 +147,7 @@ async def test_release_session_lock_drains_a_stacked_hold_to_zero(pg_dsn: str) -
     survives), leaving the pooled session holding one count. The next
     attempt on that same session re-acquires - ``pg_try_advisory_lock``
     is reentrant per session, so it returns true and the count reaches
-    two - and the attempt's release pops ONE count, reports success, and
+    two - and the attempt's release pops one count, reports success, and
     returns. Every other pod then reads the lock held until that session
     is recycled, with no further release ever reaching zero.
 
@@ -204,7 +204,7 @@ async def test_holder_racing_a_peer_for_its_own_lapsed_row_elects_exactly_one_wi
     """The own-row arm and the takeover arm can match the same lapsed row
     in the same instant - the previous holder re-electing while a peer's
     takeover predicate reads the row's pre-refresh state. The upsert
-    serialises on the singleton row, so exactly ONE candidate wins per
+    serialises on the singleton row, so exactly one candidate wins per
     instant, and the loser's conflict update re-evaluates against the
     winner's fresh row and matches nothing.
     """
@@ -301,7 +301,7 @@ async def test_sweep_drain_stops_at_batch_boundary_on_demotion() -> None:
     assert drain_calls == 4
     assert clean is True
 
-    # Now the demotion mid-drain: leadership drops after the FIRST drain
+    # Now the demotion mid-drain: leadership drops after the first drain
     # call, and the drain must stop there instead of running the remaining
     # three batches.
     drain_calls = 0
@@ -397,7 +397,7 @@ async def test_retry_rung_no_earlier_than_the_fire_is_the_scheduled_fire() -> No
     """
     shutdown = asyncio.Event()
     fire_soon = datetime.now(UTC) + timedelta(seconds=0.1)
-    # Retry rung LONGER than the time left: the sleep ends at the fire,
+    # Retry rung longer than the time left: the sleep ends at the fire,
     # not at the rung - the fresh-sequence arm.
     woke_for_retry = await _sleep_until_next_attempt(shutdown, fire_soon, 5.0)
     assert woke_for_retry is False, (

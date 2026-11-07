@@ -8,7 +8,7 @@ owns the advisory lock, the migration application, the flag read, the
 conversion call, and the capability-refusal exit - none of it mocked.
 The pinned surface:
 
-* the happy deploy: flag on, fresh schema - migrations AND conversion in
+* the happy deploy: flag on, fresh schema - migrations and conversion in
   one invocation, the hypertable shape exact;
 * the mid-life enable: a populated vanilla database converts with every
   row preserved (the ``migrate_data`` promise, counted);
@@ -144,7 +144,7 @@ async def _drop_schema(conn: asyncpg.Connection, schema: str) -> None:
 
 @pytest.mark.asyncio
 async def test_deploy_enables_hypertables_end_to_end(deploy_dsn: str, deploy_schema: str) -> None:
-    """Flag on, fresh schema: ONE invocation applies every migration AND
+    """Flag on, fresh schema: one invocation applies every migration and
     converts - the operator's entire opt-in is the env var."""
     schema = deploy_schema
     result = _invoke_migrate_up(deploy_dsn, schema, flag=True)
@@ -183,7 +183,7 @@ async def test_deploy_enables_hypertables_end_to_end(deploy_dsn: str, deploy_sch
             schema,
         )
         assert fks == 0, "the archive-attempts FK must be dropped under the flag"
-        # The retention policies are registered for THIS schema's
+        # The retention policies are registered for this schema's
         # hypertables (Timescale names the background jobs itself -
         # "Retention Policy [N]" - so scope by hypertable, not name).
         policy_jobs = await conn.fetch(
@@ -261,7 +261,7 @@ async def test_midlife_enable_preserves_every_row(deploy_dsn: str) -> None:
                 i // n_archive,
             )
 
-        # Phase 2: flip the flag; the SAME deploy path converts.
+        # Phase 2: flip the flag; the same deploy path converts.
         result = _invoke_migrate_up(deploy_dsn, schema, flag=True)
         assert result.returncode == 0, f"stderr: {result.stderr}"
 
@@ -276,7 +276,7 @@ async def test_midlife_enable_preserves_every_row(deploy_dsn: str) -> None:
             await conn.fetchval(f'SELECT count(*) FROM "{schema}".job_attempts_archive')
             == n_attempts
         )
-        # The rows are IN CHUNKS (the rewrite happened): at least one chunk
+        # The rows are in chunks (the rewrite happened): at least one chunk
         # exists per populated table and the data reads through the hypertable.
         chunks = await conn.fetch(
             "SELECT hypertable_name, count(*) AS n "
@@ -333,7 +333,7 @@ async def test_capability_refusal_exits_one_names_the_setting(vanilla_dsn: str) 
 
     conn = await asyncpg.connect(vanilla_dsn)
     try:
-        # The migrations APPLIED (the refusal is post-migration, and it
+        # The migrations applied (the refusal is post-migration, and it
         # must not roll the schema back or report it damaged).
         tables = {
             r["table_name"]
@@ -376,7 +376,7 @@ async def test_flag_off_after_enable_changes_nothing(deploy_dsn: str) -> None:
     try:
         # Identity, not a name proxy: the bgw job id is minted at
         # registration, so a re-registration (down- then up-converted
-        # policies) would surface as NEW ids - and the interval rides
+        # policies) would surface as new ids - and the interval rides
         # along so any drift from "last-registered" fails here too.
         policies_before = await conn.fetch(
             "SELECT job_id, hypertable_name, schedule_interval "
@@ -413,7 +413,7 @@ async def test_flag_off_after_enable_changes_nothing(deploy_dsn: str) -> None:
 
 
 def _vanilla_settings(dsn: str, schema: str) -> WorkerSettings:
-    """The disable gate's settings: the flag flipped OFF first (the mirror
+    """The disable gate's settings: the flag flipped off first (the mirror
     of enable's flag-on gate)."""
     return WorkerSettings.load_from_dict(
         {

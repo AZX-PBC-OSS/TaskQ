@@ -166,7 +166,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
             correctness, use ConcurrencyReservation.
 
         metadata: Arbitrary key-value metadata stored in
-            ``actor_config.metadata`` (``jsonb NOT NULL``). Must be a
+            ``actor_config.metadata`` (``jsonb not NULL``). Must be a
             plain ``dict[str, object]``, mapping proxies and
             frozendicts are rejected at decoration time to avoid
             surprises at JSONB serialization time. ``retention_days``
@@ -276,12 +276,12 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         self.singleton = singleton
         self.max_concurrent = max_concurrent
         self.max_pending = max_pending
-        # THE CAPACITY OWNER: "operator" (the default) is the
-        # estate's own law — the stored row wins on every conflict. "code"
-        # hands max_concurrent/result_ttl to the declaration: the startup
-        # upsert rewrites them from the literal on every boot (the retry
-        # contract's law, on the capacity axes), so a changed literal
-        # deploys instead of silently doing nothing after first boot.
+        # "operator" (the default) is the estate's own law — the stored row
+        # wins on every conflict. "code" hands max_concurrent/result_ttl to the
+        # declaration: the startup upsert rewrites them from the literal on
+        # every boot (the retry contract's law, on the capacity axes), so a
+        # changed literal deploys instead of silently doing nothing after first
+        # boot.
         self.capacity_owner = capacity_owner
         self.metadata = {} if metadata is None else metadata
         self.unique_for = unique_for
@@ -521,7 +521,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
             contract's own law, on the capacity axes), so a changed
             literal deploys by code instead of silently doing nothing
             after first boot. The queue assignment and ``max_pending``
-            stay operator-owned for BOTH owners: the queue is moved by
+            stay operator-owned for both owners: the queue is moved by
             ``taskq actor-config move-queue`` (a code literal must not
             undo a rolling operator move), and ``max_pending`` is
             enforced by the producer-side enqueue admission reading the
@@ -539,10 +539,10 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
             enqueues until it terminates. For per-identity singleton
             semantics use ``max_concurrent=1`` with an ``identity`` key
             instead. The library reserves the ``metadata.singleton``
-            JSONB key, callers MUST NOT set it manually.
+            JSONB key, callers MUST not set it manually.
 
         metadata: Arbitrary key-value metadata stored in
-            ``actor_config.metadata`` (``jsonb NOT NULL``). Must be a
+            ``actor_config.metadata`` (``jsonb not NULL``). Must be a
             plain ``dict[str, object]``, mapping proxies and
             frozendicts are rejected at decoration time to avoid
             surprises at JSONB serialization time. Pass ``None`` to
@@ -555,7 +555,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
             says the work already happened, the precise condition the
             window exists to detect. The remaining terminal states
             (``failed``, ``cancelled``, ``crashed``, ``abandoned``) are
-            excluded because they mean the work did NOT happen, so
+            excluded because they mean the work did not happen, so
             matching them would let one failure suppress the identity for
             the rest of the window. To block only concurrent execution,
             pass ``unique_states=("pending", "scheduled", "running")``;
@@ -745,7 +745,7 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
         )
     payload_type: type[P] = typing.cast("type[P]", payload_annotation)
 
-    # Walk remaining parameters: classify each as ctx or DI by annotation.
+    # Walk remaining parameters: classify each as ctx or di by annotation.
     wants_ctx = False
     ctx_param_name: str | None = None
     dependencies: dict[str, type[object]] = {}
@@ -774,7 +774,7 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
             wants_ctx = True
             ctx_param_name = param.name
             continue
-        # DI dependency: annotation must resolve to a concrete type at
+        # di dependency: annotation must resolve to a concrete type at
         # runtime so the resolver can build a provider graph.
         if not isinstance(annotation, type):
             raise TypeError(

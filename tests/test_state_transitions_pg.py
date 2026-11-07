@@ -327,7 +327,7 @@ class TestStateTransitionEquivalence:
 class TestDeadlineSweep:
     """Deadline sweep: pending/scheduled past schedule_to_close → failed with DeadlineExceeded.
 
-    evidence: AttemptRow written with started_at IS NOT NULL.
+    evidence: AttemptRow written with started_at IS not NULL.
     """
 
     async def test_pending_past_deadline(self, clean_jobs_app: JobsApp) -> None:
@@ -429,8 +429,8 @@ class TestPollingLifecycle:
 
         async with deps.worker_pool.acquire() as conn:
             # 5s margin, not 1s: the application process and the PG server
-            # keep separate clocks that can diverge by whole seconds (VM
-            # pause/resume and NTP drift are common causes; see
+            # keep separate clocks that can diverge by whole seconds (vm
+            # pause/resume and ntp drift are common causes; see
             # tests/conftest.py's startup clock-divergence check), so the
             # job must be pushed firmly into the server clock's past for
             # the sweep's server-side `scheduled_at <= clock_timestamp()`
@@ -555,7 +555,7 @@ class TestIsolateSelfPending:
 class TestIsolateSelfCrashed:
     """running → crashed via isolate_self when retries exhausted.
 
-    Oracle: status='crashed', error_class='HeartbeatLost' (NOT
+    Oracle: status='crashed', error_class='HeartbeatLost' (not
     'WorkerCrashed' - forensic distinction with Sweep 1 is intentional).
     """
 
@@ -615,7 +615,7 @@ class TestIsolateSelfCrashed:
             # The isolate's crashed arm now self-describes
             # on the job row, the same doctrine sweep 1's crashed arm follows.
             # The old template left both fields NULL while claiming the
-            # branch-for-branch mirror of the sweep's SET clause. The label is
+            # branch-for-branch mirror of the sweep's set clause. The label is
             # 'HeartbeatLost', not the sweep's 'WorkerCrashed': isolate means
             # the worker itself declared PG unreachable and walked away.
             assert row["error_class"] == "HeartbeatLost"

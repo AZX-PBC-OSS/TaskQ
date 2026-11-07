@@ -42,7 +42,7 @@ from taskq.settings import WorkerSettings
 from taskq.testing.jobs import make_enqueue_args
 from taskq.testing.pg import create_workered_running_job
 from taskq.worker._handlers import (
-    _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: the infra-classification tuple IS the defect under test; importing it is the only way to pin the misclassification.
+    _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: the infra-classification tuple is the defect under test; importing it is the only way to pin the misclassification.
 )
 
 pytestmark = pytest.mark.integration
@@ -297,7 +297,7 @@ async def test_enqueue_overdeep_payload_raises_type_error(pg_env: _PgEnv) -> Non
 
 
 async def test_enqueue_stores_malformed_payload_verbatim(pg_env: _PgEnv) -> None:
-    """GREEN architecture pin: PG-side enqueue performs NO payload
+    """GREEN architecture pin: PG-side enqueue performs no payload
     content validation -- wrong types and extra keys land verbatim, and
     dispatch-time ``validate_actor_payload`` (PayloadValidationError,
     non-retryable -- pinned in the runner suite) owns the payload
@@ -316,7 +316,7 @@ async def test_enqueue_stores_malformed_payload_verbatim(pg_env: _PgEnv) -> None
 
 async def test_progress_state_merge_last_writer_wins_on_type_change(pg_env: _PgEnv) -> None:
     """GREEN: jsonb ``||`` merge is last-writer-wins per top-level key
-    with NO coercion -- ``{"step": 1}`` then ``{"step": "one"}`` stores
+    with no coercion -- ``{"step": 1}`` then ``{"step": "one"}`` stores
     the string, and the in-memory mirror's ``dict |`` semantics agree
     exactly."""
     worker_id, job_id = await _seed_running_job(pg_env)

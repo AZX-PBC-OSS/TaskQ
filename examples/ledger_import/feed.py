@@ -15,7 +15,7 @@ from pathlib import Path
 
 from examples.ledger_import.models import CURRENCIES, MEMO_MAX_CHARS
 
-# Every NTH row is invalid; the classes cycle in a fixed order so each
+# Every nth row is invalid; the classes cycle in a fixed order so each
 # intake rule gets its share of the quarantine.
 INVALID_STRIDE = 13
 INVALID_CLASSES = (

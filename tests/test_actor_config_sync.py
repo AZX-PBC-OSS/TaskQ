@@ -161,7 +161,7 @@ async def test_capacity_divergence_max_concurrent_does_not_raise() -> None:
     """max_concurrent divergence is an expected operator override, not an error.
 
     Pre-populate SELECT with max_concurrent=5 for actor "X"; register
-    max_concurrent=3. sync_actor_config must NOT raise - the stored
+    max_concurrent=3. sync_actor_config must not raise - the stored
     value is authoritative and capacity divergence is never fatal,
     regardless of ``force``.
     """
@@ -174,7 +174,7 @@ async def test_capacity_divergence_max_concurrent_does_not_raise() -> None:
         force=False,
     )
 
-    # UPSERT still executed; capacity divergence never blocks startup.
+    # upsert still executed; capacity divergence never blocks startup.
     assert len(fake_conn._execute_calls) == 1
 
 
@@ -240,7 +240,7 @@ async def test_force_true_drift_proceeds_with_upsert() -> None:
     )
 
     assert result is None
-    # UPSERT executed despite drift
+    # upsert executed despite drift
     assert len(fake_conn._execute_calls) == 1
 
 
@@ -288,7 +288,7 @@ async def test_metadata_structural_equality_no_drift() -> None:
         force=False,
     )
 
-    # No ActorConfigDriftList raised; UPSERT executed
+    # No ActorConfigDriftList raised; upsert executed
     assert len(fake_conn._execute_calls) == 1
 
 
@@ -345,7 +345,7 @@ async def test_new_actor_no_stored_row_no_drift() -> None:
         force=False,
     )
 
-    # No ActorConfigDriftList raised; UPSERT executed
+    # No ActorConfigDriftList raised; upsert executed
     assert len(fake_conn._execute_calls) == 1
 
 
@@ -440,7 +440,7 @@ async def test_capacity_divergence_result_ttl_does_not_raise() -> None:
     """result_ttl divergence is an expected operator override, not an error.
 
     Pre-populate SELECT with result_ttl=60.0 for actor "X"; register
-    result_ttl=120.0. sync_actor_config must NOT raise - the stored
+    result_ttl=120.0. sync_actor_config must not raise - the stored
     value is authoritative and capacity divergence is never fatal,
     regardless of ``force``.
     """
@@ -456,7 +456,7 @@ async def test_capacity_divergence_result_ttl_does_not_raise() -> None:
     assert len(fake_conn._execute_calls) == 1
 
 
-# ── UPSERT SQL shape ─────────────────────────────────────────────────────────
+# ── upsert SQL shape ─────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -587,7 +587,7 @@ async def test_retry_contract_divergence_warns_and_does_not_raise(
 
     # The warning must actually fire: deleting the logger.warning call below
     # must turn this pin red, the overwrite it announces would otherwise be
-    # silent. The event carries the PRE-write stored pair - it announces the
+    # silent. The event carries the pre-write stored pair - it announces the
     # mismatch the upsert is about to erase, not the converged values it
     # just wrote (a warning describing a mismatch it already erased would be
     # noise about nothing).
@@ -856,7 +856,7 @@ async def test_integration_force_true_never_overwrites_capacity_or_queue(
     """force=True overwrites metadata drift but never touches the capacity
     fields or the queue assignment.
 
-    Registers a differing max_concurrent AND queue simultaneously with
+    Registers a differing max_concurrent and queue simultaneously with
     force=True: neither is overwritten - both are operator-owned once the
     row exists.
     """

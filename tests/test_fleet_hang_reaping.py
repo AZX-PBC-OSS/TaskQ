@@ -288,7 +288,7 @@ async def test_a_hanging_job_does_not_block_its_pods_other_work(
 
         async def _hang(_payload: FleetPayload, _ctx: object) -> str:
             hanging_started.set()
-            # The wait IS the hang under test; it ends when the test
+            # The wait is the hang under test; it ends when the test
             # releases it, never on a timer.
             await release.wait()
             return "eventually"

@@ -1,10 +1,10 @@
-"""THE DELIVERED OUTBOX'S TTL — the D2 soak's P3 fix's pins (integration:
+"""The delivered outbox's TTL — the d2 soak's p3 fix's pins (integration:
 real PG).
 
 The soak's evidence (REPORT-D2-soak): the delivered ``wf_outbox``
 population grew monotonically forever — 5.9k at close, no pruner touched
 it. These pins hold the fix: delivered rows past the TTL delete (the
-retention policy's own row), undelivered rows are NEVER touched (a
+retention policy's own row), undelivered rows are never touched (a
 deleted undelivered row is a lost delivery — the drain owns those), and
 ``timedelta(0)`` is the disable sentinel (the deletion-sweep family's
 zero-means-off), while the DEFAULT keeps the TTL alive — the policy's
@@ -48,7 +48,7 @@ async def _outbox_row(
 async def test_delivered_outbox_ttl_prunes_delivered_only(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE OUTBOX TTL (the D2 soak's P3): delivered rows past the period
+    """The outbox TTL (the D2 soak's P3): delivered rows past the period
     delete (the retention policy's own row — the soak measured the
     delivered population monotone-forever, 5.9k at close, no pruner);
     DELIVERED-FRESH and UNDELIVERED-OLD rows survive (a deleted

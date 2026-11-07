@@ -3,13 +3,13 @@
 
 Phase A spawns a fresh driver process (its own flow, execution ledger
 ON), waits until a slice of the fleet is terminal, then SIGKILLs the
-process mid-fan-out. Phase B resumes the SAME flow id the way a
+process mid-fan-out. Phase B resumes the same flow id the way a
 deployment resumes it: a real WORKER process — whose maintenance leader
 owns the lock-reclaim sweep — picks the run up, re-claims exactly the
 work that was not durably done, and drives the run to terminal. The
 drill proves:
 
-1. the entities already terminal when the kill landed did NOT re-run
+1. the entities already terminal when the kill landed did not re-run
    (exactly one execution-ledger row each — the idempotent face);
 2. the incomplete entities finished (the re-claim re-runs exactly the
    work that was not durably done — their ledger rows may exceed one,
@@ -59,7 +59,7 @@ async def _phase_launch() -> None:
     flow_id = (await runner.create_flow(input=plan)).flow_id
     print(f"run={flow_id}", flush=True)
 
-    # the drive task is INTENTIONALLY unawaited: the drill's parent
+    # the drive task is intentionally unawaited: the drill's parent
     # SIGKILLs this process mid-fan-out — that is the drill's premise.
     asyncio.create_task(runner.drive(flow_id, until="terminal"))  # noqa: RUF006
     while True:
@@ -80,7 +80,7 @@ async def _phase_launch() -> None:
 
 
 async def _phase_resume() -> None:
-    """Phase B: a fresh process re-drives the SAME flow through the
+    """Phase B: a fresh process re-drives the same flow through the
     fleet's own recovery (the worker's maintenance leader reclaims the
     dead process's expired locks)."""
     schema = os.environ["TASKQ_SCHEMA_NAME"]
@@ -88,7 +88,7 @@ async def _phase_resume() -> None:
     runner = FlowRunner(app.get("site_audit"), pool, schema)
     flow_id = sys.argv[2]
 
-    # the pre-resume truth: WHICH sites were durably done at the kill
+    # the pre-resume truth: which sites were durably done at the kill
     rows = await pool.fetch(
         f'SELECT map_index, payload FROM "{schema}".jobs '
         f"WHERE (metadata->>'flow_id')::uuid = $1 AND step_key LIKE 'plan.item%' "
@@ -158,7 +158,7 @@ async def drill() -> None:
     schema = _harness.use_schema("resume")
     await _harness.provision(schema)
 
-    # the execution ledger records every audit body START (the drills' receipt)
+    # the execution ledger records every audit body start (the drills' receipt)
     os.environ["TASKQ_AUDIT_EXEC_LEDGER"] = "1"
     env = dict(os.environ)
 
@@ -194,7 +194,7 @@ async def drill() -> None:
     proc.wait()
     print(f"SIGKILLED the driver (pid={proc.pid}) mid-fan-out: run={flow_id}")
 
-    # phase B: a fresh process resumes the SAME flow id through the fleet
+    # phase B: a fresh process resumes the same flow id through the fleet
     resume = subprocess.Popen(  # noqa: S603 — the drill's own module, fixed argv
         [sys.executable, "-m", "examples.site_audit.drills.resume", "resume", flow_id],
         env=env,

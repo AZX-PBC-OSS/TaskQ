@@ -68,7 +68,7 @@ def test_default_ordering_cursor_matches_the_loose_argument_encoder() -> None:
 
 
 def test_finished_at_cursor_carries_a_null_seam() -> None:
-    """``finished_at DESC NULLS LAST`` pages through unfinished rows too.
+    """``finished_at DESC NULLS last`` pages through unfinished rows too.
 
     The seam between two NULL rows is a cursor whose leading field has no
     value; it must survive the round trip as ``None`` rather than as the

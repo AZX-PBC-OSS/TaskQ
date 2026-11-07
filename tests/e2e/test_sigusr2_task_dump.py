@@ -11,7 +11,7 @@ live asyncio task plus a raw stderr marker line:
 The test enqueues a ``slow_deliver_webhook`` (3 s sleep), waits for the
 ``started`` effect (job is in-flight), sends SIGUSR2 via the Docker API,
 and verifies the dump marker appears in the container's stdout/stderr
-logs. The worker is NOT killed - SIGUSR2 is a diagnostic signal, not a
+logs. The worker is not killed - SIGUSR2 is a diagnostic signal, not a
 shutdown signal.
 """
 
@@ -55,7 +55,7 @@ async def test_sigusr2_task_dump(
     marker and one record per live task to stderr.
 
     (c) Poll the container logs until the marker
-    ``"=== task dump (sigusr2/sigusr2)"`` appears. The worker is NOT
+    ``"=== task dump (sigusr2/sigusr2)"`` appears. The worker is not
     killed - SIGUSR2 is a diagnostic signal, not a shutdown signal.
 
     (d) Verify the worker is still running after the dump, and the job

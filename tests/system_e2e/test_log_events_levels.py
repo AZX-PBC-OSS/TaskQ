@@ -6,7 +6,7 @@ setting makes:
 
 - ``warning``: a real failing job's ``job-failed`` line survives on the
   worker's stream while the per-job ``state-change`` lines are gone;
-- ``off``: the state-change lines are gone entirely AND the
+- ``off``: the state-change lines are gone entirely and the
   ``job_events`` ledger still received every event (the DB ledger is the
   audit trail - the knob suppresses the streaming duplicate only, it
   never touches the ledger);
@@ -164,7 +164,7 @@ async def test_warning_level_keeps_failures_drops_state_changes(
             await conn.close()
 
         names = _event_names(log_sink)
-        # The anomaly stream survives: the real failure's ERROR line is on
+        # The anomaly stream survives: the real failure's error line is on
         # the worker's stream.
         assert "job-failed" in names, (
             f"the failure stream was suppressed at warning: {sorted(names)[:30]}"
@@ -215,9 +215,9 @@ async def test_off_level_keeps_the_ledger_complete(
             f"WARNING-and-above anomalies must survive off: {sorted(names)[:30]}"
         )
 
-        # THE LEDGER PIN: every job event is in job_events - the
-        # state_change rows the suppressed log lines duplicated are all
-        # there, for the succeeded job and the failed one alike.
+        # every job event is in job_events - the state_change rows the
+        # suppressed log lines duplicated are all there, for the succeeded job
+        # and the failed one alike.
         for handle in (ok, bad):
             kinds = {
                 r["kind"]

@@ -7,7 +7,7 @@ reconstruct from the ledger alone.
 Pins, matching the gates this column ships under:
 
 - the chain-reconstruction pin: a job with two retries carries, on each
-  attempt row, that attempt's OWN due time (not the next retry's
+  attempt row, that attempt's own due time (not the next retry's
   reschedule, not the first attempt's);
 - the NULL-legacy pin: pre-migration attempt rows read NULL, documented,
   never backfilled;
@@ -42,7 +42,7 @@ from taskq.testing.pg import create_worker
 from taskq.worker._leader_shared import _JOB_ATTEMPTS_COLUMNS
 from taskq.worker.leader import prune_terminal_jobs
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timescale]
 
 _LOCK_LEASE = timedelta(seconds=30)
 
@@ -100,7 +100,7 @@ async def test_retry_chain_reconstructs_each_attempt_own_due_time(
     attempt k's claim ran against, which is also attempt k+1's wait
     START, so ``due_at(k) -> started_at(k) -> due_at(k+1)`` reconstructs
     the chain. The reschedule arm (mark_retry) must stamp the PRE-reschedule
-    value: the same statement's new scheduled_at belongs to the NEXT
+    value: the same statement's new scheduled_at belongs to the next
     attempt."""
     backend = clean_jobs_app.backend
     deps = clean_jobs_app.deps
@@ -175,10 +175,10 @@ async def test_retry_chain_reconstructs_each_attempt_own_due_time(
 
     rows = {r.attempt: r for r in await backend.get_attempts(job_id)}
     assert set(rows) == {1, 2, 3}
-    # THE PIN: each attempt's due_at is its OWN claim-time due time -
-    # attempt 1's is the enqueue's; the retried attempts' are the values
-    # their claims ran against (the pre-reschedule reads), never the
-    # reschedule the retry arm wrote in the same statement.
+    # each attempt's due_at is its own claim-time due time - attempt 1's is the
+    # enqueue's; the retried attempts' are the values their claims ran against
+    # (the pre-reschedule reads), never the reschedule the retry arm wrote in
+    # the same statement.
     assert rows[1].due_at == due_1
     assert rows[2].due_at == due_2
     assert rows[2].due_at != rescheduled_1
@@ -230,7 +230,7 @@ async def test_crash_reclaim_stamps_the_pre_reschedule_due_time(
     module_pg_schema: Any,
 ) -> None:
     """Sweep 1's crashed attempt rows carry the claim-time due time, read
-    BEFORE the re-pend arm reschedules the row."""
+    before the re-pend arm reschedules the row."""
     from taskq.backend._sweeps import sweep_expired_locks
     from taskq.testing.pg import create_running_job
 
@@ -252,7 +252,7 @@ async def test_crash_reclaim_stamps_the_pre_reschedule_due_time(
     # (statement_timestamp()), so both stamps are set server-side: the
     # lock expired, and the claim's due time is a fixed, capturable
     # server value (the sweep's re-pend arm will overwrite it - that
-    # overwrite is exactly what the due_at stamp must NOT read).
+    # overwrite is exactly what the due_at stamp must not read).
     await clean_pg_conn.execute(
         f'UPDATE "{schema}".jobs SET scheduled_at = statement_timestamp() '
         "- interval '2 minutes', lock_expires_at = statement_timestamp() "
@@ -362,7 +362,7 @@ async def test_pre_migration_attempts_read_null_and_stay_null(pg_dsn: str) -> No
     schema = "legacy_due_" + new_uuid().hex[:10]
     conn = await asyncpg.connect(pg_dsn)
     try:
-        # The world BEFORE 01.00.20_04: every migration up to (but
+        # The world before 01.00.20_04: every migration up to (but
         # excluding) it, applied raw with their ledger rows recorded so
         # the runner's later apply_pending starts at the new file. One
         # attempt written by the old writers (which named no due_at
@@ -430,7 +430,7 @@ async def test_pre_migration_attempts_read_null_and_stay_null(pg_dsn: str) -> No
 
 async def test_due_at_migration_applies_twice(pg_dsn: str) -> None:
     """The migration's own idempotence: running its statements a second
-    time on an already-migrated schema is a no-op (``IF NOT EXISTS``)."""
+    time on an already-migrated schema is a no-op (``IF not EXISTS``)."""
     from taskq.migrate import discover
 
     migration = next(m for m in discover() if m.version == "01.00.20_04")

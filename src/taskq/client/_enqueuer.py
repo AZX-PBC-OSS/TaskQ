@@ -94,9 +94,9 @@ _parent_tags_var: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextV
 
 # The fan-out ledger's contextvar: the enqueuing parent's job id,
 # the sibling of the tag-inheritance var above. Set together at worker
-# entry (worker/run.py and worker/_consumer.py set BOTH — the ledger
+# entry (worker/run.py and worker/_consumer.py set both — the ledger
 # stamp and the tag inheritance are one parent context), read by every
-# child-creating enqueue arm. The ledger is EXACT accounting: children
+# child-creating enqueue arm. The ledger is exact accounting: children
 # carry parent_id regardless of whether they inherit tags
 # (inherit_tags=False suppresses decoration, not linkage), and the
 # backpressure read counts pending children by it exactly.
@@ -157,7 +157,7 @@ def current_parent_id() -> JobId | None:
 def parent_tags(tags: tuple[str, ...], job_id: JobId | None = None) -> Generator[None, None, None]:
     """Context manager that sets the parent context for the duration of the block.
 
-    The ONE context the worker entry installs: the parent's tags for
+    The one context the worker entry installs: the parent's tags for
     sub-job tag inheritance, and — when *job_id* is passed — the
     parent's job id for the fan-out ledger (``parent_id`` stamped on
     every child enqueue, the exact pending-children accounting the
@@ -248,7 +248,7 @@ class SubJobEnqueuer:
         """Read the submit path's backpressure state for *queues*.
 
         The actor body's slice of the read (the fan-out decision
-        happens HERE, in the parent's execution): same contract as
+        happens here, in the parent's execution): same contract as
         :meth:`JobsClient.backpressure` — the actor-scoped verdict, the
         fail-open ``unknown`` state, advisory semantics — reading this
         enqueuer's own backend and capacity cache. ``parent_id`` defaults
@@ -322,7 +322,7 @@ class SubJobEnqueuer:
         ``_batch_id`` is a library-internal parameter used by
         :meth:`enqueue_batch` to stamp ``batch_id`` into metadata after
         :func:`build_enqueue_args` has stripped any caller-supplied
-        ``batch_id`` (the security boundary). Callers MUST NOT pass it.
+        ``batch_id`` (the security boundary). Callers MUST not pass it.
         """
         resolved_queue = actor_ref.queue
         identity_key_str = str(identity_key) if identity_key is not None else ""
@@ -374,7 +374,7 @@ class SubJobEnqueuer:
                 parent_id=current_parent_id(),
             )
             if _batch_id is not None:
-                #  stamp batch_id AFTER build_enqueue_args, which strips
+                #  stamp batch_id after build_enqueue_args, which strips
                 # any caller-supplied batch_id as a security boundary.
                 args = replace(
                     args,
@@ -462,7 +462,7 @@ class SubJobEnqueuer:
             self._loop_scope_resolved is not None
             and (loop_conn := self._loop_scope_resolved.get(_asyncpg.Connection)) is not None
         ):
-            # Why: cast, loop_conn comes from Mapping[type, object]; the DI resolver guarantees it is asyncpg.Connection at runtime
+            # Why: cast, loop_conn comes from Mapping[type, object]; the di resolver guarantees it is asyncpg.Connection at runtime
             return cast(_asyncpg.Connection, loop_conn), True
         return None, False
 
@@ -589,7 +589,7 @@ class SubJobEnqueuer:
                 rows = await self._backend.enqueue_batch(args_list, connection=conn)
             except BatchMaxPendingExceededError as exc:
                 # Why convert here: the backend's per-actor partition
-                # admission refuses the over-cap actors' items AFTER the
+                # admission refuses the over-cap actors' items after the
                 # within-cap actors' items are inserted, and this method's
                 # no-connection fallback already surfaces per-item
                 # failures as PartialBatchError (succeeded count + failed
@@ -680,7 +680,7 @@ class SubJobEnqueuer:
     async def flush_buffer(self) -> None:
         """Flush buffered EnqueueArgs to the backend (in-memory simulation).
 
-        Called by the consumer on actor success, AFTER the LOOP-scope
+        Called by the consumer on actor success, after the LOOP-scope
         transaction has committed. Per-item flush failures are collected
         and re-raised as :class:`~taskq.exceptions.SubEnqueueError` after
         the loop completes so callers can detect lost sub-jobs.
@@ -689,7 +689,7 @@ class SubJobEnqueuer:
         in flight refuses its members at the backend's single-enqueue write
         site (the terminal-batch guard, the twin of the PG single path's
         membership lock), so a terminal batch's buffered members surface
-        HERE, per item, through that same SubEnqueueError collection - not
+        here, per item, through that same SubEnqueueError collection - not
         as a wholesale preflight raise, which would speak no documented
         error contract, discard the buffered args with no handle to them,
         and block the flush of unrelated batches' buffered members. The
@@ -785,7 +785,7 @@ class SubJobEnqueuer:
             span_id=args.span_id,
             metadata=args.metadata,
             tags=args.tags,
-            # The fan-out ledger rides the display guess too (the F2 fix):
+            # The fan-out ledger rides the display guess too:
             # the synthetic row is what the caller sees before the
             # transaction commits, a parent_id it omits would make the
             # ledger lie on the transactional sub-enqueue path.

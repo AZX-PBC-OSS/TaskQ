@@ -1,4 +1,4 @@
-"""Multi-defect batches raise the violation of the FIRST offending row, on
+"""Multi-defect batches raise the violation of the first offending row, on
 both backends.
 
 A bulk statement (the unnest INSERT, the COPY) visits items in batch order

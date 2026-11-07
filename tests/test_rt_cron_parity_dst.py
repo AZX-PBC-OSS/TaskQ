@@ -2,7 +2,7 @@
 
 The singleton parity change deliberately deviates from the client enqueue
 path in one place: a cron fire whose ``dst_strategy='allof'`` slot falls
-inside a DST overlap (a repeated local hour) enqueues only ONE job - the
+inside a DST overlap (a repeated local hour) enqueues only one job - the
 second occurrence of the repeated hour is deferred, with the planning
 code claiming the schedule's own ``next_fire_at`` machinery delivers it
 later: "next_fire_at lands on the first occurrence, and the repeated hour
@@ -41,7 +41,7 @@ which is what the injection removes.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -56,9 +56,11 @@ from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.cron_loop import ActorFirePolicy, tick_cron
 
 from .test_rt_cron_harness import (
+    FallbackTransition,
     InjectedClockConn,
     count_jobs,
     cron_settings,
+    fallback_transitions,
     make_backend,
     schedule_row,
     seed_actor_config,
@@ -71,9 +73,9 @@ _SINGLETON_ACTOR = "rt_parity_dst_singleton"
 _OPEN_ACTOR = "rt_parity_dst_open"
 _CAPPED_ACTOR = "rt_parity_dst_capped"
 
-# America/New_York falls back on 2026-11-01 (02:00 EDT → 01:00 EST), so the
-# local 01:30 of the yearly expression below occurs at BOTH 05:30Z (fold 0)
-# and 06:30Z (fold 1).  2027-11-01 is NOT an overlap date (fall-back 2027 is
+# America/New_York falls back on 2026-11-01 (02:00 edt → 01:00 est), so the
+# local 01:30 of the yearly expression below occurs at both 05:30Z (fold 0)
+# and 06:30Z (fold 1).  2027-11-01 is not an overlap date (fall-back 2027 is
 # Nov 7), so the next yearly match after the overlap is 2027-11-01 05:30Z.
 _OVERLAP_YEARLY = "30 1 1 11 *"
 _OVERLAP_TZ = "America/New_York"
@@ -96,10 +98,10 @@ _FOLD1_TICKS_UTC = [
 
 # The scenario's injected "now": every seed and every tick clock in the
 # pre-overlap scenarios below reads this explicit instant. It is a control
-# point far from any DST transition (Saturday mid-afternoon UTC, the day
+# point far from any dst transition (Saturday mid-afternoon UTC, the day
 # before the 2026 fall-back) and 9.5 hours before the fold-0 occurrence, so
 # a slot seeded 5 minutes "overdue" against it is a within-window catch-up
-# whose walk answers the overlap PAIR - the pre-overlap shape the
+# whose walk answers the overlap pair - the pre-overlap shape the
 # assertions encode. The first version of these scenarios read this instant
 # from the live server clock (``server_now() - 5min``) and ran the
 # pre-overlap tick on the live clock: correct only while the wall clock
@@ -236,7 +238,7 @@ class TestSingletonDstOverlap:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """The tick BEFORE the overlap (the deviation's stated shape): one
+        """The tick before the overlap (the deviation's stated shape): one
         catch-up fire, no second-occurrence enqueue, ``next_fire_at`` on the
         first occurrence, and the deferral logged naming the deferred
         instant."""
@@ -293,9 +295,9 @@ class TestSingletonDstOverlap:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """THE attack. Across the full tick sequence - pre-overlap catch-up,
+        """The attack. Across the full tick sequence - pre-overlap catch-up,
         the first occurrence's tick (unblocked), the second occurrence's
-        tick (unblocked) - a singleton actor must end up with a job for BOTH
+        tick (unblocked) - a singleton actor must end up with a job for both
         occurrences of the repeated hour. Today the first occurrence's tick
         advances ``next_fire_at`` straight to next year, so the second
         occurrence never fires: the deferral promise is broken and the
@@ -709,7 +711,7 @@ class TestNonSingletonAllofOutageInsideOverlap:
         assert await count_jobs(clean_pg_conn, schema, _OPEN_ACTOR) == 1
 
         # The injected clock reaches the fold-1 occurrence: it fires on its own
-        # tick (nothing pre-scheduled it - this tick IS its delivery).
+        # tick (nothing pre-scheduled it - this tick is its delivery).
         second = await _tick(
             clean_pg_conn,
             settings,
@@ -735,15 +737,15 @@ class TestSteadyStateMinutelyFoldTraversal:
     A minutely ``allof`` schedule crossing the fall-back fold owes every
     slot twice - once per pass.  The fold-1 pass is delivered by the twin
     chain: during the fold-0 pass each tick pre-schedules a twin job for
-    the NEXT slot's fold-1 occurrence (the pair answer's second member), so
+    the next slot's fold-1 occurrence (the pair answer's second member), so
     by the time the last fold-0 slot fires, every fold-1 slot already has a
     queued job.  The schedule's next fire after the last fold-0 slot is
     therefore the slot PAST the repeated range (02:00 local = 07:00 UTC).
     ``_skip_already_delivered_overlap_twins`` exists precisely to advance
     past such covered instants - but at the time it only engaged when the
-    computation's answer equalled the row's OWN twin.
+    computation's answer equalled the row's own twin.
 
-    The newest branch answers the fold-1 pass's FIRST match once the fold-0
+    The newest branch answers the fold-1 pass's first match once the fold-0
     pass is spent - for a minutely schedule that is 01:00 fold-1 (06:00
     UTC), which was never the current slot's twin, so the skip never
     engaged.  The fix rewrote the skip as a coverage-prefix walk: any plan
@@ -752,7 +754,7 @@ class TestSteadyStateMinutelyFoldTraversal:
     red: the
     06:00 UTC tick fires the schedule for a slot whose twin job is already
     queued (double delivery), the walk from the fold-1 seed then answers
-    with a pair whose first member is IN THE PAST, and from there the
+    with a pair whose first member is IN the PAST, and from there the
     schedule sits due every tick, re-firing already-played fold-0 slots and
     double-scheduling every twin (duplicate jobs at 06:01, 06:02, ...).
     """
@@ -802,7 +804,7 @@ class TestSteadyStateMinutelyFoldTraversal:
         )
 
         # The fold-1 pass ticks: the twins deliver those slots, the schedule
-        # must NOT fire them a second time.
+        # must not fire them a second time.
         for due in _FOLD1_TICKS_UTC:
             fired = await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=due)
             assert fired == 0, (
@@ -934,7 +936,7 @@ class TestSingletonMinutelyFoldTraversal:
     fold-0 slot it returns the fold-1 pass's first match (01:00 fold-1 =
     06:00 UTC).  But the singleton ``elif`` then in ``_plan_fire`` (since
     deleted - the computation now owns the fold handoff) overrode
-    ``next_fire`` with the fired slot's OWN twin (01:59 fold-1 = 06:59
+    ``next_fire`` with the fired slot's own twin (01:59 fold-1 = 06:59
     UTC) whenever the fired slot was any fold-0 occurrence of a repeated
     wall time.  Its premise - "the next slot the walk finds is a full
     cadence away (for a yearly schedule, a year)" - held only for
@@ -1004,21 +1006,21 @@ class TestSingletonMinutelyFoldTraversal:
 
 
 class TestTwinCoverageIsPerSchedule:
-    """FINDING (fixed): the coverage walk counted ANY
+    """FINDING (fixed): the coverage walk counted any
     job at an in-range instant as delivered - including another
     schedule's.
 
     ``_skip_already_delivered_overlap_twins`` scoped its coverage query
     to the ACTOR (``j.actor = a.actor``), not to the schedule whose plan
     it was adjusting - yet twins are per-schedule by construction: each
-    schedule's fold-0 ticks pre-schedule THEIR OWN next-slot twins.
+    schedule's fold-0 ticks pre-schedule THEIR own next-slot twins.
     Two schedules on one actor are independent everywhere else in the
     system - both fire the same instant and both jobs coexist (no
     dedup) - so each owes its own delivery of every occurrence.
 
     The composition that exposed the granularity: schedule A crosses
     the fold normally and holds a twin at every fold-1 slot; schedule
-    B, same actor and same expression, is seeded on the LAST fold-0
+    B, same actor and same expression, is seeded on the last fold-0
     slot - it has no twins and owes the entire fold-1 pass.  Measured
     on this exact drive while red: at the last fold-0 tick B's
     ``next_fire_at`` jumped from 06:00 straight to 07:00 UTC - the walk
@@ -1060,7 +1062,7 @@ class TestTwinCoverageIsPerSchedule:
             cron_expr=_MINUTELY,
             timezone=_OVERLAP_TZ,
             dst_strategy="allof",
-            # B's first slot is the LAST fold-0 slot: no earlier tick, so
+            # B's first slot is the last fold-0 slot: no earlier tick, so
             # no twin chain - B owes the whole fold-1 pass itself.
             next_fire_at=_LAST_FOLD0_TICK_UTC,
             identity_key="fold-granularity-b",
@@ -1126,7 +1128,7 @@ class TestTwinCoverageIsPerSchedule:
         NULL (the ``create_schedule`` signature defaults
         ``identity_key=None``, and multiple schedules per actor are a
         documented feature).  This is the discriminating case: a
-        regression that scoped the coverage walk on ``identity_key IS NOT
+        regression that scoped the coverage walk on ``identity_key IS not
         DISTINCT FROM`` would pass the named-key test (the keys differ)
         while still stealing here (NULL matches NULL).  Only the
         ``cron_schedule_id`` provenance stamp keeps default-configured
@@ -1258,7 +1260,7 @@ class TestTwinCoverageIsPerSchedule:
 class TestTwinCoverageSurvivesBeyondPendingScheduled:
     """FINDING (red until fixed, GH issue #462): the coverage walk counts a
     fold-1 twin only while it is ``pending``/``scheduled``, so any twin
-    that has left that pair by the time the walk runs DROPS OUT of the
+    that has left that pair by the time the walk runs DROPS out of the
     covered prefix and the schedule re-fires its instant.
 
     ``_skip_already_delivered_overlap_twins`` scoped its coverage query
@@ -1276,7 +1278,7 @@ class TestTwinCoverageSurvivesBeyondPendingScheduled:
     (the twins are pre-scheduled about an hour ahead of the fold-0 ticks
     that create them), but a stall that drags ``next_fire_at`` through the
     twin's own instant can: tick-budget exhaustion advances a suppressed
-    schedule one cadence per suppressed tick WITHOUT consulting twin
+    schedule one cadence per suppressed tick without consulting twin
     coverage (the suppression UPDATE writes ``next_fire_at`` directly,
     cron_loop's tick-budget arm), so the walk can arrive at an instant
     whose twin a worker claimed or finished in the meantime - and the
@@ -1409,7 +1411,7 @@ class TestTwinCoverageSurvivesBeyondPendingScheduled:
 
         no_policies: Mapping[str, ActorFirePolicy] = {}
         # Ticks 06:00..06:04 fire the uncovered 01:00..01:04 fold-1
-        # occurrences; the 06:04 tick's walk must advance THROUGH the
+        # occurrences; the 06:04 tick's walk must advance through the
         # transformed twin's instant to the first instant nothing holds.
         for minute in range(5):
             due = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
@@ -1485,7 +1487,7 @@ class TestTwinCoverageSurvivesBeyondPendingScheduled:
             f"twin - a second enqueue there is a re-fired occurrence, got "
             f"{[dict(r) for r in at_instant]}"
         )
-        # 'cancel-running' is the protocol's phase-1 stamp: the row STAYS
+        # 'cancel-running' is the protocol's phase-1 stamp: the row stays
         # 'running' (cancel_running's contract) until the drain lands it.
         expected_status = "running" if transform == "cancel-running" else transform
         assert at_instant[0]["status"] == expected_status, (
@@ -1505,7 +1507,7 @@ class TestTerminalNotDeliveredTwinKeepsTheOwedRefire:
 
     ``_skip_already_delivered_overlap_twins`` counts six statuses as
     coverage and deliberately leaves out ``failed`` and ``crashed``: both
-    are terminal-NOT-delivered (``VALID_TRANSITIONS`` gives each an empty
+    are terminal-not-delivered (``VALID_TRANSITIONS`` gives each an empty
     transition set - no recovery path ever re-pends a row resting there;
     the only re-pend writers, the reclaim sweeps and ``retry_job``, move
     ``scheduled_at`` forward when they re-pend, and the sweep re-pends
@@ -1513,7 +1515,7 @@ class TestTerminalNotDeliveredTwinKeepsTheOwedRefire:
     ``crashed``).  A fold-1 twin resting on either status owns NOTHING:
     no retry will ever deliver its instant, so the instant stays
     uncovered and the schedule's own later fire is the only deliverer
-    left - the walk must stay OFF that instant and every later tick must
+    left - the walk must stay off that instant and every later tick must
     re-fire the range's remainder, one cadence each.
 
     If a future change widens the predicate to count a terminal-not-
@@ -1601,10 +1603,10 @@ class TestTerminalNotDeliveredTwinKeepsTheOwedRefire:
         )
 
         # The re-fired schedule jobs are enqueued for immediate delivery
-        # (a fire's own job carries the SERVER clock as its scheduled_at,
+        # (a fire's own job carries the server clock as its scheduled_at,
         # not the occurrence instant - only pre-scheduled twins carry the
         # fold instant), so a fire census cannot separate fires from twins
-        # by comparing a live server stamp against a PINNED bound: that
+        # by comparing a live server stamp against a pinned bound: that
         # comparison re-arms the wall-calendar bomb the injected clocks
         # exist to defuse (it armed when the real clock crossed the fold-1
         # pass's first slot, 2026-11-01 06:00Z). The wall-immune
@@ -1686,7 +1688,7 @@ class TestTwinAtRangeEndIsNotCoverage:
             identity_key="twin-at-range-end",
         )
         # The covered prefix 01:05..01:59 fold-1 plus the synthetic twin
-        # exactly AT the range's exclusive end (02:00 local = 07:00 UTC).
+        # exactly at the range's exclusive end (02:00 local = 07:00 UTC).
         for minute in range(5, 60):
             instant = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
             await _seed_scheduled_twin(clean_pg_conn, schema, _OPEN_ACTOR, instant, schedule_id)
@@ -1731,29 +1733,123 @@ class TestTwinAtRangeEndIsNotCoverage:
         assert fired == 1, "the 02:00 local occurrence is owed on its own tick"
 
 
+_DISCOVERY_FIRST_YEAR = 2018
+_DISCOVERY_LAST_YEAR = 2038
+"""The DST drives' fixed discovery window.
+
+A zone's fall-back dates are facts of the installed zone database, not of the
+test: the window is scanned in the zone itself so every drive's premise is
+checked against the runner's own zoneinfo, and the earliest matching
+transition is the pick (a transition in the zone's recorded history is stable
+across zone-database vintages; a rule-derived future date is not).
+"""
+
+
+class _DiscoveryPremiseError(AssertionError):
+    """A drive's zone premise is false in the installed zoneinfo - the zone
+    holds no fall-back of the shape the drive selects for in the discovery
+    window.  Raised, not asserted, so the named failure survives
+    ``python -O``'s stripped ``assert`` statements."""
+
+
+def _first_fallback_matching(
+    zone: str, premise: str, shape: Callable[[FallbackTransition], bool]
+) -> FallbackTransition:
+    """The zone's earliest fall-back in the discovery window whose range has
+    *shape*, refusing to invent a premise the installed zoneinfo cannot
+    answer."""
+    matches = [
+        transition
+        for transition in fallback_transitions(zone, _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
+        if shape(transition)
+    ]
+    if not matches:
+        raise _DiscoveryPremiseError(
+            f"{zone}: the installed zoneinfo holds no fall-back {premise} in "
+            f"[{_DISCOVERY_FIRST_YEAR}, {_DISCOVERY_LAST_YEAR}) - the drive's "
+            "premise is false in this environment"
+        )
+    return matches[0]
+
+
+def _first_midnight_starting_fallback(zone: str) -> FallbackTransition:
+    """The zone's earliest fall-back whose repeated range starts exactly at
+    local midnight (01:00 DST -> 00:00 standard): the fold-0 pass crosses the
+    local date boundary and both passes' walls carry the same local date."""
+    return _first_fallback_matching(
+        zone,
+        "whose repeated range starts at local midnight",
+        lambda transition: transition.range_start.hour == 0 and transition.range_start.minute == 0,
+    )
+
+
+def _first_midnight_ending_fallback(zone: str) -> FallbackTransition:
+    """The zone's earliest fall-back whose repeated range ends exactly at
+    local midnight (24:00 DST -> 23:00 standard): the range's end is the next
+    local date's first wall."""
+    return _first_fallback_matching(
+        zone,
+        "whose repeated range ends at local midnight",
+        lambda transition: transition.range_end.hour == 0 and transition.range_end.minute == 0,
+    )
+
+
+def _first_same_day_fallback(zone: str) -> FallbackTransition:
+    """The zone's earliest fall-back whose repeated range stays inside one
+    local date - the same-day shape the New York drives anchor on."""
+    return _first_fallback_matching(
+        zone,
+        "whose repeated range stays inside one local date",
+        lambda transition: transition.range_start.hour != 0 and transition.range_end.hour != 0,
+    )
+
+
+def _first_non_hour_fallback(zone: str) -> FallbackTransition:
+    """The zone's earliest fall-back whose repeated range is not a whole
+    number of hours wide - the non-hour repeat width the minute walk of
+    ``repeated_range_bounds`` exists for."""
+    return _first_fallback_matching(
+        zone,
+        "whose repeated range is a non-hour width",
+        lambda transition: transition.width_minutes % 60 != 0,
+    )
+
+
 class TestFoldParityBeyondNewYork:
     """The coverage walk's parity family beyond America/New_York.
 
-    The fix's drives all use the New York 2026-11-01 fall-back; the walk
-    itself is timezone-generic wall arithmetic (``repeated_range_bounds``
-    walks the ambiguous wall minute by minute), and these three zones
-    stress the shapes New York cannot reach:
+    The walk itself is timezone-generic wall arithmetic
+    (``repeated_range_bounds`` walks the ambiguous wall minute by minute),
+    and these zones stress the shapes New York's own drives cannot reach:
 
-    - **America/Havana** falls back AT local midnight (01:00 CDT ->
-      00:00 CST): the repeated range ``[00:00, 01:00)`` starts exactly on
-      a local date boundary, so the fold-0 pass crosses local midnight
-      and both passes' walls carry the SAME local date.
-    - **Australia/Sydney** falls back in APRIL (03:00 AEDT -> 02:00
-      AEST, repeated range ``[02:00, 03:00)``): the southern-hemisphere
-      season the northern-hemisphere drives never exercise.
-    - **Australia/Lord_Howe** falls back by HALF AN HOUR (02:00 +11 ->
-      01:30 +10:30, repeated range ``[01:30, 02:00)``): a non-hour
-      repeat width - 30 fold slots per pass, not 60.
+    - **America/Havana** falls back AT local midnight (01:00 DST ->
+      00:00 standard): the repeated range ``[00:00, 01:00)`` starts exactly
+      on a local date boundary, so the fold-0 pass crosses local midnight
+      and both passes' walls carry the same local date.
+    - **America/Santiago** falls back at 24:00 -> 23:00: the repeated range
+      ``[23:00, 00:00)`` ENDS exactly on a local date boundary, so the
+      range's end is the next local date's first wall.
+    - **Australia/Sydney** falls back in APRIL (03:00 -> 02:00, repeated
+      range ``[02:00, 03:00)``): the southern-hemisphere season the
+      northern-hemisphere drives never exercise.
+    - **Australia/Lord_Howe** falls back by HALF AN HOUR (02:00 -> 01:30,
+      repeated range ``[01:30, 02:00)``): a non-hour repeat width - 30 fold
+      slots per pass, not 60.
 
-    Each drive runs the NATURAL steady state (no seeded twins): the
-    fold-0 pass fires every slot exactly once and pre-schedules the
-    fold-1 twins, ``next_fire_at`` lands on the range end, every fold-1
-    tick fires nothing, and no instant holds two jobs.
+    Every drive dates its instants from the zone's own transition,
+    discovered from the installed zoneinfo over a fixed window. A hardcoded
+    calendar date is a premise about a zone RULE, and a rule is the zone
+    database's fact: vintages disagree (Cuba stopped returning to standard
+    time, removing fall-backs its older vintages held), so a date built by
+    hand pins the shape only on the vintages that still contain that
+    particular transition. The discovered date is stable
+    across vintages (the zone's recorded history) and reads neither the
+    runner's clock nor its ``TZ`` environment.
+
+    The steady-state drives run the NATURAL state (no seeded twins): the
+    fold-0 pass fires every slot exactly once and pre-schedules the fold-1
+    twins, ``next_fire_at`` lands on the range end, every fold-1 tick fires
+    nothing, and no instant holds two jobs.
     """
 
     async def _drive_steady_state_fold(
@@ -1843,23 +1939,114 @@ class TestFoldParityBeyondNewYork:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """America/Havana 2026-11-01: 01:00 CDT -> 00:00 CST, the repeated
-        range ``[00:00, 01:00)`` starts exactly on the local date boundary.
-        """
+        """America/Havana falls back at local midnight (01:00 DST -> 00:00
+        standard), so the repeated range ``[00:00, 01:00)`` starts exactly on
+        the local date boundary: the fold-0 pass crosses local midnight (the
+        drive's seed sits on the previous date's walls) and both passes'
+        walls carry the same local date."""
+        fold = _first_midnight_starting_fallback("America/Havana")
         await self._drive_steady_state_fold(
             clean_pg_conn,
             module_pg_schema,
-            zone="America/Havana",
+            zone=fold.zone,
             identity="parity-havana-midnight-fold",
-            # 23:58 CDT Oct 31 - two pre-fold slots cross local midnight.
-            seed_utc=datetime(2026, 11, 1, 3, 58, tzinfo=UTC),
-            # 00:59 CDT, the last fold-0 slot.
-            last_fold0_tick_utc=datetime(2026, 11, 1, 4, 59, tzinfo=UTC),
-            # 00:00 CST, the fold-1 pass's first slot.
-            fold1_first_utc=datetime(2026, 11, 1, 5, 0, tzinfo=UTC),
-            fold1_slots=60,
-            # 01:00 CST.
-            after_range_utc=datetime(2026, 11, 1, 6, 0, tzinfo=UTC),
+            # Two pre-fold slots cross local midnight.
+            seed_utc=fold.range_start_fold0_utc - timedelta(minutes=2),
+            last_fold0_tick_utc=fold.last_fold0_slot_utc,
+            fold1_first_utc=fold.range_start_fold1_utc,
+            fold1_slots=fold.width_minutes,
+            after_range_utc=fold.range_end_utc,
+        )
+
+    @pytest.mark.integration
+    async def test_havana_fold1_seed_inside_the_midnight_crossing_range_advances_to_its_end(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """The fold-1 mirror of the midnight-crossing range: the schedule's
+        own ``next_fire_at`` sits ON the range's first fold-1 occurrence with
+        the pass's remainder delivered by its own pre-queued twins. The
+        uncovered prefix fires on its own ticks, the covered remainder never
+        re-fires, and the walk lands ``next_fire_at`` on the range's end -
+        the twin-skip's window spans the range even though the range's start
+        is the local date boundary itself."""
+        fold = _first_midnight_starting_fallback("America/Havana")
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _OPEN_ACTOR)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_OPEN_ACTOR,
+            name="parity-havana-fold1-seed",
+            cron_expr=_MINUTELY,
+            timezone=fold.zone,
+            dst_strategy="allof",
+            next_fire_at=fold.range_start_fold1_utc,
+            identity_key="parity-havana-fold1-seed",
+        )
+        covered_from = 5  # the pass's first five occurrences stay uncovered
+        for offset in range(covered_from, fold.width_minutes):
+            await _seed_scheduled_twin(
+                clean_pg_conn,
+                schema,
+                _OPEN_ACTOR,
+                fold.range_start_fold1_utc + timedelta(minutes=offset),
+                schedule_id,
+            )
+        no_policies: Mapping[str, ActorFirePolicy] = {}
+
+        fired_total = 0
+        for offset in range(fold.width_minutes):
+            due = fold.range_start_fold1_utc + timedelta(minutes=offset)
+            fired = await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=due)
+            row = await schedule_row(clean_pg_conn, schema, schedule_id)
+            assert row["next_fire_at"] > due, (
+                f"{fold.zone}: after the {due.isoformat()} tick the schedule "
+                f"sits due in the past (next_fire_at={row['next_fire_at']}) - "
+                "it would re-fire an already-played slot on every later tick"
+            )
+            if offset < covered_from:
+                assert fired == 1, (
+                    f"{fold.zone}: the {due.isoformat()} tick owes the "
+                    "uncovered fold-1 occurrence - an owed occurrence may "
+                    "never be silently skipped"
+                )
+                fired_total += 1
+            else:
+                assert fired == 0, (
+                    f"{fold.zone}: the {due.isoformat()} tick re-fired a "
+                    "fold-1 slot its pre-scheduled twin already delivers"
+                )
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["next_fire_at"] == fold.range_end_utc, (
+            f"{fold.zone}: the uncovered prefix is spent and the covered "
+            "remainder is twin-delivered, so the schedule owes nothing until "
+            f"the range end ({fold.range_end_utc.isoformat()}), got "
+            f"{row['next_fire_at'].isoformat()}"
+        )
+        assert fired_total == covered_from, (
+            f"{fold.zone}: the uncovered fold-1 prefix is {covered_from} "
+            f"occurrences, got {fired_total} fires"
+        )
+        assert await count_jobs(clean_pg_conn, schema, _OPEN_ACTOR) == fold.width_minutes, (
+            f"{fold.zone}: {covered_from} schedule-delivered occurrences + "
+            f"{fold.width_minutes - covered_from} pre-queued twins - every "
+            "fold-1 occurrence of the repeated range delivered exactly once"
+        )
+        duplicates = await clean_pg_conn.fetch(
+            f'SELECT scheduled_at, count(*) AS n FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; the only interpolation is the fixture identifier.
+            "WHERE actor = $1 "
+            "  AND scheduled_at >= $2 AND scheduled_at < $3 "
+            "GROUP BY scheduled_at HAVING count(*) > 1",
+            _OPEN_ACTOR,
+            fold.range_start_fold0_utc,
+            fold.range_end_utc + timedelta(hours=2),
+        )
+        assert duplicates == [], (
+            f"{fold.zone}: no instant may hold two jobs - duplicates mean a "
+            f"fold slot was scheduled twice: {duplicates}"
         )
 
     @pytest.mark.integration
@@ -1868,23 +2055,20 @@ class TestFoldParityBeyondNewYork:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Australia/Sydney 2026-04-05: 03:00 AEDT -> 02:00 AEST, the
-        southern-hemisphere April fall-back, repeated range ``[02:00,
-        03:00)``."""
+        """Australia/Sydney falls back in April (03:00 -> 02:00, repeated
+        range ``[02:00, 03:00)``): the southern-hemisphere season the
+        northern-hemisphere drives never exercise."""
+        fold = _first_same_day_fallback("Australia/Sydney")
         await self._drive_steady_state_fold(
             clean_pg_conn,
             module_pg_schema,
-            zone="Australia/Sydney",
+            zone=fold.zone,
             identity="parity-sydney-april-fold",
-            # 00:58 AEDT Apr 5.
-            seed_utc=datetime(2026, 4, 4, 13, 58, tzinfo=UTC),
-            # 02:59 AEDT, the last fold-0 slot.
-            last_fold0_tick_utc=datetime(2026, 4, 4, 15, 59, tzinfo=UTC),
-            # 02:00 AEST, the fold-1 pass's first slot.
-            fold1_first_utc=datetime(2026, 4, 4, 16, 0, tzinfo=UTC),
-            fold1_slots=60,
-            # 03:00 AEST.
-            after_range_utc=datetime(2026, 4, 4, 17, 0, tzinfo=UTC),
+            seed_utc=fold.range_start_fold0_utc - timedelta(minutes=2),
+            last_fold0_tick_utc=fold.last_fold0_slot_utc,
+            fold1_first_utc=fold.range_start_fold1_utc,
+            fold1_slots=fold.width_minutes,
+            after_range_utc=fold.range_end_utc,
         )
 
     @pytest.mark.integration
@@ -1893,22 +2077,68 @@ class TestFoldParityBeyondNewYork:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Australia/Lord_Howe 2026-04-05: 02:00 +11 -> 01:30 +10:30, a
+        """Australia/Lord_Howe falls back by HALF AN HOUR (02:00 -> 01:30, a
         HALF-HOUR repeated range ``[01:30, 02:00)`` - 30 fold slots per
         pass, the non-hour width ``repeated_range_bounds``' minute walk
         exists for."""
+        fold = _first_non_hour_fallback("Australia/Lord_Howe")
         await self._drive_steady_state_fold(
             clean_pg_conn,
             module_pg_schema,
-            zone="Australia/Lord_Howe",
+            zone=fold.zone,
             identity="parity-lord-howe-half-hour-fold",
-            # 01:28 +11.
-            seed_utc=datetime(2026, 4, 4, 14, 28, tzinfo=UTC),
-            # 01:59 +11, the last fold-0 slot.
-            last_fold0_tick_utc=datetime(2026, 4, 4, 14, 59, tzinfo=UTC),
-            # 01:30 +10:30, the fold-1 pass's first slot.
-            fold1_first_utc=datetime(2026, 4, 4, 15, 0, tzinfo=UTC),
-            fold1_slots=30,
-            # 02:00 +10:30.
-            after_range_utc=datetime(2026, 4, 4, 15, 30, tzinfo=UTC),
+            seed_utc=fold.range_start_fold0_utc - timedelta(minutes=2),
+            last_fold0_tick_utc=fold.last_fold0_slot_utc,
+            fold1_first_utc=fold.range_start_fold1_utc,
+            fold1_slots=fold.width_minutes,
+            after_range_utc=fold.range_end_utc,
+        )
+
+    @pytest.mark.integration
+    async def test_santiago_range_end_crosses_local_midnight(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """America/Santiago falls back at 24:00 -> 23:00, so the repeated
+        range ``[23:00, 00:00)`` ENDS exactly on the local date boundary:
+        both passes' walls carry the earlier local date and the range's end
+        is the next local date's first wall. The walk must land
+        ``next_fire_at`` on that midnight boundary, not stall short of it or
+        step past the date."""
+        fold = _first_midnight_ending_fallback("America/Santiago")
+        await self._drive_steady_state_fold(
+            clean_pg_conn,
+            module_pg_schema,
+            zone=fold.zone,
+            identity="parity-santiago-midnight-end",
+            seed_utc=fold.range_start_fold0_utc - timedelta(minutes=2),
+            last_fold0_tick_utc=fold.last_fold0_slot_utc,
+            fold1_first_utc=fold.range_start_fold1_utc,
+            fold1_slots=fold.width_minutes,
+            after_range_utc=fold.range_end_utc,
+        )
+
+    @pytest.mark.integration
+    async def test_new_york_same_day_fold_advances_to_the_range_end(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """The same-day control: America/New_York's fall-back (02:00 ->
+        01:00, repeated range ``[01:00, 02:00)``) keeps both passes' walls
+        inside one local date, away from any date boundary. Pinned on a
+        date discovered from the zone's own rules so the family's control
+        holds on every zone-database vintage."""
+        fold = _first_same_day_fallback("America/New_York")
+        await self._drive_steady_state_fold(
+            clean_pg_conn,
+            module_pg_schema,
+            zone=fold.zone,
+            identity="parity-new-york-same-day",
+            seed_utc=fold.range_start_fold0_utc - timedelta(minutes=2),
+            last_fold0_tick_utc=fold.last_fold0_slot_utc,
+            fold1_first_utc=fold.range_start_fold1_utc,
+            fold1_slots=fold.width_minutes,
+            after_range_utc=fold.range_end_utc,
         )

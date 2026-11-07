@@ -200,7 +200,7 @@ async def test_wait_for_batch_polling_path_terminates() -> None:
         await original_sleep(0)
 
     with pytest.MonkeyPatch.context() as mp:
-        # Patch where the name is LOOKED UP - taskq.batch's own ``asyncio``
+        # Patch where the name is looked up - taskq.batch's own ``asyncio``
         # binding - not through to the global asyncio module (tests/_ns_patch.py).
         mp.setattr(batch_mod, "asyncio", module_ns_proxy(asyncio, sleep=fake_sleep))
         status = await wait_for_batch(
@@ -268,7 +268,7 @@ async def test_wait_for_batch_pool_polling_path_terminates() -> None:
         await original_sleep(0)
 
     with pytest.MonkeyPatch.context() as mp:
-        # Patch where the name is LOOKED UP - taskq.batch's own ``asyncio``
+        # Patch where the name is looked up - taskq.batch's own ``asyncio``
         # binding - not through to the global asyncio module (tests/_ns_patch.py).
         mp.setattr(batch_mod, "asyncio", module_ns_proxy(asyncio, sleep=fake_sleep))
         status = await wait_for_batch(

@@ -109,7 +109,7 @@ def _make_publish_args(
 
 async def test_terminal_flush_before_mark_succeeded_drains_buffer() -> None:
     """Actor calls ctx.progress(step=1) then succeeds. After the job completes
-    (in-memory backend), progress_seq >= 1 in the row AND pending_seq_delta == 0
+    (in-memory backend), progress_seq >= 1 in the row and pending_seq_delta == 0
     (buffer was drained before mark_succeeded)."""
     from collections.abc import AsyncGenerator
     from contextlib import asynccontextmanager
@@ -265,7 +265,7 @@ class _CountingPublishRedis:
 
 
 async def test_rapid_progress_calls_coalesce_in_flight_publishes() -> None:
-    """N rapid progress() calls publish at most twice; the LAST publish
+    """N rapid progress() calls publish at most twice; the last publish
     carries the final call's seq.
 
     Why: ctx.progress() fires at actor call rate and each uncoalesced
@@ -385,7 +385,7 @@ async def test_publish_failure_increments_otel_counter_with_labels(
 
 
 async def test_ctx_progress_no_publish_when_redis_client_none() -> None:
-    """When _redis_client is None, ctx.progress() does NOT attempt Redis publish
+    """When _redis_client is None, ctx.progress() does not attempt Redis publish
     and the buffer is still marked dirty."""
     from datetime import UTC, datetime
 
@@ -407,12 +407,12 @@ async def test_ctx_progress_no_publish_when_redis_client_none() -> None:
     assert buf.pending_seq_delta == 1
 
 
-# ── progress_publish_global=True → both channels in ONE pipelined round trip ──
+# ── progress_publish_global=True → both channels in one pipelined round trip ──
 
 
 async def test_publish_progress_event_global_channel_when_enabled() -> None:
     """progress_publish_global=True (the default): the per-job and global
-    publishes share ONE pipelined round trip - one pipeline, one execute,
+    publishes share one pipelined round trip - one pipeline, one execute,
     both channels queued - never two sequential client.publish awaits,
     which doubled every progress call's round trips and worst-case
     timeout budget."""
@@ -889,7 +889,7 @@ async def test_publish_progress_event_construction_error_is_fire_and_forget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If ProgressEvent construction fails, the error is caught and the
-    OTel counter increments; the coroutine does NOT raise."""
+    OTel counter increments; the coroutine does not raise."""
     import taskq.obs._otel as otel_mod
     import taskq.progress._events as events_mod
 
@@ -930,7 +930,7 @@ async def test_publish_progress_event_construction_error_is_fire_and_forget(
 async def test_cancel_clean_buffer_consumes_one_past_base_seq() -> None:
     """Regression for findings-3 Critical: when the buffer is clean (post-flush,
     base_seq=5, pending_seq_delta=0), the cancel path must read the head from
-    base_seq (5), NOT 0, and the state-change write CONSUMES the next seq
+    base_seq (5), not 0, and the state-change write CONSUMES the next seq
     (6): the cancel event must strictly follow the progress event at 5, so a
     seq-cursor consumer never dedupes it away. _terminal_seq_and_state
     ensures both the head read and the consumption."""
@@ -1021,7 +1021,7 @@ async def test_cancel_clean_buffer_consumes_one_past_base_seq() -> None:
     assert parsed["seq"] == 6
 
 
-# ── Failure WARNING carries the job fields; success binds nothing ───
+# ── Failure warning carries the job fields; success binds nothing ───
 
 
 @pytest.fixture

@@ -30,9 +30,10 @@ def test_trigger_migration_file_exists() -> None:
     assert len(sql) > 0
 
 
-# The eight DDL substring assertions that used to follow - CREATE FUNCTION,
-# CREATE TRIGGER, pg_notify, the WHEN clause, TG_TABLE_SCHEMA, AFTER INSERT ON
-# jobs, FOR EACH ROW - are all subsumed by the two integration tests below.
+# The eight DDL substring assertions here are subsumed by the two
+# integration tests below (create function,
+# create trigger, pg_notify, the when clause, TG_TABLE_SCHEMA, after INSERT on
+# jobs, for each row).
 # Every one of them was a restatement of the migration text: they passed on a
 # trigger that was syntactically present and semantically broken, and they
 # would fail on a correct trigger written with different whitespace. Applied
@@ -49,7 +50,7 @@ async def test_a_pending_insert_wakes_listeners_on_the_schema_channel(
     The trigger is the sole wake source for inserts - every enqueue path
     relies on it, and so does SQL that never goes through TaskQ.
     Asserting it end to end covers every property the DDL greps restated -
-    the function exists, the trigger is AFTER INSERT ON jobs FOR EACH ROW, and
+    the function exists, the trigger is after INSERT ON jobs FOR EACH ROW, and
     the channel is built from TG_TABLE_SCHEMA - and, unlike them, it fails if
     the trigger is present but wrong.
     """

@@ -17,7 +17,7 @@ TaskQflow's answer to each: the emit transaction (the cursor
 checkpoint), the declared in-flight bound (backpressure), the typed
 route (the totality fence), and the per-item retry ladder. The worked
 example is `examples/workflows.py` (verified by
-`tests/test_wf_demo_legs.py`); this guide walks it.
+`tests/test_wf_demo_legs.py`).
 
 ## The cursor: page by page, crash-safe
 

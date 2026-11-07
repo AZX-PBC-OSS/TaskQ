@@ -1,10 +1,10 @@
 # The invariant corpus: how invariants are stated, pinned, and attacked
 
-This repository's quality doctrine: **an invariant that is not written down and
-pinned does not exist.** The 2026-09-22 campaign regressions (#457-#461) shipped
-because the system-level invariants were never hypothesised: CI was green, the
-full suite passed, and the behaviors that broke were encoded nowhere. This
-document defines the process that closes that gap.
+The quality doctrine: **an invariant that is not written down and pinned
+does not exist.** A regression can ship with CI green and the full suite
+passing when the system-level invariants are nowhere stated - the
+behavior that broke is encoded nowhere. This document defines the
+process that closes that gap.
 
 ## The doctrine
 
@@ -25,9 +25,9 @@ document defines the process that closes that gap.
 The authoritative seam -> callers -> interleavings -> invariant -> pin matrix
 lives in `docs/design/seam-audit-matrix.md`. Every seam listed there has:
 its callers enumerated, the interleavings that can violate the invariant,
-the pin name that proves it, and its status (EXISTS / MISSING / ADDED).
+the pin that proves it, and the pin's status (pinned / missing).
 
-## Per-PR requirements (enforced by review, checked by the template)
+## Per-PR requirements
 
 - **Blast-radius audit**: every caller of every changed seam is listed; each
   caller either has a pin covering the new semantics or gets one in the PR.
@@ -44,10 +44,10 @@ the pin name that proves it, and its status (EXISTS / MISSING / ADDED).
 - **The system-e2e tier** (`tests/system_e2e/`): multi-process, stateful,
   production-shaped lifecycles (rolling deploys, leader loss, resource outages,
   cancel storms) with system invariants asserted continuously. Runs in CI.
-- **The full suite** on every PR - but understood correctly: it proves the
+- **The full suite** on every PR - and understood correctly: it proves the
   encoded behaviors. The corpus + audit are what force the encoding to be
   complete.
 - **Combined-state attack**: after every batch of src-affecting merges, the
   merged state is attacked as a single system before the next src PR merges.
-  Past regressions were found by review, not by CI - the attack
-  pass exists so the next one is found by a pin in CI instead.
+  The attack pass exists so the next cross-seam regression is found by a pin
+  in CI instead of by review.

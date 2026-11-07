@@ -58,10 +58,10 @@ from taskq.worker.deps import open_worker_deps
 
 pytestmark = pytest.mark.integration
 
-# The mark_succeeded statement VERBATIM from the pre-claim-epoch tree
+# The mark_succeeded statement verbatim from the pre-claim-epoch tree
 # (fd9ee24e, src/taskq/backend/_sql_templates.py): what an old worker
 # actually sends during the rolling window. Its fence is
-# ``status = 'running' AND locked_by_worker = $2 AND attempt = $8``; no
+# ``status = 'running' and locked_by_worker = $2 and attempt = $8``; no
 # claim_epoch conjunct exists in it.
 _OLD_MARK_SUCCEEDED_SQL = """\
 WITH upd AS (
@@ -200,7 +200,7 @@ async def test_ceiling_residual_old_handler_write_lands_as_documented(
     try:
         worker_id = new_uuid()
         # A row parked at the smallint ceiling: the claim's saturating
-        # increment stops advancing the DISPLAYED attempt.
+        # increment stops advancing the displayed attempt.
         job_id = await create_running_job(conn, mixed_schema, worker_id, attempt=32767)
         await conn.execute(
             f'UPDATE "{mixed_schema}".jobs SET claim_epoch = 5 WHERE id = $1',
@@ -346,8 +346,8 @@ async def test_new_consumer_survives_old_repeated_head_wire() -> None:
         },
     ]
     # The mixed-fleet wire, interleaved: new-worker progress at 5, 6;
-    # an OLD worker's repeated-head state-change at 6 (repeats the head);
-    # an OLD worker's stale state-change at 5; new progress at 7; the
+    # an old worker's repeated-head state-change at 6 (repeats the head);
+    # an old worker's stale state-change at 5; new progress at 7; the
     # terminal state-change consuming 8 (new contract).
     messages += [
         _wire_event(seq=5, kind="progress", status="running"),

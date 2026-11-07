@@ -77,7 +77,7 @@ async def _get_held_worker(
     return row["held_by_worker_id"]
 
 
-# ── SKIP LOCKED under contention ──────────────────────────────────
+# ── skip locked under contention ──────────────────────────────────
 
 
 async def test_skip_locked_contention(
@@ -411,9 +411,9 @@ async def test_sync_slots_deletes_expired_lease_excess_rows(
     """sync_slots() treats an excess row with an EXPIRED lease as free and
     deletes it - regression for over-admission during shrink.
 
-    The acquire CTE's free condition is ``job_id IS NULL OR
+    The acquire CTE's free condition is ``job_id IS NULL or
     lease_expires_at < now()``. If sync_slots instead treated every
-    ``job_id IS NOT NULL`` row as held, a dead worker's leaked rows would
+    ``job_id IS not NULL`` row as held, a dead worker's leaked rows would
     survive a shrink and remain acquirable - the old larger cap would keep
     being honored indefinitely. 4 rows (2 excess held by a dead worker
     with expired leases) → shrink to 2 → both excess rows deleted, nothing
@@ -536,3 +536,54 @@ async def test_release_wrong_worker_id(
     assert row is not None
     assert row["held_by_worker_id"] == worker_a
     assert row["job_id"] == job_a
+
+
+# ── The mock-subtraction conversions (the fake arms' survivors) ────────
+
+
+async def test_peek_counts_the_real_rows_after_acquires(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """peek() surfaces the row counts the real slots table holds: fresh
+    (all free), after acquires (held counts), and the no-row default.
+
+    (Converted from tests/test_ratelimit_reservation.py's fake arms in the
+    mock-subtraction cure: the fakes answered a dict-configured row; this
+    counts the real rows the acquire wrote.)"""
+    schema = module_pg_schema.schema_name
+    bucket = _unique_name()
+
+    res = ConcurrencyReservation(name=bucket, slots=6, lease=_LEASE, schema=schema)
+    await res.ensure_slots(module_pg_pool)
+
+    fresh = await res.peek(pool=module_pg_pool)
+    assert fresh == {"free_count": 6, "total_slots": 6, "held_count": 0}
+
+    worker_id = new_uuid()
+    first = await res.acquire(new_uuid(), worker_id, module_pg_pool)
+    second = await res.acquire(new_uuid(), worker_id, module_pg_pool)
+    assert {int(first), int(second)} == {0, 1}
+
+    after = await res.peek(pool=module_pg_pool)
+    assert after == {"free_count": 4, "total_slots": 6, "held_count": 2}
+
+    await res.release(first, worker_id, module_pg_pool)
+    released = await res.peek(pool=module_pg_pool)
+    assert released == {"free_count": 5, "total_slots": 6, "held_count": 1}
+
+
+async def test_peek_never_touched_bucket_falls_back_to_defaults(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """peek() on a bucket whose slots were never allocated answers the
+    empty aggregate - nothing allocated, nothing held. (The deleted fake
+    arm claimed the defaults mirrored slots=6; the real aggregate says
+    total_slots 0 until ensure_slots runs - the lie this conversion
+    caught.)"""
+    res = ConcurrencyReservation(
+        name=_unique_name(), slots=6, lease=_LEASE, schema=module_pg_schema.schema_name
+    )
+    result = await res.peek(pool=module_pg_pool)
+    assert result == {"free_count": 0, "total_slots": 0, "held_count": 0}

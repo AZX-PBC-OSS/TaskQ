@@ -6,7 +6,7 @@ sort keys the admin walks page on (``created_at``, ``finished_at``,
 clock lags a fleet-mate mints LATER-enqueued jobs with EARLIER ids, so
 ``id`` order and server-ts order disagree wherever the fleet's clocks
 disagree.  A cursor tuple is skew-immune exactly when the ORDER BY and
-the keyset predicate are the SAME full tuple (every sort key carried,
+the keyset predicate are the same full tuple (every sort key carried,
 ``id`` the unique tiebreak): the row-wise comparison then defines one
 total order and no clock assignment can move a row across a seam.
 These pins construct the disagreement deterministically -- four
@@ -195,7 +195,7 @@ async def skewed_fleet(
 
         # The constructed hazard, asserted: id order and created_at order
         # disagree (adjacent inversions), and the inversions span worker
-        # boundaries inside the ONE commit the single statement made.
+        # boundaries inside the one commit the single statement made.
         order_by_id = await conn.fetch(
             f'SELECT id, created_at FROM "{schema}".jobs ORDER BY id'  # noqa: S608  # Why: schema is fixture-derived and validated.
         )
@@ -273,7 +273,7 @@ async def test_list_jobs_walk_exact_once_under_worker_clock_skew(
 ) -> None:
     """Paging ``list_jobs`` to exhaustion sees each row exactly once.
 
-    For ANY assignment of per-worker clock skews the walk must visit
+    For any assignment of per-worker clock skews the walk must visit
     each row exactly once and in one total order: the cursor tuple and
     the ORDER BY are the same full tuple, so the skew can only change
     WHERE the rows sit in the order, never whether a page turn
@@ -411,7 +411,7 @@ async def test_events_poll_delays_never_skips_an_inverted_stamp_pair(
     try:
         # One statement, one commit: nextval evaluates per row in row
         # order, so the first row (true-recent stamp, held back by the
-        # margin) carries the LOWER id; the second row's stamp is a
+        # margin) carries the lower id; the second row's stamp is a
         # step-back lie, far older than its true time.
         sql = (
             f'INSERT INTO "{schema}".job_events (id, job_id, occurred_at, kind, detail) '  # noqa: S608  # Why: schema is fixture-derived and validated; every value is $N-bound.
@@ -486,8 +486,8 @@ async def test_events_poll_serves_the_lock_expired_tail_beside_a_foreign_reason_
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
     try:
         # One statement, one commit: nextval evaluates per row in row
-        # order, so the foreign-reason blocker carries the LOWER id and
-        # the lock_expired tail sits ABOVE it, exactly the geometry the
+        # order, so the foreign-reason blocker carries the lower id and
+        # the lock_expired tail sits above it, exactly the geometry the
         # ceiling's min() walk decides on.
         sql = (
             f'INSERT INTO "{schema}".job_events (id, job_id, occurred_at, kind, detail) '  # noqa: S608  # Why: schema is fixture-derived and validated; every value is $N-bound.
@@ -516,7 +516,7 @@ async def test_events_poll_serves_the_lock_expired_tail_beside_a_foreign_reason_
     finally:
         await conn.close()
 
-    # Served WITHIN the margin: the lock_expired row's own stamp is 60s
+    # Served within the margin: the lock_expired row's own stamp is 60s
     # old, its 2s margin clears at once, and no held-back lock_expired
     # row sits below it, so the first poll must serve it.  A ceiling
     # that also counted the foreign-reason row (the reason arm dropped

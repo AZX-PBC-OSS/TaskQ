@@ -1,7 +1,7 @@
-"""Sweep 1's reclaim of a NULL-started_at running job records NO attempt
+"""Sweep 1's reclaim of a NULL-started_at running job records no attempt
 row: the standing-claim fence.
 
-A running row whose ``started_at`` is NULL carries NO standing claim.
+A running row whose ``started_at`` is NULL carries no standing claim.
 Two writers produce the shape:
 
 * the claim-loss reconcile's refund (worker/heartbeat.py's
@@ -15,7 +15,7 @@ Two writers produce the shape:
   TaskQ path but the refund produces it).
 
 Pre-fence, the batched attempt INSERT wrote the row raw, died on the
-NOT NULL (the original finding), and the per-row clock fallback fixed
+not NULL (the original finding), and the per-row clock fallback fixed
 the crash by fabricating a started stamp the attempt never had. That
 fallback is the defect this module now pins the fence against: a
 reclaimed row whose attempt never started owes the ledger NOTHING. A
@@ -23,7 +23,7 @@ crashed attempt row at that number would permanentise an epoch the
 counter no longer carries - the claim-loss refund de-charged it - and
 the next claim re-mints the number, closing the job's lineage with one
 more attempt row than the counter: the soak's reconciliation red
-(``attempt counter 1 vs 2 attempt rows``, run 36175331443, the
+(``attempt counter 1 vs 2 attempt rows``, the
 refund-then-reclaim ledger race pinned by
 ``tests/test_rt_refund_reclaim_ledger_race.py``). The reclaim itself is
 still audited: the ``job_events`` state_change (the crash-reclaim outbox
@@ -89,7 +89,7 @@ async def test_sweep1_records_no_attempt_row_for_a_null_started_at_running_job(
 ) -> None:
     """The standing-claim fence: the sweep reclaims the row (the lease
     arm's eligibility is the lock, not the stamp) and lands the reclaim
-    event, but records NO attempt row - the attempt never started, and a
+    event, but records no attempt row - the attempt never started, and a
     crashed row for it is the fabrication the claim-loss refund exists to
     keep out of the ledger. Pre-fence this shape died on
     NotNullViolationError, then recorded a fabricated clock-fallback
@@ -140,7 +140,7 @@ async def test_sweep1_reclaims_a_full_batch_of_no_claim_rows_with_one_attempt_ro
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """A batch of SEVERAL no-claim rows reclaims whole and writes NO
+    """A batch of SEVERAL no-claim rows reclaims whole and writes no
     attempt rows: the fence is per-row inside the batched INSERT, so one
     refunded sibling cannot abort the batch's transaction (pre-fence the
     raw NULL stamp was a non-transient NotNullViolation that rolled back

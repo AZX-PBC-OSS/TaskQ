@@ -40,7 +40,7 @@ async def test_runner_terminates_noncooperative_attempt_after_force_grace() -> N
 
     async def stubborn(payload: object, ctx: object) -> None:
         # ctx is the runner's duck-typed stub context; this stub pins the
-        # NON-cooperative shape - it never reads ctx.cancel_event, exactly
+        # non-cooperative shape - it never reads ctx.cancel_event, exactly
         # like a hung actor that no cooperative signal can reach.
         await asyncio.sleep(3600.0)
 
@@ -87,7 +87,7 @@ async def test_runner_terminates_noncooperative_attempt_after_force_grace() -> N
         f"abandoned (it does today); got status={row.status!r}"
     )
 
-    # DESIRED: the runner terminates the attempt - the drain task completes
+    # desired: the runner terminates the attempt - the drain task completes
     # within a bounded real-time budget.
     terminated: bool
     try:

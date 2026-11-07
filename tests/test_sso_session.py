@@ -345,7 +345,7 @@ async def test_secret_restored_within_one_tick_revalidates() -> None:
 
 
 async def test_session_verifier_consults_only_the_cookie() -> None:
-    """The re-check performs NO store round trip: any request attribute
+    """The re-check performs no store round trip: any request attribute
     beyond ``cookies`` implies a session-store/database/IdP hit, and a
     1k-stream wall re-checking once per 60 s would turn the re-check into a
     per-second query storm. Pins the cookie-only contract sso.md states --
@@ -357,7 +357,7 @@ async def test_session_verifier_consults_only_the_cookie() -> None:
 
     class _ProbeRequest:
         # ClassVar: the probe is never instantiated with state; the class
-        # attribute IS the cookie jar the contract allows the verifier to read.
+        # attribute is the cookie jar the contract allows the verifier to read.
         cookies: ClassVar[dict[str, str]] = {manager.cookie_name: cookie}
 
         def __getattr__(self, name: str) -> Any:

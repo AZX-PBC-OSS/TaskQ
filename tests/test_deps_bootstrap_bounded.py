@@ -8,7 +8,7 @@ redis client factory, and the role pool factories - plus the bare LISTEN
 execute on ``reload_credentials``' no-listener fallback path. Every one of
 them runs where no detector can see a hang, so each must complete or raise
 within the configured bound instead of parking worker startup (or a SIGHUP
-reload) forever. The bounds are the SAME settings the already-bounded sibling
+reload) forever. The bounds are the same settings the already-bounded sibling
 paths use - ``reload_factory_timeout`` for factory calls (the notify factory
 open, the slot-pool open, the reload path, the notify reconnect loop) and
 ``notify_listener_setup_timeout`` for LISTEN executes (the bootstrap open,
@@ -40,7 +40,7 @@ from taskq.worker.deps import WorkerDeps, open_worker_deps, reload_credentials
 # Production's documented bounds for factory calls and LISTEN executes,
 # shrunk so a production-side bound fires well inside the test budget
 # below: an open that applies them raises within ~0.5s, while an open that
-# does not parks forever and the TEST budget is what fires.
+# does not parks forever and the test budget is what fires.
 _PROD_BOUND_SECS = "0.5"
 # 10x the configured production bound - generous. This budget firing is
 # the red result: production never bounded the call on its own.
@@ -93,6 +93,7 @@ class _FakePool:
 
 class _FakeConn:
     """Fake asyncpg.Connection.
+    fail-closed-exempt: the bootstrap's bounded-wait fault injection: a hung statement the budget must cut, deterministically
 
     ``hang_listen`` parks every LISTEN execute forever (a connection that
     completes the factory handshake and then black-holes on LISTEN);
@@ -171,7 +172,7 @@ def _all_ok_except(**overrides: Any) -> WorkerConnections:
 
 
 async def test_bootstrap_leader_factory_call_is_bounded() -> None:
-    """The FIRST leader factory() call during the bootstrap open completes
+    """The first leader factory() call during the bootstrap open completes
     or raises within the configured bound. A credential provider that
     accepts the call and never returns must fail the open - the notify
     seam's identical factory call is already bounded with
@@ -196,7 +197,7 @@ async def test_bootstrap_leader_factory_call_is_bounded() -> None:
     except TimeoutError as exc:
         # The factory was entered (asserted below) and never returns, so a
         # TimeoutError here can only be a bound production applied to the
-        # hung call. If it is the TEST budget that fired instead, the open
+        # hung call. If it is the test budget that fired instead, the open
         # never returns on its own: bootstrap hangs.
         assert factory_entered.is_set(), "open failed before reaching the leader factory call"
         if budget.expired():

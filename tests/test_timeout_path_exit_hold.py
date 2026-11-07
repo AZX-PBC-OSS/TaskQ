@@ -10,7 +10,7 @@ row went straight back to claimable while the body was still mid-run, the
 same overlap shape the shutdown release path closed for the interrupt path
 , on the timeout path.
 
-The fix routes the timeout handler through the SAME exit-proof hold the
+The fix routes the timeout handler through the same exit-proof hold the
 interrupt path uses: the handler parks on the job's tracked exit handles
 (``ctx._sync_actor_task``, ``ctx._tx_unwind_task``), bounded by
 ``_actor_exit_wait_budget``, and re-pends with the decision's own retry

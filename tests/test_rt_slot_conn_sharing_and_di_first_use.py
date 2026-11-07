@@ -15,7 +15,7 @@ that pin does not cover:
   re-bound TRANSIENT resolver is the only path that carries the
   shadowed scope-containers map);
 - a LOOP-scoped helper factory (the "database pools, HTTP clients" DI
-  shape) bakes the ONE registered connection into a bootstrap-resolved
+  shape) bakes the one registered connection into a bootstrap-resolved
   singleton every concurrent slot's actor receives - the no-sharing
   rule extends to "any object derived from a shared connection (an
   enqueuer, a helper)";
@@ -34,7 +34,7 @@ bootstraps bare (``worker/_bootstrap.py``) and
 with no bound (``taskq/_di/scopes.py`` - the class sweep's Tier-2 item).
 The bounded-bootstrap work covered every ``WorkerConnections`` factory open
 (``tests/test_deps_bootstrap_bounded.py``); the DI registry's own
-first-use awaits were NOT touched. The attack drives the REAL ``_main``
+first-use awaits were not touched. The attack drives the REAL ``_main``
 bootstrap with a black-holed user factory at the real seam, with a
 test-side budget so a red fails in bounded time.
 """
@@ -87,11 +87,11 @@ _SLOT_POOL_SIZE = 3
 # ── Budgets ─────────────────────────────────────────────────────────────
 #
 # Every budget below is sized so the production bound it watches fires
-# well inside it: a budget firing (budget.expired()) is the RED result -
+# well inside it: a budget firing (budget.expired()) is the red result -
 # production never bounded the operation on its own.
 
 # Surface B: reload_factory_timeout shrunk so a production-side bound on
-# the DI factory's first-use would fire at ~3s, far inside the budget.
+# the di factory's first-use would fire at ~3s, far inside the budget.
 _PROD_BOUND_SECS = "3"
 _TEST_BUDGET_SECS = 12.0
 
@@ -218,7 +218,7 @@ async def _claim_roles(backend: Any, roles: tuple[str, ...]) -> list[Any]:
     return claimed
 
 
-# ── Surface A, attack 1: the nested LOOP-scoped resolution ──────────────
+# ── Surface A, attack 1: the nested loop-scoped resolution ──────────────
 
 
 class _TransientHelper:
@@ -252,7 +252,7 @@ async def test_nested_transient_dependency_resolves_the_slot_connection(
     Two concurrent slots drive the claim end-to-end: each slot's helper
     holds the connection that slot's own transaction runs on (in-transaction
     at actor entry, identical to the slot's directly-injected connection),
-    the failing slot's write THROUGH THE HELPER joins its slot's
+    the failing slot's write THROUGH the HELPER joins its slot's
     transaction (rolled back with it), and the healthy sibling succeeds
     while the failing slot's transaction is open.
     """
@@ -290,11 +290,11 @@ async def test_nested_transient_dependency_resolves_the_slot_connection(
             helpers_seen[payload.role] = helper
             # Taken at actor entry, before any sibling can interleave: the
             # helper's connection must already be inside this slot's open
-            # transaction - the per-slot LOOP-scope semantics.
+            # transaction - the per-slot loop-scope semantics.
             in_tx_at_entry[payload.role] = bool(helper.conn.is_in_transaction())
             if payload.role == "fail":
                 # A bare write through the helper's connection: whichever
-                # connection this is, the write must live inside THIS slot's
+                # connection this is, the write must live inside this slot's
                 # transaction, so this slot's failure rolls it back.
                 await helper.conn.execute("INSERT INTO tq_rt_nested_marker VALUES ('fail')")
                 a_in_tx.set()
@@ -312,7 +312,7 @@ async def test_nested_transient_dependency_resolves_the_slot_connection(
         deps.slot_pool = slot_pool
 
         async with _ScopeStack(registry) as scopes:
-            # Guard the wiring: the LOOP-scope cache still holds the ONE
+            # Guard the wiring: the loop-scope cache still holds the one
             # registered connection, and dispatch acquires from the slot
             # pool - the per-slot path is active.
             assert scopes.loop_scope.resolved_cache().get(asyncpg.Connection) is loop_conn
@@ -353,8 +353,8 @@ async def test_nested_transient_dependency_resolves_the_slot_connection(
             b_done.set()
             outcome_a = await task_a
 
-            # Per-slot identity through the NESTED resolution: neither
-            # slot's helper received the ONE registered connection...
+            # Per-slot identity through the nested resolution: neither
+            # slot's helper received the one registered connection...
             assert helpers_seen["fail"].conn is not loop_conn, (
                 "the failing slot's TRANSIENT factory resolved the registered "
                 "LOOP-scope connection for its nested dependency - the shadowed "
@@ -371,7 +371,7 @@ async def test_nested_transient_dependency_resolves_the_slot_connection(
                 "for their nested dependency"
             )
             # The nested resolution and the direct injection agree: the
-            # helper's connection IS the slot's transaction connection.
+            # helper's connection is the slot's transaction connection.
             assert helpers_seen["fail"].conn is direct_conns["fail"], (
                 "the failing slot's nested resolution and its direct injection "
                 "disagree about which connection this slot owns"
@@ -396,7 +396,7 @@ async def test_nested_transient_dependency_resolves_the_slot_connection(
             )
             assert outcome_a in ("scheduled", "failed")
 
-            # The failing slot's write THROUGH THE HELPER rolled back with
+            # The failing slot's write through the helper rolled back with
             # its slot's transaction - transactional consume must be
             # transactional for the actor's work through its dependencies.
             probe = await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -418,7 +418,7 @@ async def test_nested_transient_dependency_resolves_the_slot_connection(
         await loop_conn.close()
 
 
-# ── Surface A, attack 2: the LOOP-scoped helper singleton ───────────────
+# ── Surface A, attack 2: the loop-scoped helper singleton ───────────────
 
 
 class _LoopHelper:
@@ -442,15 +442,15 @@ async def test_loop_scoped_helper_does_not_carry_the_registered_connection_into_
     view's headline claim.
 
     A LOOP-scoped factory whose parameter injects the LOOP-registered
-    connection is resolved ONCE at ``LoopScope.bootstrap`` (through the
+    connection is resolved once at ``LoopScope.bootstrap`` (through the
     real scope containers, before any dispatch exists), so the singleton
     it produces bakes in whichever connection the factory saw then. The
     per-slot fix's own contract (the ``LoopScopeSlotView`` docstring)
     is that "a LOOP-registered connection never reaches two
     concurrent slots' actors", and the no-sharing rule extends
     to "any object derived from a shared connection (an enqueuer, a
-    helper) is shared the same way" - a helper holding the ONE registered
-    connection is exactly that object. The actor here depends ONLY on the
+    helper) is shared the same way" - a helper holding the one registered
+    connection is exactly that object. The actor here depends only on the
     helper (the realistic user shape: "my repository handles the DB"), on
     a worker whose per-slot path is ACTIVE.
     """
@@ -483,7 +483,7 @@ async def test_loop_scoped_helper_does_not_carry_the_registered_connection_into_
         ) -> dict[str, object]:
             helpers_seen[payload.role] = helper
             if payload.role == "fail":
-                # The helper's write must join THIS slot's transaction:
+                # The helper's write must join this slot's transaction:
                 # the helper's connection must be the slot's.
                 await helper.conn.execute("INSERT INTO tq_rt_loop_helper_marker VALUES ('fail')")
                 a_in_tx.set()
@@ -499,7 +499,7 @@ async def test_loop_scoped_helper_does_not_carry_the_registered_connection_into_
             dependencies={"helper": _LoopHelper},
         )
         # The per-slot path wiring: bootstrap opens the dedicated pool on
-        # exactly this shape (LOOP-scope connection registered,
+        # exactly this shape (loop-scope connection registered,
         # max_concurrency > 1) - the premise of the attack.
         deps.slot_pool = slot_pool
 
@@ -541,7 +541,7 @@ async def test_loop_scoped_helper_does_not_carry_the_registered_connection_into_
             outcome_a = await task_a
 
             # The attack: neither concurrent slot's actor may receive the
-            # ONE registered connection through its LOOP-scoped helper.
+            # one registered connection through its loop-scoped helper.
             assert helpers_seen["fail"].conn is not loop_conn, (
                 "the LOOP-scoped helper factory resolved the ONE registered "
                 "LOOP-scope connection at bootstrap and handed it to a "
@@ -566,7 +566,7 @@ async def test_loop_scoped_helper_does_not_carry_the_registered_connection_into_
             assert outcome_b == "succeeded"
             assert outcome_a in ("scheduled", "failed")
 
-            # The failing slot's write THROUGH THE HELPER must have joined
+            # The failing slot's write through the helper must have joined
             # its slot's transaction and rolled back with it.
             probe = await asyncpg.connect(module_pg_schema.pg_dsn)
             try:
@@ -744,7 +744,7 @@ async def test_teardown_mid_slot_is_bounded_and_preserves_the_job_outcome(
     RED finding this attack caught on the release candidate: the
     terminated dispatch ESCAPES ``dispatch_one_job`` with
     ``InterfaceError('pool is closed')`` - the generic handler's fallback
-    terminal write goes through the worker pool that the SAME unwind
+    terminal write goes through the worker pool that the same unwind
     closed moments later, and ``_TERMINAL_WRITE_INFRA_EXCEPTIONS``
     (PostgresError, OSError, TimeoutError) omits asyncpg's pool/conn
     lifecycle errors (``asyncpg.InterfaceError``) that the dispatch
@@ -825,7 +825,7 @@ async def test_teardown_mid_slot_is_bounded_and_preserves_the_job_outcome(
             # The slot holds its connection inside an open transaction.
             # Run the production teardown seam: the same exit-stack unwind
             # the worker performs at shutdown.
-            exit_stack = deps._exit_stack  # pyright: ignore[reportPrivateUsage]  # Why: the deps exit stack IS the teardown seam under attack - the callbacks _maybe_open_slot_pool pushed (the slot pool's bounded close) are what this test unwinds; no public accessor exists for it.
+            exit_stack = deps._exit_stack  # pyright: ignore[reportPrivateUsage]  # Why: the deps exit stack is the teardown seam under attack - the callbacks _maybe_open_slot_pool pushed (the slot pool's bounded close) are what this test unwinds; no public accessor exists for it.
             assert exit_stack is not None, (
                 "the deps exit stack must be live inside open_worker_deps"
             )
@@ -845,7 +845,7 @@ async def test_teardown_mid_slot_is_bounded_and_preserves_the_job_outcome(
             teardown_elapsed = time.monotonic() - t0
 
             assert teardown_elapsed < _TEARDOWN_BUDGET_SECS
-            # The graceful window: the close WAITED for the in-flight slot
+            # The graceful window: the close waited for the in-flight slot
             # (up to CLOSE_TIMEOUT_SECS) before terminating it - teardown
             # happens after in-flight work's window, not instead of it.
             assert teardown_elapsed >= 4.0, (
@@ -900,7 +900,7 @@ async def test_heartbeat_and_notify_survive_transactional_role_exhaustion(
     """With every transactional-role connection checked out - the slot
     pool, the dispatcher pool, and the worker pool, each at its own max
     size - the heartbeat tick and the notify connection must both stay
-    healthy: the heartbeat runs on its OWN pool and notify on its OWN
+    healthy: the heartbeat runs on its own pool and notify on its own
     dedicated connection (the I-02 rule: no cross-role reuse - a
     transaction-carrying connection is never shared with a liveness or
     wake role). A heartbeat that "simplified" onto any transactional role
@@ -985,7 +985,7 @@ async def test_heartbeat_and_notify_survive_transactional_role_exhaustion(
         await loop_conn.close()
 
 
-# ── Surface B: the DI scope bootstraps' first-use bound ─────────────────
+# ── Surface B: the di scope bootstraps' first-use bound ─────────────────
 
 
 class _HangingDbPool:

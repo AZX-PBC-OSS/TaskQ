@@ -1,39 +1,31 @@
-"""THE CHILD-FLOW FIXES' PINS — the pin pack (the child-flows
-attack front's recorded findings, fixed failing-first on the
-``feat/taskqflow-child-fixes`` branch off the child line's head
-``f8bfc5033``).
+"""The child-flow machinery's pins — the spawn/join contracts under
+concurrency, recursion, retention, crash, and redeploy.
 
-THE RED RECEIPTS (all captured live BEFORE the fixes, on the base head
-against the lane's :5812 — the capture rides
-the recorded capture):
-
-* RV5-the (THE ASYNCIO.GATHER DRAGON — GRAND-MERGE BLOCKER): the natural
+* the ASYNCIO.GATHER CONTRACT: the natural
   fan-out spelling ``gather(*[ctx.spawn_flow(...) for t in tenants])``
-  minted ONE child and returned tenant-0's verdict K times wearing K
-  labels — the per-attempt spawn cursor's read/write was not atomic, so
-  K concurrent spawns all adopted the same slot (run key), and the
-  arbiter's conflict path handed every caller THE ONE child's handle.
-  ZERO errors, green pins, silent fabricated results.
-* RV5-the (THE RECURSION BOMB + THE RECURSIVE CASCADE — GRAND-MERGE
-  BLOCKER): (a) a self-spawning flow minted a generation per sweep tick
+  mints K children with K distinct verdicts — the per-attempt spawn
+  cursor's read/write is atomic (non-atomic, K
+  concurrent spawns all adopt the same slot (run key), and the
+  arbiter's conflict path hands every caller the one child's handle:
+  ZERO errors, green pins, silent fabricated results).
+* the RECURSION BOMB + the RECURSIVE CASCADE: (a) a self-spawning flow mints a generation per sweep tick
   forever — no depth bound, no cycle check; (b) the cancel cascade was
   Python-recursive — a 1200-deep cascade raised ``RecursionError`` at
   the operator and left hundreds of runs running.
-* RV5-the (THE RETENTION-RESPAWN FAIL-CLOSE): purging a child's rows +
-  resuming the parent SILENTLY RE-EXECUTED the child (the arbiter's row
-  went with the purge → the spawn re-minted a fresh child → the child's
-  side effects ran twice, the parent SUCCEEDED — the worst face). The
-  fail-close is now the typed arm: the dangling child pointer raises.
-* RV5-the (THE ORPHAN WINDOW): the crash between child-create and
-  receipt-write, then a parent cancel, let the child ESCAPE the cascade
-  forever — the cascade walked the crash-unsafe receipts and never read
-  the crash-safe ``parent_flow_id`` direction the rows already carry.
-* RV5-the (THE SMALLER FACES): (a) the dev-loop tick never ran the
-  expiry arm — ``timeout_s`` was inert in dev drives; (b) the admin run
-  explorer was child-blind — the parent↔child links the rows carry
-  never rendered; (c) resolving a child-join hold no-op-bounced (the
-  resolve delivered, the body re-executed, the live child re-held) —
-  the typed refusal now teaches where the resolution actually lives.
+* (the RETENTION-RESPAWN FAIL-CLOSE): purging a child's rows +
+  resuming the parent must not silently RE-EXECUTE the child: the
+  dangling child pointer raises (the typed arm) — without it the
+  spawn re-mints a fresh child, the child's
+  side effects run twice, the parent SUCCEEDS — the worst face.
+* (the ORPHAN WINDOW): the crash between child-create and
+  receipt-write, then a parent cancel, must not let the child ESCAPE the
+  cascade — the cascade walks the crash-safe ``parent_flow_id``
+  direction the rows carry, not the crash-unsafe receipts alone.
+* (the SMALLER FACES): (a) the dev-loop tick runs the
+  expiry arm — ``timeout_s`` is never inert in dev drives; (b) the admin run
+  explorer renders the parent↔child links the rows carry; (c) resolving a
+  child-join hold refuses typed (the resolution lives at the child's
+  own hold — the refusal teaches where).
 
 The fix choices are the reads' choices, and the pins hold them. Pin
 names carry the pack's own stem.
@@ -68,14 +60,13 @@ from taskq.workflows import (
     step,
 )
 
-#: The cascade's depth the recursion pin drives (the rejected shape's
-#: own number — the pre-fix Python-recursive walk raised
-#: ``RecursionError`` inside this depth).
+#: The cascade's depth the recursion pin drives (a Python-recursive
+#: walk raises ``RecursionError`` inside this depth).
 _CASCADE_DEPTH = 1200
 
 
-# ── the app pairs: every test builds its OWN (the D1 registry is
-# global — the workflow names are UNIQUE PER TEST). ──────────────────────
+# ── the app pairs: every test builds its own (the D1 registry is
+# global — the workflow names are UNIQUE per test). ──────────────────────
 
 
 class SubProbe(BaseModel):
@@ -105,7 +96,7 @@ def _child_app(name: str) -> WorkflowApp:
         return SubReport(findings=[f"found:{probe_input.doc_id}"])
 
     @app.workflow(name)
-    def rv5_child() -> Promise[object]:
+    def child() -> Promise[object]:
         return build(step(probe, key="probe"))
 
     return app
@@ -140,7 +131,7 @@ def _parent_app(child_name: str, name: str, *, body: Any = None) -> WorkflowApp:
         return await join_body(ctx, params)  # type: ignore[operator]
 
     @app.workflow(name)
-    def rv5_parent() -> Promise[object]:
+    def parent() -> Promise[object]:
         return build(step(parent_actor, ParentIn(doc_id="d1"), key="spawn_join"))
 
     return app
@@ -198,7 +189,7 @@ async def _child_roots(
 
 
 async def _spawn_and_hold(runner: FlowRunner, flow_id: JobId) -> None:
-    """ONE body execution of the parent's spawn_join node: the spawn +
+    """one body execution of the parent's spawn_join node: the spawn +
     the join hold (the body re-executes from the top on the later
     resume)."""
     rows = await runner._claimable(flow_id)
@@ -229,24 +220,24 @@ async def _descendants(
     return [JobId(str(r["fid"])) for r in rows]
 
 
-# ── RV5-C1: THE GATHER DRAGON (the spawn's atomicity face) ──────────────
+# ── the gather dragon (the spawn's atomicity face) ──────────────
 
 
-class TestRv5C1GatherDragonAtomicity:
+class TestGatherDragonAtomicity:
     async def test_gather_spawns_mint_k_distinct_children_never_tenant_zero_k_times(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE DRAGON'S KILL PIN: ``gather`` over K spawn_flow calls —
+        """The dragon's kill pin: ``gather`` over K spawn_flow calls —
         the natural fan-out spelling — must mint K DISTINCT children,
-        each carrying ITS OWN input, and every receipt must name its own
+        each carrying ITS own input, and every receipt must name its own
         child (no tenant-0 x K, no dropped tenants, no fabricated
         per-caller verdicts)."""
-        _child_app("rv5_c1_child").get("rv5_c1_child")
+        _child_app("c1_chil").get("c1_chil")
 
         async def gather_body(ctx: StepContext, params: ParentIn) -> ParentOut:
             probes = [SubProbe(doc_id=f"{params.doc_id}-{i}") for i in range(5)]
             handles = await asyncio.gather(
-                *[ctx.spawn_flow("rv5_c1_child", input=p, result=SubReport) for p in probes]
+                *[ctx.spawn_flow("c1_chil", input=p, result=SubReport) for p in probes]
             )
             verdicts: list[str] = []
             for handle in handles:
@@ -260,22 +251,20 @@ class TestRv5C1GatherDragonAtomicity:
                         verdicts.append("not-ok")
             return ParentOut(findings=verdicts, verdict="ok")
 
-        parent_app = _parent_app("rv5_c1_child", "rv5_c1_parent", body=gather_body)
+        parent_app = _parent_app("c1_chil", "c1_paren", body=gather_body)
         flow_id, outcome, _runner = await _run_parent_to_terminal(
-            parent_app, wf_pool, wf_schema, "rv5_c1_parent"
+            parent_app, wf_pool, wf_schema, "c1_paren"
         )
         assert outcome == "terminal"
 
-        # THE ROWS' LAW: K DISTINCT child roots under this parent, each
-        # carrying its OWN input (the receipts prove no cross-served
-        # verdict, no dropped tenant).
+        # K DISTINCT child roots under this parent, each carrying its own input
+        # (the receipts prove no cross-served verdict, no dropped tenant).
         roots = await _child_roots(wf_conn, wf_schema, flow_id)
         assert len(roots) == 5, f"expected 5 children, got {len(roots)}"
         inputs = sorted(r["payload"]["wf_input"]["doc_id"] for r in roots)
         assert inputs == [f"d1-{i}" for i in range(5)], inputs
 
-        # THE RECEIPTS: one per child, no dupes (the K labels each name
-        # their own child).
+        # one per child, no dupes (the K labels each name their own child).
         parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
         receipts = parent_node["metadata"]["child_flows"]
         assert sorted(receipts) == sorted(str(r["id"]) for r in roots)
@@ -283,18 +272,16 @@ class TestRv5C1GatherDragonAtomicity:
     async def test_the_same_key_concurrent_spawn_adopts_one_child_all_callers_agree(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE HONEST SHARED FACE: a SAME-key concurrent spawn ADOPTS the
-        same child and EVERY caller receives THAT child's handle/outcome
+        """The honest shared face: a same-key concurrent spawn ADOPTS the
+        same child and every caller receives THAT child's handle/outcome
         — never a fabricated per-caller verdict."""
-        _child_app("rv5_c1_same_child").get("rv5_c1_same_child")
+        _child_app("c1_same_chil").get("c1_same_chil")
 
         async def same_key_body(ctx: StepContext, params: ParentIn) -> ParentOut:
             probes = [SubProbe(doc_id=f"{params.doc_id}-{i}") for i in range(5)]
             handles = await asyncio.gather(
                 *[
-                    ctx.spawn_flow(
-                        "rv5_c1_same_child", input=p, result=SubReport, key="the-shared-site"
-                    )
+                    ctx.spawn_flow("c1_same_chil", input=p, result=SubReport, key="the-shared-site")
                     for p in probes
                 ]
             )
@@ -307,9 +294,9 @@ class TestRv5C1GatherDragonAtomicity:
                 case _:
                     return ParentOut(findings=[], verdict="not-ok")
 
-        parent_app = _parent_app("rv5_c1_same_child", "rv5_c1_same_parent", body=same_key_body)
+        parent_app = _parent_app("c1_same_chil", "c1_same_paren", body=same_key_body)
         flow_id, outcome, _runner = await _run_parent_to_terminal(
-            parent_app, wf_pool, wf_schema, "rv5_c1_same_parent"
+            parent_app, wf_pool, wf_schema, "c1_same_paren"
         )
         assert outcome == "terminal"
         roots = await _child_roots(wf_conn, wf_schema, flow_id)
@@ -318,8 +305,8 @@ class TestRv5C1GatherDragonAtomicity:
     async def test_input_fidelity_two_input_shapes_each_child_carries_its_own(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE INPUT-FIDELITY PIN: two DIFFERENT input shapes through one
-        gather fan-out — each child's rows carry ITS OWN input (shape +
+        """The input-fidelity pin: two DIFFERENT input shapes through one
+        gather fan-out — each child's rows carry ITS own input (shape +
         values), never a sibling's."""
         app = WorkflowApp()
 
@@ -341,8 +328,8 @@ class TestRv5C1GatherDragonAtomicity:
             raw = cast("dict[str, object]", ctx.input)
             return Echo(echo=raw)
 
-        @app.workflow("rv5_c1_fid_child")
-        def rv5_fid_child() -> Promise[object]:
+        @app.workflow("c1_fid_chil")
+        def fid_child() -> Promise[object]:
             return build(step(echo_step, key="echo"))
 
         async def fid_body(ctx: StepContext, params: ParentIn) -> dict[str, object]:
@@ -352,7 +339,7 @@ class TestRv5C1GatherDragonAtomicity:
                 ShapeB(doc_id="tb", shape="B", only_b="bee"),
             ]
             handles = await asyncio.gather(
-                *[ctx.spawn_flow("rv5_c1_fid_child", input=i, result=Echo) for i in inputs]
+                *[ctx.spawn_flow("c1_fid_chil", input=i, result=Echo) for i in inputs]
             )
             echoes: list[dict[str, object]] = []
             for handle in handles:
@@ -365,12 +352,12 @@ class TestRv5C1GatherDragonAtomicity:
         async def fid_parent(ctx: StepContext, params: ParentIn) -> dict[str, object]:
             return await fid_body(ctx, params)  # type: ignore[operator]
 
-        @app.workflow("rv5_c1_fid_parent")
-        def rv5_fid_parent() -> Promise[object]:
+        @app.workflow("c1_fid_paren")
+        def fid_parent_flow() -> Promise[object]:
             return build(step(fid_parent, ParentIn(doc_id="d1"), key="spawn_join"))
 
-        app.get("rv5_c1_fid_child")  # the registration door (D1)
-        runner = FlowRunner(app.get("rv5_c1_fid_parent"), wf_pool, wf_schema)
+        app.get("c1_fid_chil")  # the registration door (D1)
+        runner = FlowRunner(app.get("c1_fid_paren"), wf_pool, wf_schema)
         claim = await runner.create_flow()
         outcome = await runner.drive(claim.flow_id, until="terminal", max_ticks=4000)
         assert outcome == "terminal"
@@ -379,7 +366,7 @@ class TestRv5C1GatherDragonAtomicity:
         payloads = [r["payload"]["wf_input"] for r in roots]
         shapes = sorted(p["shape"] for p in payloads)
         assert shapes == ["A", "B"], shapes
-        # Each child's rows carry ITS OWN shape-specific field — the
+        # Each child's rows carry its own shape-specific field — the
         # cross-served verdict is unrepresentable.
         a = next(p for p in payloads if p["shape"] == "A")
         b = next(p for p in payloads if p["shape"] == "B")
@@ -387,7 +374,7 @@ class TestRv5C1GatherDragonAtomicity:
         assert b["only_b"] == "bee" and "only_a" not in b
 
 
-# ── RV5-C2a: THE RECURSION BOMB (the depth bound + the cycle check) ─────
+# ── the recursion bomb (the depth bound + the cycle check) ─────
 
 
 class GenIn(BaseModel):
@@ -398,50 +385,47 @@ class GenOut(BaseModel):
     gen: int
 
 
-class TestRv5C2SpawnDepthBound:
+class TestSpawnDepthBound:
     async def test_the_self_spawning_flow_is_bounded_the_typed_error_names_the_fix(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE BOMB'S KILL PIN: a self-spawning flow must be STOPPED by
+        """The bomb's kill pin: a self-spawning flow must be STOPPED by
         the declared depth bound — the typed
         ``SpawnDepthExceededError`` (``FanInBoundExceededError``'s
         sibling) on the record, the child census bounded, the run
-        terminal. The pre-fix bomb minted a generation per sweep tick
+        terminal. The unbounded bomb mints a generation per sweep tick
         forever."""
         app = WorkflowApp()
 
         @app.actor(queue="cpu", max_attempts=1)
         async def bomb_step(ctx: StepContext) -> GenOut:
             gen_in = GenIn.model_validate(ctx.input)
-            handle = await ctx.spawn_flow(
-                "rv5_c2_bomb", input=GenIn(gen=gen_in.gen + 1), result=GenOut
-            )
+            handle = await ctx.spawn_flow("c2_bom", input=GenIn(gen=gen_in.gen + 1), result=GenOut)
             outcome = await handle.wait()
             assert isinstance(outcome, ChildOk)
             return GenOut(gen=outcome.result.gen)
 
-        @app.workflow("rv5_c2_bomb")
-        def rv5_bomb() -> Promise[object]:
+        @app.workflow("c2_bom")
+        def bomb() -> Promise[object]:
             return build(step(bomb_step, key="bomb"))
 
-        runner = FlowRunner(app.get("rv5_c2_bomb"), wf_pool, wf_schema)
+        runner = FlowRunner(app.get("c2_bom"), wf_pool, wf_schema)
         claim = await runner.create_flow(input=GenIn(gen=0))
         outcome = await runner.drive(claim.flow_id, until="terminal", max_ticks=600)
         assert outcome == "terminal", (
             "the bomb never terminalized — the generations grew past the drive"
         )
 
-        # THE CENSUS IS BOUNDED at the declared depth (each generation
+        # the census is bounded at the declared depth (each generation
         # is one child root of the bomb's tree).
         descendants = await _descendants(wf_conn, wf_schema, claim.flow_id)
         assert len(descendants) <= DEFAULT_SPAWN_MAX_DEPTH, (
             f"the bomb minted {len(descendants)} children past the bound"
         )
 
-        # THE TYPED ERROR ON THE RECORD: the bound's refusal names the
-        # fix (the error class rides the deepest node's row — the bomb's
-        # whole tree walked from the original root via the rows' parent
-        # links).
+        # the bound's refusal names the fix (the error class rides the deepest
+        # node's row — the bomb's whole tree walked from the original root via
+        # the rows' parent links).
         tree_ids = await _descendants(wf_conn, wf_schema, claim.flow_id)
         typed = await wf_conn.fetchval(
             f'SELECT count(*) FROM "{wf_schema}".jobs '
@@ -454,14 +438,14 @@ class TestRv5C2SpawnDepthBound:
     async def test_the_ancestor_cycle_fires_the_same_bound(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE CYCLE CHECK (folded into the same ancestor walk): a cycle
+        """The cycle check (folded into the same ancestor walk): a cycle
         in the rows' parent links cannot run the walk forever — the same
         typed bound fires."""
-        _child_app("rv5_c2_cycle_child").get("rv5_c2_cycle_child")
+        _child_app("c2_cycle_chil").get("c2_cycle_chil")
 
         async def cycle_body(ctx: StepContext, params: ParentIn) -> ParentOut:
             handle = await ctx.spawn_flow(
-                "rv5_c2_cycle_child",
+                "c2_cycle_chil",
                 input=SubProbe(doc_id=params.doc_id),
                 result=SubReport,
             )
@@ -472,13 +456,13 @@ class TestRv5C2SpawnDepthBound:
                 case _:
                     return ParentOut(findings=[], verdict="not-ok")
 
-        parent_app = _parent_app("rv5_c2_cycle_child", "rv5_c2_cycle_parent", body=cycle_body)
-        runner = FlowRunner(parent_app.get("rv5_c2_cycle_parent"), wf_pool, wf_schema)
+        parent_app = _parent_app("c2_cycle_chil", "c2_cycle_paren", body=cycle_body)
+        runner = FlowRunner(parent_app.get("c2_cycle_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
 
-        # THE FABRICATED CYCLE: the parent's root points at ITSELF (the
-        # rows' parent links are operator-writable truth — a corrupted
-        # link must be a typed refusal, never a walk that never ends).
+        # the parent's root points at itself (the rows' parent links are
+        # operator-writable truth — a corrupted link must be a typed refusal,
+        # never a walk that never ends).
         await wf_conn.execute(
             f'UPDATE "{wf_schema}".jobs '
             "SET metadata = metadata || jsonb_build_object('parent_flow_id', id::text) "
@@ -489,9 +473,8 @@ class TestRv5C2SpawnDepthBound:
         rows = await runner._claimable(flow_id)
         await runner._run_node(flow_id, rows[0])
 
-        # THE TYPED REFUSAL ON THE RECORD: the deterministic failure
-        # terminal-fails the node with the bound's own class (the walk
-        # refused; the ladder unburned).
+        # the deterministic failure terminal-fails the node with the bound's
+        # own class (the walk refused; the ladder unburned).
         node_class = await wf_conn.fetchval(
             f'SELECT error_class FROM "{wf_schema}".jobs '
             "WHERE step_key = 'spawn_join' AND (metadata->>'flow_id')::uuid = $1",
@@ -500,7 +483,7 @@ class TestRv5C2SpawnDepthBound:
         assert node_class == "SpawnDepthExceededError", node_class
 
 
-# ── RV5-C2b + RV5-C4: THE CANCEL CASCADE (iterative + the rows' law) ────
+# ── + the cancel CASCADE (iterative + the rows' law) ────
 
 
 async def _chain_rows(wf_conn: asyncpg.Connection, wf_schema: str, depth: int) -> list[JobId]:
@@ -511,7 +494,7 @@ async def _chain_rows(wf_conn: asyncpg.Connection, wf_schema: str, depth: int) -
     directions."""
     ids = [JobId(new_uuid()) for _ in range(depth)]
     for i, fid in enumerate(ids):
-        meta: dict[str, object] = {"flow_id": str(fid), "workflow": "rv5_chain"}
+        meta: dict[str, object] = {"flow_id": str(fid), "workflow": "chai"}
         if i > 0:
             meta["parent_flow_id"] = str(ids[i - 1])
         if i < depth - 1:
@@ -526,16 +509,18 @@ async def _chain_rows(wf_conn: asyncpg.Connection, wf_schema: str, depth: int) -
     return ids
 
 
-class TestRv5C2bCancelCascadeIterative:
+class TestCancelCascadeIterative:
     async def test_the_1200_deep_cascade_cancels_clean_no_recursion_error(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE CASCADE'S DEPTH LAW: a 1200-deep cascade cancels CLEAN —
+        """The cascade's depth law: a 1200-deep cascade cancels CLEAN —
         the worklist walk, never Python recursion; every run terminal;
         the operator's face honest (no RecursionError, no 500)."""
         ids = await _chain_rows(wf_conn, wf_schema, _CASCADE_DEPTH)
 
-        await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=ids[0], reason="rv5-c2b")
+        await cancel_workflow_run(
+            wf_pool, schema=wf_schema, flow_id=ids[0], reason="the cascade-depth probe"
+        )
 
         left_running = await wf_conn.fetchval(
             f'SELECT count(*) FROM "{wf_schema}".jobs '
@@ -549,28 +534,27 @@ class TestRv5C2bCancelCascadeIterative:
         )
 
 
-class TestRv5C4OrphanWindow:
+class TestOrphanWindow:
     async def test_the_crash_orphan_child_is_cancelled_by_the_rows_law(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE ORPHAN WINDOW'S KILL PIN: the crash between child-create
+        """The orphan window's kill pin: the crash between child-create
         and receipt-write (simulated: the receipt removed from the
         parent's row — the crash window's committed state), then a
-        parent cancel — the child must STILL be cancelled by the rows'
+        parent cancel — the child must still be cancelled by the rows'
         parent_flow_id direction (the crash-safe truth), never escape
         the cascade forever."""
-        _child_app("rv5_c4_child").get("rv5_c4_child")
-        parent_app = _parent_app("rv5_c4_child", "rv5_c4_parent")
-        runner = FlowRunner(parent_app.get("rv5_c4_parent"), wf_pool, wf_schema)
+        _child_app("c4_chil").get("c4_chil")
+        parent_app = _parent_app("c4_chil", "c4_paren")
+        runner = FlowRunner(parent_app.get("c4_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
 
         await _spawn_and_hold(runner, flow_id)
         parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
         child_id = str(parent_node["metadata"]["child_flows"][0])
 
-        # THE CRASH WINDOW'S COMMITTED STATE: the child exists (its rows
-        # carry the parent pointers — written in the create's ONE tx),
-        # the receipt NEVER landed.
+        # the child exists (its rows carry the parent pointers — written in the
+        # create's one tx), the receipt never landed.
         await wf_conn.execute(
             f"UPDATE \"{wf_schema}\".jobs SET metadata = metadata - 'child_flows' WHERE id = $1",
             parent_node["id"],
@@ -580,7 +564,9 @@ class TestRv5C4OrphanWindow:
         )
         assert child_status == "running", child_status
 
-        await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=flow_id, reason="rv5-c4")
+        await cancel_workflow_run(
+            wf_pool, schema=wf_schema, flow_id=flow_id, reason="the cascade probe"
+        )
 
         child_status = await wf_conn.fetchval(
             f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1::uuid', child_id
@@ -590,29 +576,29 @@ class TestRv5C4OrphanWindow:
         )
 
 
-# ── RV5-C3: THE RETENTION-RESPAWN FAIL-CLOSE ────────────────────────────
+# ── the retention-respawn fail-close ────────────────────────────
 
 
-class TestRv5C3ChildLostFailClose:
+class TestChildLostFailClose:
     async def test_the_purged_child_never_silently_respawns_the_typed_arm(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE FAIL-CLOSE'S KILL PIN: purging a held child's rows +
-        resuming the parent must NEVER silently re-execute the child —
+        """The fail-close's kill pin: purging a held child's rows +
+        resuming the parent must never silently re-execute the child —
         the dangling child pointer raises the typed arm, the parent's
-        run FAILS honestly (the pre-fix shape re-minted a fresh child:
+        run FAILS honestly (the respawn shape re-mints a fresh child:
         emails/payments twice, the parent SUCCEEDED)."""
-        _child_app("rv5_c3_child").get("rv5_c3_child")
-        parent_app = _parent_app("rv5_c3_child", "rv5_c3_parent")
-        runner = FlowRunner(parent_app.get("rv5_c3_parent"), wf_pool, wf_schema)
+        _child_app("c3_chil").get("c3_chil")
+        parent_app = _parent_app("c3_chil", "c3_paren")
+        runner = FlowRunner(parent_app.get("c3_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
 
         await _spawn_and_hold(runner, flow_id)
         parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
         child_id = str(parent_node["metadata"]["child_flows"][0])
 
-        # THE RETENTION PURGE: the child's rows go (the operator's law:
-        # the purge must walk the parent links — the docs name it).
+        # the child's rows go (the operator's law: the purge must walk the
+        # parent links — the docs name it).
         await wf_conn.execute(
             f"DELETE FROM \"{wf_schema}\".jobs WHERE (metadata->>'flow_id')::uuid = $1::uuid",
             child_id,
@@ -621,16 +607,16 @@ class TestRv5C3ChildLostFailClose:
         outcome = await runner.drive(flow_id, until="terminal", max_ticks=400)
         assert outcome == "terminal"
 
-        # THE RESPAWN'S CENSUS: NO second child was ever minted.
+        # no second child was ever minted.
         roots = await _child_roots(wf_conn, wf_schema, flow_id)
         assert len(roots) == 0, (
             f"the resume silently re-executed the purged child ({len(roots)} child rows)"
         )
 
-        # THE TYPED ARM ON THE RECORD: the parent's run FAILED with the
-        # dangling-pointer refusal — never a silent success. The NODE
-        # row carries the body's error class (the failed run's first
-        # question's answer); the root's propagation verdict wraps it.
+        # the parent's run failed with the dangling-pointer refusal — never a
+        # silent success. The node row carries the body's error class (the
+        # failed run's first question's answer); the root's propagation verdict
+        # wraps it.
         root = await wf_conn.fetchrow(
             f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
         )
@@ -646,7 +632,56 @@ class TestRv5C3ChildLostFailClose:
         assert node_class == "ChildFlowLostError", node_class
 
 
-# ── RV5-C5a: THE DEV-DRIVE PARITY (the tick runs the expiry arm) ────────
+# ── the cancelled run's read face ────────────────────────────────────────
+
+
+async def test_a_cancelled_run_s_result_is_loud(wf_pool: asyncpg.Pool, wf_schema: str) -> None:
+    """A cancelled run's ``result()`` raises the typed cancellation
+    error — the same family as the failed run's read, carrying the
+    terminal status and the cancel reason. The cancelled run's first
+    question (was it cancelled, and why) is answered at the read face,
+    never the empty read that made cancelled and not-yet-terminal
+    indistinguishable."""
+    from taskq.workflows import WorkflowRunCancelledError, WorkflowRunError
+
+    app = WorkflowApp()
+
+    @app.actor(queue="cpu", max_attempts=3)
+    async def waiter(ctx: StepContext, params: ParentIn) -> Verdict:
+        _ = params
+        outcome = await ctx.wait_signal(
+            (ContinueApproval,), reason="cancelled-read", timeout_s=None
+        )
+        match outcome:
+            case ContinueApproval():
+                return Verdict(v="approved")
+            case Expired():
+                return Verdict(v="expired")
+        raise AssertionError("unreachable: the union is closed")  # pragma: no cover
+
+    gate = GateDecl(name="ContinueApproval", payload_models=(ContinueApproval,))
+
+    @app.workflow("cancelled_read_parent")
+    def cancelled_read() -> Promise[object]:
+        return build(step(waiter, ParentIn(doc_id="d1"), key="hold", gates=(gate,)))
+
+    runner = FlowRunner(app.get("cancelled_read_parent"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    await runner.drive(flow_id, until="held", max_ticks=10)
+    await cancel_workflow_run(
+        wf_pool, flow_id=flow_id, schema=wf_schema, reason="operator stopped it", principal=None
+    )
+
+    with pytest.raises(WorkflowRunCancelledError) as exc_info:
+        await runner.result(flow_id)
+    assert exc_info.value.status == "cancelled"
+    assert exc_info.value.reason == "operator stopped it"
+    # existing ``except WorkflowRunError`` clauses catch it.
+    with pytest.raises(WorkflowRunError):
+        await runner.result(flow_id)
+
+
+# ── the dev-drive parity (the tick runs the expiry arm) ────────
 
 
 class ContinueApproval(BaseModel):
@@ -657,20 +692,22 @@ class Verdict(BaseModel):
     v: str
 
 
-class TestRv5C5DevDriveParity:
+class TestDevDriveParity:
     async def test_a_dev_drive_runs_the_expiry_arm_timeout_s_fires_expired(
         self, wf_pool: asyncpg.Pool, wf_schema: str
     ) -> None:
-        """THE DEV FACE MATCHES THE LEADER'S: a ``timeout_s`` wait in a
+        """The dev face matches the leader's: a ``timeout_s`` wait in a
         dev drive fires the ``Expired`` member (the tick runs the expiry
-        arm) — the pre-fix dev face parked on the hold until
+        arm) — a dev face without the arm parks on the hold until
         ``max_ticks`` (the deadline inert)."""
         app = WorkflowApp()
 
         @app.actor(queue="cpu", max_attempts=3)
         async def waiter(ctx: StepContext, params: ParentIn) -> Verdict:
             _ = params
-            outcome = await ctx.wait_signal((ContinueApproval,), reason="rv5-c5a", timeout_s=0.05)
+            outcome = await ctx.wait_signal(
+                (ContinueApproval,), reason="the expiry-arm probe", timeout_s=0.05
+            )
             match outcome:
                 case ContinueApproval():
                     return Verdict(v="approved")
@@ -680,11 +717,11 @@ class TestRv5C5DevDriveParity:
 
         gate = GateDecl(name="ContinueApproval", payload_models=(ContinueApproval,))
 
-        @app.workflow("rv5_c5a_parent")
-        def rv5_c5a() -> Promise[object]:
+        @app.workflow("c5a_paren")
+        def c5a() -> Promise[object]:
             return build(step(waiter, ParentIn(doc_id="d1"), key="hold", gates=(gate,)))
 
-        runner = FlowRunner(app.get("rv5_c5a_parent"), wf_pool, wf_schema)
+        runner = FlowRunner(app.get("c5a_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         outcome = await runner.drive(flow_id, until="terminal", max_ticks=400)
         assert outcome == "terminal", (
@@ -694,10 +731,10 @@ class TestRv5C5DevDriveParity:
         assert result.v == "expired", result
 
 
-# ── RV5-C5b + RV5-C5c: THE ADMIN FACES ──────────────────────────────────
+# ── + the admin faces ──────────────────────────────────
 
 
-class TestRv5C5AdminFaces:
+class TestDevDriveAdminFaces:
     async def test_the_run_explorer_shows_the_parent_child_links(
         self,
         wf_pool: asyncpg.Pool,
@@ -705,7 +742,7 @@ class TestRv5C5AdminFaces:
         wf_conn: asyncpg.Connection,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """THE ADMIN IS NOT CHILD-BLIND: the run explorer's page renders
+        """The admin is not child-blind: the run explorer's page renders
         the parent↔child links the rows already carry (the child flows'
         links on the parent's page, the parent's link on the child's)."""
         import httpx
@@ -717,9 +754,9 @@ class TestRv5C5AdminFaces:
         monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
         monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
 
-        _child_app("rv5_c5b_child").get("rv5_c5b_child")
-        parent_app = _parent_app("rv5_c5b_child", "rv5_c5b_parent")
-        runner = FlowRunner(parent_app.get("rv5_c5b_parent"), wf_pool, wf_schema)
+        _child_app("c5b_chil").get("c5b_chil")
+        parent_app = _parent_app("c5b_chil", "c5b_paren")
+        runner = FlowRunner(parent_app.get("c5b_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         await _spawn_and_hold(runner, flow_id)
         parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
@@ -744,14 +781,14 @@ class TestRv5C5AdminFaces:
     async def test_resolving_a_child_join_hold_is_the_typed_refusal(
         self, wf_pool: asyncpg.Pool, wf_schema: str
     ) -> None:
-        """THE HONEST RESOLVE FACE: resolving a child-join hold is the
+        """The honest resolve face: resolving a child-join hold is the
         TYPED refusal teaching where the resolution actually lives (the
-        child's terminal) — the hold SURVIVES; the pre-fix face
+        child's terminal) — the hold SURVIVES; the bounce face
         delivered, the body re-executed, the live child re-held (the
         no-op bounce wearing a 200)."""
-        _child_app("rv5_c5c_child").get("rv5_c5c_child")
-        parent_app = _parent_app("rv5_c5c_child", "rv5_c5c_parent")
-        runner = FlowRunner(parent_app.get("rv5_c5c_parent"), wf_pool, wf_schema)
+        _child_app("c5c_chil").get("c5c_chil")
+        parent_app = _parent_app("c5c_chil", "c5c_paren")
+        runner = FlowRunner(parent_app.get("c5c_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         await _spawn_and_hold(runner, flow_id)
 
@@ -763,7 +800,7 @@ class TestRv5C5AdminFaces:
         assert result.status == "refused", result
         assert "child" in (result.reason or "").lower(), result.reason
 
-        # THE HOLD SURVIVES: nothing moved (the wake arm is the only
-        # resolver — the child's terminal).
+        # nothing moved (the wake arm is the only resolver — the child's
+        # terminal).
         (still,) = await client.list(flow_id)
         assert still.hold_id == hold.hold_id and still.status == "held"

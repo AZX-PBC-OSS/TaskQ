@@ -106,8 +106,8 @@ def test_construction_sites_use_build_redis_client(module: str) -> None:
 #
 # redis-py 8 defaults socket_connect_timeout to 5s; on a loaded runner the
 # testcontainer's address resolution out-runs it and the first command dies
-# with ``Timeout connecting to server`` — the rotating one-test-in-~12.7k
-# red (PR #682's 3.13 leg, test_full_round_trip). The testing layer owns a
+# with ``Timeout connecting to server`` — one observed red in ~12.7k runs
+# (Python 3.13's connect band, test_full_round_trip). The testing layer owns a
 # 30s connect budget (the tree's outside-system bound) that every fixture
 # client dials with; the connect phase is setup weather, never a pin's
 # subject.

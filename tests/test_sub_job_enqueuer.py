@@ -85,7 +85,7 @@ class _StubConn:
     pass
 
 
-# ── Sub-enqueue uses LOOP-scope conn when available ──────────────
+# ── Sub-enqueue uses loop-scope conn when available ──────────────
 
 
 async def test_tu1_loop_scope_conn_buffers_in_memory() -> None:
@@ -220,7 +220,7 @@ async def test_tu5_flush_makes_rows_visible() -> None:
 
 
 async def test_tu6_discard_buffer_transient() -> None:
-    """discard_buffer on transient failure; rows NOT in _jobs."""
+    """discard_buffer on transient failure; rows not in _jobs."""
     backend = _make_backend()
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     stub_conn = _StubConn()
@@ -244,7 +244,7 @@ async def test_tu6_discard_buffer_transient() -> None:
 
 
 async def test_tu7_discard_buffer_snooze() -> None:
-    """discard_buffer on Snooze; rows NOT in _jobs."""
+    """discard_buffer on Snooze; rows not in _jobs."""
     backend = _make_backend()
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     stub_conn = _StubConn()
@@ -265,7 +265,7 @@ async def test_tu7_discard_buffer_snooze() -> None:
 
 
 async def test_tu8_discard_buffer_retry_after() -> None:
-    """discard_buffer on RetryAfter; rows NOT in _jobs."""
+    """discard_buffer on RetryAfter; rows not in _jobs."""
     backend = _make_backend()
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     stub_conn = _StubConn()

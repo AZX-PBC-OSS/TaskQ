@@ -171,7 +171,7 @@ async def test_cap_refusal_on_later_chunk_names_stream_global_indices() -> None:
 
 def test_boundary_registry_is_the_single_exhaustive_source() -> None:
     """Every per-item error type the streaming boundary remaps is
-    registered in ONE structure - ``_ITEM_ERROR_REMAPS`` - and the
+    registered in one structure - ``_ITEM_ERROR_REMAPS`` - and the
     boundary's except clause consults exactly that registry (its
     exception tuple is derived from the registry's keys).
 

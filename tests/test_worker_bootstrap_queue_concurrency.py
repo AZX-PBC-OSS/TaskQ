@@ -12,7 +12,7 @@ direct SQL, runs the ``_main`` bootstrap sequence, and asserts:
   - The ``reservation_slots`` table in PG has the expected slot rows for
     that bucket name (proving ``sync_slots`` actually ran).
   - Queues with ``max_concurrent IS NULL`` or not in ``settings.queues``
-    produce NO registry entry and NO slot rows.
+    produce no registry entry and no slot rows.
   - A failing ``sync_slots`` for the queue-cap path CRASHES worker startup
     loudly (a registered-but-unslotted cap would deny every dispatch on
     the queue until a manual restart).
@@ -296,8 +296,8 @@ async def test_queue_cap_grow_slots_on_restart(pg_dsn: str) -> None:
 
 @pytest.mark.asyncio
 async def test_queue_cap_null_max_concurrent_produces_no_reservation(pg_dsn: str) -> None:
-    """A queue with ``max_concurrent IS NULL`` produces NO registry entry
-    and NO ``reservation_slots`` rows - the cap is opt-in per queue."""
+    """A queue with ``max_concurrent IS NULL`` produces no registry entry
+    and no ``reservation_slots`` rows - the cap is opt-in per queue."""
     schema = f"twbqc_{new_base62()}".lower()
     await _prepare_schema_for(pg_dsn, schema)
 
@@ -312,7 +312,7 @@ async def test_queue_cap_null_max_concurrent_produces_no_reservation(pg_dsn: str
     finally:
         await conn.close()
 
-    # The queue IS in settings.queues, but max_concurrent is NULL.
+    # The queue is in settings.queues, but max_concurrent is NULL.
     settings = _settings_for(pg_dsn, schema, queues=queue_name)
 
     await _run_and_cancel(lambda: _main(settings))
@@ -335,8 +335,8 @@ async def test_queue_cap_null_max_concurrent_produces_no_reservation(pg_dsn: str
 
 @pytest.mark.asyncio
 async def test_queue_cap_not_in_settings_queues_produces_no_reservation(pg_dsn: str) -> None:
-    """A queue with ``max_concurrent`` set but NOT in ``settings.queues``
-    produces NO registry entry and NO ``reservation_slots`` rows - only
+    """A queue with ``max_concurrent`` set but not in ``settings.queues``
+    produces no registry entry and no ``reservation_slots`` rows - only
     queues this worker consumes are capped."""
     schema = f"twbqc_{new_base62()}".lower()
     await _prepare_schema_for(pg_dsn, schema)
@@ -385,7 +385,7 @@ async def test_queue_cap_sync_slots_failure_crashes_bootstrap(
     """A failing queue-cap ``sync_slots`` CRASHES worker startup with a
     ``RuntimeError`` naming the affected queue-cap reservations.
 
-    The reservations are registered BEFORE ``sync_slots`` runs, and
+    The reservations are registered before ``sync_slots`` runs, and
     dispatch prepends the cap name as a plain string (no ensure_slots
     retry on the acquire path) - so warn-and-continue would leave the cap
     registered with zero slot rows and every dispatch on that queue
@@ -395,10 +395,10 @@ async def test_queue_cap_sync_slots_failure_crashes_bootstrap(
 
     This pins the QUEUE-CAP sync_slots block specifically - a previous
     version of this test patched ``sync_slots`` to always raise and
-    asserted on the FIRST ``sync_slots_failed`` log event, which always
+    asserted on the first ``sync_slots_failed`` log event, which always
     came from the actor-path call ~100 lines earlier in ``_main``;
     coverage showed the queue-cap block never executed. The patched
-    ``sync_slots`` below raises ONLY when called with queue-cap
+    ``sync_slots`` below raises only when called with queue-cap
     reservations (names under the reserved prefix) and delegates
     otherwise, so the actor-path warn-and-continue behavior cannot shadow
     the block under test.
@@ -540,7 +540,7 @@ async def test_bootstrap_raises_when_max_concurrent_column_missing(pg_dsn: str) 
         assert "max_concurrent" in str(raised_exc)
         assert "01.00.04" in str(raised_exc)
 
-        # The queue-cap reservation must NOT have been registered.
+        # The queue-cap reservation must not have been registered.
         assert cap_name not in rl_registry.reservations
     finally:
         await _cleanup_schema_for(pg_dsn, schema)

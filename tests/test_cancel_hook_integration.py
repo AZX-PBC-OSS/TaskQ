@@ -172,7 +172,7 @@ async def _wait_for_cancel_observed(
     timeout: float = 5.0,  # noqa: ASYNC109 # Why: polling-loop timeout for _wait_for_cancel_observed; not an anyio cancel scope
 ) -> _ActiveJob:
     """Bounded, monotonic-deadline wait until the consumer has registered
-    the job AND its cancel hook has observed the cancel request.
+    the job and its cancel hook has observed the cancel request.
 
     Replaces a fixed 50x0.02s iteration loop whose only deadline failure
     was a pair of bare asserts - this names the observable that never
@@ -660,7 +660,7 @@ async def test_worker_dies_phase1(pg_dsn: str) -> None:
 
                 async with deps.worker_pool.acquire() as sweep_conn, sweep_conn.transaction():
                     # Simulate process death: reset the row to running + expired lock.
-                    # In a real SIGKILL the terminal write never commits, so BOTH
+                    # In a real SIGKILL the terminal write never commits, so both
                     # halves of it must be undone here - the jobs row and the
                     # job_attempts row mark_cancelled recorded for this attempt.
                     # Leaving the attempt row behind is not a state a crashed

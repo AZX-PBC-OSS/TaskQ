@@ -1,7 +1,7 @@
 """A/B: TimescaleDB hypertables vs plain PostgreSQL for TaskQ's hot admin surfaces.
 
 Companion to the ``docs/guides/timescaledb.md`` opt-in (``src/taskq/timescale.py``):
-the two engines are the SAME ``timescale/timescaledb`` image, started as two
+the two engines are the same ``timescale/timescaledb`` image, started as two
 disposable containers by this script — one left vanilla (extension uncreated),
 one converted with TaskQ's own ``enable_hypertables`` (the real deploy-step DDL,
 including the widened unique constraints and retention policies).  Both get
@@ -81,7 +81,7 @@ from tors_harness import (
 
 from taskq._ids import new_job_id  # pyright: ignore[reportPrivateUsage]
 from taskq.backend._enqueue import (
-    _enqueue_batch_fast,  # pyright: ignore[reportPrivateUsage]  # Why: the private function IS the COPY enqueue path; the bench measures it in place.
+    _enqueue_batch_fast,  # pyright: ignore[reportPrivateUsage]  # Why: the private function is the COPY enqueue path; the bench measures it in place.
 )
 from taskq.backend._protocol import EnqueueArgs
 from taskq.backend._retention_floor import (
@@ -122,8 +122,8 @@ DSN_PLAIN = f"postgresql://taskq:taskq@localhost:{PORT_PLAIN}/taskq"
 DSN_TS = f"postgresql://taskq:taskq@localhost:{PORT_TS}/taskq"
 SCHEMA = "tq_tsab"
 
-# Server flags: IDENTICAL on both containers except the preload the
-# extension requires — that difference IS the feature being measured.
+# Server flags: identical on both containers except the preload the
+# extension requires — that difference is the feature being measured.
 SERVER_FLAGS = [
     "-c",
     "max_connections=200",
@@ -179,7 +179,7 @@ RESULTS_SWEEP_NAME = "timescale-tradeoffs-sweep.json"
 # question the sweep is built to answer.
 SWEEP_SHAPES = {
     "archive_recent_finished_p51",  # the chunk-pruning win shape
-    "jobs_count_all_statuses",  # parity reference: jobs is a plain table on BOTH engines
+    "jobs_count_all_statuses",  # parity reference: jobs is a plain table on both engines
 }
 SWEEP_SCALES_DEFAULT = "10000,100000,400000,2000000"
 
@@ -290,7 +290,7 @@ async def setup_engine(dsn: str, *, hypertables: bool) -> dict[str, Any]:
         # The retention policies enable_hypertables registered run on the
         # TimescaleDB background workers; left running they would delete the
         # aged seed cohorts mid-benchmark and break the drain measurements.
-        # Stopping them is the benchmark's own harness choice, NOT a changed
+        # Stopping them is the benchmark's own harness choice, not a changed
         # feature flag: the row-level sweeps under measurement run unchanged.
         stopped = False
         for stmt in (
@@ -316,7 +316,7 @@ async def setup_engine(dsn: str, *, hypertables: bool) -> dict[str, Any]:
 
 # ── Seeding: identical byte-for-byte data on both engines ────────────────
 #
-# Every timestamp derives from ONE fixed base instant bound as $1 (not
+# Every timestamp derives from one fixed base instant bound as $1 (not
 # now()), so the two engines receive identical rows and the dashboard's
 # cross-engine row-identity assertion can compare row-for-row.
 
@@ -492,7 +492,7 @@ async def assert_seed_identical() -> dict[str, Any]:
         await conn.close()
     assert checksums["plain"] == checksums["ts"], f"sample checksum mismatch: {checksums}"
 
-    # The hypertable side must actually BE hypertables; the plain side must not.
+    # The hypertable side must actually be hypertables; the plain side must not.
     ts_conn = await connected(DSN_TS)
     ht = {
         r["table_name"]
@@ -512,7 +512,7 @@ async def assert_seed_identical() -> dict[str, Any]:
     assert {"job_events", "jobs_archive", "job_attempts_archive"} <= ht, ht
     assert "jobs" not in ht, ht
     plain_conn = await connected(DSN_PLAIN)
-    # The plain side never CREATE EXTENSIONs timescaledb, so the catalog may
+    # The plain side never create EXTENSIONs timescaledb, so the catalog may
     # not exist there at all — to_regclass guards the probe.
     ht_plain = await plain_conn.fetchval(
         "SELECT CASE WHEN to_regclass('_timescaledb_catalog.hypertable') IS NULL THEN 0 "
@@ -978,7 +978,7 @@ async def bench_expiry() -> dict[str, Any]:
 
 
 async def bench_events() -> dict[str, Any]:
-    """The event TTL sweep's tick shape: ONE 10k-row batch per call
+    """The event TTL sweep's tick shape: one 10k-row batch per call
     (sweep_expired_events), engines interleaved call-by-call.
 
     The sweep probes the policy floor itself (once per call, the
@@ -1010,7 +1010,7 @@ async def bench_events() -> dict[str, Any]:
                 break
         # Aged events are the first quarter of the seed, every 25th an outbox
         # row the sweep keeps at this age (deleted only at 100x retention):
-        # exactly aged - aged//25 deletable — on the PLAIN side. On the ts
+        # exactly aged - aged//25 deletable — on the plain side. On the ts
         # side the armed policy owns the whole aged cohort (below the
         # now-7d floor): the sweep deletes nothing and the cohort remains,
         # dropped by the policy's chunk runs when the background workers
@@ -1275,10 +1275,10 @@ def analyze_sweep(scale_results: list[dict[str, Any]]) -> dict[str, Any]:
         )
     winners = [p for p in points if p["archive_page_ts_wins"]]
     losers = [p for p in points if not p["archive_page_ts_wins"]]
-    # The headline penalty metric is the DRAIN-TOTAL ratio, not the per-batch
+    # The headline penalty metric is the drain-total ratio, not the per-batch
     # p50: at scales where the cohort fits in one batch the per-batch samples
     # are [real_batch, ~0 empty trailing batch] and the p50 lands on the empty
-    # one.  Batch counts are identical across engines, so total_s ratio IS the
+    # one.  Batch counts are identical across engines, so total_s ratio is the
     # mean per-real-batch ratio.
     ratios = [p["prune_drain_total_ratio"] for p in points if p["prune_drain_total_ratio"]]
     if winners and losers:

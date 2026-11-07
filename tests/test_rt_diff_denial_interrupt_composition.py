@@ -11,7 +11,7 @@ increment is exactly what stands; and neither may pretend the
 other's bookkeeping happened.
 
 The events diet is the second half of the pin. A non-terminal deferral mints
-NO per-occurrence rows - sustained saturation must cost one counter bump per
+no per-occurrence rows - sustained saturation must cost one counter bump per
 cycle, not a table's worth of history - while the interruption is a real
 state transition the fleet must see, so it mints exactly one
 ``reason='interrupted'`` event. Through the composed chain the row's

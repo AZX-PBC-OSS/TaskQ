@@ -16,7 +16,7 @@ Two dispatch-loop latencies these pins hold:
   polls across the interval rather than ticking in unison, seeded
   per-producer like the retry RNG.
 
-Timing is deliberately NOT the gate: the wake pin asserts the producer
+Timing is deliberately not the gate: the wake pin asserts the producer
 needed no poll sleep at all (a sleep recorder - the event wake is
 µs-fast while a poll wake lands anywhere inside the interval, so a
 timing race would flake exactly on the distinction under test), and the
@@ -205,7 +205,7 @@ async def test_slot_release_wakes_the_saturated_producer_without_a_poll_sleep(
         return result
 
     monkeypatch.setattr(run_mod, "_SLOT_REFILL_POLL_SECONDS", 3600.0, raising=False)
-    # Patch where the name is LOOKED UP - run.py's own ``asyncio`` binding -
+    # Patch where the name is looked up - run.py's own ``asyncio`` binding -
     # not through to the global asyncio module (tests/_ns_patch.py).
     monkeypatch.setattr(run_mod, "asyncio", module_ns_proxy(asyncio, sleep=_recording_sleep))
 
@@ -324,7 +324,7 @@ async def test_di_consumer_loop_signals_slot_release_when_it_takes_a_job() -> No
 
     await asyncio.wait_for(
         di_consumer_loop(
-            # The loop reads the DRAINING signal off deps on every
+            # The loop reads the draining signal off deps on every
             # iteration (the consumer stop-pulling gate) and records the
             # claim intent on active_jobs at the take, resolving it on the
             # actor-not-found release; the rest of deps is unused here.
@@ -594,7 +594,7 @@ async def test_remap_error_stays_loud_when_the_pooled_gate_is_closed(
 async def test_claim_marks_enqueued_before_the_queue_put() -> None:
     """Every claimed row is fenced from the heartbeat's lost-claim probe
     from the instant its claim commits: the producer marks it enqueued
-    BEFORE the first put await, the id stays in queued_ids() while it
+    before the first put await, the id stays in queued_ids() while it
     waits in local_queue, and it is invisible to held_ids() (the exit
     hand-back must keep re-pending queued rows). The unfenced claim is
     exactly the dispatch batch whose response died with the connection:

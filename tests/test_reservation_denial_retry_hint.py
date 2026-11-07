@@ -1,14 +1,14 @@
 """A slot denial's retry hint is capacity-aware, not a flat constant.
 
-A bucket with every slot held used to deny with the flat
+A bucket with every slot held must not deny with the flat
 ``DEFAULT_RESERVATION_BACKOFF`` (5 s) no matter when capacity actually
-frees: a bucket whose earliest lease expires in 30 s was retried every
-5 s - six claim + acquire + snooze round trips that can only ever be
+frees: a bucket whose earliest lease expires in 30 s retried every
+5 s is six claim + acquire + snooze round trips that can only ever be
 denied again, the denial-heavy loop measured at 12.3:1 denial:success.
 The acquire already visits the held rows; the denial branch now reports
 the earliest held lease's expiry as the ``retry_after`` hint (plus
 :data:`RESERVATION_RETRY_HINT_MARGIN`), computed against the same
-server clock that stamps the leases, folded into the SAME acquire
+server clock that stamps the leases, folded into the same acquire
 statement so the round-trip count is unchanged. With no live-held rows
 to read (every row free but row-locked by a peer acquire - the SKIP
 LOCKED case - or the anomalous held-without-lease state) the hint is

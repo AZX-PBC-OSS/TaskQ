@@ -38,7 +38,7 @@ from taskq.worker.health import maintenance_health
 
 _PG_DSN = "postgresql://taskq:taskq@127.0.0.1:1/taskq"
 
-_JUMP_SECONDS = 3600.0  # the NTP correction / live-migration step
+_JUMP_SECONDS = 3600.0  # the ntp correction / live-migration step
 
 
 def _settings() -> WorkerSettings:
@@ -62,7 +62,7 @@ class _BackwardWall:
     """A wall clock standing ``_JUMP_SECONDS`` in the past, monotonic intact.
 
     ``record_sweep_success`` resolves ``time`` through the ``_otel``
-    module namespace, so stubbing ``otel_mod.time`` moves ONLY the wall
+    module namespace, so stubbing ``otel_mod.time`` moves only the wall
     domain the emitter stamps; ``time.monotonic()`` inside the stub is
     the real event-loop clock.
     """
@@ -81,7 +81,7 @@ def test_backward_wall_jump_cannot_hide_a_stalled_sweep(
     monkeypatch: pytest.MonkeyPatch,
     fresh_ledgers: None,
 ) -> None:
-    """THE attack: a sweep succeeds, the wall jumps back an hour, and the
+    """The attack: a sweep succeeds, the wall jumps back an hour, and the
     sweep then stops completing. The stalled view must still fire.
 
     On the wall-anchored implementation the health read computed
@@ -143,7 +143,7 @@ def test_stall_visible_before_wall_catches_up(
     fresh_ledgers: None,
 ) -> None:
     """The catch-up window is the attack's payload: with the wall an hour
-    behind, EVERY staleness reading on the wall ledger is negative until
+    behind, every staleness reading on the wall ledger is negative until
     real time catches up. The monotonic view degrades the moment the
     real stall crosses the threshold, not an hour later."""
     settings = _settings()
@@ -168,7 +168,7 @@ def test_stall_visible_before_wall_catches_up(
 
 
 def test_both_ledgers_stamp_together(fresh_ledgers: None) -> None:
-    """One emitter call stamps BOTH domains. A wall ledger that moved
+    """One emitter call stamps both domains. A wall ledger that moved
     without its monotonic twin (or vice versa) desynchronises the gauge
     from the health view: the gauge would page promotion-stalled on a
     stamp the health view never saw, or the health view would read a
@@ -185,7 +185,7 @@ def test_both_ledgers_stamp_together(fresh_ledgers: None) -> None:
 
 
 def test_clear_sweep_health_caches_releases_both_ledgers(fresh_ledgers: None) -> None:
-    """Demotion releases authority over BOTH ledgers: a demoted process
+    """Demotion releases authority over both ledgers: a demoted process
     whose monotonic ledger survived the clear reads its own pre-demotion
     freshness on /ready forever (the exact frozen-stamp failure the
     demotion fix removed for the wall ledger)."""

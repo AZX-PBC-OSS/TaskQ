@@ -12,14 +12,14 @@ comparison, and refusal construction - is separately hand-written in
 ``taskq.backend._enqueue._batch_cap_refusals`` (PG) and
 ``taskq.testing._enqueue._batch_cap_refusals`` (in-memory). Nothing in
 the type system forces the two to agree; only incidental per-backend
-tests (each written against ONE implementation) catch a divergence, and
+tests (each written against one implementation) catch a divergence, and
 only if their scenarios happen to overlap.
 
 This is a design/DRY finding, not an active bug: both implementations
 are currently correct and in sync (verified by direct side-by-side
 inspection and by the assertions below). There is nothing here to
 reproduce as a RED test - the code does not currently misbehave. This
-is therefore a GREEN PIN: it drives BOTH implementations with the exact
+is therefore a GREEN PIN: it drives both implementations with the exact
 same input scenarios and asserts their outputs (refusal actor, current
 count, and cap) are identical, item for item. Today it passes because
 the two files happen to agree. A future edit to just one file - the
@@ -106,7 +106,7 @@ async def _pg_refusals(
     ``existing_counts`` is the actor's TOTAL pending+scheduled count, as
     ``count_pending_jobs`` would report it - a stored idempotency-pair
     row is itself a pending job, so it is already included here and must
-    NOT be added again on top of ``stored_pairs``. ``_memory_refusals``
+    not be added again on top of ``stored_pairs``. ``_memory_refusals``
     seeds the same total by creating one job per ``stored_pairs`` entry
     plus ``existing_counts`` additional (non-idempotency) jobs - so a
     caller reusing one ``existing_counts`` value for both helpers must
@@ -192,7 +192,7 @@ def _refusal_facts(refusals: list[Any]) -> list[tuple[str, int, int]]:
 
 
 class TestCapRefusalParity:
-    """Each scenario below is run through BOTH ``_batch_cap_refusals``
+    """Each scenario below is run through both ``_batch_cap_refusals``
     implementations with matching seeded state, and the resulting
     refusals must match exactly. This is the parity nothing
     in the type system enforces."""
@@ -241,7 +241,7 @@ class TestCapRefusalParity:
             _args(_capped_ref, 1, idempotency_key="k2", idempotency_scope=""),
         ]
 
-        # existing_counts=2 IS the two stored-pair rows (each stored pair
+        # existing_counts=2 is the two stored-pair rows (each stored pair
         # is itself a stored, pending job): the in-memory seeding helper
         # creates one job per stored pair, so existing_counts must not
         # double-count them - mirrors how count_pending_jobs on the PG

@@ -82,7 +82,7 @@ def _cached_introspection(
 
     - The returned hints dict is shared across every solve of *func*;
       treat it as read-only (the solver only iterates it).
-    - Hints resolve against the module globals seen at FIRST resolution
+    - Hints resolve against the module globals seen at first resolution
       and are not re-resolved when those globals change afterwards. This
       differs from uncached ``get_type_hints`` only for forward references
       whose name appears in the module's globals after the first solve ,

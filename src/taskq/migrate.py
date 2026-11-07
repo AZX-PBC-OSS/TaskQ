@@ -20,7 +20,7 @@ whose bytes were amended after first shipping may exist in more than one
 that checksum forever. The ``_variants/`` directory inside
 :mod:`taskq.migrations` carries the published history (one file per
 vintage, named for the commit that published it); the drift check accepts
-a ledger checksum matching the current file OR any bundled variant, each
+a ledger checksum matching the current file or any bundled variant, each
 rendered with the checking database's own schema. A checksum nothing
 bundled produced is still drift. Variants are code: reviewed, bundled,
 versioned — adding one is a PR, never a runtime knob.
@@ -47,11 +47,11 @@ then executes the file statement by statement with no wrapping transaction
   migration itself::
 
       -- taskq:no-transaction
-      -- NOT redundant with IF NOT EXISTS below: an interrupted CREATE INDEX
-      -- CONCURRENTLY leaves an INVALID index that IF NOT EXISTS alone would
+      -- not redundant with IF not EXISTS below: an interrupted CREATE INDEX
+      -- CONCURRENTLY leaves an INVALID index that IF not EXISTS alone would
       -- silently skip rebuilding, so drop the debris first.
       DROP INDEX CONCURRENTLY IF EXISTS "{schema}".jobs_foo_idx;
-      CREATE INDEX CONCURRENTLY IF NOT EXISTS jobs_foo_idx ON "{schema}".jobs (foo);
+      CREATE INDEX CONCURRENTLY IF not EXISTS jobs_foo_idx ON "{schema}".jobs (foo);
 
 Transaction-control statements (``BEGIN``/``COMMIT``/``ROLLBACK``/...) are
 rejected in non-transactional files, they would silently re-open a
@@ -117,9 +117,9 @@ _NAME_RE = re.compile(
 )
 
 # Prefix match (not fullmatch): a trailing note after the token is the common
-# real-world form ("-- taskq:no-transaction, CIC cannot run inside a
+# real-world form ("-- taskq:no-transaction, cic cannot run inside a
 # transaction"). Case-insensitive like SQL itself. \b stops prefix drift, so
-# "-- taskq:no-transactional" does NOT match, but see the near-miss warning
+# "-- taskq:no-transactional" does not match, but see the near-miss warning
 # in _uses_transaction, which keeps such typos from failing silently.
 _NO_TRANSACTION_DIRECTIVE_RE = re.compile(r"--\s*taskq:no-transaction\b", re.IGNORECASE)
 
@@ -191,15 +191,15 @@ class Migration:
 #: Seconds a transactional migration's DDL may wait for a table lock before
 #: the migration fails (``SET LOCAL lock_timeout`` inside its transaction).
 #: ``ALTER TABLE`` takes ACCESS EXCLUSIVE, which queues behind any session
-#: holding even ACCESS SHARE on the table, an actor's open transaction
+#: holding even access share on the table, an actor's open transaction
 #: connection mid-job, an admin snapshot, ``pg_dump``, and Postgres' lock
 #: queue is FIFO, so once the DDL is queued every later statement on that
-#: table (dispatch, enqueue, heartbeat) queues behind IT. Unbounded, that
+#: table (dispatch, enqueue, heartbeat) queues behind it. Unbounded, that
 #: wait outlives the workers' heartbeat budget: the fleet self-terminates
 #: while the migration is still waiting. Thirty seconds exceeds any healthy
 #: lock hold by orders of magnitude and is short enough that a fleet parked
 #: behind it survives.
-#: Bounds the WAIT only: a statement that already holds its lock (an index
+#: Bounds the wait only: a statement that already holds its lock (an index
 #: build) is never interrupted by ``lock_timeout``. Override per call with
 #: ``apply_pending(..., ddl_lock_timeout=...)``; ``0`` waits indefinitely.
 DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT: float = 30.0
@@ -243,7 +243,7 @@ class MigrationLockTimeoutError(RuntimeError):
 
 
 class MigrationConnectionError(RuntimeError):
-    """A migration apply was handed a POOL where ONE ``asyncpg.Connection``
+    """A migration apply was handed a POOL where one ``asyncpg.Connection``
     belongs.
 
     :func:`apply_pending` runs every migration on the CALLER'S connection
@@ -293,7 +293,7 @@ class ChecksumDriftError(RuntimeError):
     premise (the recorded schema may not be what the current files
     produce, so the next file's assumptions can be silently wrong), which
     is why the runner refuses by default instead of warning and
-    continuing. NOT-YET-APPLIED files cannot drift: nothing is recorded
+    continuing. not-YET-APPLIED files cannot drift: nothing is recorded
     for them yet.
 
     Remedies: restore the migration file to the version that actually ran
@@ -329,7 +329,7 @@ def _validate_timeout_bound(value: float, name: str) -> None:
     caller asked for that silently does the OPPOSITE.
 
     * Non-finite values (``nan``, ``inf``): ``nan`` fails every ``> 0``
-      gate downstream and would silently set NO bound at all (an unbounded
+      gate downstream and would silently set no bound at all (an unbounded
       wait, the exact inversion the sub-millisecond rule refuses), and an
       infinity dies later as ``OverflowError`` from ``int(inf * 1000)``
       mid-run, after earlier migrations of the same run already applied.
@@ -373,7 +373,7 @@ def _refuse_duplicate_ledger_keys(migrations: list[Migration]) -> None:
 
     A migration's ledger identity is :attr:`Migration.key` (``{version}:{phase}``),
     ``schema_migrations``' primary key, so two files sharing a version-sequence
-    pair AND a phase are one row as far as the ledger is concerned. The apply
+    pair and a phase are one row as far as the ledger is concerned. The apply
     loop reads the ledger once up front, so both files count as pending, the
     first records the key, and the second's INSERT dies on
     ``schema_migrations_pkey`` mid-run. On a fresh schema that failure is
@@ -420,7 +420,7 @@ def discover() -> list[Migration]:
         phase: Phase = match.group("phase")  # type: ignore[assignment]  # Why: regex group "phase" is constrained to "pre|post" by _NAME_RE; re.match guarantees the value matches the Literal["pre", "post"] alias but str cannot be narrowed to it statically.
         sql_template = entry.read_text(
             encoding="utf-8-sig"
-        )  # utf-8-sig: a BOM (Windows editors) must not silently disable the header directive
+        )  # utf-8-sig: a bom (Windows editors) must not silently disable the header directive
         found.append(
             Migration(
                 version=version,
@@ -452,7 +452,7 @@ def split_statements(sql: str) -> list[str]:
 
     Non-transactional migrations are executed statement by statement: a
     multi-statement string sent through Postgres' simple query protocol runs
-    as ONE implicit transaction, which would defeat the point (``CREATE
+    as one implicit transaction, which would defeat the point (``CREATE
     INDEX CONCURRENTLY`` would still be "inside a transaction block").
 
     Splitting understands single-quoted strings (including ``E'...'``
@@ -566,7 +566,7 @@ def split_statements(sql: str) -> list[str]:
                 i += 1
         elif state == "line_comment":
             buf.append(ch)
-            if ch == "\n" or ch == "\r":  # Postgres ends -- comments at CR too (CR-only files)
+            if ch == "\n" or ch == "\r":  # Postgres ends -- comments at cr too (cr-only files)
                 state = "normal"
             i += 1
         elif state == "block_comment":
@@ -612,7 +612,7 @@ def _skip_sql_trivia(sql: str, i: int) -> int:
         if sql[i].isspace():
             i += 1
         elif sql.startswith("--", i):
-            # Postgres ends -- comments at CR too (CR-only files).
+            # Postgres ends -- comments at cr too (cr-only files).
             end = i + 2
             while end < n and sql[end] not in "\r\n":
                 end += 1
@@ -770,13 +770,13 @@ def _detect_checksum_drifts(
     """Compare every APPLIED migration's ledger checksum against the file.
 
     Checksums are computed over the schema-rendered SQL, the same input
-    the apply path hashes. A stored checksum ALSO matches when it is what
+    the apply path hashes. A stored checksum also matches when it is what
     any bundled published variant of the file renders to (see
     :func:`_variant_templates`): some files exist in more than one
     published version, and a database's ledger keeps the checksum of the
     version IT applied. A checksum no bundled version produces is drift —
     the schema was built from SQL this package cannot account for.
-    NOT-YET-APPLIED files are not in ``applied_checksums`` and cannot
+    not-YET-APPLIED files are not in ``applied_checksums`` and cannot
     drift, nothing is recorded for them yet.
     """
     drifts: list[ChecksumDrift] = []
@@ -827,7 +827,7 @@ async def list_invalid_indexes(conn: asyncpg.Connection, schema: str) -> list[st
 
     An interrupted ``CREATE INDEX CONCURRENTLY`` leaves an INVALID index
     behind: the query planner ignores it, but writers still maintain it, so
-    it is pure overhead (and blocks the re-run's ``IF NOT EXISTS``). The CLI
+    it is pure overhead (and blocks the re-run's ``IF not EXISTS``). The CLI
     surfaces these in its failure report so users never have to query the
     catalogs by hand.
     """
@@ -859,7 +859,7 @@ async def apply_pending(
 ) -> list[Migration]:
     """Apply pending migrations.
 
-    Takes ONE :class:`asyncpg.Connection` — the caller's transaction
+    Takes one :class:`asyncpg.Connection` — the caller's transaction
     scope. A :class:`asyncpg.Pool` is the typed
     :class:`MigrationConnectionError` refusal (the Pool cannot serve the
     apply's own transaction management — acquire a connection and pass
@@ -871,7 +871,7 @@ async def apply_pending(
     in which case it is executed statement by statement with no wrapping
     transaction. That unlocks ``CREATE INDEX CONCURRENTLY`` and friends, but
     nothing rolls back on failure: prior statements stay applied, the
-    migration is NOT recorded in the ledger, and it will be re-executed on
+    migration is not recorded in the ledger, and it will be re-executed on
     the next run, so non-transactional migrations must be idempotent.
 
     :param phase: restrict to ``pre`` or ``post`` migrations only.
@@ -892,14 +892,14 @@ async def apply_pending(
         sub-millisecond values are refused with ``ValueError``.
     :param allow_checksum_drift: proceed past :class:`ChecksumDriftError`
         when an APPLIED migration's ledger checksum differs from the
-        bundled file. The drift is still logged as a warning. NOT-YET-
+        bundled file. The drift is still logged as a warning. not-YET-
         APPLIED files cannot drift (nothing is recorded for them yet), so
         this flag never changes which migrations run, only whether a
         drifted ledger refuses the run.
     :returns: migrations that were applied (in order).
     :raises ChecksumDriftError: when an applied migration's stored checksum
         differs from the file and ``allow_checksum_drift`` is False.
-        Raised BEFORE anything is applied: a ledger that no longer matches
+        Raised before anything is applied: a ledger that no longer matches
         the files means the schema's provenance is unverified, and further
         migrations must not build on it.
     """
@@ -907,10 +907,9 @@ async def apply_pending(
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
     if isinstance(conn, asyncpg.Pool):
-        # THE TYPED REFUSAL (the teardown fix): the Pool dies
-        # the untyped AttributeError at the first transaction (the Pool
-        # has no transaction()) — refuse it BY NAME instead, the remedy
-        # in the message.
+        # A Pool dies the untyped AttributeError at the first transaction
+        # (the Pool has no transaction()) — refuse it by name instead, the
+        # remedy in the message.
         raise MigrationConnectionError(type(conn))
 
     exists = await conn.fetchval(
@@ -935,8 +934,8 @@ async def apply_pending(
     all_migrations = discover()
 
     # A target the runner no longer bundles must fail loudly. The
-    # truncation loop below only stops when it SEES the target, so an
-    # unknown one falls through and silently applies EVERY pending
+    # truncation loop below only stops when it sees the target, so an
+    # unknown one falls through and silently applies every pending
     # migration: the exact inversion of what a caller passing a target
     # expects, and reachable the moment any release deletes or renumbers
     # files (a deleted 01.00.11_01 or renumbered 01.00.12_05:post is a
@@ -966,7 +965,7 @@ async def apply_pending(
         )
     # Fail-closed: a drifted ledger means the database was built from SQL
     # the files no longer contain, so this run's premise (the files
-    # describe the schema) is unverified. The refusal happens BEFORE the
+    # describe the schema) is unverified. The refusal happens before the
     # apply loop, so a refused run applies nothing. Allowed through, the
     # warnings above still land: the drift stays visible in the logs.
     if drifts and not allow_checksum_drift:
@@ -977,7 +976,7 @@ async def apply_pending(
         pending = [m for m in pending if m.phase == phase]
 
     # Truncate to the prefix this run will actually apply (target is
-    # inclusive; max_steps caps the count) BEFORE validating phase ordering,
+    # inclusive; max_steps caps the count) before validating phase ordering,
     # so the guard below reasons about exactly this run's apply list and
     # cannot refuse over a migration the truncation would have skipped.
     effective: list[Migration] = []
@@ -1007,7 +1006,7 @@ async def apply_pending(
                     f"counterpart {pre_key}. Run `taskq migrate up --phase pre` "
                     f"(or a plain `taskq migrate up`) first."
                 )
-                # Why tag: this raises BEFORE the per-migration loop, so the
+                # Why tag: this raises before the per-migration loop, so the
                 # loop's except-clause tagging never runs and the diagnosis
                 # would fall back to the first-unrecorded heuristic, which
                 # blames an unrelated, earlier-version file under --phase.
@@ -1038,7 +1037,7 @@ async def apply_pending(
                         raise MigrationLockTimeoutError(migration, ddl_lock_timeout) from exc
                     if not ledger_ready:
                         # Inside the migration's own transaction: the bound
-                        # above already covers the ledger ALTER.
+                        # above already covers the ledger alter.
                         await _ensure_ledger_use_transaction_column(conn, schema)
                         ledger_ready = True
                     await _record_applied(conn, schema, migration)
@@ -1063,7 +1062,7 @@ async def apply_pending(
         except Exception as exc:
             # Why tag and re-raise: diagnose_apply_failure's first-unrecorded
             # heuristic misattributes the failure under --phase (an
-            # earlier-version pending migration of the OTHER phase sorts
+            # earlier-version pending migration of the other phase sorts
             # first in discover() order). The exception object itself is the
             # reliable channel to the diagnosis, tagging, not wrapping, so
             # the caller-visible exception type is unchanged.
@@ -1145,7 +1144,7 @@ def migration_lock_name(schema: str) -> str:
 
     Upgrade discipline: the qualified key replaces the unqualified bigint
     outright, a mixed old/new fleet holds different keys, so an old and a
-    new replica can apply migrations to the SAME schema concurrently
+    new replica can apply migrations to the same schema concurrently
     during the deploy window. Adopt by restarting the fleet onto the new
     release rather than rolling it; the window is the deploy, not the
     steady state. (Same caveat as the schema-qualified leader locks.)
@@ -1157,12 +1156,12 @@ def migration_lock_name(schema: str) -> str:
 _MIGRATION_LOCK_SQL = "SELECT pg_advisory_lock(hashtextextended($1, 0))"
 _MIGRATION_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended($1, 0))"
 
-#: Bound on how long to WAIT for another process's migration lock.
+#: Bound on how long to wait for another process's migration lock.
 #:
 #: `pg_advisory_lock` is a blocking acquire with no client-side bound, so a
 #: replica arriving while another holds the lock mid-DDL waited indefinitely
 #: with no log line -- long enough to blow past a container platform's startup
-#: probe, get killed, restart, and block again. This bounds the WAIT for the
+#: probe, get killed, restart, and block again. This bounds the wait for the
 #: advisory lock only; it is reset before the migrations themselves run, and
 #: the table-lock waits of the migrations are bounded separately by
 #: :data:`DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT`.
@@ -1212,7 +1211,7 @@ class ApplyFailureDiagnosis:
     """INVALID indexes in the schema, debris of an interrupted ``CREATE
     INDEX CONCURRENTLY``; only gathered for no-transaction failures."""
 
-    # Why carried here: the INVALID-index line names the schema and the
+    # Why carried here: the invalid-index line names the schema and the
     # renderer must stay pure (no re-querying), so the diagnosis owns every
     # value the report needs.
     schema: str
@@ -1256,7 +1255,7 @@ async def diagnose_apply_failure(
     Both apply paths leave the connection reusable (a transactional failure
     rolls back; the no-transaction path never opened one), so the same conn
     can report what failed and what state the schema is in. Diagnosis must
-    NEVER mask the original error: every read is individually suppressed,
+    never mask the original error: every read is individually suppressed,
     and whatever could not be gathered degrades to the generic report
     (``failed_filename=None``).
     """
@@ -1370,7 +1369,7 @@ async def migration_advisory_lock(
 ) -> AsyncGenerator[None]:
     """Hold *schema*'s migration advisory lock on *conn*, with a bounded wait.
 
-    Extracted so the CLI and :func:`apply_pending_locked` serialize on the SAME
+    Extracted so the CLI and :func:`apply_pending_locked` serialize on the same
     lock without duplicating the acquire/reset/release protocol. The CLI cannot
     delegate to ``apply_pending_locked``: it owns the connection so it
     can run ``_report_up_failure`` diagnostics on it after a failure, and
@@ -1402,7 +1401,7 @@ async def migration_advisory_lock(
     the wait bound as its session-wide ``lock_timeout`` until it is closed.
 
     ``statement_timeout`` is widened to unlimited immediately after the
-    lock is acquired, once, for the whole apply phase, and NEVER on the
+    lock is acquired, once, for the whole apply phase, and never on the
     contention path: a caller-owned connection that merely lost the race
     gets ``SystemExit`` above and returns to its owner, which must not
     silently gain a session-wide unlimited statement_timeout from losing
@@ -1411,7 +1410,7 @@ async def migration_advisory_lock(
     abort a long DDL statement, an index build over a large table ,
     mid-statement, and identically on every retry, since the runner
     re-executes the same migration after a failure. Like the
-    ``lock_timeout`` doctrine, the widened state is deliberately NOT
+    ``lock_timeout`` doctrine, the widened state is deliberately not
     restored on exit: the unlock must not trade a GUC restore for a
     failed migration run, and a failed widening is logged as a warning
     naming the connection while the apply proceeds, that connection
@@ -1445,7 +1444,7 @@ async def migration_advisory_lock(
     finally:
         # Reset before the DDL: the transactional files bound their own
         # table-lock waits with SET LOCAL, and the no-transaction files'
-        # CONCURRENTLY waits must stay unbounded.
+        # concurrently waits must stay unbounded.
         if lock_timeout > 0:
             try:
                 await conn.execute("SET lock_timeout = 0")
@@ -1463,8 +1462,8 @@ async def migration_advisory_lock(
                     lock_timeout_ms=int(lock_timeout * 1000),
                     error=repr(exc),
                 )
-    # Only a session that WON the lock reaches here. Widen
-    # statement_timeout for the whole apply phase, AFTER the acquire, so
+    # Only a session that won the lock reaches here. Widen
+    # statement_timeout for the whole apply phase, after the acquire, so
     # the contention exit above cannot widen a caller-owned connection it
     # is about to hand back. Unconditional because this function never
     # sets a statement_timeout itself, the bound being widened was
@@ -1538,7 +1537,7 @@ async def apply_pending_locked(
     on.
 
     Connection sources (mutually exclusive):
-    * ``conn``, pre-constructed, caller-owned; NOT closed here.
+    * ``conn``, pre-constructed, caller-owned; not closed here.
     * ``conn_factory``, zero-arg async factory; closed in ``finally``.
     * ``dsn``, ``asyncpg.connect(dsn)``; closed in ``finally``.
 
@@ -1629,7 +1628,7 @@ async def apply_pending_locked(
             # finally (bounded there for the same reason), so only the owned
             # connection close remains here. Unlocking again would fire
             # pg_advisory_unlock on a lock this session no longer holds, which
-            # Postgres answers with a WARNING and a false return.
+            # Postgres answers with a warning and a false return.
             #
             # Why bounded: contextlib.suppress catches errors but cannot stop a
             # call that never returns, and this finally runs before any lifespan

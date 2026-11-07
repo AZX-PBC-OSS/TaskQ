@@ -128,7 +128,7 @@ def test_first_signal_schedules_orchestrator(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_second_signal_sets_escalate_event(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Second signal sets escalate_event; does NOT append a second task."""
+    """Second signal sets escalate_event; does not append a second task."""
     import taskq.worker.shutdown as shutdown_mod
 
     mock_orch = AsyncMock(return_value=0)
@@ -201,7 +201,7 @@ def test_third_signal_calls_sys_exit(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_handler_is_sync() -> None:
-    """Handler callable is NOT a coroutine function."""
+    """Handler callable is not a coroutine function."""
     deps = _worker_deps()
     backend = AsyncMock(spec=Backend)
     loop, handlers = _mock_loop()
@@ -408,7 +408,7 @@ def test_sigusr2_handler_dumps_task_stacks() -> None:
 
     This is the on-demand half of the watchdog's diagnostics: answering
     "what is this live-but-idle worker waiting on?" without rebuilding the
-    image with instrumentation. It must NOT terminate the worker - SIGUSR1
+    image with instrumentation. It must not terminate the worker - SIGUSR1
     would (default action), which is why the dump is on SIGUSR2.
     """
     deps = _worker_deps()
@@ -445,13 +445,13 @@ def test_first_signal_during_orchestration_starts_nothing_and_the_next_escalates
 
     The drain monitor can trigger the orchestration before any signal
     arrives: ``deps.shutdown_phase`` is past NONE while
-    ``orchestrator_holder`` is still empty. The FIRST signal must then
+    ``orchestrator_holder`` is still empty. The first signal must then
     start NOTHING - no second orchestration task (double-orchestration
-    runs the phases twice against the same rows) - and must NOT arm the
+    runs the phases twice against the same rows) - and must not arm the
     escalate event either (nothing is mid-CANCELLING to fast-advance;
     arming it here would break the CANCELLING grace of the running
-    orchestration). The signal counter is deliberately NOT consumed by
-    the guard's return: the NEXT signal reaches the ``== 2`` rung and
+    orchestration). The signal counter is deliberately not consumed by
+    the guard's return: the next signal reaches the ``== 2`` rung and
     escalates the already-running orchestration - a regression that
     reset the counter here would restart a fresh orchestration on the
     next signal instead of escalating.
@@ -515,7 +515,7 @@ def test_signal_ladder_full_escalation_through_the_handler_body(
     and ``deps.shutdown_phase``, the shared ``_orchestration_in_progress``
     predicate) and still land the escalation on rung two. The three
     regressions pinned: a second ``create_task`` on signal two
-    (double-orchestration), the escalate event NOT set on signal two (a
+    (double-orchestration), the escalate event not set on signal two (a
     hung CANCELLING grace no operator can shorten), and a third signal
     that does anything but ``sys.exit(1)`` (the operator's last resort
     before SIGKILL must actually terminate).
@@ -573,7 +573,7 @@ def test_signal_ladder_full_escalation_through_the_handler_body(
 def test_sigterm_registration_unavailable_warns_and_returns_cleanly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """NotImplementedError on the FIRST registration → the
+    """NotImplementedError on the first registration → the
     `signal-handlers-unavailable` WARN and a clean return.
 
     On a platform without ``loop.add_signal_handler`` (Windows) the
@@ -624,8 +624,8 @@ def test_per_signal_registration_failures_warn_without_losing_the_ladder(
 ) -> None:
     """SIGHUP / SIGUSR2 registration failures degrade to their own WARN.
 
-    These arms are AFTER the shutdown ladder is registered, so their
-    failure must NOT take the early-return exit (that would discard the
+    These arms are after the shutdown ladder is registered, so their
+    failure must not take the early-return exit (that would discard the
     already-registered SIGTERM/SIGINT handlers) - only the optional
     handler's WARN fires and the rest of the registrations still land.
     Pinned against the two mutations of the try/except shape: swallowing
@@ -665,7 +665,7 @@ def test_per_signal_registration_failures_warn_without_losing_the_ladder(
         assert len(holder) == 0
         return loop, handlers, logs
 
-    # SIGHUP refused: the WARN fires, SIGUSR2 is still registered, and
+    # SIGHUP refused: the warn fires, SIGUSR2 is still registered, and
     # the SIGTERM ladder still works.
     loop, handlers, logs = _install(fail_sig=signal.SIGHUP)
     assert [e for e in logs if e.get("event") == "sighup-handler-unavailable"], (

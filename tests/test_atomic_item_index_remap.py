@@ -1,7 +1,7 @@
 """The ATOMIC arm's per-item errors must name STREAM-GLOBAL indices.
 
 ``enqueue_batch_streaming``'s atomic arm (failure_policy/finalizer, no
-caller connection) re-chunks the caller's stream INSIDE the backend:
+caller connection) re-chunks the caller's stream inside the backend:
 ``enqueue_batch_atomic`` consumes the lazy args generator chunk by
 chunk, and every per-item error the bulk core raises from a chunk
 carries a position in SOME chunk. The class defect this file pins
@@ -16,7 +16,7 @@ CALLER's stream.
 
 The in-memory mirror answers identically: it consumes the same chunks
 and preflights each through the same shared jsonb guards at the same
-base, where it previously surfaced a BARE ``ValueError(NUL_JSONB_ERROR)``
+base, where it surfaced a BARE ``ValueError(NUL_JSONB_ERROR)``
 with no attribution at all - a divergence the in-memory equivalence
 rule forbids (same observable answer on both backends).
 
@@ -51,7 +51,7 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 # The scenario every atomic-arm case shares: 25 items, chunk_size=10,
 # the NUL at stream position 23 - chunk 3 (items 20-24), chunk-local
-# position 3. Unguarded, both backends name an index in the WRONG
+# position 3. Unguarded, both backends name an index in the wrong
 # coordinate space ("item 3" on PG, a bare ValueError in memory).
 _COUNT = 25
 _CHUNK = 10
@@ -117,7 +117,7 @@ async def test_atomic_nul_at_later_stream_position_names_stream_global_index() -
 
     This is the in-memory half of the parity pair: the mirror consumes
     the same chunks the PG arm does and preflights each through the
-    same shared guards at the same base, where it previously surfaced a
+    same shared guards at the same base, where it surfaces a
     BARE ``ValueError`` with no item attribution at all.
     """
     backend = _make_backend()

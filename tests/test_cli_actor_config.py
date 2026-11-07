@@ -260,7 +260,7 @@ def test_diff_flags_queue_mismatch_as_assignment_drift(
 def test_diff_marks_actor_without_stored_row(monkeypatch: pytest.MonkeyPatch) -> None:
     """An actor the registry declares but no worker has synced yet.
 
-    max_concurrent must NOT show the literal as effective: the dispatch
+    max_concurrent must not show the literal as effective: the dispatch
     capacity gate builds FROM actor_config (inner join), so with no row
     the actor is never dispatched - effective is 0. max_pending /
     result_ttl enforcement can see the code literal, so those do fall
@@ -408,7 +408,7 @@ def test_move_queue_transposed_arguments_are_a_usage_error(
 ) -> None:
     """The transpose defense: `actor-config move-queue` takes two bare
     positionals, so an operator carrying `queue migrate`'s `--to` shape
-    gets a usage error BEFORE any dispatcher call — the two-arguments-
+    gets a usage error before any dispatcher call — the two-arguments-
     both-strings shape is what an operator transposes under pressure.
 
     Regression caught: giving move-queue an `--to` option would let the

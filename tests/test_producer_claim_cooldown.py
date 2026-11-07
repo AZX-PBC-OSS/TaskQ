@@ -261,7 +261,7 @@ async def test_a_poll_timed_round_owes_no_cooldown(monkeypatch: object) -> None:
             stop_event.set()
         return result
 
-    # Patch where the name is LOOKED UP - run.py's own ``asyncio`` binding -
+    # Patch where the name is looked up - run.py's own ``asyncio`` binding -
     # not through to the global asyncio module (tests/_ns_patch.py).
     monkeypatch.setattr(run_mod, "asyncio", module_ns_proxy(asyncio, sleep=_recording_sleep))
     deps = _deps(maxsize=4, notify_enabled=False)

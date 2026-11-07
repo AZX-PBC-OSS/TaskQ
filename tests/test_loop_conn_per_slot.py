@@ -198,17 +198,17 @@ async def test_sibling_failure_does_not_roll_back_a_committed_slot(
         actor_ref = _make_actor_ref(slot_actor, name="slot_actor", payload_type=_SlotPayload)
 
         # The per-slot path wiring: bootstrap opens the dedicated pool
-        # when a LOOP-scope connection is registered and
+        # when a loop-scope connection is registered and
         # max_concurrency > 1; this test drives two concurrent slots, so
         # the pool must be on deps for dispatch to acquire from.
         deps.slot_pool = slot_pool
 
         async with _ScopeStack(registry) as scopes:
-            # Guard the wiring: without the LOOP-scope connection in the
+            # Guard the wiring: without the loop-scope connection in the
             # resolved cache the dispatch drops to the autonomous path and
             # the test would pass without exercising the transactional seam.
             assert scopes.loop_scope.resolved_cache().get(asyncpg.Connection) is loop_conn
-            # And without the slot pool, dispatch would resolve the ONE
+            # And without the slot pool, dispatch would resolve the one
             # registered connection for every slot - the defect itself.
             assert deps.slot_pool is slot_pool
 
@@ -679,7 +679,7 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
 ) -> None:
     """Two concurrent transactional slots whose actors inject the LOOP-scope
     ``asyncpg.Connection`` must each receive the connection their own slot's
-    transaction runs on - never the ONE registered connection.
+    transaction runs on - never the one registered connection.
 
     The per-slot pool already carries TaskQ's own transactional writes (the
     terminal write, transactional sub-enqueues - pinned above); this pin
@@ -728,12 +728,12 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
             conns_seen[payload.role] = conn
             # Taken at actor entry, before any sibling can interleave: the
             # injected connection must already be inside this slot's open
-            # transaction - the per-slot LOOP-scope semantics.
+            # transaction - the per-slot loop-scope semantics.
             entered_in_transaction[payload.role] = conn.is_in_transaction()  # type: ignore[union-attr]  # Why: asyncpg.Connection exposes is_in_transaction; pool proxies forward it (dispatch's release path already relies on the same forwarding).
             if payload.role == "fail":
                 # A bare write through the injected connection - no explicit
                 # transaction of the actor's own. Whichever connection this
-                # is, the write must live inside THIS slot's transaction, so
+                # is, the write must live inside this slot's transaction, so
                 # this slot's failure rolls it back.
                 await conn.execute("INSERT INTO tq116_slot_marker VALUES ('fail')")
                 # Hold one in-flight statement on the injected connection:
@@ -761,12 +761,12 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
         )
 
         # The per-slot path wiring, as in the sibling pins above: bootstrap
-        # opens the dedicated pool on exactly this shape (LOOP-scope
+        # opens the dedicated pool on exactly this shape (loop-scope
         # connection registered, max_concurrency > 1).
         deps.slot_pool = slot_pool
 
         async with _ScopeStack(registry) as scopes:
-            # Guard the wiring: the LOOP-scope cache still holds the ONE
+            # Guard the wiring: the loop-scope cache still holds the one
             # registered connection (what every non-actor reader sees), and
             # the slot pool is what dispatch acquires from.
             assert scopes.loop_scope.resolved_cache().get(asyncpg.Connection) is loop_conn
@@ -822,7 +822,7 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
             outcome_b = await _dispatch(row_b)
             outcome_a = await task_a
 
-            # Per-slot identity: neither slot's actor received the ONE
+            # Per-slot identity: neither slot's actor received the one
             # registered connection, and the two slots did not receive each
             # other's.
             assert conns_seen["fail"] is not loop_conn, (
@@ -837,7 +837,7 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
                 "two concurrent transactional slots resolved the same connection for their actors"
             )
 
-            # The actor's connection IS the slot's transaction connection:
+            # The actor's connection is the slot's transaction connection:
             # the consumer opened the transaction before the actor ran, so
             # the injected connection must already be inside it.
             assert entered_in_transaction["fail"] is True, (

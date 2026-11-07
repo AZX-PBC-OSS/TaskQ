@@ -73,7 +73,7 @@ def test_retries_guide_keeps_the_claim_kind_knob_contract() -> None:
     # The #658 docs↔code sniff pattern: the doc's named kwarg must exist on
     # the factory's signature, and the doc's "default" claim ("the built-in
     # is the factory's claim_kind='indefinite' instance") must match the
-    # shipped default. Sniffed by PARAMETER NAME, not position: a refactor
+    # shipped default. Sniffed by parameter name, not position: a refactor
     # of kwarg order cannot silently break (or unbreak) this pin — only a
     # rename or a default drift does, together with the doc it documents.
     import inspect

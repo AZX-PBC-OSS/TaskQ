@@ -1,13 +1,13 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 """Adversarial review attacks on the outbox slice's immortality (event retention exemption).
 
-The crash-reclaim outbox - ``kind='state_change' AND detail.reason='lock_expired'``
-- is exempt from the event-retention sweep at EVERY age
+The crash-reclaim outbox - ``kind='state_change' and detail.reason='lock_expired'``
+- is exempt from the event-retention sweep at every age
 (src/taskq/backend/_sweeps.py:477-478), and ``poll_reclaim_events`` can only
 reach ``id > $1`` (the trailing watermark cursor,
 src/taskq/backend/_sql_templates.py:1138). Two consequences nothing bounds:
 
-* (a) a fleet with NO watch_reclaims consumer retains every lock_expired
+* (a) a fleet with no watch_reclaims consumer retains every lock_expired
   event forever - unbounded growth (the orphaned-row class);
 * (b) an event committed late, below a cursor that already passed it, is
   both unreachable (the cursor cannot go back) and immortal (the exemption
@@ -148,7 +148,7 @@ async def test_unconsumed_outbox_rows_survive_every_retention_batch(pg_dsn: str)
 
 async def test_below_cursor_late_event_is_unreachable_and_immortal(pg_dsn: str) -> None:
     """An event committed below a cursor that already passed it must not be
-    BOTH undeliverable and undeletable forever. Today it is exactly that: the
+    both undeliverable and undeletable forever. Today it is exactly that: the
     watermark poll cannot see it (``id > $1``) and the retention exemption
     keeps it at every age."""
     schema = f"torp_{new_base62()}".lower()

@@ -3,14 +3,14 @@
 The fenced single-row writes (``mark_succeeded`` / ``mark_failed`` /
 ``mark_retry`` / ``mark_cancelled``, and the per-job lease checks) target
 one row by
-``id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $k
-AND claim_epoch = $m``.  The row is unique by ``id = $1``, but the planner
+``id = $1 and status = 'running' and locked_by_worker = $2 and attempt = $k
+and claim_epoch = $m``.  The row is unique by ``id = $1``, but the planner
 is free to drive the UPDATE from any index the quals admit, and after bulk
 churn (a large enqueue burst before autovacuum's next ANALYZE - the
 measured regime in ``benchmarks/ab_fence_index.py`` and
 ``perf-evidence-terminal-fence.md``) the estimate collapse mispicks the
 running-holder partial index and evaluates ``id = $1`` as a post-scan
-Filter over EVERY running row the worker holds: measured at 1.07 ms of
+Filter over every running row the worker holds: measured at 1.07 ms of
 heap-filter walking per terminal write at a 2,000-row running population
 (2.56 ms statement total) where the primary-key-driven form costs 0.04 ms
 (1.42 ms total).
@@ -24,7 +24,7 @@ are.
 
 The pin below bulk-seeds the stale-stats regime directly (fresh schema,
 2,000-row running population, no ANALYZE - the bulk-churn window the
-window is named for) and asserts the invariant that holds under EVERY
+window is named for) and asserts the invariant that holds under every
 driver choice: no jobs-scan node of the fenced write may heap-filter more
 than the fence's own one target row.  It also pins the index definition
 (two key columns, one predicate) and, as the red control, replays the
@@ -70,7 +70,7 @@ async def _drop_schema(conn: asyncpg.Connection, schema: str) -> None:
 
 
 async def _seed_running_population(conn: asyncpg.Connection, schema: str) -> tuple[UUID, list[Any]]:
-    """One worker holding `_SEED_POP` running rows, NO ANALYZE (deliberately:
+    """One worker holding `_SEED_POP` running rows, no ANALYZE (deliberately:
     the stale-`reltuples` estimate collapse is the regime under test)."""
     wid = new_uuid()
     await conn.execute(

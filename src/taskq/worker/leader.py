@@ -20,7 +20,7 @@ never waited on, and its absence never gates or costs the role.
 
 Failover SLA:
    Graceful stop      sub-second when the wake lands: the resign is the
-                       FIRST act of the shutdown (the shutdown-ordering
+                       first act of the shutdown (the shutdown-ordering
                        contract below: the handover happens at shutdown
                        START, not after the drain, so draining adds no
                        latency to the handover), it deletes the row and
@@ -48,12 +48,12 @@ Failover SLA:
   Watchdog detect    ≤ watchdog_interval + heartbeat_interval
 
 Shutdown ordering contract (the no-leadership-while-stopping invariant):
-a worker that is shutting down NEVER wins, holds, or renews the leader
+a worker that is shutting down never wins, holds, or renews the leader
 lease, and a leader that begins shutting down hands the lease over at
 shutdown START, so a rolling deploy never has a leaderless window and
 never sees a dying pod win or hold leadership.
 
-1. ``orchestrate_shutdown`` sets ``deps.shutdown_start_event`` BEFORE the
+1. ``orchestrate_shutdown`` sets ``deps.shutdown_start_event`` before the
    DRAINING phase touches any row. That event is the stop signal this
    runtime obeys, earlier and narrower than the worker-wide
    ``shutdown_event``, which does not fire until every phase has run.
@@ -188,7 +188,7 @@ _WATCHDOG_INTERVAL_SECS: float = 5.0
 
 #: How much earlier than the server's ``expires_at`` this process stops
 #: trusting its own term. The local window opens at the instant the renewal
-#: attempt STARTS while the server's expiry is written after the round trip,
+#: attempt starts while the server's expiry is written after the round trip,
 #: so this margin plus that round trip is the gap in which no process acts as
 #: leader, the gap that makes the two windows unable to overlap.
 _LEADER_TRUST_MARGIN_SECS: Final[float] = 1.0
@@ -208,7 +208,7 @@ _PRE_LEASE_STALE_HEARTBEATS: Final[int] = 4
 #: Concurrent takers serialise on the singleton row, so the loser re-evaluates
 #: the conflict predicate against the winner's fresh expiry and gets zero rows.
 #:
-#: The insert side is deliberately unguarded: an absent row IS the unclaimed
+#: The insert side is deliberately unguarded: an absent row is the unclaimed
 #: role, and claiming it must never consult anything a session can hold,
 #: so the claim is a bare INSERT with no lock gate. A candidate
 #: that dies between the courtesy lock attempt and this write, or a leader
@@ -217,20 +217,20 @@ _PRE_LEASE_STALE_HEARTBEATS: Final[int] = 4
 #: whole fleet unelectable until the server reaps that session. The conflict
 #: predicate below is the only gate, and it alone protects a live holder.
 #:
-#: The recorded holder is displaced only once BOTH of the liveness signals it
+#: The recorded holder is displaced only once both of the liveness signals it
 #: could have written have lapsed: the lease it chose (``$2``-derived
 #: ``expires_at``) and its heartbeat ping (``last_seen_at``, within the
 #: ``$3`` pre-lease slack). Either alone is insufficient, because the row can
 #: be written by two protocols at once during a roll. A pod from a release
 #: that does not lease names only four columns in its upsert, so its takeover
-#: leaves the PREVIOUS holder's ``expires_at`` in place: judging that row on
+#: leaves the previous holder's ``expires_at`` in place: judging that row on
 #: the expiry alone would declare a pod that is actively pinging the row
 #: lapsed, and two processes would lead. Requiring the ping to have stopped
 #: too costs nothing against the failover bound, the lease is never shorter
 #: than the slack (``resolved_leader_lease``), so the expiry is always the
 #: later of the two horizons for a pod that leases.
 #:
-#: The first arm lets the recorded holder refresh its OWN row (a new term,
+#: The first arm lets the recorded holder refresh its own row (a new term,
 #: not a renewal, the renewal fence is narrower). While the row names this
 #: worker with a live lease no peer could legally have taken it, so the arm
 #: cannot put a second leader on the row; what it buys is a cheap route back
@@ -353,8 +353,8 @@ class MaintenanceLeader:
         # every leadership assumption the leader re-runs the stale
         # auto-disable recovery over these (the same predicates the boot
         # registration pass applies): during a mixed-version rolling
-        # deploy the OLD leader's cron tick can auto-disable a schedule
-        # AFTER every new pod has booted, an unmarked (disabled_by=NULL)
+        # deploy the old leader's cron tick can auto-disable a schedule
+        # after every new pod has booted, an unmarked (disabled_by=NULL)
         # write the boot pass has already finished matching, so the next
         # leadership change is the last moment the new code can revert it
         # without a full restart. None (tests, spec-less deployments) runs
@@ -373,7 +373,7 @@ class MaintenanceLeader:
         # role while it lost an election, so contention distinguishes a
         # transition from the steady state of following one live peer.
         self._observed_holder: tuple[UUID, datetime] | None = None
-        # The last election this pod WON, kept past every demotion for
+        # The last election this pod won, kept past every demotion for
         # resign()'s fence.  ``stop_leading`` nulls ``deps.leader_term`` on
         # every mid-run step-down, so without this copy a leader that
         # demoted itself (the cron/monitor conn-death paths) and is then
@@ -384,7 +384,7 @@ class MaintenanceLeader:
         # exactly, a successor's takeover rewrites both, so a stale fence
         # deletes nothing.
         self._resign_fence: LeaderTerm | None = None
-        # The FIRST term of this pod's current won-but-unassumable episode:
+        # The first term of this pod's current won-but-unassumable episode:
         # a run of election wins whose dedicated-conn opens keep failing
         # Its ``trusted_until`` is the episode's whole trust
         # budget (the same window ``_renew_failed`` gives a renewing
@@ -392,22 +392,22 @@ class MaintenanceLeader:
         # because every re-win mints a fresh full window, so nothing
         # else bounds how long the pod can keep a row it cannot use.
         # Cleared by a successful assume (the pod can lead again) and by
-        # an OBSERVED ELECTION LOSS (a peer holds the row now, the
+        # an observed election loss (a peer holds the row now, the
         # episode is over, and a later win starts a fresh one with a
-        # fresh budget); deliberately NOT cleared by the trust-spent
+        # fresh budget); deliberately not cleared by the trust-spent
         # resign itself, so a pod that re-wins while still broken, with
         # no peer having taken the row in between, hands the row
         # straight back instead of buying another window.
         self._unassumable_anchor: LeaderTerm | None = None
         # Log-once latch for a refused courtesy advisory-lock probe: a
         # managed Postgres refusing ``pg_try_advisory_lock`` refuses it on
-        # every election win for the life of the grants, so the WARN is
+        # every election win for the life of the grants, so the warn is
         # emitted on the first refusal and re-armed only when a probe
-        # succeeds again (the grant appearing IS a new operational fact).
+        # succeeds again (the grant appearing is a new operational fact).
         self._advisory_lock_refused = False
-        # The election-wake seam, ONE handler shape for both callers that
+        # The election-wake seam, one handler shape for both callers that
         # arm it: ``wake_election`` (this pod's own resign-broadcast seam)
-        # sets it directly, and a PEER's broadcast reaches the same object
+        # sets it directly, and a peer's broadcast reaches the same object
         # through run()'s subscription, which re-points this field at the
         # backend registry's event for the run's life (see
         # ``_leader_wake_subscription``). Consumed by the loop's tick wait
@@ -420,7 +420,7 @@ class MaintenanceLeader:
         """Whether this worker's shutdown has begun.
 
         The stop signal is ``deps.shutdown_start_event``, set by the
-        shutdown orchestrator BEFORE its first phase touches a row -
+        shutdown orchestrator before its first phase touches a row -
         earlier and narrower than the ``shutdown`` event the loops exit
         on, which does not fire until the phases complete. Everything
         the no-leadership-while-stopping invariant needs hangs off this
@@ -482,14 +482,12 @@ class MaintenanceLeader:
                 {sleep_task, stop_task, wake_task}, return_when=asyncio.FIRST_COMPLETED
             )
         finally:
-            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's fix — the
-            # same shape every one of the worker's event-racing loops now
-            # carries): CANCEL ALL the pending waiters first, THEN reap
-            # each. Our own cancel (the reaper's re-raise) propagates
-            # after the bounded reap — never swallowed, never orphaning
-            # the siblings. The clear survives even the cancel path (a
-            # wake consumed by nobody is a lost signal; the event's state
-            # belongs to the loop, not the task).
+            # cancel all the pending waiters first, then reap each. Our own
+            # cancel (the reaper's re-raise) propagates after the bounded reap
+            # — never swallowed, never orphaning the siblings. The clear
+            # survives even the cancel path (a wake consumed by nobody is a
+            # lost signal; the event's state belongs to the loop, not the
+            # task).
             pending = [t for t in (sleep_task, stop_task, wake_task) if not t.done()]
             for t in pending:
                 t.cancel()
@@ -512,7 +510,7 @@ class MaintenanceLeader:
         header table is written against. The resign broadcast is a HINT
         layered on top, never the authority: when a peer's graceful
         hand-back NOTIFY lands, the park returns early and the next cycle
-        re-runs the SAME fenced elect immediately, damped by a small
+        re-runs the same fenced elect immediately, damped by a small
         uniform jitter (``leader_wake_jitter``) so a waking fleet does not
         land on the row in the same millisecond. Every way the hint can
         fail - the listener disabled (the poll fallback never sets the
@@ -527,7 +525,7 @@ class MaintenanceLeader:
         ``_leader_wake_subscription``) and this pod's own seam
         (``wake_election``) arms the same object - so the stopping
         refusal cannot be routed around by choosing a door. It is
-        enforced at BOTH doors anyway: the arm (``wake_election`` refuses
+        enforced at both doors anyway: the arm (``wake_election`` refuses
         while stopping) and the consume (a woken park REFUSED below while
         stopping - no damping sleep, no fast re-elect; the loop's
         top-of-loop gate stays the one authority on the
@@ -535,7 +533,7 @@ class MaintenanceLeader:
         attempt-free).
 
         A wake that lands while this pod is mid-cycle stays set and wakes
-        the NEXT park immediately: at most one extra fenced elect per
+        the next park immediately: at most one extra fenced elect per
         broadcast, which against a row already taken matches nothing and
         parks again - there is no spin, the event is cleared once per wake.
         """
@@ -552,7 +550,7 @@ class MaintenanceLeader:
     def _demote(self) -> None:
         """Stop being the leader, synchronously and before anything can await.
 
-        Every path that gives up the role calls this FIRST. It must not be
+        Every path that gives up the role calls this first. It must not be
         an ``async def`` and must not follow an await on any of them: the
         steps that make demotion real at the server, closing the conn that
         carries the courtesy lock, closing the leader-owned conns, park for
@@ -564,7 +562,7 @@ class MaintenanceLeader:
         # the term is what every leader-gated loop consults per iteration.
         self._deps.stop_leading()
         # Why here, and why empty rather than zero: queue depth, reservation
-        # slots and stranded jobs are sampled ONLY by the leader's sweep
+        # slots and stranded jobs are sampled only by the leader's sweep
         # loops, so a demoted process that keeps its last sample keeps
         # exporting numbers it no longer has any authority over - during a
         # failover, which is exactly when those dashboards are being read.
@@ -577,7 +575,7 @@ class MaintenanceLeader:
         # a dead PG; if the election loop re-elects during that suspension
         # the sweep loops repopulate on their next tick.
         # The backlog gauges (jobs-by-status, oldest due age) are deliberately
-        # NOT in this list: _backlog_detection_loop samples them on every
+        # not in this list: _backlog_detection_loop samples them on every
         # worker, so a demoted process keeps full authority over its own
         # series and clearing them would mute the detectors under the exact
         # leadership failure they exist to expose.
@@ -640,7 +638,7 @@ class MaintenanceLeader:
             # conns and re-setting is_leader. Unconditionally nulling would
             # orphan the fresh conn, leaving is_leader set with no cron/monitor
             # conn (a CPU busy-spin until the next leader_conn death). Only
-            # null if the attribute still points to the SAME conn we closed.
+            # null if the attribute still points to the same conn we closed.
             if getattr(self, attr) is conn:
                 setattr(self, attr, None)
 
@@ -683,7 +681,7 @@ class MaintenanceLeader:
          DSN only when no factory is available.
 
          The factory call is bounded by ``settings.reload_factory_timeout``
-        , the SAME bound the notify reconnect loop, the bootstrap opens,
+        , the same bound the notify reconnect loop, the bootstrap opens,
          and the reload path apply to every factory call. Unbounded, a hung
          token endpoint parks the election loop past every staleness
          budget and the in-worker watchdog force-exits the whole worker
@@ -706,7 +704,7 @@ class MaintenanceLeader:
         if dsn is None:
             # Why: open_worker_deps validates this at startup, so None here
             # means deps were built by hand - fail fast instead of letting
-            # asyncpg.connect(str(None)) DNS-retry the host "None" forever.
+            # asyncpg.connect(str(None)) dns-retry the host "None" forever.
             raise RuntimeError(
                 "no leader_conn_factory and pg_dsn_direct is None - "
                 "cannot rebuild leader connection"
@@ -796,7 +794,7 @@ class MaintenanceLeader:
 
         The backend owns the registry the notify callback fans out to (the
         cancel-wake pattern); run() enters the subscription and points the
-        election loop's ONE wake event (``_wake_event``, the object
+        election loop's one wake event (``_wake_event``, the object
         ``wake_election`` arms) at the backend's event for the run's life.
         Why re-binding rather than a pump task forwarding the backend
         event to a private one: a pump is a second scheduling hop and a
@@ -810,7 +808,7 @@ class MaintenanceLeader:
         external sets, the park sleeps the plain tick, and nothing about
         the election changes.
 
-        Entered BEFORE the TaskGroup and exited before the teardown
+        Entered before the TaskGroup and exited before the teardown
         resign: the resigner emits its broadcast over pg_notify, never
         through this event, so losing the subscription early cannot cost
         a handover.
@@ -864,7 +862,7 @@ class MaintenanceLeader:
             # False return would: the lease row is the authority, and a
             # courtesy probe must never cost the leadership the row already
             # granted. Logged once per refusal streak so a refused
-            # deployment does not WARN-spam on every re-election.
+            # deployment does not warn-spam on every re-election.
             if not self._advisory_lock_refused:
                 self._advisory_lock_refused = True
                 log.warning(
@@ -958,7 +956,7 @@ class MaintenanceLeader:
         own, so a resign that cannot reach the database costs a replacement
         pod at most one lease rather than correctness.
 
-        Runs at ``run()`` teardown, AFTER the shutdown orchestrator has
+        Runs at ``run()`` teardown, after the shutdown orchestrator has
         already closed and nulled a TaskQ-owned ``leader_conn``, so the
         write rides the leader-owned monitor conn when the primary is gone.
         Both conns are idle by then (the loops that used them have exited),
@@ -1027,7 +1025,7 @@ class MaintenanceLeader:
                 tag=tag,
             )
             return False
-        # The broadcast AFTER the delete commits: the DELETE is a single
+        # The broadcast after the delete commits: the DELETE is a single
         # autocommit statement, so this separate statement is sent only
         # once the delete's round trip returned - the commit-gate
         # discipline (never notify inside the tx whose fact the payload
@@ -1098,7 +1096,7 @@ class MaintenanceLeader:
         The shutdown-ordering contract's leading branch (this module's
         doc header): a leader that begins shutting down does not carry
         the lease through the drain - today's shape resigned in
-        ``run()``'s teardown, AFTER every phase, so a rolling deploy's
+        ``run()``'s teardown, after every phase, so a rolling deploy's
         successor waited out the whole drain window. Demote comes first
         (the ``_demote`` rule: the flag drops before anything can
         await), then the fenced resign over ``leader_conn``, which is
@@ -1168,7 +1166,7 @@ class MaintenanceLeader:
         CURRENT win's term, re-captured at the top of every
         ``_assume_leadership``), which rides ``deps.leader_conn``: the
         same connection the winning elect just used, still open here
-        because every caller runs this BEFORE dropping it. Best-effort
+        because every caller runs this before dropping it. Best-effort
         like every resign: a failure costs at most the wait the lapse
         would have charged, and the next cycle re-attempts while the
         episode persists.
@@ -1176,7 +1174,7 @@ class MaintenanceLeader:
         An episode ends two ways: a successful assume (this pod proved
         it can lead) or an observed election loss (a peer holds the row;
         the election loop clears the anchor there). The resign itself
-        does NOT end it: a pod that re-wins while still broken, with no
+        does not end it: a pod that re-wins while still broken, with no
         peer having taken the row in between, must hand the row straight
         back, not buy a fresh window per cycle.
         """
@@ -1193,7 +1191,7 @@ class MaintenanceLeader:
             return
         deleted = await self.resign()
         if not deleted:
-            # The WARN below is the policy record ("this pod handed the
+            # The warn below is the policy record ("this pod handed the
             # lease back because it cannot assume it") and must not
             # claim a hand-back that did not land: a resign with no live
             # conn returns silently and a fenced no-op succeeds at
@@ -1218,7 +1216,7 @@ class MaintenanceLeader:
         while not shutdown.is_set():
             # The shutdown-ordering contract, checked before anything
             # else this loop can do: once the stop signal is observed
-            # this loop NEVER attempts the election again - no elect, no
+            # this loop never attempts the election again - no elect, no
             # renew, however long the drain runs. The handover (below)
             # is the loop's last act of leadership; the liveness
             # registration is dropped first so detector 2 does not trip
@@ -1261,7 +1259,7 @@ class MaintenanceLeader:
                     # point - credential-provider factories raise
                     # azure/hvac/botocore exceptions, and a rejected fresh
                     # token raises asyncpg.InvalidPasswordError (an
-                    # InvalidAuthorizationSpecificationError, NOT a
+                    # InvalidAuthorizationSpecificationError, not a
                     # PostgresConnectionError). All are transient at this
                     # boundary and must retry, not crash the worker
                     # TaskGroup. CancelledError is BaseException (3.8+), so
@@ -1307,7 +1305,7 @@ class MaintenanceLeader:
                 continue
             if isinstance(elected_at, datetime):
                 # The stop race: this elect was in flight when the stop
-                # signal landed and WON anyway. The lease is never held
+                # signal landed and won anyway. The lease is never held
                 # across the drain - hand the row straight back, fenced,
                 # over the conn the elect just used, and never run the
                 # assume path below (no monitor/cron conns, no lead(),
@@ -1341,7 +1339,7 @@ class MaintenanceLeader:
             else:
                 # A lost election is the observable end of any
                 # won-but-unassumable episode: the row a live peer now
-                # holds is not this pod's to hand back, so a LATER win of
+                # holds is not this pod's to hand back, so a later win of
                 # this pod starts a fresh episode with a fresh trust
                 # budget. Without this, an anchor left spent by an old
                 # episode resigned the first conn-open blip of every
@@ -1360,10 +1358,10 @@ class MaintenanceLeader:
             # deliberately without resetting.)
             guard.ok()
             # The follower's park: a heartbeat tick, a peer's resign
-            # broadcast, or the stop signal. Waking a pod that just WON is
+            # broadcast, or the stop signal. Waking a pod that just won is
             # harmless - the next cycle's renewal is fenced and merely
             # refreshes early - and a pod that just lost gets exactly the
-            # proactive re-elect the broadcast exists for. The park REFUSES
+            # proactive re-elect the broadcast exists for. The park refuses
             # the wake while stopping (see ``_follower_park``): this
             # top-of-loop gate stays the one authority on the
             # shutdown-ordering contract, so a broadcast arriving at a
@@ -1383,7 +1381,7 @@ class MaintenanceLeader:
         ``won_row`` marks the cycles whose election statement had already
         WON the lease before failing (an exception escaping
         :meth:`_assume_leadership`): those leave this pod's name on a row
-        it may never manage to assume, so the trust-spent hand-back runs FIRST,
+        it may never manage to assume, so the trust-spent hand-back runs first,
         before the leader conn it rides is dropped.
         """
         if won_row:
@@ -1452,7 +1450,7 @@ class MaintenanceLeader:
             + self._deps.settings.resolved_leader_lease
             - _LEADER_TRUST_MARGIN_SECS,
         )
-        # Captured the moment the row is won, BEFORE the conn opens that
+        # Captured the moment the row is won, before the conn opens that
         # complete the assume: even a won-then-unassumable election leaves
         # this pod's name on the row, and the resigns that hand exactly
         # that row back, the trust-spent hand-back and the
@@ -1642,13 +1640,10 @@ class MaintenanceLeader:
                     {leader_wait, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED
                 )
             finally:
-                # THE TEARDOWN'S OWN ORDER (the leaked-task guard's fix —
-                # the same shape the reload schedule's, the watchdog's, the
-                # producer's, and the bootstrap's loops carry): CANCEL ALL
-                # the pending waiters first, THEN reap each. The one-per-lap
-                # cancel+reap let the reaper's OWN concurrent cancellation
-                # re-raise out of the FIRST reap and orphan the second
-                # waiter. Our own cancel still propagates: after the
+                # cancel all the pending waiters first, then reap each. The
+                # one-per-lap cancel+reap let the reaper's own concurrent
+                # cancellation re-raise out of the first reap and orphan the
+                # second waiter. Our own cancel still propagates: after the
                 # bounded reap completes, never swallowed.
                 pending = [t for t in (leader_wait, shutdown_wait) if not t.done()]
                 for t in pending:
@@ -1684,7 +1679,7 @@ class MaintenanceLeader:
                 await asyncio.sleep(_WATCHDOG_INTERVAL_SECS)
             # Leaving the inner loop means the gate closed: demotion (the
             # probe-failure break above, which clears is_leader), a dropped
-            # monitor conn, or shutdown. Drop the registration HERE, before
+            # monitor conn, or shutdown. Drop the registration here, before
             # re-parking on is_leader.wait(), this loop stops ticking through
             # no fault of its own, and a lingering registration goes stale
             # while parked, so detector 2 would force-exit a healthy
@@ -1702,7 +1697,7 @@ class MaintenanceLeader:
                 start = time.monotonic()
                 rows: int | None = None
                 try:
-                    # Why one deadline for the WHOLE iteration: the count > 0
+                    # Why one deadline for the whole iteration: the count > 0
                     # path awaits PG twice (scheduled_to_pending, then the
                     # acquire + pg_notify), and per-statement timeouts alone
                     # admit a tick gap of k * timeout + 1.0s, over the
@@ -1712,7 +1707,7 @@ class MaintenanceLeader:
                     async with asyncio.timeout(self._deps.settings.dispatcher_command_timeout):
                         # No `now` argument, the sweep's server-side
                         # predicate (scheduled_at <= statement_timestamp(),
-                        # the STABLE bound the partial index serves) is
+                        # the stable bound the partial index serves) is
                         # the single arbiter.
                         rows = await self._backend.scheduled_to_pending()
                         if rows > 0:
@@ -1733,7 +1728,7 @@ class MaintenanceLeader:
                     # TaskGroup and wedges shutdown (see _leader_sweeps).
                     # rows is None means the awaited sweep call itself was
                     # cut short, a sweep-timeouts increment. rows bound
-                    # means the sweep COMPLETED and the deadline casualty
+                    # means the sweep completed and the deadline casualty
                     # was the wake NOTIFY: a different failure (pool
                     # exhaustion / notify timeout), already logged below,
                     # and counting the completed call as aborted would page
@@ -1754,7 +1749,7 @@ class MaintenanceLeader:
                 finally:
                     # rows is bound only by the awaited call above; the
                     # deadline that aborts it also aborts the binding, so
-                    # the failure path records duration WITHOUT a row sample
+                    # the failure path records duration without a row sample
                     # (a 0-row sample would be indistinguishable from a
                     # healthy empty sweep).
                     _metric_duration("scheduled_to_pending", start)
@@ -1788,7 +1783,7 @@ class MaintenanceLeader:
             start = time.monotonic()
             fired: int | None = None
             try:
-                # Why one deadline for the WHOLE tick: a tick is BEGIN + N
+                # Why one deadline for the whole tick: a tick is begin + N
                 # statements (one per due schedule, plus catch-up bursts) +
                 # COMMIT, each separately bounded by the conn's
                 # command_timeout, so per-statement timeouts alone let a
@@ -1868,7 +1863,7 @@ class MaintenanceLeader:
                 # _transient.py): tolerated and logged a few times (this
                 # loop's historical blanket catch), then deliberately fatal
                 # rather than retrying a real bug forever. Cleanup and log
-                # BEFORE guard.unexpected so the fatal iteration still drops
+                # before guard.unexpected so the fatal iteration still drops
                 # the conn and the cron-specific log survives.
                 await self._close_leader_owned_conns()
                 log.warning(
@@ -1880,7 +1875,7 @@ class MaintenanceLeader:
                 guard.unexpected(exc)
             finally:
                 # fired is bound only when tick_cron returned; a timed-out
-                # tick records duration WITHOUT a row sample (a 0-row sample
+                # tick records duration without a row sample (a 0-row sample
                 # would be indistinguishable from a healthy empty tick).
                 _metric_duration("cron", start)
                 if fired is not None:

@@ -11,7 +11,7 @@ rolled-back phase-2 write fix re-issues the escalation (and therefore
 the count of legitimate cancellation deliveries and requires
 ``task.cancelling()`` to match it exactly. Two sites deliver: the
 phase-2 arm's non-abandon branch (one per completed arm), and
-``run_post_tx``'s drain, which delivers the FIRST cancellation for an
+``run_post_tx``'s drain, which delivers the first cancellation for an
 abandon that applied - the same-tick abandon arm queues the abandon
 without cancelling, because a cancellation delivered inside the
 heartbeat transaction would let the consumer deregister while the
@@ -240,7 +240,7 @@ async def test_cancel_phase_ordering_property(
 
         # Escalation arms are checked before the deregister-break so an
         # escalation that queues for abandonment on the same tick (local
-        # phase lands on ABANDON_PENDING, not FORCED) is still verified.
+        # phase lands on ABANDON_PENDING, not forced) is still verified.
         escalation_sql = CANCEL_ESCALATION_SQL.format(schema=ws.schema_name)
         insert_sql_prefix = INSERT_EVENT_SQL.format(schema=ws.schema_name).split("(")[0].strip()
         escalated_this_step = any(escalation_sql in sql for sql, _ in recorder.execute_calls)
@@ -256,12 +256,12 @@ async def test_cancel_phase_ordering_property(
                 f"between UPDATE and task.cancel() (step {step_idx})"
             )
         # The same-tick abandon arm (intermediate ABANDON_PENDING) delivers
-        # NO in-tx cancellation: the abandon write is not durable until the
+        # no in-tx cancellation: the abandon write is not durable until the
         # drain lands it, and a cancellation delivered inside the
         # transaction lets the consumer unwind and deregister while the
         # escalation is still uncommitted - a rollback then strands the
         # row running at phase 1 with the entry gone from the registry.
-        # The cancellation is the DRAIN's, after mark_abandoned applies.
+        # The cancellation is the drain's, after mark_abandoned applies.
         intermediate = registry.get(job_id)
         arm_cancels = (
             1
@@ -271,7 +271,7 @@ async def test_cancel_phase_ordering_property(
             else 0
         )
 
-        # The drain is the second legitimate cancel site: the FIRST
+        # The drain is the second legitimate cancel site: the first
         # delivery of the cancellation for an abandon that applied, only
         # when the entry is still registered and no earlier arm already
         # delivered it. The task is never reaped inside the loop (no await

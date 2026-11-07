@@ -268,7 +268,7 @@ def test_actor_name_and_queue(
     assert ref.queue == expected_queue
 
 
-# ── DI actor dependency declarations ─────────────────────────────────
+# ── di actor dependency declarations ─────────────────────────────────
 
 
 def test_fetch_actor_declares_http_dependency() -> None:
@@ -283,7 +283,7 @@ def test_db_lookup_actor_declares_db_dependency() -> None:
     assert db_lookup_actor.wants_ctx is False
 
 
-# ── DI registry ──────────────────────────────────────────────────────
+# ── di registry ──────────────────────────────────────────────────────
 
 
 def test_build_registry_has_http_client_at_loop_scope() -> None:
@@ -331,7 +331,7 @@ async def test_di_registry_with_di_actors_validates_cleanly() -> None:
     registry.register_value(WorkerSettings, Scope.PROCESS, settings)
     registry.register_value(Clock, Scope.PROCESS, SystemClock())
     registry.validate(actors=[fetch_actor, db_lookup_actor])
-    # No exception = all DI deps resolved correctly for the DI actors
+    # No exception = all di deps resolved correctly for the di actors
 
 
 # ── Advanced actor options ────────────────────────────────────────────

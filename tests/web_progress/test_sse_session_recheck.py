@@ -1,7 +1,7 @@
 """Post-revocation auth re-check for the SSE progress stream (#316).
 
 The stream authenticates once at request acceptance (router-level
-``Depends(auth_dependency)``) and never again: a stream opened BEFORE a
+``Depends(auth_dependency)``) and never again: a stream opened before a
 session is invalidated kept delivering frames after revocation, while new
 requests correctly got 401.  The contract after the fix: the stream
 re-invokes the session verifier the auth dependency exposes (same
@@ -111,7 +111,7 @@ class _StubPool:
         return _StubAcquire()
 
 
-# ── app factory: the SSO wiring in miniature ─────────────────────────────
+# ── app factory: the sso wiring in miniature ─────────────────────────────
 
 
 def _make_app(pubsub: _KeepalivePubSub) -> tuple[FastAPI, dict[str, bool]]:
@@ -134,7 +134,7 @@ def _make_app(pubsub: _KeepalivePubSub) -> tuple[FastAPI, dict[str, bool]]:
         _ = request
         return auth_state["session_valid"]
 
-    _dependency.session_verifier = _verifier  # pyright: ignore[reportFunctionMemberAccess]  # Why: the re-check the SSO dependency exposes; create_auth_dependency attaches the same attribute.
+    _dependency.session_verifier = _verifier  # pyright: ignore[reportFunctionMemberAccess]  # Why: the re-check the sso dependency exposes; create_auth_dependency attaches the same attribute.
 
     router = create_router(
         _StubPool(),  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub pool satisfies the asyncpg surface the route reads.
@@ -185,7 +185,7 @@ async def _wait_for_snapshot(chunks: list[bytes], *, timeout: float = 5.0) -> No
 
 
 async def test_stream_opened_before_revocation_ends_after_recheck() -> None:
-    """A stream opened BEFORE session invalidation must not outlive it.
+    """A stream opened before session invalidation must not outlive it.
 
     CONTRACT: the streaming loop re-checks the session before every yielded
     event and at every keepalive tick; a revoked session ends the stream at
@@ -231,7 +231,7 @@ async def test_stream_opened_before_revocation_ends_after_recheck() -> None:
         # The session is invalidated while the stream is live.
         auth_state["session_valid"] = False
 
-        # A NEW request after revocation is refused, as before the fix.
+        # A new request after revocation is refused, as before the fix.
         state = await _get_state(app, job_id)
         assert state == 401
 

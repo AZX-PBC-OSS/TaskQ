@@ -19,7 +19,7 @@ This module pins the swap three ways:
   the shapes where a wrong length could hide - astral code points,
   combining marks, ZWJ sequences, mixed-width CJK, the 64 KiB cap
   boundary;
-* the error contract: a lone surrogate must raise the SAME exception
+* the error contract: a lone surrogate must raise the same exception
   class the encode raises (``UnicodeEncodeError``), never a silent wrong
   count - a wrong count here would either blackhole legal results or
   admit oversized ones past the cap;
@@ -48,11 +48,11 @@ from tors import utf8_byte_len
         "hello, world",  # plain ASCII
         "café naïve résumé",  # Latin-1 supplement (2-byte)
         " Hello, world".lstrip(),  # trivial guard against an edit slip
-        "中文字符测试",  # CJK, BMP 3-byte
+        "中文字符测试",  # cjk, bmp 3-byte
         "TaskQ 任务队列 — émoticône 🚀",  # mixed 1-4 byte, punctuation
-        "\U0001f680\U0001f4a3\U0001f525",  # astral, outside the BMP
+        "\U0001f680\U0001f4a3\U0001f525",  # astral, outside the bmp
         "étude",  # combining mark: e + U+0301 (2 code points, 3 bytes)
-        "👨‍👩‍👧‍👦 family",  # ZWJ sequence: 7 code points, one grapheme
+        "👨‍👩‍👧‍👦 family",  # zwj sequence: 7 code points, one grapheme
         "x" * 65536,  # the ASCII 64 KiB cap boundary
         "🚀" * 16384,  # the astral 64 KiB boundary (4 bytes each)
         "中" * 21845 + "x",  # the 3-byte 64 KiB boundary + 1
@@ -67,7 +67,7 @@ def test_byte_len_matches_the_stdlib_encode_byte_exact(payload: str) -> None:
     st.text(
         alphabet=st.characters(
             # Every code-point class a result payload could carry:
-            # ASCII, Latin, CJK, astral emoji, combining marks, ZWJ.
+            # ASCII, Latin, cjk, astral emoji, combining marks, zwj.
             blacklist_categories=("Cs",),  # lone surrogates: the error pin below
         ),
         max_size=4096,
@@ -86,7 +86,7 @@ def test_byte_len_property_matches_the_stdlib_encode(payload: str) -> None:
 def test_byte_len_lone_surrogate_raises_the_encode_error(surrogates: str) -> None:
     # The stdlib encode is the contract: the terminal write's str is
     # orjson's own decode output and can never carry a lone surrogate,
-    # but if one ever arrives the swap must fail IDENTICALLY - the same
+    # but if one ever arrives the swap must fail identically - the same
     # exception class, not a wrong number that walks past the cap.
     with pytest.raises(UnicodeEncodeError):
         surrogates.encode("utf-8")
@@ -94,7 +94,7 @@ def test_byte_len_lone_surrogate_raises_the_encode_error(surrogates: str) -> Non
         utf8_byte_len(surrogates)
 
 
-# ── The perf gate: the swap must WIN on the real shape ──────────────────
+# ── The perf gate: the swap must win on the real shape ──────────────────
 
 pytestmark = pytest.mark.load_sensitive  # min-of-N timing ratios: the serial lane
 

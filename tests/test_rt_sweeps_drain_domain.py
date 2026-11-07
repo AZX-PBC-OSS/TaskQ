@@ -3,7 +3,7 @@
 The bounded sweeps compute ``job_attempts.duration_ms`` from the driving
 UPDATE's own ``RETURNING ... clock_timestamp() AS now_ts`` - per row, per
 BATCH.  The existing pins (``test_sweep_expired_locks_bounded.py``'s
-attempt-shape test) bound the value inside ONE batch.  This attack
+attempt-shape test) bound the value inside one batch.  This attack
 drains a backlog across MULTIPLE committed batches with wall-clock
 separation between them and asserts each batch's rows were measured
 against THAT batch's statement clock, not the first batch's:
@@ -13,7 +13,7 @@ against THAT batch's statement clock, not the first batch's:
 * the earliest batch's rows must still measure ~the seeded elapsed,
   proving the clock is the statement's, not a stale transaction-start
   or first-batch hoist (a ``now()`` regression pins every row to one
-  instant; a hoisted first-batch clock pins every row to the FIRST
+  instant; a hoisted first-batch clock pins every row to the first
   batch's instant - both fail the spread assertion below).
 """
 
@@ -95,7 +95,7 @@ async def test_each_batchs_rows_are_measured_against_that_batchs_clock(
             break
         assert n == _BATCH, f"call {call} reclaimed {n}, expected the full batch"
         # Wall-clock separation between committed batches: everything in
-        # the NEXT batch is measured strictly later than this one's rows.
+        # the next batch is measured strictly later than this one's rows.
         await clean_pg_conn.execute(f"SELECT pg_sleep({_GAP_SECONDS})")
 
     assert counts == [_BATCH, _BATCH, _BATCH, 0], (
@@ -123,9 +123,9 @@ async def test_each_batchs_rows_are_measured_against_that_batchs_clock(
             f"started {_STARTED_SECONDS_AGO} s ago"
         )
 
-    # The critical assertion, at batch granularity: the LAST batch's
-    # rows were measured at least (batches - 1) * GAP later than the
-    # FIRST batch's rows.  Per-row comparison inside a batch is not a
+    # The critical assertion, at batch granularity: the last batch's
+    # rows were measured at least (batches - 1) * gap later than the
+    # first batch's rows.  Per-row comparison inside a batch is not a
     # stable property - both started_at (seeded per row) and now_ts (the
     # driving statement's per-row clock_timestamp()) jitter by
     # microseconds-to-milliseconds under load, which the 2.2 s batch

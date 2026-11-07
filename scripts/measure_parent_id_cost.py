@@ -125,7 +125,7 @@ async def stage_write(backend: object, parent: UUID) -> dict[str, float]:
         out["parented_over_unparented"] = out["copy_parented_ms_per_2000"] / unparented
     else:
         # The baseline tree: the column does not exist, the parented arm
-        # is the FEATURE run's comparison.
+        # is the feature run's comparison.
         out["copy_parented_ms_per_2000"] = -1.0
         out["parented_over_unparented"] = -1.0
     return out

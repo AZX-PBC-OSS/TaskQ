@@ -1,7 +1,7 @@
 """LedgerWatch's client face: trigger runs, await terminals.
 
 The trigger is IDEMPOTENT by the run-key arbiter: the run key is the
-batch id — an at-least-once feed's re-delivery gets the FIRST run's
+batch id — an at-least-once feed's re-delivery gets the first run's
 typed claim (``existing-running`` / ``existing-terminal``), never a
 second silent run.
 """
@@ -90,7 +90,7 @@ async def await_recon_report(
 async def resolve_one_hold(
     pool: asyncpg.Pool, schema: str, flow_id: str, decision: dict[str, object]
 ) -> str:
-    """The operator's reply: resolve the run's ONE pending hold (the
+    """The operator's reply: resolve the run's one pending hold (the
     typed door — a wrong shape is the typed refusal and the hold
     survives)."""
     client = HitlClient(pool, schema=schema)

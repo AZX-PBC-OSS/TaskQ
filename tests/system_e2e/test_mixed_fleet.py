@@ -5,7 +5,7 @@ once: a panic (an ordinary exception), a hang past its start_to_close
 deadline, a sync body that raises SystemExit (a BaseException crossing
 the executor-thread task boundary), and healthy sync + async neighbours.
 The worker must survive all of it (a body's failure mode is a job
-outcome, never a process outcome), serve work AFTER the last
+outcome, never a process outcome), serve work after the last
 misbehaviour landed, and the ledger must balance.
 
 Two tests, split by defect ownership:
@@ -60,7 +60,7 @@ async def test_mixed_fleet_survives_hang_and_panic_ledger_balances(
     sys_ledger: asyncpg.Connection,
 ) -> None:
     """The survivable mixed fleet: a panic, a hung body past its deadline,
-    and healthy sync + async neighbours on ONE worker. The worker must
+    and healthy sync + async neighbours on one worker. The worker must
     outlive every failure mode, finish the fleet, and serve again."""
     schema = module_pg_schema.schema_name
     conn = sys_ledger
@@ -108,7 +108,7 @@ async def test_mixed_fleet_survives_hang_and_panic_ledger_balances(
         )
         assert hang_status is not None, f"the hung job was never reaped: {hang_handle.job_id}"
 
-        # The worker survived: AFTER every misbehaviour landed, the same
+        # The worker survived: after every misbehaviour landed, the same
         # process still takes and completes new work.
         assert worker.proc.poll() is None, "the worker died serving the mixed fleet"
         post = await sys_client.enqueue(sys_fast, SysPayload(), tags=[_TAG])

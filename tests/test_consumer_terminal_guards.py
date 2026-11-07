@@ -138,7 +138,7 @@ def _settings() -> WorkerSettings:
     return WorkerSettings.load_from_dict({"TASKQ_SCHEMA_NAME": "taskq_test"})
 
 
-# ── cancel guard: a registry holding only OTHER jobs ─────────────────
+# ── cancel guard: a registry holding only other jobs ─────────────────
 
 
 async def _run_with_foreign_registry_entry(
@@ -297,11 +297,11 @@ async def _cancelled_write(*, report_progress: bool) -> dict[str, object]:
     deps.redis_client = None
     deps.disowned_jobs = set()
     # The faithful phase: a MagicMock(spec=WorkerDeps) auto-generates a
-    # Mock for shutdown_phase, and "is not ShutdownPhase.NONE" is true for
-    # any Mock, which would stamp the registry entry SHUTDOWN and route
+    # Mock for shutdown_phase, and "is not ShutdownPhase.none" is true for
+    # any Mock, which would stamp the registry entry shutdown and route
     # this cancel through mark_interrupted (release) instead of the
     # mark_cancelled write these pins exercise. A worker not shutting
-    # down carries the production default, ShutdownPhase.NONE.
+    # down carries the production default, ShutdownPhase.none.
     deps.shutdown_phase = ShutdownPhase.NONE
 
     async def actor(running: JobRow, ctx: JobContext[BaseModel]) -> dict[str, object]:
@@ -427,7 +427,7 @@ async def test_fenced_terminal_write_must_not_report_succeeded() -> None:
 
     async def actor(running: JobRow, ctx: JobContext[BaseModel]) -> dict[str, object]:
         nonlocal actor_side_effect_ran
-        # The actor's own write on the injected LOOP-scope connection, for
+        # The actor's own write on the injected loop-scope connection, for
         # instance an INSERT into an application table, issued inside the
         # same transaction as the about-to-be-fenced terminal write.
         await tx_conn.execute("INSERT INTO side_effects (job_id) VALUES ($1)", running.id)

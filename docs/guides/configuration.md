@@ -349,8 +349,7 @@ never mounted on the admin UI surface.
 The same dump is available without enabling the endpoint by sending
 **`SIGUSR2`** to the worker, which writes it to the log. Reach for either
 when a worker is alive but idle and you need to know what it is waiting
-on; that question previously required rebuilding the image with
-instrumentation.
+on — no rebuilt image with instrumentation required.
 
 ### NOTIFY Listener
 
@@ -517,7 +516,7 @@ The **prune sweep** (Sweep 5) runs once daily and moves terminal jobs from `jobs
 | `TASKQ_PRUNE_CRON_EXPR` | `str \| None` | `None` | Full 5-field cron expression for the prune sweep. Takes precedence over `TASKQ_PRUNE_SCHEDULE_UTC`. A DAILY (or slower) expression runs the once-per-day prune with the day-latch; a SUB-DAILY expression (`*/5 * * * *` and friends) is a **retention policy, not a daily appointment**: the arm checks the retention thresholds every leader sweep tick (`TASKQ_SWEEP_INTERVAL`) instead of waiting for the next cron fire, and the day-latch never gates it (a sub-daily retention that silently pruned at most once a day is the measured defect this decoupling fixes). Each deferral the day-latch does make is logged (`prune-skipped-day-latch`) — never silent. | n/a |
 | `TASKQ_PRUNE_BATCH_SIZE` | `int` | `10000` | Rows processed per CTE batch. The sweep repeats until no rows remain. | Min: 1 |
 | `TASKQ_WORKFLOW_OUTBOX_RETENTION_PERIOD` | `timedelta` | `24h` | The age at which a **delivered** `wf_outbox` row is deleted (a delivered outbox row is narration: the drain's arbiter inserted the consumer rows and `wf_join_fire` is the exactly-once ledger). Undelivered rows are never touched — the drain owns them. | Non-negative; `0` disables the sweep (see [The `0` convention](#the-0-convention)) |
-| `TASKQ_WORKFLOW_STEP_CACHE_SWEEP_PERIOD` | `timedelta` | `1h` | How often the leader's retention arm prunes the cross-run step cache's **expired** rows (T25: the in-DB TTL's corpses — the lookup's freshness leg already refuses them; this arm deletes the dead weight). Fresh rows are never touched — a deleted fresh row is a re-execution the next run would have skipped. | Non-negative; `0` disables the sweep (see [The `0` convention](#the-0-convention)) |
+| `TASKQ_WORKFLOW_STEP_CACHE_SWEEP_PERIOD` | `timedelta` | `1h` | How often the leader's retention arm prunes the cross-run step cache's **expired** rows (the in-DB TTL's corpses — the lookup's freshness leg already refuses them; this arm deletes the dead weight). Fresh rows are never touched — a deleted fresh row is a re-execution the next run would have skipped. | Non-negative; `0` disables the sweep (see [The `0` convention](#the-0-convention)) |
 | `TASKQ_WORKFLOW_EDGE_RETENTION_PERIOD` | `timedelta` | `0s` (disabled) | The flow-history arm for `wf_edge`: deletes a row when its flow's root is terminal (and, since the jobs archive moves old roots out, also when the root row is **gone**) and the root's `finished_at` is older than the period. One bounded batch per sweep pass, served by `wf_edge_flow_idx`. | Non-negative; `0` disables the arm (**the default** — these five prune flow *history*, not derived data; opt in deliberately) |
 | `TASKQ_WORKFLOW_STEP_LEDGER_RETENTION_PERIOD` | `timedelta` | `0s` (disabled) | The flow-history arm for `wf_step_ledger` — the family's fastest grower (one row per attempt per map child). The same two-leg scoping and batch discipline as the edge arm. | Non-negative; `0` disables the arm (**the default**) |
 | `TASKQ_WORKFLOW_JOIN_FIRE_RETENTION_PERIOD` | `timedelta` | `0s` (disabled) | The flow-history arm for `wf_join_fire` — the exactly-once fire ledger, aged by `fired_at`. The same scoping and discipline. | Non-negative; `0` disables the arm (**the default**) |

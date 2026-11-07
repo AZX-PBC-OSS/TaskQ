@@ -210,7 +210,7 @@ class TestSubscribeCancelWake:
     async def test_cancel_wake_not_set_for_pending_job_cancel(
         self, clean_jobs_app: JobsApp
     ) -> None:
-        """Cancelling a pending job (case 1 - immediate terminal) does NOT
+        """Cancelling a pending job (case 1 - immediate terminal) does not
         fire a cancel notify. The cancel wake event must remain unset as
         there is no callback invocation.
         """

@@ -1,30 +1,30 @@
-"""THE PROGRESS PUSH PINS (the consumer-face lane's FIX 3 — the
+"""The progress push pins (the consumer-face lane's fix 3 — the
 deploy-matrix's PARTIAL): the SSE progress stream was 1s POLLING — every
-frame the poll's own round trip late. The fix rides the SAME
+frame the poll's own round trip late. The fix rides the same
 LISTEN/NOTIFY transport the HITL broadcast landed (the pattern proven:
 the in-tx NOTIFY, the listener's backfill+tail, the zero-window, the
 dedup):
 
-* THE WRITE'S NOTIFY: the progress flush carries ONE ``pg_notify`` on
+* the WRITE'S NOTIFY: the progress flush carries one ``pg_notify`` on
   the ``taskq_wf_progress`` channel — the POINTER only (schema, flow,
   node, seq — never the payload's content; the row is the truth); the
   auto projections (node start/terminal) knock the same channel;
-* THE LISTENER (:class:`taskq.workflows.api._progress_listen.
+* the LISTENER (:class:`taskq.workflows.api._progress_listen.
   ProgressListener` — the HitlListener's sibling): ONE dedicated
   connection, LISTEN → BACKFILL → TAIL (the zero-window construction —
   an emission visible to the snapshot is announced by it, a missed
   event unrepresentable by construction); the per-connection dedup (a
   knock whose seq the snapshot already covered yields nothing); the
-  FAN-OUT, never a partition (per-subscriber queues); the coalesce
-  order (the overflow drops the OLDEST — observability degrades FIRST,
+  FAN-out, never a partition (per-subscriber queues); the coalesce
+  order (the overflow drops the OLDEST — observability degrades first,
   the writer never blocks, correctness never);
-* THE SSE FACE UPGRADED: the generator's ``listener=`` — the knock
+* the SSE FACE UPGRADED: the generator's ``listener=`` — the knock
   wakes the replay immediately (the push PRIMARY, sub-poll latency);
   the poll tick is the fallback BELT (a missed knock costs one poll
   interval, never correctness — the seq-cursor read stays the source of
   truth).
 
-Failing-first: the pins ran RED at the pre-fix head (no notify, no
+The rejected shape (the mutation red: no notify, no
 listener, no ``listener=`` param); the reds are captured in
 ``.measurements/cons-cure3-reds.json``.
 """
@@ -52,7 +52,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def cons3_redlog() -> RedLog:
-    """The red sink for the consumer-face lane's FIX 3 pins."""
+    """The red sink for the push pins."""
     log = RedLog("cons-cure3-reds.json")
     return log
 
@@ -71,7 +71,7 @@ def _stale_knock_sql(schema: str) -> str:
     return "SELECT pg_notify('taskq_wf_progress', $1)"
 
 
-# ── THE WRITE'S NOTIFY ───────────────────────────────────────────────────
+# ── the write's NOTIFY ───────────────────────────────────────────────────
 
 
 async def test_the_flush_knocks_the_progress_channel(
@@ -81,7 +81,7 @@ async def test_the_flush_knocks_the_progress_channel(
     wf_sql: Any,
     module_pg_schema: Any,
 ) -> None:
-    """THE FLUSH'S NOTIFY: one emission → one cadence flush → ONE
+    """The flush's notify: one emission → one cadence flush → one
     ``pg_notify`` on ``taskq_wf_progress`` — the payload the POINTER
     only (schema/flow/node/seq), never the pct's sole copy."""
     from taskq.workflows._progress import PROGRESS_NOTIFY_CHANNEL
@@ -127,8 +127,8 @@ async def test_the_flush_knocks_the_progress_channel(
 async def test_the_auto_projection_knocks_the_same_channel(
     wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: Any, module_pg_schema: Any
 ) -> None:
-    """THE AUTO PROJECTION'S NOTIFY: the node start/terminal projections
-    knock the SAME channel (the ring's every event class rides one
+    """The auto projection's notify: the node start/terminal projections
+    knock the same channel (the ring's every event class rides one
     transport)."""
     from taskq.workflows._progress import PROGRESS_NOTIFY_CHANNEL
 
@@ -161,7 +161,7 @@ async def test_the_auto_projection_knocks_the_same_channel(
     await listener_conn.close()
 
 
-# ── THE LISTENER ─────────────────────────────────────────────────────────
+# ── the listener ─────────────────────────────────────────────────────────
 
 
 async def test_the_listener_backfills_the_zero_window_and_dedups(
@@ -172,12 +172,12 @@ async def test_the_listener_backfills_the_zero_window_and_dedups(
     wf_sql: Any,
     module_pg_schema: Any,
 ) -> None:
-    """THE ZERO-WINDOW CONSTRUCTION (the #316 pattern, generalized): the
-    emissions written BEFORE the listener starts are announced by the
-    BACKFILL (source=backfill) — LISTEN first, THEN the snapshot; the
-    backfill ends with ONE reconcile snapshot (the last_seqs the dedup
-    reads). AND THE DEDUP: a knock whose seq the snapshot already
-    covered yields NOTHING (one emission, ONE event)."""
+    """The zero-window construction (the #316 pattern, generalized): the
+    emissions written before the listener starts are announced by the
+    BACKFILL (source=backfill) — LISTEN first, then the snapshot; the
+    backfill ends with one reconcile snapshot (the last_seqs the dedup
+    reads). and the DEDUP: a knock whose seq the snapshot already
+    covered yields NOTHING (one emission, one event)."""
     from taskq.workflows.api._progress_listen import (
         ProgressBackfilled,
         ProgressListener,
@@ -219,10 +219,10 @@ async def test_the_listener_backfills_the_zero_window_and_dedups(
         last_seq = snapshot.last_seqs.get(str(node_id))
         assert last_seq is not None and last_seq >= 1
 
-        # A LATE SUBSCRIBER replays the history first (the
+        # A late subscriber replays the history first (the
         # buffer-then-consume behavior), then goes live — the scenario's
         # collector runs until cancelled, so the dedup window and the
-        # fresh knock both land in ONE stream.
+        # fresh knock both land in one stream.
         seen: list[Any] = []
 
         async def _collect_until_cancel() -> None:
@@ -231,8 +231,8 @@ async def test_the_listener_backfills_the_zero_window_and_dedups(
 
         collector = asyncio.create_task(_collect_until_cancel())
         await asyncio.sleep(0.3)  # the history replay lands
-        # THE DEDUP: the covered seq's own knock (the LISTEN→snapshot
-        # race's witness) yields NOTHING.
+        # the covered seq's own knock (the LISTEN→snapshot race's witness)
+        # yields NOTHING.
         await _raw_knock(
             module_pg_schema.pg_dsn,
             _stale_knock_payload(wf_schema, flow_id, node_id, int(last_seq)),
@@ -242,14 +242,14 @@ async def test_the_listener_backfills_the_zero_window_and_dedups(
             "the backfill-covered knock re-announced — the dedup is broken"
         )
 
-        # A FRESH knock (a seq past the snapshot) announces.
+        # A fresh knock (a seq past the snapshot) announces.
         await _raw_knock(
             module_pg_schema.pg_dsn,
             _stale_knock_payload(wf_schema, flow_id, node_id, int(last_seq) + 5000),
         )
 
         async def _wait_fresh() -> None:
-            # THE POLL CADENCE (bounded ticks — the wake
+            # the poll cadence (bounded ticks — the wake
             # condition is the collector's list, not an event this test
             # owns).
             for _tick in range(100):
@@ -292,8 +292,8 @@ async def test_the_listener_fans_out_and_degrades_first(
     wf_sql: Any,
     module_pg_schema: Any,
 ) -> None:
-    """THE FAN-OUT, NOT A PARTITION (P7's law on the push face): two
-    subscribers each see EVERY event. THE COALESCE ORDER (the
+    """The fan-out, not A partition (P7's law on the push face): two
+    subscribers each see every event. the COALESCE ORDER (the
     backpressure's law): the bounded queues drop the OLDEST — the writer
     never blocks, the newest survives, correctness never."""
     from taskq.workflows.api import _progress_listen
@@ -321,15 +321,15 @@ async def test_the_listener_fans_out_and_degrades_first(
         isinstance(e, ProgressUpdated) for e in b
     ), "a shared queue PARTITIONS the stream — each subscriber must see the event"
 
-    # THE COALESCE ORDER: with the queues at the BOUND, the knock
-    # producer NEVER BLOCKS and the OLDEST events are the casualties
-    # (the newest survive — the row is the truth, the poll converges).
+    # with the queues at the bound, the knock producer never blocks and the
+    # oldest events are the casualties (the newest survive — the row is the
+    # truth, the poll converges).
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(_progress_listen, "_QUEUE_MAXSIZE", 2)
         listener2 = ProgressListener(wf_pool, wf_schema, flow_id=flow_id)
         async with listener2:
-            # TEN knocks against queues bound at 2, with the consumer
-            # NOT yet draining — the producer must never await it.
+            # ten knocks against queues bound at 2, with the consumer
+            # not yet draining — the producer must never await it.
             conn = await asyncpg.connect(module_pg_schema.pg_dsn)
             t0 = time.monotonic()
             for seq in range(10):
@@ -339,16 +339,16 @@ async def test_the_listener_fans_out_and_degrades_first(
                 )
             produced = time.monotonic() - t0
             await conn.close()
-            # THE MARGIN (why 5.0 and why still parallel): the pin's
-            # subject is the never-blocks LAW, not a latency band — ten
-            # knocks cost ~ms healthy, and the bound exists only to
-            # fail-stop a producer that AWAITS the bounded queue (which
-            # blocks ~forever). A ~1000x ceiling cannot be crossed by
-            # lane noise, so the serial lane buys nothing.
+            # why 5.0 and why still parallel. the pin's subject is the
+            # never-blocks law, not a latency band — ten knocks cost ~ms
+            # healthy, and the bound exists only to fail-stop a producer that
+            # awaits the bounded queue (which blocks ~forever). A ~1000x
+            # ceiling cannot be crossed by lane noise, so the serial lane buys
+            # nothing.
             assert produced < 5.0, "the producer blocked on the consumer — the law is broken"
-            # THE SETTLE: the pump decodes the raw queue into the bounded
-            # subscriber queues — the drop-oldest runs while nobody
-            # drains; the HEAD of the knock sequence is the casualty.
+            # the pump decodes the raw queue into the bounded subscriber queues
+            # — the drop-oldest runs while nobody drains; the HEAD of the knock
+            # sequence is the casualty.
             await asyncio.sleep(0.5)
             seen: list[Any] = []
 
@@ -359,9 +359,8 @@ async def test_the_listener_fans_out_and_degrades_first(
                         return
 
             await asyncio.wait_for(_collect_two(), timeout=5.0)
-            # THE ORDER: the delivered events are the knock sequence's
-            # TAIL (the head was the drop-oldest's casualty) — the
-            # newest survive.
+            # the delivered events are the knock sequence's tail (the head was
+            # the drop-oldest's casualty) — the newest survive.
             delivered = [e.last_seq for e in seen if isinstance(e, ProgressUpdated)]
             assert delivered and delivered[-1] >= 90005, (
                 f"the delivered seqs {delivered} are not the knock tail — "
@@ -373,7 +372,7 @@ async def test_the_listener_fans_out_and_degrades_first(
 async def test_the_listener_isolates_another_runs_events(
     wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: Any, module_pg_schema: Any
 ) -> None:
-    """ONE RUN'S LISTENER: a listener scoped to flow A drops flow B's
+    """one RUN'S LISTENER: a listener scoped to flow A drops flow B's
     knocks (the run-scoped backfill is bounded; the filter is the
     listener's own)."""
     from taskq.workflows.api._progress_listen import ProgressListener, ProgressUpdated
@@ -405,14 +404,14 @@ async def test_the_listener_isolates_another_runs_events(
     )
 
 
-# ── THE SSE FACE UPGRADED ────────────────────────────────────────────────
+# ── the SSE face upgraded ────────────────────────────────────────────────
 
 
 async def test_the_sse_push_delivers_sub_poll_latency(
     cons3_redlog: RedLog, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: Any
 ) -> None:
-    """THE PUSH PRIMARY: with a listener wired, an emission committed
-    AFTER the stream started delivers its ``progress`` frame well under
+    """The push primary: with a listener wired, an emission committed
+    after the stream started delivers its ``progress`` frame well under
     the poll interval (the poll's round trip is gone). The cursor
     advances; the frames stay the seq-cursor read's own (the read is the
     truth, the push buys latency)."""
@@ -461,12 +460,12 @@ async def test_the_sse_push_delivers_sub_poll_latency(
         delivered = time.monotonic() - t0
         progress_frames = [f for f in frames if f["event"] == "progress"]
         assert progress_frames, "the emission's frame never rode the stream"
-        # THE MARGIN (why 25.0 and why still parallel): the ceiling's job
-        # is the QUALITATIVE split — the push delivers in ~ms, the poll
-        # cadence delivers at ~poll_s=30 — so the bound sits just under
-        # one poll interval, ~1000x the healthy pass. Only the
-        # poll-shaped failure can cross it; lane noise cannot. A serial
-        # home would pin nothing the margin doesn't already.
+        # why 25.0 and why still parallel. the ceiling's job is the qualitative
+        # split — the push delivers in ~ms, the poll cadence delivers at
+        # ~poll_s=30 — so the bound sits just under one poll interval, ~1000x
+        # the healthy pass. Only the poll-shaped failure can cross it; lane
+        # noise cannot. A serial home would pin nothing the margin doesn't
+        # already.
         assert delivered < 25.0, f"delivered in {delivered:.2f}s — the poll interval, not the push"
     finally:
         stop.set()
@@ -477,7 +476,7 @@ async def test_the_sse_push_delivers_sub_poll_latency(
 async def test_the_poll_belt_still_carries_the_frames(
     wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: Any
 ) -> None:
-    """THE FALLBACK BELT: a SILENT listener (the knock never arrives —
+    """The fallback belt: a SILENT listener (the knock never arrives —
     the PgBouncer landmine's shape) degrades to the poll cadence, never
     to silence: the emission's frame still arrives within one poll
     interval. The push is the primary; the belt is the guarantee."""
@@ -515,7 +514,7 @@ async def test_the_poll_belt_still_carries_the_frames(
         await emitter.aclose()
 
         async def _silent_wait(_timeout: float) -> bool:
-            return False  # the knock NEVER arrives — the PgBouncer landmine
+            return False  # the knock never arrives — the PgBouncer landmine
 
         with patch.object(ProgressListener, "wait", _silent_wait):
             frames = await asyncio.wait_for(task, timeout=10.0)
@@ -524,3 +523,39 @@ async def test_the_poll_belt_still_carries_the_frames(
         stop.set()
         with contextlib.suppress(Exception):
             await listener.stop()
+
+
+async def test_a_foreign_flows_notify_knocks_the_wait(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+) -> None:
+    """The knock fires at the RAW notify: a notify the listener's decoder
+    drops (another flow's payload on the global channel) still wakes
+    ``wait()`` — the stream takes its replay read immediately instead of
+    sleeping the poll. The row is the truth; the knock is the freshness."""
+    from taskq.workflows.api._progress_listen import ProgressListener
+    from tests._wf_fixtures import seed_flow
+
+    own_flow = await seed_flow(wf_conn, wf_schema)
+    foreign_flow = await seed_flow(wf_conn, wf_schema)
+    listener = ProgressListener(wf_pool, wf_schema, flow_id=own_flow)
+    async with listener:
+        await asyncio.sleep(0.3)  # the listener's own connect + backfill settles
+        # The backfill's own emissions knock the same event (every emit
+        # sets it); consume that knock first, or the assertion below
+        # reads the stale flag and proves nothing about the foreign
+        # notify.
+        assert await listener.wait(0.6) is True, (
+            "the backfill's own knock must be pending once the listener has settled"
+        )
+        await _raw_knock(
+            module_pg_schema.pg_dsn,
+            _stale_knock_payload(wf_schema, foreign_flow, new_job_id(), 99),
+        )
+        woken = await listener.wait(0.6)
+        assert woken is True, (
+            "a foreign flow's notify must knock the wait (the knock is owed "
+            "at the raw notify, before the decode drops the payload)"
+        )

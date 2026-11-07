@@ -25,13 +25,13 @@ class DynamicsProfile:
     #: Fraction of enrichment calls that fail transiently with a typed
     #: error. The retry ladder must land them.
     flake_rate: float = 0.0
-    #: Fraction of enrichment calls that HANG past the client's declared
+    #: Fraction of enrichment calls that hang past the client's declared
     #: timeout. The timeout face fires; the ladder re-runs the attempt.
     timeout_rate: float = 0.0
     #: Wall-clock jitter the mock API charges per call (seconds).
     latency_min_s: float = 0.0
     latency_max_s: float = 0.0
-    #: THE DECLARED TIMEOUT on the external call (the client's own
+    #: the declared timeout on the external call (the client's own
     #: deadline, enforced with ``asyncio.timeout``).
     enrich_timeout_s: float = 1.0
     #: How far past the declared timeout the hanging calls run before
@@ -50,11 +50,11 @@ class DynamicsProfile:
         }
 
 
-#: The CLEAN profile: the world behaving. The happy-path drill's exact
+#: The clean profile: the world behaving. The happy-path drill's exact
 #: receipt comes from this profile.
 CLEAN_PROFILE = DynamicsProfile(latency_min_s=0.005, latency_max_s=0.02)
 
-#: The ADVERSE profile: 15% transient flake + 5% hangs past the declared
+#: The adverse profile: 15% transient flake + 5% hangs past the declared
 #: timeout + 50-300 ms of realistic jitter. The drills' world.
 ADVERSE_PROFILE = DynamicsProfile(
     flake_rate=0.15,
@@ -79,9 +79,9 @@ def _env_float(name: str, default: float) -> float:
 class LedgerWatchSettings:
     """The service's operational settings (env-tunable, recorded)."""
 
-    #: The HITL approval window (seconds). A HIGH-risk transaction no
+    #: The hitl approval window (seconds). A high-risk transaction no
     #: human approves within the window escalates to the compliance
-    #: queue. The expiry is AT-LEAST (DB-clock deadline + the sweep's
+    #: queue. The expiry is at-least (DB-clock deadline + the sweep's
     #: cadence) — the fail-close is the guarantee, never the precision.
     approval_window_s: float = 300.0
     #: The reconciliation timer's scheduled delay (seconds).
@@ -90,10 +90,10 @@ class LedgerWatchSettings:
     #: adoption's finding F3): the framework's map-item ladder caps at
     #: 3 attempts regardless of this knob (the row carries the wired
     #: value; the ladder does not honor it — evidence in the repo's
-    #: finding ledger), so the DEEP retry budget for transient
-    #: enrichment errors is the CLIENT's own policy below.
+    #: finding ledger), so the deep retry budget for transient
+    #: enrichment errors is the client's own policy below.
     enrich_max_attempts: int = 6
-    #: The client's OWN retry policy for transient enrichment errors
+    #: The client's own retry policy for transient enrichment errors
     #: (in-body: the external-call retries are the product's concern;
     #: each retry is journalled as its own call).
     enrich_client_retries: int = 8

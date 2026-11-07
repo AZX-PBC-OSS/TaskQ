@@ -67,9 +67,9 @@ async def main() -> None:
     ev(check="queues_claimed", lanes=lanes)
 
     hold_id = pending[0].hold_id
-    # THE ROW IS THE WITNESS, BOTH ENDS: the hold's status is read off
-    # the signal row BEFORE the resolve (the pinned-before face) and
-    # again after — the lifecycle is the row's own testimony.
+    # the hold's status is read off the signal row before the resolve (the
+    # pinned-before face) and again after — the lifecycle is the row's own
+    # testimony.
     before_row = await pool.fetchrow(
         f'SELECT status FROM "{SCHEMA}".wf_signals WHERE id = $1',  # noqa: S608  # Why: the schema is the scenario's own constant identifier; the id is bound.
         hold_id,

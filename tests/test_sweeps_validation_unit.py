@@ -1,7 +1,7 @@
 """Unit-level execution of ``backend/_sweeps.py``'s retention sweeps.
 
 The retention sweeps (`sweep_expired_results`, `sweep_expired_events`,
-`sweep_idle_keyed_rows`) previously executed only inside
+`sweep_idle_keyed_rows`) executed only inside
 integration-marked tests, so the SQL *rendering* and the boundary
 validation were unpinned at unit level. Against a stub connection this
 module runs the real function bodies and pins:
@@ -17,7 +17,7 @@ module runs the real function bodies and pins:
   (tests/test_index_audit.py) and the partial-index matches.
 - `sweep_expired_events`' rendered SQL carries the crash-reclaim outbox
   carve-out as a KEEP inside the windowing CTE — the
-  ``NOT (kind = 'state_change' AND COALESCE(detail->>'reason','') =
+  ``not (kind = 'state_change' and COALESCE(detail->>'reason','') =
   'lock_expired')`` predicate — and the outbox age-cap arm carries the
   positive (no-COALESCE) form at ``RECLAIM_OUTBOX_RETENTION_MULTIPLIER x
   retention``. Regression caught: dropping or inverting the KEEP
@@ -26,7 +26,7 @@ module runs the real function bodies and pins:
   EventRetentionGapError tripwire never sees the rows); flipping the
   COALESCE away re-NULLs the predicate and exempts nearly the whole
   table from retention.
-- The validation raises fire BEFORE any SQL reaches the connection:
+- The validation raises fire before any SQL reaches the connection:
   ``timedelta(0)`` retention/horizon (the settings-level disable
   sentinel must never reach a sweep as "delete everything older than
   now"), ``batch_size < 1`` (a silent LIMIT-0 drain stall), and an
@@ -163,7 +163,7 @@ async def test_sweep_expired_events_renders_the_constant_byte_identically(schema
 
 
 async def test_sweep_idle_keyed_rows_renders_both_arms_byte_identically(schema_name: str) -> None:
-    """The keyed-row sweep executes BOTH table arms, each the module
+    """The keyed-row sweep executes both table arms, each the module
     constant, each carrying (horizon, batch_size) in that order.
 
     Regression caught: an arm added to one table but not the other (the
@@ -196,10 +196,10 @@ async def test_sweep_idle_keyed_rows_renders_both_arms_byte_identically(schema_n
 
 async def test_event_ttl_sql_keeps_unconsumed_reclaim_outbox_rows(schema_name: str) -> None:
     """The windowing CTE's KEEP predicate excludes the crash-reclaim
-    outbox slice, and the exclusion sits INSIDE the CTE (the deletable
+    outbox slice, and the exclusion sits inside the CTE (the deletable
     set is filtered before the LIMIT).
 
-    Regression caught: deleting the NOT-predicate makes the ordinary
+    Regression caught: deleting the not-predicate makes the ordinary
     retention arm victimize unconsumed
     ``kind='state_change' / reason='lock_expired'`` rows — a crashed
     worker's reclaim is silently lost while the watermark advances over
@@ -216,13 +216,13 @@ async def test_event_ttl_sql_keeps_unconsumed_reclaim_outbox_rows(schema_name: s
         "NOT (kind = 'state_change' AND COALESCE(detail->>'reason', '') = 'lock_expired')"
     )
     assert keep_predicate in sql, "the outbox carve-out must stay a KEEP in the window"
-    # Split at the CTE HEADER, not the bare name: the leading comment block
+    # Split at the CTE header, not the bare name: the leading comment block
     # mentions "expired_outbox arm" in prose long before the CTE starts.
     cte_body = sql.split("expired_outbox AS MATERIALIZED", 1)[0]
     assert keep_predicate in cte_body, (
         "the KEEP predicate must sit inside the windowing CTE, before the outbox arm"
     )
-    # The outbox age-cap arm keeps the POSITIVE (no-COALESCE) form — it is
+    # The outbox age-cap arm keeps the positive (no-COALESCE) form — it is
     # the verbatim partial-index predicate the planner must match.
     assert "WHERE kind = 'state_change' AND (detail->>'reason') = 'lock_expired'" in sql, (
         "the age-cap arm's positive form is the partial-index match contract"

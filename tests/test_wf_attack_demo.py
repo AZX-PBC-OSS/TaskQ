@@ -1,36 +1,31 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""ATTACK PINS — the demo/examples front (the hostile review of the
-consolidated head af1b8779, demo lane).
+"""The demo/examples' pins — the demo machinery's contracts.
 
-The demo's own machinery was rejected on four LIVE findings and the
-evidence law on a fifth; the ergonomics contract carries an inflated
-claim. Each pin asserts the SAFE behavior, red against the shipped tree,
-strict-xfail until the fix lands (the fix flips the pin to XPASS-
-strict — a red that tells you to remove the marker; the scenario is
+Each pin asserts the SAFE behavior (the scenario is
 test_wf_attack_cancel.py's face C).
 
-* F-DEMO-1 — the demo's drive loop is poisonable by a FOREIGN run:
-  ``_drive_pending`` (examples/workflows.py) drives EVERY running flow
+* the demo's drive loop is poisonable by a FOREIGN run:
+  ``_drive_pending`` (examples/workflows.py) drives every running flow
   with the doc_ingest compiled graph; a foreign-workflow run raises
   WorkflowRunError ("a foreign step key"), aborts the whole pass, and
   starves every later run (the fetch has no ORDER BY) — re-raised and
   re-logged every 0.5 s forever.
-* F-DEMO-2 — the lifespan's ``drive_task.cancel()`` is swallowed by the
+* the lifespan's ``drive_task.cancel()`` is swallowed by the
   ``contextlib.suppress(asyncio.CancelledError)`` inside
   ``_drive_pending``: measured alive 12 s after cancel, still ticking.
-* F-DEMO-3 — the node panel cannot address a map child:
+* the node panel cannot address a map child:
   ``_NODE_PANEL_SQL`` is ``fetchrow WHERE step_key = $1`` with no
   map_index addressing, so the README's promised observation (watch
   doc-doomed's attempt go 1 → 2 in the node panel) is unreachable.
-* F-DEMO-5 — the README's leg-3 "captured verbatim scrape" is a test's
+* the README's leg-3 "captured verbatim scrape" is a test's
   f-string rendering, never scraped: the metric name carries ILLEGAL
   dots for the Prometheus text exposition (the OTel exporter sanitizes
   them) and the label reads ``workflow="None"`` where the sampler's
   documented coalesce is ``_other_``.
-* F-DEMO-6 — the compose stack's workers subscribe only
+* the compose stack's workers subscribe only
   ``TASKQ_QUEUES=examples``: none of the demo's workflow cohort queues,
   so the heterogeneous placement is decorative in the shipped stack.
-* F-ERGO-7 — the "zero-warning budget" is inflated:
+* the "zero-warning budget" is inflated:
   ``CompiledWorkflow.validate()`` raises only on severity=="error"; a
   warning-severity regression sails green.
 
@@ -61,10 +56,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.fastapi]
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-# ── F-DEMO-1: the foreign run poisons the drive pass ─────────────────────
+# ── the foreign run poisons the drive pass ─────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-4(b)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: the live finding
 async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
@@ -83,11 +77,11 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
     async def _the_foreign_body(ctx: StepContext, params: TheForeignInput) -> str:
         return "the foreign lane's own body — never driven by the demo's pass"
 
-    # The FOREIGN run FIRST: the pass's fetch is LIMIT 5 with no ORDER
-    # BY — physical (insertion) order decides who poisons whom. The
-    # foreign run belongs to a THROWAWAY app (a workflow name the demo's
+    # The FOREIGN run first: the pass's fetch is LIMIT 5 with no ORDER
+    # by — physical (insertion) order decides who poisons whom. The
+    # foreign run belongs to a throwaway app (a workflow name the demo's
     # own registry does not carry) — the honest foreign shape: the rows
-    # share the schema, the DEFINITION belongs to another driver.
+    # share the schema, the definition belongs to another driver.
     foreign_app = WorkflowApp()
 
     @foreign_app.workflow("the-foreign-lanes-own-workflow")
@@ -100,12 +94,12 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
     foreign_id = (await foreign_runner.create_flow()).flow_id
     demo_id = (await trigger_run(wf_pool, wf_schema)).flow_id
 
-    # THE PIN: one pass never raises on the foreign run (today:
-    # WorkflowRunError — step 'screen_source' is not in workflow
-    # 'doc_ingest''s compiled graph — 'a foreign step key').
+    # one pass never raises on the foreign run (today: WorkflowRunError — step
+    # 'screen_source' is not in workflow 'doc_ingest''s compiled graph — 'a
+    # foreign step key').
     await _drive_pending(wf_pool, wf_schema)
 
-    # …and the poison run never starves the pass: the demo run ADVANCED.
+    # …and the poison run never starves the pass: the demo run advanced.
     advanced = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key <> '__flow__' "
@@ -116,8 +110,8 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
         "the foreign run starved the pass — the demo run's nodes are all "
         "still pending behind the poisoned drive"
     )
-    # THE NAMED SKIP: some captured event names the foreign run (the
-    # skip/isolation is operator-visible, never silent).
+    # some captured event names the foreign run (the skip/isolation is
+    # operator-visible, never silent).
     assert any(
         "foreign" in str(event.get("event", ""))
         or str(foreign_id) in json.dumps(event, default=str)
@@ -128,7 +122,7 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
     )
 
 
-# ── F-DEMO-2: the swallowed cancellation ─────────────────────────────────
+# ── the swallowed cancellation ─────────────────────────────────
 
 #: The bounded window: a cancellable task must die promptly once
 #: ``cancel()`` lands — the measured defect was alive 12 s later. 5 s is
@@ -136,13 +130,12 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
 _CANCEL_BOUND_S = 5.0
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-4(b)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: the live finding
 async def test_the_drive_task_cancel_completes_within_a_bounded_window(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
     """The app's lifespan cancels the drive task at teardown; the cancel
     must COMPLETE. A bare running flow with no claimable nodes makes
-    every drive pass span the full max_ticks — the cancel lands INSIDE
+    every drive pass span the full max_ticks — the cancel lands inside
     ``runner.drive``, exactly where the suppress sits."""
     from examples.workflows import drive_loop
 
@@ -155,7 +148,7 @@ async def test_the_drive_task_cancel_completes_within_a_bounded_window(
         await asyncio.sleep(1.0)  # land the cancel inside the first drive pass
         task.cancel()
         deadline = time.monotonic() + _CANCEL_BOUND_S
-        while not task.done() and time.monotonic() < deadline:  # noqa: ASYNC110  # Why: the bounded-window poll IS the pin's subject (the cancel's measured completion, the clock's bound asserted after)
+        while not task.done() and time.monotonic() < deadline:  # noqa: ASYNC110  # Why: the bounded-window poll is the pin's subject (the cancel's measured completion, the clock's bound asserted after)
             await asyncio.sleep(0.05)
         assert task.done(), (
             f"the drive task was still ticking {_CANCEL_BOUND_S:.0f}s after "
@@ -165,7 +158,7 @@ async def test_the_drive_task_cancel_completes_within_a_bounded_window(
     finally:
         # Teardown discipline (the suite's loop-leak guard): a cancel
         # lands whenever the task reaches drive_loop's own sleep — poll
-        # until the task is DONE, never leave it pending on the module
+        # until the task is done, never leave it pending on the module
         # loop.
         for _ in range(150):
             if task.done():
@@ -174,10 +167,9 @@ async def test_the_drive_task_cancel_completes_within_a_bounded_window(
             await asyncio.sleep(0.1)
 
 
-# ── F-DEMO-3: the node panel cannot address a map child ──────────────────
+# ── the node panel cannot address a map child ──────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-3]; the marker was removed per the designed flip (the confirmation).
 async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
@@ -185,8 +177,8 @@ async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The README's property 1: watch doc-doomed's attempt go 1 → 2 in
-    the node panel. The panel must address ONE map child by
-    (step_key, map_index) and serve THE FAILING CHILD — its healed
+    the node panel. The panel must address one map child by
+    (step_key, map_index) and serve the FAILING CHILD — its healed
     attempt plus the failed first attempt in its timeline."""
     # The admin router fails closed outside dev (the _dev_env fixture is
     # path-gated to tests/web_admin/; this file sets its own).
@@ -201,14 +193,14 @@ async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
 
     runner = FlowRunner(wf_app.get("doc_ingest"), wf_pool, wf_schema)
     run_id = (await runner.create_flow()).flow_id
-    # Drive until the ARMED child (doc-doomed) heals through its ladder:
+    # Drive until the armed child (doc-doomed) heals through its ladder:
     # attempt 1 failed (the demo's armed transient failure), attempt 2
-    # succeeded — the observation the README promises.
+    # succeeded — the observation the readme promises.
     doomed: Any = None
     deadline = time.monotonic() + 90
     while (
         doomed is None and time.monotonic() < deadline
-    ):  # Why: the condition-not-clock poll IS the fix's shape (the boot-race class's repro) — the bounded milestone poll, never a fixed clock
+    ):  # Why: the condition-not-clock poll is the fix's shape (the boot-race class's repro) — the bounded milestone poll, never a fixed clock
         await runner.tick(run_id)
         doomed = await wf_conn.fetchrow(
             f'SELECT map_index, attempt FROM "{wf_schema}".jobs '
@@ -232,9 +224,9 @@ async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    # THE PIN: the served row IS the addressed child (today the endpoint
-    # cannot address map children at all — fetchrow returns an arbitrary
-    # sibling and the response carries no map_index at all).
+    # the served row is the addressed child (today the endpoint cannot address
+    # map children at all — fetchrow returns an arbitrary sibling and the
+    # response carries no map_index at all).
     assert body.get("map_index") == doomed["map_index"], (
         "the panel served an anonymous map child — no map_index addressing "
         f"(asked for map_index={doomed['map_index']}, got attempt={body.get('attempt')} "
@@ -247,11 +239,11 @@ async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     )
 
 
-# ── F-DEMO-5: the fabricated scrape (the evidence law) ───────────────────
+# ── the fabricated scrape (the evidence law) ───────────────────
 
 #: The Prometheus text exposition format's metric-name and label-name
 #: grammar (prometheus.io/docs/instrumenting/exposition_formats):
-#: ``[a-zA-Z_:][a-zA-Z0-9_:]*`` — DOTS ARE ILLEGAL (the OTel exporter
+#: ``[a-zA-Z_:][a-zA-Z0-9_:]*`` — dots are illegal (the otel exporter
 #: sanitizes ``taskq.wf_progress_nodes_total`` to underscores on the
 #: real /metrics surface; the fabricated artifact kept the dots).
 _PROM_NAME_RE = r"[a-zA-Z_:][a-zA-Z0-9_:]*"
@@ -263,14 +255,13 @@ _PROM_LINE_RE = re.compile(
 )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-5]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: the live finding
 def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> None:
-    """THE EVIDENCE-LAW GUARD: every ``.prom`` artifact under
+    """The evidence-law guard: every ``.prom`` artifact under
     ``.measurements`` must parse as VALID Prometheus text exposition —
     the strict name grammar (the teeth: the illegal-dots name reds
-    today) AND the official client parser's label grammar.
+    today) and the official client parser's label grammar.
 
-    THE GUARD GENERATES ITS OWN SUBJECT (the state-not-clock law: a
+    A
     guard tests the VALIDATOR, never the estate's leftovers): the valid
     exposition's shapes and the rejected illegal-dots shape are minted
     in *tmp_path* and driven through the same validator the estate walk
@@ -279,7 +270,7 @@ def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> N
     it is not — are the BELT, scanned when present, never the subject:
     in CI the estate does not ride the checkout, and the band writers'
     runtime-created registry must not mask the guard's own teeth (the
-    lost-subject red of run 38351644136's 3.14 leg)."""
+    lost-subject red the guard's own estate walk once produced)."""
     from tests import _evidence as _evidence
 
     violations: list[str] = []
@@ -302,10 +293,10 @@ def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> N
         except Exception as exc:
             violations.append(f"{rel}: parser refused: {exc}")
 
-    # THE GUARD'S OWN SUBJECT, minted: the exposition's honest shapes —
-    # a plain gauge, labels, the dot-carrying ORIGINAL name POST-sanitize
-    # (what the real exporter ships), a comment, a NaN, an explicit
-    # timestamp. Every one must green.
+    # the guard's own subject, minted: the exposition's honest shapes — a plain
+    # gauge, labels, the dot-carrying original name post-sanitize (what the
+    # real exporter ships), a comment, a NaN, an explicit timestamp. Every one
+    # must green.
     good_artifact = "\n".join(
         [
             "# a shape-honest fabricated scrape (the guard's own subject)",
@@ -322,9 +313,9 @@ def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> N
         "validator's teeth are miscalibrated:\n" + "\n".join(subject_violations)
     )
 
-    # THE TEETH: the rejected illegal-dots name MUST red (the finding
-    # that minted this guard — dots are illegal in the exposition
-    # grammar; the validator that greens one is the fabrication-enabler).
+    # the rejected illegal-dots name must red (the finding that minted this
+    # guard — dots are illegal in the exposition grammar; the validator that
+    # greens one is the fabrication-enabler).
     _validate("the-illegal-dots-shape.prom", "taskq.wf_progress_nodes_total 1.0\n")
     teeth = [v for v in violations if v.startswith("the-illegal-dots-shape.prom")]
     assert teeth, (
@@ -333,11 +324,11 @@ def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> N
     )
     violations = [v for v in violations if not v.startswith("the-illegal-dots-shape.prom")]
 
-    # THE BELT: the estate's real artifacts, scanned when present. The
-    # estate's home is decided by its INDEX (the claims registry), never
-    # by the directory's existence; no local registry → the EVIDENCE
-    # BRANCH's ls-tree/show face. Neither present (the CI face) is
-    # HONEST here — the subject above is the guard's own.
+    # the estate's real artifacts, scanned when present. The estate's home is
+    # decided by its INDEX (the claims registry), never by the directory's
+    # existence; no local registry → the evidence branch's ls-tree/show face.
+    # Neither present (the CI face) is honest here — the subject above is the
+    # guard's own.
     measurements = REPO_ROOT / ".measurements"
     artifacts: list[tuple[str, str]] = []  # (rel path, content)
     if (measurements / "runs" / "CLAIMS.json").is_file():
@@ -357,10 +348,9 @@ def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> N
     )
 
 
-# ── F-DEMO-6: the compose stack's decorative placement ───────────────────
+# ── the compose stack's decorative placement ───────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-DEMO-6: the compose workers subscribe the demo's declared cohorts + the default queue]; the marker was removed per the designed flip (the confirmation).
 def test_the_compose_workers_subscribe_the_demos_declared_queues() -> None:
     """The wiring truth: every queue the demo's workflows DECLARE must be
     SUBSCRIBED by the shipped compose stack's workers — else the
@@ -400,7 +390,7 @@ def test_the_compose_workers_subscribe_the_demos_declared_queues() -> None:
     )
 
 
-# ── F-ERGO-7: the inflated zero-warning budget ───────────────────────────
+# ── the inflated zero-warning budget ───────────────────────────
 
 
 class _Verdict(BaseModel):
@@ -412,18 +402,18 @@ class _WarnIn(BaseModel):
 
 
 async def _wait_body(ctx: StepContext, params: _WarnIn) -> object:
-    # E14's law: the declared gate's body WAITS on it (the W1 carrier's
+    # E14's law: the declared gate's body waits on it (the W1 carrier's
     # hold seat needs its waiter — a declared-never-waited gate is the
     # E14 build refusal, not a warning carrier).
     return await ctx.wait_signal((_Verdict,), timeout_s=None)
 
 
-async def _unannotated_body(ctx: Any, params: Any):  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType, reportMissingReturnType, reportUnknownReturnType]  # Why: THE PROBE — the unannotated return IS the mutation under test (E4's carrier); the root pyproject's tests relaxation would mute it.
+async def _unannotated_body(ctx: Any, params: Any):  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType, reportMissingReturnType, reportUnknownReturnType]  # Why: the probe — the unannotated return is the mutation under test (E4's carrier); the root pyproject's tests relaxation would mute it.
     return "ok"
 
 
 def test_validate_refuses_a_warning_carrying_graph() -> None:
-    """The zero-warning budget, made real: a graph carrying ANY
+    """The zero-warning budget, made real: a graph carrying any
     warning-severity finding must FAIL validate(). The carrier is a W1
     eternal wait (a gate with no declared timeout) — proven non-vacuous
     by the diagnostics assertion first."""
@@ -438,21 +428,19 @@ def test_validate_refuses_a_warning_carrying_graph() -> None:
     from taskq.workflows.api._validate import WorkflowValidationError, validate_compiled
 
     diagnostics = validate_compiled(compiled)
-    # THE CARRIER IS REAL: warnings and ONLY warnings (an error would
-    # make the raises-block green for the wrong reason).
+    # warnings and only warnings (an error would make the raises-block green
+    # for the wrong reason).
     assert diagnostics, "the W1 carrier produced no diagnostics — the pin is vacuous"
     assert all(d.severity == "warning" for d in diagnostics), diagnostics
-    # THE SHIPPED SEMANTICS (F-ERGO-7's resolution — the claim re-worded
-    # to what the door DOES): validate() RAISES on the error severity
-    # (the runner's construction door); the WARNINGS REPORT in the
-    # diagnostics — the zero-warning budget is enforced by the CONTRACT
-    # PINS' ``diagnostics == ()`` teeth (test_wf_ergonomics_contract's
-    # own asserts), not by a raise. The pin now holds the honest shape:
-    # the warning REPORTS (never silently swallowed) AND the error
-    # REFUSES. The error carrier is a graph that BUILDS and FAILS
-    # VALIDATION (E4's unannotated param — the arity lie the door owns);
-    # the build-refused shapes (the empty gather) refuse at the VERB,
-    # a different seam with its own pins.
+    # validate() raises on the error severity (the runner's construction door);
+    # the warnings report in the diagnostics — the zero-warning budget is
+    # enforced by the contract pins' ``diagnostics == ()`` teeth
+    # (test_wf_ergonomics_contract's own asserts), not by a raise. The pin now
+    # holds the honest shape: the warning reports (never silently swallowed)
+    # and the error refuses. The error carrier is a graph that builds and fails
+    # validation (E4's unannotated param — the arity lie the door owns); the
+    # build-refused shapes (the empty gather) refuse at the verb, a different
+    # seam with its own pins.
     error_carrier_app = WorkflowApp()
 
     @error_carrier_app.workflow("att_demopin_error_flow")
@@ -463,26 +451,26 @@ def test_validate_refuses_a_warning_carrying_graph() -> None:
         error_carrier_app.get("att_demopin_error_flow").validate()
 
 
-# ── GREEN GUARD: the two-driver one-schema drive race ────────────────────
+# ── green guard: the two-driver one-schema drive race ────────────────────
 
 
 @pytest.mark.load_sensitive
 async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
-    """GREEN GUARD (verified by the front, encoded so it can't rot): two
+    """GREEN GUARD (verified, encoded so it can't rot): two
     FlowRunner processes' worth of driver — one schema, one run, driven
     CONCURRENTLY through the hold and the resolve to terminal — the
     ledger's claim arbiter and the join-fire arbiter hold: ZERO
-    duplicate (step_key, map_index, attempt) ledger groups, EXACTLY ONE
+    duplicate (step_key, map_index, attempt) ledger groups, EXACTLY one
     wf_join_fire row per join, the root succeeded.
 
-    THE LOADED-BAR LAW'S MARK (load_sensitive — CI's serial exclusive
+    the LOADED-BAR LAW'S MARK (load_sensitive — CI's serial exclusive
     lane owns it): the pin's subject is a CONTENTION race (two real
     drivers, one run, the arbiter's teeth), and under the co-tenant
     lanes' ambient load the whole drive window can starve — both
     drivers' work-bounded ticks spent on the sweeps under sweeps — and
-    the gather lands ['max_ticks', 'max_ticks'] on the SAME tree that
+    the gather lands ['max_ticks', 'max_ticks'] on the same tree that
     greens in 0.7 s unloaded (the bisect that chased it dissolved on
     re-run). The arbiter's exactness — the assertions below — held in
     every green run; the starved window is the load, not the record."""

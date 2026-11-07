@@ -1,6 +1,6 @@
 """The body-hint resolution seam (one home): the compile's compatibility
 rule (E5) and the runner's payload codec (the typed boundary) read the
-SAME resolution — a body's annotations, RESOLVED (modules run under
+same resolution — a body's annotations, RESOLVED (modules run under
 ``from __future__ import annotations``, so every annotation arrives a
 string). A name the function's globals cannot resolve is looked up in the
 body's CLOSURE (a locally-declared model the body captured — the wiring
@@ -39,7 +39,7 @@ def inner_fn(body: object) -> object:
     so the ANNOTATION reads (E4/E9's faces) work through it — but the
     SOURCE reads (``inspect.getsource``) refuse an instance outright
     ("code object was expected, got WorkflowActor" — the stamp loss the
-    teardown round rejected). This seam is the ONE unwrap: the
+    teardown round rejected). This seam is the one unwrap: the
     validator's static walk and the runner's code-version stamper read
     through it, never around it."""
     from taskq.workflows.api._app import WorkflowActor
@@ -50,14 +50,14 @@ def inner_fn(body: object) -> object:
 
 
 def own_source(body: object) -> str | None:
-    """The body's OWN source text, VERIFIED (the source reads' one home):
+    """The body's own source text, VERIFIED (the source reads' one home):
     ``inspect.getsource`` unwrapped (:func:`inner_fn`), dedented — and
     the slice PROVEN to be this function's.
 
-    THE SLICE-IDENTITY GUARD (the teardown round's doc-fence
+    the SLICE-IDENTITY GUARD (the teardown round's doc-fence
     finding): a body defined by ``exec(code, FENCE_PATH)`` (the docs
     fences) carries the .md's filename and a ``co_firstlineno`` in the
-    .md's OWN line numbering, not the extracted code's — the re-sliced
+    .md's own line numbering, not the extracted code's — the re-sliced
     text is PROSE (a one-line fragment, the bash fence's text): the
     wrong slice either fails the tokenizer loudly or — the dangerous
     half — PARSES as a fragment nobody can reproduce. The guard demands
@@ -66,9 +66,9 @@ def own_source(body: object) -> str | None:
     is never rejected, a prose stamp is never written)."""
     fn = inner_fn(body)
     try:
-        # The callable-shaped cast IS the seam's boundary: the source
+        # The callable-shaped cast is the seam's boundary: the source
         # reader refuses every non-sourceable shape (builtin, partial,
-        # the wrapper) — the TypeError IS the skip's face.
+        # the wrapper) — the TypeError is the skip's face.
         source = inspect.getsource(cast("Callable[..., object]", fn))
         dedented = textwrap.dedent(source)
         name = getattr(fn, "__name__", "")
@@ -91,17 +91,17 @@ def own_source(body: object) -> str | None:
 
 
 def ctx_input_reads(body: object) -> bool | None:
-    """THE BODY'S STATIC ``ctx.input`` READ (the cross-run cache's
+    """the BODY'S STATIC ``ctx.input`` READ (the cross-run cache's
     address-scope fence): an AST walk over the body's own source —
     ``True`` when any ``<ctx>.input`` attribute chain appears (the ctx
     parameter's own name read first: the runner invokes the body
     ``body(ctx, …)`` first-positional), ``False`` when none does,
-    ``None`` when the source is NOT readable (a builtin, a partial, an
+    ``None`` when the source is not readable (a builtin, a partial, an
     exec'd fragment — the caller SKIPS: the zero-false-positive
     doctrine, a guess is never rejected).
 
-    THE SCAN IS CRUDE, ON PURPOSE (the declared boundary): it reads the
-    body's OWN source only — a helper the body calls may read
+    It reads the
+    body's own source only — a helper the body calls may read
     ``ctx.input`` unseen (the same closure boundary the address's
     helper-closure law states), and an aliased ctx (``c = ctx`` then
     ``c.input``) reads unseen. The wiring refusal names the fix

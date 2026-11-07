@@ -38,38 +38,38 @@ logger = get_logger(__name__)
 type CloseEventFamily = Literal["teardown", "mid_run", "drain"]
 
 # Bounds every TaskQ-initiated graceful close (pools, dedicated conns,
-# redis) on teardown AND mid-run error paths. The bound is PER-RESOURCE and
-# exit stacks unwind SEQUENTIALLY, so the per-resource bound multiplies.
+# redis) on teardown and mid-run error paths. The bound is per-resource and
+# exit stacks unwind sequentially, so the per-resource bound multiplies.
 # See worst_case_teardown_tail() below for the modelled total and for why
 # it is additive on top of the shutdown phase graces rather than inside
 # them. WorkerSettings surfaces the consequence at startup
 # (`shutdown-budget-exceeds-termination-grace`).
 CLOSE_TIMEOUT_SECS: float = 5.0
 
-# Bounded closes that unwind SEQUENTIALLY on the worker's AsyncExitStack:
+# Bounded closes that unwind sequentially on the worker's AsyncExitStack:
 # up to 4 pools (dispatcher, heartbeat, worker, and the conditional
 # per-slot transaction pool) + notify_conn + redis_client + the two
 # credential providers (pg, redis) a provider-backed deployment resolves.
 #
-# The slot pool is conditional (it exists only when a LOOP-scope
+# The slot pool is conditional (it exists only when a loop-scope
 # connection is registered and max_concurrency > 1), but this constant
-# models the WORST case, a deployment's SIGTERM budget must not be
+# models the worst case, a deployment's SIGTERM budget must not be
 # silently short one close timeout because its worker happens to run
 # the per-slot path. The providers follow the same rule: a managed-
 # identity deployment resolves at most one pg provider and one redis
 # provider, and each is closed once, after every resource built through
 # it (open_worker_deps pushes them first so they unwind last).
 #
-# Scope note: this models the BOOT-time stack. Each credential reload
+# Scope note: this models the boot-time stack. Each credential reload
 # pushes one more bounded close per factory-backed pool onto the same
 # stack, so a worker that has rotated K times unwinds (this count + K)
 # sequential closes, a pre-existing property of the reload
 # registration pattern, shared by the role pools; size crash budgets on
 # rotation-heavy deployments accordingly.
 #
-# The leader connection is deliberately NOT counted. orchestrate_shutdown
+# The leader connection is deliberately not counted. orchestrate_shutdown
 # closes and nulls it before the stack unwinds, so the stack's own
-# leader guard sees None and skips -- and that close runs CONCURRENTLY
+# leader guard sees None and skips -- and that close runs concurrently
 # with the unwind rather than before it, because the orchestrator task is
 # awaited outside the `async with open_worker_deps` block. Counting it
 # would overstate the SIGTERM tail by one close.
@@ -118,7 +118,7 @@ async def close_pool_bounded(
 ) -> None:
     """Close a pool during final teardown, bounded by ``close_timeout``.
 
-    NEVER raises: on timeout the pool is *terminated*, ``close()`` waits
+    never raises: on timeout the pool is *terminated*, ``close()`` waits
     for checked-out connections to be released, which a dead PG can block
     indefinitely (the CI chaos hang this helper exists to prevent), so
     ``terminate()`` kills them immediately. Any other error is logged and

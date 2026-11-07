@@ -215,7 +215,7 @@ def _pg_singleton_args(
         # None = immediate: the enqueue SQL stamps the server clock and
         # decides status in the same statement. A Python-clock stamp sits
         # ahead of the database clock by the app-to-DB skew, so the status
-        # CASE can land the row 'scheduled' under load - a race this seed
+        # case can land the row 'scheduled' under load - a race this seed
         # has no reason to take.
         scheduled_at=None,
         metadata={"singleton": True},
@@ -240,7 +240,7 @@ def _pg_non_singleton_args(
         # None = immediate: the enqueue SQL stamps the server clock and
         # decides status in the same statement. A Python-clock stamp sits
         # ahead of the database clock by the app-to-DB skew, so the status
-        # CASE can land the row 'scheduled' under load - a race this seed
+        # case can land the row 'scheduled' under load - a race this seed
         # has no reason to take.
         scheduled_at=None,
         idempotency_key=IdempotencyKey(idempotency_key) if idempotency_key is not None else None,
@@ -692,7 +692,7 @@ async def test_property_singleton_invariant_pg(
                             # None = immediate: the enqueue SQL stamps the server clock and
                             # decides status in the same statement. A Python-clock stamp sits
                             # ahead of the database clock by the app-to-DB skew, so the status
-                            # CASE can land the row 'scheduled' under load - a race this seed
+                            # case can land the row 'scheduled' under load - a race this seed
                             # has no reason to take.
                             scheduled_at=None,
                             metadata={"singleton": True},
@@ -740,3 +740,75 @@ async def test_property_singleton_invariant_pg(
     finally:
         async with deps.worker_pool.acquire() as conn:
             await conn.execute(f'DELETE FROM "{schema}".jobs WHERE actor = $1', actor)
+
+
+# ── The mock-subtraction conversions (the fake arms' survivors) ────────
+
+
+async def test_singleton_collision_retry_after_arms_on_real_pg(
+    clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
+) -> None:
+    """The singleton preflight collision's retry_after, on the REAL
+    preflight: a blocking row with a future schedule_to_close yields a
+    positive retry_after near the deadline; a blocking row with no
+    deadline yields retry_after=None - there is no recovery time to
+    report.
+
+    (Converted from tests/test_enqueue_coverage.py's fake arms in the
+    mock-subtraction cure: the fakes scripted the blocking row; this
+    blocks on a real row.)"""
+    deps, backend = clean_jobs_app
+    schema = deps.settings.schema_name
+
+    actor_deadline = "singleton_retry_deadline"
+    close_at = datetime.now(UTC) + timedelta(minutes=5)
+    await backend.enqueue(_pg_singleton_args(actor=actor_deadline, schedule_to_close=close_at))
+    with pytest.raises(SingletonCollisionError) as with_deadline:
+        await backend.enqueue(_pg_singleton_args(actor=actor_deadline))
+    assert with_deadline.value.retry_after is not None
+    assert 0 < with_deadline.value.retry_after.total_seconds() <= 300
+
+    actor_no_deadline = "singleton_retry_no_deadline"
+    await backend.enqueue(_pg_singleton_args(actor=actor_no_deadline))
+    with pytest.raises(SingletonCollisionError) as no_deadline:
+        await backend.enqueue(_pg_singleton_args(actor=actor_no_deadline))
+    assert no_deadline.value.retry_after is None, (
+        "a blocking row with no schedule_to_close has no recovery time - "
+        "a positive retry_after here would promise an unblock that never comes"
+    )
+
+    async with deps.worker_pool.acquire() as conn:
+        for actor in (actor_deadline, actor_no_deadline):
+            await conn.execute(f'DELETE FROM "{schema}".jobs WHERE actor = $1', actor)
+
+
+async def test_result_ttl_stamps_result_expires_at(
+    clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
+) -> None:
+    """A result_ttl enqueue stamps result_expires_at = the server's
+    finished-bound from the INSERT itself; the wake is the INSERT
+    trigger's (no app-side pg_notify statement runs)."""
+    deps, backend = clean_jobs_app
+    schema = deps.settings.schema_name
+
+    from taskq.backend._protocol import EnqueueArgs
+
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor="result_ttl_actor",
+        queue="default",
+        payload={},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=None,
+        result_ttl=timedelta(hours=1),
+    )
+    row = await backend.enqueue(args)
+    assert row.result_expires_at is not None, "the INSERT must stamp the expiry"
+
+    async with deps.worker_pool.acquire() as conn:
+        stored = await conn.fetchval(
+            f'SELECT result_expires_at FROM "{schema}".jobs WHERE id = $1', row.id
+        )
+    assert stored is not None, "the stamp must reach the row, not just the handle"
+    assert stored > datetime.now(UTC) - timedelta(minutes=1)

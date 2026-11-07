@@ -111,7 +111,7 @@ async def test_shutdown_force_kills_a_child_that_ignores_sigterm(tmp_path: Path)
 
     from taskq.worker.workgroup import run_forever
 
-    # Captured BEFORE the loop patch below: inside the with-block
+    # Captured before the loop patch below: inside the with-block
     # asyncio.get_running_loop() is a MagicMock, so all timing reads
     # go through this real reference.
     loop = asyncio.get_running_loop()
@@ -134,7 +134,7 @@ async def test_shutdown_force_kills_a_child_that_ignores_sigterm(tmp_path: Path)
 
             # Trigger the real shutdown path: the captured handler is the
             # production _on_signal closure installed by run_forever. Wait
-            # for the child's ready handshake FIRST so the forwarded SIGTERM
+            # for the child's ready handshake first so the forwarded SIGTERM
             # is guaranteed to hit armed traps, not the default disposition.
             deadline = loop.time() + 5.0
             while not (marker.exists() and marker.read_text() == "ready"):

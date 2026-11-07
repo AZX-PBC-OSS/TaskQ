@@ -59,14 +59,14 @@ STATS_WINDOWS: dict[str, timedelta] = {
     "30d": timedelta(days=30),
 }
 
-# The terminal-status IN list for the live side of the UNION, rendered
+# The terminal-status in list for the live side of the union, rendered
 # from the admin constants' closed set so a status added there follows
 # without a second hand-maintained literal.
 _TERMINAL_IN = ", ".join(f"'{s}'" for s in sorted(_TERMINAL_STATUSES))
 
 # Per-actor (optionally per-(actor, queue)) executor totals over the
-# archive UNION the live terminal population. Both sides select the same
-# six columns so the UNION's shape is one definition; {queue_col} /
+# archive union the live terminal population. Both sides select the same
+# six columns so the union's shape is one definition; {queue_col} /
 # {queue_group} carry the queue column for the per-queue contract of the
 # JSON endpoint (the actors page drops them and groups by actor alone).
 # The join fans one row per attempt, so total counts attempts (one per
@@ -75,7 +75,7 @@ _TERMINAL_IN = ", ".join(f"'{s}'" for s in sorted(_TERMINAL_STATUSES))
 # finished_at the actor has on either side, so "is this actor still
 # working" reads off the row without a second query.
 # ``last_error_class`` is the error_class of the actor's most recent
-# row that carries one (ordered by finished_at DESC NULLS LAST) - the
+# row that carries one (ordered by finished_at desc nulls last) - the
 # job row's own error_class, which every terminal failure path stamps
 # (the classifier's exception name, WorkerCrashed on reclaim,
 # DeadlineExceeded on the deadline sweep), so "what is this actor dying
@@ -116,13 +116,13 @@ GROUP BY u.actor{{queue_group}}
 ORDER BY total DESC
 LIMIT {STATS_LIMIT}"""
 
-#: The window bound's comparison, shared by both sides of the UNION;
+#: The window bound's comparison, shared by both sides of the union;
 #: each side prefixes it with its own keyword (the archive side's only
 #: predicate is ``WHERE``, the live side already filters terminal
-#: statuses so it composes with ``AND``). statement_timestamp() (STABLE)
+#: statuses so it composes with ``and``). statement_timestamp() (stable)
 #: keeps the bound an Index Cond on both sides' finished_at indexes:
 #: see the module docstring for why an aggregate must not take the
-#: VOLATILE form the LIMIT-ed list reads tolerate.
+#: volatile form the LIMIT-ed list reads tolerate.
 _WINDOW_BOUND = "j.finished_at >= statement_timestamp() - $1::interval"
 
 

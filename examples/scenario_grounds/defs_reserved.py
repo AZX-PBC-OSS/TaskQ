@@ -1,6 +1,6 @@
 """Scenario 4's definitions: two stages share two rendering seats.
 
-The workflow's step and a competing plain actor declare the SAME
+The workflow's step and a competing plain actor declare the same
 concurrency reservation (``grounds_scene_slots``, two slots). The
 plain actor is the seat-holder the scenario races against; the
 workflow's step has to wait for it to stand up."""

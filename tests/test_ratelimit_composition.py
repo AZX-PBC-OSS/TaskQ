@@ -1,4 +1,4 @@
-"""Unit tests for AND-composition: acquire_for_actor / release_for_actor.
+"""Unit tests for and-composition: acquire_for_actor / release_for_actor.
 
 Tests through and.
 All tests use in-memory backends (``backend="memory"``) with ``FakeClock``
@@ -154,7 +154,7 @@ async def test_rate_limit_failure_triggers_rollback() -> None:
     assert slot.job_id is None
 
 
-# ── Rollback failure - one release raises; ERROR logged ─────────
+# ── Rollback failure - one release raises; error logged ─────────
 
 
 async def test_rollback_failure_error_logged() -> None:
@@ -194,11 +194,11 @@ async def test_rollback_failure_error_logged() -> None:
     assert slot.job_id is None
 
 
-# ── Rate-limit tokens NOT refunded after actor success ──────────
+# ── Rate-limit tokens not refunded after actor success ──────────
 
 
 async def test_tokens_not_refunded_after_actor_success() -> None:
-    """Rate-limit tokens NOT refunded; reservation released."""
+    """Rate-limit tokens not refunded; reservation released."""
     clock = FakeClock(_START)
     reg, _ = _setup_registry(clock)
 

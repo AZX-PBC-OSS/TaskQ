@@ -6,7 +6,7 @@ Scenario:
 which snoozes (raises ``Snooze``) until all children reach terminal status,
 then records a ``finalized`` effect with the completion counts.
 
-The finalizer is NOT counted as a child - ``wait_for_batch`` excludes the
+The finalizer is not counted as a child - ``wait_for_batch`` excludes the
 finalizer job via the batch row's ``finalizer_job_id``.  So ``total == 5``
 (children only), not 6 (children + finalizer).
 

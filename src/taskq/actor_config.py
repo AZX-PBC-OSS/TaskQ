@@ -83,7 +83,7 @@ class ActorConfig:
     # The declared retry curve, seeded on the row's first create so the
     # server-side enqueue paths (cron fires, admin run-now) re-pend on the
     # curve the actor declared. None never reaches here (the ref's retry
-    # is a full RetryPolicy); the COLUMNS are nullable for the rows that
+    # is a full RetryPolicy); the columns are nullable for the rows that
     # predate the migration.
     retry_base: timedelta | None = None
     retry_cap: timedelta | None = None
@@ -100,17 +100,16 @@ class ActorConfig:
     # ref's validated values explicitly.
     max_attempts: int = 3
     retry_kind: str = "transient"
-    # THE CAPACITY OWNER (the ``capacity_owner`` opt-in): who owns the capacity columns
-    # once this row exists. "operator" (the default) is today's law —
-    # the stored value survives every subsequent upsert untouched.
-    # "code" hands max_concurrent/result_ttl to the declaration: the
-    # upsert's SET clause rewrites them from THIS carrier's literal on
-    # every boot. The queue and max_pending stay operator-owned for BOTH
-    # owners (the queue's move-queue law; max_pending's enforcement is
-    # the producer-side enqueue admission reading the stored row).
-    # Plain ``str`` (the retry_kind shape): the two owner names are the
-    # decorators' static door (``CapacityOwner``) + their shared runtime
-    # validation; the carrier just carries.
+    # who owns the capacity columns once this row exists. "operator" (the
+    # default) is today's law — the stored value survives every subsequent
+    # upsert untouched. "code" hands max_concurrent/result_ttl to the
+    # declaration: the upsert's set clause rewrites them from this carrier's
+    # literal on every boot. The queue and max_pending stay operator-owned for
+    # both owners (the queue's move-queue law; max_pending's enforcement is the
+    # producer-side enqueue admission reading the stored row). Plain ``str``
+    # (the retry_kind shape): the two owner names are the decorators' static
+    # door (``CapacityOwner``) + their shared runtime validation; the carrier
+    # just carries.
     capacity_owner: str = "operator"
 
     def __post_init__(self) -> None:

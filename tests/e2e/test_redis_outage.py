@@ -1,7 +1,7 @@
 """Redis outage chaos e2e - stop Dragonfly mid-run, verify graceful degradation.
 
 Scenario: a worker running rate-limited jobs loses its Dragonfly (Redis)
-container mid-run. The worker must NOT crash catastrophically: rate-limited
+container mid-run. The worker must not crash catastrophically: rate-limited
 jobs should snooze/requeue (the token-bucket acquisition fails, the
 consumer routes to ``mark_snoozed`` which re-schedules without consuming
 retry budget). When Dragonfly returns, normal operation resumes - a fresh
@@ -87,7 +87,7 @@ _RECOVERY_TIMEOUT = 120.0
 # acquisition reconnects inside the retry budget (backoff base 0.02s, cap
 # 0.1s, 1 attempt - see taskq._redis_client.RETRY_RETRIES for why one) and
 # the job completes in one rate window. Without them the acquisition fails
-# closed (snoozed 5s) AND the dependency-failure WARNING fires - the
+# closed (snoozed 5s) and the dependency-failure warning fires - the
 # warning is the red/green discriminator, the window is the
 # operator-facing promise.
 _DROP_RECOVERY_WINDOW = 30.0
@@ -313,7 +313,7 @@ async def test_redis_outage_degrades_gracefully(
     (b) Stop the chaos Dragonfly container. Enqueue 3 more rate-limited
     jobs. These jobs cannot acquire a token (Redis connection refused), so
     the consumer routes them to ``mark_snoozed`` - they return to
-    ``scheduled`` without consuming retry budget. The worker must NOT
+    ``scheduled`` without consuming retry budget. The worker must not
     crash: verify the container is still running.
 
     (c) Restart Dragonfly. The snoozed jobs re-dispatch on the next
@@ -353,7 +353,7 @@ async def test_redis_outage_degrades_gracefully(
         for i in range(3)
     ]
 
-    # The worker must NOT crash - verify it's still running after a short
+    # The worker must not crash - verify it's still running after a short
     # settling period.
     await asyncio.sleep(2.0)
     wrapped_worker = chaos_worker.container.get_wrapped_container()
@@ -391,7 +391,7 @@ async def test_redis_outage_degrades_gracefully(
 
     # Verify every job delivered, by job rather than by raw count.
     #
-    # TaskQ executes jobs AT-LEAST-ONCE: an unrenewed lock is reclaimed after
+    # TaskQ executes jobs at-least-once: an unrenewed lock is reclaimed after
     # `lock_lease` and the reclaim sweep puts a retryable job back to 'pending'
     # (_SWEEP_1_SQL), so a worker starved of CPU past its lease runs its job
     # again. `deliver_webhook` appends an effect row per execution, so a
@@ -423,7 +423,7 @@ async def test_redis_outage_degrades_gracefully(
     assert recovery_effects, "the post-recovery job must have run at least once"
 
 
-# ── Helpers for the CLIENT KILL drop scenarios ────────────────────────────
+# ── Helpers for the client kill drop scenarios ────────────────────────────
 
 
 def _kill_all_normal_clients(chaos_df: ChaosDf, chaos_schema: ChaosSchema) -> None:
@@ -478,7 +478,7 @@ async def test_client_kill_pooled_drop_completes_in_window_without_dependency_fa
 ) -> None:
     """``CLIENT KILL`` severs the worker's ESTABLISHED redis connections
     (Dragonfly never idle-closes, so the drop is injected) and the next
-    rate-limited job must still complete in-window with NO redis-level
+    rate-limited job must still complete in-window with no redis-level
     WARNING.
 
     Red before the resilience defaults: the token acquisition rides a dead
@@ -506,7 +506,7 @@ async def test_client_kill_pooled_drop_completes_in_window_without_dependency_fa
     _kill_all_normal_clients(chaos_df, chaos_schema)
 
     # The next rate-limited job: acquisition rides a (now dead) pooled
-    # connection. In-window completion + no new dependency-failure WARNING.
+    # connection. In-window completion + no new dependency-failure warning.
     drop_handle = await chaos_client.enqueue(
         deliver_webhook,
         DeliverWebhookPayload(run_id=f"{run_id}-drop", endpoint_id="ep-drop"),
@@ -515,7 +515,7 @@ async def test_client_kill_pooled_drop_completes_in_window_without_dependency_fa
 
     logs_after = _worker_logs(chaos_worker)
     for noise_line in (
-        "rate-limit-dependency-failure",  # the fail-closed snooze's WARNING
+        "rate-limit-dependency-failure",  # the fail-closed snooze's warning
         "rate-limit-redis-transient-retry",  # the limiter's own weathering budget
         "progress-publish-failure",  # the worker's terminal-publish noise
     ):

@@ -81,7 +81,7 @@ async def test_row_budget_is_the_enqueue_declaration_the_stub_never_moves() -> N
 async def test_stub_registered_after_enqueue_never_moves_the_row_budget() -> None:
     """The row's budget is a bound: a stub registered after the enqueue
     cannot move it. The row carries the ref's enqueue-time stamp (5) and
-    runs to it; only a stub registered BEFORE the enqueue stamps the row
+    runs to it; only a stub registered before the enqueue stamps the row
     (at enqueue time, via _apply_stub_retry_override). Re-stamping at
     dispatch would let a test-side registration overwrite a ceiling a
     test deliberately seeded, breaking the max_attempts-never-moves

@@ -1,7 +1,7 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE WF START_TO_CLOSE PINS — the step deadline's declaration + enforcement, failing-first.
+"""The wf start_to_close pins — the step deadline's declaration + enforcement, .
 
-THE RECORDED FINDING: the vanilla machinery EXISTS end to end — the ``jobs``
+The vanilla machinery EXISTS end to end — the ``jobs``
 table's ``start_to_close interval`` column (``migrations/
 01.00.00_01_pre_initial.sql``:85, nullable, no default), the enforcement
 (``worker/_consumer.py``'s ``_enforce_start_to_close`` — the #791
@@ -13,12 +13,12 @@ runner's body execution (``FlowRunner.run_fleet_claimed_step`` →
 ``_execute_claimed`` → the body invocation) never called it: a claimed wf
 step that hangs lives forever.
 
-THE DESIGN (plumbing, not new machinery — #698's priority threading
+the DESIGN (plumbing, not new machinery — #698's priority threading
 pattern): ``start_to_close=`` (a timedelta) declares on ``@app.actor``,
 ``step()``, and ``RouteArm`` — the value STAMPS the row's EXISTING
 column at the node INSERTs (the static rows, the fork's children + join,
 and the drain's outbox-materialized consumer rows), no new column, no
-migration; the runner's body invocation wraps in the SAME
+migration; the runner's body invocation wraps in the same
 ``_enforce_start_to_close``; the expiry's disposition is the wf ladder's
 failure arm (a START_TO_CLOSE TimeoutError is a REAL attempt burn —
 never a Snooze), with the vanilla race semantics mirrored
@@ -37,7 +37,7 @@ verbatim:
   no arm), and the node terminalises 'cancelled' through the wf
   terminal door (the deferral's cancel_fenced shape).
 
-THE RESOLUTION LAW per row, first non-``None`` wins:
+RESOLUTION LAW per row, first non-``None`` wins
 the step's/arm's own declaration > the actor's declaration (folded at
 the wiring when the step declares none) > the row's NULL > the worker's
 ``default_start_to_close`` (the enforcement-time fallback — the
@@ -130,7 +130,7 @@ async def _poll_node_status(
 
 @pytest.fixture(autouse=True)
 async def reap_detached_unwinds() -> AsyncIterator[None]:
-    """THE DETACHED UNWINDS' REAP (teardown): the deadline pins leave
+    """The detached unwinds' reap (teardown): the deadline pins leave
     their HANG_S bodies unwinding past the expiry on purpose — the
     enforcement detaches the body task (the tracked-zombie shape the
     shutdown watchdog accounts for). At teardown every still-live
@@ -194,7 +194,7 @@ def demo_app_module() -> Iterator[types.ModuleType]:
             )
         )
 
-    # THE NAME IS THE FILE'S OWN (the D1 registry is process-global — a
+    # the name is the file's own (the D1 registry is process-global — a
     # name another pin file registers is the DuplicateWorkflowError
     # order-dependent flake; this file's map flow carries the stc prefix).
     @app_obj.workflow("stc_map_children_flow")
@@ -289,7 +289,7 @@ async def test_hung_step_past_its_bound_burns_the_attempt_and_retries(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE HEADLINE PIN: a claimed wf step hung past its declared bound —
+    """The headline pin: a claimed wf step hung past its declared bound —
     the deadline fires, the attempt BURNS (the ledger's failed row, the
     claim's increment kept), the ladder re-pends per the contract, and
     the RUN STAYS ALIVE (the root 'running' — never a zombie, never a
@@ -301,32 +301,31 @@ async def test_hung_step_past_its_bound_burns_the_attempt_and_retries(
 
     assert await runner.tick(flow_id)  # the claim + the hung body + the expiry
     row = await _node_row(module_pg_pool, schema, flow_id, "solo")
-    # THE DISPOSITION: the attempt burned — the row re-pended for the
-    # ladder's next attempt (the vanilla timeout arm's own shape: the
-    # decision's retry, the row 'scheduled' at the backoff).
+    # the attempt burned — the row re-pended for the ladder's next attempt (the
+    # vanilla timeout arm's own shape: the decision's retry, the row
+    # 'scheduled' at the backoff).
     assert row["status"] == "scheduled", (
         f"the deadline's re-pend lands the row 'scheduled', got {row['status']!r}"
     )
     assert row["attempt"] == 1, (
         f"the deadline is a REAL attempt burn — the claim's increment stands, got {row['attempt']}"
     )
-    # THE RECORD: the row carries NO terminal stamp (the ladder's own
-    # re-pend face — the attempt is not terminal); the attempt's failed
-    # LEDGER row is the record, with the truthful class (the vanilla
-    # rows' own class for the deadline — the private marker's name never
-    # reaches a record) and the handler's own fallback message.
+    # the row carries no terminal stamp (the ladder's own re-pend face — the
+    # attempt is not terminal); the attempt's failed ledger row is the record,
+    # with the truthful class (the vanilla rows' own class for the deadline —
+    # the private marker's name never reaches a record) and the handler's own
+    # fallback message.
     assert row["error_class"] is None, row["error_class"]
     ledger = await _ledger_rows(module_pg_pool, schema, flow_id, "solo")
     assert [r["status"] for r in ledger] == ["failed"], ledger
     assert ledger[0]["error_class"] == "TimeoutError", ledger[0]
     assert ledger[0]["error_message"] == "start_to_close", ledger[0]
-    # THE RUN IS ALIVE.
+    # the run is alive.
     assert await _root_status(module_pg_pool, schema, flow_id) == "running"
 
-    # THE RETRY PER THE CONTRACT: the ladder re-claims (the body hangs
-    # again) and the second burn exhausts max_attempts=2 — the terminal
-    # 'failed' (the deadline's stamp on the row's record), the root
-    # failed with it.
+    # the ladder re-claims (the body hangs again) and the second burn exhausts
+    # max_attempts=2 — the terminal 'failed' (the deadline's stamp on the row's
+    # record), the root failed with it.
     await _drive_until(module_pg_pool, schema, runner, flow_id, "failed")
     row = await _node_row(module_pg_pool, schema, flow_id, "solo")
     assert row["status"] == "failed", row["status"]
@@ -362,10 +361,10 @@ async def test_no_declaration_runs_the_body_inline_byte_identical(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE CONTROL (the byte-identical law): a step with NO declaration
+    """The control (the byte-identical law): a step with no declaration
     anywhere — the row's column NULL, the body invoked INLINE (no
     enforcement task, no machinery, no deadline handle): the ctx's
-    body-task handle stays unset, the pre-fix execution shape
+    body-task handle stays unset — the plain execution shape
     exactly."""
     schema = module_pg_schema.schema_name
     app_obj = WorkflowApp()
@@ -383,8 +382,8 @@ async def test_no_declaration_runs_the_body_inline_byte_identical(
     runner = FlowRunner(app_obj.get("stc_control_flow"), module_pg_pool, schema)
     flow_id = str((await runner.create_flow(input=Ingest(doc_id="d1"))).flow_id)
 
-    # THE ROW: the unset declaration stamps NULL — the column default's
-    # own value (the pre-fix row).
+    # the unset declaration stamps NULL — the column default's own value (the
+    # unset shape's row).
     row = await _node_row(module_pg_pool, schema, flow_id, "solo")
     assert row["start_to_close"] is None, row["start_to_close"]
 
@@ -396,7 +395,7 @@ async def test_no_declaration_runs_the_body_inline_byte_identical(
     )
 
 
-# ── (1b) the fleet door: the same deadline through the REAL dispatch ─────
+# ── (1b) the fleet door: the same deadline through the real dispatch ─────
 
 
 async def test_the_fleet_door_enforces_the_row_deadline(
@@ -404,10 +403,10 @@ async def test_the_fleet_door_enforces_the_row_deadline(
     wf_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """THE FLEET FACE (production's own path — the priority pins' own
+    """The fleet face (production's own path — the priority pins' own
     rig): the step's declared bound stamps the row at create; the REAL
     dispatch claims it; the worker-hosted door
-    (``execute_flow_job``) runs the body through the SAME enforcement —
+    (``execute_flow_job``) runs the body through the same enforcement —
     the hung step's deadline fires on the fleet worker too (the row's
     own stamp outranking the threaded worker default, and the worker's
     default arming an UNDECLARED row)."""
@@ -459,9 +458,9 @@ async def test_the_fleet_door_enforces_the_row_deadline(
     )
     assert len(dispatched) == 1, dispatched
 
-    # THE FLEET EXECUTION: the hung body, the deadline fires — the
-    # outcome label the ladder's own ("laddered"), the row re-pended,
-    # the ledger's failed row the deadline's record.
+    # the hung body, the deadline fires — the outcome label the ladder's own
+    # ("laddered"), the row re-pended, the ledger's failed row the deadline's
+    # record.
     execution = await execute_flow_job(
         pool=module_pg_pool,
         schema=wf_schema,
@@ -484,7 +483,7 @@ async def test_the_resolution_law_the_row_levels(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: Any,
 ) -> None:
-    """THE RESOLUTION LAW per row, first non-``None`` wins:
+    """The resolution law per row, first non-``None`` wins:
     the step's declaration > the actor's declaration (folded at the
     wiring) > the row's NULL — the stamps asserted on the rows."""
     schema = module_pg_schema.schema_name
@@ -520,7 +519,7 @@ async def test_the_resolution_law_the_row_levels(
     row = await _node_row(module_pg_pool, schema, flow_id, "step_wins")
     assert row["start_to_close"] == timedelta(seconds=90), row["start_to_close"]
     # LEVEL 3: nothing declared — the row's column NULL (the worker's
-    # default applies at the ENFORCEMENT, never on the row).
+    # default applies at the enforcement, never on the row).
     row = await _node_row(module_pg_pool, schema, flow_id, "undeclared")
     assert row["start_to_close"] is None, row["start_to_close"]
 
@@ -570,7 +569,7 @@ async def test_the_row_stamp_beats_the_runner_default(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: Any,
 ) -> None:
-    """THE LAW'S ORDER AT THE ENFORCEMENT: the row's own stamp outranks
+    """The law's order at the enforcement: the row's own stamp outranks
     the runner's default (the vanilla ``_effective_start_to_close``
     chain: ``job.start_to_close if not None else default``) — a step
     declaring 0.25s under a runner defaulted to 300s dies at 0.25s."""
@@ -641,7 +640,7 @@ async def test_route_arm_declaration_overrides_down_and_the_join_stays_the_sourc
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE ARM'S DOWN-OVERRIDE (the priority fix's own shape): the arm's
+    """The arm's down-override (the priority fix's own shape): the arm's
     children land at the ARM's declaration; an arm declaring none keeps
     the source's; the JOIN (the source's own cohort) stays the source's
     resolution."""
@@ -663,7 +662,7 @@ async def test_route_arm_declaration_overrides_down_and_the_join_stays_the_sourc
     )
     arm_a = {k: v for k, v in by_key.items() if k.startswith("src.item:")}
     assert arm_a, f"no forked arm children found: {sorted(by_key)}"
-    # THE ARM'S OWN DECLARATION (the Image arm's 23s) vs the bare arm's
+    # the arm's own declaration (the Image arm's 23s) vs the bare arm's
     # inheritance (the Audio arm: the source's 11s). The child keys name
     # their arm's type tag.
     declared = [v for v in arm_a.values() if v == timedelta(seconds=23)]
@@ -681,11 +680,11 @@ async def test_the_drain_materializes_consumers_at_the_declared_bound(
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
 ) -> None:
-    """THE DRAIN'S LEG: an outbox-materialized consumer row inherits the
+    """The drain's leg: an outbox-materialized consumer row inherits the
     declared bound the way priority's consumer rows inherit the run's
     stamp — the fire's bindings carry it, the drain's consumer INSERT
     stamps the ``jobs.start_to_close`` column. The unset case binds
-    NULL (the pre-fix row)."""
+    NULL (the unset shape's row)."""
     from tests._wf_fixtures import seed_flow
 
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -710,7 +709,7 @@ async def test_the_drain_materializes_consumers_at_the_declared_bound(
     assert consumer is not None, "the drain inserted no consumer row"
     assert consumer["start_to_close"] == timedelta(seconds=42), consumer["start_to_close"]
 
-    # THE UNSET CASE: no binding value — the consumer row's column NULL.
+    # no binding value — the consumer row's column NULL.
     flow2 = await seed_flow(wf_conn, wf_schema)
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_outbox '
@@ -736,11 +735,11 @@ async def test_the_fork_bindings_carry_the_downstream_resolution(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE BINDING'S CARRIER: the fork's join-row metadata ``consumers``
+    """The binding's carrier: the fork's join-row metadata ``consumers``
     array carries the downstream node's own resolution (serialized as
     the binding's seconds) — the fire copies it into the outbox
     bindings, the drain stamps the fresh-materialized consumer row. The
-    undeclared downstream keeps the pre-fix shape (no key)."""
+    undeclared downstream keeps the plain shape (no key)."""
     schema = module_pg_schema.schema_name
     app_obj = WorkflowApp()
 
@@ -870,7 +869,7 @@ async def test_the_deadline_fences_a_cancel_mark_and_the_cancel_wins(
     wf_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """THE CANCEL WINS (the vanilla ``mark_retry``'s own law — a
+    """The cancel wins (the vanilla ``mark_retry``'s own law — a
     phase-carrying row matches no arm; the C4 deferral's cancel_fenced
     shape): a claimed step hung past its bound, the operator's cancel
     mark (the wf cancel's metadata carrier) landing mid-flight — the
@@ -902,9 +901,9 @@ async def test_the_deadline_fences_a_cancel_mark_and_the_cancel_wins(
     )
     assert node_id is not None
 
-    # THE CLAIM, then the cancel mark lands mid-flight (the wf cancel's
+    # the claim, then the cancel mark lands mid-flight (the wf cancel's
     # cooperative phase-1 mark on the running row). The wait is the
-    # ROW'S OWN truth — a bounded poll for the claim's visible effect,
+    # row's own truth — a bounded poll for the claim's visible effect,
     # never a blind sleep (the mark must land while the row is still
     # 'running', inside the bound's window).
     task = asyncio.create_task(runner.tick(flow_id))
@@ -931,7 +930,7 @@ async def test_hostile_finally_cannot_defer_the_wf_deadline(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: Any,
 ) -> None:
-    """THE HOSTILE UNWIND (the vanilla scenario's shape 3 — the deferrable
+    """The hostile unwind (the vanilla scenario's shape 3 — the deferrable
     deadline): a body whose ``finally`` sleeps past the deadline cannot
     hold the attempt hostage — the attempt ends AT the deadline, the
     disposition lands (the re-pend), and the body unwinds DETACHED
@@ -974,12 +973,10 @@ async def test_hostile_finally_cannot_defer_the_wf_deadline(
         f"unwinds detached), took {elapsed:.2f}s"
     )
     assert await _root_status(module_pg_pool, schema, flow_id) == "failed"
-    # THE UNWINDING ZOMBIE IS ACCOUNTED FOR (the vanilla scenario's own
-    # assertion — the shutdown watchdog can see it): tracked, not
-    # leaked. This pin's zombie is pending AT CALL END by design (the
-    # hostile finally outlives the attempt), so the reap is the pin's
-    # OWN inline duty — the module's teardown fixture is the belt for
-    # the pins whose zombies die inside the call.
+    # tracked, not leaked. This pin's zombie is pending at call end by design
+    # (the hostile finally outlives the attempt), so the reap is the pin's own
+    # inline duty — the module's teardown fixture is the belt for the pins
+    # whose zombies die inside the call.
     from taskq.worker._watchdog import live_tracked_actor_handles
 
     zombies = [z for z in live_tracked_actor_handles() if not z.done()]
@@ -993,7 +990,7 @@ async def test_hostile_finally_cannot_defer_the_wf_deadline(
 
 
 def test_the_declaration_refuses_a_nonpositive_bound() -> None:
-    """THE VANILLA LAW (``start_to_close must be > 0`` — the @actor
+    """The vanilla law (``start_to_close must be > 0`` — the @actor
     decorator's own refusal, at the resolution chain's every declaration
     site): zero and negative bounds are refused at the declaration,
     before anything registers. The step's and the arm's sites refuse at
@@ -1030,7 +1027,7 @@ def test_the_declaration_refuses_a_nonpositive_bound() -> None:
 
 
 def test_the_declaration_refuses_a_non_timedelta() -> None:
-    """THE DECLARED TYPE (a timedelta — the vanilla ``@actor``'s own
+    """The declared type (a timedelta — the vanilla ``@actor``'s own
     face): a bare number is the refused declaration, never a
     seconds-silent-coercion."""
     app_obj = WorkflowApp()
@@ -1058,9 +1055,9 @@ def test_the_declaration_refuses_a_non_timedelta() -> None:
         app_obj.get("stc-refused-arm-type-flow")
 
 
-# ── (9) THE CLAIM IDENTITY'S FENCE: the deadline's disposition binds
+# ── (9) the claim identity's fence: the deadline's disposition binds
 #        the caller's own claim (the zombie W1's disposition must never
-#        flip a re-minted LIVE W2 row) ─────────────────────────────────
+#        flip a re-minted live W2 row) ─────────────────────────────────
 
 
 async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
@@ -1069,19 +1066,19 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE ZOMBIE'S DEADLINE vs A LIVE RECLAIM (the fence legs bind the
+    """The zombie's deadline vs A live reclaim (the fence legs bind the
     caller's own claim identity): W1 claims the
     node (the ledger row live at its own instant); the 90s wf lease
     LAPSES; the reclaim re-pends the row; W2 re-claims (the attempt
     walks, W2's ledger claim live); W1's timer FIRES. The deadline's
-    disposition must carry THE CLAIM IDENTITY'S FENCE (the
+    disposition must carry the CLAIM IDENTITY'S FENCE (the
     NODE_DEFER_SQL's own legs — status + worker + attempt + epoch): W1's
     zombie disposition matches NOTHING on W2's live row — the row stays
     RUNNING (never flipped 'scheduled', never a phantom-runs ledger,
     W2's finalize never refuses) — and W1's own attempt takes the ZOMBIE
     face (the ledger's 'fenced' record, keyed on the claim's own
     instant, stamped the deadline's truthful class — the C5 shape). The
-    pre-fix shape: the unfenced WHERE (id + status) flipped W2's row
+    rejected shape: the unfenced WHERE (id + status) flips W2's row
     out from under it."""
     from tests._wf_fixtures import seed_flow, seed_running_node
 
@@ -1112,20 +1109,19 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
         attempt=int(seeded["attempt"]),
     )
     assert w1_claim.claimed_at is not None
-    # THE LAPSE + THE RECLAIM: the row re-pends (the reclaim's shape).
+    # the row re-pends (the reclaim's shape).
     await clean_pg_conn.execute(
         f"UPDATE \"{schema}\".jobs SET status = 'pending', locked_by_worker = NULL, "
         "lock_expires_at = NULL WHERE id = $1",
         node_id,
     )
-    # THE RE-CLAIM AS W2 (the claim CAS's own grant of work — the attempt
-    # walks to 2): W2 is LIVE on the row.
+    # W2 is live on the row.
     w2 = JobId(new_uuid())
     w2_attempt = await clean_pg_conn.fetchval(
         render_sql(NODE_CLAIM_SQL_TEMPLATE, schema), node_id, w2
     )
     assert w2_attempt is not None, "W2's re-claim must grant the work"
-    # W2's ledger claim (the LIVE claimant's own row).
+    # W2's ledger claim (the live claimant's own row).
     await claim_step_ledger(
         clean_pg_conn,
         runner.wsql,
@@ -1136,7 +1132,7 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
         attempt=int(w2_attempt),
     )
 
-    # W1'S TIMER FIRES (the zombie's deadline disposition, its own binds).
+    # W1'S timer fires (the zombie's deadline disposition, its own binds).
     node = compiled.nodes.get("solo")
     label = await runner._deadline_disposition(  # pyright: ignore[reportPrivateUsage]  # Why: the pins drive the ladder's own disposition seam.
         flow_id,
@@ -1147,12 +1143,12 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
         ledger_id=w1_claim.ledger_id,
         ledger_claimed_at=w1_claim.claimed_at,
     )
-    # THE ZOMBIE FACE: no arm matched — the disposition says so.
+    # no arm matched — the disposition says so.
     assert label == "fenced", (
         f"the zombie's deadline must take the zombie face (the claim "
         f"identity's fence refuses the live row), got {label!r}"
     )
-    # W2'S ROW STAYS LIVE (never flipped 'scheduled' — the phantom-runs
+    # W2'S row stays live (never flipped 'scheduled' — the phantom-runs
     # shape is dead).
     row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
     assert row["status"] == "running", (
@@ -1162,14 +1158,14 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
     assert row["attempt"] == int(w2_attempt), (
         f"the live row's attempt is W2's own (never walked by the zombie), got {row['attempt']}"
     )
-    # THE RECORDS: W1's own attempt records 'fenced' (H1, keyed on the
-    # claim's own instant); W2's live ledger row untouched ('running').
+    # W1's own attempt records 'fenced' (H1, keyed on the claim's own instant);
+    # W2's live ledger row untouched ('running').
     ledger = await _ledger_rows(module_pg_pool, schema, str(flow_id), "solo")
     by_attempt = {r["attempt"]: r for r in ledger}
     assert by_attempt[int(seeded["attempt"])]["status"] == "fenced", dict(
         by_attempt[int(seeded["attempt"])]
     )
-    # THE ZOMBIE'S STAMP IS THE DEADLINE'S OWN CLASS (the pair the live
+    # the zombie's stamp is the deadline's own class (the pair the live
     # faces carry — never the message's name in the class slot).
     assert by_attempt[int(seeded["attempt"])]["error_class"] == "TimeoutError", dict(
         by_attempt[int(seeded["attempt"])]
@@ -1185,8 +1181,8 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE BURN'S GUARD (the re-mint rig): the refund cycle re-mints the
-    ordinal — the arbiter re-use hands a LIVE winner the SAME ledger row
+    """The burn's guard (the re-mint rig): the refund cycle re-mints the
+    ordinal — the arbiter re-use hands a LIVE winner the same ledger row
     a zombie once claimed (the row's instant moves to the winner). The
     zombie's deadline disposition — the fence legs refuse at the node
     row, the zombie face's fence-by-id keys the STALE instant — can
@@ -1209,9 +1205,9 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
     runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=w1)
     from taskq.workflows.ledger import claim_step_ledger
 
-    # W1's ledger claim — then THE RE-MINT (the refund cycle's own face:
-    # a later claimant re-claims the SAME ordinal, the arbiter re-use
-    # hands the SAME row to the LIVE winner W2, the instant re-stamps).
+    # W1's ledger claim — then the re-mint (the refund cycle's own face:
+    # a later claimant re-claims the same ordinal, the arbiter re-use
+    # hands the same row to the live winner W2, the instant re-stamps).
     w1_claim = await claim_step_ledger(
         clean_pg_conn,
         runner.wsql,
@@ -1239,7 +1235,7 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
     assert winner_claim.claimed_at > w1_claim.claimed_at, (
         "the re-mint re-stamped the claim instant (the discriminator moved to the winner)"
     )
-    # THE WINNER W2 IS LIVE on the row at ITS OWN identity (the re-mint's
+    # the winner W2 is live on the row at its own identity (the re-mint's
     # own shape: the node row carries W2's claim).
     w2 = JobId(new_uuid())
     await clean_pg_conn.execute(
@@ -1249,7 +1245,7 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
         w2,
     )
 
-    # W1'S TIMER FIRES (the zombie's deadline disposition).
+    # W1'S timer fires (the zombie's deadline disposition).
     node = compiled.nodes.get("solo")
     label = await runner._deadline_disposition(  # pyright: ignore[reportPrivateUsage]
         flow_id,
@@ -1261,9 +1257,9 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
         ledger_claimed_at=w1_claim.claimed_at,
     )
     assert label == "fenced"
-    # THE WINNER'S ROW STAYS LIVE at BOTH faces: the node row never
-    # flipped, the re-minted ledger row never stamped (no 'failed' burn,
-    # no 'fenced' record — the stale instant refuses both).
+    # the winner's row stays live at both faces: the node row never flipped,
+    # the re-minted ledger row never stamped (no 'failed' burn, no 'fenced'
+    # record — the stale instant refuses both).
     row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
     assert row["status"] == "running", (
         f"the zombie's deadline must never flip the winner's live row, got {row['status']!r}"

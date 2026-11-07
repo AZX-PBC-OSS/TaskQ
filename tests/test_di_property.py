@@ -18,12 +18,12 @@ SyncCloseable note (decompose-review-1 W-7):
   close() body would race against thread-pool scheduling and is
   non-deterministic. To keep the property test deterministic, the
   SyncCloseable test class records its index in a wrapper teardown
-  closure that runs on the event loop BEFORE delegating to
+  closure that runs on the event loop before delegating to
   asyncio.to_thread(self.close) - i.e. record at *initiation*, not at
   *completion*. The wrapper closure MUST await asyncio.to_thread(
   self.close) so the thread-pool dispatch still occurs (verifying the
   asyncio.to_thread path remains present); the index recording is the
-  observable oracle. Do NOT "fix" this to record inside the sync body.
+  observable oracle. Do not "fix" this to record inside the sync body.
 """
 
 import asyncio
@@ -156,7 +156,7 @@ def _make_async_gen_spy_factory(label: str) -> Any:
     return _factory
 
 
-# ── LIFO across all shapes ─────────────────────────────────
+# ── lifo across all shapes ─────────────────────────────────
 
 
 @given(combo=_shape_combo_strategy())
@@ -170,7 +170,7 @@ async def test_lifo_teardown_across_all_shapes(
     provider records its label in _teardown_order at the moment its
     teardown is initiated. Oracle: the recorded order is the reverse
     of construction order (LIFO) for every generated combination.
-    Plain providers have no teardown and should NOT appear in the
+    Plain providers have no teardown and should not appear in the
     teardown order.
     """
     global _teardown_order

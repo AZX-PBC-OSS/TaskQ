@@ -79,7 +79,7 @@ async def test_init_hook_registers_codec_on_every_physical_connection(pg_dsn: st
         assert {pid1, pid2} <= set(initialized_pids)
 
         # Recycling: both idle connections are terminated after 0.5s, so the
-        # next acquire is a NEW physical connection - init must re-run on it.
+        # next acquire is a new physical connection - init must re-run on it.
         await asyncio.sleep(1.0)
         async with pool.acquire() as c3:
             pid3 = await c3.fetchval("SELECT pg_backend_pid()")

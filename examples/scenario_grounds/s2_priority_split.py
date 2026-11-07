@@ -63,7 +63,7 @@ async def main() -> None:
     say("the row ids alone would fragment across the tenants, and only the")
     say("priority column can produce the grouped drain the rows must show.")
 
-    # The runs are created first, worker second, and ROUND-ROBIN across
+    # The runs are created first, worker second, and round-robin across
     # the tenants: the row ids (time-ordered) then alternate across the
     # three priorities, so a claim order that ignored priority would
     # interleave the tenants instead of draining them in groups — the

@@ -27,7 +27,7 @@ from typing import Any, NoReturn
 
 import structlog
 from fastapi import HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 
 __all__ = [
     "SESSION_COOKIE_NAME",
@@ -50,7 +50,7 @@ _LOGOUT_CSRF_PURPOSE: bytes = b"taskq-logout-csrf:"
 # Armed by the auth dependency on every authenticated request and read by the
 # Jinja global of the same name in the admin chrome: the base template renders
 # the Sign out control only when a token is present, which is exactly when a
-# live SSO session is. A ContextVar rather than a per-route context key so a
+# live sso session is. A ContextVar rather than a per-route context key so a
 # new page route cannot forget it - one forgotten key is one page whose Sign
 # out button silently posts without a token.
 _sso_logout_token: ContextVar[str] = ContextVar("taskq-sso-logout-token", default="")
@@ -89,7 +89,7 @@ async def require_logout_csrf(request: Request, session_manager: "SessionManager
     closed with 403: no session cookie (there is nothing to end, and serving
     a success shape to an unauthenticated probe teaches nothing), or a
     missing/mismatched token. The token 403 names the remedy the action
-    doors' CSRF refusals carry (the round-3 fix — the 403 loop's other
+    doors' CSRF refusals carry (the 403 loop's other
     carrier: submit → 403 → submit → 403, forever, read as a bug) — the
     page's token is stale; a fresh page fixes it.
     """
@@ -105,6 +105,30 @@ async def require_logout_csrf(request: Request, session_manager: "SessionManager
             detail="logout CSRF token missing or mismatched — the page's token "
             "is stale — reload the page and submit again",
         )
+
+
+def _logout_route(  # pyright: ignore[reportUnusedFunction]  # Why: registered by both sso factories (saml.py, oidc.py) via their router decorators — the same checker-invisible registration the previous per-factory handlers carried.
+    session_manager: "SessionManager",
+    base_path: str,
+) -> Callable[[Request], Awaitable[Response]]:
+    """The POST /logout route handler both SSO backends register: gate
+    the POST on the live session and its logout CSRF token, then clear
+    the session cookie and redirect to the admin base. One body for
+    both protocols — the gate cannot be forgotten at a factory, the
+    handler is the gate."""
+
+    async def logout(request: Request) -> Response:
+        # POST + the session-bound CSRF token (shared
+        # require_logout_csrf): a forced top-level navigation is a GET
+        # and cannot clear an admin session, and a cross-site form POST
+        # carries neither the session cookie it must derive the token
+        # from (HttpOnly, SameSite=Lax) nor the secret.
+        await require_logout_csrf(request, session_manager)
+        response = RedirectResponse(url=base_path or "/", status_code=302)
+        session_manager.clear_session_cookie(response)
+        return response
+
+    return logout
 
 
 def warn_if_no_group_allowlist(backend: str, allowed_groups: frozenset[str]) -> None:
@@ -183,7 +207,7 @@ class SessionManager:
     # The secret the current _serializer was built with; verify_session_cookie
     # compares it against self.secret per verification so a rotated secret
     # (``manager.secret = ...``) is picked up without rebuilding the manager
-    # or the router -- the long-lived SSE re-check (#316) holds the manager
+    # or the router -- the long-lived SSE re-check  holds the manager
     # object a live stream captured at router construction, so a lazy rebuild
     # here is the only path a rotation has to the already-streaming session.
     _serializer_secret: str = field(default="", repr=False)
@@ -216,7 +240,7 @@ class SessionManager:
         """Verify signature + expiry; return claims or ``None`` on any failure."""
         from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-        # Rotation-aware: a live SSE stream's re-check (#316) runs THIS method
+        # Rotation-aware: a live SSE stream's re-check  runs this method
         # on the manager object it captured at router construction. If the
         # operator rotated the secret by assigning ``manager.secret``, the
         # serializer built at construction still holds the old key, and the
@@ -296,7 +320,7 @@ def create_session_verifier(
     session_manager: SessionManager,
     allowed_groups: frozenset[str] = frozenset(),
 ) -> Callable[[Request], Awaitable[bool]]:
-    """Build the session re-check that long-lived SSE streams re-invoke (#316).
+    """Build the session re-check that long-lived SSE streams re-invoke .
 
     A stream that authenticates only at request acceptance keeps delivering
     frames after its session is invalidated. The routers that own such streams
@@ -366,7 +390,7 @@ def create_auth_dependency(
         _sso_logout_token.set(logout_csrf_token(session_manager.secret, cookie))
         return claims
 
-    # The re-check long-lived SSE streams re-invoke (#316): same session
+    # The re-check long-lived SSE streams re-invoke : same session
     # inputs as this dependency, exposed as an attribute so
     # create_router(auth_dependency=...) can derive it without a second
     # parameter every host must remember to pass.

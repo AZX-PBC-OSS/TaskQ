@@ -1,4 +1,4 @@
-"""The process-shared pool, opened lazily INSIDE the running loop.
+"""The process-shared pool, opened lazily inside the running loop.
 
 The deps instance is built at import time (the binding's law), but a
 pool belongs to an event loop — and the worker's boot loop is not the
@@ -14,7 +14,7 @@ import asyncpg
 
 
 class LazyPool:
-    """Get-or-open THE process pool (one pool per dsn per loop lifetime)."""
+    """Get-or-open the process pool (one pool per dsn per loop lifetime)."""
 
     def __init__(self, dsn: str, *, max_size: int = 20) -> None:
         self._dsn = dsn

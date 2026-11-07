@@ -183,7 +183,7 @@ async def test_subscribe_cancel_wake_fires_on_cancel(pg_dsn: str) -> None:
 
 @_integration
 async def test_no_notify_on_pending_job_cancel(pg_dsn: str) -> None:
-    """Cancelling a pending job (case 1 - immediate terminal) does NOT
+    """Cancelling a pending job (case 1 - immediate terminal) does not
     fire pg_notify on the events or worker channels. Only running jobs need
     the interrupt signal.
     """

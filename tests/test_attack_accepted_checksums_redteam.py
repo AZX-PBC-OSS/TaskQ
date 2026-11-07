@@ -12,7 +12,7 @@ attacks one claim of the fix and pins the answer with an executed proof:
   production ledger this fix exists to unblock.
 - The ``_variants`` directory cannot leak into ``discover()``: a variant
   file becoming a runnable migration would double-apply its DDL.
-- The refusal keeps its teeth for EVERY migration key, not just the two
+- The refusal keeps its teeth for every migration key, not just the two
   the incident touched - including a migration with no variants at all -
   and the CLI surfaces accept published history without error while an
   unknown checksum still refuses.
@@ -42,7 +42,7 @@ from taskq.testing.assertions import plain_cli_output
 #: The sha256 of the git blob each bundled variant file must equal. These
 #: literals were reproduced by an independent audit via
 #: ``git show <commit>:src/taskq/migrations/<stem>.sql | sha256sum``:
-#: the bundled variant is the PUBLISHED bytes, byte-for-byte, never a
+#: the bundled variant is the published bytes, byte-for-byte, never a
 #: rewritten history. Variant files are named for their origin commit.
 VARIANT_PROVENANCE: dict[str, str] = {
     "01.00.05_01_pre_batches/f75762b5.sql": (
@@ -61,7 +61,7 @@ VARIANT_PROVENANCE: dict[str, str] = {
 
 #: The ledger checksums a live production database recorded for the two
 #: amended files (schema ``taskq``), supplied by the operator during the
-#: incident. Reproduced here from the bundled variant FILES, never through
+#: incident. Reproduced here from the bundled variant files, never through
 #: the guard's helpers.
 PROD_CHECKSUMS: dict[str, str] = {
     "01.00.13_03_pre_jobs_batch_open_members_index.sql": (
@@ -165,7 +165,7 @@ class TestTheWheelShipsTheVariants:
 
     def test_variant_files_are_package_data_reachable_at_runtime(self) -> None:
         """The runtime read path is importlib.resources, not the repo tree:
-        every pinned variant must resolve through it (a wheel installs ONLY
+        every pinned variant must resolve through it (a wheel installs only
         what the resource API can see)."""
         assert set(_variant_files()) == set(VARIANT_PROVENANCE), (
             "a variant is invisible to importlib.resources - it will not "
@@ -204,7 +204,7 @@ class TestDiscoverHygiene:
 @pytest.mark.integration
 class TestTheTeethEverywhere:
     """Accepting published history must not mean accepting everything: an
-    unknown checksum refuses for EVERY migration key, and the CLI treats
+    unknown checksum refuses for every migration key, and the CLI treats
     published history as honest provenance, not an error."""
 
     def test_every_discovered_key_refuses_an_unknown_checksum(self) -> None:
@@ -219,7 +219,7 @@ class TestTheTeethEverywhere:
     def test_the_variant_migrations_accept_their_variant_checksum(self) -> None:
         """The positive arm of the same unit-level sweep: each amended
         file's variant checksum (computed here from the bundled bytes,
-        rendered under the SAME schema the guard checks with) produces
+        rendered under the same schema the guard checks with) produces
         zero drifts."""
         found = {m.filename: m for m in migrate_mod.discover()}
         applied: dict[str, str] = {}
@@ -277,7 +277,7 @@ class TestTheTeethEverywhere:
                 await migrate_mod.apply_pending(conn, schema=settings.schema_name)
                 for filename in PROD_CHECKSUMS:
                     (variant,) = _variant_checksums_from_files(filename, schema_for_render)
-                    # The ledger's version column holds the FULL migration
+                    # The ledger's version column holds the full migration
                     # key ({version}:{phase}) - tampering by bare stem
                     # matches zero rows and makes the test vacuous.
                     await conn.execute(
@@ -412,7 +412,7 @@ class TestTheAnchorsReproducedFromTheVariantFiles:
 
 
 def _knock_out_variant_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point the guard's variant lookup at a root with NO _variants dir,
+    """Point the guard's variant lookup at a root with no _variants dir,
     simulating a wheel that failed to ship them (see
     TestTheWheelShipsTheVariants): the prod checksums must refuse again.
     The fake root exposes exactly the real top-level .sql files, snapshotted
@@ -431,7 +431,7 @@ def _knock_out_variant_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class _FakePackage:
-    """A resources root with NO _variants dir, exposing only snapshotted
+    """A resources root with no _variants dir, exposing only snapshotted
     top-level .sql file names - what discover() and _variant_templates()
     traverse."""
 
@@ -522,7 +522,7 @@ def test_guard_reads_variants_through_the_real_package_resources() -> None:
     }
 
 
-# ── the variant LIST itself: multiplicities and duplicates ────────────────
+# ── the variant list itself: multiplicities and duplicates ────────────────
 
 
 class _VariantEntry:
@@ -595,7 +595,7 @@ class _VariantsHop:
 
 
 class _VariantsRoot:
-    """A resources root serving ONLY ``_variants/<stem>/`` lookups, with the
+    """A resources root serving only ``_variants/<stem>/`` lookups, with the
     given entries per stem; every other path resolves missing. What
     _variant_templates() traverses, no more."""
 
@@ -621,7 +621,7 @@ class _VariantsRoot:
 
 class TestTheVariantListEdges:
     """Shapes of a migration's bundled variant list the shipped bundle never
-    exercises (every amended file carries exactly ONE variant today): a
+    exercises (every amended file carries exactly one variant today): a
     file with TWO published variants, and a variant whose rendered bytes
     equal the CURRENT file's (a duplicate). The acceptance is a SET of
     legitimate checksums, so both shapes must behave."""
@@ -646,7 +646,7 @@ class TestTheVariantListEdges:
         not matter (the acceptance is a set)."""
         found = {m.filename: m for m in migrate_mod.discover()}
         target = found["01.00.05_01_pre_batches.sql"]
-        # The real bundled variant's text, captured BEFORE the root is patched.
+        # The real bundled variant's text, captured before the root is patched.
         (real_variant_text,) = [
             text.decode("utf-8-sig")
             for name, text in _variant_files().items()
@@ -676,7 +676,7 @@ class TestTheVariantListEdges:
             )
             assert drifts == [], f"published vintage {digest[:12]} must not drift: {drifts}"
 
-        # A checksum matching NEITHER still refuses.
+        # A checksum matching neither still refuses.
         drifts = migrate_mod._detect_checksum_drifts(  # pyright: ignore[reportPrivateUsage]
             list(found.values()), {target.key: UNKNOWN_CHECKSUM}, "taskq"
         )
@@ -712,8 +712,8 @@ class TestTheVariantListEdges:
 
     def test_every_bundled_variant_renders_cleanly(self) -> None:
         """The drift check renders every bundled variant with the checking
-        database's schema INSIDE the apply/status path: a variant whose
-        text breaks str.format (an unescaped ``{``) would crash EVERY
+        database's schema inside the apply/status path: a variant whose
+        text breaks str.format (an unescaped ``{``) would crash every
         apply_pending and migrate status for every database, not just the
         amended file's check. Pin that all shipped variants format cleanly
         under an arbitrary valid schema."""

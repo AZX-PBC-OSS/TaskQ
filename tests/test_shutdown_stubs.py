@@ -355,7 +355,7 @@ async def test_consumer_generic_exception_deregisters_in_finally() -> None:
     call_seq: list[str] = []
     _install_call_tracker(deps, backend, call_seq, shutdown_event)
 
-    # Override the mark_succeeded side effect to raise AFTER tracking and setting shutdown.
+    # Override the mark_succeeded side effect to raise after tracking and setting shutdown.
     def _boom_and_track(*args: object, **kwargs: object) -> None:
         call_seq.append("mark_succeeded")
         shutdown_event.set()
@@ -480,7 +480,7 @@ async def test_no_pending_task_leak_consumer_cancelled_before_dequeue() -> None:
     assert before == after
 
 
-# ── DRAINING ownership handoff ───────────────────────────────────
+# ── draining ownership handoff ───────────────────────────────────
 
 
 async def test_consumer_stub_stops_dequeuing_once_producer_stop_is_set() -> None:
@@ -518,7 +518,7 @@ async def test_consumer_stub_stops_dequeuing_once_producer_stop_is_set() -> None
         ),
     )
 
-    # DRAINING entry: producer_stop_event without shutdown_event.
+    # draining entry: producer_stop_event without shutdown_event.
     await asyncio.sleep(0)
     deps.producer_stop_event.set()
 

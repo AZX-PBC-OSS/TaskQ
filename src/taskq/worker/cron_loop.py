@@ -25,6 +25,7 @@ from opentelemetry.trace import Span, SpanKind, StatusCode
 
 from taskq._ids import new_job_id, new_uuid
 from taskq._json import loads, sanitize_nul_str
+from taskq._sql_render import render as shared_render
 from taskq.backend._protocol import Backend, DstStrategy, EnqueueArgs, IdentityKey, parse_retry_kind
 from taskq.backend._records import parse_rowcount
 from taskq.backend._sweeps import (
@@ -220,7 +221,7 @@ class _TickBudgetExhaustedError(TimeoutError):
     message names the budget, not a hang: the factory never ran, so a
     "timed out" claim against it would be a lie.
 
-    ``skipped_slots`` rides along when the deferral happened AFTER the
+    ``skipped_slots`` rides along when the deferral happened after the
     catch-up skip branch already recomputed the fire time: the
     suppression UPDATE then durably advances ``next_fire_at`` past the
     owed slots, so those drops must reach the skipped-slots counter
@@ -380,18 +381,18 @@ LIMIT.  The index-audit test pins that shape.
 
 
 def cron_lock_sql(schema: str) -> str:
-    """The tick's lock statement for *schema*, token replacement, like every
-    other schema interpolation, so a literal brace in the template can
-    never turn a tick into a ``KeyError``."""
-    return CRON_LOCK_SQL_TEMPLATE.replace("{schema}", schema)
+    """The tick's lock statement for *schema*, the shared render's token
+    substitution, like every other schema interpolation, so a literal
+    brace in the template can never turn a tick into a ``KeyError``."""
+    return shared_render(CRON_LOCK_SQL_TEMPLATE, schema)
 
 
 def cron_due_sql(schema: str) -> str:
-    """The tick's due statement for *schema*, same token replacement
+    """The tick's due statement for *schema*, same token substitution
     discipline as :func:`cron_lock_sql`; the plan-shape audit
     (``tests/test_index_audit.py``) explains this statement, so the
     index-servable due bound cannot drift there unnoticed."""
-    return CRON_DUE_SQL_TEMPLATE.replace("{schema}", schema)
+    return shared_render(CRON_DUE_SQL_TEMPLATE, schema)
 
 
 # The commit-gate channel, ``cron_commit_gate_channel(schema)`` in
@@ -399,13 +400,13 @@ def cron_due_sql(schema: str) -> str:
 # learn that its own transaction committed. Postgres delivers a ``NOTIFY``
 # to its own session only if the emitting transaction commits, and never
 # if it rolls back, the only commit signal available to a function that
-# runs INSIDE the caller's transaction and returns before the ``COMMIT``.
+# runs inside the caller's transaction and returns before the ``COMMIT``.
 # The notification rides back on the same packet as the ``COMMIT``
 # response, so the tick's telemetry lands while the caller is still inside
 # its transaction block. Schema-scoped because channels share one
 # database-wide namespace: a foreign schema's cron session on the same
 # channel would not only hear this one's signals, its notification would
-# mark THIS session confirmed-listening (the gate records the sender's
+# mark this session confirmed-listening (the gate records the sender's
 # pid) without this session's LISTEN ever having survived a commit.
 
 
@@ -703,13 +704,13 @@ class _FireSuccess:
     queue: str
     prev_consecutive: int
     # How many schedule occurrences the catch-up skip branch dropped for
-    # this fire, in FIRE UNITS (see _plan_fire's skip branch): zero for a
+    # this fire, in fire units (see _plan_fire's skip branch): zero for a
     # fire that owed nothing. The counter and gauge ride the tick's
-    # commit-gated emission; the plan merely CARRIES the count here.
+    # commit-gated emission; the plan merely carries the count here.
     skipped_slots: int = 0
     # True when the skip-count walk spent its slice of the tick budget
     # (:data:`_SKIP_WALK_BUDGET_FRACTION`) before reaching the recomputed
-    # fire: the count is then a FLOOR, not the depth, and every surface
+    # fire: the count is then a floor, not the depth, and every surface
     # that shows the count flags it. Absent-count semantics are unchanged:
     # the fire lands at the recomputed slot either way.
     skipped_slots_partial: bool = False
@@ -748,7 +749,7 @@ class _BufferedFailureTelemetry:
     schedule/worker attributes), mark it ERROR, attach the
     ``cron.auto_disabled`` event, and emit the metric delta.  Nothing is
     exported at failure time: a strike persists only if the tick's
-    failures UPDATE executes AND the caller's transaction commits, so
+    failures UPDATE executes and the caller's transaction commits, so
     exporting at strike time claims schedule failures (and auto-disables)
     the database can still roll back, see the emission section in
     :func:`tick_cron`.
@@ -775,7 +776,7 @@ class _SuppressedFire:
     schedule's failure accounting untouched (a suppressed slot neither
     punishes nor amnestiates), but they advance differently:
     ``singleton_collision`` / ``max_pending`` advance to the computed
-    NEXT CRON SLOT: that slot is genuinely unlandable while the blocker
+    next CRON SLOT: that slot is genuinely unlandable while the blocker
     holds, so re-trying it would hot-loop against the blocker, while
     ``tick_budget`` advances only :data:`_TICK_BUDGET_RETRY_DELAY`: the
     slot is still owed and perfectly landable, only its funding was
@@ -892,7 +893,7 @@ async def _suppress_policy_collisions(
     The two queries mirror the enqueue path's own predicates
     (``_sql_templates.py``'s ``singleton_preflight`` and
     ``enqueue_max_pending_count``) so a cron fire and a client enqueue
-    answer the same question against the same rows.  Both run BEFORE the
+    answer the same question against the same rows.  Both run before the
     batched enqueue because the enqueue path classifies these conditions
     as typed *errors*: a singleton fire reaching the batched INSERT while
     a blocker is active violates ``jobs_singleton_uniq`` and aborts the
@@ -1004,9 +1005,9 @@ async def _suppress_policy_collisions(
             if len(plan.enqueue_args) > capacity:
                 deferred_at = plan.enqueue_args[capacity].scheduled_at
                 if deferred_at is None:
-                    # Unreachable today: only the DST ``allof`` pair produces
+                    # Unreachable today: only the dst ``allof`` pair produces
                     # more than one args and its extras are always
-                    # future-scheduled. An extra occurrence due NOW cannot be
+                    # future-scheduled. An extra occurrence due now cannot be
                     # deferred without exceeding the cap, so the plan
                     # suppresses whole rather than enqueue past the limit.
                     suppressed.append(_max_pending_suppressed(plan, occupied, cap))
@@ -1130,7 +1131,7 @@ def _attribute_violation(
     violation = _attributable_violation(exc)
     if violation is None:
         return None
-    # Why: gate on the constraint NAME, not just the detail's column list.
+    # Why: gate on the constraint name, not just the detail's column list.
     # Today only jobs_pkey (id) and jobs_singleton_uniq (actor, partial)
     # can produce the detail shapes parsed below, but an operator-added
     # non-partial unique index on (actor) raises the same "Key
@@ -1185,7 +1186,7 @@ def _strike_plans(
     The failure RECORD must exist at strike time, the tick's failures
     UPDATE binds it, but the span, auto-disable event and metric delta
     must not be exported here: the strikes only persist if that UPDATE
-    executes AND the caller's transaction commits, and a TRANSIENT error
+    executes and the caller's transaction commits, and a TRANSIENT error
     from any later statement of the tick rolls them all back (the
     emission site in :func:`tick_cron` is the single exporter).
     """
@@ -1216,7 +1217,7 @@ async def _enqueue_planned_fires(
 ) -> list[_FireSuccess]:
     """Enqueue the planned fires and return the plans whose jobs landed.
 
-    The whole batch is ONE ``INSERT ... SELECT`` statement, so Postgres
+    The whole batch is one ``INSERT ... SELECT`` statement, so Postgres
     aborts the entire statement when a single row violates a constraint ,
     and a statement error poisons the surrounding transaction (every later
     statement fails with SQLSTATE 25P02 until rollback).  Both halves of
@@ -1379,7 +1380,7 @@ async def tick_cron(
     # Two statements: the try-lock, then the planning clock + due read. The
     # leader ticks once a second and is idle almost always, so the idle
     # tick's cost is the round-trip count, but the read cannot share the
-    # probe's statement: under READ COMMITTED the statement's snapshot is
+    # probe's statement: under read committed the statement's snapshot is
     # taken before the probe evaluates, so a commit landing in that gap
     # handed the contender the lock with a pre-advance snapshot and the
     # winner's batch refired (the double-fire this lock exists to
@@ -1393,8 +1394,8 @@ async def tick_cron(
         # handover it exists to cover, but it is indistinguishable from total
         # cron failure. The lock is transaction-scoped and releases on
         # COMMIT/ROLLBACK -- which never happens if the holding session was
-        # partitioned without a FIN (a VNet blip, as opposed to a process kill,
-        # which sends a FIN and releases cleanly). Every subsequent tick then
+        # partitioned without a fin (a vnet blip, as opposed to a process kill,
+        # which sends a fin and releases cleanly). Every subsequent tick then
         # returns here, cron stops firing fleet-wide, and neither
         # `taskq.cron.disabled_schedules` nor `consecutive_failures` moves,
         # because the tick never reaches a fire. Silence made that state
@@ -1445,13 +1446,13 @@ async def tick_cron(
 
     successes: list[_FireSuccess] = []
     failures: list[_FireFailure] = []
-    # Budget deferrals are collected HERE, inside the planning loop, and
+    # Budget deferrals are collected here, inside the planning loop, and
     # policy suppressions join them below: both flow into the one
     # suppression UPDATE, the branch that advances next_fire_at without
     # touching failure accounting.
     suppressed: list[_SuppressedFire] = []
     # Failure telemetry (spans, auto-disable events, metric deltas) is
-    # buffered here and exported ONLY after every statement of the tick
+    # buffered here and exported only after every statement of the tick
     # has executed, see the emission section at the end of this function.
     failure_telemetry: list[_BufferedFailureTelemetry] = []
     # The tick's shared walk-time slice for the skip-count walks (see
@@ -1494,14 +1495,14 @@ async def tick_cron(
                     # obs/_otel.py): how many fire units this schedule was
                     # behind when the catch-up branch skipped them. Zero is
                     # not set -- a clean fire's span says nothing, the
-                    # attribute's ABSENCE is the clean reading.
+                    # attribute's absence is the clean reading.
                     fire_span.set_attribute("taskq.cron.skipped_slots", plan.skipped_slots)
                     if plan.skipped_slots_partial:
                         fire_span.set_attribute("taskq.cron.skipped_slots_partial", True)
             except _TickBudgetExhaustedError as budget_exc:
-                # Budget deferral, not a failure: ordered BEFORE the
+                # Budget deferral, not a failure: ordered before the
                 # generic except because this exception subclasses
-                # TimeoutError (and Exception).  The factory NEVER RAN:
+                # TimeoutError (and Exception).  The factory never ran:
                 # the only schedule with evidence against it is the one
                 # whose factory consumed the budget ahead of this one,
                 # and that schedule took its own strike through the
@@ -1510,7 +1511,7 @@ async def tick_cron(
                 # identical batch returned in the identical order every
                 # tick and healthy factory-backed schedules rode a hung
                 # neighbour's strikes to auto-disable.  The span closes
-                # UNSET, exactly like every other suppressed plan's:
+                # unset, exactly like every other suppressed plan's:
                 # the deferral is a post-commit log event, not a
                 # failure claim the database can still roll back.
                 suppressed.append(
@@ -1522,7 +1523,7 @@ async def tick_cron(
                         blocking_job_id=None,
                         current_count=None,
                         max_pending=None,
-                        # A deferral AFTER the catch-up skip branch already
+                        # A deferral after the catch-up skip branch already
                         # recomputed the fire time durably drops the owed
                         # slots with the suppression UPDATE: carry the
                         # count so the committed suppression counts them
@@ -1532,8 +1533,8 @@ async def tick_cron(
                 )
             except Exception as exc:
                 # Why buffered, not marked on the span above: that span
-                # records the planning ATTEMPT and closes UNSET; the failure
-                # claim (ERROR status, auto-disable event) belongs to the
+                # records the planning attempt and closes unset; the failure
+                # claim (error status, auto-disable event) belongs to the
                 # emission span, which opens only once the transaction has
                 # committed, a rollback takes this failure with it.
                 #
@@ -1559,7 +1560,7 @@ async def tick_cron(
     # success carries a flag, so ticks without flagged actors spend zero
     # extra statements.  Suppressed plans leave the enqueue list here and
     # never reach the failure path below.
-    # Overlap-twin delivery is settled BEFORE the policy preflight: a
+    # Overlap-twin delivery is settled before the policy preflight: a
     # suppressed plan leaves the success list here, and its next_fire
     # flows into the suppression UPDATE below, whether the fold-1 twin
     # was already delivered by an earlier tick is independent of any
@@ -1591,7 +1592,7 @@ async def tick_cron(
         )
 
     if suppressed:
-        # next_fire_at ONLY: suppression says nothing about the actor's
+        # next_fire_at only: suppression says nothing about the actor's
         # health, so no last_fired_at stamp (nothing fired), no
         # last_fire_error write, no consecutive_failures increment and no
         # reset either, a suppressed slot must neither punish nor amnesty.
@@ -1611,10 +1612,10 @@ async def tick_cron(
 
     disabled_count_after: int | None = None
     if failures:
-        # One statement for both failure flavours.  The CASE, not
-        # ``enabled = NOT f.disable``, is essential: a plain NOT would
+        # One statement for both failure flavours.  The case, not
+        # ``enabled = not f.disable``, is essential: a plain not would
         # re-enable a schedule someone re-enabled between read and write.
-        # ``AND s.enabled = true`` keeps the pre-batching guard, so a
+        # ``and s.enabled = true`` keeps the pre-batching guard, so a
         # schedule disabled by anyone else mid-tick is left alone and shows
         # up as the rowcount shortfall below.
         #
@@ -1650,7 +1651,7 @@ async def tick_cron(
             )
 
         if any(failure.auto_disable for failure in failures):
-            # SQL phase, deliberately: the count must be read INSIDE this
+            # SQL phase, deliberately: the count must be read inside this
             # transaction (it includes the tick's own uncommitted disables).
             # Only the gauge export is deferred to the emission section
             # below, with the rest of the strike telemetry.
@@ -1659,9 +1660,9 @@ async def tick_cron(
             )
 
     # The failure level every actor with a failing schedule now carries,
-    # read INSIDE this transaction so it includes the tick's own
+    # read inside this transaction so it includes the tick's own
     # uncommitted strikes and resets, and read over the whole table rather
-    # than scoped to this batch's actors: a batch covers only DUE
+    # than scoped to this batch's actors: a batch covers only due
     # schedules, so an actor whose failing schedule was disabled or
     # deleted between ticks never re-enters a batch, and a batch-scoped
     # read would strand its reported level at its last value forever.
@@ -1686,7 +1687,7 @@ async def tick_cron(
 
     def _emit() -> None:
         # The per-actor skip depths this tick committed, for the
-        # slots-behind gauge: successes AND suppressions (both durably
+        # slots-behind gauge: successes and suppressions (both durably
         # advance next_fire_at past whatever the plan skipped). Max per
         # actor -- the depth of the actor's worst schedule; a clean fire
         # contributes 0, so an actor that caught up decays on its next
@@ -1697,7 +1698,7 @@ async def tick_cron(
                 # Why actor, not schedule_id: the metric's dimension is the
                 # registered actor set (bounded by the shipped code); the
                 # schedule id rides the log line below and the cron-fire span.
-                # The delta is this schedule's OWN prior count, so the actor's
+                # The delta is this schedule's own prior count, so the actor's
                 # balance lands on the sum of its other schedules' counts.
                 record_cron_failure(plan.actor, -plan.prev_consecutive)
             log.info(
@@ -1724,10 +1725,10 @@ async def tick_cron(
             record_published_message(plan.actor, plan.queue)
 
         for entry in failure_telemetry:
-            # Span shape matches the strike-time export (PRODUCER kind, the
+            # Span shape matches the strike-time export (producer kind, the
             # link captured at failure time, the cron_schedule_name /
             # worker_id / cron_schedule_id attributes), only the emission
-            # TIME moved.
+            # time moved.
             with safe_start_span(
                 "cron fire",
                 kind=SpanKind.PRODUCER,
@@ -1759,7 +1760,7 @@ async def tick_cron(
 
         # Last, so it settles the series on what the database holds
         # whatever the per-event deltas above added: the deltas describe
-        # what THIS tick did, the reconciliation describes what every
+        # what this tick did, the reconciliation describes what every
         # process has left behind.
         reconcile_cron_failures(failure_totals)
 
@@ -1768,7 +1769,7 @@ async def tick_cron(
 
         for entry in suppressed:
             if entry.skipped_slots:
-                # A suppressed fire of an OVERDUE schedule durably dropped
+                # A suppressed fire of an overdue schedule durably dropped
                 # its owed slots (the suppression UPDATE advanced
                 # next_fire_at past them): count them on the same series as
                 # any other skip. Without this, a budget-deferred runaway
@@ -1792,11 +1793,11 @@ async def tick_cron(
                     worker_id=str(worker_id),
                 )
             elif entry.reason == "tick_budget":
-                # INFO, not WARNING: the deferred schedule did nothing
+                # info, not warning: the deferred schedule did nothing
                 # wrong and the condition is transient whenever the
                 # monopolizer ahead of it is failing (its own strikes
                 # drain it toward auto-disable).  The non-transient
-                # shape, a slow-SUCCESSFUL monopolizer that never
+                # shape, a slow-successful monopolizer that never
                 # strikes and never frees the budget, is what the
                 # counter below exists to expose: a sustained deferral
                 # rate is the operator-visible starvation signal, and
@@ -1882,11 +1883,11 @@ async def _skip_already_delivered_overlap_twins(
     fold-1 pass's first match (a multi-match range, once the fold-0
     pass is spent).  But the twin chain may already have delivered
     those instants: a tick that fires a fold-0 slot pre-schedules the
-    NEXT slot's fold-1 occurrence, so by the time the last fold-0 slot
+    next slot's fold-1 occurrence, so by the time the last fold-0 slot
     fires, every fold-1 slot can already hold a queued job, firing
     the schedule into that pass would double-deliver it.  The
     distinguishing fact is a query away and only on this rare shape
-    (twice a year per schedule per timezone): the schedule's OWN jobs
+    (twice a year per schedule per timezone): the schedule's own jobs
     inside the range tell exactly which instants are already OWNED -
     in flight (pending/scheduled), in progress (running), delivered
     (succeeded), or deliberately suppressed by operator intent
@@ -1898,7 +1899,7 @@ async def _skip_already_delivered_overlap_twins(
     this schedule's coverage, and the plan advances past the delivered
     prefix to the first instant nothing holds: the uncovered remainder
     is then delivered by the schedule's own later ticks, each exactly
-    once.  The terminal-NOT-delivered statuses (``failed``, ``crashed``)
+    once.  The terminal-not-delivered statuses (``failed``, ``crashed``)
     hold nothing - no retry will ever deliver them, so their instant
     stays uncovered and the schedule's own later fire re-delivers it.  ``identity_key`` cannot serve as the scope: it defaults to
     NULL and is a user-facing dedup handle shared with on-demand jobs,
@@ -1935,21 +1936,21 @@ async def _skip_already_delivered_overlap_twins(
         f"AND j.metadata->>'cron_schedule_id' = a.schedule_id "
         f"AND j.scheduled_at >= a.from_ts "
         f"AND j.scheduled_at < a.to_ts "
-        # Coverage = an existing job OWNS the instant's delivery: in flight
+        # Coverage = an existing job owns the instant's delivery: in flight
         # (pending/scheduled), in progress (running), delivered
         # (succeeded), or deliberately suppressed by operator intent
         # (cancelled/abandoned - the cancel paths terminalise exactly the
         # rows a bare pending/scheduled filter matches, so an
         # operator-refused twin drops out of the covered prefix and the
-        # schedule re-fires it; GH issue #462).  Counting a claimed twin
-        # is safe against over-coverage: a holder that dies WITH retry
+        # schedule re-fires it; gh issue #462).  Counting a claimed twin
+        # is safe against over-coverage: a holder that dies with retry
         # budget is re-pended by the reclaim sweep with its delivery
         # obligation intact, and one that dies without it terminalises to
-        # 'crashed' below.  The two terminal-NOT-delivered statuses
+        # 'crashed' below.  The two terminal-not-delivered statuses
         # ('failed', 'crashed') own nothing - no retry will ever deliver
         # them, their scheduled_at stays at the fold instant, and the
         # schedule's own later fire is the only deliverer left - so they
-        # must keep the walk OFF their instants: stalling there is the
+        # must keep the walk off their instants: stalling there is the
         # at-least-once re-fire a genuinely-not-delivered twin is owed.
         f"AND j.status IN ('pending', 'scheduled', 'running', "
         f"'succeeded', 'cancelled', 'abandoned')",
@@ -2043,27 +2044,27 @@ async def _plan_fire(
     # Subscript, not .get(default): the tick's SELECT is contracted to provide
     # this column, and a defaulting read is exactly what hid its absence ,
     # every schedule silently fired with 'skip' semantics, whatever it stored,
-    # and the DST-overlap branch below was unreachable.
+    # and the dst-overlap branch below was unreachable.
     dst_strategy_raw: str = row["dst_strategy"]
     dst_strategy: DstStrategy = dst_strategy_raw if dst_strategy_raw in DST_STRATEGIES else "skip"
-    # The drop count, in FIRE UNITS: every schedule occurrence between the
+    # The drop count, in fire units: every schedule occurrence between the
     # owed slot and the recomputed one is a fire this system will not even
-    # attempt -- the catch-up window's skip is the tick ADMITTING it lost
+    # attempt -- the catch-up window's skip is the tick admitting it lost
     # the race. Counted by hopping the schedule forward from the owed slot
-    # (the same walk the DST overlap-twin probe makes, bounded by the
+    # (the same walk the dst overlap-twin probe makes, bounded by the
     # recomputed fire, with the same monotonicity belt), because the count
     # must be in the schedule's own period units -- "3" on a */5 schedule
     # means three dropped fires, the number the runaway predicate compares
     # against the cron period -- and no cheaper expression of that exists
     # for arbitrary cron expressions. The walk runs at most once per
     # beyond-window fire attempt: after this tick, next_fire_at is in the
-    # future, so a SUSTAINED drop count means the schedule keeps losing
+    # future, so a sustained drop count means the schedule keeps losing
     # the race, exactly the signal.
     skipped_slots = 0
     # The walk is bounded by the tick's shared walk-time slice (see
     # _SKIP_WALK_BUDGET_FRACTION): a deep backlog trips the budget, the
     # count stops at its floor, and the fire proceeds. The walk charges
-    # its OWN elapsed time, so factory time ahead of it cannot consume the
+    # its own elapsed time, so factory time ahead of it cannot consume the
     # budget a shallow backlog still needs.
     skipped_slots_partial = False
     if fire_at < catch_up_cutoff:
@@ -2108,7 +2109,7 @@ async def _plan_fire(
         actor_policies.get(actor) if actor_policies is not None else None
     )
     # Parity stamps: the client path sets metadata["singleton"] from the
-    # ActorRef and passes its capacity-cache-RESOLVED max_pending (a
+    # ActorRef and passes its capacity-cache-resolved max_pending (a
     # non-NULL stored actor_config value over the ref literal); the tick
     # resolves the same rule from its own ac-rows read, so a cron fire's
     # args never carry a stale literal.  Without them the
@@ -2221,11 +2222,11 @@ async def _plan_fire(
     # No singleton twin-override here: the computation itself owns the
     # fold handoff.  A fired fold-0 slot whose fold-0 pass is spent
     # makes ``compute_next_fire_after`` answer the fold-1 pass's first
-    # match, for a single-match range that IS the fired slot's own
+    # match, for a single-match range that is the fired slot's own
     # twin (the sequential delivery the deferral promised), and for a
     # multi-match range it is the pass's first unspent occurrence.  An
     # override on the fired slot's own twin alone would send a minutely
-    # singleton to the range's LAST occurrence and silently lose every
+    # singleton to the range's last occurrence and silently lose every
     # fold-1 occurrence in between.
 
     return _FireSuccess(

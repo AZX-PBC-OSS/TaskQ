@@ -126,7 +126,7 @@ __all__ = [
 # Infra failures during the terminal-write itself (DB connection drop,
 # timeout acquiring a pool connection, socket errors, pool/conn
 # lifecycle refusals), as opposed to the actor's own exception, which
-# is what decide_after_failure/error_info describe. These must NOT be
+# is what decide_after_failure/error_info describe. These must not be
 # treated as "the actor failed with this exception": doing so would
 # overwrite the real error_info and re-run the retry decision against
 # the wrong exception type. See `_log_terminal_write_failed`.
@@ -352,6 +352,39 @@ class _StartToCloseExceededError(TimeoutError):
     """
 
 
+async def _failed_or_retry_write(
+    backend: Backend,
+    job: JobRow,
+    worker_id: UUID,
+    error_info: ErrorInfo,
+    retry_delay: timedelta | None,
+    *,
+    progress_seq: int,
+    progress_state: dict[str, object] | None,
+    log: structlog.stdlib.BoundLogger,
+) -> JobRow | None:
+    """The mark_failed_or_retry terminal write under the retry budget
+    (see :func:`_terminal_write_with_retry`); returns the persisted row,
+    or None when the write fenced out."""
+    return await _terminal_write_with_retry(
+        lambda: safe_mark_failed_or_retry(
+            backend,
+            job.id,
+            worker_id,
+            error_info,
+            retry_delay,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
+            log=log,
+            attempt=job.attempt,
+            claim_epoch=job.claim_epoch,
+        ),
+        log=log,
+        job=job,
+        write_name="mark_failed_or_retry",
+    )
+
+
 def _unwrap_actor_system_exit(exc: BaseException) -> BaseException:
     """Return the actor's own exception for a ``_ActorSystemExitAttemptError``
     carrier, *exc* unchanged otherwise.
@@ -378,7 +411,7 @@ def _log_terminal_write_failed(
     The job row is left in ``running``, none of the write's attempts
     landed (see :func:`_terminal_write_with_retry`), so lock-lease
     expiry and the crash sweep reclaim it for retry. This is intentionally
-    NOT re-dispatched into
+    not re-dispatched into
     ``_handle_generic_exception`` (that would classify the *infra*
     exception as the actor's failure, discarding the real one and
     re-running the retry decision against the wrong exception type).
@@ -609,12 +642,12 @@ async def _handle_timeout(
     # rejecting them (the ErrorInfo guard's job for caller-supplied text)
     # would strand the very job the text describes, the terminal write
     # must land with the defect visible as an escape sequence. Why
-    # safe_str, not str(): a TimeoutError SUBCLASS raised by actor code
+    # safe_str, not str(): a TimeoutError subclass raised by actor code
     # can carry a __str__ that raises, and an unguarded str() here would
-    # convert INSIDE this handler, escaping the classification and
+    # convert inside this handler, escaping the classification and
     # stranding the row running until lease expiry.
     raw_message = safe_str(exc)
-    # The sentinel is the MACHINERY's expiry; the row reports the deadline
+    # The sentinel is the machinery's expiry; the row reports the deadline
     # class, not the private marker's own name. A body-raised TimeoutError
     # never reaches this handler (the dispatcher routes it to the generic
     # path), so the stamp below stays the exception's own (guarded) name
@@ -746,22 +779,15 @@ async def _handle_timeout(
         )
         return "scheduled"
     else:
-        updated_row = await _terminal_write_with_retry(
-            lambda: safe_mark_failed_or_retry(
-                backend,
-                job.id,
-                worker_id,
-                error_info,
-                None,
-                progress_seq=progress_seq,
-                progress_state=progress_state,
-                log=log,
-                attempt=job.attempt,
-                claim_epoch=job.claim_epoch,
-            ),
+        updated_row = await _failed_or_retry_write(
+            backend,
+            job,
+            worker_id,
+            error_info,
+            None,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
             log=log,
-            job=job,
-            write_name="mark_failed_or_retry",
         )
         if updated_row is None:
             # Fenced out, see the retry branch above.
@@ -1131,7 +1157,7 @@ async def _handle_generic_exception(
     # must land with the defect visible as an escape sequence. Why
     # safe_str, not str(): the actor's exception class is attacker-adjacent
     # code and its __str__ can raise; an unguarded str() here would convert
-    # INSIDE this handler and defeat the per-attempt capture contract (the
+    # inside this handler and defeat the per-attempt capture contract (the
     # row would stay running until lease expiry instead of recording the
     # actor's failure). Raw text, not safe_exception_message: the
     # render-once invariant owns scrubbing (text above), the row keeps the
@@ -1227,22 +1253,15 @@ async def _handle_generic_exception(
         )
         return "scheduled"
     else:
-        updated_row = await _terminal_write_with_retry(
-            lambda: safe_mark_failed_or_retry(
-                backend,
-                job.id,
-                worker_id,
-                error_info,
-                None,
-                progress_seq=progress_seq,
-                progress_state=progress_state,
-                log=log,
-                attempt=job.attempt,
-                claim_epoch=job.claim_epoch,
-            ),
+        updated_row = await _failed_or_retry_write(
+            backend,
+            job,
+            worker_id,
+            error_info,
+            None,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
             log=log,
-            job=job,
-            write_name="mark_failed_or_retry",
         )
         if updated_row is None:
             # Fenced out, see the retry branch above.
@@ -1324,7 +1343,7 @@ async def _dispatch_exception(
         pre_handler()
 
     if isinstance(exc, _StartToCloseExceededError):
-        # ONLY the machinery's own start_to_close marker routes here. A
+        # only the machinery's own start_to_close marker routes here. A
         # bare TimeoutError (the actor body raised its own: a nested
         # wait_for, a socket read, a futures timeout) falls through to the
         # generic failure path, its own error_class and its own retry

@@ -103,7 +103,7 @@ def _login(client: TestClient) -> dict[str, list[str]]:
     return parse_qs(urlparse(resp.headers["location"]).query)
 
 
-# ── DEFECT 1: OIDC nonce ──────────────────────────────────────────────────
+# ── defect 1: OIDC nonce ──────────────────────────────────────────────────
 
 
 def test_oidc_authorization_url_carries_a_nonce() -> None:
@@ -237,7 +237,7 @@ def test_oidc_rejects_an_id_token_whose_nonce_belongs_to_another_login() -> None
     assert "taskq_session=" not in resp.headers.get("set-cookie", "")
 
 
-# ── DEFECT 2: SAML InResponseTo / replay ──────────────────────────────────
+# ── defect 2: saml InResponseTo / replay ──────────────────────────────────
 
 _SAML_SSO_URL = "https://idp.test.invalid/sso"
 _SAML_BASE_URL = "http://testserver.invalid"
@@ -270,7 +270,7 @@ def _saml_client(config: Any) -> TestClient:
     bundle = create(config, base_path=_BASE_PATH)
     app = FastAPI()
     app.include_router(bundle.router, prefix=_BASE_PATH)
-    # python3-saml validates the ACS URL against a multi-label-domain regex.
+    # python3-saml validates the acs URL against a multi-label-domain regex.
     return TestClient(app, base_url=_SAML_BASE_URL)
 
 
@@ -506,7 +506,7 @@ def test_saml_replay_rejection_happens_even_when_every_other_check_passes(
     """End-to-end discriminating pin for the replay cache.
 
     The test above can go green at the request-binding gate: with no
-    ``/login`` at all, BOTH presentations are refused for "no pending SAML
+    ``/login`` at all, both presentations are refused for "no pending SAML
     AuthnRequest" and the replay cache is never reached. This pin first
     drives two fully accepted logins - asserting each acceptance and its
     minted session so it cannot pass vacuously - then re-presents assertion
@@ -539,7 +539,7 @@ def test_saml_replay_rejection_happens_even_when_every_other_check_passes(
         assertion_a = build_saml_response(nameid="user-replay-e2e-a", in_response_to=issued[-1])
         _assert_accepted(_post_assertion(client, assertion_a), "assertion A")
 
-        # Login 2 → assertion B, a DIFFERENT assertion ID, also accepted.
+        # Login 2 → assertion B, a different assertion ID, also accepted.
         client.get(f"{_BASE_PATH}/login", follow_redirects=False)
         request_b = issued[-1]
         cookie_b = client.cookies.get("taskq_saml_request")

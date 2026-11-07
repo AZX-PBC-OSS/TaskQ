@@ -7,7 +7,7 @@ Three boundaries are attacked with hand-constructed malformed input:
    whose jsonb columns hold text that is not valid JSON, or a ROW-CONTRACT
    dict column (metadata, progress_state) whose valid-JSON body is not the
    object the row contract declares. The decode
-   sits AFTER the claim committed, so an escaping decode exception made
+   sits after the claim committed, so an escaping decode exception made
    the whole round the producer loop's problem (the unexpected-failure
    backstop kills the worker at its consecutive cap) while the poisoned
    row looped forever through claim and lease-sweep reclaim. Pinned: the
@@ -17,7 +17,7 @@ Three boundaries are attacked with hand-constructed malformed input:
 
    The USER-CONTENT columns (result, payload) hold the actor's data and
    declare no shape: they decode through ``jsonb_to_dict``'s sibling
-   ``jsonb_to_value``, which keeps ONLY the malformed-text guard. Pinned:
+   ``jsonb_to_value``, which keeps only the malformed-text guard. Pinned:
    a list result round-trips verbatim, a scalar payload dispatches, and a
    corrupt-TEXT result still fails with the named class.
 
@@ -247,7 +247,7 @@ async def _run_round(
     ['{"broken"', "not json at all", "", "[1, 2, 3]", "5", '"a bare string"', "null"],
 )
 def test_jsonb_to_dict_classifies_every_malformed_shape(blob: str) -> None:
-    """Malformed text AND valid-but-non-object JSON both raise the named
+    """Malformed text and valid-but-non-object JSON both raise the named
     CorruptJobDataError, never a raw orjson/driver vocabulary word."""
     with pytest.raises(CorruptJobDataError):
         jsonb_to_dict(blob)
@@ -301,7 +301,7 @@ def test_jsonb_to_value_round_trips_every_valid_json_shape() -> None:
 
 @pytest.mark.parametrize("blob", ['{"broken"', "not json at all", ""])
 def test_jsonb_to_value_still_guards_malformed_text(blob: str) -> None:
-    """The ONLY guard the user-content decode drops is the shape
+    """The only guard the user-content decode drops is the shape
     assertion. Text that is not valid JSON raises the same named class
     jsonb_to_dict raises: a corrupt row fails loudly, user content or
     not."""
@@ -502,7 +502,7 @@ async def test_scalar_payload_dispatches_through_the_claim_path(
     assert conn.fail_writes == [], "user content must never wear a CorruptJobDataError verdict"
 
 
-# ── the NOTIFY event callbacks: drop WITH the counter ─────────────────
+# ── the NOTIFY event callbacks: drop with the counter ─────────────────
 
 
 class _BackendStub:
@@ -564,7 +564,7 @@ def test_notify_valid_cancel_payload_still_wakes(_notify_counter: list[int]) -> 
     assert _notify_counter[0] == 0
 
 
-# ── the AAD JWT claim decode: depth-bounded, no recursion escape ──────
+# ── the aad JWT claim decode: depth-bounded, no recursion escape ──────
 
 
 def test_aad_deep_claims_returns_none_not_recursion() -> None:

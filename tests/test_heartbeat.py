@@ -28,7 +28,17 @@ from tests.conftest import _FakePool
 
 
 class FakeConn:
-    """Lightweight asyncpg.Connection stand-in; records ``execute`` calls."""
+    """The heartbeat double.
+
+    FAIL CLOSED (tests/test_suite_hygiene.py's rule): the tick's own
+    statement shapes are the named answers - the three renewal UPDATEs
+    (workers liveness, jobs lock, reservation leases) get the honest
+    ``UPDATE 1`` tag ``parse_rowcount`` reads, the two reconcile probes
+    (the still-held select and the claim-loss refund select) get an empty
+    page, and any OTHER statement raises naming the fragment. The blind
+    modulo-tag the old double answered was a rowcount lie no reader could
+    trust.
+    """
 
     def __init__(self) -> None:
         self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
@@ -37,10 +47,35 @@ class FakeConn:
 
     async def execute(self, sql: str, *args: object) -> str:
         self.execute_calls.append((sql, args))
-        return f"UPDATE {len(sql) % 10}"
+        normalized = " ".join(sql.split()).upper()
+        named = (
+            normalized.startswith("UPDATE")
+            or ("WITH DUE AS" in normalized and "UPDATE" in normalized)
+        ) and (
+            ".WORKERS" in normalized or ".JOBS" in normalized or ".RESERVATION_SLOTS" in normalized
+        )
+        if named:
+            return "UPDATE 1"
+        raise AssertionError(
+            f"FakeConn: no named answer for statement {sql!r} (args {args!r}) - "
+            "the fail-closed rule (tests/test_suite_hygiene.py) forbids a "
+            "silent default: name the statement shape or fix the wiring"
+        )
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
-        return []
+        normalized = " ".join(sql.split()).upper()
+        named_probe = (normalized.startswith("SELECT") and ".JOBS" in normalized) or (
+            # the claim-loss reconcile: an UPDATE ... RETURNING j.id driven
+            # through fetch; an empty page is "nothing lost this tick"
+            normalized.startswith("UPDATE") and ".JOBS" in normalized and "RETURNING" in normalized
+        )
+        if named_probe:
+            return []  # nothing held, nothing lost
+        raise AssertionError(
+            f"FakeConn: no named answer for statement {sql!r} (args {args!r}) - "
+            "the fail-closed rule (tests/test_suite_hygiene.py) forbids a "
+            "silent default: name the statement shape or fix the wiring"
+        )
 
     async def close(self) -> None:
         self.closed = True
@@ -293,14 +328,14 @@ async def _wait_for_heartbeat_failures(
     ``deps.heartbeat_failures`` to a target.
 
     The wait surface is ``taskq.worker.heartbeat.update_heartbeat_consecutive_failures``
-    - the loop calls it immediately AFTER every counter flip (the
+    - the loop calls it immediately after every counter flip (the
     in-tx hook-failure increment, the transient-failure increment, and
     the success-path reset), so signalling from inside the wrapper
     fires in the same event-loop turn as the flip and the waiting test
-    resumes before the loop can start its NEXT tick. A wait on the
+    resumes before the loop can start its next tick. A wait on the
     exact count therefore can never observe the counter advancing past
-    the target. (The tick-duration histogram hook is NOT usable here:
-    on the transient-failure path it records BEFORE the increment, so
+    the target. (The tick-duration histogram hook is not usable here:
+    on the transient-failure path it records before the increment, so
     it would fire a whole tick late - after isolation.) The
     ``for _ in range(50)``-style poll loop samples the counter every
     50 ms and can miss the window under scheduler
@@ -381,7 +416,7 @@ async def test_failure_counter_increments_on_connection_error() -> None:
     # Event-driven wait on the exact observable: fires on the tick that
     # reaches 2 failures, before the loop can run further ticks - which,
     # under the starvation a poll loop tolerates, could reach the
-    # isolation threshold and run the REAL isolate_self against the
+    # isolation threshold and run the real isolate_self against the
     # fake DSN.
     await _wait_for_heartbeat_failures(deps, at_least=2)
     assert deps.heartbeat_failures >= 2
@@ -419,7 +454,7 @@ async def test_failure_counter_resets_after_success() -> None:
 
 
 class _OneShotFastFailPool(FakePool):
-    """Fails the FIRST acquire instantly with a transient error, then
+    """Fails the first acquire instantly with a transient error, then
     behaves like a healthy pool for every later tick.
 
     The fast shape is the common transient blip (a refused connection
@@ -447,16 +482,16 @@ class _OneShotFastFailPool(FakePool):
 async def test_one_fast_transient_failure_is_one_miss_retried_promptly() -> None:
     """Behavior pin for the failed-tick pacing contract.
 
-    ONE fast transient tick failure - its prompt retry succeeding - must
-    cost the ledger exactly ONE miss, leave the consecutive-failure count
-    reset to zero (the isolate budget is NOT consumed: at
+    one fast transient tick failure - its prompt retry succeeding - must
+    cost the ledger exactly one miss, leave the consecutive-failure count
+    reset to zero (the isolate budget is not consumed: at
     max_heartbeat_failures=1 a second counted failure would isolate, and
     none does), and the recovery beat must land PROMPTLY - well inside
     the interval, not a full interval after the failure.
 
-    The pacing half is the regression that motivated the pin: the loop
-    used to sleep the FULL remaining interval after a tick that failed
-    instantly, so the recovery beat landed a whole interval late - at
+    The pacing half is the regression that motivated the pin: a loop that
+    sleeps the FULL remaining interval after a tick that failed
+    instantly lands the recovery beat a whole interval late - at
     twice the interval after the last good beat, the reclaim deadline
     the ops guidance calls safe at ``heartbeat_timeout = 2x interval``.
     A failed tick is not a beat: it stamps nothing, so the one-beat-per-
@@ -499,7 +534,7 @@ async def test_one_fast_transient_failure_is_one_miss_retried_promptly() -> None
     failed_at = time.monotonic()
     await _wait_for_heartbeat_failures(deps, exactly=0)
     recovered_at = time.monotonic()
-    # The isolate observation must land BEFORE the test's own
+    # The isolate observation must land before the test's own
     # shutdown.set(): the loop is parked in its inter-tick wait, and
     # nothing but a threshold trip could have isolated it.
     assert not isolate_calls, (
@@ -632,7 +667,7 @@ async def test_isolation_fires_after_max_plus_one_failures() -> None:
 
 
 async def test_no_isolation_at_exactly_max_failures() -> None:
-    """boundary. Isolation does NOT fire at exactly max_heartbeat_failures
+    """boundary. Isolation does not fire at exactly max_heartbeat_failures
     (3 failures with default max=3)."""
     await _patch_tick_duration(lambda v: None)
 
@@ -766,10 +801,10 @@ async def test_unexpected_failure_counter_resets_after_success() -> None:
 # ── TRANSIENT_PG_ERRORS membership is the load-bearing classification ──
 #
 # Since the two tick-failure arms share one ledger, membership in
-# TRANSIENT_PG_ERRORS no longer decides WHETHER a failure counts - both
+# TRANSIENT_PG_ERRORS no longer decides whether a failure counts - both
 # arms count. It decides which arm rides, and the arms spend the failure
 # differently: the transient arm warns and retries, the unexpected arm
-# raises the exception-level bug alarm AND spends the isolate budget -
+# raises the exception-level bug alarm and spends the isolate budget -
 # any Exception outside the set isolates the worker within
 # max_heartbeat_failures + 1 ticks (~40 s at the defaults, interval 10 s).
 # These pins couple the set to that consequence.
@@ -778,7 +813,7 @@ async def test_unexpected_failure_counter_resets_after_success() -> None:
 async def test_a_transient_member_does_not_count_as_unexpected(
     structlog_capture: list[structlog.types.EventDict],
 ) -> None:
-    """A TRANSIENT_PG_ERRORS member does NOT count toward the unexpected
+    """A TRANSIENT_PG_ERRORS member does not count toward the unexpected
     arm: 40001 (SerializationError, a canonical member) rides the
     transient arm's warn-level ``heartbeat-tick-failure`` and never raises
     the exception-level ``heartbeat-tick-unexpected-error`` bug alarm.
@@ -930,7 +965,7 @@ async def test_no_soft_warning_when_threshold_is_zero() -> None:
 
     with patch.object(hb_mod, "logger", mock_log):
         task = asyncio.create_task(heartbeat_loop(deps, new_uuid(), shutdown))
-        # Fires on the FIRST failure; the shutdown that follows lands
+        # Fires on the first failure; the shutdown that follows lands
         # before the second tick, so the real isolate_self (max=1 →
         # isolate at 2, one mere interval away) can never run against
         # this fake DSN - the tightest isolation margin in the file.
@@ -967,7 +1002,7 @@ async def test_cancel_controller_called_when_set() -> None:
     )
 
 
-# ── cancel_controller NOT called when None ────────────────────────
+# ── cancel_controller not called when None ────────────────────────
 
 
 async def test_cancel_controller_not_called_when_none() -> None:
@@ -1011,57 +1046,11 @@ async def test_shutdown_exits_loop_without_acquiring() -> None:
 # ── C-02 regression: schema_name flows through to all heartbeat SQL ──────
 
 
-async def test_custom_schema_name_flows_to_sql() -> None:
-    """C-02 regression: heartbeat ticks complete correctly with a non-default
-    schema_name - the configured name is used, not a hardcoded default."""
-    import taskq.worker.heartbeat as hb_mod
-
-    tick_done = asyncio.Event()
-    hb_mod._tick_duration.record = lambda *a, **kw: tick_done.set()  # type: ignore[method-assign,reportPrivateUsage]
-
-    settings = _worker_settings(
-        "postgresql://x:x@localhost/x",
-        SCHEMA_NAME="custom_ns",
-        HEARTBEAT_INTERVAL="0.5",
-        # 18.0 >= the cascade floor at h=0.5 with the default command
-        # timeout of 2.0 (max(0.5, 2.0) + 4 * (0.5 + 2.0) = 12; see
-        # _make_deps for the same bump and why the
-        # renewal-threshold behaviour is unchanged).
-        LOCK_LEASE="18.0",
-        WATCHDOG_LOOP_LAG_BUDGET="1.2",
-        WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
-        WATCHDOG_CHECK_INTERVAL="0.25",  # the lag lattice: check < warn (the F6 storm refusal)
-        MAX_HEARTBEAT_FAILURES="3",
-        CANCELLATION_GRACE_PERIOD="0.0",
-        CLEANUP_GRACE_PERIOD="0.0",
-    )
-    pool = FakePool()
-    worker_id = new_uuid()
-    deps = WorkerDeps(
-        settings=settings,
-        dispatcher_pool=_FakePool(),  # type: ignore[arg-type]
-        heartbeat_pool=pool,  # type: ignore[arg-type]
-        worker_pool=_FakePool(),  # type: ignore[arg-type]
-        notify_conn=None,
-        leader_conn=None,
-    )
-    deps.is_leader.set()
-    shutdown = asyncio.Event()
-    task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
-    # Wait for the tick to actually complete rather than guessing 0.1s is enough.
-    await wait_for(tick_done, timeout=5.0)
-    shutdown.set()
-    await task
-
-    assert not deps.heartbeat_failures
-    assert pool.execute_calls
-    # Each call binds worker_id: verify the configured schema completes a tick
-    _worker_liveness_sql, wl_args = pool.execute_calls[0]
-    assert worker_id in wl_args
-    assert settings.schema_name not in wl_args
-    # The configured schema is what the statements name - the defect this
-    # test exists for was a hardcoded default surviving the rendering.
-    assert all(f'"{settings.schema_name}".' in sql for sql, _ in pool.execute_calls)
+# NOTE (the mock-subtraction cure): the custom-schema fake arm died —
+# tests/test_heartbeat_integration.py owns the rendering against real PG:
+# its every test drives the tick/loop against the module's own non-default
+# schema name (the fixture-built settings), so a hardcoded default cannot
+# pass a single one of them.
 
 
 # ── The tick never touches the lease row ──────────────────────────
@@ -1108,7 +1097,7 @@ async def test_pool_acquire_timeout_increments_counter() -> None:
 
 async def test_unexpected_exception_is_counted_and_tolerated() -> None:
     """A generic Exception (e.g. RuntimeError) is logged at exception
-    level AND counts toward the same isolate threshold as the transient
+    level and counts toward the same isolate threshold as the transient
     arm.
 
     Both arms share one ledger: a persistent non-transient fault fails
@@ -1171,9 +1160,9 @@ class _SlowSecondAcquirePool(FakePool):
 
 
 async def test_lock_ttl_sample_is_the_lease_minus_the_gap_between_renewals() -> None:
-    """The histogram used to record ``lock_lease`` on every tick - the
-    configured constant - so a heartbeat running late could never move
-    it. It must record the lease the previous renewal stamped minus the
+    """The histogram must never record ``lock_lease`` (the
+    configured constant) - a heartbeat running late could never move
+    that. It must record the lease the previous renewal stamped minus the
     time until this one landed: nothing on the first renewal (no reference
     yet), and a sample below the lease by at least the delay on a delayed
     tick."""
@@ -1397,7 +1386,7 @@ async def test_hook_raising_versus_swallowing() -> None:
 
 async def test_hook_swallows_and_returns_none() -> None:
     """A cancel_controller.run_in_tx that swallows exceptions internally
-    and returns None does NOT increment heartbeat_failures - opaque to the loop."""
+    and returns None does not increment heartbeat_failures - opaque to the loop."""
     await _patch_tick_duration(lambda v: None)
 
     class _SwallowingController:
@@ -1593,7 +1582,7 @@ async def test_tick_merges_an_empty_tally_as_a_noop() -> None:
 
 def test_build_heartbeat_sql_liveness_shape_pins_the_merge() -> None:
     """The liveness template is the merge statement's single source: the
-    jsonb concat must keep the registration keys AND key the tally write
+    jsonb concat must keep the registration keys and key the tally write
     to $2, which is what keeps the heartbeat at one statement per tick."""
     from taskq.backend._sql import build_heartbeat_sql
 
@@ -1617,7 +1606,7 @@ def test_lease_renewal_threshold_default_config() -> None:
     default lease - the unconditional cadence, no lapse window - and the
     savings begin from lease ≈ 70s (see the sibling tests). The floor's
     terms are all ENFORCED by the tick's command budget (interval: the
-    acquire's own timeout; one command timeout: the sequence AND the
+    acquire's own timeout; one command timeout: the sequence and the
     teardown sharing its remainder)."""
     from taskq.worker.heartbeat import _lease_renewal_threshold
 
@@ -1642,7 +1631,7 @@ def test_lease_renewal_threshold_default_config() -> None:
         (2.0, 0.5, 3, 2.0),
         # A failure-tolerant fleet (F=10) with a default lease.
         (60.0, 10.0, 10, 2.0),
-        # The DEFAULT lease: the enforced-bound floor (58) meets the
+        # The default lease: the enforced-bound floor (58) meets the
         # harvestable slack (50) - the arithmetic that closes the
         # reproduced default-settings lapse window.
         (60.0, 10.0, 3, 2.0),
@@ -1701,7 +1690,7 @@ def test_lease_renewal_threshold_savings_resume_above_the_default_lease(
         heartbeat_command_timeout=2.0,
     ).total_seconds()
     assert threshold < lock_lease - 10.0, "the first post-renewal beat must skip"
-    # The renewal fires at the FIRST beat whose remaining lease is at or
+    # The renewal fires at the first beat whose remaining lease is at or
     # under the threshold: ceil((lease - threshold) / interval) beats
     # after the previous renewal.
     import math
@@ -1728,7 +1717,7 @@ def test_lease_renewal_threshold_generous_lease_uses_half() -> None:
 
 def test_naive_half_lease_threshold_lapses_before_isolation_at_defaults() -> None:
     """Adversarial review pin: the issue's naive candidate - skip while more than
-    HALF the lease remains - is NOT safe at the default settings.
+    HALF the lease remains - is not safe at the default settings.
 
     At lease 60s / interval 10s / 3 tolerated failures, a worker whose
     last successful beat skipped at remaining 30s+eps (just under half)
@@ -1747,11 +1736,11 @@ def test_naive_half_lease_threshold_lapses_before_isolation_at_defaults() -> Non
     command_timeout = 2.0
     failures = 3
     naive_threshold = lease / 2
-    # Worst coherent failed CYCLE under the ENFORCED tick bound (fix
-    # rounds): acquire <= interval, and the tick's command sequence AND
-    # its bounded teardown SHARE one command timeout.
+    # Worst coherent failed cycle under the enforced tick bound (fix
+    # rounds): acquire <= interval, and the tick's command sequence and
+    # its bounded teardown share one command timeout.
     gap = interval + command_timeout
-    # The last good beat's TAIL: from its mid-tick renewal point (where
+    # The last good beat's tail: from its mid-tick renewal point (where
     # the gate re-stamps the lease) to the next tick's start - the span
     # the failed cycles do not cover. Bounded by max(interval,
     # command_timeout): the cadence when the last beat was cheap, the
@@ -1827,11 +1816,11 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
     * a MULTI-COMMAND tick - 3..6 statements, each drawn up to (strictly
       under) one command timeout, whose SEQUENCE the single budget cuts
       at one command timeout total (a per-tick hard cap of interval +
-      ONE command timeout cannot express the attack's shape: two
+      one command timeout cannot express the attack's shape: two
       just-under-timeout statements succeeding, then a timeout);
     * a bounded teardown - a rollback that fits the budget's remainder,
       or the bounded close (server-side rollback on disconnect) - the
-      teardown spends the SAME budget's remainder, never a second
+      teardown spends the same budget's remainder, never a second
       budget (the shared-remainder rule the integration attack pinned).
 
     The beat-to-beat gap is bounded by ``max(interval, tick_duration)`` -
@@ -1861,14 +1850,14 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
         Returns the beat-to-beat gap and whether the tick's renewal
         landed. A healthy tick completes its statement sequence within
         the budget and commits (the renewal landed); an unhealthy one is
-        cut at the budget, and its teardown - rollback AND bounded close
-        - spends the remainder of the SAME budget, never a second one.
+        cut at the budget, and its teardown - rollback and bounded close
+        - spends the remainder of the same budget, never a second one.
         """
         acquire = interval * acquire_scale[i % len(acquire_scale)]
         scales = statement_scale[i % len(statement_scale)]
         k = statement_count[i % len(statement_count)]
         if healthy:
-            # The whole sequence (BEGIN + writes + probes + COMMIT,
+            # The whole sequence (begin + writes + probes + COMMIT,
             # modelled as the k statements' aggregate) fits the single
             # budget: the mean of the k per-statement draws is strictly
             # under one command timeout.
@@ -1878,7 +1867,7 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
         else:
             # The sequence wants more than the budget; the budget cuts
             # it at one command timeout, and the teardown spends the
-            # remainder of the SAME budget (the shared-remainder rule).
+            # remainder of the same budget (the shared-remainder rule).
             seq = command_timeout
             renewed = False
             teardown = 0.0
@@ -1886,14 +1875,14 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
         return max(interval, duration), renewed
 
     if cascade_bound >= lease:
-        # A config whose worst cascade can outlive the lease: NO renewal
+        # A config whose worst cascade can outlive the lease: no renewal
         # policy operating at beat boundaries can keep it - the
         # unconditional renewal has exactly the same exposure (this is
         # the 4x invariant's own blind spot: it sizes the cascade as
         # (F+1) * interval, but a failed beat costs up to interval + command_timeout
         # even under the enforced budget). What the gate
-        # must guarantee there is that it does not make things WORSE:
-        # the threshold's safety floor IS the cascade bound, so the gate
+        # must guarantee there is that it does not make things worse:
+        # the threshold's safety floor is the cascade bound, so the gate
         # renews on every beat - exactly the unconditional behaviour.
         assert threshold >= lease - interval, (
             "a config whose worst cascade can outlive the harvestable "
@@ -1918,7 +1907,7 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
     # Phase 2 - the failure cascade: up to F failed ticks (renewal never
     # lands), then either the isolate decision (recover_after > F: the
     # worker is gone by design, the lease may do what leases do) or a
-    # recovering tick. The last healthy beat's TAIL - from its renewal
+    # recovering tick. The last healthy beat's tail - from its renewal
     # point (where remaining was re-stamped) to the next tick's start -
     # is consumed before the first failed cycle.
     remaining -= tail
@@ -1939,15 +1928,15 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
 
 
 def test_the_tail_less_cascade_floor_was_under_sized_for_multi_command_ticks() -> None:
-    """Regression guard: the cascade floor WITHOUT its tail term -
-    (F+1) * (interval + ONE command timeout) - does NOT cover a failed
+    """Regression guard: the cascade floor without its tail term -
+    (F+1) * (interval + one command timeout) - does not cover a failed
     multi-command tick bounded only per-statement - the exact shape the
     attack reproduced at the default settings (a legal skip at 49.5s of
     a 60s lease, then four brownout ticks of acquire + three
     just-under-timeout statements, expiring the lease 3.2-9.2s before
     the isolate decision while the unconditional renewal survived).
 
-    This pins WHY the tick's single command budget AND the cascade
+    This pins WHY the tick's single command budget and the cascade
     floor's tail term are critical: with either removed, the
     default-config cascade is under-sized again.
     """
@@ -1983,8 +1972,8 @@ def test_the_tail_less_cascade_floor_was_under_sized_for_multi_command_ticks() -
     assert shipped.total_seconds() >= lease - interval
     # And the enforced bound itself keeps the every-beat cascade inside
     # the lease: the last good beat's tail plus (F+1) enforced failed
-    # cycles (acquire + ONE budget, the sequence and its teardown
-    # sharing it) against the 60s lease. The UN-enforced brownout tick
+    # cycles (acquire + one budget, the sequence and its teardown
+    # sharing it) against the 60s lease. The un-enforced brownout tick
     # (per-statement bounds) would overrun the same lease - the budget
     # is load-bearing - and the cascade floor without the tail term
     # would under-count the cascade by exactly that tail.
@@ -2001,7 +1990,7 @@ def test_the_tail_less_cascade_floor_was_under_sized_for_multi_command_ticks() -
 def test_build_heartbeat_sql_threshold_selects_the_gated_statement() -> None:
     """The threshold kwarg is what arms the gate: None keeps the
     unconditional renewal every existing caller binds; a threshold
-    renders the gated statement, whose three OR arms are each
+    renders the gated statement, whose three or arms are each
     critical (per-job heartbeat_timeout beats must stay fresh for
     the sweep's heartbeat arm; NULL leases always renewed; the
     threshold compared server-side, on the clock that stamped the
@@ -2024,7 +2013,7 @@ def test_build_heartbeat_sql_threshold_selects_the_gated_statement() -> None:
     assert gated_jobs == UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE.format(schema="taskq")
     assert "heartbeat_timeout IS NOT NULL" in gated_jobs
     assert "lock_expires_at IS NULL" in gated_jobs
-    # statement_timestamp(), not clock_timestamp(): the VOLATILE
+    # statement_timestamp(), not clock_timestamp(): the volatile
     # clock_timestamp() bound cannot be an index condition, and the
     # expiry arm must drive jobs_running_lock_expires_idx (see the
     # template's comment). Both are the server clock that stamped the
@@ -2158,9 +2147,9 @@ async def test_the_tick_command_budget_cuts_a_brownout_tick() -> None:
     third - ~3x the command timeout in total, the gap the tail-less
     floor assumed away. Under the single budget the tick is CUT at one command
     timeout: the third statement never starts, and the teardown - whose
-    rollback AND close SHARE the budget's remainder (never a second full
+    rollback and close SHARE the budget's remainder (never a second full
     budget) - terminates the connection immediately, the server rolling
-    the transaction back on disconnect. The tick counts as exactly ONE
+    the transaction back on disconnect. The tick counts as exactly one
     transient failure."""
     budget = 0.06
     # Three statements at 0.8x the budget each: per-statement, all three
@@ -2170,7 +2159,7 @@ async def test_the_tick_command_budget_cuts_a_brownout_tick() -> None:
     deps, tick_duration = await _run_budget_tick(pool, heartbeat_command_timeout=budget)
 
     assert deps.heartbeat_failures == 1, "the cut tick must count as exactly one failure"
-    # The budget cut the tick inside its SECOND statement (the first
+    # The budget cut the tick inside its second statement (the first
     # took 0.8x the budget; the second was cut 0.2x in): the third -
     # and the still-held probe and hook after it - never started.
     assert len(conn.execute_calls) == 2, (
@@ -2182,15 +2171,15 @@ async def test_the_tick_command_budget_cuts_a_brownout_tick() -> None:
     # remainder, shared with the rollback - here ~zero), so it did not
     # wait for a graceful close: it terminated, and the server rolls the
     # transaction back on disconnect. The unguarded teardown hands the
-    # close a SECOND full budget; the shared remainder is what holds the
-    # failed tick to acquire + ONE budget (see _lease_renewal_threshold).
+    # close a second full budget; the shared remainder is what holds the
+    # failed tick to acquire + one budget (see _lease_renewal_threshold).
     assert conn.terminated, (
         "the budget-exhausted teardown must terminate immediately - the "
         "close may not burn a second command budget the rollback's "
         "remainder cannot cover"
     )
     # And the whole tick stayed inside the model's bound: acquire (~0
-    # here) + ONE budget covering the sequence AND the teardown.
+    # here) + one budget covering the sequence and the teardown.
     assert tick_duration < 2 * budget, (
         f"the brownout tick took {tick_duration:.3f}s - more than the "
         "single shared budget; the per-statement shape (2.4x the budget "
@@ -2208,8 +2197,8 @@ async def test_an_ordinary_statement_failure_rolls_back_within_the_budget() -> N
     pool = _SharedConnPool(conn)
     deps, _tick = await _run_budget_tick(pool, heartbeat_command_timeout=budget)
 
-    # asyncpg.PostgresSyntaxError is NOT transient: it takes the
-    # unexpected-error arm, which counts toward the SAME isolate threshold
+    # asyncpg.PostgresSyntaxError is not transient: it takes the
+    # unexpected-error arm, which counts toward the same isolate threshold
     # as the transient arm (one ledger; the docstring above carries the
     # reasoning).
     assert deps.heartbeat_failures == 1
@@ -2244,7 +2233,7 @@ async def test_post_tx_is_deferred_when_the_budget_is_exhausted() -> None:
 
 async def test_a_post_tx_cut_is_one_conservative_failure_after_a_committed_tx() -> None:
     """A healthy transaction whose post-tx drain outruns the budget's
-    remainder counts the tick as ONE failure (conservative: the failure
+    remainder counts the tick as one failure (conservative: the failure
     counter moves even though the committed transaction's renewals have
     landed) - never zero and never two."""
     budget = 0.2
@@ -2294,7 +2283,7 @@ class _LostClaimConn(FakeConn):
 
 
 async def test_heartbeat_tick_disowns_the_lost_claim() -> None:
-    """A claimed row the worker holds in NO in-memory structure - the
+    """A claimed row the worker holds in no in-memory structure - the
     dispatch batch whose commit landed server-side but whose response
     died with the connection - is disowned by the tick's reconcile
     probe: the renewal stops, the lease lapses, and the reclaim sweep
@@ -2367,8 +2356,8 @@ async def test_heartbeat_tick_reconcile_excludes_held_queued_disowned() -> None:
 
 
 async def test_tick_publishes_windowed_stall_tally_and_idle_fraction() -> None:
-    """One tick publishes BOTH stall views and the drained idle window in
-    the ONE liveness write the tick already issues:
+    """One tick publishes both stall views and the drained idle window in
+    the one liveness write the tick already issues:
 
     - ``loop_stalls``: the cumulative counts, unchanged shape - no
       consumer breaks;
@@ -2452,7 +2441,7 @@ async def test_tick_publishes_windowed_stall_tally_and_idle_fraction() -> None:
         assert count == 1
         assert not (attrs or {})
 
-        # The window drained: the NEXT tick (an empty window - no
+        # The window drained: the next tick (an empty window - no
         # watchdog ran) publishes no idle key and records no histogram
         # point.
         _deps2, _ = await _run_tick()

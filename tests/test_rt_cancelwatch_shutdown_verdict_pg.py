@@ -4,7 +4,7 @@
 
 The ownership contract: an operator's cancel verdict is ``cancelled``
 (forced) - every writer that can terminalise a running, cancel-flagged
-row DURING the shutdown orchestration writes the SAME attempt-fenced
+row DURING the shutdown orchestration writes the same attempt-fenced
 verdict, so a race between them dissolves instead of letting the
 host's weather pick the row's audit trail. The writers, named:
 
@@ -195,7 +195,7 @@ async def test_drain_held_abandon_under_shutdown_lands_the_operators_verdict(
         )
         entry = deps.active_jobs.get(job_id)
         assert entry is not None
-        # The escalation was observed on an earlier tick (local FORCED, the
+        # The escalation was observed on an earlier tick (local forced, the
         # cancellation delivered); the abandon comes due now, while the row
         # is still running - the consumer's unwind has not committed yet.
         entry.cancel_phase = CancelPhase.FORCED
@@ -267,7 +267,7 @@ async def test_consumer_verdict_first_drain_noops_and_still_delivers(
             ) -> bool:
                 if not self._consumer_landed:
                     self._consumer_landed = True
-                    # The unwinding consumer's write: same fence, commits FIRST.
+                    # The unwinding consumer's write: same fence, commits first.
                     await super().mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1)
                 return await super().mark_cancelled(job_id, worker_id, **kwargs)  # type: ignore[arg-type]
 
@@ -319,7 +319,7 @@ async def test_unheld_orphan_under_shutdown_keeps_the_ladders_terminal(
         backend = await _seed_phase2_row(pool, dsn, schema, worker_id, job_id)
         deps = _deps_for(dsn, schema)
         deps.shutdown_phase = ShutdownPhase.RELEASING
-        # NO registry entry: the row is the unheld walk's orphan.
+        # no registry entry: the row is the unheld walk's orphan.
 
         await _tick(deps, backend, dsn, worker_id)
 
@@ -378,7 +378,7 @@ async def test_first_sight_phase2_applies_phase1_effects(
 ) -> None:
     """Escalation correctness: a row first observed at PG phase 2 applies
     phase-1's effects (cancel_event, origin stamp, observation stamp) in the
-    SAME tick it fast-advances the local phase to FORCED - phase 2 never
+    same tick it fast-advances the local phase to FORCED - phase 2 never
     skips phase 1."""
     schema, dsn = rt_schema
     worker_id = new_uuid()

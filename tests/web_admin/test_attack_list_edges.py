@@ -166,7 +166,7 @@ async def test_rows_vanishing_between_page_turns_do_not_500_or_replay_the_page(
     cursor already passed.
 
     55 rows (one over the 50-row page), page 1 walked, then every row the
-    cursor has NOT yet reached is deleted (the sweep racing the read) - the
+    cursor has not yet reached is deleted (the sweep racing the read) - the
     next page must come back 200 and empty, not 500 and not the deleted
     rows.
     """

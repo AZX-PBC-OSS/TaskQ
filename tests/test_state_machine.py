@@ -127,7 +127,7 @@ class TestTransitionMatrix:
     def test_invalid_transition_not_in_matrix(
         self, from_status: JobStatus, to_status: JobStatus
     ) -> None:
-        """Illegal (from, to) pair must NOT appear in VALID_TRANSITIONS."""
+        """Illegal (from, to) pair must not appear in VALID_TRANSITIONS."""
         assert to_status not in VALID_TRANSITIONS[from_status]
 
     def test_every_status_is_a_key(self) -> None:
@@ -206,7 +206,7 @@ class TestAssertValidTransition:
 
 
 def _illegal_pairs() -> list[tuple[JobStatus, JobStatus]]:
-    """Build every (from, to) pair where to is NOT in VALID_TRANSITIONS[from]."""
+    """Build every (from, to) pair where to is not in VALID_TRANSITIONS[from]."""
     pairs: list[tuple[JobStatus, JobStatus]] = []
     for from_status in ALL_STATUSES:
         for to_status in ALL_STATUSES:

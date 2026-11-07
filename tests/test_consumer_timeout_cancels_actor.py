@@ -1,6 +1,6 @@
 """Regression: start_to_close must actually stop the actor on both paths.
 
-The transactional path wrapped the actor in ``asyncio.shield()`` INSIDE the
+The transactional path wrapped the actor in ``asyncio.shield()`` inside the
 ``asyncio.wait_for()`` that enforces ``start_to_close``.  ``shield`` is
 documented to leave the shielded awaitable running when the waiter is
 cancelled, so the timeout fired, the attempt was marked timed out and became

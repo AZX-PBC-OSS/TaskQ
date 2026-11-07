@@ -1,5 +1,5 @@
-"""ATTACK2's negative type probes for the PHASE-2 public surfaces (T06/
-T07/T08/T18). Every ``MUST_ERROR(rules...)`` marker line must produce at
+"""ATTACK2's negative type probes for the PHASE-2 public surfaces (failed-parent propagation/
+the fan-in bound/the typed node view/the retention coupling). Every ``MUST_ERROR(rules...)`` marker line must produce at
 least one ERROR diagnostic from EACH checker (pyright 1.1.414 + ty
 0.0.85) whose rule-id is in the marker's DECLARED set — the gate
 (``_gate.py``, this corpus wired in) fails on a marker that reds under
@@ -8,15 +8,15 @@ tests/typeprobe's own pyrightconfig.json (reportArgumentType ON, never
 the root's false).
 
 The surfaces the probes guard:
-  * FailureInfo (T06's fan-in item — the envelope door);
-  * fan_in_skip (T06's public skip fan-in);
+  * FailureInfo (the failed-parent propagation's fan-in item — the envelope door);
+  * fan_in_skip (the failed-parent propagation's public skip fan-in);
   * WorkflowStatus / derive_workflow_status / reconstruct_workflow_status
-    (T08's derivation door);
-  * NodeView (T08's canonical node vocabulary);
-  * MAX_FAN_IN_PER_JOIN (T07's bound — an int Final, the probe defends
+    (the typed node view's derivation door);
+  * NodeView (the typed node view's canonical node vocabulary);
+  * MAX_FAN_IN_PER_JOIN (the fan-in bound's bound — an int Final, the probe defends
     its misuse as a string join target).
 
-THE EVIDENCE-INTEGRITY ROUND'S REPAIR (wire-or-delete, no zombie
+the EVIDENCE-INTEGRITY ROUND'S REPAIR (wire-or-delete, no zombie
 corpus): this file had ROTTED off the gate — the signatures moved
 (``ErrorInfo`` grew the required ``error_traceback``, ``WorkflowSql``
 became a fully-rendered bundle constructed by
@@ -26,7 +26,7 @@ remaining parameters went keyword-only-required, ``JobId`` is
 (pyright's vocabulary is ``reportAttributeAccessIssue``, not
 ``reportAttributeAccess``; ty's is ``invalid-argument-type``). Every
 marker here is re-derived against the CURRENT signatures; the rule-id
-declarations name BOTH checkers' vocabularies.
+declarations name both checkers' vocabularies.
 
 Run:  pyright --project tests/typeprobe/pyrightconfig.json tests/typeprobe/attack2_wf_phase2_types.py
       ty check tests/typeprobe/attack2_wf_phase2_types.py
@@ -63,7 +63,7 @@ def probe_failure_info_envelope() -> None:
         map_index=None,
         error=ErrorInfo(error_class="ValueError", error_message="boom", error_traceback=None),
         attempts=(),
-        policy="fail_closed",  # MUST_ERROR(reportArgumentType, invalid-argument-type): the policy marker is the TYPED absorbing vocabulary (collect|maybe); a fail_closed edge absorbs nothing, the envelope cannot claim it
+        policy="fail_closed",  # MUST_ERROR(reportArgumentType, invalid-argument-type): the policy marker is the typed absorbing vocabulary (collect|maybe); a fail_closed edge absorbs nothing, the envelope cannot claim it
     )
     _ = lie
 
@@ -98,7 +98,7 @@ def probe_workflow_status_vocabulary() -> None:
         pass
     number = len(
         next_state
-    )  # NOT a type error — a WorkflowStatus IS a str union; recorded as a (mild) type-law note
+    )  # not a type error — a WorkflowStatus is a str union; recorded as a (mild) type-law note
     _ = number
 
 
@@ -130,7 +130,7 @@ async def probe_fan_in_skip_signature() -> None:
 def probe_bound_is_an_int() -> None:
     bound: int = MAX_FAN_IN_PER_JOIN
     _ = bound
-    usage = "x" * MAX_FAN_IN_PER_JOIN  # type-correct (an int IS a repeat count)
+    usage = "x" * MAX_FAN_IN_PER_JOIN  # type-correct (an int is a repeat count)
     _ = usage
     MAX_FAN_IN_PER_JOIN.join(
         ""

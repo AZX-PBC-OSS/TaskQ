@@ -16,7 +16,7 @@ Two halves, now coherent:
   ``unique_for`` emits the warn-once event when ``identity_key`` is
   omitted (per-call and actor-declared, SubJobEnqueuer and JobsClient).
 * The inertness proofs - the same window WITH an identity dedups while
-  the identical enqueue WITHOUT one lands duplicate jobs, on the
+  the identical enqueue without one lands duplicate jobs, on the
   in-memory mirror and end-to-end against real PG: the no-op is
   observable, which is exactly what the warning points at.
 """
@@ -71,7 +71,7 @@ def _make_backend() -> InMemoryBackend:
 
 
 def _make_enqueuer(backend: InMemoryBackend) -> SubJobEnqueuer:
-    # LOOP-scope provenance is the shape ctx.jobs gives actor code: the
+    # loop-scope provenance is the shape ctx.jobs gives actor code: the
     # enqueue joins the consumer's transaction, which the in-memory
     # backend's simulation buffers - a green handle without a driver.
     return SubJobEnqueuer(
@@ -218,7 +218,7 @@ async def test_pg_actor_unique_for_without_identity_key_lands_duplicate_jobs(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
 ) -> None:
     """End-to-end against real PG: the same actor and window that
-    single-flights WITH an identity lands two fresh jobs WITHOUT one - the
+    single-flights WITH an identity lands two fresh jobs without one - the
     production gate no-ops, and the caller is handed two green handles."""
     deps, pg_backend = clean_jobs_app
     schema = deps.settings.schema_name

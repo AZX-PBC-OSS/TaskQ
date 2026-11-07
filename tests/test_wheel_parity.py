@@ -38,7 +38,7 @@ _REPO_ROOT = Path(__file__).parent.parent
 _SRC_PKG = _REPO_ROOT / "src" / "taskq"
 
 # The documented missing-extra guard: an ImportError whose message names the
-# extra with the PUBLISHED distribution name. This is the only import failure
+# extra with the published distribution name. This is the only import failure
 # the install census tolerates (the dev env installs every extra, so a clean
 # run has none; the tolerance keeps the census honest on bare-env CI legs).
 _DOCUMENTED_GUARD = re.compile(r"taskq-py\[[a-z]+\]")
@@ -61,8 +61,8 @@ def built_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
     if shutil.which("uv") is None:
         pytest.skip("uv is not on PATH; the wheel parity needs the project's own build tool")
     out_dir = tmp_path_factory.mktemp("wheel-parity")
-    subprocess.run(  # noqa: S603  # Why: fixed literal argv — uv from PATH, the project's own build tool, no shell.
-        ["uv", "build", "--wheel", "--out-dir", str(out_dir)],  # noqa: S607  # Why: uv resolved from PATH; fixed literal argv, no shell.
+    subprocess.run(  # noqa: S603  # Why: fixed literal argv — uv from path, the project's own build tool, no shell.
+        ["uv", "build", "--wheel", "--out-dir", str(out_dir)],  # noqa: S607  # Why: uv resolved from path; fixed literal argv, no shell.
         cwd=_REPO_ROOT,
         check=True,
         capture_output=True,

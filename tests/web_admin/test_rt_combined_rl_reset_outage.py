@@ -3,7 +3,7 @@
 #421's outage absorption: the redis rate-limit primitives absorb ``ReadOnlyError``
 and ``OutOfMemoryError`` (besides ConnectionError/TimeoutError) by
 falling back to Postgres -- on the ACQUIRE path. The admin reset route
-(#429) reaches the SAME redis-backed primitive through a path with no
+(#429) reaches the same redis-backed primitive through a path with no
 fallback and no handling: ``TokenBucket._reset_redis`` issues a raw
 ``redis.delete``, and the route catches only ``TimeoutError`` and
 ``KeyError``. A replica promoted mid-flight or a maxmemory breach --

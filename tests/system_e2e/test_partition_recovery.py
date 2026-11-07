@@ -3,7 +3,7 @@
 The prior families prove the contracts DURING the cut. This family pins
 the other half of a partition's lifecycle: a worker that took real
 weather - latency, a silent blackhole, a hold-then-close pass, in that
-order - must converge WITHOUT a restart when the wire heals: its
+order - must converge without a restart when the wire heals: its
 connection pools refill (asyncpg replaces the cut connections on the
 next acquire, never re-serving a poisoned one), its broker fanout
 resubscribes/reconnects, and it keeps claiming work at the normal
@@ -16,7 +16,7 @@ Budget arithmetic (derived, never a blind sleep):
 * The weather stays strictly inside the cascade floor
   ``max(0.5, 0.25) + 41 * 0.75 = 31.25s`` of CUMULATIVE failed-beat
   exposure is the isolate budget at F = 40; the phases below sum to
-  5.5s of weather, so the worker cannot isolate even if EVERY beat in
+  5.5s of weather, so the worker cannot isolate even if every beat in
   the window failed.
 * Post-recovery claim budget: poll 0.05s + body 0.1s + pool-repair
   slack (a cut connection costs one failed command before the pool
@@ -75,7 +75,7 @@ async def test_weather_then_recovery_converges_without_restart(
     toxiproxy: Toxiproxy,
 ) -> None:
     """Every weather shape in one worker's lifetime, then the heal: the
-    SAME process refills its pools, resumes its fanout, and drains the
+    same process refills its pools, resumes its fanout, and drains the
     post-recovery batch at the normal cadence."""
     schema = module_pg_schema.schema_name
     conn = sys_ledger
@@ -101,13 +101,13 @@ async def test_weather_then_recovery_converges_without_restart(
                 "TASKQ_MAX_HEARTBEAT_FAILURES": "40",
                 # The lease validator requires the lease to cover the F=40
                 # cascade (0.5 + 41 * 1.0 = 41.5s): this worker must ride
-                # OUT every weather phase, never isolate.
+                # out every weather phase, never isolate.
                 "TASKQ_LOCK_LEASE": "45.0",
             },
         )
         wait_worker_ready(worker)
 
-        # Work BEFORE the weather, work DURING each phase.
+        # Work before the weather, work during each phase.
         handles = [
             await sys_client.enqueue(sys_fast, SysPayload(sleep=0.1), tags=[_TAG]) for _ in range(3)
         ]
@@ -130,11 +130,11 @@ async def test_weather_then_recovery_converges_without_restart(
         await pg_proxy.clear()
         await redis_proxy.clear()
 
-        # THE heal, asserted on the same process: no restart, pools
+        # the heal, asserted on the same process: no restart, pools
         # refilled, fanout reconnected.
         assert worker.proc.poll() is None, "the worker exited during the weather"
 
-        # (a) Pool refill: the post-recovery batch must DRAIN - each cut
+        # (a) Pool refill: the post-recovery batch must drain - each cut
         # pool connection is replaced on its next acquire, never re-served.
         handles += [
             await sys_client.enqueue(sys_fast, SysPayload(sleep=0.1), tags=[_TAG]) for _ in range(5)
@@ -151,7 +151,7 @@ async def test_weather_then_recovery_converges_without_restart(
             f"- the pools did not refill: {counts}"
         )
 
-        # (b) Fanout resubscribe: a subscriber that dials the HEALED wire
+        # (b) Fanout resubscribe: a subscriber that dials the healed wire
         # sees the worker's progress frames for a new job - the worker's
         # broker client reconnected, the fanout is alive again. The
         # channel name is the library's own ``progress_channel`` shape.
@@ -189,7 +189,7 @@ async def test_weather_then_recovery_converges_without_restart(
                 await subscriber.aclose()
         if worker is not None:
             reap(worker)
-        # Each proxy's clear is suppressed SEPARATELY: a wedged server
+        # Each proxy's clear is suppressed separately: a wedged server
         # failing the PG sweep must not skip the redis sweep - one
         # leaked toxic on a shared server is exactly the residue the
         # per-proxy ledgers exist to prevent.

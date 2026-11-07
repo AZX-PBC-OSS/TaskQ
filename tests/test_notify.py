@@ -398,7 +398,7 @@ class TestShutdownPath:
     async def test_shutdown_calls_remove_listener_for_all_channels(self) -> None:
         """Set shutdown before entering notify_listener_loop.
         Assert remove_listener called for each channel (wake, events,
-        per-worker). Assert NO execute("UNLISTEN...") was made.
+        per-worker). Assert no execute("UNLISTEN...") was made.
         """
         deps = _make_mock_deps()
         conn = deps.notify_conn
@@ -515,7 +515,7 @@ class TestReconnectBackoff:
         import taskq.worker.notify as notify_mod
 
         monkeypatch.setattr(notify_mod, "logger", Mock())
-        # Patch where the names are LOOKED UP - the notify module's own
+        # Patch where the names are looked up - the notify module's own
         # ``asyncio`` / ``random`` bindings - not through to the global
         # modules (tests/_ns_patch.py).
         monkeypatch.setattr(notify_mod, "asyncio", module_ns_proxy(asyncio, sleep=recording_sleep))
@@ -580,7 +580,7 @@ class TestDisconnectedListener:
     async def test_disconnected_listener_cancel_events_never_fire(self) -> None:
         """Construct PostgresBackend without starting
         notify_listener_loop. Open subscribe_cancel_wake(), hold for ~50 ms.
-        Assert no exception and the event was NOT set (fallback to heartbeat).
+        Assert no exception and the event was not set (fallback to heartbeat).
         """
         backend = _make_backend()
 
@@ -858,7 +858,7 @@ class TestReconnectUsesDirectDsn:
 
 class _FakeClientAuthenticationError(RuntimeError):
     """Stands in for azure ClientAuthenticationError / hvac VaultError /
-    botocore ClientError - credential-provider errors that are NOT asyncpg
+    botocore ClientError - credential-provider errors that are not asyncpg
     exceptions and must still be retried by the reconnect loop."""
 
 
@@ -913,13 +913,13 @@ class TestReconnectWidenedCatch:
         ), f"reconnect warning must log type(exc).__name__; got {warning_kwargs}"
 
 
-# ---- Reconnect resilience: a HUNG factory -----------------------------------------
+# ---- Reconnect resilience: a hung factory -----------------------------------------
 #
 # reconnect_notify_conn awaited factory() with no bound, so a hung
 # credential provider or TCP connect parked the health-check retry loop
 # while holding notify_reconnect_lock - poll-based dispatch kept working,
 # but the notify channel stayed down until process restart. The bound is
-# settings.reload_factory_timeout: the SAME setting the SIGHUP reload path
+# settings.reload_factory_timeout: the same setting the SIGHUP reload path
 # (deps.reload_credentials factory_timeout) and the bootstrap slot-pool
 # open already use, so every factory caller agrees on what a hung factory
 # costs; exhaustion is the retry loop's ordinary failure path - logged as
@@ -931,7 +931,7 @@ class TestReconnectFactoryBound:
         """A factory that never returns is bounded by reload_factory_timeout:
         the timeout is logged as a reconnect attempt (error_type
         TimeoutError, like any other factory failure), the connection is
-        NOT swapped, the reconnect lock is released, and the loop stays
+        not swapped, the reconnect lock is released, and the loop stays
         responsive to shutdown."""
         deps = _make_mock_deps(reconnect_backoff_initial=0.01, reload_factory_timeout=0.05)
         backend = _make_backend()
@@ -970,7 +970,7 @@ class TestReconnectFactoryBound:
                         for c in logger_mock.warning.call_args_list
                     )
 
-                # RED unguarded: the loop is parked inside factory() - no
+                # red unguarded: the loop is parked inside factory() - no
                 # reconnect attempt is ever logged and this bounded wait
                 # fails by name.
                 await wait_for_condition(
@@ -1050,7 +1050,7 @@ class TestReconnectFactoryBound:
                     await task
 
 
-# ---- Reconnect resilience: a HUNG post-factory LISTEN execute ---------------------
+# ---- Reconnect resilience: a hung post-factory LISTEN execute ---------------------
 #
 # The factory bound alone does not close the threat model: a rebuilt
 # connection can complete the factory handshake and then black-hole on
@@ -1060,7 +1060,7 @@ class TestReconnectFactoryBound:
 # was bounded, so the reconnect loop parked inside execute() while
 # holding notify_reconnect_lock - poll dispatch kept working, but the
 # notify channel stayed down until process restart. The bound is the
-# SAME settings.notify_listener_setup_timeout the add_listener beside
+# same settings.notify_listener_setup_timeout the add_listener beside
 # it (and the initial listener setup) already use - not a second
 # mechanism; exhaustion is the retry loop's ordinary failure path -
 # logged as a reconnect attempt, backoff, retry - never a crash and
@@ -1073,7 +1073,7 @@ class TestReconnectListenBound:
         black-holes on the LISTEN execute is bounded by
         notify_listener_setup_timeout: the timeout is logged as a
         reconnect attempt (error_type TimeoutError), the connection is
-        NOT swapped, the reconnect lock is released, and the loop stays
+        not swapped, the reconnect lock is released, and the loop stays
         responsive to shutdown. reload_factory_timeout is generous here,
         so the bound that fires is provably the LISTEN one."""
         deps = _make_mock_deps(
@@ -1125,7 +1125,7 @@ class TestReconnectListenBound:
                         for c in logger_mock.warning.call_args_list
                     )
 
-                # RED unguarded: the loop is parked inside execute(LISTEN) -
+                # red unguarded: the loop is parked inside execute(LISTEN) -
                 # no reconnect attempt is ever logged and this bounded
                 # wait fails by name.
                 await wait_for_condition(
@@ -1183,7 +1183,7 @@ class TestReconnectListenBound:
 
         async def execute(sql: str, *args: object) -> object:
             nonlocal listen_hangs
-            # Only the FIRST LISTEN execute hangs (the first channel of
+            # Only the first LISTEN execute hangs (the first channel of
             # the first attempt); every later execute answers.
             if "LISTEN" in sql and listen_hangs == 0:
                 listen_hangs += 1
@@ -1315,7 +1315,7 @@ class TestOwnershipContract:
     async def test_health_check_does_not_close_caller_owned_conn(self) -> None:
         """connections.py documents "TaskQ never closes caller-owned
         resources" - a caller-owned notify_conn that fails the health check
-        must NOT be closed by _health_check_loop. remove_listener is fine
+        must not be closed by _health_check_loop. remove_listener is fine
         (needed before a rebuild, harmless on the caller's conn)."""
         deps = _make_mock_deps()
         deps.owns_notify_conn = False
@@ -1460,7 +1460,7 @@ class TestBoundedConnClose:
         deps.notify_conn_factory = factory
 
         # Why the outer timeout: unguarded, the cleanup awaited conn.close()
-        # unbounded, so the RED state would hang forever instead of failing
+        # unbounded, so the red state would hang forever instead of failing
         # fast.
         async with asyncio.timeout(5):
             with pytest.raises(RuntimeError, match="listener setup failed"):
@@ -1518,7 +1518,7 @@ class TestBoundedConnClose:
 
         # Why the outer timeout: unguarded, the background close awaited
         # old_conn.close() unbounded, so terminate is never reached and the
-        # poll below would spin forever in the RED state.
+        # poll below would spin forever in the red state.
         async with asyncio.timeout(5):
             await reconnect_notify_conn(deps, backend, channels, close_old=True)
             assert deps.notify_conn is new_conn
@@ -1586,7 +1586,7 @@ class TestBoundedConnClose:
         try:
             # Why the outer timeout: unguarded, the error path awaited
             # conn.close() unbounded, so the swap never happens and the
-            # poll below would spin forever in the RED state.
+            # poll below would spin forever in the red state.
             async with asyncio.timeout(5):
                 for _ in range(500):
                     if deps.notify_conn is new_conn:
@@ -1643,7 +1643,7 @@ class TestReconnectFnRegistration:
 
         # The double signals the point the negative assert needs a window
         # for: notify_listener_loop makes the register/skip decision
-        # BEFORE its first add_listener call, so once that call lands the
+        # before its first add_listener call, so once that call lands the
         # decision point has been reached and passed - no timed window
         # hoping the loop got that far under load.
         listener_started = asyncio.Event()
@@ -1685,7 +1685,7 @@ class TestCancelEventRouting:
             await asyncio.wait_for(event.wait(), timeout=0.1)
 
     async def test_events_callback_ignores_different_worker_id(self) -> None:
-        """Fleet events callback does NOT wake when worker_id doesn't match."""
+        """Fleet events callback does not wake when worker_id doesn't match."""
         backend = _make_backend()
         other_worker = uuid.UUID("00000000-0000-0000-0000-000000000002")
         cb = _make_events_callback(backend, _WORKER_ID)
@@ -1907,7 +1907,7 @@ class TestAddListenerTimeout:
     async def test_listener_loop_initial_add_listener_stall_does_not_close_caller_owned(
         self,
     ) -> None:
-        """A caller-owned notify_conn that stalls on add_listener is NOT
+        """A caller-owned notify_conn that stalls on add_listener is not
         closed - the ownership contract holds even on the timeout path."""
         deps = _make_mock_deps(listener_setup_timeout=0.05)
         deps.owns_notify_conn = False

@@ -2,14 +2,14 @@
 pins, red before the cursor exists.
 
 The unit pins (``tests/test_claim_cursor.py``) pin the store; these pin
-the WIRE-UP - that the dispatch path actually feeds the cursor from
+the WIRE-up - that the dispatch path actually feeds the cursor from
 claimed rows, actually bounds the claim query with it, and that the
 stranding trade the design accepts is BOUNDED on a real backend:
 
 1. **the stranding bound** (the mutation target): a lower-id job inserted
    mid-flight - a skewed producer's UUIDv7 clock behind the worker's
    cursor - is claimable only after the jitter reset forgets the cursor;
-   the pin proves the claim lands within ONE reset window.
+   the pin proves the claim lands within one reset window.
 2. **per-queue isolation**: another queue's high-water mark never strands
    a fresh queue's row - the memory is per queue, so a queue with no
    cursor of its own claims unbound.
@@ -75,7 +75,7 @@ def _skewed_args(actor: str, queue: str, behind_seconds: float) -> EnqueueArgs:
     producer shape. uuid7's 48-bit ms clock rewound by *behind_seconds*."""
     from uuid import UUID as _UUID
 
-    minted = uuid_utils.uuid7(  # noqa: TID251  # Why: the skewed-mint NEEDS the explicit-timestamp uuid7 form (a behind-the-worker clock); new_job_id() is the now-minting seam.
+    minted = uuid_utils.uuid7(  # noqa: TID251  # Why: the skewed-mint needs the explicit-timestamp uuid7 form (a behind-the-worker clock); new_job_id() is the now-minting seam.
         nanoseconds=int(datetime.now(UTC).timestamp() * 1e9) - int(behind_seconds * 1e9)
     )
     return EnqueueArgs(
@@ -100,7 +100,7 @@ async def _ensure_actor(app: JobsApp, actor: str, queue: str = "default") -> Non
         )
 
 
-# ── 1. the stranding bound (THE pin the mutation check breaks) ─────────
+# ── 1. the stranding bound (the pin the mutation check breaks) ─────────
 
 
 async def test_a_lower_id_job_is_claimed_within_one_reset_window(
@@ -177,7 +177,7 @@ async def test_under_monotone_fifo_the_cursor_is_a_selection_noop(
     clean_jobs_app: JobsApp,
 ) -> None:
     """The steady state: monotone-id FIFO seeds - claim order == id order -
-    so the cursor must select the SAME rows the naive shape would: all
+    so the cursor must select the same rows the naive shape would: all
     five rows claim in one round with the cursor live."""
     app = clean_jobs_app
     app.deps.settings.claim_cursor_reset_seconds = 3600.0
@@ -220,7 +220,7 @@ async def test_round_robin_rounds_ignore_the_cursor(
     # Flip the mode the way a queue-ops writer does: the table row, then
     # the seam invalidation (a writer that skipped it would serve the
     # mode cache's 5s-stale strict mode - the stale-mode shape
-    # QueueModeCache's docstring documents, not the RR exemption).
+    # QueueModeCache's docstring documents, not the rr exemption).
     schema = app.deps.settings.schema_name
     async with app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]
         await conn.execute(

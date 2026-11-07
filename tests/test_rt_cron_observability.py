@@ -7,7 +7,7 @@ committed writes, with the values a real tick produces):
 * ``record_cron_failure`` - ``+1`` per failed schedule, recorded under
   its actor (the metric's bounded dimension); ``-prev`` on a success
   that follows failures (the counter reset, not a bare ``-1``); and a
-  mixed same-actor tick nets ``-prev`` + ``+1`` on the ONE series the
+  mixed same-actor tick nets ``-prev`` + ``+1`` on the one series the
   actor's schedules share.
 * ``record_published_message`` - once per fired schedule, with the
   actor and the queue from ``actor_config``.
@@ -263,7 +263,7 @@ class TestObservabilityOnCommit:
         """One actor, two schedules, one tick: the recovering schedule
         (2 prior failures, both emitted to THIS process's counter by
         earlier ticks) fires and records ``-2``; a fresh schedule fails
-        and records ``+1``; the actor's ONE series nets to 1 - the sum
+        and records ``+1``; the actor's one series nets to 1 - the sum
         of the actor's DB counts after the tick. The netting was only
         ever pinned via direct emitter calls before; this drives it
         through a real tick, real instrument and all."""
@@ -429,7 +429,7 @@ class TestCronFireSpanAttribution:
         module_pg_schema: ModulePgSchema,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A write-failed plan gets its OWN ``cron fire`` span from
+        """A write-failed plan gets its own ``cron fire`` span from
         ``_strike_plans`` (the planning-loop span for the same schedule
         already closed OK) - that second span must carry the same
         ``taskq.cron_schedule_id`` stamp, or the write-failure path loses
@@ -525,7 +525,7 @@ class TestAutoDisableTelemetryFollowsTheCommit:
             lambda actor, delta: cron_failure_calls.append((actor, delta)),
         )
 
-        # DEFERRABLE INITIALLY DEFERRED: Postgres evaluates this trigger
+        # deferrable initially deferred: Postgres evaluates this trigger
         # only at COMMIT time, strictly after every statement the tick
         # runs (its failures UPDATE and any telemetry emission). It always
         # raises, so the COMMIT itself fails deterministically.
@@ -634,7 +634,7 @@ class TestNoStrikeTelemetryWithoutACommit:
             lambda actor, delta: cron_failure_calls.append((actor, delta)),
         )
 
-        # DEFERRABLE INITIALLY DEFERRED: Postgres evaluates this trigger
+        # deferrable initially deferred: Postgres evaluates this trigger
         # only at COMMIT time, strictly after every statement the tick
         # runs (its UPDATE of consecutive_failures/last_fire_error and
         # any telemetry emission). It always raises, so the COMMIT itself
@@ -783,7 +783,7 @@ class TestNoStrikeTelemetryWithoutACommit:
         The first tick strikes a schedule and its COMMIT is forced to
         fail, so (per the sibling test above) no telemetry survives it.
         The trigger is then dropped and a second, healthy tick runs on
-        the SAME connection -- the same session the commit gate's
+        the same connection -- the same session the commit gate's
         listener and armed-emission map are keyed by. That second tick's
         own strike must still be reported: a rolled-back tick's stale
         arming must not shadow the next tick's.
@@ -1369,7 +1369,7 @@ class TestReconciliationRequiresADueSchedule:
         # reconciling work -- it never reaches the totals read.
         assert await _tick() == 0
 
-        # Seed a fresh, healthy, due schedule so the NEXT tick has
+        # Seed a fresh, healthy, due schedule so the next tick has
         # something to examine and reconciliation actually runs.
         await seed_schedule(
             clean_pg_conn,

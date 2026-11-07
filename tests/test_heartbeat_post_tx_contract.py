@@ -163,7 +163,7 @@ async def test_rolled_back_phase_2_write_is_reissued_on_the_next_tick(
     """A phase-2 escalation lost to a rolled-back tick must be re-written.
 
     Tick 1 escalates job A in memory (task cancelled, local phase FORCED) and
-    writes ``cancel_phase = 2``; a later statement in the SAME heartbeat
+    writes ``cancel_phase = 2``; a later statement in the same heartbeat
     transaction then fails, so the write and its audit event roll back.  The
     next tick must notice that PG is still at phase 1 and re-issue both.
     """

@@ -1,6 +1,6 @@
-"""THE CAPACITY ENFORCEMENT PINS (§H-A's claim-path + finalize faces):
+"""The capacity enforcement pins (§H-A's claim-path + finalize faces):
 
-* the — THE WF RESERVATIONS ARE ACQUIRED: the flow rows carry the
+* the — the WF RESERVATIONS ARE ACQUIRED: the flow rows carry the
   step's declared reservation NAMES on their metadata (the static node
   inserts + the fork's children, the ``rate_limits`` stamp's own
   five-point ride: stamp → resolve → acquire → release → the fail-closed
@@ -8,7 +8,7 @@
   registry (the instances live there — registered at boot from
   ``collect_workflow_reservations`` with the rebind) and acquires them
   with the queue-cap's own denial discipline. A slots=1 reservation
-  shared by two claimed flow rows runs exactly ONE body at a time: the
+  shared by two claimed flow rows runs exactly one body at a time: the
   second gate DENIES (the row snoozed budget-free, its release_reason
   naming the reservation), and the release re-opens the gate. The
   overlap-guard tripwire (the flows demo's pattern) never fires.
@@ -21,7 +21,7 @@
 
 The reservations are PG-BACKED (the production shape — the boot's
 ``sync_slots`` materializes the slot rows, the acquire's lease/reclaim
-read them), on the module's OWN schema.
+read them), on the module's own schema.
 """
 
 from __future__ import annotations
@@ -187,8 +187,8 @@ class OverlapGuard:
 async def test_the_reservation_stamp_rides_the_static_and_fork_rows(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE STAMP: the step's declared reservation NAMES ride the flow
-    rows' metadata beside ``rate_limits`` — the static node inserts AND
+    """The stamp: the step's declared reservation NAMES ride the flow
+    rows' metadata beside ``rate_limits`` — the static node inserts and
     the fork's children (a map's items inherit the source node's terms:
     the children share the source's cohort). The claim path's read."""
     app = WorkflowApp()
@@ -228,10 +228,9 @@ async def test_the_reservation_stamp_rides_the_static_and_fork_rows(
             f"the fork's child row {item_key} carries the source's reservation stamp"
         )
     join_meta = stamped["src.join"]
-    # THE JOIN RIDES THE RUN'S COHORT (the depth-N law): the join row's
-    # metadata carries the source row's already-resolved names, so a
-    # NESTED fan-out over this join reads the stamp — the depth-2
-    # children inherit the run's cap.
+    # the join row's metadata carries the source row's already-resolved names,
+    # so a nested fan-out over this join reads the stamp — the depth-2 children
+    # inherit the run's cap.
     assert join_meta.get("reservations") == [GUARD_NAME], (
         f"the join row rides the run's own reservation cohort; got {join_meta}"
     )
@@ -243,15 +242,15 @@ def _meta(raw: Any) -> dict[str, Any]:
     return decoded
 
 
-# ── the: the acquire — exactly ONE body at a time ──────────────────────
+# ── the: the acquire — exactly one body at a time ──────────────────────
 
 
 @pytest.mark.integration
 async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ACQUIRE (H-A1's recorded finding): two flow rows sharing a slots=1
-    reservation, both CLAIMED concurrently — exactly ONE body runs at a
+    """The acquire (H-A1): two flow rows sharing a slots=1
+    reservation, both CLAIMED concurrently — exactly one body runs at a
     time. The second gate DENIES (the row snoozed budget-free, its
     release_reason naming the reservation), and the release RE-OPENS the
     gate: the re-claimed row runs after the first. The overlap guard's
@@ -337,9 +336,9 @@ async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
             flow_slot=(gate.acquired, gate.registry),
         )
 
-    # ── phase 1: THE DENIED CLAIM — the slot held, the gate denies (the
-    # budget-capped local retry proves the DENIAL propagated, never a
-    # pass-through), and the row's snooze stamp NAMES the reservation.
+    # ── phase 1: the denied claim — the slot held, the gate denies (the
+    # budget-capped local retry proves the denial propagated, never a
+    # pass-through), and the row's snooze stamp names the reservation.
     holder = await registry.acquire_for_actor(
         rate_limits=(),
         reservations=[GUARD_NAME],
@@ -375,7 +374,7 @@ async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
     assert stamp["released_reason"] == "flow-rate-limit-denied"
     assert stamp["released_bucket"] == GUARD_NAME, "the release_reason NAMES the reservation"
 
-    # ── phase 2: THE RELEASE RE-OPENS the gate — the re-claimed row runs.
+    # ── phase 2: the release re-opens the gate — the re-claimed row runs.
     await registry.release_for_actor(holder)
     retry_gate = await _flow_rate_limit_gate(
         registry, clock, claimed[0], CAPABLE_WORKER, _deps(wf_pool, wf_schema), job_log=JOB_LOG
@@ -393,9 +392,9 @@ async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
     assert first_outcome == "succeeded", first_outcome
     assert ran == ["one"] and guard.tripped == [], (ran, guard.tripped)
 
-    # ── phase 3: TWO CONCURRENT claims — exactly one body at a time.
+    # ── phase 3: two concurrent claims — exactly one body at a time.
     # The denial-retry's local re-probe may win the freed slot for the
-    # loser (a fast body's completion wakes it); it may never OVERLAP
+    # loser (a fast body's completion wakes it); it may never overlap
     # the winner — the tripwire screams if it did.
     outcomes = await asyncio.gather(
         _claim_then_run(registry, claimed[0]), _claim_then_run(registry, claimed[1])
@@ -412,12 +411,12 @@ async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
 async def test_an_unknown_reservation_name_parks_fail_closed(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE FAIL-CLOSED ARM (the rate_limits' own): a flow row whose
+    """The fail-closed arm (the rate_limits' own): a flow row whose
     metadata names a reservation this worker's registry does not carry
     parks budget-free, LOUD — never admitted unprotected, never a
     crash."""
     clock = FakeClock(_START)
-    registry = RateLimitRegistry()  # the guard is NOT registered here
+    registry = RateLimitRegistry()  # the guard is not registered here
     job = _flow_job(
         JobId(new_job_id()),
         JobId(new_job_id()),
@@ -436,8 +435,8 @@ async def test_an_unknown_reservation_name_parks_fail_closed(
 async def test_malformed_reservation_metadata_parks_fail_closed(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE HAND-CRAFTED ROW'S SHAPE (the jsonb boundary): a metadata
-    ``reservations`` value that is not a list of str is the SAME
+    """The hand-crafted row's shape (the jsonb boundary): a metadata
+    ``reservations`` value that is not a list of str is the same
     fail-closed arm — the row parks, the WARNING names it."""
     clock = FakeClock(_START)
     registry, _reservation = await _registered_guard(wf_schema, clock, wf_pool)
@@ -493,8 +492,8 @@ async def test_terminal_node_writes_result_expires_at_from_the_cohort_ttl(
         two = step(doomed_body, one, key="two", actor="wf-doom", max_attempts=1)
         return build(two)
 
-    # THE COHORT ROWS (the projection's seed — the finalize reads the
-    # STORED row, the operator-owned face).
+    # the cohort rows (the projection's seed — the finalize reads the
+    # stored row, the operator-owned face).
     register_rows = project_workflow_actor_configs()
     async with wf_pool.acquire() as conn:
         await sync_actor_config(conn, register_rows, schema=wf_schema)
@@ -522,7 +521,7 @@ async def test_terminal_node_writes_result_expires_at_from_the_cohort_ttl(
     assert plain is not None
     assert plain["result_expires_at"] is None, "a cohort with no TTL writes no expiry"
 
-    # THE FAILED TERMINAL'S PARITY: the vanilla mark_failed stamps no expiry.
+    # the vanilla mark_failed stamps no expiry.
     doomed_runner = FlowRunner(app.get("ttl-doomed-flow"), wf_pool, wf_schema)
     doomed_id = (await doomed_runner.create_flow()).flow_id
     doomed_state = await doomed_runner.drive(doomed_id, until="terminal", max_ticks=500)
@@ -537,14 +536,14 @@ async def test_terminal_node_writes_result_expires_at_from_the_cohort_ttl(
     assert failed_row["result_expires_at"] is None, "a FAILED terminal stamps no expiry"
 
 
-# ══ ROUND-2 ADVERSARIAL REVIEW'S RECORDED FINDINGS ═════════════
+# ══ the recorded findings' pins ═════════════
 
 
 # ── C1: the fail-closed park snoozes (never disowns) ─────────────────────
 
 
 class _RecordingParkBackend:
-    """THE PARK'S WITNESS: ``mark_snoozed`` records (the stamp's own
+    """The park's witness: ``mark_snoozed`` records (the stamp's own
     read); the fail-closed park touches nothing else on the backend."""
 
     def __init__(self) -> None:
@@ -566,9 +565,9 @@ class _RecordingParkBackend:
 async def _run_one_job_through_the_intercept(
     deps: WorkerDeps, registry: RateLimitRegistry, job: JobRow
 ) -> tuple[_RecordingParkBackend, WorkerDeps]:
-    """THE INTERCEPT'S OWN DRIVE: one claimed flow row through
+    """The intercept's own drive: one claimed flow row through
     ``di_consumer_loop``'s workflow intercept — the loop processes the
-    ONE queued job, then the shutdown event ends it. The fail-closed
+    one queued job, then the shutdown event ends it. The fail-closed
     park's witness (the stub backend + the deps' disowned set) is
     returned for the pin's assertions."""
     from taskq._di import ProviderRegistry
@@ -601,9 +600,8 @@ async def _run_one_job_through_the_intercept(
             slot_freed_event=asyncio.Event(),
         )
     )
-    # THE PROCESSED SIGNAL: either arm settles the job (the fixed shape
-    # snoozes it; the rejected shape disowns it) — wait for either, then
-    # stop the loop.
+    # either arm settles the job (the fixed shape snoozes it; the rejected
+    # shape disowns it) — wait for either, then stop the loop.
     for _ in range(1000):
         if backend.snoozes or deps.disowned_jobs:
             break
@@ -617,17 +615,17 @@ async def _run_one_job_through_the_intercept(
 async def test_a_renamed_reservation_park_snoozes_and_stamps_never_disowns(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """the (THE CHURN RECORDED FINDING): a flow row stamped with a reservation
+    """the (the CHURN RECORDED FINDING): a flow row stamped with a reservation
     NAME the registry lacks hits the FAIL-CLOSED park arm — the park is
     a SNOOZE (``mark_snoozed`` called, the stamp landed: the
     ``released_reason`` naming the park, the arm's own kind beside it),
-    NEVER a disown. The pre-fix shape asserted ``denied is not None``
+    never a disown. The asserted-``denied`` shape admits the defect
     inside the caller's broad except: the AssertionError disowned the
     row, the heartbeat stopped renewing it, the reclaim handed it back,
     the re-claim re-denied — the infinite churn at lease cadence, the
     denial stamps never landing."""
     deps = _deps(wf_pool, wf_schema)
-    registry = RateLimitRegistry()  # the guard is NOT registered — the rename
+    registry = RateLimitRegistry()  # the guard is not registered — the rename
     job = _flow_job(
         JobId(new_job_id()),
         JobId(new_job_id()),
@@ -652,7 +650,7 @@ async def test_a_malformed_metadata_park_snoozes_and_stamps_never_disowns(
 ) -> None:
     """C1, the malformed-metadata story: a flow row whose
     ``reservations`` metadata lies (not a list of str — the jsonb
-    boundary's hand-crafted row) parks by the SAME snooze-and-stamp —
+    boundary's hand-crafted row) parks by the same snooze-and-stamp —
     the arm's own kind on the record, the claim kept (the disown's
     churn never starts)."""
     deps = _deps(wf_pool, wf_schema)
@@ -689,11 +687,11 @@ class AudioItem(BaseModel):
 async def test_the_route_arm_stamp_symmetry_inherits_the_source_terms(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """C5: THE ROUTE ARM'S INHERITANCE IS SYMMETRIC — a BARE arm (no own
+    """C5: the ROUTE ARM'S INHERITANCE IS SYMMETRIC — a BARE arm (no own
     rate_limits, no actor override) inherits the SOURCE node's
     ``rate_limits`` ALONGSIDE its ``reservations`` (the FIX-2 face's own
-    terms ride the cohort); an arm declaring its own terms keeps its OWN
-    (no silent merge). The pre-fix asymmetry: the reservations flowed
+    terms ride the cohort); an arm declaring its own terms keeps its own
+    (no silent merge). The asymmetry defect: the reservations flow
     from the source, the rate_limits didn't — the bare arm's rows lost
     the source's rate caps at the stamp."""
     from taskq.ratelimit.token_bucket import TokenBucket
@@ -726,11 +724,11 @@ async def test_the_route_arm_stamp_symmetry_inherits_the_source_terms(
             route(
                 source,
                 {
-                    # THE DECLARING ARM: its own terms ONLY (no silent merge).
+                    # its own terms only (no silent merge).
                     ImageItem: RouteArm(
                         image_arm, rate_limits=[arm_bucket], reservations=[arm_guard]
                     ),
-                    # THE BARE ARM: the source's terms ride BOTH stamps.
+                    # the source's terms ride both stamps.
                     AudioItem: audio_arm,
                 },
             )
@@ -750,9 +748,9 @@ async def test_the_route_arm_stamp_symmetry_inherits_the_source_terms(
     assert len(stamped) == 2, sorted(stamped)
     image_child = next(m for k, m in stamped.items() if "ImageItem" in k)
     audio_child = next(m for k, m in stamped.items() if "AudioItem" in k)
-    # THE DECLARING ARM: its own terms only.
+    # its own terms only.
     assert image_child.get("rate_limits") == ["route-arm-bucket"], image_child
     assert image_child.get("reservations") == ["route-arm-own-guard"], image_child
-    # THE BARE ARM: the SOURCE's terms ride BOTH stamps (the symmetry).
+    # the source's terms ride both stamps (the symmetry).
     assert audio_child.get("rate_limits") == ["route-src-bucket"], audio_child
     assert audio_child.get("reservations") == [GUARD_NAME], audio_child
