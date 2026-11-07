@@ -332,8 +332,13 @@ class ProgressEmitter:
 
     async def _flush_once(self) -> None:
         """One drain: the STREAM append+trim (the drop count RETURNED) +
-        the STATE upsert (latest-wins) + the stream counters row — three
-        statements, one connection, best-effort throughout."""
+        the STATE upsert (latest-wins) + the stream counters row — the
+        three durable statements are ONE transaction (a cancellation or
+        failure between them rolls the whole group back; a fragment — a
+        stream row the state row never counts — is not committable), one
+        connection, best-effort throughout; the knock rides after the
+        commit (a lost knock is a freshness loss, never a lost
+        record)."""
         async with self._lock:
             if self._pending is None:
                 return
@@ -343,47 +348,56 @@ class ProgressEmitter:
         self.flushes += 1
         try:
             async with self._pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    self._wsql.progress_stream_append,
-                    self._node_id,
-                    self._flow_id,
-                    CLASS_USER,
-                    KIND_PROGRESS,
-                    _jsonb(snap),
-                    self._ring_bound,
-                )
-                assert row is not None  # the statement always returns its row
-                seq = int(row["seq"])
-                dropped = int(row["dropped"])
-                self.dropped_total += dropped
-                await conn.execute(
-                    self._wsql.progress_state_upsert,
-                    self._node_id,
-                    "progress",
-                    snap["pct"],
-                    snap["message"],
-                    _jsonb(snap["data"]) if snap["data"] is not None else None,
-                    n,
-                    0,
-                    seq,
-                )
-                # The stream's own counters row (channel=STREAM_CHANNEL) —
-                # the dropped counter on the record (the honest
-                # emitted-vs-delivered pair, the coalesce fence).
-                await conn.execute(
-                    self._wsql.progress_state_upsert,
-                    self._node_id,
-                    STREAM_CHANNEL,
-                    None,
-                    None,
-                    None,
-                    1,
-                    dropped,
-                    seq,
-                )
-                # the write's own connection — the pointer only. A knock
-                # failure is a freshness loss; it counts with the flush's own
-                # best-effort accounting.
+                # ONE transaction over the three durable statements: the
+                # stream append/trim, the progress-state upsert, and the
+                # stream-counter upsert are one logical record; a
+                # cancellation or failure between them would commit a
+                # fragment (a stream row the state row never counts, or
+                # a state row the counters never count) that the buffer
+                # clear makes unrepairable. The transaction rolls the
+                # whole group back instead.
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        self._wsql.progress_stream_append,
+                        self._node_id,
+                        self._flow_id,
+                        CLASS_USER,
+                        KIND_PROGRESS,
+                        _jsonb(snap),
+                        self._ring_bound,
+                    )
+                    assert row is not None  # the statement always returns its row
+                    seq = int(row["seq"])
+                    dropped = int(row["dropped"])
+                    self.dropped_total += dropped
+                    await conn.execute(
+                        self._wsql.progress_state_upsert,
+                        self._node_id,
+                        "progress",
+                        snap["pct"],
+                        snap["message"],
+                        _jsonb(snap["data"]) if snap["data"] is not None else None,
+                        n,
+                        0,
+                        seq,
+                    )
+                    # The stream's own counters row (channel=STREAM_CHANNEL) —
+                    # the dropped counter on the record (the honest
+                    # emitted-vs-delivered pair, the coalesce fence).
+                    await conn.execute(
+                        self._wsql.progress_state_upsert,
+                        self._node_id,
+                        STREAM_CHANNEL,
+                        None,
+                        None,
+                        None,
+                        1,
+                        dropped,
+                        seq,
+                    )
+                # the knock AFTER the commit, on the write's own
+                # connection — the pointer only. Notification loss is a
+                # freshness loss; the durable record is already whole.
                 await knock_progress(
                     conn,
                     schema=self._wsql.schema,
@@ -481,8 +495,10 @@ async def project_auto_event(
     failure). Returns the appended seq. the DROP COUNT IS ON the RECORD
     (the receipt discipline, the fence's own): the append's returned
     drop count lands in
-    the node's STREAM-channel counters row in the same statement group
-    — an auto-class trim that vanished uncounted would be the
+    the node's STREAM-channel counters row in the same transaction
+    (the durable pair is atomic: a cancellation rolls both back); the
+    knock rides after the commit — an auto-class trim that vanished
+    uncounted would be the
     honest-pair's lie (appended == retained + dropped, both classes)."""
     if kind not in KIND_VOCABULARY:
         raise ValueError(
@@ -491,31 +507,36 @@ async def project_auto_event(
             "closed by design"
         )
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            wsql.progress_stream_append,
-            node_id,
-            flow_id,
-            CLASS_AUTO,
-            kind,
-            _jsonb(payload),
-            ring_bound,
-        )
-        assert row is not None  # the statement always returns its row
-        seq = int(row["seq"])
-        dropped = int(row["dropped"])
-        # the same STREAM_CHANNEL counters row the user class's flush writes,
-        # occurrences 1 per projection. Unconditional — the row is the record.
-        await conn.execute(
-            wsql.progress_state_upsert,
-            node_id,
-            STREAM_CHANNEL,
-            None,
-            None,
-            None,
-            1,
-            dropped,
-            seq,
-        )
+        # ONE transaction over the durable pair: the append and its
+        # stream-counter upsert are one record; a cancellation between
+        # them would commit a stream row the counters never count. The
+        # knock rides after the commit (the pointer, not the record).
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                wsql.progress_stream_append,
+                node_id,
+                flow_id,
+                CLASS_AUTO,
+                kind,
+                _jsonb(payload),
+                ring_bound,
+            )
+            assert row is not None  # the statement always returns its row
+            seq = int(row["seq"])
+            dropped = int(row["dropped"])
+            # the same STREAM_CHANNEL counters row the user class's flush writes,
+            # occurrences 1 per projection. Unconditional — the row is the record.
+            await conn.execute(
+                wsql.progress_state_upsert,
+                node_id,
+                STREAM_CHANNEL,
+                None,
+                None,
+                None,
+                1,
+                dropped,
+                seq,
+            )
         # the same channel the user flush knocks — the ring's every event class
         # rides one transport.
         await knock_progress(conn, schema=wsql.schema, flow_id=flow_id, node_id=node_id, seq=seq)
