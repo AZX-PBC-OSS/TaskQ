@@ -335,12 +335,14 @@ def _log_has_event(log_path: str | None, event: str, actor: str) -> bool:
 async def test_two_process_chain_deadline_retry_and_capacity_owner_roll(
     pg_dsn: str, module_pg_schema: Any, tmp_path: Any
 ) -> None:
-    """The #716 fleet surface on two real worker processes and real PostgreSQL:
+    """The #716 fleet surface on real worker processes and real PostgreSQL:
     the declared exponential/linear/fixed curves land their exact applied rungs;
     an advertised non-consuming delay never spends the attempt budget; the
     engine's own start_to_close (not a body raise) owns the deadline terminal;
     and the chain cohorts' capacity owners roll by the declared law across a
-    real worker replacement."""
+    real worker replacement (`roll-a` is reaped, then `roll-b` boots — the
+    simultaneous two-worker case is
+    ``test_two_process_chain_policy_capacity_and_late_priority``)."""
     schema = module_pg_schema.schema_name
     log_sink = str(tmp_path / "policy-roll-worker.log")
     fleet: dict[str, WorkerProc] = {}

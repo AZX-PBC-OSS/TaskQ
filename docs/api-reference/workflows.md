@@ -116,9 +116,10 @@ creation is a supported policy path.
 
 `Step.outcomes` still accepts the enum or type-union route vocabulary. The
 `Chain.steps` container is heterogeneous by design; each individual Step carries
-its own record/outcome typing. No terminal-effect callback field exists on
-`ExecutionPolicy`; the shared G-EFFECT-SEMANTICS implementation owns that future
-boundary separately, and retry configuration must never silently imply one.
+its own record/outcome typing. `ExecutionPolicy` itself has no terminal-effect
+callback field: a terminal effect is declared only through
+`RetrySpec(on_exhaustion=TerminalEffect(...))` (documented below), and retry
+configuration never silently implies one.
 
 The complete precedence, retry, strict-reservation, capacity-owner, deadline,
 legacy default, and failure-boundary law is in
@@ -287,14 +288,21 @@ containing flow/workflow/node keys, `map_index`, claim attempt, positive durable
 
 A policy-owned terminal commits the failed node, current attempt ledger, and one
 stable effect intent atomically; exactly one ordinary effect job materializes
-through the physical idempotency keys. Effects execute with ordinary bounded
-retry after a terminal root. Cancellation before the winning terminal prevents
-intent; an already committed intent survives later cancellation. Missing handlers
-stay visibly unclaimed. Callback execution and external effects are at-least-once;
-same-DB completed-once domain settlement requires the application's marker and
-effects in one transaction. The engine never claims arbitrary/external
-exactly-once execution. These guarded flows require the PRE run-epoch/effect
-migrations and capable fleet workers; direct execution refuses them.
+through the physical idempotency keys. The effect runs with ordinary bounded
+retry after its own node's failed terminal — not after a terminal root. The
+effect is a nonterminal row of its run: the run's root stays nonterminal while
+the intent is undelivered or the effect job is unfinished, and the root's
+`failed` terminal is derived by the run's maintenance only after the effect has
+settled. (An operator cancel that commits first terminalises the root
+`cancelled`; a committed intent survives it and then runs on the cancelled
+root.) Cancellation before the winning terminal prevents intent; an already
+committed intent survives later cancellation. Missing handlers stay visibly
+unclaimed. Callback execution and external effects are at-least-once; same-DB
+completed-once domain settlement requires the application's marker and effects
+in one transaction. The engine never claims arbitrary/external exactly-once
+execution. These guarded flows require the capability, run-epoch and intent PRE
+migrations (see the upgrade guide's 01.00.38 + 01.00.41 section) and capable
+fleet workers; direct execution refuses them.
 
 ## The runner (create / drive / result)
 

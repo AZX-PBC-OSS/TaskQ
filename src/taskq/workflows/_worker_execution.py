@@ -1118,9 +1118,6 @@ async def execute_flow_job(
             "a deployment defect"
         ) from None
 
-    runner = _runner_for(
-        workflow_name, pool, schema, worker_id, default_start_to_close=default_start_to_close
-    )
     # the root's stamped override through the shared parse → domain-clamp →
     # degrade cascade (``resolve_priority_stamp`` — a stamp a hand-crafted row
     # rendered unparseable or out-of-domain degrades to no override, never a

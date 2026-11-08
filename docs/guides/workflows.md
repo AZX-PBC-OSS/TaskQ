@@ -3131,9 +3131,9 @@ An explicitly advertised workflow-only
 `WorkflowRetryOverride(delay=..., consume_budget=False)` does not consume
 `max_attempts`, advance a source's logical failure ordinal, or increment the
 legacy `snooze_count`. Such a spec must declare positive finite
-`non_consuming_limit`. The existing `NODE_DEFER_SQL` transaction increments and
-reads the durable `jobs.metadata.wf_retry.non_consuming_count` under the same
-claim fence as the deferral. At the exact bound it terminates as
+`non_consuming_limit`. The deferral's own claim-fenced row law increments and
+reads the durable `jobs.metadata.wf_retry.non_consuming_count` in the same
+transaction as the deferral. At the exact bound it terminates as
 `RetryDeferralBudgetExceeded`; an advertised wait itself has no failed-ledger
 outcome and interruption does not consume an ordinary failure. A malformed
 counter/bound fails closed with no counter reset or ledger mutation.
@@ -3168,15 +3168,21 @@ node/record + effect identity. Outbox replay/idempotency materializes exactly on
 ordinary effect job; a later operator cancel cannot erase an already committed
 intent. Cancel before the winning disposition writes no intent. A failed parent
 still suppresses ordinary children; only this explicit marked effect runs after
-the terminal flow. A missing registered body remains visibly unclaimed, never a
-successful no-op.
+its own node's failed terminal. The effect is a nonterminal row of its run: the
+run's root stays nonterminal while the intent is undelivered or the effect job
+is unfinished, and the root's `failed` terminal is derived by the run's
+maintenance only after the effect has settled. (The one other ordering is the
+operator cancel that commits first: the root terminalises `cancelled`, and the
+committed intent still runs on that cancelled root.) A missing registered body
+remains visibly unclaimed, never a successful no-op.
 
 The body can be invoked again after a worker/process crash. External calls and
 arbitrary Python side effects are therefore **at-least-once**, not
 exactly-once. Same-database domain closure completes once only when the effect
 writes its idempotency marker (derived from the event key) and domain effects in
 one application DB transaction. There is no generic `exactly_once=True` flag.
-Direct in-process execution refuses this guarded feature; apply the PRE epoch and
-intent-migration support and run the declaring cohorts with capable fleet workers.
-Unfinished intents and nonterminal effect rows are available to the shared
-quiescence predicate; a terminal root alone is not proof that an effect exited.
+Direct in-process execution refuses this guarded feature; apply the capability,
+run-epoch and intent PRE migrations and run the declaring cohorts with capable
+fleet workers. Unfinished intents and nonterminal effect rows are available to
+the shared quiescence predicate; a terminal root alone is not proof that an
+effect exited.
