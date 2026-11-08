@@ -88,6 +88,7 @@ from taskq.constants import (
 )
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
+from taskq.workflows._policy import TerminalEffect, TerminalEffectReason
 from taskq.workflows._progress import KIND_NODE_TERMINAL
 
 if TYPE_CHECKING:
@@ -96,6 +97,7 @@ if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
 
 __all__ = [
+    "BUDGET_EXHAUSTED_MESSAGE",
     "DeferOps",
     "DeferralDisposition",
     "defer_row_law",
@@ -112,7 +114,7 @@ WORKFLOW_CANCELLED_CLASS: Final[str] = "WorkflowCancelled"
 
 #: the named deferral dispositions (the extension seam's member set —
 #: see the module docstring for the law).
-DeferralDisposition = Literal["snooze", "retry_after_consuming"]
+DeferralDisposition = Literal["snooze", "retry_after_consuming", "retry_after_non_consuming"]
 
 
 def deferral_disposition(exc: Snooze | RetryAfter) -> DeferralDisposition:
@@ -148,6 +150,8 @@ class _DeferHost(Protocol):
     async def _project_auto(
         self, flow_id: JobId, node_id: JobId, kind: str, payload: dict[str, Any]
     ) -> None: ...
+
+    def _terminal_effect_for(self, node: Any, row: dict[str, Any]) -> TerminalEffect | None: ...
 
     async def _exhaust_loop(
         self,
@@ -203,17 +207,31 @@ async def defer_row_law(
     (:func:`deferral_disposition` + the signal's class name) — this
     function is the ROW LAW only, never the signal's interpretation.
     """
+    from taskq.workflows._policy import validate_retry_after_delay
+
+    validate_retry_after_delay(delay)
     async with pool.acquire() as conn, conn.transaction():
-        verdict = await conn.fetchrow(
-            wsql.node_defer,
-            job_id,
-            worker_id,
-            delay,
-            attempt,
-            claim_epoch,
-            disposition,
-            signal_name,
-        )
+        try:
+            verdict = await conn.fetchrow(
+                wsql.node_defer,
+                job_id,
+                worker_id,
+                delay,
+                attempt,
+                claim_epoch,
+                disposition,
+                signal_name,
+            )
+        except Exception as exc:
+            import asyncpg
+
+            if disposition == "retry_after_non_consuming" and isinstance(exc, asyncpg.DataError):
+                raise ValueError(
+                    "metadata.wf_retry.non_consuming_count and non_consuming_limit "
+                    "must be valid signed-int32 integers; the deferral, counter, "
+                    "and ledger transition rolled back"
+                ) from exc
+            raise
         if verdict is None:
             if ledger_id is not None:
                 await conn.execute(
@@ -227,9 +245,13 @@ async def defer_row_law(
             if ledger_id is not None:
                 # 'awaited' — the hold's own resume-not-retry status. Never
                 # 'failed': the ladder's budget read counts failures only, and
-                # the deferral never executed. (The caller proved its claim at
-                # the node row's fence — the instant's re-mint guard is the
-                # fence-by-id's own; the rest keeps the by-id-only write.)
+                # the deferral never executed. The write keys the EXACT claim
+                # identity — the claim's own row id AND its own RETURNING
+                # instant (the re-mint guard): a re-minted row is the LIVE
+                # winner's, never ours to rest (the caller proved its claim at
+                # the node row's fence; the instant's match is the
+                # fence-by-id's own). No nullable-instant bypass exists in
+                # current production claims.
                 await conn.execute(
                     wsql.ledger_terminal_by_id,
                     ledger_id,
@@ -238,10 +260,16 @@ async def defer_row_law(
                     None,
                     None,
                     None,
-                    None,
+                    ledger_claimed_at,
                 )
             return "deferred"
-        return str(verdict["verdict"])
+        verdict_text = str(verdict["verdict"])
+        if verdict_text == "malformed_counter":
+            raise ValueError(
+                "metadata.wf_retry.non_consuming_count and non_consuming_limit "
+                "must be valid signed-int32 integers; no counter or ledger reset occurred"
+            )
+        return verdict_text
 
 
 async def route_defer_terminal(
@@ -254,11 +282,14 @@ async def route_defer_terminal(
     attempt: int,
     claim_epoch: int,
     ledger_id: JobId | None,
+    ledger_claimed_at: Any = None,
     capture_policy: Any,
     project_auto: Any,
     outcome: str,
     error_class: str,
     error_message: str,
+    terminal_effect: TerminalEffect | None = None,
+    terminal_reason: TerminalEffectReason = "retry_exhausted",
 ) -> None:
     """the TERMINAL VERDICTS' SHARED ROUTE (the wf terminal door's own
     mechanics — the ledger's terminal + the door + the projection ride):
@@ -266,12 +297,13 @@ async def route_defer_terminal(
     once (the DRY of the step's and the loop's routes — the DOORS differ,
     never the mechanics):
 
-    * the LEDGER'S TERMINAL: the claim's own RETURNING id when held (the
-      strongest keying — ``_run_tx1``'s own law), else the arbiter tuple
-      (the ladder's exhaustion shape);
-    * :func:`~taskq.workflows.engine.finalize_node` — the fenced
-      terminal mark, the failed-parent cascade and the propagation ride it;
-    * the auto projection (the node's terminal event, best-effort).
+    * the engine's one tx1 owns the fenced terminal mark and current-ledger
+      terminal together with job_attempts/job_events; no separate pre-terminal
+      ledger write leaves atomicity to crash luck;
+    * :func:`~taskq.workflows.engine.finalize_node` also owns failed-parent
+      propagation and the ordinary outbox work;
+    * the auto projection (the node's terminal event, best-effort) follows
+      that acknowledged commit.
 
     The DOORS' SEMANTICS live at the call sites (which verdict routes
     which door with which vocabulary — the step's exhaustion finalizes
@@ -279,34 +311,12 @@ async def route_defer_terminal(
     state); this function is the shape they share, never a decision."""
     from taskq.workflows.engine import finalize_node
 
-    async with pool.acquire() as conn:
-        if ledger_id is not None:
-            await conn.execute(
-                wsql.ledger_terminal_by_id,
-                ledger_id,
-                outcome,
-                None,
-                error_class,
-                error_message,
-                None,
-                # The route's callers proved their claim at the fence
-                # legs' own verdict — the NULL form keeps the by-id-only
-                # write here.
-                None,
-            )
-        else:
-            await conn.execute(
-                wsql.ledger_terminal,
-                flow_id,
-                row["step_key"],
-                attempt,
-                outcome,
-                None,
-                error_class,
-                error_message,
-                None,
-                row["map_index"],
-            )
+    # The engine's tx1 is the sole job + current-ledger + attempt + event
+    # commit. A separate pre-terminal ledger write would reopen exactly the
+    # crash window the cancellation door is required to close. The ledger's
+    # terminal rides the EXACT claim identity (id + instant) — no
+    # four-expression fallback, never a cross-write over the parked
+    # attempt's own row.
     final = await finalize_node(
         pool,
         wsql,
@@ -321,6 +331,10 @@ async def route_defer_terminal(
         error_message=error_message,
         capture_policy=capture_policy,
         map_index=row["map_index"],
+        ledger_id=ledger_id,
+        ledger_claimed_at=ledger_claimed_at,
+        terminal_effect=terminal_effect,
+        terminal_reason=terminal_reason,
     )
     if final.applied:
         await project_auto(
@@ -333,6 +347,70 @@ async def route_defer_terminal(
                 "error_class": error_class,
             },
         )
+
+
+async def policy_retry_defer(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    row: dict[str, Any],
+    worker_id: JobId,
+    attempt: int,
+    claim_epoch: int,
+    ledger_id: JobId | None,
+    ledger_claimed_at: Any,
+    exc: Exception,
+    delay: timedelta,
+    capture_policy: Any,
+    project_auto: Any,
+    terminal_effect: TerminalEffect | None = None,
+) -> str:
+    """Apply one bounded workflow-classifier non-consuming advertised retry."""
+    from taskq.workflows._policy import RetryDeferralBudgetExceeded
+
+    signal_name = type(exc).__name__
+    verdict = await defer_row_law(
+        pool,
+        wsql,
+        job_id=JobId(row["id"]),
+        worker_id=worker_id,
+        delay=delay,
+        attempt=attempt,
+        claim_epoch=claim_epoch,
+        disposition="retry_after_non_consuming",
+        signal_name=signal_name,
+        ledger_id=ledger_id,
+        ledger_claimed_at=ledger_claimed_at,
+    )
+    if verdict in ("deferred", "fenced"):
+        return verdict
+    cancelled = verdict == "cancel_fenced"
+    error_class = WORKFLOW_CANCELLED_CLASS if cancelled else RetryDeferralBudgetExceeded.__name__
+    error_message = (
+        "cancelled while applying an advertised retry policy"
+        if cancelled
+        else f"{signal_name} reached the workflow non_consuming_limit without consuming max_attempts"
+    )
+    await route_defer_terminal(
+        pool,
+        wsql,
+        flow_id=flow_id,
+        row=row,
+        worker_id=worker_id,
+        attempt=attempt,
+        claim_epoch=claim_epoch,
+        ledger_id=ledger_id,
+        ledger_claimed_at=ledger_claimed_at,
+        capture_policy=capture_policy,
+        project_auto=project_auto,
+        outcome="cancelled" if cancelled else "failed",
+        error_class=error_class,
+        error_message=error_message,
+        terminal_effect=None if cancelled else terminal_effect,
+        terminal_reason="non_consuming_exhausted",
+    )
+    return "cancelled" if cancelled else "laddered"
 
 
 class DeferOps(_DeferHost):
@@ -432,11 +510,13 @@ class DeferOps(_DeferHost):
             attempt=attempt,
             claim_epoch=claim_epoch,
             ledger_id=ledger_id,
+            ledger_claimed_at=ledger_claimed_at,
             capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the compile (the workflow decorator's declaration); the host protocol's compiled is the runner's Any-typed field — the ladder's own call shape.
             project_auto=self._project_auto,
             outcome=outcome,
             error_class=error_class,
             error_message=error_message,
+            terminal_effect=self._terminal_effect_for(None, row) if exhausted else None,
         )
         logger.info(
             "node.defer-terminal",

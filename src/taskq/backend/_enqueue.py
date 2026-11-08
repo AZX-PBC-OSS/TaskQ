@@ -2176,6 +2176,8 @@ async def _enqueue_batch_fast(
                 # label rather than by the actor's stored assignment (the
                 # routing contract in taskq/backend/_dispatch_sql.py).
                 False,
+                # Vanilla COPY has no run incarnation; the nullable mirror stays NULL.
+                None,
                 # The fan-out ledger, COPY_ENQUEUE_COLUMNS' trailing
                 # member (COPY_FROM_COLUMNS carries parent_id last and the
                 # enqueue omit-list does not drop it).

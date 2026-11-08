@@ -36,7 +36,7 @@ from taskq.actor_config import (
     CapacityOwner,
     validate_capacity_owner,
 )
-from taskq.constants import check_priority_domain
+from taskq.constants import check_max_attempts_domain, check_priority_domain
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.workflows._emit import EMIT_MAX_IN_FLIGHT_DEFAULT
 from taskq.workflows._types import duration_seconds
@@ -52,6 +52,7 @@ from taskq.workflows.definitions import DuplicateWorkflowError
 
 if TYPE_CHECKING:
     from taskq.workflows.api._validate import WorkflowValidationError
+    from taskq.workflows.chain import Chain
 
 __all__ = [
     "CompiledWorkflow",
@@ -98,7 +99,13 @@ class WorkflowActor:
         self._fn = fn
         self.name = name
         self.queue = queue
+        from taskq.workflows._policy import canonical_retry_kind
+
+        check_max_attempts_domain(max_attempts)
         self.max_attempts = max_attempts
+        canonical_retry_kind(
+            retry_kind, what="actor retry_kind"
+        )  # validate only; preserve the public authoring alias
         self.retry_kind = retry_kind
         self.capture_policy = capture_policy
         self.redact = redact
@@ -225,7 +232,7 @@ class CompiledWorkflow:
     input_type: object = None
     #: The workflow's declared chains — the chain source node owns
     #: its Chain; the runner resolves chain-step routes from here.
-    chains: tuple[object, ...] = ()
+    chains: tuple[Chain, ...] = ()
     #: the run's admission control, declared at the workflow level; the runner
     #: hands it to every ``ctx.emit_batch``. ``None`` = the explicit unbounded.
     max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT
@@ -771,13 +778,21 @@ def _register_bodies(
         # registered under their own step keys (D1 — the emitted + fork-spawned
     # chain rows resolve their bodies from the registry; the chain's steps have
     # no compiled NodeDecl).
-    from taskq.workflows.chain import Chain
 
     for chain_decl in compiled.chains:
-        chain = cast("Chain", chain_decl)
+        chain = chain_decl
         for step_key, chain_step in chain.steps.items():
             if chain_step.body is not None:
-                bodies.setdefault(step_key, chain_step.body)
+                bodies.setdefault(step_key, cast("StepBody", chain_step.body))
+    from taskq.workflows._effects import collect_terminal_effects
+
+    for step_key, registered in collect_terminal_effects(compiled).items():
+        if step_key in bodies and bodies[step_key] is not registered.effect.body:
+            raise DuplicateStepBodyError(
+                f"workflow {compiled.name!r} terminal-effect handler {step_key!r} collides "
+                "with a different registered body"
+            )
+        bodies[step_key] = cast("StepBody", registered.effect.body)
     if bodies or aggregates or loop_policies:
         get_registry().register(
             WorkflowDef(

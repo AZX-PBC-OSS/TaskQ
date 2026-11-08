@@ -68,7 +68,8 @@ from typing import TYPE_CHECKING, Any, Final
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.workflows._fork import FORK_CHUNK
-from taskq.workflows._types import MAP_INDEX_CEILING, EmitChild, _jsonb, _metadata
+from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
+from taskq.workflows._types import MAP_INDEX_CEILING, EmitChild, _jsonb, _row_metadata
 
 if TYPE_CHECKING:
     import asyncpg
@@ -214,6 +215,7 @@ async def _emit_tx(
     max_attempts: int,
     retry_kind: str,
     _window_hook: WindowHook | None,
+    run_priority: int | None = None,
 ) -> None:
     """The emit tx's body (the caller owns the transaction): the children
     INSERT, the edge rows, the cursor checkpoint — the certified fork
@@ -242,13 +244,23 @@ async def _emit_tx(
                 [c.actor for c in chunk],
                 [c.queue for c in chunk],
                 [_jsonb(c.payload) for c in chunk],
-                [max_attempts] * len(chunk),
-                [retry_kind] * len(chunk),
+                [c.max_attempts or max_attempts for c in chunk],
+                [c.retry_kind or canonical_retry_kind(retry_kind) for c in chunk],
                 [source_id] * len(chunk),
                 [c.map_index for c in chunk],
                 [c.step_key for c in chunk],
                 [c.trace_id for c in chunk],
-                [_jsonb(_metadata(flow_id, blocking_reason=None))] * len(chunk),
+                [
+                    _jsonb(
+                        _row_metadata(
+                            flow_id,
+                            rate_limits=c.rate_limits,
+                            reservations=c.reservations,
+                            retry=c.retry,
+                        )
+                    )
+                    for c in chunk
+                ],
                 # The scope is the fork's own (one scope per flow) — the
                 # uniqueness pair is (scope, key), the key carries the
                 # emit scope + the per-record index.
@@ -257,6 +269,9 @@ async def _emit_tx(
                 # one cohort per run (the flow_id), the fork's own law at the
                 # page inserts.
                 [str(flow_id)] * len(chunk),
+                [run_priority if run_priority is not None else (c.priority or 0) for c in chunk],
+                [c.start_to_close for c in chunk],
+                *[[row_retry_curve(c.retry_policy)[column] for c in chunk] for column in range(4)],
             )
         except asyncpg.UniqueViolationError as exc:
             raise PageDivergedError(
@@ -336,6 +351,7 @@ async def emit_batch(
     max_in_flight: int | None = None,
     backpressure_timeout_s: float = _EMIT_BACKPRESSURE_DEFAULT_S,
     _window_hook: WindowHook | None = None,
+    run_priority: int | None = None,
 ) -> tuple[JobId, ...]:
     """Emit one page of chain starts: the children + the edges + the
     cursor checkpoint, one transaction, while the source stays
@@ -473,6 +489,7 @@ async def emit_batch(
                         max_attempts=max_attempts,
                         retry_kind=retry_kind,
                         _window_hook=_window_hook,
+                        run_priority=run_priority,
                     )
                     # the valid page-mates' tx committed above (the batch
                     # semantics — a poison record kills itself loudly, never
@@ -508,6 +525,7 @@ async def emit_batch(
             max_attempts=max_attempts,
             retry_kind=retry_kind,
             _window_hook=_window_hook,
+            run_priority=run_priority,
         )
     # the poison's loud death is outside the tx (the valid work committed).
     if poison:

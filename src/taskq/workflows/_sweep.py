@@ -33,7 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from time import monotonic
-from typing import Final
+from typing import Final, cast
 
 import asyncpg
 import structlog
@@ -42,6 +42,7 @@ from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
 from taskq.obs import get_logger
+from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._progress import PROGRESS_RING_BOUND
 from taskq.workflows._reducers import forget_flow_reducers, resolve_flow_reducer
 from taskq.workflows._sql import (
@@ -60,11 +61,12 @@ from taskq.workflows._sql_sweep import (
     render_rootless_retention_sql,
 )
 from taskq.workflows._types import (
+    ConsumerBinding,
     FiredJoin,
+    _consumer_binding,
     _consumer_bindings,
     _jsonb,
-    _metadata,
-    _seconds_or_none,
+    _row_metadata,
 )
 
 __all__ = [
@@ -284,6 +286,16 @@ async def sweep_join_rederive(
     )
 
 
+def _outbox_priority(row: asyncpg.Record, binding: ConsumerBinding) -> int:
+    """Run override > binding declaration > previously resolved default."""
+    from taskq.constants import resolve_priority_stamp
+
+    resolved = resolve_priority_stamp(row.get("run_priority"))
+    if resolved is not None:
+        return resolved
+    return binding.priority if binding.priority is not None else int(row["priority"])
+
+
 async def drain_outbox(
     pool: asyncpg.Pool,
     wsql: WorkflowSql,
@@ -314,29 +326,75 @@ async def drain_outbox(
         ids = [new_uuid() for _ in rows]
         # asyncpg returns the jsonb bindings as str on un-coded connections
         # (the estate's _json seam parses; the stdlib import is banned).
-        bindings = [_json_loads(r["bindings"] or "{}") for r in rows]
+        bindings: list[ConsumerBinding] = []
+        traces: list[str | None] = []
+        for row in rows:
+            decoded: object = _json_loads(row["bindings"] or "{}")
+            if not isinstance(decoded, dict):
+                raise ValueError("workflow outbox bindings must be a JSON object")
+            document = cast("dict[str, object]", decoded)
+            bindings.append(
+                _consumer_binding(
+                    document
+                    | {
+                        "step_key": row["consumer_step_key"],
+                        "map_index": row["map_index"],
+                    }
+                )
+            )
+            trace = document.get("trace_id")
+            if trace is not None and not isinstance(trace, str):
+                raise ValueError("workflow outbox trace_id must be a string or null")
+            traces.append(trace)
         await conn.execute(
             wsql.outbox_drain_consumers,
             ids,
-            [b.get("actor", "workflow") for b in bindings],
-            [b.get("queue", "default") for b in bindings],
+            [binding.actor for binding in bindings],
+            [binding.queue for binding in bindings],
             # The payload is the unwrapped one: the consumer body receives
             # the declared payload, never the transport envelope it rode
             # in on (the envelope's actor/queue are the placement columns
             # above; the payload key is the body's own contract).
-            [_jsonb(b.get("payload")) for b in bindings],
-            [default_max_attempts] * len(rows),
-            [default_retry_kind] * len(rows),
+            [_jsonb(binding.payload) for binding in bindings],
+            [
+                binding.retry.policy.max_attempts
+                if binding.retry is not None
+                else default_max_attempts
+                for binding in bindings
+            ],
+            [
+                binding.retry.policy.kind
+                if binding.retry is not None
+                else canonical_retry_kind(default_retry_kind)
+                for binding in bindings
+            ],
             [r["join_job_id"] for r in rows],
             [r["map_index"] for r in rows],
             [r["consumer_step_key"] for r in rows],
             # The trace (stamped at enqueue): the fire wrote the
             # join's trace — or the fire's own id — into the bindings;
             # the consumer row carries it, never a NULL.
-            [b.get("trace_id") for b in bindings],
-            # The consumer row's metadata: the flow link, no blocking
-            # reason (a normal step, dispatchable like any other).
-            [_jsonb(_metadata(JobId(r["flow_id"]), blocking_reason=None)) for r in rows],
+            traces,
+            # The typed consumer's full admission/deferral policy rides the row.
+            [
+                _jsonb(
+                    _row_metadata(
+                        JobId(row["flow_id"]),
+                        rate_limits=binding.rate_limits,
+                        reservations=binding.reservations,
+                        retry=binding.retry,
+                    )
+                    | (
+                        {
+                            "wf_after_terminal_effect": True,
+                            "wf_effect_key": binding.effect_key,
+                        }
+                        if binding.effect_key is not None
+                        else {}
+                    )
+                )
+                for row, binding in zip(rows, bindings, strict=True)
+            ],
             [f"workflow:{r['flow_id']}" for r in rows],
             [
                 # The arbiter's key — the static row's own convention
@@ -346,9 +404,13 @@ async def drain_outbox(
                 # (the belt, never a second dispatch). The fired-join
                 # consumer rows that do insert fresh (a fork's own
                 # item-shape consumer) keep the map-index leg.
-                f"wf:{r['consumer_step_key']}"
-                + (f":{r['map_index']}" if r["map_index"] is not None else "")
-                for r in rows
+                (
+                    f"wf_effect:{binding.effect_key}"
+                    if binding.effect_key is not None
+                    else f"wf:{r['consumer_step_key']}"
+                    + (f":{r['map_index']}" if r["map_index"] is not None else "")
+                )
+                for r, binding in zip(rows, bindings, strict=True)
             ],
             # The run-priority stamp's resolution (the priority surface's
             # drain leg): the fetch's SQL resolved the flow root's stamped
@@ -357,7 +419,7 @@ async def drain_outbox(
             # column default — the consumer row materializes at the run's
             # priority (the loop escalation's interactive follow-up), the
             # unset case at the column default's own value (0).
-            [r["priority"] for r in rows],
+            [_outbox_priority(row, binding) for row, binding in zip(rows, bindings, strict=True)],
             # The consumer's declared deadline (the drain leg of the
             # start_to_close stamp): the fire's bindings carry the downstream
             # node's own resolution (the join row's metadata `consumers`
@@ -368,14 +430,15 @@ async def drain_outbox(
             # — a malformed value degrades to NULL, never a sweep death.
             # The parse is the binding decode's own helper
             # (``_seconds_or_none``) — one guard, both faces.
-            [
-                _seconds_or_none(b.get("start_to_close_s"))  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the jsonb walk hands the Any-typed doc the drain decoded above; the helper is the parse.
-                for b in bindings
-            ],
+            [binding.start_to_close for binding in bindings],
             # The consumer row's dispatch cohort (the fairness stamp):
             # the run's flow_id — the same birth stamp every claimable wf
             # row of the run carries.
             [str(r["flow_id"]) for r in rows],
+            *[
+                [row_retry_curve(binding.retry_policy)[column] for binding in bindings]
+                for column in range(4)
+            ],
         )
         await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
     return len(rows)

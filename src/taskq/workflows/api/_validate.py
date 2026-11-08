@@ -306,6 +306,16 @@ def _rule_annotations(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
                     "the wiring (the promise's data type comes from it)",
                 )
             )
+    for chain in compiled.chains:
+        for step_key, chain_step in chain.steps.items():
+            if "return" not in getattr(chain_step.body, "__annotations__", {}):
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E4-unannotated-step",
+                        "error",
+                        f"chain step {step_key!r}'s body has no return annotation",
+                    )
+                )
     return diagnostics
 
 
@@ -554,6 +564,8 @@ def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationE
     stand-in that CLAIMS the type it does not have) is the wiring-site
     erasure: the checker verifies the body's ``ctx.*`` reads against the
     LIE, every face reports clean. The conformance is verified at BUILD
+    — the annotation is verification, not documentation.
+
     — the annotation is verification, not documentation."""
     from taskq.workflows.api._ctx import StepContext
 
@@ -568,21 +580,62 @@ def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationE
         if ctx_ann is Any or ctx_ann is object:
             continue  # the declared-unchecked: Any/object honestly declare
             # the absence of verification — never a lie.
-        if ctx_ann is StepContext or (
+        if ctx_ann is not StepContext and not (
             isinstance(ctx_ann, type) and issubclass(ctx_ann, StepContext)
         ):
-            continue
-        diagnostics.append(
-            WorkflowValidationError(
-                "E9-ctx-annotation",
-                "error",
-                f"{node.key!r}'s body declares its context as {ctx_ann!r} — "
-                "the ctx annotation must BE StepContext (or a subclass), "
-                "or the declared-unchecked Any/object: the checker "
-                "verifies the body's ctx.* reads against the REAL "
-                "surface; a fabricated stand-in verifies a lie",
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E9-ctx-annotation",
+                    "error",
+                    f"{node.key!r}'s body declares its context as {ctx_ann!r} — "
+                    "the ctx annotation must BE StepContext (or a subclass), "
+                    "or the declared-unchecked Any/object: the checker "
+                    "verifies the body's ctx.* reads against the REAL "
+                    "surface; a fabricated stand-in verifies a lie",
+                )
             )
-        )
+            continue
+    from taskq.workflows._effects import collect_terminal_effects
+
+    for step_key, registered in collect_terminal_effects(compiled).items():
+        hints = body_hints(registered.effect.body)
+        ctx_ann = hints.get("ctx")
+        if ctx_ann not in (None, Any, object, StepContext):
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E9-ctx-annotation",
+                    "error",
+                    f"terminal effect {step_key!r} has a non-StepContext ctx: {ctx_ann!r}",
+                )
+            )
+        event_params = [key for key in hints if key not in ("return", "ctx")]
+        if event_params:
+            event_ann = hints[event_params[0]]
+            from taskq.workflows._policy import ExhaustionEvent
+
+            if event_ann is not ExhaustionEvent:
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E4-unannotated-step",
+                        "error",
+                        f"terminal effect {step_key!r} must accept ExhaustionEvent; "
+                        f"got {event_ann!r}",
+                    )
+                )
+    for chain in compiled.chains:
+        for step_key, chain_step in chain.steps.items():
+            ctx_ann = body_hints(chain_step.body).get("ctx")
+            if ctx_ann in (None, Any, object) or ctx_ann is StepContext:
+                continue
+            if isinstance(ctx_ann, type) and issubclass(ctx_ann, StepContext):
+                continue
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E9-ctx-annotation",
+                    "error",
+                    f"chain step {step_key!r} declares a non-StepContext ctx: {ctx_ann!r}",
+                )
+            )
     return diagnostics
 
 
@@ -653,6 +706,57 @@ def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
                         "discovery of a wiring-time lie)",
                     )
                 )
+    diagnostics.extend(_chain_arity_diagnostics(compiled))
+    return diagnostics
+
+
+def _chain_arity_diagnostics(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """Chain leaf bodies wire one record, plus an optional dependency tail."""
+    diagnostics: list[WorkflowValidationError] = []
+    for chain in compiled.chains:
+        for step_key, chain_step in chain.steps.items():
+            body = chain_step.body
+            if not callable(body) or not body_hints(body):
+                continue
+            params = [
+                name
+                for name, parameter in inspect.signature(body).parameters.items()
+                if name != "ctx"
+                and parameter.kind
+                not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            ]
+            if len(params) not in (1, 2):
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E10-arity",
+                        "error",
+                        f"{step_key!r}'s chain body takes {len(params)} parameter(s) "
+                        "but a chain leaf wires exactly one record (plus an optional "
+                        f"deps tail); params={params!r}",
+                    )
+                )
+    from taskq.workflows._effects import collect_terminal_effects
+
+    for step_key, registered in collect_terminal_effects(compiled).items():
+        body = registered.effect.body
+        if not callable(body) or not body_hints(body):
+            continue
+        effect_params = [
+            name
+            for name, parameter in inspect.signature(body).parameters.items()
+            if name != "ctx"
+            and parameter.kind
+            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        ]
+        if len(effect_params) not in (1, 2):
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E10-arity",
+                    "error",
+                    f"{step_key!r}'s terminal effect takes {len(effect_params)} parameter(s); "
+                    "it wires exactly one ExhaustionEvent plus an optional deps tail",
+                )
+            )
     return diagnostics
 
 
@@ -700,6 +804,18 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
                 "Callable[..., object]", node.loop_spec.escalation_body
             )  # Why: the escalation body's declared shape is the StepBody contract (the same cast the registration walk keeps).
             checks.append((f"{node.key}.escalation", escalation, 1))
+    # Chain steps' bodies and terminal-effect handlers ride the same deps
+    # contract (one param beyond ctx — wired 1); the chain container itself
+    # is the routing container, never a second registration.
+    for chain_decl in compiled.chains:
+        for step_key, chain_step in chain_decl.steps.items():
+            body = chain_step.body
+            if callable(body):
+                checks.append((step_key, body, 1))
+    from taskq.workflows._effects import collect_terminal_effects
+
+    for step_key, registered in collect_terminal_effects(compiled).items():
+        checks.append((step_key, registered.effect.body, 1))
     for owner, body, wired in checks:
         hints = body_hints(body)
         if not hints:

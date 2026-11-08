@@ -53,6 +53,17 @@ from taskq.workflows._childflow import (
     ChildWorkflowUnknownError,
     SpawnDepthExceededError,
 )
+from taskq.workflows._policy import (
+    CLEAR_POLICY,
+    ExecutionPolicy,
+    ExhaustionEvent,
+    FiniteReservationCohort,
+    RetryDeferralBudgetExceeded,
+    RetrySpec,
+    TerminalEffect,
+    WorkflowPolicyError,
+    WorkflowRetryOverride,
+)
 from taskq.workflows._progress_read import keyed_display, run_display
 from taskq.workflows.api import (
     CompiledWorkflow,
@@ -109,6 +120,7 @@ from taskq.workflows.definitions import FanInBoundExceededError
 from taskq.workflows.ledger import RunClaim
 
 __all__ = [
+    "CLEAR_POLICY",
     "DEFAULT_SPAWN_MAX_DEPTH",
     "DONE",
     "Backfilled",
@@ -123,9 +135,12 @@ __all__ = [
     "CompiledWorkflow",
     "DeliveryResult",
     "Done",
+    "ExecutionPolicy",
+    "ExhaustionEvent",
     "Exit",
     "Expired",
     "FanInBoundExceededError",
+    "FiniteReservationCohort",
     "FlowRunner",
     "GateDecl",
     "HitlClient",
@@ -141,6 +156,8 @@ __all__ = [
     "ProgressUpdated",
     "Promise",
     "Refine",
+    "RetryDeferralBudgetExceeded",
+    "RetrySpec",
     "Route",
     "RouteArm",
     "RouterNotTotal",
@@ -148,9 +165,12 @@ __all__ = [
     "SpawnDepthExceededError",
     "Step",
     "StepContext",
+    "TerminalEffect",
     "TimerWake",
     "WorkflowApp",
     "WorkflowBuildError",
+    "WorkflowPolicyError",
+    "WorkflowRetryOverride",
     "WorkflowRunCancelledError",
     "WorkflowRunError",
     "WorkflowRunResult",

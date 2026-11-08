@@ -18,8 +18,9 @@ from typing import TYPE_CHECKING
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, JobId
+from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._sql import WorkflowSql
-from taskq.workflows._types import ForkSpec, _join_metadata, _jsonb, _metadata, _row_metadata
+from taskq.workflows._types import ForkSpec, _join_metadata, _jsonb, _row_metadata
 from taskq.workflows.definitions import validate_fork
 
 if TYPE_CHECKING:
@@ -58,8 +59,8 @@ async def insert_fork(
             [c.actor for c in chunk],
             [c.queue for c in chunk],
             [_jsonb(c.payload) for c in chunk],
-            [fork.max_attempts] * len(chunk),
-            [fork.retry_kind] * len(chunk),
+            [c.resolved_max_attempts or fork.max_attempts for c in chunk],
+            [c.resolved_retry_kind or canonical_retry_kind(fork.retry_kind) for c in chunk],
             [parent_id] * len(chunk),
             [c.map_index for c in chunk],
             [c.step_key for c in chunk],
@@ -71,9 +72,12 @@ async def insert_fork(
             # byte-identical.
             [
                 _jsonb(
-                    _row_metadata(flow_id, rate_limits=c.rate_limits, reservations=c.reservations)
-                    if c.rate_limits or c.reservations
-                    else _metadata(flow_id, blocking_reason=None)
+                    _row_metadata(
+                        flow_id,
+                        rate_limits=c.rate_limits,
+                        reservations=c.reservations,
+                        retry=c.retry,
+                    )
                 )
                 for c in chunk
             ],
@@ -101,6 +105,7 @@ async def insert_fork(
             # interleaves runs instead of draining them as one FIFO
             # stream.
             [str(flow_id)] * len(chunk),
+            *[[row_retry_curve(c.retry_policy)[column] for c in chunk] for column in range(4)],
         )
         await conn.execute(
             wsql.fork_edges,
@@ -164,7 +169,7 @@ async def insert_fork(
                 fork.join.queue,
                 _jsonb(fork.join.payload),
                 fork.max_attempts,
-                fork.retry_kind,
+                canonical_retry_kind(fork.retry_kind),
                 parent_id,
                 fork.join.step_key,
                 len(children),
