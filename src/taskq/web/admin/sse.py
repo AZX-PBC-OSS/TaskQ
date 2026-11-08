@@ -228,10 +228,12 @@ async def _holds_generator(
     outage never announces its own death — the browser board drops any
     card the snapshot disowns. The resolve/deliver door is UNCHANGED —
     this is the read face only. The session re-check gates every
-    frame exactly as the state_change feed's does; the bounded shielded
-    close is the same shape (a client disconnect closes THIS generator;
-    the listener's pump and its dedicated LISTEN connection must
-    release deterministically)."""
+    frame exactly as the state_change feed's does; the exit runs one bounded,
+    cancellation-shielded teardown whose listener stop sits in the frame
+    close's inner finally (a client disconnect closes THIS generator; the
+    frames unsubscribe, the pump stops, and that pump stop is what returns
+    the dedicated LISTEN connection — the release is only as sustainable as
+    the stop)."""
     from taskq.workflows.api._hitl_listen import (
         HitlListener,  # the import law (the import law): lazy, never at module scope
     )
@@ -275,26 +277,47 @@ async def _holds_generator(
                 else:
                     yield f"event: hold\ndata: {frame.model_dump_json()}\n\n"
         finally:
-            # The pump is not the frames iterator: closing the iterator
-            # abandons the consumer's queue, never the pump task or its
-            # dedicated LISTEN connection. Both teardowns are bounded
-            # and shielded (the state feed's close, twice over).
-            try:
-                await shield_with_retrieval(
-                    asyncio.wait_for(frames.aclose(), timeout=CLOSE_TIMEOUT_SECS)
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "admin-sse-holds-close-failed",
-                    topic=schema,
-                    error_type=type(exc).__name__,
-                    error=str(exc),
-                )
-            await shield_with_retrieval(
-                asyncio.wait_for(listener.stop(), timeout=CLOSE_TIMEOUT_SECS)
-            )
+            # One bounded teardown owns both halves of this consumer's
+            # exit: the frames close runs first (it unsubscribes this
+            # consumer's queue from the fan-out), and the listener stop
+            # runs in the close's inner finally (it cancels and reaps
+            # the pump task — the pump stop is what returns the
+            # dedicated LISTEN connection). Stop therefore runs on
+            # every exit that reaches this teardown — a successful
+            # close, the logged ordinary close failure, the close's
+            # own timeout, or a BaseException out of the close,
+            # cancellation included. The whole coroutine is awaited
+            # exactly once through shield_with_retrieval: a
+            # cancellation delivered here detaches the teardown — the
+            # detached teardown and the stop's nested shielded release
+            # cleanup may then outlive this caller, including at the
+            # stop bound — while the cancellation still propagates out
+            # of this generator and the detached outcome is retrieved
+            # (and logged when it failed). The two bounds are the same
+            # CLOSE_TIMEOUT_SECS, sequential and independent; they
+            # bound TaskQ's cooperative waits only — neither universal
+            # completion nor a universal wall-clock connection-release
+            # guarantee (a cleanup that detached under the shield runs
+            # until the backend operations themselves return). A
+            # frames-close timeout can also defer the inner iterator's
+            # own unsubscribe finalization; a stop that returns through
+            # its reap phase still ends every subscriber by clearing
+            # the fan-out registry, even when the inner frames close
+            # timed out.
+            async def teardown() -> None:
+                try:
+                    await asyncio.wait_for(frames.aclose(), timeout=CLOSE_TIMEOUT_SECS)
+                except Exception as exc:
+                    logger.warning(
+                        "admin-sse-holds-close-failed",
+                        topic=schema,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                finally:
+                    await asyncio.wait_for(listener.stop(), timeout=CLOSE_TIMEOUT_SECS)
+
+            await shield_with_retrieval(teardown())
     finally:
         semaphore.release()
         record_sse_connection_closed("admin", topic)
