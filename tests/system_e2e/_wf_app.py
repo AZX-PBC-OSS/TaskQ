@@ -645,7 +645,20 @@ def policy_reserved_fleet() -> Promise[object]:
 
 @policy_app.workflow("policy_priority_fleet")
 def policy_priority_fleet() -> Promise[object]:
-    return build(chain_source(POLICY_PRIORITY_CHAIN, policy_priority_source, key="source"))
+    # The source rides a dedicated control actor/queue cohort (one queue per
+    # actor — the estate's own law): the deterministic priority phase boots
+    # ONLY this source's worker first, observes the emitted priority-9 row's
+    # commit on the test's own connection, and starts the default-queue
+    # workers only after that visibility is established.
+    return build(
+        chain_source(
+            POLICY_PRIORITY_CHAIN,
+            policy_priority_source,
+            key="source",
+            actor="wf-policy-control",
+            queue="policy-control",
+        )
+    )
 
 
 class PolicyBacklogPayload(BaseModel):
@@ -653,7 +666,13 @@ class PolicyBacklogPayload(BaseModel):
 
 
 @actor(name="wf_policy_backlog", queue="default")
-async def wf_policy_backlog(payload: PolicyBacklogPayload, ctx: Any) -> dict[str, object]:
+async def wf_policy_backlog(
+    payload: PolicyBacklogPayload, ctx: JobContext[PolicyBacklogPayload]
+) -> dict[str, object]:
+    # Each backlog record holds its claim briefly: the phase's two worker
+    # processes overlap on the backlog, and a wrong-first-claim ordering
+    # stays observable for the whole wrong sequence.
+    await asyncio.sleep(1.0)
     return {"accepted": True}
 
 

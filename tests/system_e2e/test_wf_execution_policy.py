@@ -78,22 +78,6 @@ async def _attempt_rows(
     return [dict(row) for row in rows]
 
 
-async def _wait_for_high_priority_row(
-    conn: asyncpg.Connection, schema: str, flow_id: str, *, bound_s: float
-) -> None:
-    async with asyncio.timeout(bound_s):
-        while True:
-            terminal = await conn.fetchval(
-                f"""SELECT count(*) FROM "{schema}".jobs
-                    WHERE metadata->>'flow_id' = $1 AND step_key = 'work'
-                      AND status = 'succeeded' AND finished_at IS NOT NULL""",
-                flow_id,
-            )
-            if terminal == 1:
-                return
-            await asyncio.sleep(0.05)
-
-
 @pytest.mark.timeout(300)
 async def test_two_process_chain_policy_capacity_and_late_priority(
     pg_dsn: str, module_pg_schema: Any
@@ -178,13 +162,19 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
         assert node["start_to_close"] == timedelta(seconds=5)
         assert node["priority"] == 4 and node["max_attempts"] == 1
 
-        # Active workers must stop before the priority fixture is born, so its
-        # deeper backlog remains pending until both new processes start.
+        # ── the late-priority phase, deterministic by construction ──────────
+        # Active workers must stop before the priority fixture is born, and
+        # the priority phase is PHASED: the chain source runs on a dedicated
+        # control queue with no default-queue dispatch in flight, the high
+        # row's commit is observed on this connection, and only then does the
+        # first default-queue worker start — so its first eligible claim is
+        # decided among fully-visible candidates.
         for pod in fleet.values():
             reap(pod)
         fleet = {}
 
         priority_flow = await _run(pool, schema, "policy_priority_fleet")
+        # The older priority-0 backlog is committed BEFORE the high row exists.
         await conn.executemany(
             f"""INSERT INTO "{schema}".jobs
                 (id, actor, queue, status, payload, max_attempts, retry_kind,
@@ -200,64 +190,94 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
                 for index in range(12)
             ],
         )
-        fleet = await spawn_wf_fleet(conn, pg_dsn, schema, ["policy-pa", "policy-pb"])
-        await _wait_for_high_priority_row(conn, schema, priority_flow, bound_s=45)
-        high = await _attempt_rows(conn, schema, priority_flow)
-        assert len(high) == 1
-        assert all(row["outcome"] == "succeeded" for row in high)
-        root_created = await conn.fetchval(
-            f'SELECT created_at FROM "{schema}".jobs WHERE id = $1::uuid', priority_flow
+        # The source's own worker, alone on the control queue: the real source
+        # emits the priority-9 chain row while no default-queue worker exists.
+        fleet = await spawn_wf_fleet(
+            conn, pg_dsn, schema, ["policy-src"], extra_env={"TASKQ_QUEUES": "policy-control"}
         )
-        assert all(row["created_at"] > root_created for row in high), (
-            "all these policy rows must be source-materialized after create_flow"
-        )
-
-        low = await conn.fetch(
-            f"""SELECT j.id, j.started_at FROM "{schema}".jobs AS j
-                WHERE j.actor = 'wf_policy_backlog' AND j.started_at IS NOT NULL
-                ORDER BY j.started_at, j.id"""
-        )
-        high_claims = sorted(row["started_at"] for row in high)
-        async with asyncio.timeout(20):
-            while not low:
-                await asyncio.sleep(0.05)
-                low = await conn.fetch(
-                    f"""SELECT j.id, j.started_at FROM "{schema}".jobs AS j
-                        WHERE j.actor = 'wf_policy_backlog' AND j.started_at IS NOT NULL
-                        ORDER BY j.started_at, j.id"""
+        # Commit visibility, observed on this independent connection: the
+        # high row is readable as `pending` (never inferred from a clock).
+        async with asyncio.timeout(45):
+            while True:
+                high_row = await conn.fetchrow(
+                    f"""SELECT id, status::text AS status FROM "{schema}".jobs
+                        WHERE metadata->>'flow_id' = $1 AND step_key = 'work'""",
+                    priority_flow,
                 )
-        # A backlog claim that began before the source materialized its first
-        # high row is legal. Every claim made after that row exists must respect
-        # its priority; there must still be an actual later low claim to read.
-        first_materialized = min(row["created_at"] for row in high)
-        later_low = [row for row in low if row["started_at"] >= first_materialized]
-        assert later_low, (first_materialized, low)
-        assert max(high_claims) <= later_low[0]["started_at"], (
-            f"high claims={high_claims!r}; materialized={first_materialized!r}; "
-            f"later backlog={later_low[0]['started_at']!r}; earlier legal backlog may exist"
+                if high_row is not None and high_row["status"] == "pending":
+                    break
+                await asyncio.sleep(0.02)
+        for pod in fleet.values():
+            reap(pod)
+        fleet = {}
+
+        # The FIRST default-queue worker, claiming one job per round: its
+        # claims are strictly sequential (the next claim's statement runs
+        # after the previous body's completion), so the worker's own earliest
+        # attempt IS its first eligible claim — a durable record, never a
+        # cross-worker clock inference. It boots and dispatches strictly
+        # before the second worker's process exists.
+        fleet = await spawn_wf_fleet(
+            conn,
+            pg_dsn,
+            schema,
+            ["policy-pa"],
+            extra_env={"TASKQ_QUEUES": "default", "TASKQ_MAX_CONCURRENCY": "1"},
         )
-        observed = await conn.fetchrow(
-            f"""SELECT min(j.started_at) AS first, max(j.started_at) AS last
-                FROM "{schema}".jobs AS j
-                WHERE j.metadata->>'flow_id' = $1 AND j.step_key = 'work'""",
-            priority_flow,
+        # The SECOND default worker, spawned after the first worker's joined
+        # observation; the backlog drains across the two real processes.
+        fleet.update(
+            await spawn_wf_fleet(
+                conn,
+                pg_dsn,
+                schema,
+                ["policy-pb"],
+                extra_env={"TASKQ_QUEUES": "default", "TASKQ_MAX_CONCURRENCY": "1"},
+            )
         )
-        assert observed is not None and observed["first"] is not None
-        actual_order = await conn.fetch(
-            f"""SELECT j.actor, j.map_index, a.started_at
+        async with asyncio.timeout(120):
+            while True:
+                done = await conn.fetchval(
+                    f"""SELECT count(*) FROM "{schema}".jobs
+                        WHERE actor = 'wf_policy_backlog' AND status = 'succeeded'"""
+                )
+                high_done = await conn.fetchval(
+                    f"""SELECT count(*) FROM "{schema}".jobs
+                        WHERE metadata->>'flow_id' = $1 AND step_key = 'work'
+                          AND status = 'succeeded'""",
+                    priority_flow,
+                )
+                if int(done or 0) == 12 and int(high_done or 0) == 1:
+                    break
+                await asyncio.sleep(0.05)
+
+        # The direct first-work assertion: the high row was policy-pa's OWN
+        # first claim, decided among fully-visible candidates (the priority-0
+        # backlog committed first, the priority-9 row observed pending before
+        # either default worker existed). A broken ordering claims the
+        # backlog first.
+        first_work = await conn.fetchrow(
+            f"""SELECT j.actor, j.step_key
                 FROM "{schema}".job_attempts AS a
                 JOIN "{schema}".jobs AS j ON j.id = a.job_id
-                WHERE (j.metadata->>'flow_id' = $1 AND j.step_key = 'work')
-                   OR (j.actor = 'wf_policy_backlog' AND a.started_at >= $2)
-                ORDER BY a.started_at, j.actor, j.map_index""",
-            priority_flow,
-            first_materialized,
+                WHERE a.worker_id = (SELECT id FROM "{schema}".workers WHERE pid = $1)
+                ORDER BY a.started_at
+                LIMIT 1""",
+            fleet["policy-pa"].proc.pid,
         )
-        high_positions = [
-            index for index, row in enumerate(actual_order) if row["actor"] == "wf-policy-priority"
-        ]
-        assert high_positions and all(
-            row["map_index"] in (0, 1, 2, 3) for row in actual_order[: max(high_positions) + 1]
+        assert first_work is not None, "the first default worker recorded no attempt"
+        assert dict(first_work)["actor"] == "wf-policy-priority", (
+            "the first eligible default-queue claim must be the committed "
+            f"priority-9 row; the worker's first work was {dict(first_work)!r}"
+        )
+        backlog_workers = await conn.fetch(
+            f"""SELECT DISTINCT a.worker_id::text AS worker_id
+                FROM "{schema}".job_attempts AS a
+                JOIN "{schema}".jobs AS j ON j.id = a.job_id
+                WHERE j.actor = 'wf_policy_backlog'"""
+        )
+        assert len(backlog_workers) == 2, (
+            f"the backlog must be processed across both real worker processes: {backlog_workers!r}"
         )
 
         for pod in fleet.values():
@@ -499,6 +519,97 @@ async def test_two_process_chain_deadline_retry_and_capacity_owner_roll(
         assert not _log_has_event(
             log_sink + "-roll-b", "actor-config-capacity-code-change", "wf-policy-operator-cap"
         ), "an operator-owned cohort must never log the code-change diagnostic"
+    finally:
+        for pod in fleet.values():
+            reap(pod)
+        await conn.close()
+        await pool.close()
+
+
+@pytest.mark.timeout(300)
+async def test_priority_first_claim_tracks_the_law_inverted_backlog_outranks(
+    pg_dsn: str, module_pg_schema: Any
+) -> None:
+    """The first-claim assertion's opposite direction: with the older backlog
+    seeded at a HIGHER priority than the chain row, the same phased shape's
+    first eligible default-queue claim is a backlog row and the chain row
+    stays unclaimed — the assertion tracks the priority law, never the
+    fixture's row identity."""
+    schema = module_pg_schema.schema_name
+    fleet: dict[str, WorkerProc] = {}
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        priority_flow = await _run(pool, schema, "policy_priority_fleet")
+        await conn.executemany(
+            f"""INSERT INTO "{schema}".jobs
+                (id, actor, queue, status, payload, max_attempts, retry_kind,
+                 scheduled_at, idempotency_scope, idempotency_key, priority)
+                VALUES ($1, 'wf_policy_backlog', 'default', 'pending',
+                        '{{}}', 3, 'transient', clock_timestamp(), $2, $3, 10)""",
+            [
+                (
+                    new_uuid(),
+                    f"policy-priority-backlog:{schema}",
+                    f"inverted-backlog-{index}",
+                )
+                for index in range(12)
+            ],
+        )
+        fleet = await spawn_wf_fleet(
+            conn, pg_dsn, schema, ["inv-src"], extra_env={"TASKQ_QUEUES": "policy-control"}
+        )
+        async with asyncio.timeout(45):
+            while True:
+                high_row = await conn.fetchrow(
+                    f"""SELECT id, status::text AS status FROM "{schema}".jobs
+                        WHERE metadata->>'flow_id' = $1 AND step_key = 'work'""",
+                    priority_flow,
+                )
+                if high_row is not None and high_row["status"] == "pending":
+                    break
+                await asyncio.sleep(0.02)
+        for pod in fleet.values():
+            reap(pod)
+        fleet = {}
+        fleet = await spawn_wf_fleet(
+            conn,
+            pg_dsn,
+            schema,
+            ["inv-pa"],
+            extra_env={"TASKQ_QUEUES": "default", "TASKQ_MAX_CONCURRENCY": "1"},
+        )
+        # The first eligible claim is the priority-10 backlog row; the
+        # priority-9 chain row stays unclaimed while it runs.
+        async with asyncio.timeout(60):
+            while True:
+                backlog_claimed = await conn.fetchval(
+                    f"""SELECT count(*) FROM "{schema}".jobs
+                        WHERE actor = 'wf_policy_backlog' AND started_at IS NOT NULL"""
+                )
+                if int(backlog_claimed or 0) > 0:
+                    break
+                await asyncio.sleep(0.02)
+        chain_claimed = await conn.fetchval(
+            f"""SELECT count(*) FROM "{schema}".jobs
+                WHERE metadata->>'flow_id' = $1 AND step_key = 'work'
+                  AND started_at IS NOT NULL""",
+            priority_flow,
+        )
+        if int(chain_claimed or 0) != 0:
+            priorities = await conn.fetch(
+                f"""SELECT actor, priority, status::text AS status
+                    FROM "{schema}".jobs
+                    WHERE actor = 'wf_policy_backlog'
+                       OR (metadata->>'flow_id' = $1 AND step_key = 'work')""",
+                priority_flow,
+            )
+            raise AssertionError(
+                "with a higher-priority backlog the chain row must NOT be the "
+                "first eligible claim — the first-claim assertion tracks the "
+                f"priority law, not the fixture: {[dict(r) for r in priorities]!r}"
+            )
+        print("[priority-inverted] the backlog row was claimed first; the chain row is unclaimed")
     finally:
         for pod in fleet.values():
             reap(pod)
