@@ -3168,13 +3168,15 @@ node/record + effect identity. Outbox replay/idempotency materializes exactly on
 ordinary effect job; a later operator cancel cannot erase an already committed
 intent. Cancel before the winning disposition writes no intent. A failed parent
 still suppresses ordinary children; only this explicit marked effect runs after
-its own node's failed terminal. The effect is a nonterminal row of its run: the
-run's root stays nonterminal while the intent is undelivered or the effect job
-is unfinished, and the root's `failed` terminal is derived by the run's
-maintenance only after the effect has settled. (The one other ordering is the
-operator cancel that commits first: the root terminalises `cancelled`, and the
-committed intent still runs on that cancelled root.) A missing registered body
-remains visibly unclaimed, never a successful no-op.
+its own node's `failed` terminal. The effect may execute after the run root is
+already `failed` or `cancelled`; root maintenance derives root status from graph
+node rows and may derive `failed` while the durable effect intent is still
+undelivered and before an effect job exists, so a terminal root does not prove
+that the effect has settled. The stable effect key guarantees exactly one
+durable intent and exactly one ordinary effect-job materialization, while
+callback execution and external effects are at-least-once rather than
+exactly-once. A missing registered body remains visibly unclaimed, never a
+successful no-op.
 
 The body can be invoked again after a worker/process crash. External calls and
 arbitrary Python side effects are therefore **at-least-once**, not
@@ -3183,6 +3185,6 @@ writes its idempotency marker (derived from the event key) and domain effects in
 one application DB transaction. There is no generic `exactly_once=True` flag.
 Direct in-process execution refuses this guarded feature; apply the capability,
 run-epoch and intent PRE migrations and run the declaring cohorts with capable
-fleet workers. Unfinished intents and nonterminal effect rows are available to
-the shared quiescence predicate; a terminal root alone is not proof that an
-effect exited.
+fleet workers. The effect's own settlement fact is its job's terminal write
+plus the application's idempotent domain closure — no root status, `failed` or
+`cancelled`, proves that an effect exited.

@@ -289,20 +289,22 @@ containing flow/workflow/node keys, `map_index`, claim attempt, positive durable
 A policy-owned terminal commits the failed node, current attempt ledger, and one
 stable effect intent atomically; exactly one ordinary effect job materializes
 through the physical idempotency keys. The effect runs with ordinary bounded
-retry after its own node's failed terminal — not after a terminal root. The
-effect is a nonterminal row of its run: the run's root stays nonterminal while
-the intent is undelivered or the effect job is unfinished, and the root's
-`failed` terminal is derived by the run's maintenance only after the effect has
-settled. (An operator cancel that commits first terminalises the root
-`cancelled`; a committed intent survives it and then runs on the cancelled
-root.) Cancellation before the winning terminal prevents intent; an already
-committed intent survives later cancellation. Missing handlers stay visibly
-unclaimed. Callback execution and external effects are at-least-once; same-DB
-completed-once domain settlement requires the application's marker and effects
-in one transaction. The engine never claims arbitrary/external exactly-once
-execution. These guarded flows require the capability, run-epoch and intent PRE
-migrations (see the upgrade guide's 01.00.38 + 01.00.41 section) and capable
-fleet workers; direct execution refuses them.
+retry after its own node's `failed` terminal and **may execute after the run
+root is already `failed` or `cancelled`**; root maintenance derives root status
+from graph node rows and may derive `failed` while the durable effect intent is
+still undelivered and before an effect job exists, so a terminal root does not
+prove that the effect has settled. The stable effect key guarantees exactly one
+durable intent and exactly one ordinary effect-job materialization, while
+callback execution and external effects are at-least-once rather than
+exactly-once. An operator cancel that commits first terminalises the root
+`cancelled`; a committed intent survives it and then runs on that cancelled
+root. Cancellation before the winning terminal prevents intent. Missing
+handlers stay visibly unclaimed. Same-DB completed-once domain settlement
+requires the application's marker and effects in one transaction. The engine
+never claims arbitrary/external exactly-once execution. These guarded flows
+require the capability, run-epoch and intent PRE migrations (see the upgrade
+guide's 01.00.38 + 01.00.41 section) and capable fleet workers; direct
+execution refuses them.
 
 ## The runner (create / drive / result)
 

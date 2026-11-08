@@ -796,3 +796,102 @@ def test_terminal_effect_rejects_missing_bounding_or_recursive_callback() -> Non
                 retry=RetrySpec(on_exhaustion=inner),
             ),
         )
+
+
+@pytest.mark.integration
+async def test_root_maintenance_derives_failed_before_effect_materialization_in_production_sweep_order(
+    wf_conn: asyncpg.Connection,
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+    pg_dsn: str,
+) -> None:
+    """The production sweep order's effect/root staging, printed and asserted.
+
+    The leader's sweep table registers ``wf_join_rederive`` (whose final leg
+    runs root maintenance) BEFORE ``wf_outbox_drain``, so the documented
+    contract is: the root's ``failed`` terminal is derived from graph node
+    rows while the durable effect intent is still undelivered and before any
+    effect job exists; the effect job then materializes and executes on that
+    already-terminal root. A terminal root proves nothing about the effect.
+    """
+    observed: list[ExhaustionEvent] = []
+
+    async def effect(ctx: StepContext, event: ExhaustionEvent) -> None:
+        observed.append(event)
+
+    creator, runners, workers, flow_id, _suffix = await _effect_fixture(
+        wf_pool, wf_schema, pg_dsn, effect_body=effect
+    )
+
+    async def root_status() -> str | None:
+        return await wf_conn.fetchval(
+            f'SELECT status::text FROM "{wf_schema}".jobs WHERE id=$1::uuid', flow_id
+        )
+
+    async def effect_facts() -> tuple[int, int, int]:
+        """(total intents, delivered intents, materialized effect jobs)."""
+        total = await wf_conn.fetchval(
+            f'SELECT count(*) FROM "{wf_schema}".wf_outbox WHERE flow_id=$1::uuid',
+            flow_id,
+        )
+        delivered = await wf_conn.fetchval(
+            f'SELECT count(*) FROM "{wf_schema}".wf_outbox WHERE flow_id=$1::uuid AND delivered',
+            flow_id,
+        )
+        jobs = await wf_conn.fetchval(
+            f"""SELECT count(*) FROM "{wf_schema}".jobs
+                WHERE (metadata->>'flow_id')::uuid=$1::uuid
+                  AND step_key='work.__on_exhaustion'""",
+            flow_id,
+        )
+        return int(total), int(delivered), int(jobs)
+
+    from taskq.workflows._sweep import drain_outbox as production_drain
+    from taskq.workflows._sweep import sweep_join_rederive
+
+    await _execute(wf_pool, wf_schema, workers, runners, "source")
+    _failed_claim, failed_outcome = await _execute(wf_pool, wf_schema, workers, runners, "work")
+    assert failed_outcome == "laddered"
+
+    # (a) After the winning failed-node/ledger/intent tx, before either sweep.
+    assert await root_status() == "running"
+    assert await effect_facts() == (1, 0, 0)
+    print(
+        "[effect-root-order] (a) after node terminal: root=running, (intents, delivered, jobs)=(1, 0, 0)"
+    )
+
+    # (b) The PRODUCTION-FIRST sweep: root maintenance, with NO preliminary
+    # drain. The root derives `failed` while the intent is still undelivered
+    # and before any effect job exists.
+    await sweep_join_rederive(wf_pool, creator.wsql)
+    assert await root_status() == "failed"
+    assert await effect_facts() == (1, 0, 0)
+    print(
+        "[effect-root-order] (b) after wf_join_rederive: root=failed, (intents, delivered, jobs)=(1, 0, 0)"
+    )
+
+    # (c) The production-second sweep materializes exactly one job on the
+    # already-failed root.
+    assert await production_drain(wf_pool, creator.wsql) == 1
+    assert await root_status() == "failed"
+    assert await effect_facts() == (1, 1, 1)
+    print(
+        "[effect-root-order] (c) after wf_outbox_drain: root=failed, (intents, delivered, jobs)=(1, 1, 1)"
+    )
+
+    # (d) A repeated production-order cycle mints no duplicate intent or job.
+    await sweep_join_rederive(wf_pool, creator.wsql)
+    assert await production_drain(wf_pool, creator.wsql) == 0
+    assert await effect_facts() == (1, 1, 1)
+    print("[effect-root-order] (d) repeated cycle: still exactly one intent and one job")
+
+    # (e) The effect executes successfully while the root remains `failed`
+    # (the terminal-flow dispatch exemption).
+    _effect_claim, effect_outcome = await _execute(
+        wf_pool, wf_schema, workers, runners, "work.__on_exhaustion"
+    )
+    assert effect_outcome == "succeeded"
+    assert len(observed) == 1
+    assert observed[0].run_epoch == 1
+    assert await root_status() == "failed"
+    print("[effect-root-order] (e) effect succeeded on the failed root; root still failed")
