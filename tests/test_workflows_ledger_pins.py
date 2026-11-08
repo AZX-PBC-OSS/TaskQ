@@ -404,6 +404,8 @@ async def test_pin_6_ledger_terminal_atomic(
         claim_epoch=0,
         outcome="succeeded",
         result={"done": True},
+        ledger_id=claim.ledger_id,
+        ledger_claimed_at=claim.claimed_at,
     )
     assert result.applied
     ledger_status = await wf_conn.fetchval(
@@ -418,19 +420,22 @@ async def test_pin_6_ledger_terminal_atomic(
     )
 
     # ...the split variant is a real engine mutation: the ledger's
-    # terminal statement mutated to update NOTHING (the write lost — the
-    # cancel ate the window); the node terminalized, the ledger did not.
-    # The shipped statement greens it (the tx1 co-location above). The
-    # mutated statement rides a copy of the rendered bundle (the
-    # dataclass replace), the render seam unpatched.
+    # terminal statement mutated to match NOTHING. The shipped engine can
+    # no longer produce the silent split (node terminal, ledger running —
+    # the old fallback's phantom): the admitted terminal write's one-row
+    # law classifies the no-match on the row's own state, and a row still
+    # nonterminal is the phantom — the finalize RAISES and tx1 (the node
+    # terminal included) ROLLS BACK. The mutated statement rides a copy of
+    # the rendered bundle (the dataclass replace), the render seam
+    # unpatched.
     #
     # The mutation lands BEFORE the RETURNING (a suffix would corrupt the
     # statement's tail): the terminal matches nothing — the write is lost.
-    mutated_terminal = wf_sql.ledger_terminal.replace(
+    mutated_terminal = wf_sql.ledger_terminal_by_id.replace(
         "RETURNING id", "  AND status = 'no-such-status'\nRETURNING id"
     )
-    assert mutated_terminal != wf_sql.ledger_terminal, "the mutation test did not arm"
-    mutated_sql = dataclasses.replace(wf_sql, ledger_terminal=mutated_terminal)
+    assert mutated_terminal != wf_sql.ledger_terminal_by_id, "the mutation test did not arm"
+    mutated_sql = dataclasses.replace(wf_sql, ledger_terminal_by_id=mutated_terminal)
     split_node = new_uuid()
     split_worker = new_uuid()
     await wf_conn.execute(
@@ -444,7 +449,7 @@ async def test_pin_6_ledger_terminal_atomic(
         json.dumps({"flow_id": str(flow_id)}),
         str(flow_id),
     )
-    await claim_step_ledger(
+    split_claim = await claim_step_ledger(
         wf_conn,
         mutated_sql,
         flow_id=flow_id,
@@ -453,19 +458,21 @@ async def test_pin_6_ledger_terminal_atomic(
         map_index=None,
         attempt=1,
     )
-    split_result = await finalize_node(
-        module_pg_pool,
-        mutated_sql,
-        flow_id=flow_id,
-        job_id=split_node,
-        step_key="split2",
-        worker_id=split_worker,
-        attempt=1,
-        claim_epoch=0,
-        outcome="succeeded",
-        result={"done": True},
-    )
-    assert split_result.applied
+    with pytest.raises(RuntimeError, match="matched no current claim row"):
+        await finalize_node(
+            module_pg_pool,
+            mutated_sql,
+            flow_id=flow_id,
+            job_id=split_node,
+            step_key="split2",
+            worker_id=split_worker,
+            attempt=1,
+            claim_epoch=0,
+            outcome="succeeded",
+            result={"done": True},
+            ledger_id=split_claim.ledger_id,
+            ledger_claimed_at=split_claim.claimed_at,
+        )
     split_status = await wf_conn.fetchval(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', split_node
     )
@@ -476,12 +483,15 @@ async def test_pin_6_ledger_terminal_atomic(
     )
     ledger_redlog.red(
         "pin6-ledger-terminal-atomic",
-        "the ledger's terminal statement mutated to update nothing (the write lost in the cancel window)",
+        "the ledger's terminal statement mutated to match nothing — the shipped "
+        "one-row law raises and the whole tx1 (the node terminal included) rolls "
+        "back; the silent node/ledger split is unconstructible",
         {"node": split_status, "ledger": split_ledger},
     )
-    assert split_status == "succeeded" and split_ledger == "running", (
-        "the mutated terminal must drift from the node — the red comparator "
-        "is broken (the tx1 co-location is load-bearing)"
+    assert split_status == "running" and split_ledger == "running", (
+        "the mutated terminal must roll the whole tx1 back (the node terminal "
+        "included) — the silent split the old fallback produced is the phantom "
+        "the one-row law exists to prevent"
     )
 
 

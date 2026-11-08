@@ -157,6 +157,8 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
         "budget_deadline",
         "budget_paused",
         "budget_remaining_ms",
+        # 01.00.38: only guarded workflow inserts stamp the requirement.
+        "required_worker_schema",
     }
     assert set(COPY_ENQUEUE_COLUMNS) == set(COPY_FROM_COLUMNS) - omitted
     assert list(COPY_ENQUEUE_COLUMNS) == [c for c in COPY_FROM_COLUMNS if c not in omitted]

@@ -245,13 +245,14 @@ async def test_retry_classifier_routes_by_kind(
         flow_id,
     )
     row = await wf_conn.fetchrow(
-        f'SELECT status, attempt FROM "{wf_schema}".jobs '
+        f'SELECT status, attempt, retry_kind FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'perm'",
         flow_id,
     )
     assert row is not None
     assert row["status"] == "failed"
-    # permanent → the ladder never ran: exactly one attempt.
+    # permanent → the canonical non-retryable row: the ladder never ran.
+    assert row["retry_kind"] == "non_retryable"
     assert attempts == 1 and row["attempt"] == 1
 
 

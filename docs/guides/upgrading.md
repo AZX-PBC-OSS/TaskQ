@@ -129,6 +129,21 @@ adds that column when recording the next migration, so deployments upgraded
 from older TaskQ versions need no manual step; rows applied before the column
 existed read `true`.
 
+## Workflow terminal effects / run incarnation (01.00.41)
+
+Apply both PRE files `01.00.41_01_pre_wf_run_epoch.sql` and
+`01.00.41_02_pre_wf_terminal_effect_intents.sql` before deploying authors/workers
+that declare `RetrySpec.on_exhaustion`. The first adds nullable legacy-compatible
+root `run_epoch` storage (new roots begin at 1; only explicit locked reopen
+advances it). The second supplies the stable physical intent arbiter. Existing
+rows retain NULL epochs and existing outbox rows remain unchanged.
+
+Guarded effect-producing workflows stamp the actual worker schema requirement and
+refuse direct in-process execution. Upgrade all fleet workers serving their
+queues before creating such runs; an insufficient/missing actual boot capability
+fails at the physical entry-to-running trigger before body execution. Do not
+manufacture worker metadata or use queue membership as an upgrade assertion.
+
 ## If a migration goes wrong
 
 `taskq migrate up` diagnoses its own failures: it tells you which migration
