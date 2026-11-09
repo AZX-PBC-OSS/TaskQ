@@ -72,8 +72,6 @@ class ExitOps(_ExitHost):
         exit_value: Exit[object],
         *,
         claim_epoch: int = 0,
-        ledger_id: JobId | None = None,
-        ledger_claimed_at: Any = None,
     ) -> None:
         """TYPED EARLY-EXIT (§17.1, attack-audit's Missing #1): the
         body returned ``Exit(payload)`` — the node TERMINAL-SUCCEEDS
@@ -84,9 +82,13 @@ class ExitOps(_ExitHost):
         attempt; the join-firing machinery never runs for rows the exit
         resolved). All rows terminal → the derivation reports the
         workflow COMPLETE. The LEDGER records the exit on the exited
-        node's own terminal row (the result carries the marker) — keyed
-        on the EXACT claim identity (the claim's own row id + instant),
-        never a four-expression fallback."""
+        node's own terminal row (the result carries the marker) — the
+        by-attempt write, keyed by the node's own arbiter tuple (flow,
+        step, attempt, map_index), exactly like every other no-ledger-id
+        finalize; the JOB row's terminal itself is the claim CAS
+        (``terminal_mark`` binds the claim's worker/attempt/epoch), so a
+        fenced-out claim writes nothing and its ledger row reads
+        'fenced' by the same tuple."""
         step_key: str = row["step_key"]
         await finalize_node(
             self.pool,
@@ -100,8 +102,6 @@ class ExitOps(_ExitHost):
             outcome="succeeded",
             result={"value": jsonable(exit_value.payload), "exit": True},
             map_index=row["map_index"],
-            ledger_id=ledger_id,
-            ledger_claimed_at=ledger_claimed_at,
         )
         # the compiled graph's descendants (the wiring's own edges — never a
         # runtime guess), skipped with the record. Bounded by the graph's size;
