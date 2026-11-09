@@ -131,7 +131,7 @@ def test_handle_retry_terms_flow_into_the_node_decl() -> None:
 
     node = app.get("retry-terms-flow").nodes["probe"]
     assert node.max_attempts == 7
-    assert node.retry_kind == "permanent"
+    assert node.retry_kind == "non_retryable"
 
 
 def test_undeclared_actor_retry_defaults_do_not_leak() -> None:
@@ -1446,13 +1446,10 @@ def test_map_queue_only_override_is_not_refused() -> None:
     assert rows["wf"].max_concurrent == 1 and rows["wf"].result_ttl == 45.0
 
 
-def test_chain_step_capped_body_refused() -> None:
-    """H-A4's chain arm: a capped handle as a CHAIN step body — the
-    chain's rows ride the CHAIN's own actor (the placement override the
-    chain spells), and the chain surface has no terms passthrough: the
-    handle's capacity terms would be dropped. The wiring REFUSES."""
-    from taskq.workflows.api._graph import WorkflowBuildError
-    from taskq.workflows.chain import Chain, Step
+def test_chain_step_capped_body_projects_instead_of_being_refused() -> None:
+    """A capped handle supplies chain-target defaults through the real resolver."""
+    from taskq.workflows._worker_execution import project_workflow_actor_configs
+    from taskq.workflows.chain import Chain, Step, chain_start
 
     app = WorkflowApp()
 
@@ -1471,8 +1468,15 @@ def test_chain_step_capped_body_refused() -> None:
         source = step(_route_source, Ingest(doc_id="d"), key="src")
         return build(chain_source(capped_chain, _route_source, source, key="chain-src"))
 
-    with pytest.raises(WorkflowBuildError, match="capacity terms would be dropped"):
-        app.get("chain-capped-body-flow")
+    app.get("chain-capped-body-flow")
+    resolved = capped_chain.resolved_policy("s1")
+    assert (resolved.actor, resolved.max_concurrent) == ("wf", 1)
+    assert (
+        chain_start(capped_chain, ImageItem(kind_id="i"), map_index=0, trace_id="record-0").actor
+        == "wf"
+    )
+    rows = {config.actor: config for config in project_workflow_actor_configs()}
+    assert rows["wf"].max_concurrent == 1
 
 
 # ── (h) the: the loop escalation's cohort projects ────────────────────
@@ -2222,7 +2226,7 @@ def test_the_code_only_handle_is_never_silent() -> None:
     with pytest.raises(WorkflowBuildError, match="capacity_owner"):
         app_two.get("code-only-arm-flow")
 
-    # (iii) The chain: the same named refusal (the surface that drops).
+    # (iii) The chain now projects the code-owned handle instead of dropping it.
     from taskq.workflows.chain import Chain, Step
 
     app_three = WorkflowApp()
@@ -2230,6 +2234,9 @@ def test_the_code_only_handle_is_never_silent() -> None:
     @app_three.actor(capacity_owner="code")
     async def code_only_chain_body(ctx: StepContext, item: ImageItem) -> Report:
         return Report(ref=item.kind_id)  # pragma: no cover
+
+    async def code_only_chain_source(ctx: StepContext) -> None:
+        return None  # pragma: no cover - this declaration is projected, not driven
 
     code_only_chain = Chain(
         name="code-only-chain",
@@ -2239,10 +2246,12 @@ def test_the_code_only_handle_is_never_silent() -> None:
 
     @app_three.workflow("code-only-chain-flow")
     def code_only_chain_flow() -> Promise[object]:
-        return build(chain_source(code_only_chain, Ingest(doc_id="d"), key="chain"))
+        return build(chain_source(code_only_chain, code_only_chain_source, key="chain"))
 
-    with pytest.raises(WorkflowBuildError, match=r"capped actor handle.*capacity_owner"):
-        app_three.get("code-only-chain-flow")
+    app_three.get("code-only-chain-flow")
+    code_rows = {config.actor: config for config in project()}
+    assert code_rows["wf"].capacity_owner == "code"
+    assert code_only_chain.resolved_policy("s1").capacity_owner == "code"
 
 
 def test_the_code_only_step_flows_the_owner_into_the_decl() -> None:

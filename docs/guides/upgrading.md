@@ -129,6 +129,35 @@ adds that column when recording the next migration, so deployments upgraded
 from older TaskQ versions need no manual step; rows applied before the column
 existed read `true`.
 
+## Workflow terminal effects / run incarnation (01.00.38 + 01.00.41)
+
+Apply all three PRE files, in this order, before deploying authors/workers that
+declare `RetrySpec.on_exhaustion`:
+
+1. `01.00.38_01_pre_wf_worker_capability.sql` — the nullable
+   `jobs`/`jobs_archive` `required_worker_schema` column and the physical
+   entry-to-running claim trigger. Every effect-producing root's create
+   transaction names this column, so it must exist before any such run is
+   created.
+2. `01.00.41_01_pre_wf_run_epoch.sql` — nullable legacy-compatible root
+   `run_epoch` storage (new roots begin at 1; only explicit locked reopen
+   advances it).
+3. `01.00.41_02_pre_wf_terminal_effect_intents.sql` — the stable physical
+   intent arbiter.
+
+Existing rows retain NULL epochs/requirements and existing outbox rows remain
+unchanged. (Applying the two 01.00.41 files without `01.00.38_01` fails at
+`FlowRunner.create_flow()` with
+`column "required_worker_schema" of relation "jobs" does not exist` — the
+create path stamps the requirement on the root and its rows.)
+
+Guarded effect-producing workflows stamp the actual worker schema requirement and
+refuse direct in-process execution. Upgrade all fleet workers serving their
+queues before creating such runs; an insufficient/missing actual boot capability
+(the worker's boot-stamped `workflow_execution_schema` metadata) fails at the
+physical entry-to-running trigger before body execution. Do not manufacture
+worker metadata or use queue membership as an upgrade assertion.
+
 ## If a migration goes wrong
 
 `taskq migrate up` diagnoses its own failures: it tells you which migration

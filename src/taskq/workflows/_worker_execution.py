@@ -59,6 +59,7 @@ from taskq.obs import get_logger
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.workflows._policy import FiniteReservationCohort
 from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._sql_runner import render_sql
@@ -408,8 +409,48 @@ def _workflow_cohorts(
                         )
                     caps.setdefault(arm_actor, arm_terms)
     for chain in getattr(compiled, "chains", ()):
-        for _step_key in chain.steps:
-            cohorts.add((chain.actor, chain.queue))
+        for step_key in chain.steps:
+            target = chain.resolved_policy(step_key, resolve_names=False)
+            cohorts.add((target.actor, target.queue))
+            chain_terms = _CapacityTerms(
+                target.max_concurrent,
+                target.result_ttl,
+                target.capacity_owner,
+            )
+            if chain_terms != _UNSET_CAPACITY_TERMS:
+                existing = caps.get(target.actor)
+                if existing is not None and existing != chain_terms:
+                    differing = _capacity_conflict_fields(existing, chain_terms)
+                    raise WorkflowActorCapacityConflictError(
+                        f"workflow actor {target.actor!r} is declared with two "
+                        f"different capacity terms ({'; '.join(differing)}) — "
+                        "actor_config is keyed by actor (one capacity per actor); "
+                        "give the differing chain step its own actor name."
+                    )
+                caps.setdefault(target.actor, chain_terms)
+    from taskq.workflows._effects import collect_terminal_effects
+
+    for registered in collect_terminal_effects(compiled).values():
+        policy = registered.effect.policy
+        actor = policy.actor
+        queue = policy.queue
+        assert isinstance(actor, str) and isinstance(queue, str)
+        cohorts.add((actor, queue))
+        terms = _CapacityTerms(
+            policy.max_concurrent if type(policy.max_concurrent) is int else None,
+            float(policy.result_ttl)  # pyright: ignore[reportArgumentType]  # ExecutionPolicy normalizes a declared TTL to finite seconds
+            if type(policy.result_ttl) in (int, float)
+            else None,
+            policy.capacity_owner if isinstance(policy.capacity_owner, str) else "operator",
+        )
+        if terms != _UNSET_CAPACITY_TERMS:
+            existing = caps.get(actor)
+            if existing is not None and existing != terms:
+                raise WorkflowActorCapacityConflictError(
+                    f"terminal effect actor {actor!r} conflicts with an existing cohort: "
+                    + "; ".join(_capacity_conflict_fields(existing, terms))
+                )
+            caps.setdefault(actor, terms)
         # an ``on_exhausted="escalate"`` loop enqueues its escalation through the
     # outbox, addressed to the registered definition's own (actor, queue) — the
     # WorkflowDef's placement fields ("workflow"/"default"). The projection
@@ -759,6 +800,23 @@ def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str]
             if node.map_arms is not None:
                 for arm in node.map_arms.values():
                     decls.extend(arm.rate_limits)
+        for chain in compiled.chains:
+            for step_key in chain.steps:
+                decls.extend(chain.resolved_policy(step_key, resolve_names=False).rate_limit_decls)
+        from taskq.workflows._effects import collect_terminal_effects
+        from taskq.workflows._policy import resolve_execution_policy
+
+        for effect_registration in collect_terminal_effects(compiled).values():
+            actor = effect_registration.effect.policy.actor
+            queue = effect_registration.effect.policy.queue
+            assert isinstance(actor, str) and isinstance(queue, str)
+            target = resolve_execution_policy(
+                step_policy=effect_registration.effect.policy,
+                compatibility_actor=actor,
+                compatibility_queue=queue,
+                resolve_names=False,
+            )
+            decls.extend(target.rate_limit_decls)
         for entry in decls:
             if isinstance(entry, TokenBucket | SlidingWindow):
                 try:
@@ -851,7 +909,11 @@ def collect_workflow_reservations(
         arms' own declarations (the passthrough) feed the same
         name-keyed law; a plain ``str`` name is GATHERED, never
         silently dropped)."""
-        if isinstance(entry, ConcurrencyReservation):
+        if isinstance(entry, FiniteReservationCohort):
+            _take(entry.ref)
+            for reservation in entry.reservations():
+                _take(reservation)
+        elif isinstance(entry, ConcurrencyReservation):
             existing = by_name.get(entry.name)
             if existing is None:
                 by_name[entry.name] = entry
@@ -918,6 +980,26 @@ def collect_workflow_reservations(
                     # the arm's reservations collect beside the nodes'.
                     for entry in getattr(arm, "reservations", ()) or ():
                         _take(entry)
+        for chain in compiled.chains:
+            for step_key in chain.steps:
+                target = chain.resolved_policy(step_key, resolve_names=False)
+                for entry in target.reservation_decls:
+                    _take(entry)
+        from taskq.workflows._effects import collect_terminal_effects
+        from taskq.workflows._policy import resolve_execution_policy
+
+        for registered in collect_terminal_effects(compiled).values():
+            actor = registered.effect.policy.actor
+            queue = registered.effect.policy.queue
+            assert isinstance(actor, str) and isinstance(queue, str)
+            effect_target = resolve_execution_policy(
+                step_policy=registered.effect.policy,
+                compatibility_actor=actor,
+                compatibility_queue=queue,
+                resolve_names=False,
+            )
+            for entry in effect_target.reservation_decls:
+                _take(entry)
     return [by_name[res_name] for res_name in sorted(by_name)], sorted(set(unknown))
 
 
@@ -1036,9 +1118,6 @@ async def execute_flow_job(
             "a deployment defect"
         ) from None
 
-    runner = _runner_for(
-        workflow_name, pool, schema, worker_id, default_start_to_close=default_start_to_close
-    )
     # the root's stamped override through the shared parse → domain-clamp →
     # degrade cascade (``resolve_priority_stamp`` — a stamp a hand-crafted row
     # rendered unparseable or out-of-domain degrades to no override, never a
@@ -1055,6 +1134,12 @@ async def execute_flow_job(
         # JobRow's field — the row is the truth); the runner's enforcement
         # resolves it over the worker's default.
         "start_to_close": job.start_to_close,
+        "max_attempts": job.max_attempts,
+        "retry_kind": job.retry_kind,
+        "retry_base_seconds": job.retry_base.total_seconds(),
+        "retry_cap_seconds": job.retry_cap.total_seconds(),
+        "retry_backoff": job.retry_backoff,
+        "retry_jitter": job.retry_jitter,
         # the fork's builders read the source row's already-resolved
         # reservation names off it — the children ride the source row's cohort
         # (never a per-item re-derivation).
@@ -1062,6 +1147,9 @@ async def execute_flow_job(
     }
     from taskq.workflows.api._runner_errors import WorkflowRunError
 
+    runner = _runner_for(
+        workflow_name, pool, schema, worker_id, default_start_to_close=default_start_to_close
+    )
     try:
         outcome = await runner.run_fleet_claimed_step(
             JobId(cast(UUID, flow_raw)),

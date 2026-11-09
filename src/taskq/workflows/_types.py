@@ -11,12 +11,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
-from taskq.backend._protocol import ErrorInfo, JobId
+from taskq.backend._protocol import ErrorInfo, JobId, RetryKind
+from taskq.retry import RetryPolicy
+from taskq.workflows._capability import validate_required_worker_schema
 from taskq.workflows._sql import BLOCKING_REASON_JOIN
+
+if TYPE_CHECKING:
+    from taskq.workflows._policy import RetrySpec
 
 
 def duration_seconds(value: timedelta | float | int | None) -> float | None:
@@ -133,6 +138,16 @@ class ConsumerBinding:
     #: consumer declares none — the row's column NULL (the pre-fix row;
     #: the binding omits the key, the shape byte-identical).
     start_to_close: timedelta | None = None
+    rate_limits: tuple[str, ...] = ()
+    reservations: tuple[str, ...] = ()
+    priority: int | None = None
+    retry: RetrySpec | None = None
+    #: Internal, stable terminal-effect key. Ordinary consumers never carry it.
+    effect_key: str | None = None
+
+    @property
+    def retry_policy(self) -> RetryPolicy | None:
+        return self.retry.policy if self.retry is not None else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +187,20 @@ class ChildSpec:
     #: ``default_start_to_close`` at claim time, the resolution chain's
     #: own tail).
     start_to_close: timedelta | None = None
+    #: Per-child retry lowering; None preserves the ForkSpec compatibility terms.
+    retry: RetrySpec | None = None
+
+    @property
+    def retry_policy(self) -> RetryPolicy | None:
+        return self.retry.policy if self.retry is not None else None
+
+    @property
+    def resolved_max_attempts(self) -> int | None:
+        return self.retry.policy.max_attempts if self.retry is not None else None
+
+    @property
+    def resolved_retry_kind(self) -> RetryKind | None:
+        return self.retry.policy.kind if self.retry is not None else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +227,23 @@ class EmitChild:
     #: both ride it — two records' children of one step are two rows, two keys,
     #: two claims, only when it is stamped per record at emit.
     map_index: int
+    rate_limits: tuple[str, ...] = ()
+    reservations: tuple[str, ...] = ()
+    priority: int | None = None
+    start_to_close: timedelta | None = None
+    retry: RetrySpec | None = None
+
+    @property
+    def max_attempts(self) -> int | None:
+        return self.retry.policy.max_attempts if self.retry is not None else None
+
+    @property
+    def retry_kind(self) -> RetryKind | None:
+        return self.retry.policy.kind if self.retry is not None else None
+
+    @property
+    def retry_policy(self) -> RetryPolicy | None:
+        return self.retry.policy if self.retry is not None else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,7 +285,7 @@ class ForkSpec:
     join: JoinSpec | None = None
     trace_id: str | None = None
     max_attempts: int = 3
-    retry_kind: str = "transient"
+    retry_kind: RetryKind | Literal["permanent"] = "transient"
     #: the fork's JOIN is the source's own cohort (the placement fields say
     #: so), so its row lands at the source's resolution of the precedence law —
     #: the arms' overrides apply to the arm children, never the join. ``None``
@@ -279,7 +325,7 @@ class NodeSpec:
     consumers: tuple[ConsumerBinding, ...] = ()
     trace_id: str | None = None
     max_attempts: int = 3
-    retry_kind: str = "transient"
+    retry_kind: RetryKind | Literal["permanent"] = "transient"
     idempotency_scope: str = ""
     idempotency_key: str | None = None
     #: the ``jobs.priority`` column value the insert stamps — the resolved
@@ -293,6 +339,34 @@ class NodeSpec:
     #: default — migrations/01.00.00_01:85), so a spec built without it stores
     #: exactly the pre-fix row.
     start_to_close: timedelta | None = None
+    #: Internal guarded-run inheritance. Existing callers default to NULL and
+    #: never stamp a capability accidentally; future feature fronts enter via
+    #: the validated helper, while this model revalidates direct construction.
+    required_worker_schema: int | None = None
+    retry: RetrySpec | None = None
+
+    @property
+    def retry_policy(self) -> RetryPolicy | None:
+        return self.retry.policy if self.retry is not None else None
+
+    def __post_init__(self) -> None:
+        from taskq.workflows._policy import canonical_retry_kind
+
+        if self.required_worker_schema is not None:
+            validate_required_worker_schema(self.required_worker_schema)
+        if self.retry is not None:
+            policy = self.retry.policy
+            if self.max_attempts != 3 and self.max_attempts != policy.max_attempts:
+                raise ValueError("NodeSpec max_attempts contradicts its resolved retry policy")
+            if (
+                self.retry_kind != "transient"
+                and canonical_retry_kind(self.retry_kind) != policy.kind
+            ):
+                raise ValueError("NodeSpec retry_kind contradicts its resolved retry policy")
+            object.__setattr__(self, "max_attempts", policy.max_attempts)
+            object.__setattr__(self, "retry_kind", policy.kind)
+        else:
+            object.__setattr__(self, "retry_kind", canonical_retry_kind(self.retry_kind))
 
 
 @dataclass(frozen=True, slots=True)
@@ -453,6 +527,30 @@ def _consumer_binding_doc(c: ConsumerBinding) -> dict[str, object]:
     }
     if c.start_to_close is not None:
         doc["start_to_close_s"] = c.start_to_close.total_seconds()
+    if c.rate_limits:
+        doc["rate_limits"] = list(c.rate_limits)
+    if c.reservations:
+        doc["reservations"] = list(c.reservations)
+    if c.priority is not None:
+        doc["priority"] = c.priority
+    if c.effect_key is not None:
+        doc["wf_effect_key"] = c.effect_key
+        doc["after_terminal"] = True
+    if c.retry is not None:
+        policy = c.retry.policy
+        doc["retry"] = {
+            "max_attempts": policy.max_attempts,
+            "kind": policy.kind,
+            "base_s": policy.base.total_seconds(),
+            "cap_s": policy.cap.total_seconds(),
+            "backoff": policy.backoff,
+            "jitter": policy.jitter,
+            **(
+                {"non_consuming_limit": c.retry.non_consuming_limit}
+                if c.retry.non_consuming_limit is not None
+                else {}
+            ),
+        }
     return doc
 
 
@@ -461,6 +559,7 @@ def _row_metadata(
     *,
     rate_limits: tuple[str, ...] = (),
     reservations: tuple[str, ...] = (),
+    retry: RetrySpec | None = None,
 ) -> dict[str, object]:
     """The node row's metadata WITH admission terms (the admission terms): the base
     flow link plus the ``rate_limits`` names and the STRICT reservation
@@ -473,6 +572,8 @@ def _row_metadata(
         meta["rate_limits"] = list(rate_limits)
     if reservations:
         meta["reservations"] = list(reservations)
+    if retry is not None and retry.non_consuming_limit is not None:
+        meta["wf_retry"] = {"non_consuming_limit": retry.non_consuming_limit}
     return meta
 
 
@@ -520,6 +621,53 @@ def _seconds_or_none(raw: object) -> timedelta | None:
     return timedelta(seconds=float(raw)) if isinstance(raw, (int, float)) and raw >= 0 else None
 
 
+def _string_tuple(raw: object) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError("workflow consumer admission names must be a list of strings")
+    values = cast("list[object]", raw)
+    if not all(isinstance(value, str) for value in values):
+        raise ValueError("workflow consumer admission names must be a list of strings")
+    return tuple(cast("list[str]", values))
+
+
+def _retry_from_doc(raw: object) -> RetrySpec | None:
+    """Validate a persisted consumer's execution terms before interpreting them."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("workflow consumer retry must be an object")
+    document = cast("dict[str, object]", raw)
+    from taskq.workflows._policy import RetrySpec, canonical_retry_kind
+
+    kind = document.get("kind", "transient")
+    backoff = document.get("backoff", "exponential")
+    if not isinstance(kind, str) or backoff not in ("exponential", "linear", "fixed"):
+        raise ValueError("workflow consumer retry has an invalid kind/backoff")
+    numeric: dict[str, float] = {}
+    for key in ("base_s", "cap_s", "jitter"):
+        value = document.get(key)
+        if type(value) not in (int, float):
+            raise ValueError(f"workflow consumer retry {key} must be numeric")
+        numeric[key] = float(cast("int | float", value))
+    max_attempts = document.get("max_attempts", 3)
+    if type(max_attempts) is not int:
+        raise ValueError("workflow consumer retry max_attempts must be an integer")
+    limit = document.get("non_consuming_limit")
+    return RetrySpec(
+        policy=RetryPolicy(
+            max_attempts=max_attempts,
+            kind=canonical_retry_kind(kind, what="consumer retry kind"),
+            base=timedelta(seconds=numeric["base_s"]),
+            cap=timedelta(seconds=numeric["cap_s"]),
+            backoff=backoff,
+            jitter=numeric["jitter"],
+        ),
+        non_consuming_limit=limit if type(limit) is int else None,
+    )
+
+
 def _consumer_binding(raw: dict[str, Any]) -> ConsumerBinding:
     """one metadata ``consumers`` entry → the typed binding (the walk's
     own arm): the declared deadline parses back from the binding's
@@ -533,4 +681,15 @@ def _consumer_binding(raw: dict[str, Any]) -> ConsumerBinding:
         payload=raw.get("payload"),
         map_index=raw.get("map_index"),
         start_to_close=_seconds_or_none(raw.get("start_to_close_s")),
+        rate_limits=_string_tuple(raw.get("rate_limits")),
+        reservations=_string_tuple(raw.get("reservations")),
+        priority=raw.get("priority") if type(raw.get("priority")) is int else None,
+        retry=_retry_from_doc(raw.get("retry")),
+        effect_key=(
+            raw.get("wf_effect_key")
+            if raw.get("after_terminal") is True
+            and isinstance(raw.get("wf_effect_key"), str)
+            and raw.get("wf_effect_key")
+            else None
+        ),
     )

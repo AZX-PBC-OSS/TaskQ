@@ -24,16 +24,23 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Final, cast, get_args, get_origin, overload
+from typing import TYPE_CHECKING, Any, Concatenate, Final, cast, get_args, get_origin, overload
 
 from pydantic import BaseModel
 
 from taskq.actor_config import validate_capacity_owner
+from taskq.backend._protocol import RetryKind
 from taskq.constants import check_priority_domain
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
+from taskq.workflows._policy import (
+    ExecutionPolicy,
+    ResolvedExecutionPolicy,
+    canonical_retry_kind,
+    resolve_source_execution_policy,
+)
 from taskq.workflows._types import EdgeFailurePolicy, duration_seconds
 from taskq.workflows.api._hints import body_hints, ctx_input_reads, inner_fn, own_source
 from taskq.workflows.chain import Chain
@@ -49,6 +56,7 @@ if TYPE_CHECKING:
     # _loop imports _graph's wiring verbs at runtime, so the import rides
     # TYPE_CHECKING here; the annotation is lazy (``from __future__ import
     # annotations``) and pyright binds it.
+    from taskq.workflows.api._ctx import StepContext
     from taskq.workflows.api._loop import LoopSpec
 
 __all__ = [
@@ -647,7 +655,7 @@ class NodeDecl:
     #: default; the timeout arm resolves per the same policy.
     on_failure: str = "fail_closed"
     max_attempts: int = 3
-    retry_kind: str | None = None
+    retry_kind: RetryKind | None = None
     skip: SkipPredicate | None = None
     gates: tuple[GateDecl, ...] = ()
     #: the claim path acquires these buckets before the body runs — the vanilla
@@ -747,6 +755,8 @@ class NodeDecl:
     # from the compiled workflow's chains. ``chain is not None`` is the source
     # marker.
     chain: object | None = None
+    #: The fully resolved source policy. Chain steps use Chain.resolved_policy.
+    execution_policy: ResolvedExecutionPolicy | None = None
     # the node's result may serve a later run over the same body + the same
     # input (the temporal dedup — the arbiter owns the concurrent one). Default
     # off: the cache is a decision, never a surprise. ``cache_ttl`` is the
@@ -811,7 +821,7 @@ class BuildGraph:
         self.nodes: dict[str, NodeDecl] = {}
         self.sunk: tuple[str, ...] = ()
         self.terminal: str | None = None
-        self.chains: list[object] = []
+        self.chains: list[Chain] = []
         self._auto_counter: dict[str, int] = {}
         #: The cross-graph smuggles recorded by the wiring verbs
         #: (the smuggle class): ``(consumer_key, parent_key)`` pairs
@@ -917,7 +927,7 @@ def declared_exit_return(body: object) -> bool:
 
 
 def step[R](
-    body: Callable[..., Awaitable[R]],
+    body: Callable[Concatenate[StepContext, ...], Awaitable[R]],
     *args: object,
     key: str | None = None,
     actor: str = "wf",
@@ -1239,6 +1249,8 @@ def step[R](
             "step (the run input) or on a map/route fan-out (each child's "
             "own payload resolves the key)."
         )
+    if retry_kind is not None:
+        retry_kind = canonical_retry_kind(retry_kind, what=f"step {node_key!r}'s retry_kind")
     graph.add(
         NodeDecl(
             key=node_key,
@@ -1897,40 +1909,18 @@ def chain_source(
     actor: str = "wf",
     queue: str = "default",
     max_attempts: int = 3,
-) -> Promise[Any]:
-    """Wire a CHAIN SOURCE node: *source_body* is the paged
-    generator (each ``ctx.emit_batch`` yield = one page's emit tx — the
-    children + edges + the cursor checkpoint while the source stays
-    running); *chain* is the declared :class:`taskq.workflows.chain.Chain`
-    the source instantiates per record; *max_attempts* is the source's
-    own ladder budget (a backpressured source's stalls ride the ladder —
-    budget it for the pages a resume must re-drive). The chain's step
-    rows exist only
-    from the emit onward — they are not graph nodes; the runner resolves
-    their bodies (registry, D1) and routes (the compiled chain). A chain
-    step key that collides with a wired node or another chain's step is
-    refused at declaration (a coding error)."""
+    policy: ExecutionPolicy | None = None,
+) -> Promise[None]:
+    """Wire a chain source with its own execution policy.
+
+    Source terms resolve only from this call, the source handle, and the
+    compatibility kwargs; ``Chain.default_policy`` belongs to record leaves
+    and is deliberately not inherited by the source.
+    """
     graph = active_graph()
-    # the chain's rows ride the chain's own actor (its own placement override)
-    # and the chain surface has no capacity passthrough — a capped handle wired
-    # as a chain step body would have its terms dropped silently. The wiring
-    # refuses.
-    for step_key, chain_step in chain.steps.items():
-        chain_handle = _capped_handle_of(chain_step.body)
-        if chain_handle is not None:
-            raise WorkflowBuildError(
-                f"chain {chain.name!r}'s step {step_key!r} wires a capped "
-                "actor handle — the chain's rows ride the CHAIN's own "
-                f"actor (actor={chain.actor!r}) and the chain surface has "
-                "no capacity passthrough: the handle's capacity terms "
-                "would be dropped by the placement override (the guard "
-                "failing open by rename), the handle's capacity_owner "
-                "declaration included. Wire the capped body as a graph "
-                "step (its own cohort), or strip its terms."
-            )
     step_keys = set(chain.steps)
     clashes = (step_keys & set(graph.nodes)) | (
-        step_keys & {k for c in graph.chains for k in c.steps}  # type: ignore[attr-defined]
+        step_keys & {k for c in graph.chains for k in c.steps}
     )
     if clashes:
         raise WorkflowBuildError(
@@ -1943,20 +1933,57 @@ def chain_source(
     sources: list[tuple[str, object]] = []
     for arg in args:
         sources.append(("p", arg.key) if isinstance(arg, Promise) else ("d", arg))
+    if any(kind == "p" for kind, _value in sources):
+        declarations = (
+            *(
+                policy.rate_limits
+                if policy is not None and isinstance(policy.rate_limits, Sequence)
+                else ()
+            ),
+            *(
+                policy.reservations
+                if policy is not None and isinstance(policy.reservations, Sequence)
+                else ()
+            ),
+        )
+        if any(
+            isinstance(value, KeyedRateLimitRef | KeyedReservationRef) for value in declarations
+        ):
+            raise WorkflowBuildError(
+                "chain_source with parent-derived payloads cannot resolve keyed admission; "
+                "declare admission on the emitted record steps instead"
+            )
+    resolved = resolve_source_execution_policy(
+        source_body=source_body,
+        policy=policy,
+        actor=actor,
+        queue=queue,
+        max_attempts=max_attempts,
+        payload_values=tuple(value for kind, value in sources if kind == "d"),
+    )
     graph.add(
         NodeDecl(
             key=node_key,
-            actor=actor,
-            queue=queue,
+            actor=resolved.actor,
+            queue=resolved.queue,
             body=source_body,
-            parents=tuple(k for k, _ in sources if k == "p"),
+            parents=tuple(str(value) for kind, value in sources if kind == "p"),
             args=tuple(sources),
-            max_attempts=max_attempts,
+            max_attempts=resolved.max_attempts,
+            retry_kind=resolved.retry_kind,
+            rate_limits=resolved.rate_limit_decls,
+            max_concurrent=resolved.max_concurrent,
+            reservations=resolved.reservation_decls,
+            result_ttl=resolved.result_ttl,
+            priority=resolved.priority,
+            start_to_close=resolved.start_to_close,
+            capacity_owner=resolved.capacity_owner,
             kind="chain_source",
             chain=chain,
+            execution_policy=resolved,
         )
     )
-    return Promise(node_key, object, graph)
+    return Promise(node_key, None, graph)
 
 
 def sink(*dropped: Promise[object]) -> None:

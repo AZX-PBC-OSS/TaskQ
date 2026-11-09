@@ -1850,10 +1850,23 @@ async def register_worker(
     # ``max_concurrency`` sizes ``local_queue`` and bounds every dispatch,
     # so a fleet's effective parallelism stays queryable from the database
     # for monitoring and coordination.
+    # Schema level 1 is implemented by this build's physical claim trigger and
+    # direct-driver refusal; level 2 by the guarded terminal effects. The
+    # stamp is what this build actually implements, not an operator override
+    # or a claim that future guarded application features are complete.
+    # Vanilla workers stamp zero: they still cannot execute workflow bodies
+    # under the existing workflow_execution fence, and every pre-existing
+    # metadata key survives.
+    workflow_execution_schema = 0
+    if workflow_execution:
+        from taskq.workflows._capability import WORKER_BOOT_WORKFLOW_SCHEMA
+
+        workflow_execution_schema = WORKER_BOOT_WORKFLOW_SCHEMA
     metadata: dict[str, object] = {
         "notify_enabled": notify_enabled,
         "max_concurrency": settings.max_concurrency,
         "workflow_execution": workflow_execution,
+        "workflow_execution_schema": workflow_execution_schema,
     }
 
     sql = (

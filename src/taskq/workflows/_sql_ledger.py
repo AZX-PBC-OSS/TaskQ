@@ -152,17 +152,18 @@ RETURNING id
 FLOW_RUN_INSERT_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,
-     step_key, trace_id, metadata, idempotency_scope, idempotency_key)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, '__flow__', $7, $8::jsonb, $9, $10)
+     step_key, trace_id, metadata, idempotency_scope, idempotency_key,
+     required_worker_schema, run_epoch)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, '__flow__', $7, $8::jsonb, $9, $10, $11, 1)
 ON CONFLICT (idempotency_scope, idempotency_key)
     WHERE idempotency_key IS NOT NULL
 DO NOTHING
-RETURNING id, status::text
+RETURNING id, status::text, required_worker_schema
 """
 
 
 FLOW_RUN_READ_SQL = """\
-SELECT id, status::text
+SELECT id, status::text, required_worker_schema
 FROM {schema}.jobs
 WHERE idempotency_scope = $1 AND idempotency_key = $2
 """

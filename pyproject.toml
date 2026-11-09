@@ -323,6 +323,11 @@ ignore = [
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "tests/e2e/**" = ["S608"]
+# Same rationale as tests/e2e: the f-strings' ONLY interpolation is the
+# module fixture's schema identifier (validated upstream by the schema
+# fixtures), every caller-controlled value uses $N parameter binding —
+# the release-gate helpers' DDL/DML and the cron bridge's runner setup.
+"tests/system_e2e/_wf_app.py" = ["S608"]
 # Same rationale as tests/e2e and migrate.py: only the schema identifier is
 # interpolated, it is validated by the test fixtures upstream, and every
 # caller-controlled value uses $N parameter binding. The file's SQL is the

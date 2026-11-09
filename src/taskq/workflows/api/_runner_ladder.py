@@ -17,13 +17,20 @@ import structlog
 
 from taskq.backend._protocol import JobId
 from taskq.obs import get_logger
+from taskq.retry import compute_backoff
+from taskq.workflows._policy import (
+    RetrySpec,
+    TerminalEffect,
+    WorkflowRetryOverride,
+    canonical_retry_kind,
+)
 from taskq.workflows._progress import (
     KIND_NODE_TERMINAL,
     MESSAGE_TERMINAL_MAX,
 )
+from taskq.workflows.api._attempt import AttemptClaim, repend_attempt
 from taskq.workflows.api._sql_runner import (
     NODE_DEADLINE_REPEND_SQL,
-    NODE_REPEND_SQL_TEMPLATE,
     render_sql,
     wf_conn_fetchval,
 )
@@ -190,6 +197,40 @@ class LadderOps(_LadderHost):
             return source.map_max_attempts, source.retry_kind if source.retry_kind else "transient"
         return 3, "transient"
 
+    def _target_retry_spec(self, node: Any, row: dict[str, Any]) -> RetrySpec | None:
+        """Read the declared source/effect resolver that planned this exact row."""
+        registered = getattr(self, "_terminal_effects", {}).get(row["step_key"])
+        if registered is not None:
+            retry = registered.effect.policy.retry
+            return retry if isinstance(retry, RetrySpec) else None
+        if node is not None:
+            resolved = getattr(node, "execution_policy", None)
+            return resolved.retry if resolved is not None else None
+        chain = getattr(self, "_chain_steps", {}).get(row["step_key"])
+        if chain is None:
+            return None
+        return chain.resolved_policy(row["step_key"], resolve_names=False).retry
+
+    def _terminal_effect_for(self, node: Any, row: dict[str, Any]) -> TerminalEffect | None:
+        from taskq.workflows._effects import effect_for_source
+
+        return effect_for_source(getattr(self, "_terminal_effects", {}), str(row["step_key"]))
+
+    @staticmethod
+    def _row_ladder_terms(
+        row: dict[str, Any], node: Any, fallback: tuple[int, str]
+    ) -> tuple[int, str]:
+        max_attempts = row.get("max_attempts")
+        retry_kind = row.get("retry_kind")
+        if max_attempts is None:
+            max_attempts = fallback[0]
+        if retry_kind is None:
+            retry_kind = fallback[1]
+        return (
+            int(max_attempts),
+            canonical_retry_kind(str(retry_kind)),
+        )
+
     async def _ladder_or_fail(
         self,
         flow_id: JobId,
@@ -199,7 +240,9 @@ class LadderOps(_LadderHost):
         exc: Exception,
         *,
         claim_epoch: int = 0,
-    ) -> Literal["retried", "failed"]:
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
+    ) -> Literal["retried", "failed", "cancelled", "fenced", "deferred"]:
         """The ladder: an attempt failure emits no terminal (P3 rule 7) —
         the node re-pends with backoff until ``max_attempts``, then
         terminal-fails (the failed-parent propagation takes over). ``permanent`` retry
@@ -224,11 +267,13 @@ class LadderOps(_LadderHost):
         ladder unburned — whatever the declared ``retry_kind`` (the rule
         outranks the knob: a retry budget spent on a deterministic death
         is the record's lie)."""
-        if node is not None:
-            max_attempts = node.max_attempts
-            retry_kind = node.retry_kind
-        else:
-            max_attempts, retry_kind = self._map_child_ladder_terms(row["step_key"])
+        fallback = (
+            (node.max_attempts, node.retry_kind or "transient")
+            if node is not None
+            else self._map_child_ladder_terms(row["step_key"])
+        )
+        max_attempts, retry_kind = self._row_ladder_terms(row, node, fallback)
+        retry_spec = self._target_retry_spec(node, row)
         # the ladder (the count read + the re-pend) is skipped entirely for a
         # deterministic authoring failure — the finalizer below runs on the
         # first attempt.
@@ -252,32 +297,108 @@ class LadderOps(_LadderHost):
                     row["map_index"],
                 )
             )
-        # The attempt's own ledger row terminalizes 'failed' (the claim
-        # inserted it — the arbiter's key is the attempt's identity): an
-        # INSERT here would collide with the claim (the UniqueViolation
-        # the runner pins reject). Ladder retries emit no terminal on
-        # the job row (P3 rule 7) — the node re-pends with backoff.
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                self.wsql.ledger_terminal,
-                flow_id,
-                row["step_key"],
-                attempt,
-                "failed",
-                None,
-                type(exc).__name__,
-                str(exc)[:500],
-                None,
-                row["map_index"],
+        override = (
+            retry_spec.classify(exc, failed_count + 1)
+            if retry_spec is not None and not deterministic
+            else None
+        )
+        if (
+            retry_spec is not None
+            and isinstance(override, WorkflowRetryOverride)
+            and not override.consume_budget
+        ):
+            from taskq.workflows.api._runner_defer import policy_retry_defer
+
+            # The classifier only sees this body exception. Deadlines, control
+            # flow, deterministic engine authoring faults, cancellation, and
+            # infrastructure never enter this arm.
+            assert override.delay is not None
+            outcome = await policy_retry_defer(
+                self.pool,
+                self.wsql,
+                flow_id=flow_id,
+                row=row,
+                worker_id=self._worker_id,
+                attempt=attempt,
+                claim_epoch=claim_epoch,
+                ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
+                exc=exc,
+                delay=override.delay,
+                capture_policy=self.compiled.capture,
+                project_auto=self._project_auto,
+                terminal_effect=self._terminal_effect_for(node, row),
             )
-            if not deterministic and retry_kind != "permanent" and failed_count + 1 < max_attempts:
-                await conn.execute(
-                    render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
-                    row["id"],
-                    0.05 * (2 ** (failed_count)),
-                    attempt,
+            return (
+                "deferred"
+                if outcome == "deferred"
+                else (
+                    "cancelled"
+                    if outcome == "cancelled"
+                    else "fenced"
+                    if outcome == "fenced"
+                    else "failed"
                 )
+            )
+        if override is not None and override.kind is not None:
+            retry_kind = override.kind
+        backoff_s = (
+            override.delay.total_seconds()
+            if override is not None and override.delay is not None
+            else (
+                compute_backoff(retry_spec.policy, failed_count + 1).total_seconds()
+                if retry_spec is not None
+                else 0.05 * (2**failed_count)
+            )
+        )
+        # One full-fenced transaction owns both the row transition and the
+        # claim-owned ledger result. A cancelled row is not another failed
+        # attempt; a stale row cannot report a retry it did not write.
+        if not deterministic:
+            async with self.pool.acquire() as conn, conn.transaction():
+                disposition = await repend_attempt(
+                    conn,
+                    self.wsql,
+                    claim=AttemptClaim(
+                        job_id=JobId(row["id"]),
+                        flow_id=flow_id,
+                        step_key=row["step_key"],
+                        worker_id=self._worker_id,
+                        attempt=attempt,
+                        claim_epoch=claim_epoch,
+                        ledger_id=ledger_id,
+                        ledger_claimed_at=ledger_claimed_at,
+                        map_index=row["map_index"],
+                    ),
+                    error_class=type(exc).__name__,
+                    error_message=str(exc)[:500],
+                    failures_before=failed_count,
+                    max_attempts=max_attempts,
+                    retry_kind=retry_kind,
+                    backoff_s=backoff_s,
+                    # Only the compiled chain_source declaration enters the
+                    # logical-source carrier domain. Static/map/chain-step
+                    # rows keep their physical claim ordinal unchanged.
+                    chain_source=getattr(node, "kind", None) == "chain_source",
+                )
+            if disposition == "repended":
                 return "retried"
+            if disposition == "cancel_fenced":
+                from taskq.workflows.api._runner_defer import WORKFLOW_CANCELLED_CLASS
+
+                await self._project_auto(
+                    flow_id,
+                    JobId(row["id"]),
+                    KIND_NODE_TERMINAL,
+                    {
+                        "outcome": "cancelled",
+                        "step_key": row["step_key"],
+                        "error_class": WORKFLOW_CANCELLED_CLASS,
+                    },
+                )
+                return "cancelled"
+            if disposition == "stale":
+                return "fenced"
         final = await finalize_node(
             self.pool,
             self.wsql,
@@ -292,6 +413,12 @@ class LadderOps(_LadderHost):
             error_message=str(exc)[:MESSAGE_TERMINAL_MAX],
             capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the compile (the workflow decorator's declaration); the host protocol's compiled is the runner's Any-typed field.
             map_index=row["map_index"],
+            ledger_id=ledger_id,
+            ledger_claimed_at=ledger_claimed_at,
+            terminal_effect=(None if deterministic else self._terminal_effect_for(node, row)),
+            terminal_reason=(
+                "non_retryable" if retry_kind == "non_retryable" else "retry_exhausted"
+            ),
         )
         if final.applied:
             await self._project_auto(
@@ -350,11 +477,13 @@ class LadderOps(_LadderHost):
             route_defer_terminal,
         )
 
-        if node is not None:
-            max_attempts = node.max_attempts
-            retry_kind = node.retry_kind
-        else:
-            max_attempts, retry_kind = self._map_child_ladder_terms(row["step_key"])
+        fallback = (
+            (node.max_attempts, node.retry_kind or "transient")
+            if node is not None
+            else self._map_child_ladder_terms(row["step_key"])
+        )
+        max_attempts, retry_kind = self._row_ladder_terms(row, node, fallback)
+        retry_spec = self._target_retry_spec(node, row)
         # the ladder's own count + curve (the burn prices like any body
         # failure: the ledger's failed rows count, the backoff doubles).
         failed_count = int(
@@ -367,8 +496,14 @@ class LadderOps(_LadderHost):
                 row["map_index"],
             )
         )
-        backoff_s = 0.05 * (2**failed_count)
-        exhausted = retry_kind == "permanent" or failed_count + 1 >= max_attempts
+        # Deadline enforcement stays outside the author classifier. Its policy
+        # is still RETRY, with the same failed ordinal and full declared curve.
+        backoff_s = (
+            compute_backoff(retry_spec.policy, failed_count + 1).total_seconds()
+            if retry_spec is not None
+            else 0.05 * (2**failed_count)
+        )
+        exhausted = retry_kind == "non_retryable" or failed_count + 1 >= max_attempts
         async with self.pool.acquire() as conn, conn.transaction():
             rec = await conn.fetchrow(
                 render_sql(NODE_DEADLINE_REPEND_SQL, self.schema),
@@ -487,6 +622,10 @@ class LadderOps(_LadderHost):
                 error_message=DEADLINE_ERROR_MESSAGE,
                 capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]
                 map_index=row["map_index"],
+                ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
+                terminal_effect=self._terminal_effect_for(node, row),
+                terminal_reason="deadline",
             )
             if final.applied:
                 await self._project_auto(
@@ -510,7 +649,15 @@ class LadderOps(_LadderHost):
         return "laddered"
 
     async def _reclaim_step(
-        self, flow_id: JobId, row: dict[str, Any], attempt: int, exc: Exception
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        exc: Exception,
+        *,
+        claim_epoch: int = 0,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
     ) -> None:
         """the STEP NODE'S MACHINERY RECLAIM (the claim tail's
         escape-point contract — the machinery boundary, the classifier's law applied
@@ -534,22 +681,32 @@ class LadderOps(_LadderHost):
         One fault, one semantics: the identical fault at either
         finalize face takes the identical seat — never a second patched
         boundary."""
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                self.wsql.ledger_terminal,
-                flow_id,
-                row["step_key"],
-                attempt,
-                "crashed",
-                None,
-                type(exc).__name__,
-                str(exc)[:500],
-                None,
-                row["map_index"],
-            )
-            await conn.execute(
-                render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
-                row["id"],
-                0.05,
-                attempt,
+        async with self.pool.acquire() as conn, conn.transaction():
+            await repend_attempt(
+                conn,
+                self.wsql,
+                claim=AttemptClaim(
+                    job_id=JobId(row["id"]),
+                    flow_id=flow_id,
+                    step_key=row["step_key"],
+                    worker_id=self._worker_id,
+                    attempt=attempt,
+                    claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
+                    map_index=row["map_index"],
+                ),
+                error_class=type(exc).__name__,
+                error_message=str(exc)[:500],
+                failures_before=0,
+                max_attempts=1,
+                retry_kind="transient",
+                backoff_s=0.05,
+                machinery_crashed=True,
+                # Reclaim can persist a legacy source's current ordinal but
+                # never turns infrastructure into another authored failure.
+                chain_source=(
+                    getattr(self.compiled.nodes.get(row["step_key"]), "kind", None)
+                    == "chain_source"
+                ),
             )

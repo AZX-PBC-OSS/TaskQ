@@ -684,6 +684,75 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
     _ = render_loop_sql, LOOP_REMAINING_SQL  # the clock seam's imports (the on-wake read)
 
 
+async def test_loop_reclaim_after_resumed_wait_keeps_the_current_claim(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A machinery fault after a resumed wait reclaims, never strands awaited."""
+    from unittest.mock import patch
+
+    from taskq.workflows.api._hitl import deliver_payload
+
+    async def hold_then_done(ctx: StepContext, carry: object) -> object:
+        await ctx.wait_signal(Approval, timeout_s=120.0)
+        return Done({"ok": True})
+
+    app = WorkflowApp()
+
+    @app.workflow("hold_reclaim_loop_flow")
+    def hold_reclaim_loop_flow() -> Promise[object]:
+        return build(
+            loop(
+                "holdreclaimloop",
+                hold_then_done,
+                max_iterations=2,
+                budget_s=600.0,
+                gates=(GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0),),
+            )
+        )
+
+    runner = FlowRunner(app.get("hold_reclaim_loop_flow"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id, until="held") == "held"
+    held = await wf_conn.fetchval(
+        f"SELECT id FROM \"{wf_schema}\".wf_signals WHERE workflow_id = $1 AND status = 'held'",
+        flow_id,
+    )
+    assert held is not None
+    delivered = await deliver_payload(
+        wf_pool,
+        schema=wf_schema,
+        workflow_id=flow_id,
+        hold_id=JobId(held),
+        payload={"verdict": "approve"},
+        payload_json=json.dumps({"verdict": "approve"}),
+    )
+    assert delivered.status == "delivered"
+    calls = 0
+
+    async def fail_iteration_write(*args: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        raise asyncpg.exceptions.InterfaceError("injected post-wait machinery failure")
+
+    with patch.object(runner, "_record_iteration_terminal", new=fail_iteration_write):
+        await runner.tick(flow_id)
+    assert calls == 1
+    crashed = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND status = 'crashed'",
+        flow_id,
+    )
+    assert crashed == 1
+    assert await runner.drive(flow_id, max_ticks=10) == "terminal"
+    assert await runner.result(flow_id) == {"ok": True}
+    failed = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND status = 'failed'",
+        flow_id,
+    )
+    assert failed == 0
+
+
 # ── the carry's typed truth: the declared type reaches the body ─────────
 
 

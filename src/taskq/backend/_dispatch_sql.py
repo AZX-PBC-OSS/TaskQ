@@ -366,6 +366,7 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
                   -- escalation consumer is dispatchable ON the terminal
                   -- flow that spawned it.
                   __WF_ALIAS__.step_key = '__WF_ESCALATION_STEP__'
+                  OR __WF_ALIAS__.metadata ? 'wf_after_terminal_effect'
                   OR NOT EXISTS (
                       SELECT 1
                       FROM "{schema}".jobs wf_flow
@@ -402,6 +403,7 @@ _WF_PROBE_FENCE_TEMPLATE = """\
               __WF_ALIAS__.step_key = '__flow__'
               OR (
                   __WF_ALIAS__.step_key <> '__WF_ESCALATION_STEP__'
+                  AND NOT __WF_ALIAS__.metadata ? 'wf_after_terminal_effect'
                   AND EXISTS (
                       SELECT 1
                       FROM "{schema}".jobs wf_flow

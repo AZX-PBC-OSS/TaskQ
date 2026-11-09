@@ -41,6 +41,13 @@ from tests.system_e2e._wf_app import MARCH_WORKER_QUEUES, PUBLISH_APPROVAL_TIMEO
 #: import is the capability stamp).
 WF_ENTRY = "tests.system_e2e._wf_entry"
 
+#: The workflow-capable entry whose boot honors ``TASKQ_LOG_LEVEL`` (it
+#: enters through the production ``worker_main_async`` wrapper's
+#: ``setup_logging``): the capacity-cohort control's workers run this so the
+#: boot's INFO-level operator-mismatch diagnostic surfaces in the worker's
+#: own log sink.
+WF_DIAG_ENTRY = "tests.system_e2e._wf_diag_entry"
+
 #: The leader lease the march fleets boot with (the rolling-fleet file's
 #: measured rationale: a loaded leader iteration pays every sweep's
 #: dispatcher budget before it renews — under that bound leadership

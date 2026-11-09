@@ -60,7 +60,13 @@ ITEM_KEY = "wf_item"
 NODE_CLAIM_SQL_TEMPLATE = _render_fence_tokens("""
 UPDATE {schema}.jobs
 SET status = 'running', locked_by_worker = $2, lock_expires_at = now() + interval '90 seconds',
-    attempt = attempt + 1, claim_epoch = 0
+    started_at = COALESCE(started_at, clock_timestamp()),
+    last_heartbeat_at = COALESCE(last_heartbeat_at, clock_timestamp()),
+    -- THE DIRECT CLAIM IS A REAL CLAIM SEQUENCE (the fleet's own rule):
+    -- the epoch increments atomically with the attempt, and the returned
+    -- pair fences this claim's ledger row and every context/finalize
+    -- write.
+    attempt = attempt + 1, claim_epoch = claim_epoch + 1
 WHERE id = $1
   AND (
     status = 'pending'
@@ -93,45 +99,18 @@ WHERE id = $1
   -- into a terminal flow; the two fences may not disagree).
   AND (
     step_key = '__WF_ESCALATION_STEP__'
+    OR metadata ? 'wf_after_terminal_effect'
     OR NOT EXISTS (
       SELECT 1 FROM {schema}.jobs wf_flow
       WHERE wf_flow.id = ({schema}.jobs.metadata->>'flow_id')::uuid
         AND wf_flow.status IN __WF_TERMINAL__
     )
   )
-RETURNING attempt
+RETURNING attempt, claim_epoch
 """)
 
-NODE_REPEND_SQL_TEMPLATE = """
-UPDATE {schema}.jobs
-SET status = 'scheduled', locked_by_worker = NULL, scheduled_at = now() + ($2::double precision * interval '1 second'),
-    -- THE RE-PEND'S OWN PROVENANCE, stamped in the re-pend's own
-    -- statement — atomic with the re-pend, so the curve's evidence is
-    -- the applied value itself, never a poller's reconstruction: the
-    -- applied backoff, the re-pend's instant, and the due instant (one
-    -- now() read — due minus at IS the backoff the statement applied),
-    -- keyed PER ATTEMPT and ACCUMULATED (a later attempt's key wins
-    -- only ITS key; the stamp a row carries after it later SUCCEEDED
-    -- is history, harmless — nothing reads wf_repend as live state;
-    -- the row's own status/scheduled_at columns are the live face).
-    -- The instants ride the ISO-8 face the row's stamps carry (the
-    -- timer wake's payload shape).
-    metadata = metadata || jsonb_build_object(
-        'wf_repend',
-        COALESCE(metadata->'wf_repend', '{}'::jsonb) || jsonb_build_object(
-            $3::int::text,
-            jsonb_build_object(
-                'backoff', $2::double precision,
-                'at', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-                'due', to_char((now() + ($2::double precision * interval '1 second'))
-                               AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
-            )
-        )
-    )
-WHERE id = $1
-  AND status = 'running'
-RETURNING id
-"""
+# The ordinary re-pend statement lives with its claim/ledger transaction
+# in ``api._attempt``; no weaker claimant-only statement remains here.
 
 # the ladder's re-pend shape (NODE_REPEND_SQL_TEMPLATE) with the cancel fence
 # in-statement and the budget gate — the vanilla ``mark_retry``'s own arms
@@ -285,7 +264,10 @@ WHERE id = $1
 """
 
 CLAIMABLE_NODES_SQL_TEMPLATE = _render_fence_tokens("""
-SELECT id, step_key, map_index, attempt, trace_id, payload, start_to_close, metadata FROM {schema}.jobs
+SELECT id, step_key, map_index, attempt, trace_id, payload, start_to_close, metadata,
+       required_worker_schema, max_attempts, retry_kind,
+       retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter
+FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status IN ('pending', 'scheduled')
   AND (scheduled_at IS NULL OR scheduled_at <= now())
@@ -304,6 +286,7 @@ WHERE (metadata->>'flow_id')::uuid = $1
   -- shape).
   AND (
     step_key = '__WF_ESCALATION_STEP__'
+    OR metadata ? 'wf_after_terminal_effect'
     OR NOT EXISTS (
       SELECT 1 FROM {schema}.jobs wf_flow
       WHERE wf_flow.id = ({schema}.jobs.metadata->>'flow_id')::uuid
@@ -333,6 +316,12 @@ ROOT_PRIORITY_STAMP_SQL_TEMPLATE = """
 SELECT metadata->>'wf_priority' AS wf_priority
 FROM {schema}.jobs WHERE id = $1
 """
+
+FLOW_REQUIRED_WORKER_SCHEMA_SQL_TEMPLATE = """
+SELECT required_worker_schema FROM {schema}.jobs
+WHERE id = $1 AND step_key = '__flow__'
+"""
+
 
 FLOW_STATUS_SQL_TEMPLATE = """
 SELECT status FROM {schema}.jobs WHERE id = $1
@@ -394,6 +383,10 @@ WITH flipped AS (
         metadata = metadata || '{"cancel_phase": "cooperative"}'::jsonb
     WHERE (metadata->>'flow_id')::uuid = $1
       AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+      -- A materialized terminal effect owns an independent ordinary policy.
+      -- Its committed intent has already been granted this one physical job;
+      -- later run cancellation must not revoke that durable obligation.
+      AND NOT metadata ? 'wf_after_terminal_effect'
     RETURNING id, (status::text) AS to_state
 ), evt AS (
     -- THE AUDIT LEG: only the rows THIS statement actually
@@ -499,7 +492,8 @@ WHERE (metadata->>'flow_id')::uuid = $1
 #: linearization; a cancelled root stays closed).
 RETRY_FLOW_REOPEN_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
-SET status = 'running', finished_at = NULL
+SET status = 'running', finished_at = NULL,
+    run_epoch = COALESCE(run_epoch, 0) + 1
 WHERE id = $1
   AND status = 'failed'
 """

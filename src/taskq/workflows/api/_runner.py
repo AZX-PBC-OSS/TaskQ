@@ -62,7 +62,13 @@ from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger, safe_start_span
+from taskq.retry import RetryPolicy
 from taskq.workflows._cache import CachedStep
+from taskq.workflows._capability import (
+    direct_capability_refusal,
+    postgres_capability_error,
+    validate_required_worker_schema,
+)
 from taskq.workflows._obs import (
     finish_step_span,
     record_step_deferred,
@@ -73,6 +79,7 @@ from taskq.workflows._obs import (
     step_span_attributes,
     step_span_name,
 )
+from taskq.workflows._policy import RetrySpec, canonical_retry_kind, row_retry_curve
 from taskq.workflows._progress import (
     KIND_NODE_STARTED,
     KIND_NODE_TERMINAL,
@@ -131,6 +138,7 @@ from taskq.workflows.api._sql_runner import (
     FLOW_FAILURE_SQL_TEMPLATE,
     FLOW_NODE_CENSUS_SQL_TEMPLATE,
     FLOW_PAYLOAD_SQL_TEMPLATE,
+    FLOW_REQUIRED_WORKER_SCHEMA_SQL_TEMPLATE,
     FLOW_STATUS_SQL_TEMPLATE,
     HELD_COUNT_SQL_TEMPLATE,
     INCREMENT_DEPS_SQL_TEMPLATE,
@@ -147,6 +155,7 @@ from taskq.workflows.api._sql_runner import (
     WF_ARGS_KEY,
     render_sql,
 )
+from taskq.workflows.chain import Chain
 from taskq.workflows.definitions import FanInBoundExceededError, validate_fork
 from taskq.workflows.engine import fan_in_skip, finalize_node
 from taskq.workflows.ledger import (
@@ -215,6 +224,17 @@ def _bounded_collect(values: list[object]) -> dict[str, object]:
     }
 
 
+def _node_retry_spec(node: Any) -> RetrySpec | None:
+    """Lower an ordinary static node's compatibility retry row for consumers."""
+    resolved = getattr(node, "execution_policy", None)
+    if resolved is not None and resolved.retry is not None:
+        return resolved.retry
+    kind = canonical_retry_kind(node.retry_kind or "transient")
+    if node.max_attempts == 3 and kind == "transient":
+        return None
+    return RetrySpec(policy=RetryPolicy(max_attempts=node.max_attempts, kind=kind))
+
+
 def _resolve_priority(*levels: int | None) -> int:
     """the PRECEDENCE LAW'S ARITHMETIC (the priority surface), stated
     once: the first non-``None`` level wins; ``None`` everywhere = the
@@ -269,11 +289,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # satisfy is refused here too.
         compiled_deps = compiled.deps if isinstance(compiled, CompiledWorkflow) else None
         if deps is not None and isinstance(compiled, CompiledWorkflow):
-            compiled = replace(compiled, deps=deps)
             compiled_deps = deps
         self._deps: object | None = deps if deps is not None else compiled_deps
         validate_compiled(compiled)  # a graph with errors does not run
         self.compiled = compiled
+        from taskq.workflows._effects import (
+            RegisteredTerminalEffect,
+            collect_terminal_effects,
+        )
+
+        self._terminal_effects: dict[str, RegisteredTerminalEffect] = collect_terminal_effects(
+            compiled
+        )
         self.pool = pool
         self.wsql: WorkflowSql = WorkflowSql.build(schema)
         self.schema = schema
@@ -286,7 +313,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # the workflow's declared chains — a chain step row (fork-spawned or
         # emitted) has no compiled NodeDecl; its route resolves from here (the
         # compiled chain), its body from the registry (D1).
-        self._chain_steps: dict[str, Any] = {
+        self._chain_steps: dict[str, Chain] = {
             step_key: chain for chain in getattr(compiled, "chains", ()) for step_key in chain.steps
         }
         # the child flow's runner resolved once per drive (the root's stamped
@@ -321,6 +348,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         run_key: str | None = None,
         root_metadata_extra: dict[str, object] | None = None,
         priority: int | None = None,
+        _required_worker_schema: int | None = None,
     ) -> RunClaim:
         """Create the run: the flow root (its payload CARRIES the input) + every
         non-map node upfront (the join-wait rows among
@@ -385,6 +413,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         from taskq.constants import check_priority_domain
         from taskq.workflows.api._graph import WorkflowBuildError
 
+        uses_terminal_effects = bool(self._terminal_effects)
+        if uses_terminal_effects and _required_worker_schema is None:
+            _required_worker_schema = 2
+        if (
+            uses_terminal_effects
+            and _required_worker_schema is not None
+            and _required_worker_schema < 2
+        ):
+            raise WorkflowRunError(
+                "a workflow declaring terminal effects requires worker schema >= 2; "
+                "apply the run-epoch/effect PRE migrations and use capable fleet workers"
+            )
+        if _required_worker_schema is not None:
+            # Private producer door used only by workflows._capability; this
+            # second validation deliberately rejects post-construction mutation.
+            validate_required_worker_schema(_required_worker_schema)
         if priority is not None:
             check_priority_domain(priority, what="the run's priority override")
             # ``key=``; ``run_key=`` rides as the alias (either accepted, one name
@@ -400,7 +444,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             root_metadata_extra = {**(root_metadata_extra or {}), "wf_priority": priority}
         try:
             async with self.pool.acquire() as conn, conn.transaction():
-                claim = await self._insert_root(conn, input, run_key, root_metadata_extra)
+                claim = await self._insert_root(
+                    conn,
+                    input,
+                    run_key,
+                    root_metadata_extra,
+                    required_worker_schema=_required_worker_schema,
+                )
+                if not claim.created and claim.required_worker_schema != _required_worker_schema:
+                    raise WorkflowRunError(
+                        f"run key {run_key!r} already names a run with "
+                        f"required_worker_schema={claim.required_worker_schema!r}; "
+                        f"the internal create requested {_required_worker_schema!r}. "
+                        "Use a fresh run key rather than changing an immutable capability."
+                    )
                 complete = claim.created
                 if not complete:
                     # the orphan's signature is pending + zero nodes — a
@@ -425,9 +482,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # an existing run whose root stamp is its own truth; the
                     # row is the law, never the echo).
                     self._run_priority = priority
-                    await self._insert_static_nodes(
-                        conn, claim.flow_id, input, run_priority=priority
-                    )
+                    if claim.required_worker_schema is None:
+                        # Preserve the long-standing private hook call shape for
+                        # ordinary creates (including test crash-injection seams).
+                        await self._insert_static_nodes(
+                            conn, claim.flow_id, input, run_priority=priority
+                        )
+                    else:
+                        await self._insert_static_nodes(
+                            conn,
+                            claim.flow_id,
+                            input,
+                            run_priority=priority,
+                            required_worker_schema=claim.required_worker_schema,
+                        )
                     # The run is live: the root flips pending → running (the
                     # maintenance leg's derivation owns the terminal verdict
                     # from the rows — the root is a cache, never the decider).
@@ -487,6 +555,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         input: object,
         run_key: str | None,
         root_metadata_extra: dict[str, object] | None = None,
+        *,
+        required_worker_schema: int | None = None,
     ) -> RunClaim:
         key = run_key or f"flow:{new_uuid()}"
         entry_payload: dict[str, object] = {INPUT_KEY: encode_data_arg(input)}
@@ -496,10 +566,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             entry=FlowEntryShim(self.compiled.name, entry_payload),
             run_key=key,
             extra_metadata=root_metadata_extra,
+            required_worker_schema=required_worker_schema,
         )
 
     async def _insert_static_nodes(
-        self, conn: ConnLike, flow_id: JobId, input: object, *, run_priority: int | None = None
+        self,
+        conn: ConnLike,
+        flow_id: JobId,
+        input: object,
+        *,
+        run_priority: int | None = None,
+        required_worker_schema: int | None = None,
     ) -> None:
         for key in sorted(self.compiled.nodes):
             node = self.compiled.nodes[key]
@@ -528,6 +605,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 parents=(),
                 deps_pending=0,
                 max_attempts=node.max_attempts,
+                retry_kind=node.retry_kind or "transient",
                 # the per-call override > the node's declared (the handle's
                 # folded in at the wiring) > the column default.
                 priority=_resolve_priority(run_priority, node.priority),
@@ -537,6 +615,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # override), so the value rides the row as-is; the undeclared
                 # case is the column's NULL.
                 start_to_close=node.start_to_close,
+                required_worker_schema=(required_worker_schema),
+                retry=(node.execution_policy.retry if node.execution_policy is not None else None),
             )
             # a step declaring rate_limits carries the bucket names on its
             # metadata, and a step declaring reservations carries their names
@@ -561,11 +641,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             ) + keyed_reservation_names(
                 tuple(node.reservations), key_payloads, what=f"step {key!r}'s reservations"
             )
-            row_meta = (
-                _row_metadata(flow_id, rate_limits=static_rl, reservations=static_res)
-                if node.rate_limits or node.reservations
-                else {"flow_id": str(flow_id)}
+            row_meta: dict[str, object] = _row_metadata(
+                flow_id,
+                rate_limits=static_rl,
+                reservations=static_res,
+                retry=spec.retry,
             )
+            if node.kind == "chain_source":
+                # The public/logical source ordinal is born once before its
+                # first claim. Park/wake preserve it; only P0's genuine source
+                # failure disposition advances it.
+                row_meta["wf_source_logical_attempt"] = 1
             await conn.execute(
                 render_sql(NODE_INSERT_SQL, self.schema),
                 new_uuid(),
@@ -573,7 +659,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 spec.queue,
                 _jsonb(spec.payload),
                 spec.max_attempts,
-                "transient",
+                spec.retry_kind,
                 None,
                 None,
                 spec.step_key,
@@ -590,6 +676,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # the run's flow_id — one cohort per run on the round-robin
                 # queues.
                 str(flow_id),
+                spec.required_worker_schema,
+                *row_retry_curve(spec.retry_policy),
             )
         # The edges in a second pass (both endpoints exist).
         for key in sorted(self.compiled.nodes):
@@ -629,6 +717,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
 
     # ── drive ────────────────────────────────────────────────────────
 
+    async def _refuse_guarded_direct_run(self, flow_id: JobId) -> None:
+        """Root-level early refusal; roots never execute through the DB trigger.
+
+        The row read is the current root's immutable field, not an inferred
+        feature flag. A later child-only guarded row is also refused directly
+        at ``_run_node`` before body resolution or the claim CAS.
+        """
+        async with self.pool.acquire() as conn:
+            required: object = await conn.fetchval(
+                render_sql(FLOW_REQUIRED_WORKER_SCHEMA_SQL_TEMPLATE, self.schema), flow_id
+            )
+        if required is not None:
+            raise direct_capability_refusal(required, flow_id=flow_id)
+
     async def drive(
         self,
         flow_id: JobId,
@@ -651,17 +753,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         fleet's workers through the queue-routed dispatch (the
         worker-hosted door). The in-process body execution — the
         dev-loop driver — is the ``execute=True`` default, unchanged."""
+        await self._refuse_guarded_direct_run(flow_id)
         for _ in range(max_ticks):
             if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
                 return "terminal"
             if until == "held" and await self._any_held(flow_id):
                 return "held"
-            ran = await self.tick(flow_id, execute=execute)
+            ran = await self.tick(flow_id, execute=execute, _capability_checked=True)
             if not ran:
                 await asyncio.sleep(tick)
         return "max_ticks"
 
-    async def tick(self, flow_id: JobId, *, execute: bool = True) -> bool:
+    async def tick(
+        self, flow_id: JobId, *, execute: bool = True, _capability_checked: bool = False
+    ) -> bool:
         """One dispatch pass: claim + run + finalize every claimable node
         (``execute=True`` — the dev-loop driver); then the sweep arms
         (the crash-window heal + the outbox drain + the DURABLE TIMER's
@@ -670,6 +775,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         fleet). With ``execute=False`` the sweep arms only — the
         orchestration-only pass. Returns whether any node ran."""
         ran = False
+        if execute and not _capability_checked:
+            await self._refuse_guarded_direct_run(flow_id)
         if execute:
             for row in await self._claimable(flow_id):
                 ran = True
@@ -719,6 +826,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             child = await self._runner_for_flow(fid)
             if child is None or not execute:
                 continue
+            await child._refuse_guarded_direct_run(fid)
             for row in await child._claimable(fid):
                 ran = True
                 await child._run_node(fid, row)
@@ -767,6 +875,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         return [dict(r) for r in rows]
 
     async def _run_node(self, flow_id: JobId, row: dict[str, Any]) -> None:
+        required_worker_schema: object = row.get("required_worker_schema")
+        if required_worker_schema is not None:
+            raise direct_capability_refusal(
+                required_worker_schema, flow_id=flow_id, job_id=JobId(row["id"])
+            )
         node_key = row["step_key"]
         node = self.compiled.nodes.get(node_key)
         try:
@@ -791,13 +904,26 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # strands the terminal).
         ledger_id: JobId | None = None
         ledger_claimed_at: Any = None
+        claimed_row: asyncpg.Record | None = None
         async with self.pool.acquire() as conn:
-            claimed = await conn.fetchval(
-                render_sql(NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
-            )
-            if claimed is not None:
+            try:
+                claimed_row = await conn.fetchrow(
+                    render_sql(NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
+                )
+            except asyncpg.PostgresError as claim_exc:
+                mapped = postgres_capability_error(
+                    claim_exc, flow_id=flow_id, job_id=JobId(row["id"])
+                )
+                if mapped is not None:
+                    raise mapped from claim_exc
+                raise
+            if claimed_row is not None:
                 from taskq.workflows.ledger import claim_step_ledger
 
+                # THE CLAIM'S OWN IDENTITY: the CAS returned the attempt AND
+                # the epoch it granted — the ledger claim and every
+                # context/finalize fence carry the pair (never a hardcoded
+                # zero).
                 claim = await claim_step_ledger(
                     conn,
                     self.wsql,
@@ -805,20 +931,21 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     job_id=JobId(row["id"]),
                     step_key=row["step_key"],
                     map_index=row["map_index"],
-                    attempt=int(claimed),
+                    attempt=int(claimed_row["attempt"]),
                 )
                 ledger_id = claim.ledger_id
                 ledger_claimed_at = claim.claimed_at
-        if claimed is None:
+        if claimed_row is None:
             return  # someone else claimed it (or the flow died) — no error
-        attempt = int(claimed)
+        attempt = int(claimed_row["attempt"])
+        claim_epoch_direct = int(claimed_row["claim_epoch"])
 
         # the tail is shared with the worker-hosted execution
         # ````(``_worker_execution``'s fleet-claimed door): from the ledger
         # claim on, the machinery is one machinery — the auto projection, the
         # emitter, the router, the ladder, the finalize — and the two drivers
-        # differ only in who claimed (this driver's own CAS stamps claim_epoch
-        # 0; the fleet's dispatch claim carries the row's epoch).
+        # differ only in who claimed (this driver's own CAS granted a fresh
+        # epoch; the fleet's dispatch claim carries the row's epoch).
         await self._execute_claimed(
             flow_id,
             row,
@@ -826,6 +953,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             ledger_id,
             node,
             body,
+            claim_epoch=claim_epoch_direct,
             run_priority=self._run_priority,
             ledger_claimed_at=ledger_claimed_at,
         )
@@ -847,23 +975,36 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
 
         A lost CAS (a peer claimed the row first — or the flow died)
         touches nothing: the winner's own drive owns the verdict."""
+        ledger_id: JobId | None = None
+        ledger_claimed_at: Any = None
+        claimed_row: asyncpg.Record | None = None
         async with self.pool.acquire() as conn:
-            claimed = await conn.fetchval(
-                render_sql(NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
-            )
-            if claimed is not None:
+            try:
+                claimed_row = await conn.fetchrow(
+                    render_sql(NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
+                )
+            except asyncpg.PostgresError as claim_exc:
+                mapped = postgres_capability_error(
+                    claim_exc, flow_id=flow_id, job_id=JobId(row["id"])
+                )
+                if mapped is not None:
+                    raise mapped from claim_exc
+                raise
+            if claimed_row is not None:
                 from taskq.workflows.ledger import claim_step_ledger
 
-                await claim_step_ledger(
+                claim = await claim_step_ledger(
                     conn,
                     self.wsql,
                     flow_id=flow_id,
                     job_id=JobId(row["id"]),
                     step_key=row["step_key"],
                     map_index=row["map_index"],
-                    attempt=int(claimed),
+                    attempt=int(claimed_row["attempt"]),
                 )
-        if claimed is None:
+                ledger_id = claim.ledger_id
+                ledger_claimed_at = claim.claimed_at
+        if claimed_row is None:
             return  # someone else claimed it (or the flow died) — their drive owns the verdict
         logger.warning(
             "node.vanished-from-registry",
@@ -872,7 +1013,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             error_class=type(exc).__name__,
             error=str(exc)[:200],
         )
-        await self._ladder_or_fail(flow_id, row, int(claimed), None, exc)
+        await self._ladder_or_fail(
+            flow_id,
+            row,
+            int(claimed_row["attempt"]),
+            None,
+            exc,
+            claim_epoch=int(claimed_row["claim_epoch"]),
+            ledger_id=ledger_id,
+            ledger_claimed_at=ledger_claimed_at,
+        )
 
     def _deps_tail(self, body: Callable[..., object], wired_count: int) -> tuple[object, ...]:
         """
@@ -908,6 +1058,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         return (
             effective.total_seconds() if isinstance(effective, timedelta) else float(effective)  # pyright: ignore[reportArgumentType]  # Why: a hand-built row dict may carry the seconds number — the same degrade the fleet door's reads keep.
         )
+
+    def _body_queue(self, node: Any, row: dict[str, Any]) -> str | None:
+        if node is not None:
+            return cast("str | None", node.queue)
+        registered = self._terminal_effects.get(row["step_key"])
+        if registered is None:
+            return None
+        queue = registered.effect.policy.queue
+        assert isinstance(queue, str)  # TerminalEffect declaration validated
+        return queue
 
     async def run_fleet_claimed_step(
         self,
@@ -1039,7 +1199,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 workflow=self.compiled.name,
                 step_key=row["step_key"],
                 attempt=attempt,
-                queue=node.queue if node is not None else None,
+                queue=self._body_queue(node, row),
                 map_index=row["map_index"],
             ),
         ) as span:
@@ -1110,7 +1270,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             and node.skip is not None
             and node.skip(await self._flow_state(flow_id))
         ):
-            await self._finalize_skipped(flow_id, row, node, claim_epoch=claim_epoch)
+            await self._finalize_skipped(
+                flow_id,
+                row,
+                node,
+                claim_epoch=claim_epoch,
+                ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
+            )
             return "skipped"
 
             # the emission op's buffer: the attempt's own emitter — the declared
@@ -1148,16 +1315,28 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         route_fork: ForkSpec | None = (
             None  # the typed route's prebuilt fork (the body path builds it from the live elements)
         )
+        # Chain routing/finalization is intentionally outside the body-failure
+        # catch. A successful body followed by a failing route write is
+        # machinery recovery, never another author-classified body attempt.
+        chain_success: tuple[Any, object, dict[str, object]] | None = None
 
         # the miss path's envelope, None on the hit path (the hit's finalize is
         # the tail's — below — and returns before the miss finalize reads
         # this).
         result: dict[str, object] | None = None
+        logical_attempt = attempt
+        if node is not None and node.kind == "chain_source":
+            from taskq.workflows.api._attempt import resolve_source_logical_attempt
+
+            # The durable carrier is the only public source attempt authority;
+            # the actual claim's physical attempt stays private to fencing.
+            logical_attempt = resolve_source_logical_attempt(row["metadata"], attempt)
         ctx = build_step_context(
             flow_id=flow_id,
             job_id=JobId(row["id"]),
             node_key=row["step_key"],
-            attempt=attempt,
+            attempt=logical_attempt,
+            physical_attempt=attempt,
             pool=self.pool,
             wsql=self.wsql,
             input=await self._flow_input(flow_id),
@@ -1174,8 +1353,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # the runtime info (the context contract — the observability
             # primitive the body asserts on).
             flow_name=self.compiled.name,
-            queue=node.queue if node is not None else None,
+            queue=self._body_queue(node, row),
             claimed_at=datetime.now(UTC),
+            run_priority=run_priority,
         )
         try:
             # the parents' results' read and the arg resolution ran before the
@@ -1191,7 +1371,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
             assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
             payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
-            args = self._resolve_args(node, body, parents_by_key, payload_doc)
+            args = self._resolve_args(
+                node, body, parents_by_key, payload_doc, node_key=row["step_key"]
+            )
 
             # the cross-run cache's claim-path seam . Opt-in per step
             # ````(``cache=``), the plain step face only: the address is the
@@ -1291,22 +1473,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     )
                 chain = self._chain_steps.get(row["step_key"])
                 if chain is not None:
-                    # the body's typed outcome is the router's decision — the
-                    # finalize routes it (at most one forked child, no join).
-                    # The engine's fork-at-finalize machinery owns the child
-                    # row; the route is this runner's decision.
-                    await self._finalize_chain_step(
-                        flow_id,
-                        row,
-                        attempt,
-                        row["step_key"],
-                        chain,
-                        outcome_value,
-                        payload_doc,
-                        claim_epoch=claim_epoch,
-                    )
-                    return "succeeded"
-                if isinstance(outcome_value, Exit):
+                    # Only capture the completed body/value here. Routing and all
+                    # persistence execute after the body exception boundary.
+                    chain_success = (chain, outcome_value, payload_doc)
+                elif isinstance(outcome_value, Exit):
                     # the sentinel ends the node now — terminal-succeed with
                     # the typed payload, the downstream graph marked
                     # skipped-with-the-record.
@@ -1347,6 +1517,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                             error_class="RouterNotTotal",
                             error_message=str(exc)[:500],
                             map_index=row["map_index"],
+                            ledger_id=ledger_id,
+                            ledger_claimed_at=ledger_claimed_at,
                         )
                         return "succeeded"
                 result = encode_result(outcome_value)
@@ -1422,12 +1594,23 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # freshness, never the ladder's correctness.
             await emitter.aclose()
             route = await self._ladder_or_fail(
-                flow_id, row, attempt, node, exc, claim_epoch=claim_epoch
+                flow_id,
+                row,
+                attempt,
+                node,
+                exc,
+                claim_epoch=claim_epoch,
+                ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
             )
             # the scrubbed render + the ladder's route (retried / the
             # terminal). The current span is this attempt's step span (the
             # wrapper above).
+            if route == "deferred":
+                return "deferred"
             record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
+            if route in ("cancelled", "fenced"):
+                return route
             return "laddered"
         try:
             # everything from here to the return is the machinery's own
@@ -1444,6 +1627,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # (the re-raise — the driver's loop counts it, the F2-2 arm).
             # Anything else re-raises unchanged (the loud escape).
             await emitter.aclose()
+            if chain_success is not None:
+                chain, chain_outcome, chain_payload = chain_success
+                await self._finalize_chain_step(
+                    flow_id,
+                    row,
+                    attempt,
+                    row["step_key"],
+                    chain,
+                    chain_outcome,
+                    chain_payload,
+                    claim_epoch=claim_epoch,
+                    run_priority=run_priority,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
+                )
+                return "succeeded"
             if cache_hit is not None:
                 # a fault escaping this finalize is the machinery's seat, never
                 # the body's — the body never ran, and the identical fault on
@@ -1463,6 +1662,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     cache_hit.envelope,
                     claim_epoch=claim_epoch,
                     run_priority=run_priority,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
                 )
                 if final.applied:
                     await self._write_cache_receipt(
@@ -1488,13 +1689,26 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     claim_epoch=claim_epoch,
                     prebuilt_route_fork=route_fork,
                     run_priority=run_priority,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
                 )
             except FanInBoundExceededError as exc:
                 await emitter.aclose()
                 route = await self._ladder_or_fail(
-                    flow_id, row, attempt, node, exc, claim_epoch=claim_epoch
+                    flow_id,
+                    row,
+                    attempt,
+                    node,
+                    exc,
+                    claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
                 )
+                if route == "deferred":
+                    return "deferred"
                 record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
+                if route in ("cancelled", "fenced"):
+                    return route
                 return "laddered"
                 # the miss ran the body — the cache fill happens only on the
             # terminal that actually landed (a fenced write is a zombie's,
@@ -1505,7 +1719,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             return "succeeded"
         except Exception as exc:  # Why: the machinery boundary — the classifier reads WHERE the error escaped (the body's exceptions never reach this tail). BLE001 is the boundary's shape: any machinery exception is classified, then reclaimed or re-raised.
             if is_infra_fault(exc):
-                await self._reclaim_step(flow_id, row, attempt, exc)
+                await self._reclaim_step(
+                    flow_id,
+                    row,
+                    attempt,
+                    exc,
+                    claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
+                )
             raise
 
     async def _stamp_code_version(self, job_id: JobId, node_key: str, node: Any, body: Any) -> None:
@@ -1712,6 +1934,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         body: Any,
         parent_results: dict[str, object],
         payload: dict[str, object],
+        *,
+        node_key: str | None = None,
     ) -> tuple[object, ...]:
         """Argument order is signature order. A promise
         position resolves to its parent's decoded result; a data position
@@ -1722,6 +1946,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         if ITEM_KEY in payload:
             item_raw: object = payload[ITEM_KEY]  # pyright: ignore[reportUnknownVariableType] — the Any-contract walk; the fork wrote the shape.
             return (self._coerce(item_raw, node, body, 0),)
+        if node_key in self._terminal_effects:
+            from taskq.workflows._policy import ExhaustionEvent
+
+            # The outbox JSON is validated into the declared effect input at the
+            # actual body boundary, not passed as an untyped callback dict.
+            return (ExhaustionEvent.model_validate(payload),)
         if node is None:
             # The outbox consumer with no compiled NodeDecl (the
             # escalation step): its declared
@@ -1809,6 +2039,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         claim_epoch: int = 0,
         prebuilt_route_fork: ForkSpec | None = None,
         run_priority: int | None = None,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
     ) -> FinalizeResult:
         """The success finalize (the fenced terminal + the ledger row +
         the fork): the FinalizeResult is RETURNED now — the
@@ -1838,6 +2070,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             result=result,
             fork=fork,
             map_index=row["map_index"],
+            ledger_id=ledger_id,
+            ledger_claimed_at=ledger_claimed_at,
         )
         # the finalize seam's additive write, after the two-tx finalize
         # returned (the projection is never inside the finalize's transactions
@@ -2109,6 +2343,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # join row's metadata → the fire's outbox bindings → the
                 # drain's consumer row's column).
                 start_to_close=self.compiled.nodes[downstream].start_to_close,
+                rate_limits=rate_limit_names(
+                    self.compiled.nodes[downstream].rate_limits,
+                    what=f"consumer {downstream!r}'s rate_limits",
+                ),
+                reservations=reservation_names(
+                    self.compiled.nodes[downstream].reservations,
+                    what=f"consumer {downstream!r}'s reservations",
+                ),
+                priority=self.compiled.nodes[downstream].priority,
+                retry=_node_retry_spec(self.compiled.nodes[downstream]),
             )
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
@@ -2267,6 +2511,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # join row's metadata → the fire's outbox bindings → the
                 # drain's consumer row's column).
                 start_to_close=self.compiled.nodes[downstream].start_to_close,
+                rate_limits=rate_limit_names(
+                    self.compiled.nodes[downstream].rate_limits,
+                    what=f"consumer {downstream!r}'s rate_limits",
+                ),
+                reservations=reservation_names(
+                    self.compiled.nodes[downstream].reservations,
+                    what=f"consumer {downstream!r}'s reservations",
+                ),
+                priority=self.compiled.nodes[downstream].priority,
+                retry=_node_retry_spec(self.compiled.nodes[downstream]),
             )
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
@@ -2395,12 +2649,21 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         return spec
 
     async def _finalize_skipped(
-        self, flow_id: JobId, row: dict[str, Any], node: Any, *, claim_epoch: int = 0
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        node: Any,
+        *,
+        claim_epoch: int = 0,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
     ) -> None:
         """The v1 SKIP semantics: the node succeeds WITH the skip record
         (the envelope never lies about what ran); its ABSORBING joins
         (collect | maybe) receive the typed skip item — a skip is not an
-        attempt (zero ledger rows)."""
+        attempt (zero ledger rows for the skipped DOWNSTREAM nodes). The
+        terminal keys the EXACT claim identity (the claim's own row id +
+        instant) — never a four-expression fallback."""
         async with self.pool.acquire() as conn:
             await fan_in_skip(
                 conn,
@@ -2422,6 +2685,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             outcome="succeeded",
             result=dict(SKIPPED_RESULT),
             map_index=row["map_index"],
+            ledger_id=ledger_id,
+            ledger_claimed_at=ledger_claimed_at,
         )
         await self._project_auto(
             flow_id,

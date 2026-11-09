@@ -892,9 +892,10 @@ name, the same durable leg the leader's fire arm uses) and runs via the
 runner's ledger-claim + finalize machinery — the same two-transaction
 finalize, the same fences, the same ladder. NOT a second execution
 semantics: the in-process driver and the worker's door differ only in WHO
-CLAIMED (the runner's own claim stamps `claim_epoch` 0; the fleet's
-dispatch claim carries the row's epoch — every fence reads the epoch it
-fences against). A row whose stamped name resolves to nothing (the
+CLAIMED — both are a real claim sequence (each door's own claim grants
+the row's next `claim_epoch` atomically with its attempt; the ledger
+claim and every context/finalize fence carry that granted pair). A row
+whose stamped name resolves to nothing (the
 definitions not imported anywhere — a deployment defect, or a hand-crafted
 row) parks at the snooze cadence budget-free, `released_reason=
 'workflow-body-unresolvable'`, the stranded-jobs detector the witness —
@@ -3082,3 +3083,108 @@ Reconstructing a run's story from the surfaces (no app source, no logs):
 5. **The graph:** `jobs.parent_id` is the fork's source pointer (every map child points at the source node; node rows point at their wired parents); `wf_edge` is the complete edge list with each edge's failure policy. The parent↔child walk is a two-column query:
    `SELECT child.step_key, child.map_index, parent.step_key AS via FROM taskq.wf_edge e JOIN taskq.jobs child ON child.id = e.child_id JOIN taskq.jobs parent ON parent.id = e.parent_id WHERE e.flow_id = '<run_id>';`
 6. **The operator's actions:** the explorer's audit-trail section (and `admin_audit` rows) record every resolve/deliver/cancel — including the REFUSED ones.
+### CHAIN EXECUTION POLICY — one target resolver
+
+`Step(body=..., policy=ExecutionPolicy(...))`, `Chain(default_policy=...)`, and
+`chain_source(..., policy=...)` share the converted target terms; they are not a
+second reservation, retry, or actor-capacity implementation. Every source/leaf
+field supports omission/`None` = inherit. Use the explicit `CLEAR_POLICY`
+sentinel to clear one inherited option. Frozen `ExecutionPolicy` carries
+`actor`, `queue`, existing rate-limit/reservation declarations,
+`max_concurrent`, `result_ttl`, `capacity_owner`, `priority`, `start_to_close`,
+and an optional workflow `RetrySpec`.
+
+Precedence is **target policy → target actor-handle defaults → chain default →
+compatibility placement/defaults**. A run's explicit `priority=` still outranks
+all of those, including rows emitted or forked later. Compatibility
+`actor`/`queue`/`max_attempts` lower into this same representation;
+contradictory co-declarations fail early with `E21-execution-policy`, while an
+equivalent redeclaration is accepted. Handle names/queues do not replace the
+chain target's placement. Two different cohort capacities/owners require
+different actor names, exactly as above.
+
+**The source is not a record leaf.** `chain_source`'s policy comes from its own
+arguments and handle, never silently from `Chain.default_policy`. The same
+resolved target governs chain starts, routed forks, row stamps, boot cohort
+projection and ladder lookup. Bounded strict slots, actor capacity, result TTL,
+priority, and per-attempt `start_to_close` therefore ride the ordinary jobs
+rows/actor registry instead of needing an application-side scheduler.
+
+`RetrySpec` wraps the existing validated `RetryPolicy`; its `exceptions` map
+accepts exception classes mapped to canonical kinds, `RetryOverride`, or the
+workflow-specific `WorkflowRetryOverride`. The most specific exception class
+wins. A mapped `None` explicitly selects the default policy instead of falling
+through. A custom `classifier` uses the existing safe-hook fallback if it raises
+or returns a malformed value. Only body-raised ordinary exceptions enter it:
+engine authoring faults, `Snooze`/`RetryAfter`, deadline enforcement,
+cancellation/shutdown and infrastructure persistence faults stay in their own
+domains.
+
+Declared `exponential`, `linear`, and `fixed` curves share `compute_backoff`'s
+base/cap/jitter arithmetic with the live ladder and durable row curve. New
+workflow declarations reject `time_budget` (use per-attempt `start_to_close`)
+and reject `indefinite` as a budget bypass; already-persisted legacy rows retain
+their existing vocabulary. Legacy `retry_kind="permanent"` normalizes to the
+persistent `non_retryable`, which also outranks consuming `RetryAfter`.
+
+An explicitly advertised workflow-only
+`WorkflowRetryOverride(delay=..., consume_budget=False)` does not consume
+`max_attempts`, advance a source's logical failure ordinal, or increment the
+legacy `snooze_count`. Such a spec must declare positive finite
+`non_consuming_limit`. The deferral's own claim-fenced row law increments and
+reads the durable `jobs.metadata.wf_retry.non_consuming_count` in the same
+transaction as the deferral. At the exact bound it terminates as
+`RetryDeferralBudgetExceeded`; an advertised wait itself has no failed-ledger
+outcome and interruption does not consume an ordinary failure. A malformed
+counter/bound fails closed with no counter reset or ledger mutation.
+
+This new bound is deliberately **not** applied retroactively to generic
+body-raised `Snooze` or `RetryAfter(consume_budget=False)` without such a retry
+declaration; that pre-existing public unbounded seam is a named compatibility
+limitation, not a newly bounded guarantee. Ordinary backpressure also never
+moves this provider counter.
+
+A chain keyed reservation whose concrete name depends on a record must use
+`FiniteReservationCohort(ref=existing_keyed_ref, keys=(...))`. Boot materializes
+exactly those concrete slots; emit/fork verifies the payload-derived name is in
+that finite set. Arbitrary new per-record slots are refused rather than
+silently created. This restriction does not turn per-attempt reservations into
+run-scoped exclusion.
+
+#### Authored terminal effects — durable intent, not external exactly-once
+
+`RetrySpec(on_exhaustion=TerminalEffect(body=..., policy=...))` declares one typed
+terminal effect for that resolved target. Its independent `ExecutionPolicy` must
+name non-empty `actor` and `queue`; its own bounded retry, priority,
+`start_to_close`, reservations and dependencies execute through the ordinary
+worker path. The body receives `(ctx, event: ExhaustionEvent)` with the flow,
+node/record identity, attempt, durable `run_epoch`, current record,
+`ErrorInfo`, and the exact terminal reason.
+
+On a winning ordinary retry/non-retryable/deadline/non-consuming-limit terminal,
+the node terminal, claim-owned failed ledger, and **one** stable `wf_outbox`
+intent commit atomically. The physical key contains flow + run incarnation +
+node/record + effect identity. Outbox replay/idempotency materializes exactly one
+ordinary effect job; a later operator cancel cannot erase an already committed
+intent. Cancel before the winning disposition writes no intent. A failed parent
+still suppresses ordinary children; only this explicit marked effect runs after
+its own node's `failed` terminal. The effect may execute after the run root is
+already `failed` or `cancelled`; root maintenance derives root status from graph
+node rows and may derive `failed` while the durable effect intent is still
+undelivered and before an effect job exists, so a terminal root does not prove
+that the effect has settled. The stable effect key guarantees exactly one
+durable intent and exactly one ordinary effect-job materialization, while
+callback execution and external effects are at-least-once rather than
+exactly-once. A missing registered body remains visibly unclaimed, never a
+successful no-op.
+
+The body can be invoked again after a worker/process crash. External calls and
+arbitrary Python side effects are therefore **at-least-once**, not
+exactly-once. Same-database domain closure completes once only when the effect
+writes its idempotency marker (derived from the event key) and domain effects in
+one application DB transaction. There is no generic `exactly_once=True` flag.
+Direct in-process execution refuses this guarded feature; apply the capability,
+run-epoch and intent PRE migrations and run the declaring cohorts with capable
+fleet workers. The effect's own settlement fact is its job's terminal write
+plus the application's idempotent domain closure — no root status, `failed` or
+`cancelled`, proves that an effect exited.

@@ -34,20 +34,28 @@ reaches outside the database (the tier's hermeticity).
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import json
+from datetime import timedelta
 from typing import Any, Final
 
+import asyncpg
 from pydantic import BaseModel
 
-from taskq import JobContext, actor
+from taskq import JobContext, RetryPolicy, actor
+from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.settings import WorkerSettings
 from taskq.workflows import (
     Done,
+    ExecutionPolicy,
     Expired,
     Promise,
     Refine,
+    RetrySpec,
     StepContext,
     WorkflowApp,
+    WorkflowRetryOverride,
     build,
     chain_source,
     chain_start,
@@ -60,6 +68,9 @@ from taskq.workflows._types import EmitChild
 from taskq.workflows.api import GateDecl
 from taskq.workflows.api._sql_runner import render_sql
 from taskq.workflows.chain import DONE, Chain, Route, Step
+from tests.system_e2e import (
+    _p5_cancel_app as _p5_cancel_app_module,  # registers the effect fleet's definitions
+)
 
 #: The march pods' queues: both the vanilla actors' system_e2e and the
 #: flows' framework-default queue (the join nodes the API creates are
@@ -537,9 +548,555 @@ def drift_target() -> Promise[object]:
     return build(gone)
 
 
+# ── execution-policy fleet controls (generic records only) ──────────────
+
+
+class PolicyOutcome(enum.Enum):
+    DONE = "done"
+
+
+async def policy_reserved_body(ctx: Any, item: dict[str, object]) -> PolicyOutcome:
+    async def body_window() -> dict[str, object]:
+        await asyncio.sleep(0.2)
+        return {"record_id": item["record_id"]}
+
+    await ctx.substep("policy-reserved-window", body_window)
+    return PolicyOutcome.DONE
+
+
+policy_app = WorkflowApp()
+
+
+@policy_app.actor(name="wf-policy-capped-handle", max_concurrent=1)
+async def policy_capped_body(ctx: Any, item: dict[str, object]) -> PolicyOutcome:
+    return await policy_reserved_body(ctx, item)
+
+
+POLICY_RESERVED_CHAIN = Chain(
+    name="execution-policy-reserved-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_capped_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-reserved",
+                reservations=(
+                    ConcurrencyReservation(
+                        "wf-policy-reservation",
+                        slots=1,
+                        lease=timedelta(seconds=30),
+                    ),
+                ),
+                priority=4,
+                start_to_close=timedelta(seconds=5),
+                retry=RetrySpec(policy=RetryPolicy(max_attempts=1)),
+            ),
+        )
+    },
+)
+
+
+async def policy_reserved_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_RESERVED_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"policy-reserved-{index}",
+            )
+            for index in range(8)
+        ],
+        cursor={"page": 0},
+    )
+
+
+async def policy_priority_body(ctx: Any, item: dict[str, object]) -> PolicyOutcome:
+    """The priority chain's own workload: one claim HELD ON THE TEST'S
+    RELEASE GATE — the late-priority phase's participation gate. The first
+    worker's attempt stays genuinely occupied (the worker's slot with it)
+    until the test, having observed the exact-row claim and joined the
+    second worker, opens the gate — so no boot-speed window can ever let
+    this worker drain the shared backlog alone."""
+    await _await_test_release("priority-release")
+    return PolicyOutcome.DONE
+
+
+POLICY_PRIORITY_CHAIN = Chain(
+    name="execution-policy-priority-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_priority_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(actor="wf-policy-priority", priority=9),
+        )
+    },
+)
+
+
+async def policy_priority_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_PRIORITY_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"policy-priority-{index}",
+            )
+            for index in range(1)
+        ],
+        cursor={"page": 0},
+    )
+
+
+@policy_app.workflow("policy_reserved_fleet")
+def policy_reserved_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_RESERVED_CHAIN, policy_reserved_source, key="source"))
+
+
+# ── the compact two-cohort control: one saturated cohort, one free cohort ──
+
+
+def e2e_release_gate_ddl(schema: str) -> str:
+    """The test-set release gate's DDL — one authority for both the system
+    tests that create it (their own module schema) and the fixture bodies
+    that wait on it."""
+    return (
+        f'CREATE TABLE IF NOT EXISTS "{schema}".e2e_release_gate '
+        "(gate text PRIMARY KEY, open_at timestamptz)"
+    )
+
+
+async def seed_e2e_release_gate(conn: asyncpg.Connection, schema: str, gate: str) -> None:
+    """Seed (or reset) one gate row to CLOSED — the arrange half of the
+    handshake; the reset keeps a prior run's opened gate from leaking in."""
+    await conn.execute(
+        f'INSERT INTO "{schema}".e2e_release_gate (gate, open_at) VALUES ($1, NULL) '
+        "ON CONFLICT (gate) DO UPDATE SET open_at = NULL",
+        gate,
+    )
+
+
+async def open_e2e_release_gate(conn: asyncpg.Connection, schema: str, gate: str) -> None:
+    """The TEST's release event: stamped only once the test's own observation
+    is complete (the claim witnessed, the second worker joined, the fence's
+    refusal seen). This write — not any timer — is what ends the hold."""
+    await conn.execute(
+        f'UPDATE "{schema}".e2e_release_gate SET open_at = clock_timestamp() WHERE gate = $1',
+        gate,
+    )
+
+
+async def clear_e2e_release_gate(conn: asyncpg.Connection, schema: str, gate: str) -> None:
+    """The handshake's cleanup half: the gate row must not outlive its test
+    (the shared module schema's other tests seed their own)."""
+    await conn.execute(f'DELETE FROM "{schema}".e2e_release_gate WHERE gate = $1', gate)
+
+
+async def _await_test_release(gate: str) -> None:
+    """Hold the calling body's attempt until the TEST opens this gate.
+
+    The worker half of the cross-process handshake. The body polls the gate
+    row through its own connection (the same DB-local idiom the cron bridge
+    below uses — ``WorkerSettings`` for DSN and schema) and returns only
+    when the test has stamped ``open_at``. This is occupancy, deliberately
+    NOT a HITL park: the hold's slot law releases a held OUTCOME (the wait
+    is not occupancy), while a body mid-await keeps the worker's slot, the
+    row's lock and the cohort's reservation genuinely held (the heartbeat
+    renews those leases) — and that occupancy is exactly what the
+    saturation controls prove. The poll is the handshake's transport, never
+    a timer: if the gate never opens this raises and the attempt fails
+    loudly (the ladder retries it, still loud), so a lost test release can
+    never silently drain the workload."""
+    settings = WorkerSettings.load()
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        async with asyncio.timeout(240):
+            while True:
+                opened = await conn.fetchval(
+                    f'SELECT open_at FROM "{settings.schema_name}".e2e_release_gate '
+                    "WHERE gate = $1",
+                    gate,
+                )
+                if opened is not None:
+                    return
+                await asyncio.sleep(0.05)
+    except TimeoutError as error:
+        raise RuntimeError(
+            f"the test's release gate {gate!r} never opened — the observation "
+            "handshake lost its release; failing loudly instead of draining"
+        ) from error
+    finally:
+        await conn.close()
+
+
+async def policy_cohort_a_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """The saturated cohort's workload: one strict slot HELD ON THE TEST'S
+    RELEASE GATE. The attempt — and with it the cohort's single reserved
+    slot — stays genuinely occupied until the test, having watched cohort B
+    claim and finish inside the window and the reservation-headroom fence
+    refuse A's second row, opens the gate. The refusal and the containment
+    then land as durable attempt-window facts, never a race against a
+    body's duration."""
+    await _await_test_release("cohort-a-release")
+    return PolicyOutcome.DONE
+
+
+async def policy_cohort_b_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """The free cohort's workload: fast bodies whose durable attempts land
+    while the other cohort's slot is held."""
+    await asyncio.sleep(0.1)
+    return PolicyOutcome.DONE
+
+
+POLICY_COHORT_A_CHAIN = Chain(
+    name="policy-cohort-a-chain",
+    start="awork",
+    steps={
+        "awork": Step(
+            body=policy_cohort_a_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-cap-a",
+                queue="default",
+                priority=5,
+                max_concurrent=1,
+                # The operator owns this cohort's stored capacity: the boot's
+                # diagnostic fires on the declared/stored mismatch and the
+                # stored value is never overwritten.
+                capacity_owner="operator",
+                reservations=(
+                    ConcurrencyReservation(
+                        "policy-cohort-a-slot",
+                        slots=1,
+                        lease=timedelta(seconds=30),
+                    ),
+                ),
+            ),
+        )
+    },
+)
+
+POLICY_COHORT_B_CHAIN = Chain(
+    name="policy-cohort-b-chain",
+    start="bwork",
+    steps={
+        "bwork": Step(
+            body=policy_cohort_b_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-cap-b",
+                queue="default",
+                priority=3,
+                max_concurrent=1,
+                # The code owns this cohort's stored capacity: a matching
+                # stored row fires no diagnostic; a drifted one deploys by
+                # boot.
+                capacity_owner="code",
+            ),
+        )
+    },
+)
+
+
+async def policy_cohort_a_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_COHORT_A_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"cap-a-{index}",
+            )
+            for index in range(2)
+        ],
+        cursor={"page": 0},
+    )
+
+
+async def policy_cohort_b_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_COHORT_B_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"cap-b-{index}",
+            )
+            for index in range(2)
+        ],
+        cursor={"page": 0},
+    )
+
+
+@policy_app.workflow("policy_two_cohort_fleet")
+def policy_two_cohort_fleet() -> Promise[object]:
+    return build(
+        chain_source(POLICY_COHORT_A_CHAIN, policy_cohort_a_source, key="source-a"),
+        chain_source(POLICY_COHORT_B_CHAIN, policy_cohort_b_source, key="source-b"),
+    )
+
+
+@policy_app.workflow("policy_priority_fleet")
+def policy_priority_fleet() -> Promise[object]:
+    # The source rides a dedicated control actor/queue cohort (one queue per
+    # actor — the estate's own law): the deterministic priority phase boots
+    # ONLY this source's worker first, observes the emitted priority-9 row's
+    # commit on the test's own connection, and starts the default-queue
+    # workers only after that visibility is established.
+    return build(
+        chain_source(
+            POLICY_PRIORITY_CHAIN,
+            policy_priority_source,
+            key="source",
+            actor="wf-policy-control",
+            queue="policy-control",
+        )
+    )
+
+
+class PolicyBacklogPayload(BaseModel):
+    record_id: str = "backlog"
+
+
+@actor(name="wf_policy_backlog", queue="default")
+async def wf_policy_backlog(
+    payload: PolicyBacklogPayload, ctx: JobContext[PolicyBacklogPayload]
+) -> dict[str, object]:
+    # Each backlog record holds its claim briefly: the phase's two worker
+    # processes overlap on the backlog, and a wrong-first-claim ordering
+    # stays observable for the whole wrong sequence.
+    await asyncio.sleep(1.0)
+    return {"accepted": True}
+
+
+# ── rolling retry curves, advertised non-consuming delay, the engine's
+# deadline, and the code/operator capacity-owner cohorts (generic records) ──
+
+
+class PolicyRollTransientError(RuntimeError):
+    """The mapped transient the non-consuming record's classifier matches."""
+
+
+async def policy_rolling_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """Three real failed attempts, then the record's success (curve-visible)."""
+    if ctx.attempt < 4:
+        raise PolicyRollTransientError("rolling curve failure")
+    return PolicyOutcome.DONE
+
+
+async def policy_non_consuming_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """Always raises; the declared map classifies it into advertised free waits."""
+    raise PolicyRollTransientError("advertised wait")
+
+
+async def policy_deadline_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """Never raises and never finishes inside its declared start_to_close."""
+    await asyncio.sleep(2.5)
+    return PolicyOutcome.DONE  # pragma: no cover - the deadline fires first
+
+
+async def policy_cap_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    return PolicyOutcome.DONE
+
+
+def _roll_chain(name: str, step_key: str, backoff: str) -> Chain:
+    """One record-leaf chain with the declared curve (base 0.05s, cap 1s, no jitter)."""
+    retry_policy = RetryPolicy(
+        max_attempts=4,
+        base=timedelta(seconds=0.05),
+        cap=timedelta(seconds=1.0),
+        jitter=0,
+        backoff=backoff,  # type: ignore[arg-type]  # the declared literal is one of the three validated curve names
+    )
+    return Chain(
+        name=name,
+        start=step_key,
+        steps={
+            step_key: Step(
+                body=policy_rolling_body,
+                outcomes=PolicyOutcome,
+                policy=ExecutionPolicy(
+                    actor="wf-policy-roll",
+                    retry=RetrySpec(policy=retry_policy),
+                ),
+            )
+        },
+    )
+
+
+POLICY_EXP_CHAIN = _roll_chain("policy-exp-chain", "exp", "exponential")
+POLICY_LIN_CHAIN = _roll_chain("policy-lin-chain", "lin", "linear")
+POLICY_FIX_CHAIN = _roll_chain("policy-fix-chain", "fix", "fixed")
+
+POLICY_NON_CONSUMING_CHAIN = Chain(
+    name="policy-non-consuming-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_non_consuming_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-roll",
+                retry=RetrySpec(
+                    policy=RetryPolicy(max_attempts=1, jitter=0),
+                    exceptions={
+                        PolicyRollTransientError: WorkflowRetryOverride(
+                            delay=timedelta(seconds=0.05),
+                            consume_budget=False,
+                        )
+                    },
+                    non_consuming_limit=2,
+                ),
+            ),
+        )
+    },
+)
+
+POLICY_DEADLINE_CHAIN = Chain(
+    name="policy-deadline-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_deadline_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-roll",
+                start_to_close=timedelta(seconds=0.4),
+                retry=RetrySpec(policy=RetryPolicy(max_attempts=1, jitter=0)),
+            ),
+        )
+    },
+)
+
+# The two capacity-owner cohorts: the code's literal owns one actor's
+# max_concurrent (the boot's code-owned upsert deploys it); the operator's
+# stored row owns the other's.
+POLICY_CODE_CAP_CHAIN = Chain(
+    name="policy-code-cap-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_cap_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-code-cap",
+                queue="default",
+                max_concurrent=1,
+                capacity_owner="code",
+            ),
+        )
+    },
+)
+
+POLICY_OPERATOR_CAP_CHAIN = Chain(
+    name="policy-operator-cap-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_cap_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-operator-cap",
+                queue="default",
+                max_concurrent=1,
+                capacity_owner="operator",
+            ),
+        )
+    },
+)
+
+
+def _single_record_source(chain: Chain, trace: str) -> Any:
+    async def source(ctx: StepContext) -> None:
+        await ctx.emit_batch(
+            [chain_start(chain, {"record_id": 0}, map_index=0, trace_id=trace)],
+            cursor={"page": 0},
+        )
+
+    return source
+
+
+async def policy_exp_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_EXP_CHAIN, "roll-exp")(ctx)  # type: ignore[operator]
+
+
+async def policy_lin_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_LIN_CHAIN, "roll-lin")(ctx)  # type: ignore[operator]
+
+
+async def policy_fix_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_FIX_CHAIN, "roll-fix")(ctx)  # type: ignore[operator]
+
+
+async def policy_non_consuming_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_NON_CONSUMING_CHAIN, "roll-nc")(ctx)  # type: ignore[operator]
+
+
+async def policy_deadline_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_DEADLINE_CHAIN, "roll-deadline")(ctx)  # type: ignore[operator]
+
+
+async def policy_code_cap_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_CODE_CAP_CHAIN, "roll-code-cap")(ctx)  # type: ignore[operator]
+
+
+async def policy_operator_cap_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_OPERATOR_CAP_CHAIN, "roll-operator-cap")(ctx)  # type: ignore[operator]
+
+
+@policy_app.workflow("policy_exp_fleet")
+def policy_exp_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_EXP_CHAIN, policy_exp_source, key="source"))
+
+
+@policy_app.workflow("policy_lin_fleet")
+def policy_lin_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_LIN_CHAIN, policy_lin_source, key="source"))
+
+
+@policy_app.workflow("policy_fix_fleet")
+def policy_fix_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_FIX_CHAIN, policy_fix_source, key="source"))
+
+
+@policy_app.workflow("policy_non_consuming_fleet")
+def policy_non_consuming_fleet() -> Promise[object]:
+    return build(
+        chain_source(POLICY_NON_CONSUMING_CHAIN, policy_non_consuming_source, key="source")
+    )
+
+
+@policy_app.workflow("policy_deadline_fleet")
+def policy_deadline_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_DEADLINE_CHAIN, policy_deadline_source, key="source"))
+
+
+@policy_app.workflow("policy_code_cap_fleet")
+def policy_code_cap_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_CODE_CAP_CHAIN, policy_code_cap_source, key="source"))
+
+
+@policy_app.workflow("policy_operator_cap_fleet")
+def policy_operator_cap_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_OPERATOR_CAP_CHAIN, policy_operator_cap_source, key="source"))
+
+
 #: The march flows' compiled definitions, by name (the test side's
 #: create-run surface resolves here — one registry, one compile).
 MARCH_FLOWS: dict[str, Any] = {
+    "policy_reserved_fleet": policy_app.get("policy_reserved_fleet"),
+    "policy_priority_fleet": policy_app.get("policy_priority_fleet"),
+    "policy_exp_fleet": policy_app.get("policy_exp_fleet"),
+    "policy_lin_fleet": policy_app.get("policy_lin_fleet"),
+    "policy_fix_fleet": policy_app.get("policy_fix_fleet"),
+    "policy_non_consuming_fleet": policy_app.get("policy_non_consuming_fleet"),
+    "policy_deadline_fleet": policy_app.get("policy_deadline_fleet"),
+    "policy_two_cohort_fleet": policy_app.get("policy_two_cohort_fleet"),
+    "policy_code_cap_fleet": policy_app.get("policy_code_cap_fleet"),
+    "policy_operator_cap_fleet": policy_app.get("policy_operator_cap_fleet"),
     "deep_research": research_app.get("deep_research"),
     "deep_research_cron": research_app.get("deep_research_cron"),
     "triage_chain": march_app.get("triage_chain"),
@@ -587,4 +1144,11 @@ async def wf_research_cron(payload: CronKick, ctx: JobContext[CronKick]) -> dict
 
 #: The bridge actor's registry face (the _wf_entry's import merges it):
 #: the cron fire resolves the actor by name from the boot's registry.
-MARCH_ACTORS: dict[str, object] = {"wf_research_cron": wf_research_cron}
+MARCH_ACTORS: dict[str, object] = {
+    "wf_research_cron": wf_research_cron,
+    "wf_policy_backlog": wf_policy_backlog,
+}
+
+#: The imported effect-app module object (the registration's witness — the
+#: import above must never be dropped as unused).
+P5_CANCEL_APP_MODULE = _p5_cancel_app_module

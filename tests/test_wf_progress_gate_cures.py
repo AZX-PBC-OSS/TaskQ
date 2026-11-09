@@ -48,6 +48,7 @@ from taskq.workflows._progress import (
     ProgressRefusedError,
 )
 from taskq.workflows._types import EmitChild
+from taskq.workflows.api._attempt import AttemptClaim
 from tests._wf_fixtures import RedLog, seed_flow
 
 pytestmark = pytest.mark.integration
@@ -259,10 +260,10 @@ async def _routed_node(
     flow_id: JobId,
     *,
     step_key: str = "routed",
-) -> tuple[FlowRunner, dict[str, Any]]:
+) -> tuple[FlowRunner, dict[str, Any], AttemptClaim]:
     """A claimed node row + the runner, for the ladder's own call shape
-    (the ledger claim first — the ladder's terminal write updates the
-    claim's own row, the arbiter's key)."""
+    (the real owner record is returned beside them so later ladder calls
+    can never lose that claim's identity)."""
     from tests._wf_fixtures import claim_view, seed_running_node
 
     node_id = await seed_running_node(wf_conn, wf_schema, flow_id, step_key=step_key)
@@ -270,7 +271,7 @@ async def _routed_node(
     from taskq.workflows.ledger import claim_step_ledger
 
     async with wf_pool.acquire() as conn:
-        await claim_step_ledger(
+        ledger = await claim_step_ledger(
             conn,
             wf_sql,
             flow_id=flow_id,
@@ -286,7 +287,18 @@ async def _routed_node(
     runner._worker_id = worker  # type: ignore[attr-defined]
     runner.compiled = type("C", (), {"capture": "none", "name": "routing-pin"})()  # type: ignore[attr-defined]
     row = {"id": str(node_id), "step_key": step_key, "map_index": None}
-    return runner, row
+    ownership = AttemptClaim(
+        job_id=node_id,
+        flow_id=flow_id,
+        step_key=step_key,
+        worker_id=worker,
+        attempt=attempt,
+        claim_epoch=_epoch,
+        ledger_id=ledger.ledger_id,
+        ledger_claimed_at=ledger.claimed_at,
+        map_index=None,
+    )
+    return runner, row, ownership
 
 
 async def _terminal_shape(
@@ -329,10 +341,19 @@ async def test_routing_progress_refused_is_the_named_terminal_not_a_flake(
     identical failures pretending to be a flake, the retry budget spent
     on a bug no retry can fix."""
     flow_id = await seed_flow(wf_conn, wf_schema)
-    runner, row = await _routed_node(wf_conn, wf_schema, wf_pool, wf_sql, flow_id)
+    runner, row, claim = await _routed_node(wf_conn, wf_schema, wf_pool, wf_sql, flow_id)
 
     exc = ProgressRefusedError("pct must be int 0..100, got 999")
-    await runner._ladder_or_fail(flow_id, row, 1, _FakeNode(), exc)  # pyright: ignore[reportPrivateUsage,reportUnknownArgumentType]  # Why: the routing pin drives the ladder's own method — the runner's real record is the subject.
+    await runner._ladder_or_fail(
+        flow_id,
+        row,
+        1,
+        _FakeNode(),
+        exc,
+        claim_epoch=claim.claim_epoch,
+        ledger_id=claim.ledger_id,
+        ledger_claimed_at=claim.ledger_claimed_at,
+    )  # pyright: ignore[reportPrivateUsage,reportUnknownArgumentType]  # Why: the routing pin drives the ladder's own method — the runner's real record is the subject.
 
     status, error_class, attempt, failed_rows = await _terminal_shape(
         wf_conn, wf_schema, flow_id, row["step_key"]
@@ -366,12 +387,21 @@ async def test_routing_page_diverged_is_the_named_terminal(
     terminal on the first attempt, the ladder unburned. The raw
     UniqueViolationError must never escape to ladder, re-collide, and burn."""
     flow_id = await seed_flow(wf_conn, wf_schema)
-    runner, row = await _routed_node(wf_conn, wf_schema, wf_pool, wf_sql, flow_id)
+    runner, row, claim = await _routed_node(wf_conn, wf_schema, wf_pool, wf_sql, flow_id)
 
     from taskq.workflows._emit import PageDivergedError
 
     exc = PageDivergedError(JobId(row["id"]), JobId(row["id"]), "the scenario")
-    await runner._ladder_or_fail(flow_id, row, 1, _FakeNode(), exc)  # pyright: ignore[reportPrivateUsage,reportUnknownArgumentType]
+    await runner._ladder_or_fail(
+        flow_id,
+        row,
+        1,
+        _FakeNode(),
+        exc,
+        claim_epoch=claim.claim_epoch,
+        ledger_id=claim.ledger_id,
+        ledger_claimed_at=claim.ledger_claimed_at,
+    )  # pyright: ignore[reportPrivateUsage,reportUnknownArgumentType]
 
     status, error_class, attempt, failed_rows = await _terminal_shape(
         wf_conn, wf_schema, flow_id, row["step_key"]
@@ -391,12 +421,21 @@ async def test_routing_map_index_exhausted_is_the_named_terminal(
     is a DETERMINISTIC death — the named terminal, the ladder unburned
     (re-running cannot grow a record's identity past the column)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
-    runner, row = await _routed_node(wf_conn, wf_schema, wf_pool, wf_sql, flow_id)
+    runner, row, claim = await _routed_node(wf_conn, wf_schema, wf_pool, wf_sql, flow_id)
 
     from taskq.workflows._emit import MapIndexExhaustedError
 
     exc = MapIndexExhaustedError("record #32768 is past the ceiling")
-    await runner._ladder_or_fail(flow_id, row, 1, _FakeNode(), exc)  # pyright: ignore[reportPrivateUsage,reportUnknownArgumentType]
+    await runner._ladder_or_fail(
+        flow_id,
+        row,
+        1,
+        _FakeNode(),
+        exc,
+        claim_epoch=claim.claim_epoch,
+        ledger_id=claim.ledger_id,
+        ledger_claimed_at=claim.ledger_claimed_at,
+    )  # pyright: ignore[reportPrivateUsage,reportUnknownArgumentType]
 
     status, error_class, attempt, failed_rows = await _terminal_shape(
         wf_conn, wf_schema, flow_id, row["step_key"]
@@ -416,9 +455,18 @@ async def test_routing_transient_body_failure_still_ladders(
     rides the ladder (the re-pend, no terminal) — the rule's fix must
     not eat the retry curve it exists to protect."""
     flow_id = await seed_flow(wf_conn, wf_schema)
-    runner, row = await _routed_node(wf_conn, wf_schema, wf_pool, wf_sql, flow_id)
+    runner, row, claim = await _routed_node(wf_conn, wf_schema, wf_pool, wf_sql, flow_id)
 
-    await runner._ladder_or_fail(flow_id, row, 1, _FakeNode(), RuntimeError("boom"))  # pyright: ignore[reportPrivateUsage,reportUnknownArgumentType]
+    await runner._ladder_or_fail(
+        flow_id,
+        row,
+        1,
+        _FakeNode(),
+        RuntimeError("boom"),
+        claim_epoch=claim.claim_epoch,
+        ledger_id=claim.ledger_id,
+        ledger_claimed_at=claim.ledger_claimed_at,
+    )  # pyright: ignore[reportPrivateUsage,reportUnknownArgumentType]
 
     status, error_class, _attempt, failed_rows = await _terminal_shape(
         wf_conn, wf_schema, flow_id, row["step_key"]
@@ -426,6 +474,50 @@ async def test_routing_transient_body_failure_still_ladders(
     assert status == "scheduled", "the transient failure did not re-pend (the ladder eaten)"
     assert error_class is None, "a laddered attempt emitted a terminal (P3 rule 7)"
     assert failed_rows == 1, "the attempt's own ledger row is the only failure record"
+
+
+async def test_cancel_fenced_ladder_projects_the_committed_terminal(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: Any,
+    wf_sql: Any,
+) -> None:
+    """The ordinary cancel face publishes the same best-effort projection."""
+    from taskq.workflows.api._runner_defer import WORKFLOW_CANCELLED_CLASS
+
+    flow_id = await seed_flow(wf_conn, wf_schema)
+    runner, row, claim = await _routed_node(wf_conn, wf_schema, wf_pool, wf_sql, flow_id)
+    changed = await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs SET cancel_phase = 1 WHERE id = $1',
+        claim.job_id,
+    )
+    assert changed == "UPDATE 1"
+    await runner._ladder_or_fail(
+        flow_id,
+        row,
+        claim.attempt,
+        _FakeNode(),
+        RuntimeError("body failed after the cancel carrier landed"),
+        claim_epoch=claim.claim_epoch,
+        ledger_id=claim.ledger_id,
+        ledger_claimed_at=claim.ledger_claimed_at,
+    )  # pyright: ignore[reportPrivateUsage]
+
+    status, error_class, _attempt, failed_rows = await _terminal_shape(
+        wf_conn, wf_schema, flow_id, row["step_key"]
+    )
+    assert (status, error_class, failed_rows) == ("cancelled", WORKFLOW_CANCELLED_CLASS, 0)
+    projected = await wf_conn.fetchrow(
+        f'SELECT payload FROM "{wf_schema}".wf_node_stream '
+        "WHERE node_id = $1 AND kind = 'wf.node.terminal'",
+        claim.job_id,
+    )
+    assert projected is not None
+    payload = projected["payload"]
+    payload = json.loads(payload) if isinstance(payload, str) else payload
+    assert payload["outcome"] == "cancelled"
+    assert payload["step_key"] == claim.step_key
+    assert payload["error_class"] == WORKFLOW_CANCELLED_CLASS
 
 
 # ── the typed deaths: the poison record kills itself, never its mates ───

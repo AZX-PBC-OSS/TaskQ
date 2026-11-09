@@ -763,6 +763,7 @@ async def test_defer_fences_a_cancel_marked_row(
         claim.ledger_id,
         Snooze(timedelta(seconds=FLOOR_S)),
         claim_epoch=int(epoch),
+        ledger_claimed_at=claim.claimed_at,
     )
     assert label == "cancelled"
     row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
@@ -838,6 +839,7 @@ async def test_defer_fences_a_zombie_attempt(
         claim.ledger_id,
         Snooze(timedelta(seconds=FLOOR_S)),
         claim_epoch=int(epoch),
+        ledger_claimed_at=claim.claimed_at,
     )
     assert label == "fenced"
     ledger_rows = await _ledger_rows(module_pg_pool, schema, str(flow_id), "solo")
@@ -929,6 +931,7 @@ async def test_defer_fences_a_vanilla_cancel_marked_row(
         claim.ledger_id,
         Snooze(timedelta(seconds=FLOOR_S)),
         claim_epoch=int(epoch),
+        ledger_claimed_at=claim.claimed_at,
     )
     assert label == "cancelled"
     row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
@@ -1038,6 +1041,7 @@ async def test_the_deferral_resets_the_cancel_columns_for_the_later_claim(
         claim.ledger_id,
         Snooze(timedelta(seconds=FLOOR_S)),
         claim_epoch=int(epoch),
+        ledger_claimed_at=claim.claimed_at,
     )
     assert label == "deferred", label
     row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")

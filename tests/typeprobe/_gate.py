@@ -100,6 +100,10 @@ _CORPUS: tuple[str, ...] = (
     # body's list[E] and the promise's list[E] must agree on E); the
     # matching-element green face stays clean.
     "wf_list_element_negative_types.py",
+    # the execution policy's typed declarations: valid record/outcome/source
+    # inference stays clean; the wrong-slot RetryPolicy and the unsupported
+    # terminal-callback field red at the declaration site on both checkers.
+    "wf_execution_policy_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

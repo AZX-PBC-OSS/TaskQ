@@ -108,6 +108,11 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "budget_deadline",
     "budget_paused",
     "budget_remaining_ms",
+    # 01.00.38: nullable worker-execution requirement, mirrored by archive.
+    # Vanilla COPY never stamps it; workflow inserts name it explicitly.
+    "required_worker_schema",
+    # 01.00.41: nullable run incarnation, preserved by archive; legacy COPY NULL.
+    "run_epoch",
     # the archive-mirror columns, THE MERGED LINES' ONE parent_id (the workflow
     # edge's wiring parent AND the fan-out ledger — the same nullable column,
     # two writers: the engine's node inserts stamp the wiring parent, the
@@ -162,6 +167,9 @@ _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
         "budget_deadline",
         "budget_paused",
         "budget_remaining_ms",
+        # 01.00.38: only guarded workflow producers stamp this; vanilla COPY
+        # leaves the nullable column at NULL.
+        "required_worker_schema",
     }
 )
 COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(

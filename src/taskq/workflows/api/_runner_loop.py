@@ -26,13 +26,13 @@ from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
 from taskq.workflows._progress import ProgressEmitter
 from taskq.workflows._types import FinalizeResult
+from taskq.workflows.api._attempt import AttemptClaim, repend_attempt
 from taskq.workflows.api._ctx import build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._runner_codec import encode_result, jsonable
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._runner_ladder import is_infra_fault
-from taskq.workflows.api._sql_runner import NODE_REPEND_SQL_TEMPLATE, render_sql
 
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
@@ -225,7 +225,10 @@ class LoopOps(_LoopHost):
                     ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
                     BUDGET_EXHAUSTED_MESSAGE,
                     None,
-                    None,  # the loop's route holds no claim instant here — the NULL form
+                    # The loop's exhaustion writes its OWN claim's row — the
+                    # exact id+instant identity (the re-mint guard), never a
+                    # status-only form.
+                    ledger_claimed_at,
                 )
         await self._exhaust_loop(
             flow_id,
@@ -302,7 +305,15 @@ class LoopOps(_LoopHost):
             )
         except Exception as exc:  # Why: the machinery boundary — the classifier reads WHERE the error escaped, never its type (the escape-point contract). BLE001 is the boundary's shape: any machinery exception is classified, then re-raised or reclaimed.
             if is_infra_fault(exc):
-                return await self._reclaim_loop(flow_id, row, attempt, exc)
+                return await self._reclaim_loop(
+                    flow_id,
+                    row,
+                    attempt,
+                    exc,
+                    claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
+                )
             raise
 
     async def _drive_loop(
@@ -696,7 +707,15 @@ class LoopOps(_LoopHost):
             )
 
     async def _reclaim_loop(
-        self, flow_id: JobId, row: dict[str, Any], attempt: int, exc: Exception
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        exc: Exception,
+        *,
+        claim_epoch: int = 0,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
     ) -> None:
         """The MACHINERY reclaim (the smuggle contract's other half): an infra
         fault raised by the DRIVER'S own statements — never by the body
@@ -706,24 +725,28 @@ class LoopOps(_LoopHost):
         arm (its exceptions exhaust the loop as the body failure they
         are), so reclaim stays UNBOUNDED-BY-the-BODY — a poison body
         cannot wedge the flow through the classifier."""
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                self.wsql.ledger_terminal,
-                flow_id,
-                row["step_key"],
-                attempt,
-                "crashed",
-                None,
-                type(exc).__name__,
-                str(exc)[:500],
-                None,
-                None,
-            )
-            await conn.execute(
-                render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
-                row["id"],
-                0.05,
-                attempt,
+        async with self.pool.acquire() as conn, conn.transaction():
+            await repend_attempt(
+                conn,
+                self.wsql,
+                claim=AttemptClaim(
+                    job_id=JobId(row["id"]),
+                    flow_id=flow_id,
+                    step_key=row["step_key"],
+                    worker_id=self._worker_id,
+                    attempt=attempt,
+                    claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
+                    map_index=row["map_index"],
+                ),
+                error_class=type(exc).__name__,
+                error_message=str(exc)[:500],
+                failures_before=0,
+                max_attempts=1,
+                retry_kind="transient",
+                backoff_s=0.05,
+                machinery_crashed=True,
             )
 
     async def _exhaust_loop(

@@ -58,6 +58,8 @@ def build_step_context(
     queue: str | None = None,
     claimed_at: datetime | None = None,
     budget_remaining_ms: int | None = None,
+    physical_attempt: int | None = None,
+    run_priority: int | None = None,
 ) -> StepContext:
     """The one context construction (the claim seam's factory): the
     runner's step path and the loop driver's iteration path build the
@@ -83,6 +85,8 @@ def build_step_context(
         queue=queue,
         claimed_at=claimed_at,
         budget_remaining_ms=budget_remaining_ms,
+        _claim_attempt=attempt if physical_attempt is None else physical_attempt,
+        _run_priority=run_priority,
     )
 
 
@@ -140,6 +144,14 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     #: the epoch beside the worker and the attempt (the fence must match
     #: the row, or the checkpoint updates nothing and the emit refuses).
     claim_epoch: int = 0
+    #: The physical jobs.attempt this context's claim granted (the fence's
+    #: ordinal), kept beside the public logical ``attempt``: a source's
+    #: public ordinal is the durable carrier's value, the physical claim's
+    #: is the row's own counter (the park's refund/remint keeps them
+    #: distinct).
+    _claim_attempt: int = 0
+    #: Durable run-priority override for chain starts emitted by this attempt.
+    _run_priority: int | None = None
     # ── the runtime info (the context contract — the observability
     # primitive for body authors) ────────────────────────────────────
     flow_name: str | None = None
@@ -283,12 +295,13 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
             flow_id=self.flow_id,
             source_id=self.job_id,
             worker_id=self._worker_id,
-            attempt=self.attempt,
+            attempt=self._claim_attempt,
             claim_epoch=self.claim_epoch,  # the claim view's fence epoch
             children=children,
             cursor=cursor,
             max_in_flight=self._max_in_flight,
             backpressure_timeout_s=backpressure_timeout_s,
+            run_priority=self._run_priority,
         )
 
     async def progress(
@@ -355,6 +368,6 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
             flow_id=self.flow_id,
             job_id=self.job_id,
             map_index=self._map_index,
-            attempt=self.attempt,
+            attempt=self._claim_attempt,
         )
         return await steps.step(name, fn, *args, idempotent=idempotent)

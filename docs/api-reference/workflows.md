@@ -74,11 +74,56 @@ module → same compile, byte-stable).
 | `step(body, *args, key=None, actor="wf", queue="default", on_failure="fail_closed", max_attempts=None, retry_kind=None, skip=None, gates=(), progress_schema=None, rate_limits=(), max_concurrent=None, reservations=(), result_ttl=None, priority=None, cache=False, cache_ttl=None)` | `→ Promise[R]` where `R` is the body's declared return | promise args become the node's incoming edges (several = the fan-in); plain args are the node's data (in signature order). `max_attempts=None` is the UNSET sentinel: the wired actor handle's DECLARED `max_attempts` applies (the decorator's own default is not a declaration), else the three-attempt default — omitting and explicitly passing 3 are different declarations, and the step's explicit count overrides the handle's. `skip` is the DISPATCH-TIME predicate. `progress_schema=` is the node's DECLARED progress payload schema (the body's `ctx.progress` emissions are validated against it). `priority=` is the node rows' claim ORDER (the value stamped into the `jobs.priority` column, which the dispatch claim's `priority DESC` orders by; `None` = the actor's declaration applies, or the column default `0` — the precedence law: the per-call run/create_flow override > the step's declaration > the actor's declaration > the default). THE CAPACITY TERMS (the same surface `@app.actor` declares — the explicit step param overrides the handle's, never the reverse): `rate_limits=` stamps the node's bucket names onto the row's metadata (honored at the fleet's dispatch claim; a denial snoozes the row budget-free); `max_concurrent=` is the per-round admission DAMPER seeded on the cohort's `actor_config` — NOT a strict cap (declare `reservations=` when the bound must hold); `reservations=` is the STRICT slots (a list of `ConcurrencyReservation` — the boot materializes their slot rows in the ensure-slots pass; an unnamed/malformed entry parks the row fail-closed, LOUD); `result_ttl=` is the node result's in-DB TTL in seconds (stamped on the SUCCEEDED terminal row from the cohort's stored term). `max_pending` is deliberately absent — the engine's inserts bypass the enqueue admission and a claim-side gate would wedge the backlog, so the knob stays vanilla-actor-only (never a dead knob). `cache=True` is the CROSS-RUN CACHE opt-in (see the guide's cache section): the result serves a later run over the same body + input; `cache_ttl` is the in-DB expiry's seconds (default 24h). THE CACHE HAZARDS (each refused at the wiring — E17/E18/E19/E20): the address covers the body's OWN source + the WIRED args — a changed HELPER is invisible to it (bump the body's own source when the closure changes); the FLOW input (`ctx.input`) never enters it (a body reading `ctx.input` is refused — the cross-tenant leak); a typed-route SOURCE carrying `cache=True` is refused (the hit path cannot rebuild the route fork — the wedged-forever run); an Exit-returning body is refused (the silent no-op); an unverifiable body source is refused (the silently-uncached step). |
 | `gather(promises, *, on_failure="fail_closed")` | `list[Promise[A]] → Promise[list[A]]` | the ALL-upstream join, the FLAT shape — the ELEMENT TYPE PRESERVED (a homogeneous join over `Promise[Report]`s is a `Promise[list[Report]]`; a heterogeneous join upcasts to `Promise[list[object]]` honestly). `gather([])` is refused at the verb (the stranded invisible join). |
 | `route(source, arms, *, queue="default", on_failure="fail_closed", max_attempts=3, aggregate=None, child_driven=False)` | `Promise[list[S]] × Mapping[type, RouteArm[R] \| Callable] → Promise[list[R]]` | the TYPED ROUTE: the source's body returns the elements' list (`list[Image \| Audio]`), and *arms* keys the union MEMBERS' types to the arm bodies — each element runs ITS type's arm as a FRESH job (`<source>.item:<module.qualname>`), the arm's placement stamps its children's queue/actor, and the derived `<source>.join` packs the arms' returns VERBATIM (the typed sum — an arm returning `list[X]` packs that list as ONE element; see the guide's nesting note). Totality is fenced at three doors: the verb refuses a non-total route (`RouterNotTotal` at runtime for a body that lied), `E15-route-totality` re-proves it from the compiled graph, and the runtime door raises. Takes a LIST source — a single-value `Promise[A\|B]` is refused at build ("the route is a MAP face"; the chain step's in-body `Route` is the single-value routing face). `aggregate=` is the user's DECLARED read-side fn over the children's decoded results (progress aggregation — evaluated AT READ TIME, writes nothing; `taskq.workflows.read_map_aggregate` evaluates it). `child_driven=True` is the fan-in bound's escape (the join counts its terminal children from the edge ledger). Per-arm placement/admission: `RouteArm(body=fn, actor=None, queue=None, rate_limits=(), max_concurrent=None, reservations=(), result_ttl=None, priority=None, capacity_owner="operator")` — `queue=None` inherits the route's `queue=`, `actor=None` the source's actor; a bare `Callable` arm normalizes to `RouteArm(body=fn)`; the capacity fields are the arm's OWN declaration (a capped handle wired under this arm's actor override has its terms re-declared here, and an override that would silently drop a capped handle's terms is refused at the wiring); `priority=None` = the arm does not override (the SOURCE node's resolution applies — the arm overrides DOWN from the source, graph-DIRECTION, not a value ceiling: the arm's value may raise or lower freely, and the JOIN keeps the source's resolution); `capacity_owner` is the arm's own owner declaration — an overriding arm whose body handle carries `capacity_owner="code"` must re-declare it HERE (per-arm: the other arms and the join never inherit it). |
-| `chain_source(chain, source_body, *args, key=None, actor="wf", queue="default", max_attempts=3)` | `Chain × BodyFn → Promise[Any]` | the streaming chain's source: *source_body* is the paged generator (each `ctx.emit_batch` yield = one page's emit tx); the chain's step rows exist only from the emit onward (never graph nodes — the runner routes them from the compiled chain). |
+| `chain_source(chain, source_body, *args, key=None, actor="wf", queue="default", max_attempts=3, policy=None)` | `Chain × BodyFn → Promise[None]` | the streaming chain's source: *source_body* is the paged generator (each `ctx.emit_batch` yield = one page's emit tx); the chain's step rows exist only from the emit onward (never graph nodes — the runner routes them from the compiled chain). |
 | `map_source(source, body, *, queue="default", on_failure="fail_closed", max_attempts=3, aggregate=None, rate_limits=(), child_driven=False)` | `Promise[list[T]] × body → Promise[list[R]]` | the map: the source's finalize forks N children (fresh jobs, per-item ledger identity); the join collects. One map per source (a node finalizes once). The join key is DERIVED (`<source>.join`) — the engine's fork addresses the map join by the source's own key; a custom join key is refused, never silently ignored. `aggregate=` is the user's DECLARED read-side fn over the children's decoded results (progress aggregation — evaluated AT READ TIME, writes nothing; `taskq.workflows.read_map_aggregate` evaluates it). `rate_limits=` stamps the CHILDREN's admission terms (the buckets' names ride each child row's metadata — honored at the FLEET's dispatch claim, see the rate-limiting guide's doors note). `child_driven=True` is the fan-in bound's escape (the join counts its terminal children from the edge ledger). The DICT form (`{Type: arm}`) is the typed route — the same lowering as `route`. |
 | `sink(*promises)` | `→ None` | explicit fire-and-forget — RECORDED in the compiled metadata, never silent. |
 | `build(result, *residuals)` | `Promise[R] × Promise[Never] → Promise[R]` | the terminal completeness point: names the result and accounts for every residual. The residual slot is `Promise[Never]` — a produces-nothing body's handle (`-> NoReturn`); because `Promise` is covariant, every REAL data handle in the slot is the checker's error (the static half of `E2-produced-never-consumed`). |
 | `loop(name, body, *, initial=None, carry_type=None, until=None, max_iterations=None, budget_s=None, on_exhausted="escalate", escalates_to=None, gates=())` | `→ Promise[Any]` | the LOOP node (see the section below — the carry contract, the two walls, the named exhaustion). `initial=` is the initial carry VALUE, `carry_type=` the DECLARED carrier-type (derived from the instance when `initial=` is a model); `until` is AWAITED per iteration (`Callable[[], Awaitable[bool]]`); `gates=` declares the body's HOLD gates for the admin's resolve/deliver doors. |
+
+
+## Typed chain execution policy
+
+`Step[Record, Outcome]` preserves its body's record and outcome types and accepts
+`policy=ExecutionPolicy(...)`. `Chain(default_policy=...)` supplies record-leaf
+defaults; a source's `chain_source(policy=...)` remains its own declaration. None
+means inherit at every layer; `CLEAR_POLICY` is the explicit clearing sentinel.
+Equivalent compatibility/policy redeclarations are accepted, contradictory ones
+raise `WorkflowPolicyError` (`E21-execution-policy`) before a row exists.
+
+`ExecutionPolicy` is frozen and typed: placement uses strings; reservations/rate
+limits reuse their existing declarations; capacity ownership is the existing
+`CapacityOwner`; priority and start_to_close use their existing domains; retry
+is `RetrySpec`, which wraps the shared validated `RetryPolicy`. Its typed
+exception map supports specific subclass precedence and `None` as an explicit
+default-policy result. `RetrySpec` also accepts an isolated classifier. The
+workflow-only `WorkflowRetryOverride` may advertise
+`delay=..., consume_budget=False` without changing vanilla `Retry`,
+`RetryDecision`, or `RetryOverride`. Such classifications require positive
+finite `RetrySpec.non_consuming_limit` and increment the durable
+`metadata.wf_retry.non_consuming_count` under the existing claim-fenced row law;
+the limit has its own terminal `RetryDeferralBudgetExceeded` and never advances
+a source's logical failure ordinal or consumes `max_attempts`. New workflow
+policies reject `time_budget` and `indefinite` with actionable validation; saved
+legacy rows are not reinterpreted. Generic legacy `Snooze`/non-consuming
+`RetryAfter` remain compatibility behavior, not a newly claimed bounded path.
+
+Dynamic chain reservations whose keys vary per record must declare
+`FiniteReservationCohort(ref=..., keys=(...))`. The existing key function decides
+each concrete name deterministically, emit/fork refuses names outside the finite
+set, and worker boot registers/materializes exactly those existing reservation
+slots. No process-hash/modulo identity or arbitrary-cardinality per-record slot
+creation is a supported policy path.
+
+`Step.outcomes` still accepts the enum or type-union route vocabulary. The
+`Chain.steps` container is heterogeneous by design; each individual Step carries
+its own record/outcome typing. `ExecutionPolicy` itself has no terminal-effect
+callback field: a terminal effect is declared only through
+`RetrySpec(on_exhaustion=TerminalEffect(...))` (documented below), and retry
+configuration never silently implies one.
+
+The complete precedence, retry, strict-reservation, capacity-owner, deadline,
+legacy default, and failure-boundary law is in
+[the workflows guide](../guides/workflows.md#chain-execution-policy-one-target-resolver).
 
 ## The loop (`wf.loop`, `Done`, `Refine`)
 
@@ -229,6 +274,37 @@ with their gate name + timeout policy — the hold gate consumes the same
 declaration). Edge labels = the promise types. The diagram-lies property
 is pinned: every compiled node/edge appears in the emission, nothing
 else does.
+
+
+## Authored terminal effects
+
+`RetrySpec(on_exhaustion=TerminalEffect(body, policy=ExecutionPolicy(...)))` is the
+typed terminal-effect declaration. The independent policy explicitly names its
+handler actor/queue and may carry ordinary bounded retry, admission, deadline and
+priority terms. Its invocation is `(ctx, event: ExhaustionEvent)` plus the
+standard optional dependency tail. `ExhaustionEvent` is a validated Pydantic model
+containing flow/workflow/node keys, `map_index`, claim attempt, positive durable
+`run_epoch`, trace, current record, `ErrorInfo`, and the reason.
+
+A policy-owned terminal commits the failed node, current attempt ledger, and one
+stable effect intent atomically; exactly one ordinary effect job materializes
+through the physical idempotency keys. The effect runs with ordinary bounded
+retry after its own node's `failed` terminal and **may execute after the run
+root is already `failed` or `cancelled`**; root maintenance derives root status
+from graph node rows and may derive `failed` while the durable effect intent is
+still undelivered and before an effect job exists, so a terminal root does not
+prove that the effect has settled. The stable effect key guarantees exactly one
+durable intent and exactly one ordinary effect-job materialization, while
+callback execution and external effects are at-least-once rather than
+exactly-once. An operator cancel that commits first terminalises the root
+`cancelled`; a committed intent survives it and then runs on that cancelled
+root. Cancellation before the winning terminal prevents intent. Missing
+handlers stay visibly unclaimed. Same-DB completed-once domain settlement
+requires the application's marker and effects in one transaction. The engine
+never claims arbitrary/external exactly-once execution. These guarded flows
+require the capability, run-epoch and intent PRE migrations (see the upgrade
+guide's 01.00.38 + 01.00.41 section) and capable fleet workers; direct
+execution refuses them.
 
 ## The runner (create / drive / result)
 

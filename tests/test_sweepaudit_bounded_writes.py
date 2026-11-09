@@ -462,7 +462,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "cannot grow with the backlog, only with the run's own fan-out",
     ),
     "NODE_REPEND_SQL_TEMPLATE": (
-        "WHERE id = $1",
+        "WHERE j.id = params.job_id",
         "keyed single node row (the ladder's repend CAS)",
     ),
     "NODE_DEADLINE_REPEND_SQL": (
