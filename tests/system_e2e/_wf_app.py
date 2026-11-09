@@ -40,10 +40,12 @@ import json
 from datetime import timedelta
 from typing import Any, Final
 
+import asyncpg
 from pydantic import BaseModel
 
 from taskq import JobContext, RetryPolicy, actor
 from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.settings import WorkerSettings
 from taskq.workflows import (
     Done,
     ExecutionPolicy,
@@ -611,11 +613,13 @@ async def policy_reserved_source(ctx: Any) -> None:
 
 
 async def policy_priority_body(ctx: Any, item: dict[str, object]) -> PolicyOutcome:
-    """The priority chain's own workload: one held claim for a long, bounded
-    beat — the late-priority phase's participation gate (the first worker
-    stays busy on the high row until the second worker has joined, so both
-    real processes deterministically share the backlog)."""
-    await asyncio.sleep(10.0)
+    """The priority chain's own workload: one claim HELD ON THE TEST'S
+    RELEASE GATE — the late-priority phase's participation gate. The first
+    worker's attempt stays genuinely occupied (the worker's slot with it)
+    until the test, having observed the exact-row claim and joined the
+    second worker, opens the gate — so no boot-speed window can ever let
+    this worker drain the shared backlog alone."""
+    await _await_test_release("priority-release")
     return PolicyOutcome.DONE
 
 
@@ -655,13 +659,88 @@ def policy_reserved_fleet() -> Promise[object]:
 # ── the compact two-cohort control: one saturated cohort, one free cohort ──
 
 
+def e2e_release_gate_ddl(schema: str) -> str:
+    """The test-set release gate's DDL — one authority for both the system
+    tests that create it (their own module schema) and the fixture bodies
+    that wait on it."""
+    return (
+        f'CREATE TABLE IF NOT EXISTS "{schema}".e2e_release_gate '
+        "(gate text PRIMARY KEY, open_at timestamptz)"
+    )
+
+
+async def seed_e2e_release_gate(conn: asyncpg.Connection, schema: str, gate: str) -> None:
+    """Seed (or reset) one gate row to CLOSED — the arrange half of the
+    handshake; the reset keeps a prior run's opened gate from leaking in."""
+    await conn.execute(
+        f'INSERT INTO "{schema}".e2e_release_gate (gate, open_at) VALUES ($1, NULL) '
+        "ON CONFLICT (gate) DO UPDATE SET open_at = NULL",
+        gate,
+    )
+
+
+async def open_e2e_release_gate(conn: asyncpg.Connection, schema: str, gate: str) -> None:
+    """The TEST's release event: stamped only once the test's own observation
+    is complete (the claim witnessed, the second worker joined, the fence's
+    refusal seen). This write — not any timer — is what ends the hold."""
+    await conn.execute(
+        f'UPDATE "{schema}".e2e_release_gate SET open_at = clock_timestamp() WHERE gate = $1',
+        gate,
+    )
+
+
+async def clear_e2e_release_gate(conn: asyncpg.Connection, schema: str, gate: str) -> None:
+    """The handshake's cleanup half: the gate row must not outlive its test
+    (the shared module schema's other tests seed their own)."""
+    await conn.execute(f'DELETE FROM "{schema}".e2e_release_gate WHERE gate = $1', gate)
+
+
+async def _await_test_release(gate: str) -> None:
+    """Hold the calling body's attempt until the TEST opens this gate.
+
+    The worker half of the cross-process handshake. The body polls the gate
+    row through its own connection (the same DB-local idiom the cron bridge
+    below uses — ``WorkerSettings`` for DSN and schema) and returns only
+    when the test has stamped ``open_at``. This is occupancy, deliberately
+    NOT a HITL park: the hold's slot law releases a held OUTCOME (the wait
+    is not occupancy), while a body mid-await keeps the worker's slot, the
+    row's lock and the cohort's reservation genuinely held (the heartbeat
+    renews those leases) — and that occupancy is exactly what the
+    saturation controls prove. The poll is the handshake's transport, never
+    a timer: if the gate never opens this raises and the attempt fails
+    loudly (the ladder retries it, still loud), so a lost test release can
+    never silently drain the workload."""
+    settings = WorkerSettings.load()
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        async with asyncio.timeout(240):
+            while True:
+                opened = await conn.fetchval(
+                    f'SELECT open_at FROM "{settings.schema_name}".e2e_release_gate '
+                    "WHERE gate = $1",
+                    gate,
+                )
+                if opened is not None:
+                    return
+                await asyncio.sleep(0.05)
+    except TimeoutError as error:
+        raise RuntimeError(
+            f"the test's release gate {gate!r} never opened — the observation "
+            "handshake lost its release; failing loudly instead of draining"
+        ) from error
+    finally:
+        await conn.close()
+
+
 async def policy_cohort_a_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
-    """The saturated cohort's workload: one strict slot, held for a long,
-    bounded beat — longer than the fleet's spawn-verification window, so the
-    other cohort's rows claim, complete, and leave durable attempts inside
-    the observed window, and the second A row's refusal is observable
-    on the test's own connection."""
-    await asyncio.sleep(20.0)
+    """The saturated cohort's workload: one strict slot HELD ON THE TEST'S
+    RELEASE GATE. The attempt — and with it the cohort's single reserved
+    slot — stays genuinely occupied until the test, having watched cohort B
+    claim and finish inside the window and the reservation-headroom fence
+    refuse A's second row, opens the gate. The refusal and the containment
+    then land as durable attempt-window facts, never a race against a
+    body's duration."""
+    await _await_test_release("cohort-a-release")
     return PolicyOutcome.DONE
 
 

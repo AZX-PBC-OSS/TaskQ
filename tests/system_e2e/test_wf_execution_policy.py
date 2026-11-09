@@ -18,7 +18,13 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.workflows import FlowRunner
 from tests.system_e2e._harness import WorkerProc, reap
-from tests.system_e2e._wf_app import MARCH_FLOWS
+from tests.system_e2e._wf_app import (
+    MARCH_FLOWS,
+    clear_e2e_release_gate,
+    e2e_release_gate_ddl,
+    open_e2e_release_gate,
+    seed_e2e_release_gate,
+)
 from tests.system_e2e._wf_harness import WF_DIAG_ENTRY, spawn_joined_worker, spawn_wf_fleet
 
 pytestmark = [pytest.mark.system, pytest.mark.integration]
@@ -173,6 +179,12 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
             reap(pod)
         fleet = {}
 
+        # The release gate for the priority body's hold: the TEST opens it
+        # (after worker B has genuinely joined) — the first worker's
+        # occupancy, not a body duration, brackets the handshake.
+        await conn.execute(e2e_release_gate_ddl(schema))
+        await seed_e2e_release_gate(conn, schema, "priority-release")
+
         priority_flow = await _run(pool, schema, "policy_priority_fleet")
         # The older priority-0 backlog is committed BEFORE the high row exists.
         # The exact inserted ids are captured so every count/attempt assertion
@@ -236,7 +248,9 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
         # The FIRST-WORK HANDSHAKE, observed on this independent connection
         # before worker B exists: the exact high row is claimed BY worker A —
         # its `locked_by_worker` is A's own registered row and the row is
-        # still running inside A's held workload. Worker B starts only after
+        # still running inside A's gate-held workload (the attempt stays
+        # genuinely occupied until this test opens the release gate, so this
+        # observation has no duration to race). Worker B starts only after
         # this observation, so no legal schedule can put B's dispatch ahead
         # of A's first claim.
         pa_worker_id = await conn.fetchval(
@@ -267,6 +281,10 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
                 extra_env={"TASKQ_QUEUES": "default", "TASKQ_MAX_CONCURRENCY": "1"},
             )
         )
+        # Worker B has genuinely joined (the spawn's own join verification).
+        # THE RELEASE — the test's decision, not a timer's: worker A's held
+        # attempt ends here, and the backlog drains across both processes.
+        await open_e2e_release_gate(conn, schema, "priority-release")
         async with asyncio.timeout(120):
             while True:
                 done = await conn.fetchval(
@@ -327,6 +345,15 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
     finally:
         for pod in fleet.values():
             reap(pod)
+        # Best-effort gate release + cleanup: a failed assertion must not
+        # leave a worker inside the gate-held body through reap's grace,
+        # and the gate row must not outlive this test in the shared module
+        # schema. Never masks the test's own verdict.
+        try:
+            await open_e2e_release_gate(conn, schema, "priority-release")
+            await clear_e2e_release_gate(conn, schema, "priority-release")
+        except Exception as exc:
+            print(f"[priority] gate cleanup warning: {exc!r}")
         await conn.close()
         await pool.close()
 
@@ -575,6 +602,13 @@ async def test_priority_first_claim_tracks_the_law_inverted_backlog_outranks(
     priority_flow: str | None = None
     backlog_ids: list[str] = []
     try:
+        # The same release gate the primary test seeds: this control's shape
+        # leaves the chain row unclaimed (the backlog outranks it), but a
+        # slow run can still see the chain row claimed after the backlog
+        # drains — the gate holds that body too, and the cleanup below
+        # releases it so reap stays graceful.
+        await conn.execute(e2e_release_gate_ddl(schema))
+        await seed_e2e_release_gate(conn, schema, "priority-release")
         priority_flow = await _run(pool, schema, "policy_priority_fleet")
         # This control's own rows, captured by id: its counts and its cleanup
         # are scoped to them, so the shared module schema's other tests (and
@@ -663,6 +697,11 @@ async def test_priority_first_claim_tracks_the_law_inverted_backlog_outranks(
         # failure is printed loudly (the rows may remain) and never masks the
         # test's own verdict.
         try:
+            # The gate first: release any gate-held body (reap stays
+            # graceful) and remove the row (the shared module schema's
+            # other tests seed their own).
+            await open_e2e_release_gate(conn, schema, "priority-release")
+            await clear_e2e_release_gate(conn, schema, "priority-release")
             flow_row_ids: list[str] = []
             if priority_flow is not None:
                 flow_row_ids = [
@@ -723,65 +762,137 @@ async def test_two_process_distinct_cohorts_enforce_independently_and_the_operat
                 cap,
             )
 
+        # The release gate: cohort A's saturation body holds its attempt —
+        # the worker's slot, the row's lock and the cohort's single reserved
+        # slot all genuinely occupied — until THIS test opens the gate.
+        # The test, not a timer, decides the window.
+        await conn.execute(e2e_release_gate_ddl(schema))
+        await seed_e2e_release_gate(conn, schema, "cohort-a-release")
+
         flow_id = await _run(pool, schema, "policy_two_cohort_fleet")
 
-        # Two real worker processes, each claiming one row per round; their
-        # boots run the capacity sync whose mismatch diagnostic the logs
-        # must carry. They enter through the diagnostic entry (the same app
-        # import + the production worker_main_async's setup_logging), because
-        # the shared fleet entry's pre-setup chain filters INFO by design.
-        for name in ("cohort-a", "cohort-b"):
-            fleet[name] = await spawn_joined_worker(
-                conn,
-                pg_dsn,
-                schema,
-                tag=name,
-                extra_env={"TASKQ_QUEUES": "default", "TASKQ_MAX_CONCURRENCY": "1"},
-                log_sink=f"{log_sink}-{name}",
-                entry=WF_DIAG_ENTRY,
-            )
-
-        async def step_row(step_key: str, map_index: int) -> dict[str, Any]:
-            row = await conn.fetchrow(
-                f"""SELECT id, status::text AS status, started_at
-                    FROM "{schema}".jobs
-                    WHERE metadata->>'flow_id' = $1 AND step_key = $2 AND map_index = $3""",
+        # PHASED, like the late-priority phase. Worker A first; its boot runs
+        # the capacity sync whose mismatch diagnostic the logs must carry,
+        # through the diagnostic entry (the same app import + the production
+        # worker_main_async's setup_logging), because the shared fleet
+        # entry's pre-setup chain filters INFO by design.
+        fleet["cohort-a"] = await spawn_joined_worker(
+            conn,
+            pg_dsn,
+            schema,
+            tag="cohort-a",
+            extra_env={"TASKQ_QUEUES": "default", "TASKQ_MAX_CONCURRENCY": "1"},
+            log_sink=f"{log_sink}-cohort-a",
+            entry=WF_DIAG_ENTRY,
+        )
+        awork_ids = [
+            str(row["id"])
+            for row in await conn.fetch(
+                f"""SELECT id FROM "{schema}".jobs
+                    WHERE metadata->>'flow_id' = $1 AND step_key = 'awork' ORDER BY id""",
                 flow_id,
-                step_key,
-                map_index,
             )
-            assert row is not None, (step_key, map_index)
-            return dict(row)
+        ]
+        assert len(awork_ids) == 2, awork_ids
+        ca_worker_id = await conn.fetchval(
+            f'SELECT id FROM "{schema}".workers WHERE pid = $1',
+            fleet["cohort-a"].proc.pid,
+        )
+        assert ca_worker_id is not None
+        # The CLAIM HANDSHAKE, on this independent connection: the exact
+        # cohort-A row worker A claimed, via the row's durable claim state
+        # (running + locked_by_worker = A's registered id — the same
+        # race-free shape the late-priority phase observes; the gate holds
+        # it running indefinitely, so this has no duration to race). The
+        # attempts' WINDOWS below are the job_attempts facts.
+        async with asyncio.timeout(90):
+            while True:
+                a1_row = await conn.fetchrow(
+                    f"""SELECT id::text AS job_id, started_at
+                        FROM "{schema}".jobs
+                        WHERE id = ANY($1::uuid[]) AND status = 'running'
+                          AND locked_by_worker = $2::uuid""",
+                    awork_ids,
+                    ca_worker_id,
+                )
+                if a1_row is not None:
+                    break
+                await asyncio.sleep(0.02)
+        a1_id = str(a1_row["job_id"])
+        a2_id = next(cand for cand in awork_ids if cand != a1_id)
 
-        # The observed window: cohort A's first row holds its strict slot
-        # (an 8s body) while cohort B's rows claim and complete, and A's
-        # second row stays unclaimed — the reservation-headroom fence
-        # refuses it because A's one slot is held. B is not throttled.
+        # Worker B second — its process does not exist until A1's claim is a
+        # durable fact, so no legal schedule can put B's attempts ahead of
+        # A1's claim.
+        fleet["cohort-b"] = await spawn_joined_worker(
+            conn,
+            pg_dsn,
+            schema,
+            tag="cohort-b",
+            extra_env={"TASKQ_QUEUES": "default", "TASKQ_MAX_CONCURRENCY": "1"},
+            log_sink=f"{log_sink}-cohort-b",
+            entry=WF_DIAG_ENTRY,
+        )
+        cb_worker_id = await conn.fetchval(
+            f'SELECT id FROM "{schema}".workers WHERE pid = $1',
+            fleet["cohort-b"].proc.pid,
+        )
+        assert cb_worker_id is not None
+
+        # Cohort B claims and completes inside A1's open window — the free
+        # cohort is not throttled by A's saturation.
         async with asyncio.timeout(120):
             while True:
-                a1, a2 = await step_row("awork", 0), await step_row("awork", 1)
                 b_done = await conn.fetchval(
                     f"""SELECT count(*) FROM "{schema}".jobs
                         WHERE metadata->>'flow_id' = $1 AND step_key = 'bwork'
                           AND status = 'succeeded'""",
                     flow_id,
                 )
-                if a1["status"] == "running" and int(b_done or 0) == 2:
+                if int(b_done or 0) == 2:
                     break
                 await asyncio.sleep(0.05)
-        assert a2["started_at"] is None, (
-            "cohort A's second row must stay unclaimed while its one strict "
-            f"slot is held: a1={a1}, a2={a2}, b_done={b_done}"
+
+        # THE FENCE, witnessed across A1's whole open window — after cohort
+        # B's completions, i.e. after the free worker has had dispatch
+        # opportunity aplenty: A1 is STILL running (the gate holds its
+        # claim), and A2 is still an unclaimed pending row — never started,
+        # never locked. The reservation-headroom fence refused the free
+        # worker.
+        a1_open = await conn.fetchrow(
+            f"""SELECT status::text AS status, locked_by_worker
+                FROM "{schema}".jobs WHERE id = $1::uuid""",
+            a1_id,
+        )
+        assert a1_open is not None and a1_open["status"] == "running", (
+            f"A1 must still be running while the gate holds its claim: "
+            f"a1={a1_id}, got {None if a1_open is None else dict(a1_open)!r}"
+        )
+        a2_state = await conn.fetchrow(
+            f"""SELECT status::text AS status, started_at, locked_by_worker
+                FROM "{schema}".jobs WHERE id = $1::uuid""",
+            a2_id,
+        )
+        assert a2_state is not None, a2_id
+        a2_live = dict(a2_state)
+        assert (
+            a2_live["status"] == "pending"
+            and a2_live["started_at"] is None
+            and a2_live["locked_by_worker"] is None
+        ), (
+            "cohort A's second row must stay an unclaimed pending row while "
+            "A1's window is open (the fence refuses the free worker): "
+            f"a2={a2_live!r}, b_done={b_done}"
         )
         print(
-            "[cohorts] A1 running (slot held), A2 unclaimed, B1+B2 succeeded "
-            "inside A's window — the cohorts enforce independently"
+            "[cohorts] A1's claim open (gate-held), B1+B2 succeeded inside "
+            "A's window, A2 unclaimed — the cohorts enforce independently"
         )
 
-        # The cohorts' durable attempt facts: B's completions are exact
-        # attempts on its own rows, and A's rows complete after their slot
-        # frees.
-        async with asyncio.timeout(180):
+        # THE RELEASE — the test's own decision, after the observations
+        # above: A1 finishes, the slot and reservation free, A2 proceeds.
+        await open_e2e_release_gate(conn, schema, "cohort-a-release")
+        async with asyncio.timeout(120):
             while True:
                 done = await conn.fetchval(
                     f"""SELECT count(*) FROM "{schema}".jobs
@@ -793,6 +904,66 @@ async def test_two_process_distinct_cohorts_enforce_independently_and_the_operat
                 if int(done or 0) == 4:
                     break
                 await asyncio.sleep(0.05)
+
+        # The DURABLE causal order, from job_attempts on the exact rows
+        # (an attempt row materializes at its attempt's END; its started_at
+        # is the claim instant copied from the job row): A1 is exactly one
+        # gate-held attempt; every B attempt sits strictly INSIDE A1's
+        # attempt window (B claimed after A1's claim — the phased spawn —
+        # and finished before A1's release-gated completion); A2's first
+        # attempt starts only AFTER A1's attempt finished. A delayed-A
+        # schedule (B done before A1 even claims) violates the containment;
+        # a broken fence (A2 claimed during the hold) violates A2's order.
+        a1_window = await conn.fetchrow(
+            f"""SELECT count(*) AS n, min(a.started_at) AS started,
+                       max(a.finished_at) AS finished
+                FROM "{schema}".job_attempts AS a WHERE a.job_id = $1::uuid""",
+            a1_id,
+        )
+        assert a1_window is not None
+        a1w = dict(a1_window)
+        assert int(a1w["n"]) == 1 and a1w["started"] is not None and a1w["finished"] is not None, (
+            f"A1 must be exactly one (gate-held) attempt: {a1w}"
+        )
+        b_windows = await conn.fetch(
+            f"""SELECT a.job_id::text AS job_id, a.started_at, a.finished_at,
+                       a.worker_id::text AS worker_id
+                FROM "{schema}".job_attempts AS a
+                WHERE a.job_id IN (SELECT id FROM "{schema}".jobs
+                                   WHERE metadata->>'flow_id' = $1 AND step_key = 'bwork')
+                ORDER BY a.started_at""",
+            flow_id,
+        )
+        assert len(b_windows) == 2, f"both B rows must carry their own attempts: {b_windows!r}"
+        for window in b_windows:
+            assert (
+                window["started_at"] > a1w["started"] and window["finished_at"] < a1w["finished"]
+            ), (
+                "every B attempt must sit strictly inside A1's attempt window "
+                "(B progressed inside A's held slot, never before or after it): "
+                f"a1_window=[{a1w['started']}, {a1w['finished']}], b={dict(window)!r}"
+            )
+            assert window["worker_id"] == str(cb_worker_id), (
+                "B's work must belong to the second real process inside A's "
+                f"window: {dict(window)!r}"
+            )
+        a2_first = await conn.fetchrow(
+            f"""SELECT min(a.started_at) AS started FROM "{schema}".job_attempts AS a
+                WHERE a.job_id = $1::uuid""",
+            a2_id,
+        )
+        assert a2_first is not None and a2_first["started"] is not None, (
+            "A2 must have completed (its release-gated claim happened)"
+        )
+        assert a2_first["started"] > a1w["finished"], (
+            "A2's first attempt must start only after A1's attempt finished — "
+            f"the fence held across A1's whole window: a2_first={dict(a2_first)!r}, "
+            f"a1_finished={a1w['finished']}"
+        )
+        print(
+            "[cohorts] durable attempt order: B1,B2 strictly inside A1's "
+            "attempt window; A2's first attempt only after A1 finished"
+        )
 
         # Both cohorts' actor_config rows, as the declarations projected:
         # the operator-owned cohort's stored cap was NOT overwritten (the
@@ -830,6 +1001,15 @@ async def test_two_process_distinct_cohorts_enforce_independently_and_the_operat
             "[cohorts] the operator mismatch diagnostic fired on both real boots; the matching cohort stayed quiet"
         )
     finally:
+        try:
+            # Release any gate-held body (a failed assertion must not leave a
+            # worker inside it through reap's grace) and remove the row (the
+            # shared module schema's other tests seed their own). Never
+            # masks the test's own verdict.
+            await open_e2e_release_gate(conn, schema, "cohort-a-release")
+            await clear_e2e_release_gate(conn, schema, "cohort-a-release")
+        except Exception as exc:
+            print(f"[cohorts] gate cleanup warning: {exc!r}")
         for pod in fleet.values():
             reap(pod)
         await conn.close()
