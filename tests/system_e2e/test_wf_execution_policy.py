@@ -606,8 +606,11 @@ async def test_priority_first_claim_tracks_the_law_inverted_backlog_outranks(
         # The same release gate the primary test seeds: this control's shape
         # leaves the chain row unclaimed (the backlog outranks it), but a
         # slow run can still see the chain row claimed after the backlog
-        # drains — the gate holds that body too, and the cleanup below
-        # releases it so reap stays graceful.
+        # drains — the gate holds that body (it neither completes nor
+        # retries while the gate is closed). The cleanup cannot release it:
+        # the finally hard-reaps first (`reap` is `proc.kill()` — no grace
+        # phase; no gate-held body survives), and the open/clear afterwards
+        # is row hygiene for the shared module schema.
         await conn.execute(e2e_release_gate_ddl(schema))
         await seed_e2e_release_gate(conn, schema, "priority-release")
         priority_flow = await _run(pool, schema, "policy_priority_fleet")
