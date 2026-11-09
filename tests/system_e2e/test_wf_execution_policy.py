@@ -19,7 +19,7 @@ from taskq._ids import new_uuid
 from taskq.workflows import FlowRunner
 from tests.system_e2e._harness import WorkerProc, reap
 from tests.system_e2e._wf_app import MARCH_FLOWS
-from tests.system_e2e._wf_harness import spawn_wf_fleet
+from tests.system_e2e._wf_harness import WF_DIAG_ENTRY, spawn_joined_worker, spawn_wf_fleet
 
 pytestmark = [pytest.mark.system, pytest.mark.integration]
 
@@ -225,8 +225,7 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
         # claims are strictly sequential (the next claim's statement runs
         # after the previous body's completion), so the worker's own earliest
         # attempt IS its first eligible claim — a durable record, never a
-        # cross-worker clock inference. It boots and dispatches strictly
-        # before the second worker's process exists.
+        # cross-worker clock inference.
         fleet = await spawn_wf_fleet(
             conn,
             pg_dsn,
@@ -234,8 +233,31 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
             ["policy-pa"],
             extra_env={"TASKQ_QUEUES": "default", "TASKQ_MAX_CONCURRENCY": "1"},
         )
-        # The SECOND default worker, spawned after the first worker's joined
-        # observation; the backlog drains across the two real processes.
+        # The FIRST-WORK HANDSHAKE, observed on this independent connection
+        # before worker B exists: the exact high row is claimed BY worker A —
+        # its `locked_by_worker` is A's own registered row and the row is
+        # still running inside A's held workload. Worker B starts only after
+        # this observation, so no legal schedule can put B's dispatch ahead
+        # of A's first claim.
+        pa_worker_id = await conn.fetchval(
+            f'SELECT id FROM "{schema}".workers WHERE pid = $1',
+            fleet["policy-pa"].proc.pid,
+        )
+        assert pa_worker_id is not None
+        async with asyncio.timeout(60):
+            while True:
+                claimed = await conn.fetchval(
+                    f"""SELECT count(*) FROM "{schema}".jobs
+                        WHERE id = $1::uuid AND status = 'running'
+                          AND locked_by_worker = $2::uuid""",
+                    high_row_id,
+                    pa_worker_id,
+                )
+                if int(claimed or 0) == 1:
+                    break
+                await asyncio.sleep(0.02)
+        # The SECOND default worker, spawned after the first-work observation;
+        # the backlog drains across the two real processes.
         fleet.update(
             await spawn_wf_fleet(
                 conn,
@@ -666,5 +688,149 @@ async def test_priority_first_claim_tracks_the_law_inverted_backlog_outranks(
             await conn.execute(f'DELETE FROM "{schema}".jobs WHERE id = ANY($1::uuid[])', owned_ids)
         except Exception as exc:  # Why: the cleanup's own failure is a hygiene warning, never a replacement for the test's verdict.
             print(f"[priority-inverted] cleanup warning (rows may remain): {exc!r}")
+        await conn.close()
+        await pool.close()
+
+
+@pytest.mark.timeout(300)
+async def test_two_process_distinct_cohorts_enforce_independently_and_the_operator_mismatch_is_observed(
+    pg_dsn: str, module_pg_schema: Any, tmp_path: Any
+) -> None:
+    """The issue's distinct-cohorts acceptance on two real worker processes:
+    the chain's two cohorts project two actor_config rows with different
+    capacity owners; cohort A's strict slot saturates (its rows serialize
+    through one execution while the others are refused or denied) and that
+    saturation does not throttle cohort B, whose rows claim and complete
+    inside A's execution span; and the operator-owned mismatch's diagnostic
+    actually fires on every real worker's boot while the matching code-owned
+    cohort stays quiet."""
+    schema = module_pg_schema.schema_name
+    log_sink = str(tmp_path / "cohort-worker.log")
+    fleet: dict[str, WorkerProc] = {}
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        # The operator pre-seeds both cohort rows: cohort A's stored cap
+        # (2) MISmatches its declared literal (1) — the genuine mismatch —
+        # and cohort B's stored cap (1) matches its declared literal.
+        for actor, cap in (("wf-policy-cap-a", 2), ("wf-policy-cap-b", 1)):
+            await conn.execute(
+                f'INSERT INTO "{schema}".actor_config '
+                "(actor, queue, max_concurrent, metadata) "
+                "VALUES ($1, 'default', $2, '{\"workflow_actor\": true}'::jsonb) "
+                "ON CONFLICT (actor) DO UPDATE SET max_concurrent = $2",
+                actor,
+                cap,
+            )
+
+        flow_id = await _run(pool, schema, "policy_two_cohort_fleet")
+
+        # Two real worker processes, each claiming one row per round; their
+        # boots run the capacity sync whose mismatch diagnostic the logs
+        # must carry. They enter through the diagnostic entry (the same app
+        # import + the production worker_main_async's setup_logging), because
+        # the shared fleet entry's pre-setup chain filters INFO by design.
+        for name in ("cohort-a", "cohort-b"):
+            fleet[name] = await spawn_joined_worker(
+                conn,
+                pg_dsn,
+                schema,
+                tag=name,
+                extra_env={"TASKQ_QUEUES": "default", "TASKQ_MAX_CONCURRENCY": "1"},
+                log_sink=f"{log_sink}-{name}",
+                entry=WF_DIAG_ENTRY,
+            )
+
+        async def step_row(step_key: str, map_index: int) -> dict[str, Any]:
+            row = await conn.fetchrow(
+                f"""SELECT id, status::text AS status, started_at
+                    FROM "{schema}".jobs
+                    WHERE metadata->>'flow_id' = $1 AND step_key = $2 AND map_index = $3""",
+                flow_id,
+                step_key,
+                map_index,
+            )
+            assert row is not None, (step_key, map_index)
+            return dict(row)
+
+        # The observed window: cohort A's first row holds its strict slot
+        # (an 8s body) while cohort B's rows claim and complete, and A's
+        # second row stays unclaimed — the reservation-headroom fence
+        # refuses it because A's one slot is held. B is not throttled.
+        async with asyncio.timeout(120):
+            while True:
+                a1, a2 = await step_row("awork", 0), await step_row("awork", 1)
+                b_done = await conn.fetchval(
+                    f"""SELECT count(*) FROM "{schema}".jobs
+                        WHERE metadata->>'flow_id' = $1 AND step_key = 'bwork'
+                          AND status = 'succeeded'""",
+                    flow_id,
+                )
+                if a1["status"] == "running" and int(b_done or 0) == 2:
+                    break
+                await asyncio.sleep(0.05)
+        assert a2["started_at"] is None, (
+            "cohort A's second row must stay unclaimed while its one strict "
+            f"slot is held: a1={a1}, a2={a2}, b_done={b_done}"
+        )
+        print(
+            "[cohorts] A1 running (slot held), A2 unclaimed, B1+B2 succeeded "
+            "inside A's window — the cohorts enforce independently"
+        )
+
+        # The cohorts' durable attempt facts: B's completions are exact
+        # attempts on its own rows, and A's rows complete after their slot
+        # frees.
+        async with asyncio.timeout(180):
+            while True:
+                done = await conn.fetchval(
+                    f"""SELECT count(*) FROM "{schema}".jobs
+                        WHERE metadata->>'flow_id' = $1
+                          AND step_key IN ('awork', 'bwork')
+                          AND status = 'succeeded'""",
+                    flow_id,
+                )
+                if int(done or 0) == 4:
+                    break
+                await asyncio.sleep(0.05)
+
+        # Both cohorts' actor_config rows, as the declarations projected:
+        # the operator-owned cohort's stored cap was NOT overwritten (the
+        # mismatch's durable half), the code-owned cohort's row carries the
+        # code's literal.
+        a_config = await conn.fetchrow(
+            f"""SELECT max_concurrent FROM "{schema}".actor_config
+                WHERE actor = 'wf-policy-cap-a'"""
+        )
+        b_config = await conn.fetchrow(
+            f"""SELECT max_concurrent FROM "{schema}".actor_config
+                WHERE actor = 'wf-policy-cap-b'"""
+        )
+        assert a_config is not None
+        a_values = dict(a_config)
+        assert a_values["max_concurrent"] == 2, a_values
+        assert b_config is not None
+        b_values = dict(b_config)
+        assert b_values["max_concurrent"] == 1, b_values
+
+        # The operator-owned mismatch diagnostic actually fires, on both real
+        # workers' boots; the matching code-owned cohort fires nothing.
+        for name in fleet:
+            assert _log_has_event(
+                log_sink + f"-{name}",
+                "actor-config-capacity-override",
+                "wf-policy-cap-a",
+            ), f"worker {name}'s boot must log the operator-owned mismatch for cohort A"
+            assert not _log_has_event(
+                log_sink + f"-{name}",
+                "actor-config-capacity-code-change",
+                "wf-policy-cap-b",
+            ), f"worker {name}'s boot must stay quiet on the matching code-owned cohort B"
+        print(
+            "[cohorts] the operator mismatch diagnostic fired on both real boots; the matching cohort stayed quiet"
+        )
+    finally:
+        for pod in fleet.values():
+            reap(pod)
         await conn.close()
         await pool.close()

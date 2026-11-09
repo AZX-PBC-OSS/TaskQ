@@ -610,12 +610,21 @@ async def policy_reserved_source(ctx: Any) -> None:
     )
 
 
+async def policy_priority_body(ctx: Any, item: dict[str, object]) -> PolicyOutcome:
+    """The priority chain's own workload: one held claim for a long, bounded
+    beat — the late-priority phase's participation gate (the first worker
+    stays busy on the high row until the second worker has joined, so both
+    real processes deterministically share the backlog)."""
+    await asyncio.sleep(10.0)
+    return PolicyOutcome.DONE
+
+
 POLICY_PRIORITY_CHAIN = Chain(
     name="execution-policy-priority-chain",
     start="work",
     steps={
         "work": Step(
-            body=policy_reserved_body,
+            body=policy_priority_body,
             outcomes=PolicyOutcome,
             policy=ExecutionPolicy(actor="wf-policy-priority", priority=9),
         )
@@ -641,6 +650,114 @@ async def policy_priority_source(ctx: Any) -> None:
 @policy_app.workflow("policy_reserved_fleet")
 def policy_reserved_fleet() -> Promise[object]:
     return build(chain_source(POLICY_RESERVED_CHAIN, policy_reserved_source, key="source"))
+
+
+# ── the compact two-cohort control: one saturated cohort, one free cohort ──
+
+
+async def policy_cohort_a_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """The saturated cohort's workload: one strict slot, held for a long,
+    bounded beat — longer than the fleet's spawn-verification window, so the
+    other cohort's rows claim, complete, and leave durable attempts inside
+    the observed window, and the second A row's refusal is observable
+    on the test's own connection."""
+    await asyncio.sleep(20.0)
+    return PolicyOutcome.DONE
+
+
+async def policy_cohort_b_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """The free cohort's workload: fast bodies whose durable attempts land
+    while the other cohort's slot is held."""
+    await asyncio.sleep(0.1)
+    return PolicyOutcome.DONE
+
+
+POLICY_COHORT_A_CHAIN = Chain(
+    name="policy-cohort-a-chain",
+    start="awork",
+    steps={
+        "awork": Step(
+            body=policy_cohort_a_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-cap-a",
+                queue="default",
+                priority=5,
+                max_concurrent=1,
+                # The operator owns this cohort's stored capacity: the boot's
+                # diagnostic fires on the declared/stored mismatch and the
+                # stored value is never overwritten.
+                capacity_owner="operator",
+                reservations=(
+                    ConcurrencyReservation(
+                        "policy-cohort-a-slot",
+                        slots=1,
+                        lease=timedelta(seconds=30),
+                    ),
+                ),
+            ),
+        )
+    },
+)
+
+POLICY_COHORT_B_CHAIN = Chain(
+    name="policy-cohort-b-chain",
+    start="bwork",
+    steps={
+        "bwork": Step(
+            body=policy_cohort_b_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-cap-b",
+                queue="default",
+                priority=3,
+                max_concurrent=1,
+                # The code owns this cohort's stored capacity: a matching
+                # stored row fires no diagnostic; a drifted one deploys by
+                # boot.
+                capacity_owner="code",
+            ),
+        )
+    },
+)
+
+
+async def policy_cohort_a_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_COHORT_A_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"cap-a-{index}",
+            )
+            for index in range(2)
+        ],
+        cursor={"page": 0},
+    )
+
+
+async def policy_cohort_b_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_COHORT_B_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"cap-b-{index}",
+            )
+            for index in range(2)
+        ],
+        cursor={"page": 0},
+    )
+
+
+@policy_app.workflow("policy_two_cohort_fleet")
+def policy_two_cohort_fleet() -> Promise[object]:
+    return build(
+        chain_source(POLICY_COHORT_A_CHAIN, policy_cohort_a_source, key="source-a"),
+        chain_source(POLICY_COHORT_B_CHAIN, policy_cohort_b_source, key="source-b"),
+    )
 
 
 @policy_app.workflow("policy_priority_fleet")
@@ -898,6 +1015,7 @@ MARCH_FLOWS: dict[str, Any] = {
     "policy_fix_fleet": policy_app.get("policy_fix_fleet"),
     "policy_non_consuming_fleet": policy_app.get("policy_non_consuming_fleet"),
     "policy_deadline_fleet": policy_app.get("policy_deadline_fleet"),
+    "policy_two_cohort_fleet": policy_app.get("policy_two_cohort_fleet"),
     "policy_code_cap_fleet": policy_app.get("policy_code_cap_fleet"),
     "policy_operator_cap_fleet": policy_app.get("policy_operator_cap_fleet"),
     "deep_research": research_app.get("deep_research"),
