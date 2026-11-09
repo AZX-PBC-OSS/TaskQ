@@ -1,0 +1,13 @@
+{
+  "pin": "row-width-mutation pin",
+  "vanilla": {
+    "heap_per_row": 241.664,
+    "avg_tuple": "232.0000000000000000"
+  },
+  "padded": {
+    "heap_per_row": 264.6016,
+    "avg_tuple": "251.0000000000000000"
+  },
+  "tuple_delta_bytes": "19.0000000000000000",
+  "head_sha": "70bcfd1d7692169d48c16bc6f5b7a0a7a2eed0b0"
+}

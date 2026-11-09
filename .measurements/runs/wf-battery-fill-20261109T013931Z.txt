@@ -1,0 +1,5 @@
+# the wf battery's FILL at the re-stamp head 70bcfd1d7692169d48c16bc6f5b7a0a7a2eed0b0
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+986 passed, 1 warning in 141.05s (0:02:21)
+rc=0
+head: 70bcfd1d7692169d48c16bc6f5b7a0a7a2eed0b0

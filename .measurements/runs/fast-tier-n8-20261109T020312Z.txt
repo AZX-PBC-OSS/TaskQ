@@ -1,0 +1,16 @@
+# THE FAST TIER at -n 8 at the re-stamp head 70bcfd1d7692169d48c16bc6f5b7a0a7a2eed0b0 (pytest -n 8 -m 'not slow and not load_sensitive')
+pytest rc=0
+SKIPPED [1] tests/test_scenario_grounds.py:117: the scenario grounds need a real Postgres/Redis: set TASKQ_SCENARIO_GROUNDS=1 to opt in
+SKIPPED [1] tests/test_scenario_grounds.py:187: the scenario grounds need a real Postgres/Redis: set TASKQ_SCENARIO_GROUNDS=1 to opt in
+SKIPPED [1] tests/test_scenario_grounds.py:106: the scenario grounds need a real Postgres/Redis: set TASKQ_SCENARIO_GROUNDS=1 to opt in
+SKIPPED [1] tests/test_scenario_grounds.py:87: the scenario grounds need a real Postgres/Redis: set TASKQ_SCENARIO_GROUNDS=1 to opt in
+SKIPPED [1] tests/test_scenario_grounds.py:163: the scenario grounds need a real Postgres/Redis: set TASKQ_SCENARIO_GROUNDS=1 to opt in
+SKIPPED [1] tests/test_scenario_grounds.py:70: the scenario grounds need a real Postgres/Redis: set TASKQ_SCENARIO_GROUNDS=1 to opt in
+SKIPPED [1] tests/test_scenario_grounds.py:143: the scenario grounds need a real Postgres/Redis: set TASKQ_SCENARIO_GROUNDS=1 to opt in
+SKIPPED [1] tests/test_attack_insights_rec.py:244: uvloop is not installed
+SKIPPED [3] tests/test_atk_upgrade_kill_mid_migration.py:154: boundary beyond this file's statement count
+SKIPPED [1] tests/test_memory_jobs_fixture.py:155: PG backend requires @pytest.mark.integration
+SKIPPED [1] tests/test_backend_equivalence.py:670: connection-loss test requires PostgresBackend
+14040 passed, 15 skipped, 151 warnings in 688.83s (0:11:28)
+rc=0
+head: 70bcfd1d7692169d48c16bc6f5b7a0a7a2eed0b0
