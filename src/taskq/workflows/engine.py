@@ -379,6 +379,21 @@ async def _run_tx1(
                 await conn.execute(
                     wsql.ledger_fence_by_id, ledger_id, error_class, ledger_claimed_at
                 )
+            else:
+                # The no-ledger-id caller (the Exit path's finalize,
+                # ``api/_runner.py``'s `_finalize_exit` call site) still
+                # fences its ledger row — by the node's own arbiter tuple
+                # (flow, step, attempt, map_index), the status-only fence:
+                # a fenced-out finalize's 'fenced' record is never left to
+                # the phantom reap.
+                await conn.execute(
+                    wsql.ledger_fence_attempt,
+                    flow_id,
+                    step_key,
+                    attempt,
+                    error_class,
+                    map_index,
+                )
             return _Tx1Outcome(applied=False)
 
         if ledger_id is not None:
