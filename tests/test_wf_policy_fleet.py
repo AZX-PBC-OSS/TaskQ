@@ -396,27 +396,28 @@ async def test_two_real_claimants_enforce_reserved_target_and_release_all_slots(
             await gate.registry.release_for_actor(gate.acquired)
 
     first_task = asyncio.create_task(consume(0))
-    second_task = asyncio.create_task(consume(1))
+    second_task: asyncio.Task[str] | None = None
     try:
         await asyncio.wait_for(entered.wait(), timeout=10)
-        # Reservation headroom may stop the second dispatch before its gate.
-        # Wait for that actual non-claim result while the winner remains inside
-        # the body; then release and complete both attempts.
-        completed, _pending_tasks = await asyncio.wait(
-            (first_task, second_task),
-            timeout=10,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        non_running = [task.result() for task in completed]
+        # `entered` means the winner is INSIDE the body with its reservation
+        # slot held (the gate's acquisition precedes the body). Only now does
+        # the second claimant dispatch, so the reservation-headroom fence's
+        # outcome is deterministic: the second row is not claimable, and the
+        # post-claim gate denial stays the fence's documented fallback, not
+        # this test's scheduling accident.
+        second_task = asyncio.create_task(consume(1))
+        non_running = [await asyncio.wait_for(second_task, timeout=10)]
         assert non_running == ["not-claimable"], non_running
         release.set()
-        outcomes = await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=20)
+        first_outcome = await asyncio.wait_for(first_task, timeout=20)
+        outcomes = [non_running[0], first_outcome]
     finally:
         release.set()
-        for task in (first_task, second_task):
+        live_tasks = [task for task in (first_task, second_task) if task is not None]
+        for task in live_tasks:
             if not task.done():
                 task.cancel()
-        await asyncio.gather(first_task, second_task, return_exceptions=True)
+        await asyncio.gather(*live_tasks, return_exceptions=True)
     assert sorted(outcomes) == ["not-claimable", "succeeded"], outcomes
     assert maximum_observed == 1, maximum_observed
     assert len(active_rows) == 1, active_rows

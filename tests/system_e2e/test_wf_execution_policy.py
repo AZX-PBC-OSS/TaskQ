@@ -175,21 +175,27 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
 
         priority_flow = await _run(pool, schema, "policy_priority_fleet")
         # The older priority-0 backlog is committed BEFORE the high row exists.
-        await conn.executemany(
-            f"""INSERT INTO "{schema}".jobs
-                (id, actor, queue, status, payload, max_attempts, retry_kind,
-                 scheduled_at, idempotency_scope, idempotency_key, priority)
-                VALUES ($1, 'wf_policy_backlog', 'default', 'pending',
-                        '{{}}', 3, 'transient', clock_timestamp(), $2, $3, 0)""",
-            [
-                (
-                    new_uuid(),
-                    f"policy-priority-backlog:{schema}",
-                    f"backlog-{index}",
+        # The exact inserted ids are captured so every count/attempt assertion
+        # below is scoped to THIS test's own rows — never a stale row from the
+        # module schema's other tests.
+        backlog_ids = [
+            row["id"]
+            for row in (
+                await conn.fetch(
+                    f"""INSERT INTO "{schema}".jobs
+                        (id, actor, queue, status, payload, max_attempts, retry_kind,
+                         scheduled_at, idempotency_scope, idempotency_key, priority)
+                        SELECT j.id, 'wf_policy_backlog', 'default', 'pending', '{{}}'::jsonb,
+                               3, 'transient', clock_timestamp(), j.scope, j.key, 0
+                        FROM unnest($1::uuid[], $2::text[], $3::text[]) AS j(id, scope, key)
+                        RETURNING id""",
+                    [new_uuid() for _ in range(12)],
+                    [f"policy-priority-backlog:{schema}"] * 12,
+                    [f"backlog-{index}" for index in range(12)],
                 )
-                for index in range(12)
-            ],
-        )
+            )
+        ]
+        assert len(backlog_ids) == 12
         # The source's own worker, alone on the control queue: the real source
         # emits the priority-9 chain row while no default-queue worker exists.
         fleet = await spawn_wf_fleet(
@@ -197,6 +203,8 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
         )
         # Commit visibility, observed on this independent connection: the
         # high row is readable as `pending` (never inferred from a clock).
+        # Its exact id scopes the first-work/done assertions to THIS run.
+        high_row_id: str | None = None
         async with asyncio.timeout(45):
             while True:
                 high_row = await conn.fetchrow(
@@ -205,8 +213,10 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
                     priority_flow,
                 )
                 if high_row is not None and high_row["status"] == "pending":
+                    high_row_id = str(high_row["id"])
                     break
                 await asyncio.sleep(0.02)
+        assert high_row_id is not None
         for pod in fleet.values():
             reap(pod)
         fleet = {}
@@ -239,13 +249,13 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
             while True:
                 done = await conn.fetchval(
                     f"""SELECT count(*) FROM "{schema}".jobs
-                        WHERE actor = 'wf_policy_backlog' AND status = 'succeeded'"""
+                        WHERE id = ANY($1::uuid[]) AND status = 'succeeded'""",
+                    backlog_ids,
                 )
                 high_done = await conn.fetchval(
                     f"""SELECT count(*) FROM "{schema}".jobs
-                        WHERE metadata->>'flow_id' = $1 AND step_key = 'work'
-                          AND status = 'succeeded'""",
-                    priority_flow,
+                        WHERE id = $1::uuid AND status = 'succeeded'""",
+                    high_row_id,
                 )
                 if int(done or 0) == 12 and int(high_done or 0) == 1:
                     break
@@ -257,7 +267,7 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
         # either default worker existed). A broken ordering claims the
         # backlog first.
         first_work = await conn.fetchrow(
-            f"""SELECT j.actor, j.step_key
+            f"""SELECT a.job_id, j.actor
                 FROM "{schema}".job_attempts AS a
                 JOIN "{schema}".jobs AS j ON j.id = a.job_id
                 WHERE a.worker_id = (SELECT id FROM "{schema}".workers WHERE pid = $1)
@@ -266,15 +276,16 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
             fleet["policy-pa"].proc.pid,
         )
         assert first_work is not None, "the first default worker recorded no attempt"
-        assert dict(first_work)["actor"] == "wf-policy-priority", (
-            "the first eligible default-queue claim must be the committed "
-            f"priority-9 row; the worker's first work was {dict(first_work)!r}"
+        assert str(first_work["job_id"]) == high_row_id, (
+            "the first eligible default-queue claim must be THIS run's "
+            f"priority-9 row; the worker's first work was {dict(first_work)!r} "
+            f"(the run's high row is {high_row_id})"
         )
         backlog_workers = await conn.fetch(
             f"""SELECT DISTINCT a.worker_id::text AS worker_id
                 FROM "{schema}".job_attempts AS a
-                JOIN "{schema}".jobs AS j ON j.id = a.job_id
-                WHERE j.actor = 'wf_policy_backlog'"""
+                WHERE a.job_id = ANY($1::uuid[])""",
+            backlog_ids,
         )
         assert len(backlog_workers) == 2, (
             f"the backlog must be processed across both real worker processes: {backlog_workers!r}"
@@ -539,26 +550,35 @@ async def test_priority_first_claim_tracks_the_law_inverted_backlog_outranks(
     fleet: dict[str, WorkerProc] = {}
     pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
     conn = await asyncpg.connect(pg_dsn)
+    priority_flow: str | None = None
+    backlog_ids: list[str] = []
     try:
         priority_flow = await _run(pool, schema, "policy_priority_fleet")
-        await conn.executemany(
-            f"""INSERT INTO "{schema}".jobs
-                (id, actor, queue, status, payload, max_attempts, retry_kind,
-                 scheduled_at, idempotency_scope, idempotency_key, priority)
-                VALUES ($1, 'wf_policy_backlog', 'default', 'pending',
-                        '{{}}', 3, 'transient', clock_timestamp(), $2, $3, 10)""",
-            [
-                (
-                    new_uuid(),
-                    f"policy-priority-backlog:{schema}",
-                    f"inverted-backlog-{index}",
+        # This control's own rows, captured by id: its counts and its cleanup
+        # are scoped to them, so the shared module schema's other tests (and
+        # this test's own leftovers) never enter its assertions.
+        backlog_ids = [
+            row["id"]
+            for row in (
+                await conn.fetch(
+                    f"""INSERT INTO "{schema}".jobs
+                        (id, actor, queue, status, payload, max_attempts, retry_kind,
+                         scheduled_at, idempotency_scope, idempotency_key, priority)
+                        SELECT j.id, 'wf_policy_backlog', 'default', 'pending', '{{}}'::jsonb,
+                               3, 'transient', clock_timestamp(), j.scope, j.key, 10
+                        FROM unnest($1::uuid[], $2::text[], $3::text[]) AS j(id, scope, key)
+                        RETURNING id""",
+                    [new_uuid() for _ in range(12)],
+                    [f"policy-priority-backlog:{schema}"] * 12,
+                    [f"inverted-backlog-{index}" for index in range(12)],
                 )
-                for index in range(12)
-            ],
-        )
+            )
+        ]
+        assert len(backlog_ids) == 12
         fleet = await spawn_wf_fleet(
             conn, pg_dsn, schema, ["inv-src"], extra_env={"TASKQ_QUEUES": "policy-control"}
         )
+        high_row_id: str | None = None
         async with asyncio.timeout(45):
             while True:
                 high_row = await conn.fetchrow(
@@ -567,8 +587,10 @@ async def test_priority_first_claim_tracks_the_law_inverted_backlog_outranks(
                     priority_flow,
                 )
                 if high_row is not None and high_row["status"] == "pending":
+                    high_row_id = str(high_row["id"])
                     break
                 await asyncio.sleep(0.02)
+        assert high_row_id is not None
         for pod in fleet.values():
             reap(pod)
         fleet = {}
@@ -585,24 +607,24 @@ async def test_priority_first_claim_tracks_the_law_inverted_backlog_outranks(
             while True:
                 backlog_claimed = await conn.fetchval(
                     f"""SELECT count(*) FROM "{schema}".jobs
-                        WHERE actor = 'wf_policy_backlog' AND started_at IS NOT NULL"""
+                        WHERE id = ANY($1::uuid[]) AND started_at IS NOT NULL""",
+                    backlog_ids,
                 )
                 if int(backlog_claimed or 0) > 0:
                     break
                 await asyncio.sleep(0.02)
         chain_claimed = await conn.fetchval(
-            f"""SELECT count(*) FROM "{schema}".jobs
-                WHERE metadata->>'flow_id' = $1 AND step_key = 'work'
-                  AND started_at IS NOT NULL""",
-            priority_flow,
+            f"""SELECT count(*) FROM "{schema}".job_attempts AS a
+                WHERE a.job_id = $1::uuid AND a.started_at IS NOT NULL""",
+            high_row_id,
         )
         if int(chain_claimed or 0) != 0:
             priorities = await conn.fetch(
                 f"""SELECT actor, priority, status::text AS status
                     FROM "{schema}".jobs
-                    WHERE actor = 'wf_policy_backlog'
-                       OR (metadata->>'flow_id' = $1 AND step_key = 'work')""",
-                priority_flow,
+                    WHERE id = ANY($1::uuid[]) OR id = $2::uuid""",
+                backlog_ids,
+                high_row_id,
             )
             raise AssertionError(
                 "with a higher-priority backlog the chain row must NOT be the "
@@ -613,5 +635,36 @@ async def test_priority_first_claim_tracks_the_law_inverted_backlog_outranks(
     finally:
         for pod in fleet.values():
             reap(pod)
+        # The control's rows must not outlive it: a priority-10 backlog row or
+        # a stale priority-9 chain row in the shared module schema would
+        # otherwise sit ahead of the primary test's own population. A cleanup
+        # failure is printed loudly (the rows may remain) and never masks the
+        # test's own verdict.
+        try:
+            flow_row_ids: list[str] = []
+            if priority_flow is not None:
+                flow_row_ids = [
+                    row["id"]
+                    for row in await conn.fetch(
+                        f"""SELECT id FROM "{schema}".jobs
+                            WHERE metadata->>'flow_id' = $1 OR id = $1::uuid""",
+                        priority_flow,
+                    )
+                ]
+            owned_ids = [*backlog_ids, *flow_row_ids]
+            await conn.execute(
+                f'DELETE FROM "{schema}".job_events WHERE job_id = ANY($1::uuid[])', owned_ids
+            )
+            await conn.execute(
+                f'DELETE FROM "{schema}".job_attempts WHERE job_id = ANY($1::uuid[])', owned_ids
+            )
+            if priority_flow is not None:
+                await conn.execute(
+                    f'DELETE FROM "{schema}".wf_step_ledger WHERE flow_id = $1::uuid',
+                    priority_flow,
+                )
+            await conn.execute(f'DELETE FROM "{schema}".jobs WHERE id = ANY($1::uuid[])', owned_ids)
+        except Exception as exc:  # Why: the cleanup's own failure is a hygiene warning, never a replacement for the test's verdict.
+            print(f"[priority-inverted] cleanup warning (rows may remain): {exc!r}")
         await conn.close()
         await pool.close()
