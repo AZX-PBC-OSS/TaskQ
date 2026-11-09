@@ -345,10 +345,11 @@ async def test_two_process_chain_policy_capacity_and_late_priority(
     finally:
         for pod in fleet.values():
             reap(pod)
-        # Best-effort gate release + cleanup: a failed assertion must not
-        # leave a worker inside the gate-held body through reap's grace,
-        # and the gate row must not outlive this test in the shared module
-        # schema. Never masks the test's own verdict.
+        # reap above is a hard kill (`proc.kill()` — no grace phase), so no
+        # gate-held body survives a failed assertion. What remains here is
+        # row hygiene: the gate row must not outlive this test in the
+        # shared module schema (the other tests seed their own).
+        # Best-effort, never masking the test's own verdict.
         try:
             await open_e2e_release_gate(conn, schema, "priority-release")
             await clear_e2e_release_gate(conn, schema, "priority-release")
@@ -697,9 +698,10 @@ async def test_priority_first_claim_tracks_the_law_inverted_backlog_outranks(
         # failure is printed loudly (the rows may remain) and never masks the
         # test's own verdict.
         try:
-            # The gate first: release any gate-held body (reap stays
-            # graceful) and remove the row (the shared module schema's
-            # other tests seed their own).
+            # The workers were already reaped above (a hard kill — no
+            # gate-held body survives), so this is row hygiene: the gate
+            # row must not outlive the control in the shared module schema
+            # (the other tests seed their own).
             await open_e2e_release_gate(conn, schema, "priority-release")
             await clear_e2e_release_gate(conn, schema, "priority-release")
             flow_row_ids: list[str] = []
@@ -1002,10 +1004,13 @@ async def test_two_process_distinct_cohorts_enforce_independently_and_the_operat
         )
     finally:
         try:
-            # Release any gate-held body (a failed assertion must not leave a
-            # worker inside it through reap's grace) and remove the row (the
-            # shared module schema's other tests seed their own). Never
-            # masks the test's own verdict.
+            # Open-then-clear BEFORE the reap loop below: the release is
+            # issued while the workers are still alive, so a gate-held body
+            # gets the chance to finish its beat instead of being killed
+            # mid-hold (reap itself is a hard kill — `proc.kill()`, no
+            # grace phase), and the row is removed so the shared module
+            # schema's other tests seed their own. Best-effort, never
+            # masking the test's own verdict.
             await open_e2e_release_gate(conn, schema, "cohort-a-release")
             await clear_e2e_release_gate(conn, schema, "cohort-a-release")
         except Exception as exc:
