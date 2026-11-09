@@ -129,7 +129,7 @@ async def _drive_until(
         await real_sleep(0)
         return result
 
-    # Patch where the name is LOOKED UP - run.py's own ``asyncio`` binding -
+    # Patch where the name is looked up - run.py's own ``asyncio`` binding -
     # not through to the global asyncio module (tests/_ns_patch.py).
     monkeypatch.setattr(run_mod, "asyncio", module_ns_proxy(asyncio, sleep=_round_counting_sleep))
 

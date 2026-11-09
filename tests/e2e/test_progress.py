@@ -203,7 +203,7 @@ async def test_progress_fanout_pubsub(
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 90.0
 
-        # SUBSCRIBE-first is mandatory: both pubsubs register (acks read back
+        # subscribe-first is mandatory: both pubsubs register (acks read back
         # explicitly) before the enqueue can race them server-side.
         pubsubs = [client.pubsub() for client in redis_clients]
         for pubsub in pubsubs:
@@ -302,7 +302,7 @@ async def test_progress_fanout_pubsub(
 
 _SSE_REPO_ROOT = Path(__file__).resolve().parents[2]
 _SSE_ADMIN_ENTRY = _SSE_REPO_ROOT / "tests" / "e2e" / "admin_entry.py"
-# Bind-and-release port selection loses a TOCTOU race now and then under
+# Bind-and-release port selection loses a toctou race now and then under
 # parallel load; a child that exits early with "address already in use" gets
 # this many total attempts, each on a fresh port.
 _SSE_MAX_BIND_ATTEMPTS = 3
@@ -443,7 +443,7 @@ async def test_progress_sse_stream(
     The admin server (``admin_entry.py``) mounts the progress router at
     ``/jobs`` which exposes ``GET /jobs/api/job/{job_id}/progress/stream``
     (``web/progress.py``). The SSE endpoint subscribes to the per-job
-    Redis pub/sub channel BEFORE reading the PG snapshot, so no events
+    Redis pub/sub channel before reading the PG snapshot, so no events
     are lost between the snapshot and the subscription.
 
     The test spawns the admin server with Redis configured (via
@@ -456,7 +456,7 @@ async def test_progress_sse_stream(
     pub/sub test above which subscribes to the global channel before
     enqueue): the SSE endpoint subscribes to the per-job channel, which
     requires the job_id. So the test enqueues first, then opens the SSE
-    stream. The SSE handler subscribes Redis BEFORE reading the PG
+    stream. The SSE handler subscribes Redis before reading the PG
     snapshot, so events published between the enqueue and the subscribe
     are captured by the initial PG snapshot read.
     """

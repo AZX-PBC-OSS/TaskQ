@@ -32,11 +32,11 @@ __all__ = [
     "wait_for_leader",
 ]
 
-# The full escape grammar rich can emit, not just SGR colors: CSI sequences
+# The full escape grammar rich can emit, not just sgr colors: csi sequences
 # (including private modes like ``\x1b[?25l`` cursor hide/show and colon/plus
 # sub-parameter forms like ``\x1b[38;5;196m``), bare two-byte escapes
-# (``\x1bc`` reset, ``\x1b7`` save cursor), and OSC string sequences (the
-# OSC 8 hyperlinks rich emits on link-aware terminals). Typer's rich help
+# (``\x1bc`` reset, ``\x1b7`` save cursor), and osc string sequences (the
+# osc 8 hyperlinks rich emits on link-aware terminals). Typer's rich help
 # renderer force-colorizes whenever ``GITHUB_ACTIONS`` is set - which is
 # every GitHub runner - so tests must never match raw CLI bytes.
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[!-~])")

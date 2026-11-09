@@ -8,27 +8,27 @@ threshold semantics. Nothing else.
 
 Hunted interleavings, worked out on paper from ``_batch_sql.py`` first:
 
-1. THE GRANT GAP (RED).  ``complete_batch``'s bounded handshake takes the
+1. the GRANT GAP (RED).  ``complete_batch``'s bounded handshake takes the
    batches row FOR UPDATE inside ``_bounded_batches_row_wait``'s
-   transaction and the completion write runs as the NEXT statement. On
+   transaction and the completion write runs as the next statement. On
    the transactional-caller shape the lock survives to the caller's
    COMMIT, exactly as the docstring promises ("the lock is held to the
    caller's commit"). On the AUTONOMOUS shape (a bare pool connection --
    every reissue, the ``connection=None`` backend path, the consumer
    hook's own shape) the handshake's transaction COMMITS at the end of
-   ``_bounded_batches_row_wait``, releasing the row lock BEFORE the
+   ``_bounded_batches_row_wait``, releasing the row lock before the
    completion UPDATE runs. An appender that takes the row in that gap
    holds it from its first member INSERT to its commit; the completion
    UPDATE then blocks on the row lock with a snapshot that predates the
    appender's commit, and the post-wait EPQ re-check re-evaluates the
-   NOT EXISTS guard against the ORIGINAL snapshot -- the just-committed
+   not EXISTS guard against the ORIGINAL snapshot -- the just-committed
    member is invisible -- so the batch flips 'complete' with a pending
    member. The docstring's serialization claim ("an appender arriving
    after the grant serializes behind the completion") is defeated by the
    gap, and the unbounded holder class the bounded wait exists for (the
    streaming append) parks the completion write unbounded.
 
-2. THE DROPPED REISSUE (RED).  ``apply_batch_terminal_outcome`` returns
+2. the DROPPED REISSUE (RED).  ``apply_batch_terminal_outcome`` returns
    whether the caller owes a post-commit re-arbitration, and its
    docstring says "the caller honors it by calling complete_batch
    (batch_id) again". The production caller -- ``worker/dispatch.py``,
@@ -39,7 +39,7 @@ Hunted interleavings, worked out on paper from ``_batch_sql.py`` first:
    the transaction (or a future caller that rides one) silently re-opens
    the stuck-batch hole the reissue was built to close.
 
-3. THE COUNTER'S ARITHMETIC (GREEN pins).  N concurrent failing members
+3. the COUNTER'S ARITHMETIC (GREEN pins).  N concurrent failing members
    must count exactly N (the bounded-wait skip is the documented M7
    loss class, not a silent race); threshold=1 aborts on the first
    failure and abort wins over complete; a running member outlives the
@@ -198,16 +198,16 @@ class _GrantGate:
 
 
 async def test_completion_write_races_an_append_into_the_grant_gap(pg_dsn: str) -> None:
-    """RED: on the autonomous shape the handshake's lock used to be released
-    before the completion write ran, so an appender that took the row in the
-    gap committed a member the completion write's snapshot never saw. The
+    """RED: on the autonomous shape the handshake's lock is released
+    before the completion write runs, so an appender that takes the row in the
+    gap commits a member the completion write's snapshot never sees. The
     batch must not reach 'complete' with a non-terminal member -- the
     docstring's "an appender arriving after the grant serializes behind the
     completion" promise, which the gap defeated.
 
     The choreography is deterministic in both worlds: the proxy parks the
     completion write until the appender has resolved the batches-row lock.
-    With the lock and the write in ONE transaction (the fix), the appender's
+    With the lock and the write in one transaction (the fix), the appender's
     bounded FOR UPDATE cannot be granted -- it times out against the
     completer's hold and inserts nothing, the serialization the docstring
     promises. With the two statements split across two transactions (the
@@ -304,7 +304,7 @@ async def test_dispatch_honors_the_reissue_owed_flag() -> None:
     """RED: the hook's reissue-owed return must survive the caller. The
     recorder stands in for the hook returning True (a gated-out attempt on
     the transactional-caller shape) and the backend records every
-    ``complete_batch`` reissue issued WITHOUT a connection -- the
+    ``complete_batch`` reissue issued without a connection -- the
     post-commit re-arbitration. A dispatch that drops the flag leaves the
     recorder empty and turns this pin red; the #589 contract ("the caller
     honors it by calling complete_batch(batch_id) again") then holds for
@@ -460,7 +460,7 @@ async def test_eight_concurrent_failures_count_exactly_eight(pg_dsn: str) -> Non
 async def test_threshold_one_first_failure_aborts_and_abort_wins_over_complete(
     pg_dsn: str,
 ) -> None:
-    """GREEN pin: threshold=1 -- the FIRST failure aborts the batch (the
+    """GREEN pin: threshold=1 -- the first failure aborts the batch (the
     increment's own count crosses the boundary), pending/scheduled members
     are cancelled, and the succeeding member's completion attempt never
     flips the aborted row back (abort wins, one terminal status)."""
@@ -584,7 +584,7 @@ async def test_running_member_outlives_the_abort_and_never_completes(pg_dsn: str
             f"is pending/scheduled only); cancelled {cancelled}"
         )
 
-        # The running member finishes AFTER the flip: success, hook, and the
+        # The running member finishes after the flip: success, hook, and the
         # completion attempt that must no-op on the aborted row.
         async with deps.worker_pool.acquire() as conn, conn.transaction():
             await conn.execute(
@@ -680,7 +680,7 @@ async def test_completion_reissue_racing_a_new_failure_is_consistent(pg_dsn: str
         assert batch is not None
         non_terminal = await _non_terminal_members_conn(deps, schema, bid)
         if batch.status == "complete":
-            # The reissue won: the failure's writes rode the row AFTER the
+            # The reissue won: the failure's writes rode the row after the
             # flip, so the counter is untouched and the member is terminal.
             assert non_terminal == 0, (
                 f"a 'complete' batch must have no non-terminal members; got {non_terminal}"

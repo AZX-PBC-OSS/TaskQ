@@ -195,10 +195,9 @@ SSO is a non-goal for v1.
 
 ### SAML container requirements
 
-`python3-saml` depends on the `xmlsec` Python package, which historically
-bound to the system `libxmlsec1` C library at both build and runtime. As
-currently pinned, this is no longer the case on common platforms: `xmlsec`
-ships prebuilt `manylinux`/`musllinux` wheels (Linux x86_64/aarch64, both
+`python3-saml` depends on the `xmlsec` Python package. As
+currently pinned, `xmlsec` ships prebuilt `manylinux`/`musllinux`
+wheels (Linux x86_64/aarch64, both
 glibc and musl) as well as macOS and Windows wheels, each bundling its
 native dependencies internally, confirmed via `ldd` against the installed
 extension module, which links only against base glibc (`libc`, `libm`,
@@ -402,7 +401,7 @@ it**: multi-replica deployments and `uvicorn --workers N` need no sticky
 sessions, and a login whose callback lands on a different process than the
 one that issued it completes normally.
 
-One caveat remains, and it is a different one than it used to be: the
+One caveat remains: the
 consumed-assertion replay record and the answered-request record live in a
 shared Postgres table (`saml_replay_store`, created by the bundled
 migrations) that every replica reads and writes, so a captured ACS POST

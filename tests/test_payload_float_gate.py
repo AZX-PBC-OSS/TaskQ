@@ -73,7 +73,7 @@ def _clean_handler(payload: _CleanPayload) -> None:
 
 
 class _CleanTypedPayload(BaseModel):
-    # a float constraint WITHIN the exact range: fine
+    # a float constraint within the exact range: fine
     ratio: float = Field(ge=0.0, le=1.0)
 
 
@@ -97,11 +97,11 @@ def test_the_alias_is_real_the_gate_is_not_paranoia() -> None:
         "if this assertion fails, f64 grew exact digits and the gate's "
         "threshold can move"
     )
-    assert aliased.amount >= 10**25  # the constraint the author wrote LIES
+    assert aliased.amount >= 10**25  # the constraint the author wrote lies
 
 
 def test_gate_threshold_is_the_f64_exact_integer_limit() -> None:
-    # AT the limit already aliases (2**53 - 1 rounds UP to 2**53, so a
+    # at the limit already aliases (2**53 - 1 rounds up to 2**53, so a
     # ge=2**53 constraint would accept a value the author read as one
     # below the bound): refused.
     class AtLimit(BaseModel):

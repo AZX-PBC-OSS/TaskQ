@@ -1,11 +1,11 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 
-"""Red-team pins: fleet-wide reclamation of keyed rate-limit/reservation rows.
+"""Adversarial review pins: fleet-wide reclamation of keyed rate-limit/reservation rows.
 
 The residual these pins close: keyed ``reservation_slots`` /
 ``rate_limit_buckets`` rows orphan when the worker that materialised them
 DIES. The in-process reclamation machinery (the registry's idle eviction
-plus ``drain_pending_reservation_reclaims``) only ever names rows its OWN
+plus ``drain_pending_reservation_reclaims``) only ever names rows its own
 process evicted - the pending-reclaim set, the tracked-key stamps, and
 the row-schema captures all live inside the dead process's registry, so
 no survivor can name the rows. A live worker that happens to re-resolve
@@ -63,6 +63,7 @@ from taskq.migrate import apply_pending
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry, sync_rate_limit_buckets
 from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.settings import WorkerSettings
 
@@ -226,7 +227,7 @@ async def _bucket_rows(pool: asyncpg.Pool, bucket: str) -> int:
 
 
 async def _slots_keyed(pool: asyncpg.Pool, bucket: str) -> bool | None:
-    """Whether EVERY slot row of *bucket* carries the fleet-reclaimable
+    """Whether every slot row of *bucket* carries the fleet-reclaimable
     mark (None when the bucket has no rows)."""
     async with pool.acquire() as conn:
         return await conn.fetchval(
@@ -294,7 +295,7 @@ async def test_orphaned_keyed_rows_are_reclaimed_after_worker_death(pg_dsn: str)
     rows is gone with the process (no pending-reclaim set, no tracked-key
     stamp, no row-schema capture survives it), and no live worker ever
     re-resolves the same concrete key - so the fleet sweep's row-borne
-    staleness is the ONLY signal left that can name them."""
+    staleness is the only signal left that can name them."""
     await _fresh_schema(pg_dsn)
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
     try:
@@ -404,7 +405,7 @@ async def test_static_bucket_rows_survive_the_sweep_forever(pg_dsn: str) -> None
             "fixture broken: the startup sync publish must never mark a row fleet-reclaimable"
         )
 
-        # 30 days stale, swept at the production horizon AND at a horizon
+        # 30 days stale, swept at the production horizon and at a horizon
         # narrower than their age - no horizon may touch them.
         await _age_slots(pool, "fleet-static-res", timedelta(days=30))
         await _age_bucket_row(pool, "fleet-static-rl", timedelta(days=30))
@@ -443,7 +444,7 @@ async def test_redis_backend_keyed_row_is_never_swept(pg_dsn: str) -> None:
         reg = RateLimitRegistry()
         # The resolution publishes the row (best-effort, idempotent);
         # the acquire then needs a Redis client this test does not
-        # inject, so it raises AFTER the publish - the RuntimeError is
+        # inject, so it raises after the publish - the RuntimeError is
         # the fixture's publish trigger, not a failure under test.
         with pytest.raises(RuntimeError, match="redis_client not injected"):
             await reg.acquire_for_actor(
@@ -485,7 +486,7 @@ async def test_stale_keyed_row_is_refreshed_by_acquire_and_release(pg_dsn: str) 
     writes - the statements that already touch the row refresh the
     staleness stamp; no dedicated stamping round trip exists.
 
-    Aged rows that are acquired again come back fresh on BOTH tables
+    Aged rows that are acquired again come back fresh on both tables
     (the reservation acquire CTE and the token bucket's preseed/upsert),
     and the reservation release stamps the row it frees."""
     await _fresh_schema(pg_dsn)
@@ -606,7 +607,7 @@ async def test_live_held_slot_vetoes_the_whole_bucket(pg_dsn: str) -> None:
     await _fresh_schema(pg_dsn)
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
     try:
-        # Acquire one of the two slots and KEEP it held (live lease).
+        # Acquire one of the two slots and keep it held (live lease).
         reg = RateLimitRegistry()
         handles = await reg.acquire_for_actor(
             rate_limits=[],
@@ -713,7 +714,7 @@ async def test_consumed_fixed_quota_bucket_survives_the_fleet_sweep(pg_dsn: str)
         # The bucket goes idle past the horizon with no acquire touching
         # it - no lease, no hold, nothing but ordinary idleness. The
         # sibling reservation_slots sweep vetoes a live-held bucket even
-        # PAST the horizon; this bucket has consumed quota but nothing
+        # past the horizon; this bucket has consumed quota but nothing
         # analogous protects it.
         await _age_bucket_row(pool, row_name, _HORIZON * 2)
 
@@ -1201,7 +1202,7 @@ async def test_concurrent_acquire_on_a_reclaim_candidate_never_partially_deletes
     slot on an orphan bucket that already sits in the sweep's candidate
     window (aged past the horizon, 2 slots, both free) before the sweep's
     DELETE runs, then let the sweep proceed. Expect the bucket to keep all
-    of its rows -- the freshly-acquired one AND its still-stale sibling --
+    of its rows -- the freshly-acquired one and its still-stale sibling --
     because the whole-bucket veto must fire on the re-checked state.
     """
     await _fresh_schema(pg_dsn)
@@ -1260,6 +1261,48 @@ async def test_concurrent_acquire_on_a_reclaim_candidate_never_partially_deletes
         )
 
         await res.release(lease, new_uuid(), pool=pool)
+    finally:
+        await pool.close()
+        await _drop_schema(pg_dsn)
+
+
+async def test_startup_sync_publishes_pg_backed_kinds_only(pg_dsn: str) -> None:
+    """The startup sync's kind dispatch, on real rows: a TokenBucket and a
+    GCRA window each land one rate_limit_buckets row (keyed=False); a
+    log-style window - no PG backend to sync - lands none.
+
+    (Converted from tests/test_ratelimit_registry.py's fake arm in the
+    mock-subtraction cure: the fake recorded the upsert calls; this counts
+    the rows the upserts wrote, and the absence of the log-style row.)"""
+    await _fresh_schema(pg_dsn)
+    pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
+    try:
+        reg = RateLimitRegistry()
+        reg.register(
+            TokenBucket(
+                name="sync-tb",
+                capacity=5,
+                refill_per_second=0.5,
+                backend="postgres",
+            )
+        )
+        reg.register(
+            SlidingWindow(name="sync-gcra", limit=5, window=timedelta(minutes=1), style="gcra")
+        )
+        reg.register(
+            SlidingWindow(name="sync-log", limit=5, window=timedelta(minutes=1), style="log")
+        )
+        await sync_rate_limit_buckets(reg, pool, schema=_schema())
+
+        assert await _bucket_rows(pool, "sync-tb") == 1
+        assert await _bucket_rows(pool, "sync-gcra") == 1
+        assert await _bucket_rows(pool, "sync-log") == 0, (
+            "a log-style window has no PG backend - the startup sync must "
+            "not publish a row for it (the admin UI would show a limiter "
+            "the worker never enforces on PG)"
+        )
+        assert await _bucket_keyed(pool, "sync-tb") is False
+        assert await _bucket_keyed(pool, "sync-gcra") is False
     finally:
         await pool.close()
         await _drop_schema(pg_dsn)

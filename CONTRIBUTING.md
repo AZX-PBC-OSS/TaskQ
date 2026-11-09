@@ -412,8 +412,9 @@ Fixes <issue number>
 
 ### What to Expect
 
-The full process a change passes through — red-first proofs, red-team
-review, the weather rule for CI reds, the migration immutability law —
+The full process a change passes through — failing-test-first proofs,
+adversarial review, the flake rule for CI failures, the migration
+immutability law —
 is documented in the [landing doctrine](docs/design/landing-doctrine.md).
 Reviewers check those rules by name; reading the page first saves a
 round trip.

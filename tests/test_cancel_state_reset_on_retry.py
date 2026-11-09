@@ -2,9 +2,9 @@
 cancel in flight must survive the actor's own write attempts.
 
 The regression: a cancel that escalated to ``cancel_phase = 2`` in the
-same moment the actor raised an ordinary retryable exception used to
-survive the retry write, leaving ``cancel_phase`` and
-``cancel_requested_at`` on the row.  Retries reuse the SAME job row, so
+same moment the actor raises an ordinary retryable exception must not
+survive the retry write — surviving it leaves ``cancel_phase`` and
+``cancel_requested_at`` on the row.  Retries reuse the same job row, so
 the next attempt was dispatched already at FORCED - the cancel
 controller's fast-advance then skipped straight past phase 2 without
 ever calling ``task.cancel()``, and the job could no longer be
@@ -13,7 +13,7 @@ cancelled.
 The merged contract splits the consumer's terminal writes by whether a
 cancel is in flight:
 
-- Every re-pend arm resets both columns ONLY behind the
+- Every re-pend arm resets both columns only behind the
   ``cancel_phase = 0`` fence: the crash-reclaim sweep, ``isolate_self``,
   and every deferral template's arms refuse a phase-carrying row
   outright, and so does ``mark_failed_or_retry``'s retry arm (pinned
@@ -122,7 +122,7 @@ async def test_mark_failed_or_retry_refuses_a_row_carrying_a_cancel_phase(
     assert row.cancel_requested_at is not None
 
     # The escalation ladder must stay armed: the worker's cancel-flag
-    # poll STILL returns the in-flight cancel - that poll is what feeds
+    # poll still returns the in-flight cancel - that poll is what feeds
     # the ladder that terminalises the row. This is the pin's real
     # teeth: on the unfenced write the retried arm resets
     # cancel_requested_at to NULL, so the poll comes back empty and the

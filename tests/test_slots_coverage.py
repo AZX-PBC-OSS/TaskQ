@@ -139,8 +139,8 @@ class TestExtendLeasesForJob:
         assert count == 1
 
         # The new lease (later + new_lease = _NOW + 130 s) is not expired at
-        # _NOW + 31 s even though the OLD lease (_NOW + 30 s) is.  Acquiring
-        # at _NOW + 31 s must NOT reclaim slot 0 - it takes slot 1 instead.
+        # _NOW + 31 s even though the old lease (_NOW + 30 s) is.  Acquiring
+        # at _NOW + 31 s must not reclaim slot 0 - it takes slot 1 instead.
         reclaimed = table.acquire(
             "bucket", new_uuid(), new_uuid(), _LEASE, _NOW + timedelta(seconds=31)
         )

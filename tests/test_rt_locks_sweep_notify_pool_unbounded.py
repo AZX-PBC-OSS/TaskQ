@@ -1,5 +1,5 @@
 # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team locks: backend sweeps acquire the notify/dispatcher pool with no timeout.
+"""Adversarial review locks: backend sweeps acquire the notify/dispatcher pool with no timeout.
 
 ``backend/postgres.py``'s sweep entrypoints acquire with
 ``async with self._notify_pool.acquire() as conn:`` - no ``timeout=``
@@ -62,7 +62,7 @@ async def test_sweep_notify_pool_acquire_must_be_bounded_under_held_dispatcher_c
     ``async with self._notify_pool.acquire() as conn:`` - no timeout=
     (same shape at ``deadline_sweep`` and ``reclaim_expired_locks``) - so
     with the pool's only connection held by a prune drain, the sweep
-    queued past the test's own 8 s bound; the ONLY thing that ended the
+    queued past the test's own 8 s bound; the only thing that ended the
     wait was this test's wait_for, proving the acquire itself carries no
     bound. A production-side bound that fires inside the window (e.g.
     dispatcher_command_timeout, the prune loop's own acquire convention)

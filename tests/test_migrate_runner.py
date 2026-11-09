@@ -46,7 +46,7 @@ class _FakeMigrateConn:
         return True  # schema_migrations table exists
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, str]]:
-        # Checksums are computed over the schema-RENDERED SQL, so the
+        # Checksums are computed over the schema-rendered SQL, so the
         # stand-in must hash with the same schema the caller passed
         # (parsed from the ledger query itself) or every applied key
         # would look drifted under the fail-closed contract.
@@ -86,7 +86,7 @@ def _patch_discover(monkeypatch: Any, migrations: list[Migration]) -> None:
 
 
 async def test_post_only_version_is_allowed(monkeypatch: Any) -> None:
-    """A post migration whose version has NO pre-phase counterpart is not
+    """A post migration whose version has no pre-phase counterpart is not
     guarded -- the ordering rule only binds pre/post pairs."""
     _patch_discover(
         monkeypatch,
@@ -188,7 +188,7 @@ async def test_guard_passes_when_pre_applied_earlier_in_same_run(
 class _FailOnMarkerConn(_FakeMigrateConn):
     """_FakeMigrateConn whose execute raises when the SQL contains a marker.
 
-    Lets a test fail ONE specific migration mid-apply while every other
+    Lets a test fail one specific migration mid-apply while every other
     migration executes normally.
     """
 
@@ -221,7 +221,7 @@ async def test_apply_pending_tags_exception_with_failing_transactional_migration
     """The self-diagnosis can only name the right file if the failure
     carries WHICH migration failed - the first-unrecorded-in-discover-order
     heuristic is wrong under ``--phase``. apply_pending must tag the raised
-    exception with the failing migration and re-raise the SAME object (the
+    exception with the failing migration and re-raise the same object (the
     type pins in test_migrate_no_transaction.py forbid wrapping)."""
     failing = _failing_migration("02.00.00_01", "pre", "tx-fail-marker", use_transaction=True)
     _patch_discover(monkeypatch, [_make_migration("01.00.00_01", "pre"), failing])
@@ -256,7 +256,7 @@ async def test_phase_guard_failure_report_names_offending_migration(
     monkeypatch: Any,
 ) -> None:
     """``migrate up --phase post`` on a stale schema trips the ordering
-    guard BEFORE the per-migration loop, so its ValueError carries no
+    guard before the per-migration loop, so its ValueError carries no
     ``taskq_failed_migration`` tag and the diagnosis fell back to the
     first-unrecorded heuristic - the report named the pre_initial FILE
     while the headline named the post VIOLATION. The guard knows the
@@ -437,7 +437,7 @@ class _ContendedLockConn(_FakeMigrateConn):
 
 async def test_migration_advisory_lock_contention_does_not_widen_statement_timeout() -> None:
     """Losing the lock race must return the caller-owned connection
-    WITHOUT a session-wide unlimited statement_timeout.
+    without a session-wide unlimited statement_timeout.
 
     The contention path raises SystemExit before any migration runs, and
     the connection returns to its owner (the CLI keeps it precisely to
@@ -580,11 +580,11 @@ async def test_apply_pending_locked_bounds_hung_conn_close(monkeypatch: Any) -> 
     conn = _HangCloseMigrateConn(applied=set())
     # Shrink seam: CLOSE_TIMEOUT_SECS is read from migrate_mod's module
     # globals at call time, and the outer timeout below is what makes the
-    # RED hang fail fast.
+    # red hang fail fast.
     monkeypatch.setattr(migrate_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: unguarded, apply_pending_locked awaited c.close()
-    # unbounded in its finally, so the RED state hangs forever instead of
+    # unbounded in its finally, so the red state hangs forever instead of
     # failing fast. Mirrors the CLI bounded-close tests.
     async with asyncio.timeout(5):
         applied = await migrate_mod.apply_pending_locked(
@@ -607,7 +607,7 @@ async def test_apply_pending_locked_bounds_hung_unlock_execute(monkeypatch: Any)
     monkeypatch.setattr(migrate_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: unguarded, the unlock execute was awaited
-    # unbounded in the finally, so the RED state hangs forever instead of
+    # unbounded in the finally, so the red state hangs forever instead of
     # failing fast.
     async with asyncio.timeout(5):
         applied = await migrate_mod.apply_pending_locked(

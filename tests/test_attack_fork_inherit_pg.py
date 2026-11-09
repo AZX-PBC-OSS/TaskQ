@@ -15,7 +15,7 @@ Four attacks:
    inherited connection and is refused before a byte moves.
 3. The full loop: a worker consumes a job whose body forks; the child
    refuses the inherited client pool, the worker reports
-   ``fork-detected-in-worker-process``, and the NEXT job still succeeds -
+   ``fork-detected-in-worker-process``, and the next job still succeeds -
    the parent is not punished for its child's fork.
 4. The subprocess cousin's dark side: a process that spawns a long-lived
    child with ``close_fds=False`` and dies - the child's copy of the PG
@@ -94,16 +94,16 @@ def _fork_body_actor():
     async def _fork_body_actor_impl(payload: _ForkProbePayload) -> None:
         assert _PROBE.verdict_path is not None
         assert _PROBE.client_pool is not None
-        # The parent holds one connection OUT of the TaskQ-built pool while
+        # The parent holds one connection out of the TaskQ-built pool while
         # it forks - the exact mid-flight shape: the child inherits this
         # connection's socket mid-protocol.
         conn = await _PROBE.client_pool.acquire()
         pid = os.fork()
         if pid == 0:
-            # THE CHILD: still inside the worker's coroutine, loop not
-            # running in this process, the inherited connection's socket
-            # one write away from corruption. The refusal must fire
-            # synchronously, before any wire byte.
+            # still inside the worker's coroutine, loop not running in this
+            # process, the inherited connection's socket one write away from
+            # corruption. The refusal must fire synchronously, before any wire
+            # byte.
             verdict = "allowed"
             try:
                 await conn.fetch("SELECT 1")
@@ -121,7 +121,7 @@ def _fork_body_actor():
         # Parent: the fork happened mid-body. Reap the child, release the
         # connection the child inherited (its copy died with it, never used),
         # then finish the job normally - the worker's loops own the report.
-        os.waitpid(pid, 0)  # noqa: ASYNC222  # Why: waitpid MUST block here - the child's verdict write must land before the parent releases the shared connection; asyncio's process APIs do not reap a raw fork().
+        os.waitpid(pid, 0)  # noqa: ASYNC222  # Why: waitpid must block here - the child's verdict write must land before the parent releases the shared connection; asyncio's process APIs do not reap a raw fork().
         await _PROBE.client_pool.release(conn)
         return None
 
@@ -157,7 +157,7 @@ async def test_forked_child_inherits_the_pools_sockets_and_is_refused(pg_dsn: st
     try:
         # A live, exercised connection leaves the parent's socket table...
         parent_sockets = _socket_inodes()
-        # ...and one STAYS acquired while the fork happens: the exact
+        # ...and one stays acquired while the fork happens: the exact
         # mid-flight shape, the child inherits a checked-out connection.
         conn = await pool.acquire()
         assert await conn.fetchval("SELECT 1") == 1
@@ -173,7 +173,7 @@ async def test_forked_child_inherits_the_pools_sockets_and_is_refused(pg_dsn: st
                     verdict = "no-inherited-sockets"
                 else:
                     # The same asyncio.run shape a prefork server's child
-                    # would use: a NEW loop in the child, the PARENT's
+                    # would use: a new loop in the child, the parent's
                     # connection underneath it.
                     async def child_uses() -> str:
                         try:
@@ -367,7 +367,7 @@ async def test_fork_in_a_job_body_refuses_reports_and_keeps_consuming(
             "at-fork parent hook or the loop's consume is broken"
         )
 
-        # The ledger: the PARENT's attempts completed BOTH jobs (the child
+        # The ledger: the parent's attempts completed both jobs (the child
         # refused the wire and died; the parent's body ran to its terminal
         # write, and the worker went on to the next job).
         check = await asyncpg.connect(pg_dsn)
@@ -437,7 +437,7 @@ def test_close_fds_false_child_holds_the_backend_alive_after_the_parent_dies(
     sleeper_pid = int(proc.stdout.strip())
 
     try:
-        # The spawning parent is DEAD; the backend lives in the sleeper.
+        # The spawning parent is dead; the backend lives in the sleeper.
         alive_with_parent_dead = _pg_backend_count(pg_dsn)
         assert alive_with_parent_dead >= 1, (
             "the close_fds=False child did not hold the backend: the leak "

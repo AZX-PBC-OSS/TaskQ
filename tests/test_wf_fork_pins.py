@@ -1,10 +1,10 @@
-"""The fork-family pins (T04): pin 18 (ID-COLLISION — the compiled graph owns ids), pin 19 (FORK-DEBT — the atomic fork makes the debt unrepresentable; the split-tx variant reds), pin 20 (OUTBOX-FLUSH — the drain completes the dispatch exactly once).
+"""The fork-family pins: pin 18 (ID-COLLISION — the compiled graph owns ids), pin 19 (FORK-DEBT — the atomic fork makes the debt unrepresentable; the split-tx variant reds), pin 20 (OUTBOX-FLUSH — the drain completes the dispatch exactly once).
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
 home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
 file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
-the unfenced variants kept in this file forever as the convicted shapes.
+the unfenced variants kept in this file forever as the rejected shapes.
 """
 
 # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
@@ -48,19 +48,18 @@ async def test_pin_18_no_id_collision(
 ) -> None:
     """A fork whose children derive ids from a ``{parent}.{child}``
     string-shape convention over hand-built parent ids containing dots
-    lands ALL forks on the SAME child ids (the silently wrong graph). The
+    lands ALL forks on the same child ids (the silently wrong graph). The
     engine mints per-fork uuid7 ids through the seam: 20 forks → 200
     distinct children, each with its own (parent_id, map_index)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
 
-    # THE RED — A REAL ENGINE MUTATION: the fork's id mint site swapped
-    # for the convicted string-shape convention (ids derived from a
-    # {parent}.{child}-style convention with no per-fork discriminator —
-    # 10 distinct ids TOTAL): the second fork's children collide with the
-    # first's on the PRIMARY KEY — the convicted graph cannot even be
-    # built, and a convention WITHOUT the PK would silently land the
-    # wrong graph (the same ids, the wrong parents' work). The shipped
-    # mint (uuid7 via the seam) forks 20 x 10 distinct children.
+    # the fork's id mint site swapped for the rejected string-shape convention
+    # (ids derived from a {parent}.{child}-style convention with no per-fork
+    # discriminator — 10 distinct ids total): the second fork's children
+    # collide with the first's on the PRIMARY KEY — the rejected graph cannot
+    # even be built, and a convention without the PK would silently land the
+    # wrong graph (the same ids, the wrong parents' work). The shipped mint
+    # (uuid7 via the seam) forks 20 x 10 distinct children.
     import taskq.workflows._fork as fork_module
 
     convicted_calls = itertools.count()
@@ -97,9 +96,8 @@ async def test_pin_18_no_id_collision(
         },
     )
 
-    # THE SHIPPED FORK: each parent's finalize atomically forks 10
-    # children; every child id is distinct, wiring lives in (parent_id,
-    # map_index).
+    # each parent's finalize atomically forks 10 children; every child id is
+    # distinct, wiring lives in (parent_id, map_index).
     forked_parents: list[JobId] = []
     for i in range(20):
         fork_parent = await seed_running_node(wf_conn, wf_schema, flow_id, step_key=f"fp{i}")
@@ -138,7 +136,7 @@ async def test_pin_18_no_id_collision(
         assert r["map_index"] is not None
 
 
-# ── Pin 19: FORK-DEBT (the atomic fork makes the debt unrepresentable) ──
+# ── Pin 19: fork-debt (the atomic fork makes the debt unrepresentable) ──
 
 
 @pytest.mark.integration
@@ -153,14 +151,13 @@ async def test_pin_19_fork_atomicity(
     """The split-tx variant — the parent's terminal commits, the fork's
     child INSERTs follow — hit by a kill in the window: a TERMINAL PARENT
     WITH A FORK DEBT (the partial fork, the join it owes never fires). The
-    ONE-transaction fork path makes it unrepresentable: a kill at ANY
+    one-transaction fork path makes it unrepresentable: a kill at any
     statement boundary rolls the whole tx back; the reclaim re-forks."""
     dsn = module_pg_schema.pg_dsn
     admin = await asyncpg.connect(dsn)
     flow_id = await seed_flow(wf_conn, wf_schema)
 
-    # THE SPLIT VARIANT (the red): terminal commit, then the kill before
-    # the children land.
+    # terminal commit, then the kill before the children land.
     split_parent = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="split")
     victim = await asyncpg.connect(dsn)
     victim_pid = await victim.fetchval("SELECT pg_backend_pid()")
@@ -188,8 +185,8 @@ async def test_pin_19_fork_atomicity(
         "observable — the red comparator is broken"
     )
 
-    # THE ATOMIC FORK (the shipped shape): the same kill, mid-fork — the
-    # whole tx rolls back; the parent stays running (the reclaim re-forks).
+    # the same kill, mid-fork — the whole tx rolls back; the parent stays
+    # running (the reclaim re-forks).
     atomic_parent = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="atomic")
     fork = ForkSpec(
         children=tuple(
@@ -226,7 +223,7 @@ async def test_pin_19_fork_atomicity(
         atomic_parent,
     )
     assert int(atomic_children) == 0, "never partial"
-    # The reclaim re-forks: the retry lands the WHOLE fork — exactly
+    # The reclaim re-forks: the retry lands the whole fork — exactly
     # N children + 1 join, never partial, never double.
     result = await finalize_node(
         module_pg_pool,
@@ -241,7 +238,7 @@ async def test_pin_19_fork_atomicity(
         fork=fork,
     )
     assert result.applied
-    # The children count EXCLUDES the join node (its parent_id is the fork
+    # The children count excludes the join node (its parent_id is the fork
     # parent too; the join identifies itself by its blocking reason).
     children = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs WHERE parent_id = $1 AND '
@@ -257,7 +254,7 @@ async def test_pin_19_fork_atomicity(
     await admin.close()
 
 
-# ── Pin 20: OUTBOX-FLUSH (the drain completes the dispatch exactly once) ─
+# ── Pin 20: outbox-flush (the drain completes the dispatch exactly once) ─
 
 
 @pytest.mark.integration
@@ -269,16 +266,16 @@ async def test_pin_20_outbox_drain_exactly_once(
     engine_redlog: RedLog,
 ) -> None:
     """A crash between fire-commit and consumer-insert → the drain
-    completes the dispatch EXACTLY ONCE (the consumer insert idempotent
+    completes the dispatch EXACTLY once (the consumer insert idempotent
     ``ON CONFLICT`` on the consumer step key via the composite arbiter,
     the undelivered flag flipped in the insert's tx). The stranded-join
     state (fired join, no consumer) and the double-insert variant each
     red."""
     flow_id = await seed_flow(wf_conn, wf_schema)
 
-    # The finalize forks one child + a join declaring ONE consumer; the
+    # The finalize forks one child + a join declaring one consumer; the
     # join fires in the same finalize's tx2 (deps 1 → 0) and the
-    # consumer's outbox row rides tx2. THE CRASH WINDOW: the worker dies
+    # consumer's outbox row rides tx2. the crash window: the worker dies
     # before the drain — the outbox row sits undelivered.
     fork_parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     fork = ForkSpec(
@@ -298,8 +295,8 @@ async def test_pin_20_outbox_drain_exactly_once(
 
     # The child c is claimed (running) and finalizes → the join hits 0 and
     # fires in its tx2; the consumer's outbox row rides the same tx2. The
-    # worker then DIES before the drain — the outbox row sits undelivered
-    # (the stranded-join state the drain exists to cure).
+    # worker then dies before the drain — the outbox row sits undelivered
+    # (the stranded-join state the drain exists to fix).
     child_c = child_ids[0]
     c_worker = new_uuid()
     await wf_conn.execute(
@@ -328,9 +325,8 @@ async def test_pin_20_outbox_drain_exactly_once(
     )
     assert len(outbox_rows) == 1, outbox_rows  # the consumer's outbox row
 
-    # THE STRANDED-JOIN RED (the crash window): before the drain, the
-    # fired join's consumers never dispatched — the state the drain exists
-    # to prevent.
+    # before the drain, the fired join's consumers never dispatched — the state
+    # the drain exists to prevent.
     stranded = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs WHERE parent_id = $1',
         result.fired[0].join_job_id,
@@ -342,7 +338,7 @@ async def test_pin_20_outbox_drain_exactly_once(
     )
     assert int(stranded) == 0
 
-    # THE SHIPPED DRAIN: the consumer dispatches exactly once...
+    # the consumer dispatches exactly once...
     delivered = await drain_outbox(module_pg_pool, wf_sql)
     assert delivered == 1, delivered
     consumers = await wf_conn.fetch(
@@ -350,15 +346,15 @@ async def test_pin_20_outbox_drain_exactly_once(
         result.fired[0].join_job_id,
     )
     assert len(consumers) == 1, len(consumers)
-    # THE ARBITER'S KEY — the STATIC ROW's own convention
-    # (``step_idempotency_key``: scope=workflow:{flow}, key=wf:{step}):
-    # the map-join's downstream is a static row since create (the
-    # consumption cure), so the drain's consumer insert for it is the
-    # arbiter's CONFLICT — the belt, never a second dispatch.
+    # the arbiter's key — the static row's own convention
+    # ````(``step_idempotency_key``: scope=workflow:{flow}, key=wf:{step}): the
+    # map-join's downstream is a static row since create (the consumption fix),
+    # so the drain's consumer insert for it is the arbiter's CONFLICT — the
+    # belt, never a second dispatch.
     assert consumers[0]["idempotency_key"] == "wf:consumer"
 
-    # ...and the DOUBLE-INSERT variant reds: a second drain (the crash
-    # re-delivery) must be a no-op on the arbiter. The convicted shape
+    # ...and the double-insert variant reds: a second drain (the crash
+    # re-delivery) must be a no-op on the arbiter. The rejected shape
     # (a drain without ON CONFLICT) would insert the second row.
     await drain_outbox(module_pg_pool, wf_sql)
     consumers = await wf_conn.fetchval(
@@ -382,7 +378,7 @@ async def _fork_with_edges(
     fork_parent: JobId,
     fork: ForkSpec,
 ) -> tuple[list[JobId], JobId | None]:
-    """Insert the fork's rows via the engine's OWN tx1 (the atomic fork):
+    """Insert the fork's rows via the engine's own tx1 (the atomic fork):
     the child rows + edges + the join node land with the parent's terminal.
 
     Returns (child job ids, the join's id)."""

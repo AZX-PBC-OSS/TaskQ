@@ -23,9 +23,9 @@ The timeline shapes, one pin each:
    against the derived hold-expiry bound; the ledger shows the first
    attempt interrupted and the second run: exactly 2 runs, never 0 or 3;
 3. the mid-terminal-write kill, both deterministic sides of the window:
-   the kill AFTER the terminal write commits (committed: terminal, done
-   once) and the kill BEFORE it is attempted (uncommitted: running with a
-   live lease, reclaimed, re-run). BOTH conserve; never both-effect-nor-
+   the kill after the terminal write commits (committed: terminal, done
+   once) and the kill before it is attempted (uncommitted: running with a
+   live lease, reclaimed, re-run). both conserve; never both-effect-nor-
    none;
 4. the SIGTERM mid-DRAIN: the kill lands during the drain's cancel ladder
    walk with an operator cancel armed on one job: the partially walked
@@ -75,9 +75,9 @@ from taskq.worker.run import _main
 
 pytestmark = pytest.mark.integration
 
-# The queue MUST match the harness module's declaration exactly: the actor
+# The queue must match the harness module's declaration exactly: the actor
 # name is the sync key, and a released/re-pended row routes by the actor's
-# CURRENT assignment (actor_config.queue, whatever the worker's sync wrote
+# current assignment (actor_config.queue, whatever the worker's sync wrote
 # last). Two registries declaring different queues for one name leaves the
 # re-pended row on a queue no worker of this test consumes.
 _QUEUE = "consv_q"
@@ -86,7 +86,7 @@ _TAG = "grace"
 # ── The derived pickup bounds ────────────────────────────────────────────
 #
 # Every term is a named quantity of the test configuration; the bound is
-# their sum plus ONE named margin. A pin asserts pickup <= bound, so a
+# their sum plus one named margin. A pin asserts pickup <= bound, so a
 # recovery mechanism that stops running (a wedged sweep, a lost promote)
 # fails the pin on its own deadline instead of passing by luck.
 
@@ -102,7 +102,7 @@ _BACKOFF = 1.0  # the reclaim's re-pend delay: the row's own curve, base 1s
 #   1s MIN_DEFERRAL_INTERVAL: exactly 1.0s.
 _TAIL = 4.0  # release_exit_tail_seconds: watchdog_dump_interval (1.0) +
 #   WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS (2.0) + RELEASE_EXIT_TAIL_SLACK_SECS
-#   (1.0). The hold a RELEASING release carries always expires at deadline
+#   (1.0). The hold a releasing release carries always expires at deadline
 #   + tail, so the pickup after the hard exit waits out the tail, then the
 #   promote tick, then the claim.
 _CLAIM = 0.5  # the wake (NOTIFY or the 0.05 poll) + the claim cooldown +
@@ -118,7 +118,7 @@ BOUND_LEASE_LAPSE = (
     _LEASE + max(_LEADER_LEASE, 4 * _HB) + _HB + _SWEEP + _BACKOFF + _CLAIM + _MARGIN
 )
 
-# The hold-expiry path (shape 2): the row leaves RELEASING 'scheduled' until
+# The hold-expiry path (shape 2): the row leaves releasing 'scheduled' until
 # deadline + tail; from the hard exit the pickup waits out the tail, then
 # one promote tick, then the claim.
 BOUND_HOLD_EXPIRY = _TAIL + _SWEEP + _CLAIM + _MARGIN
@@ -477,7 +477,7 @@ async def _assert_drained_job_conserved(
 
     The worker exited 0 (both promptness pins above already held), so the
     row's state is final: every write the drain owed was awaited before the
-    process died. What the drain owes is NOT one fixed verdict - the
+    process died. What the drain owes is not one fixed verdict - the
     observable contract ("a deploy never terminalises a job", conservation:
     no lost job, no double run, a whole attempt ledger) admits exactly the
     arms below, each with its own teeth:
@@ -788,9 +788,9 @@ async def test_grace_expiry_hard_exit_requeues_within_derived_hold_bound(
             conn, schema, tag, "succeeded", want=1, cap_secs=BOUND_HOLD_EXPIRY + 5.0
         )
 
-        # The ledger: the FIRST attempt interrupted (released, not
+        # The ledger: the first attempt interrupted (released, not
         # terminalised, no attempt row: an interruption is not an execution
-        # outcome), the SECOND run and succeeded. Exactly 2 runs.
+        # outcome), the second run and succeeded. Exactly 2 runs.
         row = await _job_row(conn, schema, job_id)
         assert row["status"] == "succeeded" and row["attempt"] == 2, f"row: {row}"
         assert row["interrupt_count"] == 1, f"the interruption was not counted: {row}"
@@ -878,7 +878,7 @@ async def test_kill_after_terminal_commit_is_terminal_and_done_once(
         )
         row = await _job_row(conn, schema, job_id)
 
-        # The committed side: terminal AND whole, done once.
+        # The committed side: terminal and whole, done once.
         assert row["status"] == "succeeded", (
             f"the committed zombie left {row['status']!r}: the commit did not hold"
         )
@@ -918,7 +918,7 @@ async def test_kill_before_terminal_write_requeues_within_derived_lease_bound(
     tmp_path: Path,
     trial: int,
 ) -> None:
-    """The kill lands BEFORE the terminal write is attempted (the
+    """The kill lands before the terminal write is attempted (the
     uncommitted side of the window): the row is left running with a live
     lease, the lease lapses, the reclaim re-pends, and the successor's
     second attempt conserves: exactly 2 runs, one succeeded terminal, the
@@ -976,7 +976,7 @@ async def test_kill_before_terminal_write_requeues_within_derived_lease_bound(
         )
         # The pickup measurement anchors at the poll helper's own clock.
 
-        # The uncommitted side: the row is NOT terminal; the recovery is
+        # The uncommitted side: the row is not terminal; the recovery is
         # the lease lapse, the reclaim, the requeue, the second attempt.
         pickup = await _wait_attempt_run(
             conn, schema, job_id, attempt=2, cap_secs=BOUND_LEASE_LAPSE
@@ -1091,7 +1091,7 @@ async def test_kill_mid_cancel_ladder_strands_nothing_loses_no_cancel(
                 ),
             )
 
-            # The operator's request arms on the running row, THEN the
+            # The operator's request arms on the running row, then the
             # drain starts: the ladder walk owns both jobs when the hard
             # exit lands.
             await conn.execute(
@@ -1101,7 +1101,7 @@ async def test_kill_mid_cancel_ladder_strands_nothing_loses_no_cancel(
             )
 
             proc.send_signal(signal.SIGTERM)
-            # Kill mid-walk: CANCELLING's grace runs 1.5s from the signal,
+            # Kill mid-walk: cancelling's grace runs 1.5s from the signal,
             # the SIGKILL at +0.5s lands inside the ladder's walk.
             await asyncio.sleep(0.5)
             proc.kill()
@@ -1115,7 +1115,7 @@ async def test_kill_mid_cancel_ladder_strands_nothing_loses_no_cancel(
 
         # The requested job's derived bound. The sweep's cancel carve-out:
         # a cancel-carrying running row is crash-reclaim eligible only past
-        # its lease lapse PLUS cancel_grace + cleanup_grace + the flat 60s
+        # its lease lapse plus cancel_grace + cleanup_grace + the flat 60s
         # cooperative headroom (the protocol's own completion window, the
         # margin that keeps a merely-slow cancellation from being mistaken
         # for a crash); one sweep tick then owns it, then the terminal
@@ -1266,7 +1266,7 @@ async def test_immediate_kill_pure_lease_lapse_conserves_and_requeues_in_bound(
 
         assert proc.returncode == -9
 
-        # Pickup bound for BOTH rows, measured from the death instant.
+        # Pickup bound for both rows, measured from the death instant.
         for job_id in job_ids:
             pickup = await _wait_attempt_run(
                 conn, schema, job_id, attempt=2, cap_secs=BOUND_LEASE_LAPSE

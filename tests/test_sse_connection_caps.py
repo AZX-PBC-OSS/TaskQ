@@ -122,9 +122,9 @@ def _progress_client(pool: _SwitchablePool, redis: _StubRedis) -> Any:
 
 @pytest.fixture(autouse=True)
 def _clear_semaphores() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture, invoked by pytest not by name.
-    """Isolate the process-global slot registry, on BOTH sides of every test.
+    """Isolate the process-global slot registry, on both sides of every test.
 
-    Clearing only on the way in leaks whatever the LAST test in this module
+    Clearing only on the way in leaks whatever the last test in this module
     acquired - these tests deliberately take slots and never release them - into
     every other module sharing the worker process. `_semaphore()` returns an
     existing key's semaphore regardless of the limit asked for, so a leaked
@@ -180,7 +180,7 @@ async def test_a_limit_change_gets_its_own_budget_not_the_first_mounts() -> None
     tight first mount 429'd streams the wide one was configured to allow."""
     # First mount of family "t": wide limit, one slot held.
     await _sse_limit.acquire_sse_slot("t", 50)
-    # Second mount of the SAME family, configured tight: its third
+    # Second mount of the same family, configured tight: its third
     # concurrent stream must be refused by its own limit...
     await _sse_limit.acquire_sse_slot("t", 2)
     await _sse_limit.acquire_sse_slot("t", 2)

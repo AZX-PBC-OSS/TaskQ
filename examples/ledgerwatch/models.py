@@ -1,6 +1,6 @@
 """LedgerWatch's typed payload contract.
 
-THE DISCRIMINATOR LAW, learned the hard way and recorded here: every
+DISCRIMINATOR LAW, learned the hard way and recorded here: every
 union member carries a REQUIRED ``kind: Literal[...]`` tag. A tag with a
 DEFAULT is an optional field — the validator reads only required fields
 when it proves a union decodable, and field-identical required faces are
@@ -29,7 +29,7 @@ class Batch(BaseModel):
 
     The batch id IS the pipeline's idempotency key: an at-least-once
     feed re-delivers batches, and the run-key arbiter turns the second
-    delivery into the FIRST run's claim.
+    delivery into the first run's claim.
     """
 
     batch_id: str
@@ -84,11 +84,11 @@ class PendingReviewTxn(BaseModel):
 RoutingVerdict = ClearedTxn | PendingReviewTxn
 
 
-# ── the HITL contract (the review run's hold) ───────────────────────────
+# ── the hitl contract (the review run's hold) ───────────────────────────
 
 
 class ReviewRequest(BaseModel):
-    """The review run's input: ONE transaction to review."""
+    """The review run's input: one transaction to review."""
 
     txn_id: str
     batch_id: str
@@ -148,7 +148,7 @@ class CompletionReport(BaseModel):
 
     DERIVED from the run's own collect (the envelope is the truth):
     ``failed`` is the batch's residual — a transaction that produced no
-    verdict — and its presence means the run did NOT go cleanly. The
+    verdict — and its presence means the run did not go cleanly. The
     counts' law the tests assert: cleared + pending_review + failed ==
     total, and every id list is unique.
     """

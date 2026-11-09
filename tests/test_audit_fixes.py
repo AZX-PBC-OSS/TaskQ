@@ -165,7 +165,7 @@ async def test_producer_loop_single_dispatch_on_empty_poll() -> None:
     # Without the fix, the first empty poll would trigger 2 calls per iteration.
     assert len(dispatch_calls) >= 2
     # Key assertion: no two dispatch calls share the same iteration.
-    # The original bug had 2 calls in the SAME iteration (same available slot count).
+    # The original bug had 2 calls in the same iteration (same available slot count).
     # After the fix, consecutive calls always come from different iterations.
     # We verify by checking that between any two consecutive calls,
     # the loop went through a wait cycle (indicated by iteration count > dispatch count).

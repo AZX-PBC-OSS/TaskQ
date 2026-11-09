@@ -1,17 +1,15 @@
-"""ATTACK PINS — THE CRASHED-TERMINAL WEDGE + THE RUN-CREATION SEAM
+"""The crashed-terminal wedge + the run-creation seam
 (engine half).
 
-Provenance: the hostile review of the consolidated head (af1b8779) —
-FINDING PACK 1 (the round's most severe engine finding; attacker
-evidence in schema ``att_t20``) and the migrations front's F-CREATE-1 /
-F-CREATE-3. The pins assert the SAFE behavior; each carries its
-unmarked red run in the pack's RECEIPTS.md.
+the WEDGE (the engine's most severe defect; the
+evidence lives in the probe schema's rows). The pins assert the SAFE
+behavior.
 
-THE WEDGE (pack 1, convicted LIVE at af1b8779): a run whose nodes are
+A run whose nodes are
 ``{succeeded|failed, crashed}`` wedges ``running`` FOREVER. The chain:
 
 * the jobs-level reclaim (``backend._sweeps._SWEEP_1_BODY``) reads
-  ``status = 'running'`` rows ONLY, and writes ``crashed`` exactly when
+  ``status = 'running'`` rows only, and writes ``crashed`` exactly when
   the attempt budget is EXHAUSTED (``_RECLAIM_HAS_BUDGET_SQL``:
   ``attempt < max_attempts`` fails → the ELSE arm) — so every crashed
   row is terminal at the jobs layer, revisited by no arm;
@@ -27,31 +25,31 @@ THE WEDGE (pack 1, convicted LIVE at af1b8779): a run whose nodes are
   always-on assertion (reported == reconstructed) stays GREEN on a
   dead run, and retention's liveness guard holds every row forever.
 
-The named verdict (the lane's semantics read off ``_status.py``'s own
+The named verdict (the semantics read off ``_status.py``'s own
 table): a budget-exhausted crashed node is an UNABSORBED, IRRECOVERABLE
 failure — the table's rule 2 (``counts_failed``) shape — so the wedge
 derives ``failed``, never ``running``, and never ``complete``
 (rule 4's all-succeeded/failed/skipped row cannot claim a node whose
-work can never report). The pins assert NOT-running + ``failed``.
+work can never report). The pins assert not-running + ``failed``.
 
-F-CREATE-1 (LANDED): ``FlowRunner.create_flow`` is N+M+2 auto-committed
+``FlowRunner.create_flow`` is N+M+2 auto-committed
 statements — ``_insert_root`` commits the root row ALONE on its own
 pool acquire; ``_insert_static_nodes`` + ``ROOT_START`` ride a SECOND
-acquire with NO ``conn.transaction()``. Kill after the root insert →
+acquire with no ``conn.transaction()``. Kill after the root insert →
 an orphan root (``pending``, zero nodes) the derivation can never see
 (``WORKFLOW_ROOT_MAINTAIN_SQL`` inner-joins the node rows — the orphan
 produces no ``per_flow`` row), never terminalizes, never prunes.
 
-F-CREATE-3 (LANDED): the pending root row (``actor='wf'``,
+the pending root row (``actor='wf'``,
 ``step_key='__flow__'``, ``metadata.flow_id`` = its own id) matches the
-dispatch candidate predicates — ``backend/_dispatch_sql.py`` carries NO
+dispatch candidate predicates — ``backend/_dispatch_sql.py`` carries no
 ``__flow__`` exclusion (grep-verified: the only ``step_key`` legs in
 the claim path are the ``IS NULL`` short-circuit and the
 capability/flow-terminal fence, which the pending root PASSES for a
 ``workflow_execution``-capable worker: the flow it names is itself,
 and ``pending`` is not terminal). The claimed root reaches the
 intercept, ``_resolve_body('__flow__', None)`` raises the plain
-``WorkflowRunError`` — NOT the ``WorkflowBodyUnresolvableError`` the
+``WorkflowRunError`` — not the ``WorkflowBodyUnresolvableError`` the
 intercept catches — and the row churns.
 """
 
@@ -78,13 +76,13 @@ from tests._wf_fixtures import FlowStandIn, seed_flow
 
 pytestmark = pytest.mark.integration
 
-#: The jobs-table terminal vocabulary (the pin's SAFE side: a surfaced
+#: The jobs-table terminal vocabulary (the pin's safe side: a surfaced
 #: run is one of these, never 'running').
 TERMINAL = ("succeeded", "failed", "cancelled", "crashed", "abandoned")
 
 
 async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
-    """THE WEDGE SHAPE, seeded in the post-reclaim state: the flow root
+    """The wedge shape, seeded in the post-reclaim state: the flow root
     ``running``; one node ``crashed`` at the budget ceiling
     (``attempt == max_attempts`` — the row the reclaim's ELSE arm
     writes, terminal at the jobs layer, revisited by no arm) with its
@@ -96,13 +94,14 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
     crashed = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, metadata, error_class, error_message, "
-        "finished_at) "
+        "retry_kind, status, attempt, step_key, metadata, fairness_key, error_class, "
+        "error_message, finished_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'crashed', 3, 'boom', "
-        "$2::jsonb, 'WorkerCrashed', "
+        "$2::jsonb, $3, 'WorkerCrashed', "
         "'lock expired before worker reported terminal state', clock_timestamp())",
         crashed,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_step_ledger (id, flow_id, job_id, step_key, '
@@ -114,11 +113,12 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
     sibling = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, metadata, finished_at) "
+        "retry_kind, status, attempt, step_key, metadata, fairness_key, finished_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'succeeded', 1, 'ok', "
-        "$2::jsonb, clock_timestamp())",
+        "$2::jsonb, $3, clock_timestamp())",
         sibling,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_step_ledger (id, flow_id, job_id, step_key, '
@@ -130,19 +130,18 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
     return flow_id
 
 
-# ── Pack 1, pin (a): THE DERIVATION MUST TERMINALIZE THE CORPSE ────────
+# ── Pack 1, pin (a): the derivation must terminalize the corpse ────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [pack-1(a)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING pack-1(a) @ af1b8779: a run whose nodes are …
 async def test_wedge_derivation_terminalizes_the_dead_run(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
     """PACK 1(a): the derivation must terminalize a run whose work is
     all terminal-or-irrecoverable. The wedge shape {crashed at
     attempt == max_attempts, succeeded} derives ``failed`` — the table's
-    rule-2 verdict for an unabsorbed failure — NEVER ``running``.
+    rule-2 verdict for an unabsorbed failure — never ``running``.
 
-    The unmarked red (RECEIPTS.md): ``reconstruct_workflow_status``
+    The unmarked failing run: ``reconstruct_workflow_status``
     returns ``'running'`` for the corpse — and the G7 always-on
     assertion agrees with the root's ``running`` cache, so the dead run
     is hidden, not surfaced."""
@@ -156,19 +155,18 @@ async def test_wedge_derivation_terminalizes_the_dead_run(
     )
 
 
-# ── Pack 1, pin (b): THE WEDGE IS SURFACED, NOT HIDDEN (the G7 face) ───
+# ── Pack 1, pin (b): the wedge is surfaced, not hidden (the G7 face) ───
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [pack-1(b)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING pack-1(b) @ af1b8779: the maintenance leg's …
 async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql, wf_pool: asyncpg.Pool
 ) -> None:
-    """PACK 1(b), the G7 guard: after the cure the wedge is IMPOSSIBLE —
+    """PACK 1(b), the G7 guard: after the fix the wedge is IMPOSSIBLE —
     the maintenance arms (``sweep_join_rederive``'s root-maintain leg +
     ``reap_phantom_ledger``) terminalize the wedged root within the
     sweep's grace, so the reported status and the rows-alone
     reconstruction agree ON A TERMINAL VERDICT (the drift-check's
-    agreement then means what it says). The unmarked red (RECEIPTS.md):
+    agreement then means what it says). The unmarked failing run:
     three full passes leave the root ``running`` and the reconstruction
     ``running`` — the always-on assertion green on a dead run."""
     flow_id = await _seed_wedge(wf_conn, wf_schema)
@@ -182,7 +180,7 @@ async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
         "OUTPUT (terminal at the jobs layer), never its input; the root must "
         "terminalize 'failed' so the operator (and retention) can see the corpse"
     )
-    # The drift-check's agreement is honest ONLY on the terminal verdict.
+    # The drift-check's agreement is honest only on the terminal verdict.
     reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, flow_id)
     assert reconstructed == "failed", (
         f"reported {root!r} but the rows reconstruct {reconstructed!r} — "
@@ -190,7 +188,7 @@ async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
     )
 
 
-# ── F-CREATE-1: THE INTERRUPTED CREATE LEAVES NO LIVE ORPHAN ───────────
+# ── the interrupted create leaves no live orphan ───────────
 
 
 class _CreateIn(BaseModel):
@@ -201,7 +199,6 @@ async def _create_body(ctx: StepContext, params: _CreateIn) -> Any:
     return {"doc_id": params.doc_id}
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-CREATE-1]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING F-CREATE-1 @ af1b8779: create_flow commits the …
 async def test_interrupted_create_leaves_no_live_orphan(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -209,17 +206,17 @@ async def test_interrupted_create_leaves_no_live_orphan(
     wf_sql: WorkflowSql,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F-CREATE-1: drive the REAL ``create_flow`` with the second leg
+    """drive the REAL ``create_flow`` with the second leg
     killed (``_insert_static_nodes`` raises — the crash-after-root-insert
-    window). The SAFE law, either cure direction:
+    window). The SAFE law, either fix direction:
 
-    * ONE TRANSACTION — the root insert rolls back with the failure: NO
+    * one TRANSACTION — the root insert rolls back with the failure: no
       root row exists afterwards; or
     * A NAMED ARM'S GRACE — the orphan is terminalized/reaped by the
       sweep within 3 maintenance passes.
 
     Today's shape fails both: the root row sits ``pending`` with zero
-    nodes forever (the red in RECEIPTS.md)."""
+    nodes forever (the red in ."""
     app = WorkflowApp()
 
     @app.workflow("create_seam_orphan")
@@ -257,15 +254,14 @@ async def test_interrupted_create_leaves_no_live_orphan(
     )
 
 
-# ── F-CREATE-3: THE CLAIM PATH NEVER HANDS OUT THE __flow__ ROW ────────
+# ── the claim path never hands out the __flow__ row ────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-CREATE-3]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING F-CREATE-3 @ af1b8779: the dispatch fence …
 async def test_dispatch_never_claims_the_flow_root_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
-    """F-CREATE-3, at the SQL level (the doctrine's verify-first): the
-    pending root row — the mid-create window's shape AND every run's
+    """at the SQL level (the doctrine's verify-first): the
+    pending root row — the mid-create window's shape and every run's
     steady pre-``ROOT_START`` instant — must be UNCLAIMABLE even by a
     registered, ``workflow_execution``-capable worker serving the root's
     own (actor, queue) cohort. The ``__flow__`` row is the run's
@@ -275,7 +271,7 @@ async def test_dispatch_never_claims_the_flow_root_row(
         wf_conn, wf_sql, entry=FlowStandIn(name="root-claim-flow"), run_key="create3:root"
     )
     assert claim.created
-    # The cohort + the CAPABLE worker (the F3 projection's stamps, seeded
+    # The cohort + the capable worker (the F3 projection's stamps, seeded
     # the way test_pin_2's fence pin seeds them).
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '

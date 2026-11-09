@@ -65,7 +65,7 @@ class TestPerSubscriberSemantics:
             await backend.enqueue(make_enqueue_args(payload={}, scheduled_at=_START))
             assert event_b.is_set()
 
-            # event_a should NOT be set (it's no longer in subscribers)
+            # event_a should not be set (it's no longer in subscribers)
             assert not event_a.is_set()
 
             # Confirm event_a is not in the subscriber set

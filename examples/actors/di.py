@@ -116,7 +116,7 @@ def build_registry() -> ProviderRegistry:
     """Build and return a configured DI registry for the example worker.
 
     Called by worker.py and passed to worker_main(di_registry=...).
-    Do NOT call validate() here - the worker does that during bootstrap.
+    Do not call validate() here - the worker does that during bootstrap.
     """
     registry = ProviderRegistry()
     registry.register_factory(FakeHttpClient, Scope.LOOP, _http_client_factory)

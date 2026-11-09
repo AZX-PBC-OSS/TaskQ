@@ -136,9 +136,9 @@ async def test_migrate_status_terminates_hung_conn_close(monkeypatch: Any) -> No
     monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: unguarded, _status awaits conn.close() unbounded,
-    # so the RED state would hang forever instead of failing fast. Driven via
+    # so the red state would hang forever instead of failing fast. Driven via
     # the command coroutine directly (not runner.invoke) so asyncio.timeout
-    # can bound the RED state.
+    # can bound the red state.
     async with asyncio.timeout(5):
         await cli_mod._status(TaskQSettings.load())
 
@@ -159,7 +159,7 @@ async def test_migrate_status_hung_close_does_not_mask_body_error(monkeypatch: A
     monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: unguarded, _status awaits conn.close() unbounded,
-    # so the RED state would hang forever (masking "boom") instead of
+    # so the red state would hang forever (masking "boom") instead of
     # failing fast.
     async with asyncio.timeout(5):
         with pytest.raises(RuntimeError, match="boom"):
@@ -310,7 +310,7 @@ def test_migrate_up_refuses_a_negative_ddl_lock_timeout(monkeypatch: Any) -> Non
 def test_migrate_up_takes_the_advisory_lock(monkeypatch: Any) -> None:
     """`taskq migrate up` must serialize on the migration advisory lock.
 
-    The README names it as THE deploy step and calls it idempotent, but a
+    The README names it as the deploy step and calls it idempotent, but a
     container platform will start two replicas or retry a failed job. Unlocked,
     the loser of a race against a virgin schema hits the pre-initial
     migration's bare CREATE TABLE and crash-loops on DuplicateTableError.
@@ -355,7 +355,7 @@ def test_migrate_up_lock_contention_exits_with_a_named_reason(monkeypatch: Any) 
     assert result.exit_code != 0
     combined = plain_cli_output(result.output) + str(result.exception)
     assert "another process is applying migrations" in combined
-    # It must NOT be reported as a broken migration -- that misdirects the operator.
+    # It must not be reported as a broken migration -- that misdirects the operator.
     assert "migration failed, aborting startup" not in combined
     apply_pending_mock.assert_not_awaited()
 
@@ -410,7 +410,7 @@ def test_migrate_up_transactional_failure_reports_rollback_and_rerun(
 
 def test_migrate_up_no_transaction_failure_lists_invalid_indexes(monkeypatch: Any) -> None:
     """A failed no-transaction migration keeps its partial effects: the CLI
-    says the migration was NOT recorded, names any INVALID indexes an
+    says the migration was not recorded, names any INVALID indexes an
     interrupted concurrent build left behind, and prescribes re-running the
     idempotent migration."""
     _patch_connect(monkeypatch)
@@ -549,7 +549,7 @@ def test_migrate_up_failure_report_exact_stderr_lines(monkeypatch: Any) -> None:
 def test_migrate_up_connect_failure_reports_generic_and_skips_close(
     monkeypatch: Any,
 ) -> None:
-    """asyncpg.connect itself can fail (PG down, bad DSN) BEFORE the apply:
+    """asyncpg.connect itself can fail (PG down, bad DSN) before the apply:
     the CLI must still print the short report - original error plus re-run
     action, never a traceback - and must not attempt a close on a
     connection that was never acquired."""
@@ -574,7 +574,7 @@ def test_migrate_up_phase_failure_report_names_tagged_migration(
     monkeypatch: Any,
 ) -> None:
     """Under ``migrate up --phase pre`` an earlier-version :post migration can
-    still be pending and sorts FIRST in discover() order, so the naive
+    still be pending and sorts first in discover() order, so the naive
     first-unrecorded heuristic would name the wrong file. apply_pending tags
     the exception with the migration that actually failed; the report must
     name the tagged (later) file."""
@@ -608,9 +608,9 @@ async def test_migrate_up_terminates_hung_conn_close(monkeypatch: Any) -> None:
     monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: unguarded, _up awaits conn.close() unbounded,
-    # so the RED state would hang forever instead of failing fast. Driven via
+    # so the red state would hang forever instead of failing fast. Driven via
     # the command coroutine directly (not runner.invoke) so asyncio.timeout
-    # can bound the RED state.
+    # can bound the red state.
     async with asyncio.timeout(5):
         await cli_mod._up(TaskQSettings.load(), phase=None, target=None, max_steps=None)
 
@@ -640,11 +640,11 @@ def test_migrate_up_threads_allow_checksum_drift(monkeypatch: Any) -> None:
 
 @pytest.mark.integration
 def test_migrate_up_checksum_drift_flag_end_to_end(pg_dsn: str, monkeypatch: Any) -> None:
-    """The tampered-ledger drill against a real PG, the full operator path
+    """The tampered-ledger scenario against a real PG, the full operator path
     the ChecksumDriftError text advertises: without the flag the run exits
     1 fail-closed (the failure report names the drift); with the flag the
     run proceeds past the refusal and the ``migration-checksum-drift``
-    warning fires; on the NEXT run the warning fires AGAIN (never sticky
+    warning fires; on the next run the warning fires again (never sticky
     silence), and a no-flag default behaves exactly as before."""
     import structlog.testing
 
@@ -690,13 +690,13 @@ def test_migrate_up_checksum_drift_flag_end_to_end(pg_dsn: str, monkeypatch: Any
 
         drifted_key = _tamper()
 
-        # WITHOUT the flag: fail-closed, exit 1, the report names the drift.
+        # without the flag: fail-closed, exit 1, the report names the drift.
         result = runner.invoke(app, ["migrate", "up"])
         assert result.exit_code == 1, result.output
         assert "checksum drift" in plain_cli_output(result.output)
         assert drifted_key in plain_cli_output(result.output)
 
-        # WITH the flag: the run proceeds, the drift warning still fires.
+        # with the flag: the run proceeds, the drift warning still fires.
         with structlog.testing.capture_logs() as captured:
             result = runner.invoke(app, ["migrate", "up", "--allow-checksum-drift"])
         assert result.exit_code == 0, result.output
@@ -704,7 +704,7 @@ def test_migrate_up_checksum_drift_flag_end_to_end(pg_dsn: str, monkeypatch: Any
         assert len(drift_events) == 1, captured
         assert drift_events[0]["key"] == drifted_key
 
-        # The NEXT run: the warning fires AGAIN - allowing one drifted run
+        # The next run: the warning fires again - allowing one drifted run
         # never silences the later ones.
         with structlog.testing.capture_logs() as captured_next:
             result = runner.invoke(app, ["migrate", "up", "--allow-checksum-drift"])

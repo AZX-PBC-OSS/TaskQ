@@ -1,8 +1,8 @@
 """Integration tests: rotating Postgres credentials refresh per connection.
 
 The regression these guard against: ``make_pg_pool_factory`` /
-``make_dedicated_conn_factory`` used to resolve the credential once, at factory
-invocation, and pass it to asyncpg as a fixed ``password=`` string. asyncpg
+``make_dedicated_conn_factory`` resolving the credential once, at factory
+invocation, and passing it to asyncpg as a fixed ``password=`` string. asyncpg
 reuses that string for every physical connection it opens afterwards, and
 Postgres authenticates at **connect time only** - so with a finite-lifetime
 token (Entra ID, AWS IAM RDS) the pool is healthy at deploy and then, roughly
@@ -85,7 +85,7 @@ async def test_provider_is_called_for_every_physical_connection(pg_dsn: str) -> 
         assert after_growth > after_construction
 
         # Idle recycling: both connections are terminated after 0.5s, so the
-        # next acquire opens a NEW physical connection and re-fetches again.
+        # next acquire opens a new physical connection and re-fetches again.
         await asyncio.sleep(1.0)
         async with pool.acquire() as c3:
             pid3 = await c3.fetchval("SELECT pg_backend_pid()")
@@ -127,7 +127,7 @@ async def test_rotated_credential_is_used_by_new_connections(pg_dsn: str) -> Non
         provider.password = "expired-token-replaced-by-garbage"  # deliberately invalid
 
         # Let the idle connection be recycled so the next acquire must open a
-        # new physical connection, which authenticates with the CURRENT
+        # new physical connection, which authenticates with the current
         # credential rather than the one captured at pool construction.
         await asyncio.sleep(1.0)
         with pytest.raises(asyncpg.InvalidPasswordError):
@@ -146,7 +146,7 @@ async def test_rotated_credential_is_used_by_new_connections(pg_dsn: str) -> Non
 async def test_dedicated_conn_factory_refreshes_on_each_open(pg_dsn: str) -> None:
     """The LISTEN / advisory-lock connection path works end-to-end unchanged.
 
-    Honest scope: this one does NOT discriminate the fix - it passes against
+    Honest scope: this one does not discriminate the fix - it passes against
     the old code too, because a dedicated connection is opened once per factory
     invocation and the old code already re-fetched per invocation. It is here
     as the end-to-end guard that handing asyncpg a *callable* ``password=``

@@ -45,7 +45,7 @@ permissions:
 #    `uv python install 3.12` only downloads an interpreter; it does not
 #    select one, so a later `uv sync` with no `--python` reads .python-version
 #    (3.13) and builds a 3.13 environment under a step labelled "Set up Python
-#    3.12" -- which is what several jobs here used to do. UV_PYTHON is read by
+#    3.12" while actually building a 3.13 environment. UV_PYTHON is read by
 #    `sync` and `run` alike, so nothing downstream can disagree with the sync.
 #
 # `--no-dev` is the only sanctioned pruning, and only for deployment
@@ -83,7 +83,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
+      # FULL history: the head-stamp verifier's teeth (merge-base
+      # --is-ancestor + the diff against each claim's recorded head)
+      # need the claims' heads resolvable in this checkout — a depth-1
+      # fetch would convict every PR on unresolvable heads.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: ./.github/actions/setup-uv-env
 
@@ -92,6 +98,18 @@ jobs:
 
       - name: Check formatting
         run: uv run --no-sync ruff format --check .
+
+      # THE HEAD-STAMP LAW, IN CI (in seconds, at review time — not as a
+      # pytest pin buried in a 13k-test fill lane): every live claim on
+      # evidence/taskqflow must name THIS checkout's HEAD, or an
+      # ancestor of it whose diff touches nothing outside
+      # .measurements/. A change that stalifies the estate's claims
+      # reds HERE, with the verifier's own named verdicts.
+      - name: The head-stamp law (the evidence verifier)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          git fetch --depth=1 origin evidence/taskqflow
+          uv run --no-sync python scripts/verify_evidence_heads.py
 
   typecheck:
     runs-on: ubuntu-latest
@@ -109,7 +127,7 @@ jobs:
         run: uv run --no-sync pyright src/taskq tests
 
   type-probes:
-    # T01's negative type-probe corpus: the workflows API's wrong-shape
+    # The negative type-probe corpus: the workflows API's wrong-shape
     # calls MUST red on BOTH pinned checkers (pyright 1.1.414 + ty 0.0.85
     # — the `typeprobe` group, pinned exactly; the exclude-newer
     # quarantine is waived for ty because the pin IS the review). The
@@ -135,6 +153,25 @@ jobs:
       - name: The MUST_ERROR corpus reds on both pinned checkers
         run: uv run --no-sync python tests/typeprobe/_gate.py
 
+  docs-examples:
+    # Every python fence in docs/** and README.md is EXECUTED — the
+    # harness runs each example standalone and quick, or the fence
+    # carries an explicit no-exec reason; any unrecognized tag is a
+    # collection error. This is the documented first-hour path's own
+    # gate: a doc snippet cannot rot outside CI. Needs Docker — the
+    # examples self-provision their PG/Redis containers.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-uv-env
+
+      - name: Execute the docs' python fences
+        env:
+          TASKQ_DOCS_EXAMPLES: "1"
+        run: uv run --no-sync pytest tests/test_docs_examples.py tests/test_docs_no_exec_apis.py -q --timeout=300
+
   test:
     # The per-interpreter suite: ALL extras installed, the whole test suite
     # -n 2, not -n 4: the lanes were calibrated for the 8-core larger
@@ -146,9 +183,10 @@ jobs:
     # green solo). The 451 precedent: the density is the defect.
 
     # except the load-sensitive family (which owns its serial lane below).
-    # One leg per Python version replaces the old 12-leg matrix (3 x 4
-    # extra-sets, each re-running the same 9,000 tests with different skips):
-    # the extras' tests were the only per-leg difference, and they now have
+    # One leg per Python version — a 12-leg matrix (3 x 4
+    # extra-sets, each re-running the same 9,000 tests with different skips)
+    # is the shape this replaced:
+    # the extras' tests were the only per-leg difference, and they have
     # their own spot-check legs below. The intended lane is the 4-core
     # larger runner at -n 4 (the same per-core density the fast lanes
     # always ran, a dedicated core per worker); the standard runner is the
@@ -243,10 +281,12 @@ jobs:
       # same 4 threads) pushes a trial off its fast regime, and a
       # pytest-timeout bound cannot fire inside a job cap that fires
       # first - the leg goes silent at 99% and cancels with zero output.
-      # The slow tier's lane below runs it at -n 2, the density its
+      # The slow tier's lane runs its remainder at -n 2, the density its
       # fast regime assumes, on one interpreter: the slow tier's value is
       # behaviour, not runtime parity (that lane's own comment). The
-      # load-sensitive tier has its own lane for the same wall-clock
+      # lost-job soak's trials are no longer among that remainder - as
+      # load_sensitive they run in the load-sensitive lane below,
+      # serially. That tier has its own lane for the same wall-clock
       # reason.
       - name: Run the suite (all extras, minus slow and load-sensitive)
         # faulthandler_timeout: DUMP-ONLY stack dumps (no exit) when a test
@@ -260,7 +300,62 @@ jobs:
         # faulthandler timer cannot see and would dump on every run.
         # Dump-only on purpose: a worker that exits on the dump would turn
         # pytest-timeout's graceful per-test failure into a lost worker.
-        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive" -o faulthandler_timeout=300
+        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
+
+      # THE ADVERSARIAL PROBES' GATE (the constitution's law: a regression
+      # test outside your gate is not a defense). The probes are
+      # collect-ignored (tests/conftest.py's collect_ignore_glob) — they
+      # never ride the fill lane above — so this explicit-path step is
+      # their ONLY gate, and it runs the same invocation the heavy gates
+      # run: the paths explicit, serial (the chaos probes' calibrated
+      # density). The restart probe's cluster is provisioned HERE —
+      # initdb + pg_ctl on the runner host (the probe restarts the
+      # database mid-round, a shape a service container cannot serve) —
+      # so the lane runs ZERO-SKIP. The count floor + the no-skip assert
+      # refuse the silent-collection regression: a green lane that
+      # collected fewer probes than the estate holds, or skipped one, is
+      # the gate lying by omission. The load-sensitive benchmark is
+      # explicitly EXCLUDED here ('not load_sensitive'): its 50ms band
+      # is a clean-box claim whose own comments record the co-tenancy
+      # failure mode, so it gates in the load-sensitive lane below, in
+      # its own serial explicit-node invocation.
+      - name: Run the adversarial probes (explicit paths, serial, zero-skip)
+        run: |
+          set -euo pipefail
+          if ! command -v initdb >/dev/null 2>&1; then
+            pgbindir="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | head -1 || true)"
+            if [ -z "$pgbindir" ]; then
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq postgresql
+              pgbindir="$(ls -d /usr/lib/postgresql/*/bin | head -1)"
+            fi
+            export PATH="$pgbindir:$PATH"
+          fi
+          pgroot="$RUNNER_TEMP/probe-pg"
+          rm -rf "$pgroot"; mkdir -p "$pgroot"
+          printf 'postgres\n' > "$pgroot/pwfile"
+          initdb -D "$pgroot/data" -U postgres --pwfile="$pgroot/pwfile" -A scram-sha-256 >/dev/null
+          {
+            echo "port = 5711"
+            echo "unix_socket_directories = '$pgroot'"
+            echo "listen_addresses = '127.0.0.1'"
+          } >> "$pgroot/data/postgresql.conf"
+          pg_ctl -D "$pgroot/data" -l "$pgroot/pg.log" -w start >/dev/null
+          export ATTACK4_PG_DATA="$pgroot/data" ATTACK4_PG_PORT=5711
+          rc=0
+          uv run --no-sync pytest tests/probes_*.py tests/progress_numbers_run.py -m "not load_sensitive" --timeout=900 -q 2>&1 | tee "$RUNNER_TEMP/probes.log" || rc=$?
+          pg_ctl -D "$pgroot/data" stop -m fast >/dev/null || true
+          passed="$(grep -oE '[0-9]+ passed' "$RUNNER_TEMP/probes.log" | grep -oE '[0-9]+' | head -1 || true)"
+          skipped="$(grep -oE '[0-9]+ skipped' "$RUNNER_TEMP/probes.log" | grep -oE '[0-9]+' | head -1 || true)"
+          echo "probes green: ${passed:-0}, skipped: ${skipped:-0}"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the probes lane ran red (rc=$rc) — a probe failed"
+            exit 1
+          fi
+          if [ "${passed:-0}" -lt 75 ] || [ "${skipped:-0}" -ne 0 ]; then
+            echo "::error::the probes lane expected 75 green zero-skip probes (the load-sensitive benchmark gates in its own lane), saw ${passed:-0} passed / ${skipped:-0} skipped — a probe stopped being collected (the gate lying by omission) or could not run"
+            exit 1
+          fi
 
   test-extras:
     # The extra-gated families, one leg per extra: install the extra, run
@@ -303,7 +398,7 @@ jobs:
       - name: Run the extra's own tests
         # The fastapi leg installs no redis, so the tests tagged for both
         # extras run in the redis leg (which installs fastapi) only.
-        run: uv run --no-sync pytest -n 2 -m "${{ matrix.extra == 'fastapi' && 'fastapi and not redis' || matrix.extra }}"
+        run: uv run --no-sync pytest -n 2 -m "(${{ matrix.extra == 'fastapi' && 'fastapi and not redis' || matrix.extra }}) and not load_sensitive and not timescale"
 
   test-cross:
     # Common extra PAIRS in one process: both families' tests run together
@@ -331,25 +426,30 @@ jobs:
         with:
           node-version: "22"
       - name: Run both families together
-        run: uv run --no-sync pytest -n 2 -m "${{ matrix.select }}"
+        run: uv run --no-sync pytest -n 2 -m "(${{ matrix.select }}) and not load_sensitive and not timescale"
 
   test-timescale:
     # The optional-TimescaleDB lane (TASKQ_TIMESCALEDB_HYPERTABLES): the
-    # feature's own module, run for real. Like the slow and e2e tiers, the
-    # containers are testcontainers booted by the fixtures themselves (the
-    # module's timescale_container and the shared pg_dsn pair), so this job
-    # needs only Docker on the runner - a service container would be dead
-    # weight no test reads. TASKQ_TEST_TIMESCALEDB_IMAGE is pinned to the
-    # same tag the module defaults to, so the lane and the module can never
-    # disagree about which server they mean. Serially, not under xdist: the
-    # module boots ONE module-scoped timescale container, and each xdist
-    # worker would boot its own.
+    # marked family's six files, run for real. The containers are
+    # testcontainers booted by the fixtures themselves (the family's
+    # timescale_container and the shared pg_dsn pair), so this job needs
+    # only Docker on the runner. TASKQ_TEST_TIMESCALEDB_IMAGE is pinned
+    # to the same tag the family defaults to. These six files are the
+    # timescale-marked family (the marker the other lanes deselect), not
+    # every Timescale-container module: eight more boot their
+    # own containers and remain in the fast matrix (the root
+    # three-mode-lifecycle, standing-matrix, deploy-e2e and upgrade-flip
+    # files, and the four web_admin hypertable files). Serially, not
+    # under xdist: the loadgroup already pins each module's tests to one
+    # worker, but the six launchers would still share a runner, and
+    # shared-runner contention widens each module's own launcher races,
+    # so the lane runs them one module at a time.
     #
     # The check at the bottom is the lane's contract: every test of the
-    # module must RUN. skip_test_without_docker() makes a container-less
-    # run exit 0 with skips, so a green lane with skips would prove
-    # nothing - the summary is parsed and any skip, deselection, or
-    # failure fails the job. Bump the floor when the module grows.
+    # family must RUN. skip_test_without_docker() makes a container-less
+    # run exit 0 with skips, so a green lane with skips proves nothing:
+    # the summary is parsed and any skip, deselection, or failure fails
+    # the job. Bump the floor when the family grows.
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -363,20 +463,20 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Run the hypertable module (a skip here is a failure)
+      - name: Run the hypertable family (a skip here is a failure)
         env:
           TASKQ_TEST_TIMESCALEDB_IMAGE: timescale/timescaledb:2.30.1-pg18
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/timescale-pytest.txt"
-          uv run --no-sync pytest tests/test_timescaledb_hypertables.py -rs | tee "$out"
+          uv run --no-sync pytest tests/test_timescaledb_hypertables.py tests/test_timescale_retention_interplay.py tests/test_attack_rt_retention_integration.py tests/test_attempt_due_at.py tests/test_insights.py tests/test_archive_page_idx_migration_attacks.py -rs | tee "$out"
           uv run --no-sync python - "$out" <<'PY'
           import re
           import sys
 
           summary = open(sys.argv[1], encoding="utf-8").read().strip().splitlines()[-1]
           passed = int(re.search(r"(\d+) passed", summary).group(1))
-          assert passed >= 11, f"the module's 11 tests did not all pass: {summary}"
+          assert passed >= 138, f"the Timescale family's 138 tests did not all pass: {summary}"
           for bad in ("skipped", "deselected", "failed", "error"):
               assert bad not in summary, f"the lane must be skip-free: {summary}"
           PY
@@ -403,7 +503,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      # fetch-depth 0 is REQUIRED: the docs-honesty pins resolve the
+      # evidence ref at collection. The docs-honesty pins resolve
+      # MEASUREMENTS at COLLECTION time from
+      # origin/evidence/taskqflow when no local registry exists; a default
+      # shallow PR checkout fetches only the merge ref, the ref does not
+      # resolve, and the lane dies in collection before a single test runs.
+      # Every leg that collects tests/ with fetch-depth 0 collected the
+      # same module GREEN in the same run.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # Defaults are exactly this family's environment: --all-extras --group
       # dev (redis included — the fleet and chaos tests are redis-marked, and
@@ -412,21 +522,48 @@ jobs:
       - uses: ./.github/actions/setup-uv-env
 
       - name: Run the slow suite
-        run: uv run --no-sync pytest -n 2 -m "slow and not load_sensitive"
+        run: uv run --no-sync pytest -n 2 -m "slow and not load_sensitive and not timescale"
 
   load-sensitive:
     # The wall-clock/timing guards (watchdog lag sampling, terminal-write
-    # budget, cron commit gates, otel overhead, bootstrap slots) assert on
-    # elapsed time, so they are load-fragile: under xdist a sibling's CPU
-    # churn shows up as flake. They run here, ONCE per CI run, serially, on
-    # a standard runner (the job is ~2 minutes: GitHub bills per second but
-    # rounds up to the minute, so a larger runner would cost more and buy
-    # nothing for a serial lane). Every other lane deselects the family via
-    # "not load_sensitive"; this lane is the one place it runs.
+    # budget, cron commit gates, otel overhead, bootstrap slots, and the
+    # PR #695/#698 convicted families: the retention scale pin, the cron
+    # hang-livelock bounds, the tx-unwind windows, the lost-job soak's
+    # three settle trials, the marches' settle windows, the
+    # lock-contention emission window) assert on elapsed time, so they
+    # are load-fragile: under xdist a sibling's CPU churn shows up as
+    # flake. They run here, ONCE per CI run, serially, on a standard
+    # runner, under the tier's per-test default --timeout=900 (explicit
+    # per-test timeout markers - the soak's 2700 - override it). Honest
+    # composition: the pre-existing family (~2 min) + the convicted
+    # families + the soak's trials + the system-e2e window family (15
+    # pins) - ~32-60 min healthy against this job's 90-min cap (~1.5x,
+    # the repo's cap doctrine). The documented starve-trade still holds,
+    # now at 90: a runner so starved that a settle outlives the cap
+    # cancels this lane silently instead of reding at the test's own cap
+    # (the marker comment in tests/test_rt_lost_job_soak.py). The
+    # accepted trade: the 15 marked tier pins leave the 4-leg PG version
+    # matrix and run ONCE here against the harness's default image (the
+    # family's single-run law); the SQL surface keeps its matrix via the
+    # tier's remaining 38 x 4 legs. Lane selection: the test, slow-suite,
+    # coverage, extras, cross, and system-e2e lanes deselect the family
+    # with the literal "not load_sensitive" filter; e2e deselects de
+    # facto by directory scope, and the Timescale family's load-sensitive
+    # member (tests/test_attack_rt_retention_integration.py) runs in the
+    # file-scoped test-timescale lane, so the selection here adds "and
+    # not timescale" and every marked test runs once. This lane, which
+    # also collects the system-e2e tier via --system-e2e, is the one
+    # place the rest of the family runs.
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 90
     steps:
+      # fetch-depth 0: the evidence-estate read face (tests/_evidence.py) —
+      # same reason as the slow-suite lane above: the docs-honesty pins'
+      # collection resolves origin/evidence/taskqflow, which a shallow
+      # checkout never provides (run 38346989984, exit 2 in collection).
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # The workflow-level pin (test_ci_workflow.py) requires Node on every
       # job whose pytest can reach tests/web_admin; keep it unconditional.
@@ -437,7 +574,31 @@ jobs:
       - uses: ./.github/actions/setup-uv-env
 
       - name: Run the load-sensitive suite serially
-        run: uv run --no-sync pytest -m "load_sensitive"
+        run: uv run --no-sync pytest --system-e2e -m "load_sensitive and not timescale" --timeout=900
+
+      # The panel latency benchmark's OWN lane. The probe is
+      # collect-ignored (tests/conftest.py's collect_ignore_glob), so the
+      # marker lane above never collects it, and the probes lane now
+      # excludes load_sensitive work explicitly: this explicit-node
+      # invocation is the benchmark's ONLY gate. The summary parse
+      # requires EXACTLY one passed and zero skipped — a missing
+      # collection (the file renamed, the node id stale) cannot be green.
+      - name: Run the panel latency benchmark (serial, exactly one probe)
+        run: |
+          set -euo pipefail
+          rc=0
+          uv run --no-sync pytest "tests/probes_admin_actions_under_fire.py::test_the_panel_and_page_latency_on_a_200_child_map" --system-e2e --timeout=900 -q 2>&1 | tee "$RUNNER_TEMP/panel-bench.log" || rc=$?
+          passed="$(grep -oE '[0-9]+ passed' "$RUNNER_TEMP/panel-bench.log" | grep -oE '[0-9]+' | head -1 || true)"
+          skipped="$(grep -oE '[0-9]+ skipped' "$RUNNER_TEMP/panel-bench.log" | grep -oE '[0-9]+' | head -1 || true)"
+          echo "panel benchmark: ${passed:-0} passed, ${skipped:-0} skipped"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the panel latency benchmark ran red (rc=$rc) — the 50ms band failed or the probe could not run"
+            exit 1
+          fi
+          if [ "${passed:-0}" -ne 1 ] || [ "${skipped:-0}" -ne 0 ]; then
+            echo "::error::the panel latency benchmark expected exactly 1 passed / 0 skipped, saw ${passed:-0} passed / ${skipped:-0} skipped — the benchmark stopped being collected (the gate lying by omission)"
+            exit 1
+          fi
 
   coverage:
     # The coverage lane is the single longest CI job (the whole suite, one
@@ -528,7 +689,7 @@ jobs:
         # matrix's lane (its step comment holds the full rationale; this
         # lane matches the same mark filter, so no 2700s slow-tier trial
         # can trip the timer).
-        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive" --cov=taskq --cov-report=term-missing --cov-fail-under=90 -o faulthandler_timeout=300
+        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive and not timescale" --cov=taskq --cov-report=term-missing --cov-fail-under=90 -o faulthandler_timeout=300
 
   e2e:
     # Containerized e2e tier: workers built from the packaged wheel run
@@ -603,7 +764,91 @@ jobs:
       - name: Run the system-e2e tier
         env:
           TASKQ_TEST_PG_IMAGE: postgres:${{ matrix.postgres-version }}-alpine
-        run: uv run --no-sync pytest --system-e2e -m system tests/system_e2e --timeout=900 -n 2 -q
+        run: uv run --no-sync pytest --system-e2e -m "system and not load_sensitive" tests/system_e2e --timeout=900 -n 2 -q
+
+  scenario-grounds:
+    # The scenario grounds (examples/scenario_grounds): seven runnable
+    # examples, one production behavior each, each driving real workflows
+    # against real Postgres + Redis and printing its own evidence; the
+    # companion test (tests/test_scenario_grounds.py) asserts that
+    # evidence's row-truth.
+    #
+    # THE CHOICE, stated: this is its own lane on EVERY pull_request event
+    # (the maintainers' own shape — the e2e and system-e2e tiers are also
+    # dedicated PR lanes precisely because their scenarios are
+    # wall-clock-bound), not a scheduled job: the lane costs ~8 minutes
+    # (cheaper than the e2e lane above), it needs no Docker and no image
+    # builds (plain service containers), and a scheduled-only lane would
+    # let the examples rot on main silently between runs — the scenarios'
+    # only failure mode is a src change that broke them, and that change
+    # arrives on a PR. No `paths:` filter (the deploy-check deadlock
+    # lesson: a check that must catch a src change cannot scope itself to
+    # the src paths — every lane here obeys that).
+    #
+    # The scenarios opt in via TASKQ_SCENARIO_GROUNDS=1 (a developer
+    # without a local Postgres must not collect red); setting it here
+    # makes the lane skip-free. The final step asserts ALL SEVEN ran and
+    # passed — a lane that silently collected nothing (or skipped all
+    # seven) must not wear a green checkmark.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TASKQ_PG_DSN: postgresql://postgres:postgres@localhost:5432/taskq_grounds
+      TASKQ_REDIS_URL: redis://localhost:6379/0
+      TASKQ_SCENARIO_GROUNDS: "1"
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: taskq_grounds
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d taskq_grounds"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:8.10.2
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-uv-env
+
+      # The workflow-level pin (test_ci_workflow.py) requires Node on every
+      # job whose pytest invocation can reach tests/web_admin; this job's
+      # selection does not, but the pin's substring scan cannot tell, so
+      # Node is installed unconditionally (the system-e2e lane's precedent).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Run the scenario grounds (skip-free, all seven asserted)
+        run: |
+          set -euo pipefail
+          uv run --no-sync pytest tests/test_scenario_grounds.py -v --timeout=900 2>&1 | tee "$RUNNER_TEMP/scenario-grounds.log"
+          # The count assertion: all seven scenario pins ran and none
+          # skipped — a green lane that collected or skipped the module
+          # is the lie this assert exists to refuse.
+          passed="$(grep -c '^tests/test_scenario_grounds.py::test_s[1-7]_.*PASSED' "$RUNNER_TEMP/scenario-grounds.log" || true)"
+          echo "scenario pins that ran green: ${passed}/7"
+          if [ "$passed" -ne 7 ]; then
+            echo "::error::the scenario grounds lane expected 7 green scenario pins, saw ${passed} — the lane must run all seven, skip-free"
+            exit 1
+          fi
+          if grep -E '[0-9]+ skipped' "$RUNNER_TEMP/scenario-grounds.log"; then
+            echo "::error::the scenario grounds lane skipped pins — TASKQ_SCENARIO_GROUNDS must hold in this lane"
+            exit 1
+          fi
 
 
   security:
@@ -961,26 +1206,26 @@ jobs:
         run: |
           set -euo pipefail
           listing="$(uv run --no-project python -m zipfile -l dist/*.whl)"
-          echo "$listing" | grep -q "taskq/py.typed"
-          echo "$listing" | grep -q "taskq/migrations/01.00.00_01_pre_initial.sql"
-          echo "$listing" | grep -q "taskq/migrations/_variants/"
+          echo "$listing" | grep "taskq/py.typed"
+          echo "$listing" | grep "taskq/migrations/01.00.00_01_pre_initial.sql"
+          echo "$listing" | grep "taskq/migrations/_variants/"
           # ^ migrate.py's checksum-drift check reads the published variant
           # history from the installed package (importlib.resources); a wheel
           # without it silently narrows every accepted-checksum set to the
           # current file only.
-          echo "$listing" | grep -q "taskq/web/templates/"
+          echo "$listing" | grep "taskq/web/templates/"
 
       - name: Test installation from wheel
         run: |
           uv venv test-env
           uv pip install --python test-env/bin/python dist/*.whl
-          cd /tmp && $GITHUB_WORKSPACE/test-env/bin/python -c "import taskq; print(taskq.__version__)"
+          cd /tmp && "$GITHUB_WORKSPACE/test-env/bin/python" -c "import taskq; print(taskq.__version__)"
 
       - name: Test installation from source distribution
         run: |
           uv venv test-src-env
           uv pip install --python test-src-env/bin/python dist/*.tar.gz
-          cd /tmp && $GITHUB_WORKSPACE/test-src-env/bin/python -c "import taskq; print(taskq.__version__)"
+          cd /tmp && "$GITHUB_WORKSPACE/test-src-env/bin/python" -c "import taskq; print(taskq.__version__)"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7.0.1

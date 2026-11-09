@@ -646,10 +646,8 @@ def test_enqueue_args_unique_states_default() -> None:
     """EnqueueArgs() omitting unique_states gets the shipped default.
 
     The default covers ``succeeded`` (the state that says the work
-    already happened) and excludes the failure states. (This pin
-    previously asserted the narrower three-state default; the window
-    deliberately widened to cover success, and the explicit three-state
-    set remains the opt-out.)
+    already happened) and excludes the failure states; the explicit
+    three-state set is the opt-out.)
     """
     args = EnqueueArgs(
         id=new_job_id(),
@@ -964,7 +962,7 @@ async def _nodup_no_identity_actor(payload: _SingletonDedupPayload) -> None:
 
 
 async def test_singleton_plus_unique_for_unique_for_fires_first() -> None:
-    """Actor with singleton=True AND unique_for; second enqueue within
+    """Actor with singleton=True and unique_for; second enqueue within
     window returns was_existing=True via unique_for; no SingletonCollisionError."""
     clock = FakeClock(_START)
     backend = InMemoryBackend(clock=clock)
@@ -1037,7 +1035,7 @@ async def test_singleton_constraint_disambiguation(monkeypatch: pytest.MonkeyPat
 
     # Neutralize Layer 1 (the preflight) per instance, the mirror of the
     # PG integration test rewriting _sql.singleton_preflight to a
-    # WHERE FALSE query: the preflight can no longer see a blocker, so
+    # WHERE false query: the preflight can no longer see a blocker, so
     # any refusal must come from Layer 2, the insert-time constraint twin.
     monkeypatch.setattr(backend, "_singleton_preflight_row", lambda args: None)
 
@@ -1350,7 +1348,7 @@ class TestBatchStreamingEventName:
         assert entry["batch_id"] == str(handle.batch_id)
 
 
-# ── Schedule CRUD ──────────────────────────────────────────────────────
+# ── Schedule crud ──────────────────────────────────────────────────────
 
 
 class TestCreateSchedule:
@@ -1786,7 +1784,7 @@ class TestRedisCloseBounded:
 
         fake.aclose_wait.clear()  # aclose() blocks forever from now on
         # Why the outer timeout: unguarded, close() awaited aclose() unbounded
-        # (via Redis.__aexit__), so the RED state would hang forever instead
+        # (via Redis.__aexit__), so the red state would hang forever instead
         # of failing fast.
         with structlog.testing.capture_logs() as captured:
             async with asyncio.timeout(5):
@@ -1827,7 +1825,7 @@ class TestRedisCloseBounded:
         """A redis client whose initialize() fails (broker down at startup) is
         still closed during JobsClient.close(): from_url() has already
         allocated the connection pool, so the failed eager setup must not
-        leak it. Pins that the bounded-close callback is pushed BEFORE
+        leak it. Pins that the bounded-close callback is pushed before
         initialize() is awaited."""
         import redis.asyncio as redis_async
 
@@ -1982,14 +1980,14 @@ class TestStreamingPayloadValidation:
 
     async def test_streaming_validation_errors_are_sanitized(self) -> None:
         """validation_errors follows the documented sanitization contract
-        (include_url=False, include_input=False): no attacker-controlled
+        (include_url=False, include_input=False): no hostile caller-controlled
         field values and no pydantic doc URLs are carried on the exception -
         it is persisted into job rows / web admin via generic handlers."""
         _backend, client = _make_client()
         items = [
             EnqueueItem(
                 actor_ref=_streaming_val_actor,
-                payload=_ForeignPayload(name="attacker-controlled-value"),
+                payload=_ForeignPayload(name="hostile caller-controlled-value"),
             )
         ]
 
@@ -2001,7 +1999,7 @@ class TestStreamingPayloadValidation:
         for err in errs:
             assert "input" not in err, f"unsanitized payload input leaked: {err}"
             assert "url" not in err, f"pydantic doc URL leaked: {err}"
-            assert "attacker-controlled-value" not in str(err)
+            assert "hostile caller-controlled-value" not in str(err)
 
     async def test_streaming_payload_dict_is_json_mode_dump(self) -> None:
         """The row payload is the JSON-mode dump of the validated payload -

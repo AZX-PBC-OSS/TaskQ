@@ -1,7 +1,7 @@
 """Two-phase shutdown orchestration.
 
 Consumers (``orchestrate_shutdown``, health endpoints) MUST observe
-``deps.shutdown_phase`` set at the START of each phase, BEFORE any
+``deps.shutdown_phase`` set at the START of each phase, before any
 per-phase work.  Value ``NONE (0)`` means the worker is running normally.
 
 Phase ordering invariant:
@@ -32,7 +32,7 @@ alive past
 both graces is interrupted with a hold at RELEASING (released only once
 the process is provably gone). ``abandoned`` is never a shutdown verdict:
 an operator-cancelled row the process dies with is terminalised with the
-operator's OWN verdict (``mark_cancelled``, forced) at RELEASING - the
+operator's own verdict (``mark_cancelled``, forced) at RELEASING - the
 same write its unwinding consumer races - never relabelled ``abandoned``.
 """
 
@@ -86,8 +86,8 @@ def _orchestration_in_progress(
     """Check whether a shutdown orchestration is already running.
 
     Shared guard used by both the SIGTERM signal handler and the drain
-    monitor's ``_trigger_drain_shutdown`` to prevent double-orchestration
-    (H2). Returns True if ``orchestrator_holder`` is non-empty (an
+    monitor's ``_trigger_drain_shutdown`` to prevent double-orchestration.
+    Returns True if ``orchestrator_holder`` is non-empty (an
     orchestration task was already created) or ``deps.shutdown_phase`` is
     past ``NONE`` (an orchestration has started executing phases).
     """
@@ -127,7 +127,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     """Re-pend every job this worker claimed but never started.
 
        Issues a single bounded-timeout UPDATE that clears the lock on rows
-       where ``locked_by_worker = $worker_id AND status = 'running'``,
+       where ``locked_by_worker = $worker_id and status = 'running'``,
        excluding the jobs with live consumers (``deps.active_jobs``):
        CANCELLING owns those, and re-pending one would unlock a row
        another worker can claim while its consumer still executes it. On
@@ -148,7 +148,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
        exactly-once). ``mark_interrupted`` is the deliberate exception: its
     attempt DID start executing, so it keeps the increment.
 
-       Why the ``started_at IS NOT NULL`` conjunct: the dispatch claim CTE
+       Why the ``started_at IS not NULL`` conjunct: the dispatch claim CTE
        stamps ``started_at = clock_timestamp()`` AT CLAIM
        (backend/_dispatch_sql.py), so every row the drain exists for is
        stamped and the conjunct never fences a claimed-but-unstarted row.
@@ -158,7 +158,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
        ``running`` and locked (Sweep 1 owns that reclaim). On a
        running-and-locked row a NULL ``started_at`` means exactly "this
        claim was already refunded", so without the conjunct the drain
-       re-pends the reconciled row and refunds the SAME claim a second
+       re-pends the reconciled row and refunds the same claim a second
        time: the counter drops below the epoch a genuine execution's
        ``job_attempts`` row holds, and the row is yanked out of the
        Sweep-1 reclaim the reconcile preserved. The conjunct is a
@@ -174,7 +174,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
        is not this helper's population. The disown arms cover attempts
        that may have STARTED executing, and refunding a started attempt
        re-creates the exact epoch the first execution ran under - the
-       successor's re-claim would re-run the body at the SAME attempt
+       successor's re-claim would re-run the body at the same attempt
        number. The row's recovery stays where the disown arms put it: the
        lease lapses unrenewed and Sweep 1 reclaims at the charged attempt
        (the reconcile's documented owner).
@@ -223,9 +223,9 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # claim that never reached an actor bought nothing" - is enforced
     # with data, not just the registry's absence. An attempt row already
     # recorded for the row's current attempt number (the isolate-self
-    # write, the sweep's reclaim INSERT, a retried terminal write) IS a
+    # write, the sweep's reclaim INSERT, a retried terminal write) is a
     # started attempt: its charge stands, and refunding it would make
-    # the next claim revisit the number the PK already carries - the
+    # the next claim revisit the number the pk already carries - the
     # exact collision the ATTEMPT_REFUND_SQL fragment's safety argument
     # excludes. A never-started claim (no registry entry, no ledger row
     # - the drain's whole design) matches nothing and refunds unchanged;
@@ -233,10 +233,10 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # hands to Sweep 1, the same owner every other started attempt's
     # reclaim has.
     # The cancel fence (``cancel_phase = 0``): a row carrying an operator
-    # cancel in flight must NOT re-enter the fleet through the drain: the
+    # cancel in flight must not re-enter the fleet through the drain: the
     # same fence every other deferral/release arm carries (the snooze and
     # retry-after arms, mark_interrupted's release arm, sweep-1's
-    # cancel-first CASE, the isolate template). Without it, a cancel
+    # cancel-first case, the isolate template). Without it, a cancel
     # stamped between the operator's write and the consumer's next flag
     # poll would be handed back to dispatch, and the row would execute
     # again under the next holder before any ladder terminalises it. The
@@ -248,17 +248,17 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # the single-parameter statement shape the helper has always issued.
     try:
         async with deps.dispatcher_pool.acquire(timeout=2.0) as conn:
-            # The exclusion arrays are captured HERE, after the pool
+            # The exclusion arrays are captured here, after the pool
             # acquire and immediately before the bind - never before it.
             # The capture is the row's classification ("a consumer of
             # this process holds this row, the hand-back must not touch
             # it"), and the statement is the writer that acts on it: any
             # take (a claim intent's mark) or registration landing
-            # between an EARLIER capture and this statement's execution
+            # between an earlier capture and this statement's execution
             # would be invisible to the exclusion array, and the UPDATE
-            # would re-pend the row UNDER ITS LIVE CONSUMER - the
+            # would re-pend the row under its live consumer - the
             # consumer's terminal write then fences out
-            # (JOB_FENCE_BOUND_SQL requires status='running' AND
+            # (JOB_FENCE_BOUND_SQL requires status='running' and
             # locked_by_worker, both cleared by this re-pend) and the
             # row is stranded 'pending' with its body mid-flight. The
             # pool acquire is the one await between the function's entry
@@ -273,7 +273,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
             # NewType(UUID), so the bare comprehension infers
             # list[JobId], and list invariance would refuse the uuid[]
             # bind parameter's declared type below. held_ids() covers
-            # BOTH maps: registered consumers (executing now) and claim
+            # both maps: registered consumers (executing now) and claim
             # intents (taken off local_queue, not yet registered, the
             # window the registry's comment documents).
             active_ids: list[JobId] = deps.active_jobs.held_ids()
@@ -361,7 +361,7 @@ def _release_hold(
     tail = _watchdog_exit_tail(settings)
     started_at = deps.shutdown_started_at if deps is not None else None
     if started_at is None:
-        # Unreachable through orchestrate_shutdown (DRAINING stamps it
+        # Unreachable through orchestrate_shutdown (draining stamps it
         # first); the defensive shape is the full budget, the same bound
         # the watchdog enforces from the first signal.
         return timedelta(seconds=settings.termination_grace_period + tail)
@@ -380,6 +380,38 @@ def _cancel_origin_counts(deps: "WorkerDeps") -> dict[str, int]:
     return counts
 
 
+async def _shielded_mark_cancelled(
+    backend: Backend,
+    job_id: JobId,
+    worker_id: UUID,
+    *,
+    attempt: int,
+    claim_epoch: int | None,
+) -> bool:
+    """One shielded ``mark_cancelled`` write: True when this write
+    landed, False when cancelled or when the backend failed (warned as
+    ``cancel-pg-write-failed``, never raised — the shutdown walk
+    continues past it)."""
+    try:
+        return await shield_with_retrieval(
+            backend.mark_cancelled(
+                job_id,
+                worker_id,
+                attempt=attempt,
+                claim_epoch=claim_epoch,
+            )
+        )
+    except asyncio.CancelledError:
+        return False
+    except Exception as exc:
+        _log.warning(
+            "cancel-pg-write-failed",
+            job_id=str(job_id),
+            error=str(exc),
+        )
+        return False
+
+
 async def orchestrate_shutdown(
     deps: "WorkerDeps",
     settings: "WorkerSettings",
@@ -393,16 +425,16 @@ async def orchestrate_shutdown(
 
     Phases are DRAINING → CANCELLING → FORCING → RELEASING, followed by
     TaskQ-owned ``leader_conn`` close and ``shutdown_event.set()``.  Each
-    phase is assigned to ``deps.shutdown_phase`` BEFORE any per-phase work.
+    phase is assigned to ``deps.shutdown_phase`` before any per-phase work.
     Returns 0 on clean exit.
     """
     loop = asyncio.get_running_loop()
     t0 = loop.time()
 
     try:
-        # ── Phase 1: DRAINING ──────────────────────────────────────────
+        # ── Phase 1: draining ──────────────────────────────────────────
         # The early handover (leader.py's shutdown-ordering contract):
-        # the stop signal fires BEFORE any phase work, so the leader
+        # the stop signal fires before any phase work, so the leader
         # runtime's election loop parks (no attempts, no renewals) and a
         # leading pod resigns the lease while this pod still drains its
         # jobs - the successor elects into the drain window instead of
@@ -421,13 +453,13 @@ async def orchestrate_shutdown(
             elapsed_seconds=0.0,
         )
         deps.producer_stop_event.set()
-        # The DRAINING failure containment: the helper contains the
+        # The draining failure containment: the helper contains the
         # transient-PG shapes itself (log + return 0, its backstop
-        # doctrine), but a NON-transient one - a data error, a dropped
+        # doctrine), but a non-transient one - a data error, a dropped
         # table, the schema-identifier contract - escapes it. Uncontained
-        # here, the exception collapses the phase train: CANCELLING never
-        # stamps the in-flight jobs' origins, FORCING never delivers
-        # task.cancel(), RELEASING never releases, and the jobs the
+        # here, the exception collapses the phase train: cancelling never
+        # stamps the in-flight jobs' origins, forcing never delivers
+        # task.cancel(), releasing never releases, and the jobs the
         # shutdown owes its writes are thrown to the watchdog's os._exit
         # and the lease-expiry sweep while the exception sits unretrieved
         # in the orchestrator task until _main joins it after the whole
@@ -446,7 +478,7 @@ async def orchestrate_shutdown(
                 error=str(exc),
             )
 
-        # ── Phase 2: CANCELLING ────────────────────────────────────────
+        # ── Phase 2: cancelling ────────────────────────────────────────
         deps.shutdown_phase = ShutdownPhase.CANCELLING
         cancel_grace = settings.cancellation_grace_period
         for active in deps.active_jobs.all():
@@ -458,8 +490,8 @@ async def orchestrate_shutdown(
                 active.cancel_observed_at = loop.time()
             # Stamp the shutdown as the cancel's origin, unless an
             # operator's cancel was already observed (the controller's
-            # PG-observation arms stamp OPERATOR; the row says who asked).
-            # The consumer's terminal routing reads the origin: SHUTDOWN
+            # PG-observation arms stamp operator; the row says who asked).
+            # The consumer's terminal routing reads the origin: shutdown
             # releases the attempt back to the fleet (interrupted), an
             # operator's keeps the cancel ladder. A later operator cancel
             # still wins: the controller overrides the stamp on its next
@@ -483,7 +515,7 @@ async def orchestrate_shutdown(
                 break
             await asyncio.sleep(0.1)
 
-        # ── Phase 3: FORCING ───────────────────────────────────────────
+        # ── Phase 3: forcing ───────────────────────────────────────────
         deps.shutdown_phase = ShutdownPhase.FORCING
         cleanup_grace = settings.cleanup_grace_period
         _log.info(
@@ -502,12 +534,12 @@ async def orchestrate_shutdown(
                 #
                 # The escalation write doubles as the origin probe: it lands
                 # only when the row is at cancel_phase = 1, i.e. carrying an
-                # operator's cancel request. A SHUTDOWN-stamped entry whose
+                # operator's cancel request. A shutdown-stamped entry whose
                 # probe lands was racing an unobserved operator cancel (the
                 # heartbeat poll had not seen the row yet), the row says
-                # who asked, so the entry re-stamps OPERATOR and stays on
-                # the operator ladder (RELEASING abandons it past the
-                # graces). A probe that misses on an OPERATOR-stamped entry
+                # who asked, so the entry re-stamps operator and stays on
+                # the operator ladder (releasing abandons it past the
+                # graces). A probe that misses on an operator-stamped entry
                 # means the row moved under the ladder (already terminal or
                 # reclaimed); that is logged, never silently discarded.
                 escalated = await shield_with_retrieval(
@@ -521,10 +553,10 @@ async def orchestrate_shutdown(
                 )
                 # The local cancel is delivered even when the row-side
                 # write failed: skipping it let a cancellable actor run
-                # untouched into RELEASING and be released-with-hold
+                # untouched into releasing and be released-with-hold
                 # while still alive: the exact overlap the hold exists
                 # to prevent. The escalation probe is the row-side
-                # half of FORCING; task.cancel() is the process-side
+                # half of forcing; task.cancel() is the process-side
                 # half, and only both together advance the entry. The
                 # phase stamp mirrors the success path below so the
                 # registry's local ladder stays truthful either way.
@@ -553,12 +585,12 @@ async def orchestrate_shutdown(
         while loop.time() < deadline and deps.active_jobs.count() > 0:  # noqa: ASYNC110  # Why: poll-for-exit with deadline is the intentional design for shutdown phases; the timed grace period cannot be expressed with Event alone.
             await asyncio.sleep(0.1)
 
-        # ── Phase 4: RELEASING ─────────────────────────────────────────
+        # ── Phase 4: releasing ─────────────────────────────────────────
         # Every entry still registered belongs to an actor that ignored
         # both cancels. The shutdown owes it a release, not a verdict:
         # mark_interrupted hands the row back to the fleet with the spent
         # attempt standing (no refund; the attempt started executing),
-        # HELD behind the rest of this
+        # held behind the rest of this
         # process's termination budget: plus the watchdog's exit tail
         # past the deadline itself (the dump-interval lag before the trip
         # is observed and the bounded flush before os._exit), so no other
@@ -579,41 +611,31 @@ async def orchestrate_shutdown(
         noop_count = 0
         cancelled_count = 0
         for active in deps.active_jobs.all():
-            # An OPERATOR entry belongs to the cancel ladder, never to a
-            # release: one shielded write carrying the operator's OWN
+            # An operator entry belongs to the cancel ladder, never to a
+            # release: one shielded write carrying the operator's own
             # verdict. mark_cancelled, fenced to this worker's attempt
-            # (the fence mark_interrupted uses below), NOT mark_abandoned:
+            # (the fence mark_interrupted uses below), not mark_abandoned:
             # an entry still registered here is a consumer whose unwind
-            # overran the cleanup grace - the FORCING probe escalated its
+            # overran the cleanup grace - the forcing probe escalated its
             # row to phase 2 and delivered task.cancel(), and the
             # consumer's own mark_cancelled is in flight (the unwind's
             # commit lags the grace under co-tenant load; the system
             # tier's cancel-racing-SIGTERM scenario). Two writers racing
-            # DIFFERENT verdicts on one row is the defect: whoever
+            # different verdicts on one row is the defect: whoever
             # committed first owned the terminal state, so a row the
-            # operator cancelled could land `abandoned`. Writing the SAME
+            # operator cancelled could land `abandoned`. Writing the same
             # verdict from here dissolves the race - one of the two
             # mark_cancelled writes commits, the other's fence no-ops,
             # and the row reads `cancelled` at every timing.
             if active.cancel_origin is CancelOrigin.OPERATOR:
-                try:
-                    if await shield_with_retrieval(
-                        backend.mark_cancelled(
-                            active.job_id,
-                            worker_id,
-                            attempt=active.ctx.attempt,
-                            claim_epoch=active.ctx.claim_epoch,
-                        )
-                    ):
-                        cancelled_count += 1
-                except asyncio.CancelledError:
-                    pass
-                except Exception as exc:
-                    _log.warning(
-                        "cancel-pg-write-failed",
-                        job_id=str(active.job_id),
-                        error=str(exc),
-                    )
+                if await _shielded_mark_cancelled(
+                    backend,
+                    active.job_id,
+                    worker_id,
+                    attempt=active.ctx.attempt,
+                    claim_epoch=active.ctx.claim_epoch,
+                ):
+                    cancelled_count += 1
                 continue
             _buf = deps.progress_buffers.get(active.job_id)
             _seq, _state = _terminal_seq_and_state(_buf)
@@ -634,7 +656,7 @@ async def orchestrate_shutdown(
             except Exception as exc:
                 # No retry, no disown. The row stays running and locked.
                 # Its recovery is the lease-expiry reclaim sweep. What
-                # keeps that fallback safe is NOT a settings-load
+                # keeps that fallback safe is not a settings-load
                 # rejection. No such validation exists, by design. Two
                 # real protections do the work, and both live in code:
                 #
@@ -669,11 +691,11 @@ async def orchestrate_shutdown(
             if outcome == "noop":
                 # The fence declined: the row is no longer this worker's to
                 # release (its own consumer already terminalised it, or an
-                # operator cancel landed on it between FORCING and
-                # RELEASING). The row is the arbiter of origin: a
+                # operator cancel landed on it between forcing and
+                # releasing). The row is the arbiter of origin: a
                 # cancel-carrying row gets the operator's own verdict -
                 # mark_cancelled, the same fenced write the consumer's
-                # unwind is racing (the OPERATOR arm's comment), so either
+                # unwind is racing (the operator arm's comment), so either
                 # the consumer's write landed and this fence no-ops, or
                 # this one lands and the consumer's does. A row that moved
                 # to another owner no-ops the fence either way.
@@ -684,24 +706,14 @@ async def orchestrate_shutdown(
                     worker_id=str(worker_id),
                     cancel_origin=int(active.cancel_origin),
                 )
-                try:
-                    if await shield_with_retrieval(
-                        backend.mark_cancelled(
-                            active.job_id,
-                            worker_id,
-                            attempt=active.ctx.attempt,
-                            claim_epoch=active.ctx.claim_epoch,
-                        )
-                    ):
-                        cancelled_count += 1
-                except asyncio.CancelledError:
-                    pass
-                except Exception as exc:
-                    _log.warning(
-                        "cancel-pg-write-failed",
-                        job_id=str(active.job_id),
-                        error=str(exc),
-                    )
+                if await _shielded_mark_cancelled(
+                    backend,
+                    active.job_id,
+                    worker_id,
+                    attempt=active.ctx.attempt,
+                    claim_epoch=active.ctx.claim_epoch,
+                ):
+                    cancelled_count += 1
             else:
                 released_count += 1
         _log.info(
@@ -722,9 +734,9 @@ async def orchestrate_shutdown(
         # is also left in place for caller-owned conns.
         #
         # By this point the election loop has long been parked: the
-        # shutdown-start event (set before DRAINING) is the signal it
+        # shutdown-start event (set before draining) is the signal it
         # obeys, and a leader handed the lease over before the drain via
-        # its fenced resign. The leader runtime's TEARDOWN resign
+        # its fenced resign. The leader runtime's teardown resign
         # (leader.py's run() finally) stays as the backstop for exits
         # that never run this orchestrator (a sibling crash, a bare
         # cancel of _main); on this path it finds no row of ours and
@@ -732,14 +744,14 @@ async def orchestrate_shutdown(
         #
         # Why set → null → close, in that order (two races, one ordering):
         # (a) the bounded close can park for seconds, so shutdown_event is
-        # set FIRST to stop the loops still reading this event; the
+        # set first to stop the loops still reading this event; the
         # election loop itself parked much earlier, on the shutdown-start
         # event, and cannot swap in a fresh (possibly lock-holding) conn
         # mid-park. (b) the early set also releases
-        # _main's ``await shutdown_event.wait()`` INSIDE the
+        # _main's ``await shutdown_event.wait()`` inside the
         # open_worker_deps context (the orchestrator is awaited only after
         # that context exits), so the deps exit-stack guard unwinds
-        # CONCURRENTLY with this parked close, nulling BEFORE the park is
+        # concurrently with this parked close, nulling before the park is
         # what stops the guard entering a second close_conn_bounded on the
         # same conn (one closer's terminate would abort the other's
         # in-flight close and log a spurious conn-teardown-close-error on
@@ -749,12 +761,12 @@ async def orchestrate_shutdown(
         if conn is not None and deps.owns_leader_conn:
             # Why this can be a module-level import from taskq._close:
             # taskq._close imports nothing from taskq.worker, so the
-            # deps↔shutdown cycle (deps imports ShutdownPhase from THIS
+            # deps↔shutdown cycle (deps imports ShutdownPhase from this
             # module) is not re-introduced. The bounded helper never raises
             # (timeout → terminate, error → log), so a dead PG cannot wedge
             # shutdown on an unbounded close.
-            shutdown_event.set()  # stop the election loop BEFORE the close park
-            # BEFORE the park: the deps exit-stack guard unwinds concurrently
+            shutdown_event.set()  # stop the election loop before the close park
+            # before the park: the deps exit-stack guard unwinds concurrently
             # once shutdown_event is set; it must not enter a second
             # close_conn_bounded on this same conn while the close below is
             # parked.
@@ -798,7 +810,7 @@ def install_signal_handlers(
     sibling task in the worker's ``TaskGroup`` and performs the actual
     pool/connection swap. SIGHUP can be sent multiple times, each one
     sets the event. The coordinator clears the event *before* each
-    reload and never after, so a SIGHUP arriving mid-reload (success OR
+    reload and never after, so a SIGHUP arriving mid-reload (success or
     failure) is honored with exactly one follow-up reload: N signals
     during one reload coalesce into one follow-up, not N. Reload
     requests arriving while shutdown orchestration is in progress
@@ -814,9 +826,9 @@ def install_signal_handlers(
         nonlocal _sig_count
         _sig_count += 1
         if _sig_count == 1:
-            # H2 guard: skip if orchestration is already in progress
+            # Double-orchestration guard: skip if orchestration is already in progress
             # (e.g., drain monitor triggered first). The _sig_count is
-            # NOT reset, the next SIGTERM correctly escalates the
+            # not reset, the next SIGTERM correctly escalates the
             # already-running orchestration rather than starting a new one.
             if _orchestration_in_progress(orchestrator_holder, deps):
                 return

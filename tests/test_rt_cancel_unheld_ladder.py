@@ -1,4 +1,4 @@
-"""Red-team: the cancel ladder's ownership of a polled row with NO registry entry.
+"""Adversarial review: the cancel ladder's ownership of a polled row with no registry entry.
 
 The attacking interleaving (surfaced by the system-e2e cancel-storm tier's
 effects ledger - a body run with no claim row behind it):
@@ -7,11 +7,11 @@ effects ledger - a body run with no claim row behind it):
    and its body runs; the body's own evidence row commits.
 2. The body fails fast and the worker's outcome write (``mark_retry``) races
    an operator cancel: the row already carries ``cancel_phase = 1``, the
-   cancel fence matches NO arm, the write no-ops, and the consumer's
+   cancel fence matches no arm, the write no-ops, and the consumer's
    unconditional ``finally`` DEREGISTERS the row - which stays ``running``,
    locked by this worker, phase 1, holding nobody.
 3. The ladder walked ``active_jobs.all()`` only, so the stranded row matched
-   NO writer: the heartbeat kept renewing its lease, and once its
+   no writer: the heartbeat kept renewing its lease, and once its
    claim-stamped ``started_at`` aged past the lock lease the claim-loss
    reconcile read it as "a claim that never reached an actor" and REFUNDED
    the attempt whose body had already run. The executed attempt lost its
@@ -19,9 +19,9 @@ effects ledger - a body run with no claim row behind it):
    at the refunded attempt number with no attempt row anywhere.
 
 The contract pinned here: the poll's own predicate (``locked_by_worker =
-this worker AND cancel_requested_at IS NOT NULL AND status = 'running'``)
+this worker and cancel_requested_at IS not NULL and status = 'running'``)
 is exactly the set of rows this ladder owns - entry or not. An unheld row
-must walk the SAME grace schedule from the controller's first sight: the
+must walk the same grace schedule from the controller's first sight: the
 phase-2 escalation after the cancellation grace, the abandon after the
 cleanup grace on top, never a stale-inherited elapsed.
 """
@@ -204,7 +204,7 @@ async def test_unheld_abandon_delivers_to_a_late_registered_entry() -> None:
     """The drain of an unheld abandon still cancels an entry that registered late.
 
     The claim->register handoff can complete between the queueing tick and
-    the post-commit drain: the row that queued with NO entry now HAS one,
+    the post-commit drain: the row that queued with no entry now HAS one,
     and its body is running. The abandon is durable (mark_abandoned has
     applied), so the delivery must reach the live task and drop its
     registration - a skip would leave a body running against an

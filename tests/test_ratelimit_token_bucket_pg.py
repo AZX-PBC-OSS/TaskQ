@@ -56,7 +56,7 @@ async def _rewind_bucket_ts(pool: asyncpg.Pool, schema: str, name: str, seconds:
         )
 
 
-# ── PG fallback activation - WARNING log + ordering ────────────
+# ── PG fallback activation - warning log + ordering ────────────
 
 
 @pytest.mark.redis
@@ -84,10 +84,10 @@ async def test_pg_fallback_activation(
         backend="redis",
     )
 
-    # Seed the PG row with a SERVER-domain ts one hour INTO THE FUTURE,
-    # so the fallback acquire measures EXACTLY zero elapsed refill: the
+    # Seed the PG row with a server-domain ts one hour INTO the future,
+    # so the fallback acquire measures exactly zero elapsed refill: the
     # conflict arm's refill math clamps negative elapsed to zero
-    # (``GREATEST(statement_timestamp() - ts, 0)``), so the seeded
+    # (``greatest(statement_timestamp() - ts, 0)``), so the seeded
     # ``tokens: 0`` survives however much wall clock the starved stretch
     # between this seed and the acquire below burns. A ts at seed time
     # was the old shape, and it raced its own 1 s refill window: at
@@ -302,10 +302,10 @@ async def test_pg_refund_fixed_quota_recovers(
 #
 # The fused acquire stamps a transient `granted` boolean into the state
 # document so the decision can ride the row home through RETURNING; every
-# reader reads NAMED keys only, so the key is inert, but a future reader
+# reader reads named keys only, so the key is inert, but a future reader
 # that iterates the key set would silently inherit that assumption. This
 # pin makes the assumption loud: acquire -> the key set is the canonical
-# set PLUS `granted`; refund -> exactly the canonical set (the refund
+# set plus `granted`; refund -> exactly the canonical set (the refund
 # rewrites the document through `_state_payload`, dropping the transient).
 
 
@@ -352,3 +352,80 @@ async def test_state_key_set_acquire_adds_granted_refund_restores_canonical(
         "the refund rewrites the document through _state_payload and must "
         "drop the transient 'granted' key, restoring exactly the canonical set"
     )
+
+
+# ── The mock-subtraction conversions (the fake arms' survivors) ────────
+#
+# The fake arms in tests/test_ratelimit_token_bucket.py that drove these
+# paths through a dict-configured double are converted here (the
+# mock-subtraction cure): the assertion rides the real statement's own row.
+
+
+async def test_pg_peek_exhausted_computes_retry_after(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """peek() on an exhausted refillable bucket reports the exhaustion and
+    computes a positive retry_after from the deficit."""
+    settings = _settings(module_pg_schema)
+    tb = _pg_bucket(capacity=5, refill=2)
+
+    r = await tb.acquire(count=5.0, pg_pool=module_pg_pool, settings=settings)
+    assert r.allowed is True, "fixture broken: the burst must drain the bucket"
+
+    state = await tb.peek(pg_pool=module_pg_pool, settings=settings)
+    assert state.is_exhausted is True
+    assert state.backend == "postgres"
+    assert state.retry_after is not None
+    assert state.retry_after.total_seconds() > 0, (
+        f"an exhausted refillable bucket must report a positive retry_after, got {state.retry_after!r}"
+    )
+
+
+async def test_pg_peek_no_row_defaults_to_full_capacity(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """peek() on a bucket whose row was never written reports full capacity."""
+    settings = _settings(module_pg_schema)
+    tb = _pg_bucket(capacity=42, refill=1)
+
+    state = await tb.peek(pg_pool=module_pg_pool, settings=settings)
+    assert state.is_exhausted is False
+    assert state.tokens_remaining == 42.0
+
+
+async def test_pg_reset_deletes_the_bucket_row(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """reset() deletes the stored row: the next acquire starts from a
+    fresh full bucket, not from the spent state."""
+    settings = _settings(module_pg_schema)
+    tb = _pg_bucket(capacity=2, refill=0)
+
+    r1 = await tb.acquire(count=2.0, pg_pool=module_pg_pool, settings=settings)
+    assert r1.allowed is True
+    r2 = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
+    assert r2.allowed is False, "fixture broken: the bucket must be spent"
+
+    await tb.reset(clock=SystemClock(), settings=settings, pg_pool=module_pg_pool)
+
+    r3 = await tb.acquire(count=2.0, pg_pool=module_pg_pool, settings=settings)
+    assert r3.allowed is True, "the reset must restore the full bucket"
+
+
+async def test_pg_fixed_quota_denial_reports_no_retry_after(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """A fixed quota's denial (refill=0) reports retry_after=None - there
+    is no recovery time; only a refund restores the quota."""
+    settings = _settings(module_pg_schema)
+    tb = _pg_bucket(capacity=1, refill=0)
+
+    r1 = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
+    assert r1.allowed is True
+    r2 = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
+    assert r2.allowed is False
+    assert r2.retry_after is None, f"a fixed quota has no recovery time; got {r2.retry_after!r}"

@@ -565,7 +565,7 @@ class TestPostgresAbortBatchNoRow:
         schema = deps.settings.schema_name
         bid = new_uuid()
 
-        # Insert jobs with batch_id metadata but do NOT create a batches row.
+        # Insert jobs with batch_id metadata but do not create a batches row.
         async with deps.worker_pool.acquire() as conn:
             j1 = await _insert_test_job(conn, schema, bid, status="pending")
             j2 = await _insert_test_job(conn, schema, bid, status="scheduled")
@@ -646,7 +646,7 @@ class TestPostgresRollingDeployUndefinedTable:
 
 class TestPostgresCompleteStaleBatchesNegative:
     async def test_mixed_statuses_not_completed_by_sweep(self, jobs_app: JobsApp) -> None:
-        """A batch with some terminal and some running jobs is NOT completed by the sweep."""
+        """A batch with some terminal and some running jobs is not completed by the sweep."""
         from taskq.worker._leader_shared import complete_stale_batches
 
         deps = jobs_app.deps
@@ -713,7 +713,7 @@ class TestPostgresAbortSetsCancelColumns:
                 assert r["error_class"] == "BatchAbortedError"
                 assert r["error_message"] == "Batch aborted due to consecutive failures"
                 assert r["cancel_requested_at"] is not None
-                assert r["cancel_phase"] == 2  # CancelPhase.FORCED
+                assert r["cancel_phase"] == 2  # CancelPhase.forced
 
         row = await backend.get_batch(bid)
         assert row is not None

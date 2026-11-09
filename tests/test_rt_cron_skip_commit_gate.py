@@ -95,7 +95,7 @@ async def test_a_rolled_back_beyond_window_tick_reports_nothing_and_the_reattemp
         lambda data: gauge_calls.append(dict(data)),
     )
 
-    # DEFERRABLE INITIALLY DEFERRED: evaluated only at COMMIT time,
+    # deferrable initially deferred: evaluated only at COMMIT time,
     # strictly after every statement the tick runs and after the
     # emission's pg_notify was armed. It always raises, so the COMMIT
     # itself fails deterministically.
@@ -131,7 +131,7 @@ async def test_a_rolled_back_beyond_window_tick_reports_nothing_and_the_reattemp
     )
 
     # The re-attempt, committed: drop the trigger and tick again. The
-    # same owed slot, counted ONCE.
+    # same owed slot, counted once.
     await clean_pg_conn.execute(f'DROP TRIGGER skip_gate_fail_trg ON "{schema}".cron_schedules')
     async with clean_pg_conn.transaction():
         fired = await tick_cron(clean_pg_conn, settings, make_backend(settings), schema, new_uuid())

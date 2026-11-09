@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team: rolling-deploy windows around migration 01.00.08 (denial counters).
+"""Adversarial review: rolling-deploy windows around migration 01.00.08 (denial counters).
 
 Old-code/new-schema: the previous release's prune CTE names its columns
 explicitly and predates ``snooze_count`` / ``rate_limit_blocked_count``. The
@@ -87,7 +87,7 @@ _PRIOR_ATTEMPTS_QUALIFIED_CSV: Final[str] = (
 )
 
 # Verbatim prior-release archive CTE (git show b23c921^:.../_leader_shared.py):
-# no MATERIALIZED fence, 38-column list, identical CTE arms.
+# no materialized fence, 38-column list, identical CTE arms.
 _PRIOR_RELEASE_ARCHIVE_CTE: Final[str] = (
     "WITH candidate_ids AS ("
     '  SELECT id FROM "{schema}".jobs'

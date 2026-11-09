@@ -35,7 +35,7 @@ async def _join_sse_starlette_shutdown_watcher() -> AsyncIterator[None]:  # pyri
     """Join the sse-starlette loop watcher a streaming test leaves behind.
 
     ``EventSourceResponse`` - the progress router's SSE response class -
-    lazily starts ONE ``_shutdown_watcher`` task on the running loop the
+    lazily starts one ``_shutdown_watcher`` task on the running loop the
     first time a response streams: a poller that parks until uvicorn sets
     ``AppStatus.should_exit``, a signal no in-process ``httpx.ASGITransport``
     test ever sends. The test cannot hold the task reference (sse-starlette

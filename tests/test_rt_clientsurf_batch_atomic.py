@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team pins: the client-facing observables of the atomic batch path.
+"""Adversarial review pins: the client-facing observables of the atomic batch path.
 
 Three observables of ``JobsClient.enqueue_batch``'s single-transaction
 arm (``Backend.enqueue_batch_atomic``, src/taskq/backend/_batch_sql.py::
@@ -25,13 +25,13 @@ the CLIENT:
    Unpinned anywhere: the observable is a PLAIN
    :class:`~taskq.exceptions.MaxPendingExceededError` (all-or-nothing,
    matching the client docstring at src/taskq/client/_jobs.py:550-555)
-   with zero member rows committed - NOT
+   with zero member rows committed - not
    :class:`~taskq.exceptions.BatchMaxPendingExceededError` (the
    partition error whose contract assumes "part of the batch is already
    stored", which would be a lie inside one transaction).
 
 3. **A finalizer idempotency collision records the EXISTING row's id
-   (M4).** The atomic wrapper inserts the finalizer BEFORE creating the
+   (M4).** The atomic wrapper inserts the finalizer before creating the
    batch row "so the returned row's id can be used for
    finalizer_job_id (M4: idempotency collision may return a different
    id than finalizer_args.id)" (src/taskq/backend/_batch_sql.py:584-586).
@@ -39,7 +39,7 @@ the CLIENT:
    (tests/test_batch_enqueue.py::test_finalizer_job_id_on_batch_row);
    the collision arm - batch row must name the collided row, the
    finalizer handle must report ``was_existing=True``, and the collided
-   row must NOT be retro-stamped with ``batch_id`` metadata - is not.
+   row must not be retro-stamped with ``batch_id`` metadata - is not.
 
 All three are expected GREEN (documented behavior); any RED here is a
 real defect in the atomic arm. PG tier because each observable turns on
@@ -150,7 +150,7 @@ async def test_duplicate_batch_id_rolls_back_the_whole_second_call(tcs_app: _Tcs
     The client contract (src/taskq/client/_jobs.py:516-518): 'the entire
     operation (batch row + all child jobs + finalizer) is inserted in a
     single transaction ... If any insert fails, no rows are committed.'
-    The duplicate-batch_id failure fires at create_batch - AFTER all
+    The duplicate-batch_id failure fires at create_batch - after all
     member and finalizer inserts succeeded (src/taskq/backend/
     _batch_sql.py:604-626) - so this is the arm where a rollback bug
     would strand an orphaned member set under a foreign batch id."""
@@ -208,7 +208,7 @@ async def test_capped_finalizer_actor_refuses_the_whole_atomic_batch(tcs_app: _T
     batch is already stored'.
 
     src/taskq/backend/_batch_sql.py:595-599 documents the intent; the
-    member chunks insert BEFORE the finalizer's cap check runs
+    member chunks insert before the finalizer's cap check runs
     (src/taskq/backend/_batch_sql.py:549-582 vs :587-601), so this is
     exactly the shape where a missing rollback or a partition-style
     refusal would corrupt the all-or-nothing contract."""

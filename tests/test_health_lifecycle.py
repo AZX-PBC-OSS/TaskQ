@@ -12,7 +12,7 @@ from taskq._ids import new_uuid
 from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
 from taskq.worker import (
-    _bootstrap as _bootstrap_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace whose asyncio binding must carry the Event fake (patch where it is LOOKED UP).
+    _bootstrap as _bootstrap_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace whose asyncio binding must carry the Event fake (patch where it is looked up).
 )
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.health import HealthUnixBindCollisionError
@@ -53,7 +53,7 @@ class _FakeMaintenanceLeader:
         clock: object = None,
         rate_limit_registry: object = None,
         actor_policies: object = None,
-        cron_specs: object = None,  # Why: mirrors the real MaintenanceLeader signature (leader.py); the cron-spec takeover recovery runs at leadership ASSUME inside run(), which this fake stubs out, so the bootstrap constructor call must merely type-check.
+        cron_specs: object = None,  # Why: mirrors the real MaintenanceLeader signature (leader.py); the cron-spec takeover recovery runs at leadership assume inside run(), which this fake stubs out, so the bootstrap constructor call must merely type-check.
     ) -> None:
         pass
 
@@ -197,7 +197,7 @@ def _setup_lifecycle_stubs(
         )
 
     # ── Make shutdown_event.wait() return immediately ──────────────────
-    # Patch where the name is LOOKED UP - the bootstrap module's own
+    # Patch where the name is looked up - the bootstrap module's own
     # ``asyncio`` binding (it constructs shutdown_event/escalate_event at
     # _bootstrap.py) - not through to the global asyncio module, which the
     # old spelling swung for every namespace in the process
@@ -268,7 +268,7 @@ async def test_start_failure_propagates_deps_stack_unwinds(
     assert "health.stop" not in events
 
 
-# ── A unix collision with the TCP listener up keeps booting AND stopping ───
+# ── A unix collision with the TCP listener up keeps booting and stopping ───
 
 
 @pytest.mark.asyncio

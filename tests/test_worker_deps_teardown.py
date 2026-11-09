@@ -66,8 +66,8 @@ class _FakePool:
         self._close_events = close_events
         # Why closed_event alongside the closed flag (and despite the
         # _close_events name-ordering list): the flag is the assertion
-        # surface; the event is the WAIT surface - reload_credentials
-        # drains OLD pools on background tasks, and a test that needs
+        # surface; the event is the wait surface - reload_credentials
+        # drains old pools on background tasks, and a test that needs
         # "drained" can await this instead of sleeping a fixed interval
         # that races the drain under load.
         self.closed_event = asyncio.Event()
@@ -78,10 +78,10 @@ class _FakePool:
             return  # close-after-close/terminate is a no-op on a real pool
         await self.close_wait.wait()
         if self.close_error is not None:
-            # Real-semantics error path (asyncpg 0.31 Pool.close()): on ANY
+            # Real-semantics error path (asyncpg 0.31 Pool.close()): on any
             # close error the pool calls self.terminate() and sets
             # self._closed = True in the finally before re-raising - so a
-            # raising close still leaves the pool terminated AND closed.
+            # raising close still leaves the pool terminated and closed.
             self.terminated = True
             self.closed = True
             self.closed_event.set()
@@ -108,8 +108,8 @@ class _FakePool:
         # Why no close() here: unguarded, teardown enters pools via
         # ``stack.enter_async_context`` and relied on this dunder to close
         # them; the fix pushes an explicit bounded-close callback instead.
-        # If this fake closed itself on __aexit__, the fast-close and LIFO
-        # tests below would pass against the OLD code and prove nothing.
+        # If this fake closed itself on __aexit__, the fast-close and lifo
+        # tests below would pass against the old code and prove nothing.
         self.aexit_calls += 1
 
 
@@ -217,7 +217,7 @@ async def test_teardown_terminates_pool_when_close_hangs(
         leader_conn_factory=_make_conn_factory([leader]),
     )
     # Why the outer timeout: unguarded, teardown closes pools unbounded, so the
-    # RED state would hang forever instead of failing fast.
+    # red state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns):
             dispatcher.close_wait.clear()  # close() blocks forever from now on
@@ -346,13 +346,13 @@ async def test_teardown_close_error_does_not_propagate(
     assert heartbeat.close_calls == 1
     # Real asyncpg Pool.close() self-terminates and marks the pool closed
     # before re-raising a close error (asyncpg 0.31: except -> terminate(),
-    # finally -> _closed = True) - the fake mirrors that, so the pool IS
-    # terminated/closed even though the HELPER never called terminate().
+    # finally -> _closed = True) - the fake mirrors that, so the pool is
+    # terminated/closed even though the helper never called terminate().
     assert heartbeat.terminate_calls == 0
     assert heartbeat.terminated is True
     assert heartbeat.closed is True
     assert worker.closed is True
-    # dispatcher unwinds AFTER heartbeat (LIFO) - proof the error was contained.
+    # dispatcher unwinds after heartbeat (lifo) - proof the error was contained.
     assert dispatcher.closed is True
     assert dispatcher.close_calls == 1
 
@@ -377,7 +377,7 @@ async def test_teardown_terminates_notify_conn_when_close_hangs(
         leader_conn=_FakeConn("leader"),  # type: ignore[arg-type]
     )
     # Why the outer timeout: unguarded, teardown awaits conn.close() unbounded,
-    # so the RED state would hang forever instead of failing fast.
+    # so the red state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns) as deps:
             notify.close_wait.clear()  # close() blocks forever from now on
@@ -404,7 +404,7 @@ async def test_teardown_terminates_leader_conn_when_close_hangs(
         leader_conn_factory=_make_conn_factory([leader]),
     )
     # Why the outer timeout: unguarded, teardown awaits conn.close() unbounded,
-    # so the RED state would hang forever instead of failing fast.
+    # so the red state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns) as deps:
             leader.close_wait.clear()  # close() blocks forever from now on
@@ -420,7 +420,7 @@ async def test_teardown_terminates_leader_conn_when_close_hangs(
 async def test_teardown_bounds_hot_swapped_pool_after_reload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A pool swapped in by reload_credentials is registered for the SAME
+    """A pool swapped in by reload_credentials is registered for the same
     bounded teardown: if the NEW pool's close hangs at shutdown, it is
     terminated. Covers the reload_credentials registration site (inside the
     pool loop - default-arg binding must capture the right pool/label)."""
@@ -438,7 +438,7 @@ async def test_teardown_bounds_hot_swapped_pool_after_reload(
     )
     # Why the outer timeout: unguarded, reload registered new pools via
     # enter_async_context (unbounded __aexit__ close), so a hanging close in
-    # the RED state would wedge teardown forever instead of failing fast.
+    # the red state would wedge teardown forever instead of failing fast.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns) as deps:
             assert deps.dispatcher_pool is old_dispatcher
@@ -466,9 +466,9 @@ async def test_teardown_bounds_redis_close(
 ) -> None:
     """A hung Redis aclose() is bounded: teardown logs and continues (Redis
     has no terminate()) - no exception escapes. The timeout event carries
-    ``close_timeout=`` - NOT ``drain_timeout=``, the reload path's
+    ``close_timeout=`` - not ``drain_timeout=``, the reload path's
     drain-event field - so the teardown close bound stays distinguishable
-    from the reload drain bound in log alerts (review C9)."""
+    from the reload drain bound in log alerts."""
     _shrink_teardown_timeout(monkeypatch)
     settings = _make_settings()
     redis_client = _FakeRedisClient()
@@ -485,7 +485,7 @@ async def test_teardown_bounds_redis_close(
         redis_client_factory=redis_factory,
     )
     # Why the outer timeout: unguarded, teardown awaits redis_client.aclose()
-    # unbounded, so the RED state would hang forever instead of failing fast.
+    # unbounded, so the red state would hang forever instead of failing fast.
     with structlog.testing.capture_logs() as captured:
         async with asyncio.timeout(5):
             async with open_worker_deps(settings, connections=conns) as deps:
@@ -507,7 +507,7 @@ async def test_teardown_bounds_redis_close(
 
 async def test_teardown_nulls_redis_client_after_close() -> None:
     """After teardown closes a TaskQ-owned Redis client, ``deps.redis_client``
-    is None - mirroring the notify/leader conn guards (review C6). Reload
+    is None - mirroring the notify/leader conn guards. Reload
     interplay is safe: ``reload_credentials`` swaps the attr and drains the old
     client itself, so the guard reads the attr once, closes, and nulls - the
     same lifecycle as the conn siblings."""
@@ -532,17 +532,17 @@ async def test_teardown_nulls_redis_client_after_close() -> None:
     assert deps.redis_client is None
 
 
-# ── C9: teardown close events carry close_timeout=, not drain_timeout= ──
+# ── the close events carry close_timeout=, not drain_timeout= ──
 
 
 async def test_teardown_close_timeout_logs_close_timeout_field(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The bounded-close timeout event carries ``close_timeout=`` - NOT
+    """The bounded-close timeout event carries ``close_timeout=`` - not
     ``drain_timeout=``, which is the reload path's drain-event field
     (``pool-draining``, ``pool-drain-timeout-terminating``). Sharing the
     field name conflates the teardown close bound with the reload drain
-    bound in log alerts (review C9)."""
+    bound in log alerts."""
     _shrink_teardown_timeout(monkeypatch)
     settings = _make_settings()
     dispatcher = _FakePool("dispatcher")

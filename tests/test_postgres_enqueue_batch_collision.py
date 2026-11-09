@@ -41,7 +41,7 @@ def _make_args(
 
 class TestFirstEnqueueWins:
     """When an idempotency key already exists, the second batch returns the
-    previously-inserted row data."""
+    the row already inserted."""
 
     async def test_second_batch_returns_original_row_with_existing_key(
         self, clean_jobs_app: JobsApp
@@ -60,7 +60,7 @@ class TestFirstEnqueueWins:
         assert len(batch2) == 1
         collision = batch2[0]
 
-        # The collision result should have the ORIGINAL job's id, not args_b's
+        # The collision result should have the original job's id, not args_b's
         assert collision.id == original.id
         assert collision.idempotency_key == IdempotencyKey(_IDEMP_KEY_1)
 
@@ -88,9 +88,9 @@ class TestFirstEnqueueWins:
         batch2 = await backend.enqueue_batch([args_b])
         collision = batch2[0]
 
-        # The collision should return the ORIGINAL data
+        # The collision should return the original data
         assert collision.id == original.id
-        assert collision.payload == {"first": True}  # NOT {"second": True}
+        assert collision.payload == {"first": True}  # not {"second": True}
 
 
 # ── Mixed new and collision ────────────────────────────────────────────────

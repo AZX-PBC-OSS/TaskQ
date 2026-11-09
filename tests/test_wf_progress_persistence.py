@@ -1,21 +1,19 @@
-"""T21 — THE PERSISTENCE PINS: the two-channel progress substrate.
+"""The persistence pins: the two-channel progress substrate.
 
-The provenance: the PoC's PROOF (t21-20261008T033005Z, PROVEN - DH1-DH8
-closed, 3 consecutive clean rounds) is the spec's proven shape; these pins
-port its obligations onto the BUILT surface, in the estate's pin idiom.
+The obligations these pins hold were proven in the design phase and are
+pinned here against the built surface.
 
-The red-first evidence: each pin's CONVICTED VARIANT (the spike's dragons)
-is named in the docstring and — where the variant is observable — drilled
+The evidence: each pin's REJECTED VARIANT (the spike's dragons)
+is named in the docstring and — where the variant is observable — exercised
 with the red captured to ``.measurements/t21-pin-reds.json``. The unfenced
 variants stay RED FOREVER (they are the dragons, not bugs).
 
-THE CHANNELS (T21 decision d):
-* the STATE channel — ``wf_node_progress``: ONE row per (node, channel),
+* the STATE channel — ``wf_node_progress``: one row per (node, channel),
   upserted latest-wins + the honest occurrence counter. The row count is
   nodes x channels, CONSTANT whatever the emission rate (DH1's fence).
 * the STREAM channel — ``wf_node_stream``: append rows in a bounded
-  per-node ring, drop-oldest with the dropped counter ON THE RECORD
-  (DH2's fence), ONE seq space for both classes (DH3's fence).
+  per-node ring, drop-oldest with the dropped counter ON the RECORD
+  (DH2's fence), one seq space for both classes (DH3's fence).
 """
 
 from __future__ import annotations
@@ -66,16 +64,16 @@ async def _append(
     return int(row["seq"]), int(row["dropped"])
 
 
-# ── THE STRUCTURAL PINS ──────────────────────────────────────────────────
+# ── the structural pins ──────────────────────────────────────────────────
 
 
 async def test_two_channel_tables_exact_shape(wf_conn: asyncpg.Connection, wf_schema: str) -> None:
     """The migration's exact shape (01.00.29): the STATE channel's PK is
     (node_id, channel) — the latest-wins row's IDENTITY, the fence that
     makes the row count nodes x channels; the STREAM channel's PK is the
-    bigserial seq — THE ONE SEQ SPACE (DH3's fence), DB-side because a
+    bigserial seq — the one SEQ SPACE (DH3's fence), DB-side because a
     position is not an identity (the 01.00.20_03 progress_seq precedent).
-    And exactly ONE sequence generator backs the stream: a second
+    And exactly one sequence generator backs the stream: a second
     seq-cursor space is the fleet's vocabulary fragmentation re-created."""
     cols = await wf_conn.fetch(
         f"""SELECT table_name, column_name, data_type FROM information_schema.columns
@@ -151,7 +149,7 @@ async def test_stream_vocabulary_closed_at_the_storage_domain(
 async def test_state_upsert_latest_wins_counter_honest(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
-    """The STATE channel's contract: N upserts → ONE row, latest-wins
+    """The STATE channel's contract: N upserts → one row, latest-wins
     payload, ``occurrences`` == N (the coalescing is HONEST — the counter
     counts every emission that coalesced into the row, so the record shows
     both the delivered state and the emission rate)."""
@@ -210,7 +208,7 @@ async def test_one_seq_space_classes_interleave(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql, wf_pool: asyncpg.Pool
 ) -> None:
     """DH3 on the BUILT projection: the engine's auto-class events and the
-    body's user-class emissions interleave in ONE seq range — a single
+    body's user-class emissions interleave in one seq range — a single
     cursor serves both classes (the two-vocabulary fragmentation cannot
     re-appear)."""
     flow = await seed_flow(wf_conn, wf_schema)
@@ -277,9 +275,9 @@ async def test_ring_prune_arm_prunes_leaked_ring(
     wf_pool: asyncpg.Pool,
     progress_redlog: RedLog,
 ) -> None:
-    """THE RETENTION ARM (DH1's "prunes on schedule"): rings that leaked
+    """The retention arm (DH1's "prunes on schedule"): rings that leaked
     past the bound — the red world's shape, seeded here by bypassing the
-    append-trim — are pruned back to the bound in ONE pass. The LEAK is
+    append-trim — are pruned back to the bound in one pass. The LEAK is
     observed first (the red): rows growing past the bound with no trim."""
     flow = await seed_flow(wf_conn, wf_schema)
     node = await seed_running_node(wf_conn, wf_schema, flow)
@@ -315,7 +313,7 @@ async def test_ring_prune_arm_prunes_leaked_ring(
     assert after == PROGRESS_RING_BOUND, (
         f"the arm pruned to {after}, not the bound — the backstop's own trim is broken"
     )
-    # The NEWEST rows survive (drop-OLDEST): the node's own head seq — the
+    # The newest rows survive (drop-oldest): the node's own head seq — the
     # global seq space's position at its last append — is untouched.
     head = await wf_conn.fetchval(
         f'SELECT max(seq) FROM "{wf_schema}".wf_node_stream WHERE node_id = $1', node
@@ -326,22 +324,23 @@ async def test_ring_prune_arm_prunes_leaked_ring(
 async def test_map_progress_line_reads_the_state_channel(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
-    """THE AGGREGATION'S MAP LINE (decision c): the certified grouped read
+    """The aggregation's map line (decision c): the certified grouped read
     LEFT JOINed to the state channel — the children's emitted progress
-    (avg pct, the freshest update) rides the SAME read, computed IN the
+    (avg pct, the freshest update) rides the same read, computed IN the
     query, never a second instrument. A child that never emitted reads
     NULL avg_pct and the counts stay complete (the LEFT JOIN's law)."""
     flow = await seed_flow(wf_conn, wf_schema)
     source = await seed_running_node(wf_conn, wf_schema, flow)
     child_ids = [new_uuid() for _ in range(3)]
-    for cid in child_ids:  # the map children: rows WITH the parent link
+    for cid in child_ids:  # the map children: rows with the parent link
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, parent_id, metadata) "
-            "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'item', $2, $3::jsonb)",
+            "retry_kind, status, step_key, parent_id, metadata, fairness_key) "
+            "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'item', $2, $3::jsonb, $4)",
             cid,
             source,
             json.dumps({"flow_id": str(flow)}),
+            str(flow),
         )
     for i, cid in enumerate(child_ids[:2]):  # two emitted, one silent
         await wf_conn.fetchrow(
@@ -371,14 +370,15 @@ async def test_child_results_read_is_the_aggregate_input(
     ):
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, parent_id, result, metadata) "
+            "retry_kind, status, step_key, parent_id, result, metadata, fairness_key) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', $2, 'item', $3, "
-            "$4::jsonb, $5::jsonb)",
+            "$4::jsonb, $5::jsonb, $6)",
             jid,
             status,
             parent,
             result,
             json.dumps({"flow_id": str(flow)}),
+            str(flow),
         )
     rows = await wf_conn.fetch(wf_sql.progress_child_results, parent)
     assert len(rows) == 1 and rows[0]["id"] == ok
@@ -389,12 +389,12 @@ async def test_child_results_read_is_the_aggregate_input(
     assert result == {"risk": 3}
 
 
-# ── THE ZERO-FINALIZE-CHANGES PROBE ──────────────────────────────────────
+# ── the zero-finalize-changes probe ──────────────────────────────────────
 
 
 def test_zero_finalize_changes_probe() -> None:
-    """THE ASYMMETRY, structurally pinned: the finalize's terminal-mark
-    statement touches NO progress table — the emission path can never
+    """The asymmetry, structurally pinned: the finalize's terminal-mark
+    statement touches no progress table — the emission path can never
     block the finalize because the finalize does not know the emission
     path exists (the PoC's P4.finalize_touches_no_progress_table, ported
     to the built statement)."""
@@ -409,16 +409,16 @@ def test_zero_finalize_changes_probe() -> None:
     )
 
 
-# ── THE RED (DH1's convicted variant — kept RED FOREVER) ─────────────────
+# ── the red (DH1's rejected variant — kept failing forever) ─────────────────
 
 
 async def test_red_every_emission_a_row_grows_unbounded(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql, progress_redlog: RedLog
 ) -> None:
-    """DH1's red, observed on the BUILT substrate: the convicted variant —
+    """DH1's red, observed on the BUILT substrate: the rejected variant —
     one row PER EMISSION (the 6.5M-row incident's shape) — grows the store
     with emissions; the two-channel design holds it at nodes x channels +
-    the ring bound. The unfenced variant stays RED FOREVER (the drill
+    the ring bound. The unfenced variant stays RED FOREVER (the scenario
     writes a scratch log table, never the shipped tables)."""
     flow = await seed_flow(wf_conn, wf_schema)
     node = await seed_running_node(wf_conn, wf_schema, flow)
@@ -435,10 +435,10 @@ async def test_red_every_emission_a_row_grows_unbounded(
                 i,
                 "m",
             )
-            # the BUILT state channel rides the same emissions (the upsert)
-            # — the pct rides the OP'S domain (0..100: the storage CHECK
+            # the built state channel rides the same emissions (the upsert)
+            # — the pct rides the op's domain (0..100: the storage check
             # wf_node_progress_pct_domain, 01.00.32_01, is the backstop
-            # that REFUSES the raw i past 100 — the domain's teeth, the
+            # that refuses the raw i past 100 — the domain's teeth, the
             # same DH1 shape either way: the row count is the subject).
             await wf_conn.fetchrow(
                 wf_sql.progress_state_upsert, node, "progress", i % 101, "m", None, 1, 0, None
@@ -459,7 +459,7 @@ async def test_red_every_emission_a_row_grows_unbounded(
                 "verdict": "the log grows with emissions; the state channel does not",
             },
         )
-        assert log_rows == emissions, "the convicted variant did not convict"
+        assert log_rows == emissions, "the rejected variant did not reject"
         assert state_rows == 1, "the state channel grew with emissions"
     finally:
         await wf_conn.execute(f'DROP TABLE "{wf_schema}".wf_progress_log_red')

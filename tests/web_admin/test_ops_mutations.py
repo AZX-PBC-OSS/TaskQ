@@ -110,17 +110,14 @@ def _make_app(pool: Any, **kwargs: Any) -> Any:
 # ── Schedule enable ──────────────────────────────────────────────────────
 
 
-def test_schedule_enable_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _ScriptedConnection(execute_results=["UPDATE 1"])
-    client = _make_app(_ScriptedPool(conn))
-    sid = new_uuid()
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{sid}/enable", data={"csrf_token": token}, follow_redirects=False
-    )
-    assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
-    assert resp.headers["location"].endswith("/schedules")  # pyright: ignore[reportUnknownMemberType]
+# NOTE (the mock-subtraction cure): the schedule-mutation success paths
+# (enable/disable/skip → 303, the run-now enqueue) are deleted —
+# tests/test_web_admin_integration.py owns them against real PG
+# (test_schedule_enable_resets_failures, test_schedule_disable_sets_enabled_false,
+# test_schedule_skip_advances_next_fire_at — the db-clock-anchored write,
+# test_schedule_run_now_enqueues_job). The 404 arms stay (the stub's error
+# arms); test_schedule_run_now_succeeds_and_enqueues trims to its NULL-curve
+# edge (the pre-migration row shape the real pack does not seed).
 
 
 def test_schedule_enable_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -149,18 +146,6 @@ def test_schedule_enable_redirects_when_cron_not_installed(monkeypatch: pytest.M
 # ── Schedule disable ─────────────────────────────────────────────────────
 
 
-def test_schedule_disable_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _ScriptedConnection(execute_results=["UPDATE 1"])
-    client = _make_app(_ScriptedPool(conn))
-    sid = new_uuid()
-    token = _get_csrf_token(client)
-    resp = client.post(
-        f"/schedules/{sid}/disable", data={"csrf_token": token}, follow_redirects=False
-    )
-    assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
-
-
 def test_schedule_disable_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConnection(execute_results=["UPDATE 0"])
@@ -187,36 +172,6 @@ def test_schedule_disable_redirects_when_cron_not_installed(
 
 
 # ── Schedule skip ────────────────────────────────────────────────────────
-
-
-def test_schedule_skip_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Skip writes a next_fire_at strictly past the database clock's now
-    (7565d3f: db_now comes from the row fetch, so the written value is
-    future in the same clock domain the cron loop fires in) and redirects."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    db_now = datetime.now(UTC)
-    past = db_now - timedelta(minutes=2)
-    # The skip fetch reads the server clock in the same row
-    # (clock_timestamp() AS db_now), so the stub row carries it.
-    row = StubRecord(
-        cron_expr="* * * * *",
-        timezone="UTC",
-        dst_strategy="skip",
-        next_fire_at=past,
-        db_now=db_now,
-    )
-    conn = _ScriptedConnection(fetchrow_results=[row])
-    client = _make_app(_ScriptedPool(conn))
-    sid = new_uuid()
-    token = _get_csrf_token(client)
-    resp = client.post(f"/schedules/{sid}/skip", data={"csrf_token": token}, follow_redirects=False)
-    assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
-    assert resp.headers["location"].endswith("/schedules")  # pyright: ignore[reportUnknownMemberType]
-    skip_writes = [args for sql, args in conn.execute_calls if "SET next_fire_at" in sql]
-    assert len(skip_writes) == 1
-    written_next = skip_writes[0][1]
-    assert isinstance(written_next, datetime)
-    assert written_next > db_now
 
 
 def test_schedule_skip_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -403,15 +358,20 @@ def test_schedule_run_now_redirects_when_actor_not_configured(
     assert len(backend.enqueue_calls) == 0
 
 
-def test_schedule_run_now_succeeds_and_enqueues(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_schedule_run_now_resolves_a_pre_migration_null_curve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run-now edge the real pack does not seed: a PRE-MIGRATION row's
+    NULL retry-curve columns resolve to the declared defaults on the
+    enqueued job - the two server-side fire paths (the cron tick and the
+    run-now) cannot disagree on a row that never stored an override.
+    (The happy path itself - the 303, the actor/payload enqueue - is
+    owned by tests/test_web_admin_integration.py::test_schedule_run_now_enqueues_job
+    on real PG; the mock-subtraction cure trimmed this arm to the edge.)"""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     schedule_row = StubRecord(
         actor="cleanup", payload_factory=None, enabled=True, metadata={"static_payload": {"x": 1}}
     )
-    # The row the run-now SELECT returns: the four curve columns are NULL
-    # on rows predating migration 01.00.18, and the handler must resolve
-    # them to the declared defaults instead of failing or forwarding NULLs.
-    # max_pending is the operator-stored cap, NULL = no stored override.
     actor_config_row = StubRecord(
         queue="default",
         max_attempts=3,
@@ -429,13 +389,7 @@ def test_schedule_run_now_succeeds_and_enqueues(monkeypatch: pytest.MonkeyPatch)
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/run", data={"csrf_token": token}, follow_redirects=False)
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
-    assert resp.headers["location"].endswith("/schedules")  # pyright: ignore[reportUnknownMemberType]
     assert len(backend.enqueue_calls) == 1
-    assert backend.enqueue_calls[0].actor == "cleanup"
-    assert backend.enqueue_calls[0].payload == {"x": 1}
-    # A pre-migration row's NULL curve resolves to the declared defaults,
-    # the same curve the cron fire path applies: the two server-side fire
-    # paths cannot disagree on a row that never stored an override.
     enqueued = backend.enqueue_calls[0]
     assert enqueued.retry_base == _DEFAULT_RETRY_BASE
     assert enqueued.retry_cap == _DEFAULT_RETRY_CAP
@@ -543,7 +497,7 @@ def test_rate_limit_reset_pg_only_bucket_is_not_a_500(monkeypatch: pytest.Monkey
     clean, explanatory error, not the registry's raw KeyError as a 500."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
-    # The registry stays EMPTY - the bucket exists only as a PG row.
+    # The registry stays empty - the bucket exists only as a PG row.
     monkeypatch.setattr(rl_registry, "_rate_limits", {})
     conn = _ScriptedConnection()
     client = _make_app(_ScriptedPool(conn))
@@ -665,9 +619,9 @@ def test_reservations_page_merges_pg_state_and_extra_bucket(
 
     # Fetch order with a configured reservation: the page reads
     # (reservations, held), sync_slots then reads per reservation
-    # (existing, insert) through its OWN transaction - the shared stub
+    # (existing, insert) through its own transaction - the shared stub
     # supports conn.transaction(), so the sync completes here instead of
-    # erroring into the degraded no-refetch path - and the page REFETCHES
+    # erroring into the degraded no-refetch path - and the page refetches
     # (reservations, held) to render post-sync state.
     conn = _ScriptedConnection(
         fetch_results=[[configured_row, orphan_row], [], [], [], [configured_row, orphan_row], []]

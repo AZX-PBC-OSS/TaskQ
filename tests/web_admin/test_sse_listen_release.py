@@ -150,7 +150,7 @@ class _GatedReleasePool:
 
 class _ParkedVerifier:
     """Session verifier that passes twice (initial check + first event) and
-    parks on the third, suspending the consumer at its OWN await while the
+    parks on the third, suspending the consumer at its own await while the
     feed stays suspended at a yield."""
 
     def __init__(self) -> None:
@@ -319,7 +319,7 @@ async def test_the_close_that_outlives_its_bound_still_releases(
     verifier = _ParkedVerifier()
     sem = asyncio.Semaphore(1)
     await sem.acquire()
-    # The REAL feed: no listen_with_reconnect monkeypatch here.
+    # The real feed: no listen_with_reconnect monkeypatch here.
     gen = _sse_generator(sem, lambda: pool, "taskq", verifier)
 
     with structlog.testing.capture_logs() as logs:
@@ -351,7 +351,7 @@ async def test_the_detached_close_does_not_lose_its_failure(
     callback and logged - not silently lost. The captured
     ``shield-detached-task-failed`` log record is the contract: the
     retrieval callback is the only code that emits it, so the line proves
-    the failure was retrieved. (A loop exception-handler count is NOT the
+    the failure was retrieved. (A loop exception-handler count is not the
     observation: 3.14's C task internals record the un-retrieved-exception
     bookkeeping on a different clock than the done-callback retrieval, so
     the handler sees the TimeoutError even when it was retrieved and
@@ -373,7 +373,7 @@ async def test_the_detached_close_does_not_lose_its_failure(
         await verifier.parked.wait()
         stream.cancel()  # first cancel: the stream's exit begins
         await feed.aclose_started.wait()  # the close is in flight
-        stream.cancel()  # second cancel: the close is now DETACHED
+        stream.cancel()  # second cancel: the close is now detached
         with pytest.raises(asyncio.CancelledError):
             await stream
         await asyncio.sleep(0.3)  # the 0.1s bound fires in the detached close

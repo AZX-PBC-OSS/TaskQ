@@ -1,4 +1,4 @@
-"""THE EMBEDDING DEMO'S WEB HALF, VERIFIED (T26's cure lane — C10):
+"""The embedding demo's web half, verified (the expiry-face's fix lane):
 ``examples/deep_research_web.py`` — the app-lifespan listener → the
 per-user SSE endpoint (authz scoped by the run) → the HoldCreated
 handler reading the ROW for the display facts → the resolve POST → the
@@ -35,6 +35,7 @@ fastapi = pytest.importorskip("fastapi")
 from examples.deep_research_web import build_app, stream_run_cards  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+from taskq._ids import new_uuid  # noqa: E402
 from taskq.workflows import (  # noqa: E402
     FlowRunner,
     Promise,
@@ -93,7 +94,7 @@ def _blocks(text: str) -> list[tuple[str, dict[str, Any]]]:
 
 
 class _Board:
-    """THE BOARD'S SERVER-SIDE TWIN: the card set driven ONLY by the
+    """The board's server-side twin: the card set driven ONLY by the
     demo's frames — create opens (with the ROW context), resolve/expired
     clear, Backfilled reconciles (drops what the snapshot disowns)."""
 
@@ -136,14 +137,14 @@ async def _read_until(
 async def test_the_web_half_lives_and_clears(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE WEB HALF'S SPINE: the authz gates are the RUN SCOPE (a
+    """The web half's spine: the authz gates are the RUN SCOPE (a
     token minted for another run — or no token — never subscribes); the
     per-user stream carries the run's HoldCreated WITH the ROW-read
     context (the reason the wait site declared — the pointer triggered
     the read) and the reconcile snapshot; the resolve POST lands
     through the demo's typed door; and the broadcast CLEARS the card —
     the HoldResolved frame on the same stream, no polling."""
-    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_web_demo_flow")
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="web_demo_flow")
     app = build_app(wf_pool, wf_schema)
     demo_client = HitlClient(wf_pool, schema=wf_schema)
     # httpx's ASGITransport runs NO lifespan — the test wires the app's
@@ -155,21 +156,43 @@ async def test_the_web_half_lives_and_clears(
         listener,
         httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://demo") as http,
     ):
-        # THE DEMO'S LOGIN: a token scoped to the run.
+        # the demo's login: a token scoped to the run.
         minted = (await http.get(f"/runs/{flow_id}/token")).json()
         assert set(minted) == {"token", "run_id"} and minted["run_id"] == flow_id
-        # THE AUTHZ IS THE RUN SCOPE: a token for ANOTHER run (minted
-        # through the app's OWN identity store) cannot subscribe here;
+        # the authz is the run scope: a token for another run (minted
+        # through the app's own identity store — a well-formed run id
+        # this run's token is not scoped to) cannot subscribe here;
         # neither can the tokenless.
-        other = (await http.get("/runs/another-run/token")).json()
+        other = (await http.get(f"/runs/{new_uuid()}/token")).json()
         scoped_elsewhere = (
             await http.get(f"/runs/{flow_id}/events", params={"token": other["token"]})
         ).status_code
         tokenless = (await http.get(f"/runs/{flow_id}/events")).status_code
         assert scoped_elsewhere == 403 and tokenless == 403
 
-        # THE SUBSCRIBE + THE ROW READ: the board's stream carries the
-        # create AND the context fetched from the row.
+        # the doors' id shape: a malformed run id is a 404 on every door
+        # (the canonicalize-at-entry rule) — never a 500, never a silent
+        # stream.
+        malformed_status = (
+            await http.get("/runs/not-a-uuid/events", params={"token": minted["token"]})
+        ).status_code
+        assert malformed_status == 404
+        assert (await http.get("/runs/not-a-uuid/board")).status_code == 404
+        malformed_resolve = await http.post(
+            f"/runs/{flow_id}/holds/not-a-uuid/resolve", json={"verdict": "approve"}
+        )
+        assert malformed_resolve.status_code == 404
+
+        # the braced spelling: the same run named the list doors' other
+        # accepted way — the token door mints a token scoped to the
+        # canonical run (the doors canonicalize at entry; the events
+        # door's stream behavior rides the canonical form the same way).
+        braced = "{" + str(flow_id).upper() + "}"
+        braced_login = (await http.get(f"/runs/{braced}/token")).json()
+        assert braced_login["run_id"] == flow_id, braced_login
+
+        # the subscribe + the row read: the board's stream carries the
+        # create and the context fetched from the row.
         board = await _read_until(
             listener, demo_client, flow_id, lambda b: b.reconciled and bool(b.contexts)
         )
@@ -178,7 +201,7 @@ async def test_the_web_half_lives_and_clears(
         assert card["run_id"] == flow_id and card["signal"] == "Approval"
         assert board.contexts[hold_id]["reason"] == "the demo's gate", board.contexts
 
-        # THE RESOLVE POST: the typed door, the demo's endpoint.
+        # the resolve post: the typed door, the demo's endpoint.
         answer = await http.post(
             f"/runs/{flow_id}/holds/{hold_id}/resolve",
             params={"token": minted["token"]},
@@ -187,8 +210,8 @@ async def test_the_web_half_lives_and_clears(
         assert answer.status_code == 200, answer.text
         assert answer.json()["status"] == "delivered", answer.json()
 
-        # THE CARD CLEARS ON THE BROADCAST: the stream's HoldResolved —
-        # the POST's answer is the door's receipt, the CARD closes on
+        # the card clears on the broadcast: the stream's HoldResolved —
+        # the post's answer is the door's receipt, the card closes on
         # the frame.
         cleared = await _read_until(listener, demo_client, flow_id, lambda b: not b.cards)
         assert not cleared.cards, f"the card never cleared: {cleared.cards}"
@@ -197,13 +220,13 @@ async def test_the_web_half_lives_and_clears(
 async def test_the_board_reconciles_after_an_outage(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE WEB HALF'S RECONCILE (C1's consumer face on the demo): a
+    """The web half's reconcile (C1's consumer face on the demo): a
     hold resolved while the app's listener was DOWN never clears its
     card from a notify — the Backfilled frame does the clearing on the
     next subscribe. The board's law, exercised through the demo's
     stream: the stale events replayed from the history cannot keep a
     dead card open (the ghost dies the same death)."""
-    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_web_reconcile_flow")
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="web_reconcile_flow")
     demo_client = HitlClient(wf_pool, schema=wf_schema)
     listener = HitlListener(wf_pool, wf_schema)
 
@@ -212,15 +235,146 @@ async def test_the_board_reconciles_after_an_outage(
         board = await _read_until(listener, demo_client, flow_id, lambda b: b.reconciled)
         assert len(board.cards) == 1, board.cards
         hold_id = next(iter(board.cards))
-        # THE OUTAGE: the listener down, the rows move on.
+        # the outage: the listener down, the rows move on.
         await listener.stop()
         resolved = await demo_client.resolve(hold_id, {"verdict": "approve"})
         assert resolved.status == "delivered"
-        # THE RECONNECT: the same listener (its history replays the
+        # the reconnect: the same listener (its history replays the
         # ghost create), the fresh backfill — the card clears on the
-        # SNAPSHOT, never on a notify.
+        # snapshot, never on a notify.
         await listener.start()
         board2 = await _read_until(listener, demo_client, flow_id, lambda b: b.reconciled)
         assert board2.cards == {}, f"the dead hold's card survived the reconcile: {board2.cards}"
     finally:
         await listener.stop()
+
+
+async def test_resolve_is_scoped_to_the_url_runs_own_hold(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The resolve door's scope is the HOLD'S OWN RUN: a token minted
+    for run A does not resolve run B's hold through A's door — the
+    hold's run is checked (the admin door's rule), the cross-run call
+    is a 404, and B's hold stays held."""
+    flow_a, _runner_a = await _held_flow(wf_conn, wf_schema, wf_pool, name="scope_flow_a")
+    flow_b, _runner_b = await _held_flow(wf_conn, wf_schema, wf_pool, name="scope_flow_b")
+    app = build_app(wf_pool, wf_schema)
+    demo_client = HitlClient(wf_pool, schema=wf_schema)
+    holds_b = await demo_client.list(run=flow_b)
+    assert len(holds_b) == 1, holds_b
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://demo"
+    ) as http:
+        token_a = (await http.get(f"/runs/{flow_a}/token")).json()["token"]
+        cross = await http.post(
+            f"/runs/{flow_a}/holds/{holds_b[0].hold_id}/resolve",
+            params={"token": token_a},
+            json={"verdict": "approve"},
+        )
+        assert cross.status_code == 404, cross.text
+        still = await demo_client.get(holds_b[0].hold_id)
+        assert still is not None and still.status == "held", still
+        own_holds = await demo_client.list(run=flow_a)
+        own = await http.post(
+            f"/runs/{flow_a}/holds/{own_holds[0].hold_id}/resolve",
+            params={"token": token_a},
+            json={"verdict": "approve"},
+        )
+        assert own.status_code == 200 and own.json()["status"] == "delivered", own.text
+
+
+async def test_the_dsn_form_opens_its_own_pool_and_the_doors_live(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, pg_dsn: str
+) -> None:
+    """The advertised runnable form: ``build_app(dsn, schema)`` — the
+    lifespan opens the app's own pool and the doors live on it: the
+    token mints, the events stream starts (200), the resolve delivers
+    through the app's own pool. A well-formed id with NO hold is a 404
+    (the resolve door's contract), never a silent refusal."""
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="dsn_form_flow")
+    app = build_app(pg_dsn, wf_schema)
+    async with app.router.lifespan_context(app):
+        demo_client = HitlClient(app.state.pool, schema=wf_schema)
+        holds = await demo_client.list(run=flow_id)
+        assert len(holds) == 1, holds
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://demo"
+        ) as http:
+            minted = (await http.get(f"/runs/{flow_id}/token")).json()
+            assert minted["run_id"] == flow_id
+            # the db-facing doors live on the app's own pool (the DSN
+            # form's whole point — the pool-form tests own the stream
+            # logic): the resolve delivers through it.
+            result = await http.post(
+                f"/runs/{flow_id}/holds/{holds[0].hold_id}/resolve",
+                params={"token": minted["token"]},
+                json={"verdict": "approve"},
+            )
+            assert result.status_code == 200, f"{result.status_code} {result.text}"
+            assert result.json()["status"] == "delivered", result.text
+            gone = await http.post(
+                f"/runs/{flow_id}/holds/{new_uuid()}/resolve",
+                params={"token": minted["token"]},
+                json={"verdict": "approve"},
+            )
+            assert gone.status_code == 404, gone.text
+
+
+async def test_the_demo_doors_refuse_hostile_and_malformed_input_loud(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The demo's doors refuse loud: a malformed JSON body is a 400 (a
+    NUL-bearing decision value is the product's own typed refusal
+    class), never a 500, never silence."""
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="loud_refusal_flow")
+    app = build_app(wf_pool, wf_schema)
+    demo_client = HitlClient(wf_pool, schema=wf_schema)
+    holds = await demo_client.list(run=flow_id)
+    assert len(holds) == 1, holds
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://demo"
+    ) as http:
+        minted = (await http.get(f"/runs/{flow_id}/token")).json()
+        not_json = await http.post(
+            f"/runs/{flow_id}/holds/{holds[0].hold_id}/resolve",
+            params={"token": minted["token"]},
+            content="{not json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert not_json.status_code == 400, not_json.text
+        nul_decision = await http.post(
+            f"/runs/{flow_id}/holds/{holds[0].hold_id}/resolve",
+            params={"token": minted["token"]},
+            json={"verdict": "approve", "note": "a\u0000b"},
+        )
+        assert nul_decision.status_code in (400, 422), nul_decision.text
+        after = await demo_client.get(holds[0].hold_id)
+        assert after is not None and after.status == "held", after
+
+
+async def test_the_demo_parses_the_body_with_the_bounded_parser(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The demo's body parser is the HOUSE's bounded parser (the admin
+    doors' own rule): a nesting bomb is the named 400 — the stdlib
+    decoder's RecursionError never escapes the door as a 500 — and the
+    hold survives it."""
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="bounded_parser_flow")
+    app = build_app(wf_pool, wf_schema)
+    demo_client = HitlClient(wf_pool, schema=wf_schema)
+    holds = await demo_client.list(run=flow_id)
+    assert len(holds) == 1, holds
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://demo"
+    ) as http:
+        minted = (await http.get(f"/runs/{flow_id}/token")).json()
+        bomb = await http.post(
+            f"/runs/{flow_id}/holds/{holds[0].hold_id}/resolve",
+            params={"token": minted["token"]},
+            content="[" * 20_000 + "]" * 20_000,
+            headers={"Content-Type": "application/json"},
+        )
+        assert bomb.status_code == 400, f"{bomb.status_code} {bomb.text}"
+        after = await demo_client.get(holds[0].hold_id)
+        assert after is not None and after.status == "held", after

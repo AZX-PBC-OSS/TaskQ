@@ -3,13 +3,13 @@
 Red (proven live at the audit base): two ``@actor(name="dup")``
 decorators in one registry loaded through ``taskq.cli.
 _load_actor_registry`` booted with ``actor_count == 1`` and exit 0 --
-the dict comprehension ``{r.name: r for r in items}`` let the LAST
+the dict comprehension ``{r.name: r for r in items}`` let the last
 duplicate silently win, so dispatch for the loser's jobs ran the
 winner's code. A silent wrong-code dispatch is the worst failure mode
 a registry can have, so a duplicate name is refused at load, the
-message naming the collision and BOTH registration sites.
+message naming the collision and both registration sites.
 
-The same ActorRef object listed twice is NOT a refusal: the dispatch
+The same ActorRef object listed twice is not a refusal: the dispatch
 behavior is byte-identical (one function, one config), so collapsing it
 preserves the old shape for restart/registry-rebuild flows.
 """
@@ -85,7 +85,7 @@ def test_duplicate_names_refused_naming_both_sites(
 
 
 def test_same_object_listed_twice_still_collapses() -> None:
-    """The legit-reregistration carve-out: the SAME ActorRef object twice
+    """The legit-reregistration carve-out: the same ActorRef object twice
     is not a collision (one function, one config, nothing to mis-dispatch)
     and keeps the old collapse behavior."""
     the_ref = _make_actor_ref("dup")

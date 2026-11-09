@@ -1,6 +1,6 @@
-# Event-intel pipelines — the streaming fan-out, the typed route, the envelope
+# Event pipelines — the streaming fan-out, the typed route, the envelope
 
-An event-intel pipeline ingests an open-ended feed of records — pages,
+An event pipeline ingests an open-ended feed of records — pages,
 messages, sensor reads — and runs each record through a route: classify
 or screen it, enrich the readable ones, dead-letter the rest, aggregate
 the results. The engineering constraints that decide whether it is
@@ -17,7 +17,7 @@ TaskQflow's answer to each: the emit transaction (the cursor
 checkpoint), the declared in-flight bound (backpressure), the typed
 route (the totality fence), and the per-item retry ladder. The worked
 example is `examples/workflows.py` (verified by
-`tests/test_wf_demo_legs.py`); this guide walks it.
+`tests/test_wf_demo_legs.py`).
 
 ## The cursor: page by page, crash-safe
 
@@ -47,7 +47,7 @@ transaction that inserts the page's children. A kill between pages
 leaves the cursor at the last COMMITTED page; the resume continues from
 there and **re-emits exactly the lost page** — the records between the
 last commit and the crash. Nothing before it re-runs (the emitted
-children's ledger identity convicts the duplicate), nothing after it is
+children's ledger identity rejects the duplicate), nothing after it is
 skipped. The child spec (`chain_start`) stamps each record's
 `map_index` (the discriminator: two records' children are two rows, two
 ledger keys, two claims — only because it is stamped per record at

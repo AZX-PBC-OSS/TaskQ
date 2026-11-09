@@ -1,4 +1,4 @@
-"""Red-team attacks on the `cron_schedule_id` provenance stamp.
+"""Adversarial review attacks on the `cron_schedule_id` provenance stamp.
 
 The fix scopes the DST twin-coverage walk to the schedule that
 enqueued the jobs: every cron fire and twin carries
@@ -49,7 +49,7 @@ from .test_rt_cron_harness import (
 
 _ACTOR = "rt_stamp_forgery_open"
 
-# 2026-11-01 fall-back (02:00 EDT -> 01:00 EST): fold-0 runs
+# 2026-11-01 fall-back (02:00 edt -> 01:00 est): fold-0 runs
 # 05:00-05:59 UTC, fold-1 06:00-06:59 UTC, past-the-range 07:00 UTC.
 _LAST_FOLD0_TICK_UTC = datetime(2026, 11, 1, 5, 59, tzinfo=UTC)
 _FIRST_FOLD1_SLOT_UTC = datetime(2026, 11, 1, 6, 0, tzinfo=UTC)
@@ -117,7 +117,7 @@ def test_caller_supplied_cron_schedule_id_is_stripped_from_batch_items() -> None
 
 
 def test_batch_stamp_param_cannot_resurrect_forged_stamps() -> None:
-    """``stamp_batch_id`` sits INSIDE the strip boundary, not after it.
+    """``stamp_batch_id`` sits inside the strip boundary, not after it.
 
     The batch paths pass the library's batch_id into
     ``build_enqueue_args`` directly (``stamp_batch_id``) instead of

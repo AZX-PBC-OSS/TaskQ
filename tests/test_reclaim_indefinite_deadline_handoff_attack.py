@@ -1,4 +1,4 @@
-"""Red-team attack: an ``indefinite`` job reclaimed with a backoff delay
+"""Adversarial review attack: an ``indefinite`` job reclaimed with a backoff delay
 that lands its ``scheduled_at`` past its own ``schedule_to_close``.
 
 Hypothesis under test: crash-reclaim's hand-back branch does not clamp
@@ -12,7 +12,7 @@ of "no work stalled forever".
 
 The actual design (confirmed by reading ``_SWEEP_2_SQL`` /
 ``_deadline_sweep``): a second, independent sweep scans
-``status IN ('pending', 'scheduled') AND schedule_to_close < now`` and
+``status IN ('pending', 'scheduled') and schedule_to_close < now`` and
 fails any such row with ``DeadlineExceeded``, regardless of how it got
 into that status. So reclaim handing a job back with a scheduled_at past
 its deadline is not a stall - the deadline sweep resolves it on its next

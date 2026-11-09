@@ -1,4 +1,4 @@
-"""Red-team pins for the admin audit trail (attack review of #324's fix).
+"""Adversarial review pins for the admin audit trail (attack review of #324's fix).
 
 The original defect (no audit trail at all) is fixed; these tests attack
 what that fix MISSED:
@@ -95,7 +95,7 @@ def test_cancel_lands_when_audit_checkout_keeps_failing(
     assert _audit_inserts(conn) == []
 
     # ... and the degradation is alertable: the counter saw it. A degraded
-    # cancel counts TWICE -- the audit record and the event fold both ride
+    # cancel counts twice -- the audit record and the event fold both ride
     # the wedged checkout, and each is a distinct lost attribution.
     assert counter_value(reader, _FAILED_METRIC) == 2
 
@@ -238,7 +238,7 @@ def test_cancel_lost_race_writes_no_row_and_never_folds_an_older_event(
 ) -> None:
     """A cancel whose ``write_cancel_request`` returned False (another
     writer's cancel_request is already in flight) applied nothing itself:
-    no audit row may claim it, and the principal fold must NOT run -- the
+    no audit row may claim it, and the principal fold must not run -- the
     newest cancel_request event belongs to the OTHER writer, and folding
     this operator's identity onto it would falsify the event log."""
     jid = new_uuid()
@@ -268,7 +268,7 @@ def _make_admin_app_for_test(
     *,
     backend: Any = None,
     # Module-level singleton default (B008): a default of None means the
-    # no-auth DEV router below, so "not provided" needs its own sentinel.
+    # no-auth dev router below, so "not provided" needs its own sentinel.
     auth_dependency: Any = _AUTHENTICATED,
     rate_limit_registry: Any = None,
 ) -> Any:

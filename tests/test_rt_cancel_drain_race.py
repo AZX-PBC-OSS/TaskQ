@@ -1,4 +1,4 @@
-"""Red-team attacks on the bounded bulk cancel's drain-time races (real PG).
+"""Adversarial review attacks on the bounded bulk cancel's drain-time races (real PG).
 
 Three properties of ``_cancel_where``'s bounded drain that the two-statement
 design promises but no pinned test exercises at DRAIN scale (≥2 batches):
@@ -194,7 +194,7 @@ class _CountingPool:
         return sum(c.event_inserts for c in self.conns)
 
 
-# ── P1-3: EPQ race under the DRAIN shape ─────────────────────────────────
+# ── P1-3: epq race under the drain shape ─────────────────────────────────
 
 
 async def test_mid_drain_claim_lands_in_cooperative_cancel_and_finisher_is_untouched(

@@ -7,7 +7,7 @@ unique-for, future-scheduled), batch enqueue, dispatch claims, heartbeats
 retry-after consuming and not, snooze, admission denial, interrupt, worker
 cancel, operator cancel request / escalation / abandon), operator re-runs,
 the three sweeps, and the twin's archive/expiry simulation - and checks the
-invariants after EVERY step:
+invariants after every step:
 
 1. CONSERVATION: every enqueued id stays live, archived (with truthful
    columns), or expired-from-archive; terminal rows carry ``finished_at``;
@@ -66,10 +66,10 @@ _GRACE = timedelta(seconds=30)
 _LEASE = timedelta(seconds=60)
 _ACTOR = "fuzz_actor"
 
-# The documented ROW-level transition machine: VALID_TRANSITIONS plus the
+# The documented row-level transition machine: VALID_TRANSITIONS plus the
 # operator re-run edge (retry_job's docstring: "every state a job can come
 # to rest in is a valid source", including succeeded and abandoned).
-# retry_job re-pends the row WITHOUT a state_change event, so this union
+# retry_job re-pends the row without a state_change event, so this union
 # governs the row's transitions, not the event trail's.
 _ROW_EDGES: dict[str, frozenset[str]] = {
     source: frozenset(targets | ({"pending"} if source in TERMINAL_STATUSES else set()))
@@ -370,7 +370,7 @@ class FsmFuzzMachine(RuleBasedStateMachine):
                 )
             )
         except WorkerOwnershipMismatch:
-            # Documented: the failure-RETRY arm refuses a phase-carrying
+            # Documented: the failure-retry arm refuses a phase-carrying
             # row (an operator cancel in flight wins over a budget spend);
             # the row must be exactly where it stood.
             assert row.cancel_phase != CancelPhase.NONE
@@ -421,7 +421,7 @@ class FsmFuzzMachine(RuleBasedStateMachine):
         if res == "noop" and post.status == "running":
             # No arm landed: the row is either untouched or the caller was
             # fenced out (a phase-carrying row stays 'running' with its
-            # cancel armed - FENCE COHERENCE).
+            # cancel armed - fence coherence).
             assert row == post or post.cancel_phase != CancelPhase.NONE
         self._observe(job, post)
 
@@ -509,7 +509,7 @@ class FsmFuzzMachine(RuleBasedStateMachine):
         assert post.finished_at is not None
         self._observe(job, post)
 
-    # ── STALE-VIEW writes: the fence must no-op ────────────────────────
+    # ── stale-view writes: the fence must no-op ────────────────────────
 
     @precondition(lambda self: any(self.views.values()))
     @rule(
@@ -598,7 +598,7 @@ class FsmFuzzMachine(RuleBasedStateMachine):
         attempts_after = len(asyncio.run(self.backend.get_attempts(job)))
         if not fenced_out:
             return  # The view was still current; the fresh rules pin the landing.
-        # FENCE COHERENCE: a stale view must not terminalise a live row.
+        # fence coherence: a stale view must not terminalise a live row.
         # Every fenced-out arm must read back as a no-op and leave the row
         # exactly where it stood - no status move, no counter bump, no
         # attempt row, no event.
@@ -670,7 +670,7 @@ class FsmFuzzMachine(RuleBasedStateMachine):
         self.backend.expire_archived_jobs()
         self.expired |= still_there - set(self.backend._archive.keys())  # pyright: ignore[reportPrivateUsage]  # Why: same pattern.
 
-    # ── Invariants (checked after EVERY step) ──────────────────────────
+    # ── Invariants (checked after every step) ──────────────────────────
 
     @invariant()
     def conservation_and_order(self) -> None:
@@ -726,7 +726,7 @@ class FsmFuzzMachine(RuleBasedStateMachine):
             # Event trail: legal edges only; a terminal state_change event
             # is the last event of its epoch (operator re-runs write no
             # event and start a new epoch above the watermark).  One
-            # documented self-loop allowance: the cancel ESCALATION writes
+            # documented self-loop allowance: the cancel escalation writes
             # a state_change (running, running) carrying the phase
             # transition in its detail (cancel_phase_from/to) - a
             # phase-carrying event, not a status transition; both backends'
@@ -762,13 +762,13 @@ TestFsmFuzzMachine = FsmFuzzMachine.TestCase  # type: ignore[reportUnknownVariab
 def test_regression_ceiling_repeat_keeps_first_attempt_row() -> None:
     """INVARIANT (conservation, the attempt ledger): at the smallint
     ceiling the claim's ``LEAST(attempt + 1, 32767)`` clamp repeats the
-    attempt number, and the ``(job_id, attempt)`` key keeps its FIRST
+    attempt number, and the ``(job_id, attempt)`` key keeps its first
     record - the ``ON CONFLICT DO NOTHING`` doctrine every PG attempt
     INSERT carries.  Shrunken from the differential counterexample in
     ``test_attack_fsm_fuzz_pg.py`` (plant at 32767 -> reclaim -> claim ->
     consuming RetryAfter -> claim -> succeed): the twin's terminal and
-    deferral writers used to append duplicates PG refused to store, so
-    the mirror's attempt ledger disagreed with the contract source's."""
+    deferral writers append no duplicates (PG refuses to store them), so
+    the mirror's attempt ledger agrees with the contract source's."""
     clock = FakeClock(_START)
     backend = InMemoryBackend(
         clock=clock, cancellation_grace_period=_GRACE, cleanup_grace_period=_GRACE
@@ -795,7 +795,7 @@ def test_regression_ceiling_repeat_keeps_first_attempt_row() -> None:
     )
 
     # Reclaim: the expired lock's epoch crashes (the 'crashed' record -
-    # the FIRST record of the 32767 key) and the row re-queues.
+    # the first record of the 32767 key) and the row re-queues.
     assert asyncio.run(backend.reclaim_expired_locks(_GRACE, _GRACE)) == 1
     clock.advance(timedelta(hours=2))  # the crash backoff elapses
     asyncio.run(backend.scheduled_to_pending())
@@ -807,7 +807,7 @@ def test_regression_ceiling_repeat_keeps_first_attempt_row() -> None:
     first_epoch = claimed[0].claim_epoch
 
     # A consuming RetryAfter re-pends the row and writes the epoch's
-    # attempt row ('snoozed') - which must NOT land: the key is taken.
+    # attempt row ('snoozed') - which must not land: the key is taken.
     res = asyncio.run(
         backend.mark_retry_after(
             jid,
@@ -820,7 +820,7 @@ def test_regression_ceiling_repeat_keeps_first_attempt_row() -> None:
     )
     assert res == "scheduled"
 
-    # Claim again at the SAME clamped number under a fresh epoch and
+    # Claim again at the same clamped number under a fresh epoch and
     # terminalise - the 'succeeded' attempt row must not land either.
     claimed2 = asyncio.run(backend.dispatch_batch(worker, ["default"], 5, _LEASE))
     assert [row.id for row in claimed2] == [jid]

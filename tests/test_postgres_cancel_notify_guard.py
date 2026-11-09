@@ -2,7 +2,7 @@
 
 The cancel flag commits in the transaction block; the pg_notify fan-out
 fires afterwards on a second pooled connection. A NOTIFY failure there
-must NOT surface to the caller as a failed cancel - the request IS
+must not surface to the caller as a failed cancel - the request IS
 recorded - so it is swallowed with a warning, the same contract as
 ``cancel_where``'s notify block. These tests pin that contract at the
 connection-mock level (no real PG needed); the happy-path SQL behaviour
@@ -48,7 +48,7 @@ def _mock_pool(conn: Mock) -> Mock:
 def _scripted_conn(notify_error: Exception) -> Mock:
     """A conn stub for write_cancel_request's running-job path.
 
-    fetchrow: ONE call, the fused arbiter, returning the locked running
+    fetchrow: one call, the fused arbiter, returning the locked running
     row (drives the cancel_phase=1 branch). execute: raises *notify_error*
     for the post-commit pg_notify round trip (the events are written
     server-side by the arbiter statement itself).

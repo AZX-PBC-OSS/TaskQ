@@ -1,22 +1,22 @@
-"""Red-team pins for the ``taskq.queue.depth`` gauge's label cardinality.
+"""Adversarial review pins for the ``taskq.queue.depth`` gauge's label cardinality.
 
 The job-side instruments bound their ``queue`` label through
 ``_bounded_queue()`` (``obs/_otel.py:361-371``): the first
 ``_MAX_QUEUE_LABEL_VALUES`` (100) distinct names keep their own series,
 everything past the cap collapses onto the fixed ``_other_`` value - the
 ~100-values-per-dimension ceiling Azure Monitor's guidance sets, behind
-which a subscription's 50k-series cap throttles ingestion of EVERY custom
+which a subscription's 50k-series cap throttles ingestion of every custom
 metric. The gauge is the one instrument that skips the seam:
 ``_observe_queue_depth`` (``obs/_otel.py:632-634``) yields one
 ``Observation`` per raw cache key, and the cache is filled by a
 leader-side ``GROUP BY queue`` - so label cardinality is however many
 distinct queue names exist in ``jobs``, unbounded.
 
-The fix is NOT the counter-site five-liner: a gauge is observable, not
+The fix is not the counter-site five-liner: a gauge is observable, not
 additive, so each overflow queue must not yield its own ``_other_``
 observation. The signal-preserving shape is partition-then-aggregate:
 queues inside the cap keep their series; everything past the cap
-contributes to ONE ``_other_`` observation carrying the SUM of the
+contributes to one ``_other_`` observation carrying the SUM of the
 overflow depths.
 
 These tests drive the real callback through the real SDK reader, with
@@ -34,7 +34,7 @@ import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
 from taskq.testing.otel import collect_metrics
 
-_CAP = otel_mod._MAX_QUEUE_LABEL_VALUES  # pyright: ignore[reportPrivateUsage]  # Why: the test asserts behaviour AT the cap; duplicating the constant would let it drift from the thing it guards.
+_CAP = otel_mod._MAX_QUEUE_LABEL_VALUES  # pyright: ignore[reportPrivateUsage]  # Why: the test asserts behaviour at the cap; duplicating the constant would let it drift from the thing it guards.
 _OVERFLOW = "_other_"
 
 

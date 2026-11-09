@@ -339,7 +339,7 @@ async def test_isolate_self_racing_a_terminal_write(
     """RACE, forced both ways: isolate_self (crash reclaim) vs the worker's
     own mark_cancelled terminal write, same job, same worker.
 
-    The arbiter on BOTH sides is the server-side guarded UPDATE: whichever
+    The arbiter on both sides is the server-side guarded UPDATE: whichever
     writer's guarded UPDATE commits first owns the outcome, and the loser's
     re-check no-ops. The two legal commit orders are not sampled with sleep
     head starts -- a harness that hopes N iterations sample both orders is
@@ -372,7 +372,7 @@ async def test_isolate_self_racing_a_terminal_write(
     iso_deps = _iso_deps(clean_jobs_app)
     dsn = str(iso_deps.settings.pg_dsn_direct)
 
-    # The REAL connect, captured once before any monkeypatching: the loop
+    # The real connect, captured once before any monkeypatching: the loop
     # must not re-capture the previous iteration's stand-in.
     real_connect = asyncpg.connect
 
@@ -380,7 +380,7 @@ async def test_isolate_self_racing_a_terminal_write(
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await _running_row(conn, schema, attempt=1, max_attempts=3)
 
-        # The park point IS the forced winner: parked in the select window
+        # The park point is the forced winner: parked in the select window
         # the terminal write wins from, parked on the arbiter's row lock
         # isolate wins from.
         park_after = "select" if forced_winner == "terminal" else "arbiter"
@@ -495,7 +495,7 @@ async def test_isolate_self_racing_the_reclaim_sweep(
     dsn = str(iso_deps.settings.pg_dsn_direct)
     expired = datetime.now(UTC) - timedelta(seconds=5)
 
-    # The REAL connect, captured once before any monkeypatching: the loop
+    # The real connect, captured once before any monkeypatching: the loop
     # must not re-capture the previous iteration's stand-in.
     real_connect = asyncpg.connect
 
@@ -541,7 +541,7 @@ async def test_isolate_self_racing_the_reclaim_sweep(
                 await asyncio.wait_for(isolate_task, timeout=_WAIT)
             else:
                 # isolate parked holding the jobs-row lock (its guarded
-                # UPDATE executed, uncommitted): the sweep's SKIP LOCKED
+                # UPDATE executed, uncommitted): the sweep's skip locked
                 # snap runs into that contention and must step over the row.
                 sweep_task = asyncio.create_task(_sweep())
                 release.set()

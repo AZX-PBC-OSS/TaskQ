@@ -1,24 +1,24 @@
-"""T01's type-probe gate: every MUST_ERROR marker reds on BOTH pinned
-checkers — asserting the EXPECTED RULE-IDS per marker, and failing on any
-error OUTSIDE the markers.
+"""The type-probe gate: every MUST_ERROR marker reds on both pinned
+checkers — asserting the expected rule-ids per marker, and failing on any
+error outside the markers.
 
 The probe corpus (``*_negative_types.py``) names the wrong-shape
-calls the typed-doors law (BUILD-PROTOCOL §7b: "the negative probes
-(wrong-shape inputs RED on both checkers) ship WITH the API") requires to
+calls the typed-doors law (build-protocol §7b: "the negative probes
+(wrong-shape inputs red on both checkers) ship with the API") requires to
 be checker errors. This gate is the enforcement: it runs the corpus under
-the PINNED checkers (``pyright 1.1.414`` + ``ty 0.0.85`` — the typeprobe
-dependency group) and fails unless EVERY marker line
+the pinned checkers (``pyright 1.1.414`` + ``ty 0.0.85`` — the typeprobe
+dependency group) and fails unless every marker line
 
-1. produces at least one ERROR diagnostic from EACH checker whose
-   RULE-ID matches the marker's declared set — ``MUST_ERROR(rule-a,
-   rule-b): prose`` — (a marker that reds with the WRONG rule — a stray
-   missing-import satisfying a payload probe — is a RED GATE: the
+1. produces at least one error diagnostic from each checker whose
+   rule-id matches the marker's declared set — ``MUST_ERROR(rule-a,
+   rule-b): prose`` — (a marker that reds with the wrong rule — a stray
+   missing-import satisfying a payload probe — is a red gate: the
    marker without its rule is the leak wearing a pass), and
-2. carries the rule-id declaration AT ALL — a bare ``MUST_ERROR`` is a
+2. carries the rule-id declaration at all — a bare ``MUST_ERROR`` is a
    gate failure (the assertion must name what it asserts),
 
-AND unless the checkers emit NO error anywhere else in the corpus (the
-unmarked-error rule): an error outside a marker is either a GREEN-surface
+and unless the checkers emit no error anywhere else in the corpus (the
+unmarked-error rule): an error outside a marker is either a green-surface
 regression (the corpus's clean lines — the two-faces boundary's honest
 gap — must stay clean) or an unasserted red — both are gate failures.
 (The old gate printed these as informational notes and passed — the
@@ -27,7 +27,7 @@ clean-site regression's escape hatch, removed.)
 pyright runs under this directory's own ``pyrightconfig.json`` — the root
 pyproject's ``tests`` executionEnvironment sets ``reportArgumentType =
 false``, which would mute exactly the violations the probes assert (the
-T01 finding this config exists to fix).
+claim-door hole this config exists to fix).
 
 Run: ``uv run --no-sync python tests/typeprobe/_gate.py`` (the CI
 ``type-probes`` job's single step).
@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import json
 import re  # Why: the marker's rule-id declaration is parsed from the trailing comment.
-import subprocess  # Why: the gate IS the checker invocation; fixed argv, the repo's own probe corpus.
+import subprocess  # Why: the gate is the checker invocation; fixed argv, the repo's own probe corpus.
 import sys
 from pathlib import Path
 
@@ -47,16 +47,15 @@ from pathlib import Path
 PYRIGHT_VERSION = "1.1.414"
 TY_VERSION = "0.0.85"
 
-#: The probe CORPUS: one file per API surface round (T01's engine corpus,
-#: the T09 flow API's wiring corpus, the type-mechanism round's generic
+#: The probe corpus: one file per API surface round (the claim door's engine corpus,
+#: the typed API flow API's wiring corpus, the type-mechanism round's generic
 #: wiring corpus, the phase-2/-3/-4 attack rounds' surface corpora — the
-#: negative probes ship WITH the API, BUILD-PROTOCOL §7b). Each
-#: MUST_ERROR marker reds on BOTH checkers — with the RULE-IDS the
-#: marker declares. THE EVIDENCE-INTEGRITY ROUND'S WIRING (cure 4):
-#: attack2/attack3/attack4 ran only under their attackers' own
-#: invocations and ROTTED OFF this gate — three of seven corpus files
+#: negative probes ship with the API, build-protocol §7b). Each
+#: MUST_ERROR marker reds on both checkers — with the rule-ids the
+#: marker declares. the evidence-integrity round's wiring (fix 4):
+#: the phase-probe corpora ran only under their own invocations and rotted off this gate — three of seven corpus files
 #: unwired, their markers dead or wrong-rule as the signatures moved.
-#: They are WIRED here, re-derived against the current signatures
+#: They are wired here, re-derived against the current signatures
 #: (wire-or-delete, no zombie corpus).
 _CORPUS: tuple[str, ...] = (
     "attack_wf_negative_types.py",
@@ -65,55 +64,52 @@ _CORPUS: tuple[str, ...] = (
     "attack2_wf_phase2_types.py",
     "attack3_wf_negative_types.py",
     "attack4_new_surfaces_negative_types.py",
-    # THE ZOMBIE PROBE'S WIRE (finding 7's cure — wire-or-delete, the
-    # gate's own law): ``wf_gather_negative_types.py`` carried a LIVE
-    # ``MUST_ERROR`` marker but was registered NOWHERE — the gate never
-    # ran it, the marker was decoration, the vacuous class exactly the
-    # wiring round convicted ("three of seven corpus files unwired").
-    # WIRED and re-derived against the current signatures (the F1-2
-    # residual slot's door still reds on both checkers with the
-    # declared rules).
+    # finding 7's fix — wire-or-delete, the gate's own law.
+    # ``wf_gather_negative_types.py`` carried a live ``MUST_ERROR`` marker but
+    # was registered nowhere — the gate never ran it, the marker was
+    # decoration, the vacuous class exactly the wiring round rejected ("three
+    # of seven corpus files unwired"). wired and re-derived against the current
+    # signatures (the F1-2 residual slot's door still reds on both checkers
+    # with the declared rules).
     "wf_gather_negative_types.py",
-    # THE BUILD LANE'S DOOR PROBES (the typed decorator's negative
-    # faces — the object decl, the direct-call decl, the async decl):
-    # a -> object decl is a static error at the decoration site, both
-    # checkers; these hold that line in the corpus.
+    # a -> object decl is a static error at the decoration site, both checkers;
+    # these hold that line in the corpus.
     "wf_workflow_decl_negative_types.py",
-    # T26'S AMENDMENT — the expiry-as-value probes: the wait's timeout
-    # face is the TYPED UNION (the decision models | Expired) and the
-    # CHECKER forces the fail-close arm (the bare unwrap + the
+    # the expiry-as-value'S amendment — the expiry-as-value probes: the wait's timeout
+    # face is the typed union (the decision models | Expired) and the
+    # checker forces the fail-close arm (the bare unwrap + the
     # fall-through match red; the green door — both arms — stays clean).
     "wf_wait_expired_negative_types.py",
-    # THE TYPE-TAGGED ROUTE'S PROBES (the routing proof's cure): the
-    # Route literal's keys are checker-gated on BOTH faces — a raw
-    # string key (neither an enum member nor a payload type) reds; the
-    # type-keyed green face stays clean.
+    # the Route literal's keys are checker-gated on both faces — a raw string
+    # key (neither an enum member nor a payload type) reds; the type-keyed
+    # green face stays clean.
     "wf_type_tagged_route_negative_types.py",
-    # THE GRAPH-DSL TYPED ROUTE'S PROBES (T27's cure): the route verb's
-    # arms are keyed by the union's member TYPES — a raw string key reds
-    # at the call site (the Route literal's discipline, at the wiring
-    # verbs); the type-keyed green face (and the flat Promise[list[R]]
+    # the route verb's arms are keyed by the union's member types — a raw
+    # string key reds at the call site (the Route literal's discipline, at the
+    # wiring verbs); the type-keyed green face (and the flat Promise[list[R]]
     # it returns) stays clean.
     "wf_graph_route_negative_types.py",
-    # THE CHILD FLOWS' PROBES (T28): the join's closed union
+    # the child flows' probes (the child flows : the join's closed union
     # (``ChildOk[M] | ChildFailed | ChildCancelled | Expired``) forces
     # the fail-close arms — the bare unwrap reds the attribute, the
     # ChildOk-only match reds the fall-through against the body's
     # declared return; the all-arms green door stays clean.
     "wf_childflow_negative_types.py",
-    # THE WIRING'S ELEMENT-TYPE SEAM'S PROBES (the E5 drill's cure — the
-    # engine-faces lane): a list[Word] producer wired into a list[str]
-    # consumer reds at the WIRING SITE on both checkers (the single-
-    # promise list seam is TYPED — the body's list[E] and the promise's
-    # list[E] must agree on E); the matching-element green face stays
-    # clean.
+    # a list[Word] producer wired into a list[str] consumer reds at the wiring
+    # site on both checkers (the single- promise list seam is typed — the
+    # body's list[E] and the promise's list[E] must agree on E); the
+    # matching-element green face stays clean.
     "wf_list_element_negative_types.py",
+    # the execution policy's typed declarations: valid record/outcome/source
+    # inference stays clean; the wrong-slot RetryPolicy and the unsupported
+    # terminal-callback field red at the declaration site on both checkers.
+    "wf_execution_policy_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: The marker's rule-id declaration: ``MUST_ERROR(rule-a, rule-b)`` —
-#: the rules any ONE of the checkers may be asserted against (pyright
-#: and ty name the same violation differently; the marker lists BOTH
+#: the rules any one of the checkers may be asserted against (pyright
+#: and ty name the same violation differently; the marker lists both
 #: vocabularies and the gate requires each checker to produce ≥1 error
 #: whose rule is in the set).
 _MARKER_RULES = re.compile(r"MUST_ERROR\(([^)]+)\)")
@@ -122,22 +118,22 @@ _MARKER_RULES = re.compile(r"MUST_ERROR\(([^)]+)\)")
 def _must_error_lines(source: str) -> list[tuple[frozenset[str], frozenset[int]]]:
     """The corpus's markers → (declared rule-ids, asserted line-span).
 
-    THE SPAN CONVENTION (the formatter's law): ruff format WRAPS long
+    Ruff format wraps long
     calls and leaves the trailing marker on the closing-paren line while
-    the checker reports the violation at the argument INSIDE the
-    expression — so a marker asserts its innermost AST statement's WHOLE
+    the checker reports the violation at the argument inside the
+    expression — so a marker asserts its innermost AST statement's whole
     span (every line of it), not the single line it happens to trail. A
-    COMMENT-ONLY line is never a marker (prose names the convention
-    too): the marker must TRAIL code. A marker with no rule-id
+    comment-only line is never a marker (prose names the convention
+    too): the marker must trail code. A marker with no rule-id
     declaration is reported by the caller as its own failure (the
     assertion must name what it asserts)."""
     import ast
 
     tree = ast.parse(source)
-    # The module docstring's range is EXCLUDED: it NAMES the convention
+    # The module docstring's range is EXCLUDED: it names the convention
     # ("Each ``MUST_ERROR`` marker names...") — prose, never an asserted
-    # line. A marker must be a comment attached to CODE (trailing) or a
-    # standalone comment pointing DOWN at the next statement.
+    # line. A marker must be a comment attached to code (trailing) or a
+    # standalone comment pointing down at the next statement.
     doc_end = 0
     if (
         tree.body
@@ -150,7 +146,7 @@ def _must_error_lines(source: str) -> list[tuple[frozenset[str], frozenset[int]]
     statements: list[ast.stmt] = [n for n in ast.walk(tree) if isinstance(n, ast.stmt)]
 
     def _innermost(lineno: int) -> ast.stmt | None:
-        """The DEEPEST statement whose span contains *lineno* (1-based)."""
+        """The deepest statement whose span contains *lineno* (1-based)."""
         best: ast.stmt | None = None
         for node in statements:
             start = node.lineno
@@ -168,8 +164,8 @@ def _must_error_lines(source: str) -> list[tuple[frozenset[str], frozenset[int]]
         if lineno <= doc_end or "MUST_ERROR" not in line:
             continue
         if line.strip().startswith("#"):
-            # A COMMENT-ONLY line is never a marker (prose names the
-            # convention too): the marker must TRAIL code — the asserted
+            # A comment-only line is never a marker (prose names the
+            # convention too): the marker must trail code — the asserted
             # statement is the one the comment's line falls inside.
             continue
         match = _MARKER_RULES.search(line)
@@ -206,7 +202,7 @@ def _pyright_errors(probe: Path) -> dict[int, set[str]]:
             ["pyright", "--outputjson", "--project", str(probe.parent), str(probe)],
             capture_output=True,
             text=True,
-            check=False,  # a non-zero exit is EXPECTED (the corpus must red)
+            check=False,  # a non-zero exit is expected (the corpus must red)
             timeout=300,
         )
     )
@@ -217,7 +213,7 @@ def _pyright_errors(probe: Path) -> dict[int, set[str]]:
             line = int(diag["range"]["start"]["line"]) + 1
             # A syntax diagnostic carries no rule id — recorded as "?"
             # (it can never satisfy a marker's rule assertion; the
-            # marker must red on the SEMANTIC rule it names).
+            # marker must red on the semantic rule it names).
             errors.setdefault(line, set()).add(str(diag.get("rule") or "?"))
     return errors
 
@@ -231,17 +227,29 @@ def _ty_errors(probe_rel: str) -> dict[int, set[str]]:
     ).stdout
     assert TY_VERSION in out, f"ty must be pinned at {TY_VERSION}, got {out!r}"
     proc = subprocess.run(
-        ["ty", "check", probe_rel],
+        # --config-file: the gate's own (empty) config — hermetic to the
+        # box; without it ty's discovery adopts stray parent-directory
+        # ty.toml files (a stale-tool-residue shape: a bisection leftover
+        # in a scratch parent directory carrying a newer ty's
+        # `return-type-inference` option crashed every probe on config
+        # parse). The flag belongs to the check subcommand.
+        [
+            "ty",
+            "check",
+            "--config-file",
+            "tests/typeprobe/ty.toml",
+            probe_rel,
+        ],
         capture_output=True,
         text=True,
-        check=False,  # a non-zero exit is EXPECTED (the corpus must red)
+        check=False,  # a non-zero exit is expected (the corpus must red)
         timeout=300,
         cwd=_REPO_ROOT,
     )
     errors: dict[int, set[str]] = {}
     pending_rule: str | None = None
     for line in proc.stdout.splitlines():
-        # ty's diagnostic is TWO lines: 'error[rule]: message' then
+        # ty's diagnostic is two lines: 'error[rule]: message' then
         # '  --> path:line:col: ...' (the checker's human format, stable
         # across 0.0.x; the machine format has no stable flag yet).
         if line.lstrip().startswith("error[") and ":" in line:
@@ -296,9 +304,8 @@ def main() -> int:
                         f"{', '.join(sorted(rules))} (a stray unrelated error must not "
                         "satisfy the probe)"
                     )
-            # THE UNMARKED-ERROR RULE: any error OUTSIDE a marker's
-            # asserted span is a failure — a green-surface regression or
-            # an unasserted red.
+                    # any error outside a marker's asserted span is a failure — a
+            # green-surface regression or an unasserted red.
             for line, rules in sorted(errors.items()):
                 if line not in covered:
                     failures.append(

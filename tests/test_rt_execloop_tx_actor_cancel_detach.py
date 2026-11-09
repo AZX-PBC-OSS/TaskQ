@@ -1,4 +1,4 @@
-"""Red-team: external cancel detaches the transactional actor (E3).
+"""Adversarial review: external cancel detaches the transactional actor (E3).
 
 Contract under attack: an external cancel of the consume task must reach the
 transactional actor attempt - the row already says cancelled
@@ -8,7 +8,7 @@ committing side effects.
 Hypothesis (verified against the current tree): the transactional path wraps
 the whole actor-in-transaction coroutine in ``tx_task`` and awaits
 ``asyncio.shield(tx_task)`` (src/taskq/worker/_consumer.py:851-853). On outer
-cancel the shield raises but ``tx_task`` is NEVER cancelled - the handler only
+cancel the shield raises but ``tx_task`` is never cancelled - the handler only
 attaches ``add_done_callback(_retrieve_detached_outcome)``
 (_consumer.py:888). With no ``start_to_close`` (settings ``None`` → timeout
 ``None``, src/taskq/settings.py:1002-1010) and a non-DB actor, the actor runs

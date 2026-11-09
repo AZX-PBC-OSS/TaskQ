@@ -3,8 +3,9 @@
 A document-ingestion pipeline: documents arrive, get enriched, pass an
 editorial review, and publish — with the failures REPORTED, never
 swallowed. This page is the minimal copy-paste form; the repo's
-`examples/` directory runs the SAME graph live (the FastAPI demo app,
-`examples/fastapi_app/`) with the admin's run explorer attached.
+`examples/` directory runs the SAME graph live (the demo app
+`examples/app.py`, serving the graph wired in `examples/workflows.py`)
+with the admin's run explorer attached.
 
 > **New to the workflows engine?** The guides are the tutorial:
 > [the workflows guide](../guides/workflows.md) teaches the wiring
@@ -33,8 +34,9 @@ reference; the same names every TaskQ surface loads through
 ```bash
 export TASKQ_PG_DSN=postgresql://taskq:taskq@localhost:5432/taskq
 # REQUIRED — the fence fails fast with a named error without it.
-# Any reachable Postgres 18 works; `docker run -d -p 5432:5432 -e
-# POSTGRES_USER=taskq -e POSTGRES_PASSWORD=taskq -e POSTGRES_DB=taskq postgres:18.6`
+# Any reachable Postgres works (15 minimum; 15–18 covered by CI — see
+# docs/getting-started/installation.md); `docker run -d -p 5432:5432 -e
+# POSTGRES_USER=taskq -e POSTGRES_PASSWORD=taskq -e POSTGRES_DB=taskq postgres:18-alpine`
 # is the two-minute one.
 
 export TASKQ_SCHEMA_NAME=fence_first_hour
@@ -47,7 +49,8 @@ export TASKQ_QUEUES=enrich,cpu,io,classify
 # in-process driver executes every body regardless, but declaring the
 # queues keeps the graph's validate() at ZERO findings — the zero-warning
 # budget counts WARNINGs too (W2-unknown-queue: a queue no worker may
-# listen on).
+# listen on). validate() RETURNS the diagnostics (empty when clean), so
+# the budget is assertable: `assert compiled.validate() == ()`.
 ```
 
 Without `TASKQ_PG_DSN` the fence stops at the named error, not a bare
@@ -172,7 +175,7 @@ async def enrich_item(ctx: StepContext, doc_id: str) -> Summary | Unreadable:
 async def route_body(ctx: StepContext, enriched: list[Summary | Unreadable]) -> list[str]:
     """Shape 7 — the CONSUMED union: `match` + `assert_never` is the
     exhaustiveness idiom BOTH checkers reject a missing arm through.
-    Deleting the `Unreadable` arm must red the residual. The dead
+    Deleting the `Unreadable` arm must fail the residual check. The dead
     letters ride a durable step; the router's own result is declared
     fire-and-forget (the wiring's `sink` — produced, recorded, never
     silently dropped)."""
@@ -279,7 +282,7 @@ async def publish_body(
     )
 
 
-# ── the wiring (ONE flow — the join-body cure makes that true) ──────────
+# ── the wiring (ONE flow — the join-body rule makes that true) ──────────
 
 app = WorkflowApp()
 
@@ -309,7 +312,7 @@ def doc_ingest() -> Promise[object]:
     # the barrier closed); the classification path is the MAYBE edge (the
     # barrier does not fail — the failure is surfaced in the report).
     barrier = gather([summaries, entities], on_failure="fail_closed")
-    maybe_labels = gather([labels], on_failure="maybe")
+    maybe_labels = gather([labels], on_failure="collect")
     sink(routed)  # THE FIRE-AND-FORGET DECLARATION: recorded, never silent
 
     review = loop(
@@ -433,13 +436,14 @@ What each shape shows (and where to look):
 | 2 | per-item fork + collect | `map_source(ingested, enrich_item, …)` |
 | 3 | typed HITL hold | `ctx.wait_signal((ReviewDecision,), …)` inside the loop |
 | 4 | retry ladder, isolated | `max_attempts=3` on `map_source` (the item's ladder — a child re-runs alone) |
-| 5 | the worked duality | `gather([summaries, entities], on_failure="fail_closed")` vs `gather([labels], on_failure="maybe")` |
+| 5 | the worked duality | `gather([summaries, entities], on_failure="fail_closed")` vs `gather([labels], on_failure="collect")` |
 | 6 | budget-capped loop, held budget | `loop("review", …, max_iterations=3, budget_s=3600.0)` |
 | 7 | union routing | `match item:` + `case _ as it: assert_never(it)` in `route_body` |
 | 8 | typed terminal verdict | `PublishReport` — derived from the run's collect (the ghost named) |
 | 9 | cron-slot run key | `run_nightly_refresh`'s `run_key=f"doc_ingest:nightly:{slot}"` |
 
-**Run it live**: the demo app (`examples/fastapi_app/`) wires this same
+**Run it live**: the demo app (`examples/app.py`, with the graph wired
+in `examples/workflows.py`) serves this same
 graph behind HTTP with the admin's run explorer. **The verify loop**: the
 example's fence executes in CI (`make test-docs-examples`), the fast tier
 runs its `build()` + `validate()` without containers, and the compiled
@@ -451,14 +455,14 @@ Mermaid is byte-pinned.
 
 Each leg is a RUNNABLE path in the demo (`tests/test_wf_demo_legs.py` —
 the evidence-matrix's demo work order; every run's output is captured
-verbatim under `.measurements/demo-legs/`):
+by the leg's own test):
 
 | # | Capability | The runnable path | The captured evidence |
 |---|-----------|-------------------|-----------------------|
-| 1 | **Cancellation mid-flight** | trigger → the run holds mid-flight → `taskq flows cancel <run_id> --reason ...` → the explorer shows the story: the root `cancelled`, the nodes' named states (the held signal resolved, the downstream cancelled), the derived status `cancelled`, the audit ROW (the principal + the reason) | `.measurements/demo-legs/leg1-cancellation.json` |
-| 2 | **Resumability (the kill-and-resume)** | a PRODUCTION worker (`taskq worker --actors examples.workflows:ACTORS`) claims a node mid-run → **SIGKILL** → a fresh worker's lease-expiry + reclaim re-runs the killed node → **the run COMPLETES** (the ledger records the reclaim; nothing is lost — the killed attempt's rows are the record) | `.measurements/demo-legs/leg2-kill-resume.json` |
-| 3 | **Observability (the live scrape)** | a real run + the maintenance leader's sampler → `taskq.wf_progress_nodes_total{workflow,state}` rendered at the metrics surface → the /metrics ENDPOINT's response captured verbatim | `.measurements/demo-legs/leg3-wf-gauge-scrape.prom` |
-| 4 | **The conditional router (the T20 chain)** | the demo's `doc_screen_router` run: the chain's SCREEN step routes each record — READABLE → `index`, UNREADABLE → `dead_letter`; the totals are the FENCE (a non-total route refused at declaration; a body outcome with no arm = the loud `RouterNotTotal`) | `.measurements/demo-legs/leg4-router.json` |
+| 1 | **Cancellation mid-flight** | trigger → the run holds mid-flight → `taskq flows cancel <run_id> --reason ...` → the explorer shows the story: the root `cancelled`, the nodes' named states (the held signal resolved, the downstream cancelled), the derived status `cancelled`, the audit ROW (the principal + the reason) | the leg test's recorded output |
+| 2 | **Resumability (the kill-and-resume)** | a PRODUCTION worker (`taskq worker --actors examples.workflows:ACTORS`) claims a node mid-run → **SIGKILL** → a fresh worker's lease-expiry + reclaim re-runs the killed node → **the run COMPLETES** (the ledger records the reclaim; nothing is lost — the killed attempt's rows are the record) | the leg test's recorded output |
+| 3 | **Observability (the live scrape)** | a real run + the maintenance leader's sampler → `taskq.wf_progress_nodes_total{workflow,state}` rendered at the metrics surface → the /metrics ENDPOINT's response captured verbatim | the leg test's recorded output |
+| 4 | **The conditional router (the chain)** | the demo's `doc_screen_router` run: the chain's SCREEN step routes each record — READABLE → `index`, UNREADABLE → `dead_letter`; the totals are the FENCE (a non-total route refused at declaration; a body outcome with no arm = the loud `RouterNotTotal`) | the leg test's recorded output |
 
 **The two doors' contracts differ — stated AT the example (the pick:
 document, don't shim):** the `step(...)` door COERCES — the example's
@@ -473,7 +477,7 @@ teaches: pass `model.model_dump()` at emit; hand the MODEL to `step`
 (the door coerces). (The small coercion shim at emit was considered and
 DECLINED: hiding the wire's vocabulary behind a shim moves the
 zero-copy discipline from the contract to the accident; the ergonomics
-cure is the T20 lane's ledger.)
+fix is on the ledger's refuted-claim discipline.)
 
 The demo's worker subscription: the compose stack's workers SUBSCRIBE
 to the workflow cohorts' queues — per worker, per the placement
@@ -483,5 +487,5 @@ exactly ONE worker of the stack, so a queue's node runs on ITS worker —
 the pin lives in `tests/test_wf_demo_legs.py`). A worker subscribes
 with `TASKQ_QUEUES=demo-screen,demo-cpu,...` — the boot projection
 declares the cohorts in `actor_config` (the worker's import of
-`examples.workflows` populates the D1 registry the bodies resolve
+`examples.workflows` populates the definition registry the bodies resolve
 from); the subscription is the operator's deployment knob.

@@ -47,7 +47,7 @@ from taskq.testing.in_memory import InMemoryBackend
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 
-#: The cennan shape: their classifier hands back the server's 90s reprieve.
+#: The downstream shape: the consumer's classifier hands back the server's 90s reprieve.
 _HINT = timedelta(seconds=90)
 
 
@@ -87,7 +87,7 @@ def _job_state(*, attempt: int = 1, max_attempts: int = 3) -> JobRetryState:
     )
 
 
-# ── pin 1: the exact-compliance property (the red-first pin) ────────
+# ── pin 1: the exact-compliance property ────────────────────────────
 
 
 @given(seed=st.integers(min_value=0, max_value=2**63 - 1))
@@ -116,7 +116,7 @@ def test_explicit_override_delay_is_honored_exactly_under_default_jitter(seed: i
     )
 
 
-# ── pin 2: the cennan-shaped pin, mirrored upstream ─────────────────
+# ── pin 2: the classifier's exact 90s-reprieve pin ──────────────────
 
 
 async def test_429_reprieve_schedules_the_retry_exactly_at_the_hint_in_virtual_time() -> None:
@@ -179,15 +179,14 @@ async def test_429_reprieve_schedules_the_retry_exactly_at_the_hint_in_virtual_t
     )
 
 
-# ── pin 2b: the cennan pin's full drain shape, mirrored upstream ────
+# ── pin 2b: the full drain shape, end to end ────────────────────────
 
 
 async def test_a_429_reprieve_schedules_the_retry_at_the_server_horizon_in_virtual_time() -> None:
-    """The downstream consumer's pin, mirrored upstream at full fidelity
-    (cennan ``tests/unit/test_pipeline_actor_dispatch.py``, same test
-    name): the REAL ``rate_limit_aware_classifier`` (the built-in, not a
-    stand-in — the original pins its real classifier by identity, this
-    pin uses the real built-in for the same reason) turns a 429 carrying
+    """The 429-reprieve scenario at full fidelity: the REAL
+    ``rate_limit_aware_classifier`` (the built-in, not a stand-in — a
+    consumer's suite pins its real classifier by identity, and this pin
+    does the same) turns a 429 carrying
     ``Retry-After: 90`` into a reprieve scheduled at the server's own
     horizon, advanced in VIRTUAL time by a full ``run_until_drained``
     drain — attempt 2 runs and succeeds, the attempt rows' started_at
@@ -211,7 +210,7 @@ async def test_a_429_reprieve_schedules_the_retry_at_the_server_horizon_in_virtu
         "partner",
         body,
         retry=_policy(),
-        # The REAL built-in, composed as a consumer would: the 429 shape
+        # The real built-in, composed as a consumer would: the 429 shape
         # below is the claimed signal (bare .status_code + .headers).
         retry_classifier=_rate_limit_aware_classifier,
         payload_type=EmptyPayload,
@@ -246,7 +245,7 @@ async def test_a_429_reprieve_schedules_the_retry_at_the_server_horizon_in_virtu
     assert clock.now() >= _START + _HINT
 
 
-# ── pin 3: the curve path STILL jitters (symmetric, unchanged) ──────
+# ── pin 3: the curve path still jitters (symmetric, unchanged) ──────
 
 
 def test_curve_derived_delays_still_jitter_symmetrically() -> None:
@@ -276,12 +275,12 @@ def test_curve_derived_delays_still_jitter_symmetrically() -> None:
     assert above, "the symmetric band must still draw above the raw curve value"
 
 
-# ── pin 4: jitter=0.0 stays the exact identity on BOTH paths ────────
+# ── pin 4: jitter=0.0 stays the exact identity on both paths ────────
 
 
 def test_jitter_zero_is_exact_on_both_paths() -> None:
     """``jitter=0.0`` is the deterministic-suite knob: the hint passes
-    through exactly AND the curve lands on its raw value."""
+    through exactly and the curve lands on its raw value."""
     policy = _policy(jitter=0.0, base=timedelta(seconds=5))
 
     hint_decision = decide_after_failure(
@@ -382,7 +381,7 @@ def test_the_delay_field_documentation_names_the_floor() -> None:
 async def test_override_delay_landing_past_schedule_to_close_fails_terminally_at_the_write() -> (
     None
 ):
-    """The cennan hazard shape, end to end on the override path: a server's
+    """The hazard shape, end to end on the override path: a server's
     90s reprieve against a job whose ``schedule_to_close`` is only 60s away.
     The write arm refuses the reschedule (the same single effective delay
     feeds its deadline guard) and terminalises ``DeadlineExceeded`` — the
@@ -481,7 +480,7 @@ def test_max_attempts_one_delay_only_override_is_terminal() -> None:
 
 def test_override_kind_indefinite_lifts_the_attempt_ceiling_explicitly() -> None:
     """The rescue twin: an override carrying ``kind='indefinite'`` is an
-    explicit direction that replaces the policy's own kind BEFORE the
+    explicit direction that replaces the policy's own kind before the
     attempt-ceiling guard runs, so at ``max_attempts=1`` the delay IS
     honored and the job retries past its declared ceiling — bounded then
     only by ``schedule_to_close`` (the indefinite hazard the classifier

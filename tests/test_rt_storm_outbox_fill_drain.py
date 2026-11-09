@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team storm: the reclaim-event outbox under mass failure - fill
+"""Adversarial review storm: the reclaim-event outbox under mass failure - fill
 vs drain geometry.
 
 Model (from ``backend/_sweeps.py`` sweep 1, ``backend/_reads.py``
@@ -16,7 +16,7 @@ Model (from ``backend/_sweeps.py`` sweep 1, ``backend/_reads.py``
   IMMEDIATELY after a full batch - so a crash storm larger than one
   batch drains at full poll speed, not one batch per ``poll_timeout``.
 * RATIO: at the default knobs the per-call fill bound and the per-call
-  drain bound are the SAME 100 - one committed sweep batch is exactly
+  drain bound are the same 100 - one committed sweep batch is exactly
   one drainable poll batch, so a tight-loop consumer cannot fall behind
   per call. Backlog accrues only when the consumer's downstream (the
   ``yield`` into the caller's handler) is slower than the fill rate;
@@ -63,7 +63,7 @@ _ACTOR = "storm_outbox_actor"
 _QUEUE = "default"
 
 # 250 = 2 full 100-row sweep batches + a 50-row remainder: enough to
-# observe the multi-batch fill AND the multi-poll drain with their exact
+# observe the multi-batch fill and the multi-poll drain with their exact
 # per-call bounds, small enough to stay fast.
 _STORM_N = 250
 _BATCH = 100  # settings default event_writer_batch_size
@@ -164,7 +164,7 @@ async def test_outbox_fill_and_drain_are_both_per_call_bounded_and_parity_sized(
             cleanup_grace_period=timedelta(0),
         )
 
-        # ── FILL: bounded per call, drains the storm in committed batches ──
+        # ── fill: bounded per call, drains the storm in committed batches ──
         fill_calls: list[int] = []
         fill_per_call: list[int] = []
         for _ in range(3):
@@ -184,7 +184,7 @@ async def test_outbox_fill_and_drain_are_both_per_call_bounded_and_parity_sized(
         )
         assert await _outbox_depth(admin, schema) == _STORM_N
 
-        # ── DRAIN: bounded per call, ceil(N/limit) polls, immediate
+        # ── drain: bounded per call, ceil(N/limit) polls, immediate
         # full-batch re-poll makes the consumer keep up per call ──
         drained_batches: list[int] = []
         cursor = 0
@@ -212,9 +212,9 @@ async def test_outbox_fill_and_drain_are_both_per_call_bounded_and_parity_sized(
         )
         assert cursor > 0, "the storm's events must actually have been delivered"
 
-        # ── RATIO: at default knobs the fill and drain per-call bounds
-        # are the SAME number - per call, drain capacity == fill rate.
-        # (A depth alarm on top of this parity is the DESIGN ask in the
+        # ── ratio: at default knobs the fill and drain per-call bounds
+        # are the same number - per call, drain capacity == fill rate.
+        # (A depth alarm on top of this parity is the design ask in the
         # module docstring; it does not exist today.)
         assert _BATCH == _POLL_LIMIT == DEFAULT_RECLAIM_POLL_LIMIT, (
             "the fill bound (event_writer_batch_size) and the drain bound "

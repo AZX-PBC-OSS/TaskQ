@@ -1,6 +1,6 @@
 """Non-deadlock mid-drain failure and re-run semantics of the bounded cancel.
 
-The bounded drain's contract for a failure that is NOT a deadlock (so
+The bounded drain's contract for a failure that is not a deadlock (so
 no retry): the operation RAISES - no partial-success result object -
 the failed batch's driving UPDATE and event writes roll back together
 (per-batch atomicity: a batch's events can never commit without the
@@ -166,7 +166,7 @@ async def test_mid_drain_statement_failure_raises_keeps_batch1_and_rerun_complet
     assert total_after_failure == 200
 
     # Re-run: completes the drain, exactly-once events per job across
-    # both runs - the EPQ predicates skip batch 1's committed rows.
+    # both runs - the epq predicates skip batch 1's committed rows.
     result, _notify = await _cancel_where(
         module_pg_pool,
         schema,
@@ -257,7 +257,7 @@ async def test_running_drain_failure_after_ps_completion_leaves_ps_committed(
     )
     assert running_events == 0
 
-    # Re-run: the ps rows are already terminal (EPQ skips them), the
+    # Re-run: the ps rows are already terminal (epq skips them), the
     # running rows get their cooperative cancel, and the notify target
     # survives the earlier failure.
     result, notify_targets = await _cancel_where(

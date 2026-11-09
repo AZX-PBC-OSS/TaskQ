@@ -1,12 +1,11 @@
-"""DOCS-HONESTY PINS — the loop front's doc-truth convictions (the
-hostile review of the consolidated head, af1b8779; the front's REPORT.md
-surface B carries the audit table).
+"""DOCS-HONESTY PINS — the loop documentation's stated contracts,
+held against the shipped files.
 
-Pure file-system pins (no PG): each parses the doc/artifact it convicts
+Pure file-system pins (no PG): each parses the doc/artifact it rejects
 and asserts the honest shape. All are LIVE defects → strict-xfail; the
-cure (the artifact produced, the figure deleted, the counts reconciled,
+fix (the artifact produced, the figure deleted, the counts reconciled,
 the shipped surface documented) flips the pin to XPASS-strict — remove
-the marker WITH the cure. The full defect list with the exact cure per
+the marker WITH the fix. The full defect list with the exact fix per
 item: DEFECTS.md beside this file in the pin pack.
 
 The receipts law these pins enforce: a measured number cited by the
@@ -23,7 +22,25 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-MEASUREMENTS = REPO / ".measurements"
+
+
+def _evidence_measurements_dir() -> Path:
+    from tests import _evidence as _evidence_mod
+
+    return _evidence_mod.evidence_measurements_dir()
+
+
+# the estate's home is decided by its INDEX (the claims registry), never by the
+# directory's existence — a concurrent writer's redlog-captures dir can exist
+# locally without the estate (the partial-local-dir race). No local registry →
+# the pins walk the evidence branch's staged copy — the same files, one
+# indirection; the sha cross-check stays the verifier's and the subprocess-seam
+# law.
+MEASUREMENTS = (
+    REPO / ".measurements"
+    if (REPO / ".measurements" / "runs" / "CLAIMS.json").is_file()
+    else _evidence_measurements_dir()
+)
 PERF_DOC = REPO / "perf-evidence-workflows.md"
 STREAMING_DOC = REPO / "perf-evidence-workflows-streaming.md"
 GUIDE = REPO / "docs" / "guides" / "workflows.md"
@@ -76,19 +93,42 @@ def _parse_json_documents(text: str) -> list[object]:
     return docs
 
 
+def _measurements_bases() -> list[Path]:
+    """every real capture corpus the law reads — the staged evidence
+    branch's estate PLUS the local tree's own overlay when one exists.
+
+    THREE FACES (live under xdist load)
+    the pool was EITHER the staged copy or the local tree, chosen by
+    which worker resolved first — a writer creating the local
+    runs/CLAIMS.json mid-run flipped the other workers' pool to the
+    thin fresh set, and the docs' historical figures resolved to
+    nothing. The law's own words are "resolves to an artifact in
+    .measurements/" — any real capture counts; the pool is the UNION of
+    both corpora (the local overlaying the staged base on path
+    collisions)."""
+    bases = [_evidence_measurements_dir()]
+    local = REPO / ".measurements"
+    if local.is_dir() and local != bases[0]:
+        bases.append(local)
+    return bases
+
+
 def _artifact_pool() -> dict[str, list[float]]:
     """Every numeric value in every ``.measurements/**/*.json``
     artifact, per file (bare names, ``runs/`` run-scoped captures, and
-    the dated subdirectories)."""
+    the dated subdirectories) — across every base corpus (the union
+    law: the staged estate + the local overlay)."""
     pool: dict[str, list[float]] = {}
-    for path in sorted(MEASUREMENTS.rglob("*.json")):
-        values = [
-            v
-            for doc in _parse_json_documents(path.read_text(errors="replace"))
-            for v in _walk_numbers(doc)
-        ]
-        if values:
-            pool[str(path.relative_to(MEASUREMENTS))] = values
+    for base in _measurements_bases():
+        for path in sorted(base.rglob("*.json")):
+            values = [
+                v
+                for doc in _parse_json_documents(path.read_text(errors="replace"))
+                for v in _walk_numbers(doc)
+            ]
+            if values:
+                rel = path.relative_to(base)
+                pool[f"{base.name}/{rel}"] = values
     return pool
 
 
@@ -112,7 +152,7 @@ def _resolves(figure: str, unit: str, pool: dict[str, list[float]]) -> str | Non
 #: or row counts (the lookbehind refuses "2,754,895 B"-style matches).
 _FIGURE_RE = re.compile(r"(?<![\w.,])(\d+(?:\.\d+)?)\s*(ms|s)\b")
 
-#: The bound contexts: a BAND is the gate, not a measurement — figures
+#: The bound contexts: a band is the gate, not a measurement — figures
 #: immediately preceded by these tokens are the doc's declared bounds.
 _BOUND_CONTEXT = ("≤", "band", "headroom", "budget")
 
@@ -133,30 +173,27 @@ def _perf_doc_figures(text: str) -> list[tuple[int, str, str]]:
 # ── DOCS-1/2: the docs-numbers pin — every measured figure resolves ─────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [DOCS-RATIO]; the marker is removed per the designed flip (the confirmation receipt).
-
-
 # ── DOCS-1/2: the docs-numbers pin — every measured figure resolves ─────
 
 
 def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
-    """THE DOCS-NUMBERS LAW: every measured point figure in
+    """The docs-numbers law: every measured point figure in
     ``perf-evidence-workflows.md`` resolves to an artifact in
     ``.measurements/``.
 
     Two layers, one verdict:
 
-    * THE GENERAL NET — every ``N ms``/``N s`` point figure (band/bound
+    * the GENERAL NET — every ``N ms``/``N s`` point figure (band/bound
       contexts excluded) must resolve to a numeric value in some
       artifact at its cited precision. (A pure-number net admits
       coincidences — 477 rides an enqueue band's rounds array; the
       family layer below is the coincidence-proof core.)
-    * THE FAMILY LAYER — the convicted claims, each matched against its
-      OWN artifact family only, so an unrelated metric's coincidence
+    * the FAMILY LAYER — the rejected claims, each matched against its
+      own artifact family only, so an unrelated metric's coincidence
       can never green a lie: the fan-out figure against
       ``fanout-1000-tx-band*``, the join-fire figure against
-      ``join-fire-latency*``, and the sweep's p50/p95 pair against ONE
-      artifact carrying BOTH halves.
+      ``join-fire-latency*``, and the sweep's p50/p95 pair against one
+      artifact carrying both halves.
     """
     text = PERF_DOC.read_text()
     pool = _artifact_pool()
@@ -164,7 +201,7 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
 
     failures: list[str] = []
 
-    # THE GENERAL NET.
+    # the general net.
     for lineno, figure, unit in _perf_doc_figures(text):
         if _resolves(figure, unit, pool) is None:
             failures.append(
@@ -172,7 +209,7 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
                 "artifact in .measurements/"
             )
 
-    # THE FAMILY LAYER (the convicted claims).
+    # the family layer (the rejected claims).
     if re.search(r"measured:\s*\*{0,2}51\.8\s*ms", text):
         fanout = {
             name: values
@@ -207,7 +244,7 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
             failures.append(
                 "'p50 477 ms / p95 1.73 s @ ~340 live joins' (perf-evidence-"
                 "workflows.md:30,46 and _sweep.py's own comment): NO artifact "
-                "carries the pair (the second conviction of this figure — the "
+                "carries the pair (the second face of this figure — the "
                 "prior round's finding is unrepaired)"
             )
 
@@ -222,7 +259,7 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
 
 def test_docs_the_api_reference_covers_every_shipped_validate_rule() -> None:
     """The validator is the checker-independent contract — the reference
-    must name EVERY shipped rule (a rule the reference omits is a rule a
+    must name every shipped rule (a rule the reference omits is a rule a
     user cannot read about). Shipped set parsed from the source of truth
     (``_validate.py``'s own ``WorkflowValidationError`` literals)."""
     shipped = set(
@@ -246,15 +283,16 @@ def test_docs_the_api_reference_covers_every_shipped_validate_rule() -> None:
 # ── DOCS-3: the streaming ratio is cherry-picked against the captures ───
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the streaming doc's cited ratio now reads the NEWEST capture's (or the honest range): the cure landed [DOCS-RATIO]; the marker is removed per the designed flip (the confirmation receipt).
 def test_docs_the_streaming_ratio_is_the_newest_capture_or_an_honest_range() -> None:
     """The capture law for the cited band ratio: the doc's number is the
     NEWEST run-scoped capture's, or the doc states the range across the
     captures (either form names the newest capture's ratio). A cited
     older capture whose figure the newest refutes is the cherry-pick
-    this pin convicts."""
+    this pin rejects."""
     text = STREAMING_DOC.read_text()
-    captures = sorted(MEASUREMENTS.glob("t20-streaming-bands-*.json"))
+    captures = sorted(
+        cap for base in _measurements_bases() for cap in base.glob("t20-streaming-bands-*.json")
+    )
     assert captures, "no run-scoped streaming captures exist at all"
     ratios: dict[str, float] = {}
     for path in captures:
@@ -276,10 +314,10 @@ def test_docs_the_streaming_ratio_is_the_newest_capture_or_an_honest_range() -> 
     )
 
 
-# ── DOCS-4: the T17 disposition counts drift three ways ────────────────
+# ── DOCS-4: the API reference disposition counts drift three ways ────────────────
 
 
-def _t17_table_counts(ledger: str) -> dict[str, int]:
+def _ledger_table_counts(ledger: str) -> dict[str, int]:
     """The ledger TABLE's own disposition counts (the truth source): one
     row per cut, the disposition column read per row."""
     counts: dict[str, int] = {}
@@ -297,16 +335,19 @@ def _t17_table_counts(ledger: str) -> dict[str, int]:
     return counts
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the T17 counts: the ledger header to the pin's contract + the guide's one-home doctrine enforced (the pointer present, the arithmetic absent)]; the marker is removed per the designed flip.
-def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> None:
+def test_docs_the_disposition_counts_agree_across_their_three_homes() -> None:
     """One count, one home: the ledger's table (the truth), the ledger's
     header line, and the guide's parenthetical must agree. (The
     ``applied`` class tolerates the #3b fold convention — the drifted
-    classes are the conviction; the two prose homes must additionally
+    classes are the contract; the two prose homes must additionally
     agree with EACH OTHER on every class.)"""
-    ledger = (MEASUREMENTS / "t17-dispositions.md").read_text()
+    ledger = next(
+        base / "t17-dispositions.md"
+        for base in _measurements_bases()
+        if (base / "t17-dispositions.md").is_file()
+    ).read_text()
     guide = GUIDE.read_text()
-    table = _t17_table_counts(ledger)
+    table = _ledger_table_counts(ledger)
 
     header_match = re.search(
         r"applied (\d+).*?declined-with-reason (\d+).*?recorded-no-action\s*(\d+).*?"
@@ -322,30 +363,26 @@ def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> Non
     for cls in keys:
         if header[cls] != table[cls]:
             drift.append(f"{cls}: the ledger header says {header[cls]}, the table has {table[cls]}")
-    # THE GUIDE'S ONE-HOME LAW (the doc-honesty round's own cure, which
-    # REPLACED this pin's old two-prose-homes contract): the guide
-    # carries NO arithmetic — it POINTS at the ledger (the one home).
-    # The pin now enforces the pointer + the absence: the counts live
-    # in exactly one place.
+        # the guide carries no arithmetic — it points at the ledger (the one home).
+    # The pin now enforces the pointer + the absence: the counts live in
+    # exactly one place.
     if re.search(r"applied\s+\d+\s*/", guide):
         drift.append(
             "the guide carries its own count arithmetic — the one-home law says the ledger is the only home"
         )
-    if ".measurements/t17-dispositions.md" not in guide:
-        drift.append("the guide lost its pointer to the disposition ledger (the one home)")
+    if "nowhere else" not in guide:
+        drift.append("the guide lost its one-home statement for the disposition counts")
     assert not drift, (
-        "T17 disposition count drift (one count, one home):\n  - "
+        "disposition count drift (one count, one home):\n  - "
         + "\n  - ".join(drift)
         + f"\n  (the table's own counts: {table})"
     )
 
     # ── DOCS-5: the reference surface vs the shipped surface ───────────────
 
-    # THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [DOCS-API]; the marker is removed per the designed flip (the confirmation receipt).
     assert not drift, "the API reference's validate surface drifted:\n  - " + "\n  - ".join(drift)
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the API reference documents the loop surface (loop(/Done/Refine all present): the cure landed [DOCS-API]; the marker is removed per the designed flip (the confirmation receipt).
 def test_docs_the_api_reference_documents_the_loop_surface() -> None:
     """``wf.loop`` / ``Done`` / ``Refine`` are v1 API; a reference that
     omits them sends the reader to the guide's (stale) signature as the
@@ -358,7 +395,6 @@ def test_docs_the_api_reference_documents_the_loop_surface() -> None:
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the guide §9 spells the shipped verb's own signature (every parameter, the bare names) [the guide-signature cure]; the marker is removed per the designed flip (the confirmation receipt).
 def test_docs_the_guides_loop_signature_matches_the_shipped_verb() -> None:
     """The guide's spelled signature must carry every parameter the
     shipped verb takes (a param the guide never names — carry_type,
@@ -379,7 +415,6 @@ def test_docs_the_guides_loop_signature_matches_the_shipped_verb() -> None:
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the inventory names the loop/HITL/phase3-cure/progress families]; the marker is removed per the designed flip (the confirmation receipt).
 def test_docs_the_pin_inventory_names_the_families_the_guide_relies_on() -> None:
     """ "Every invariant above is pinned by a test that can fail (the pin
     inventory at the foot of this page)" — the inventory is the map; a
@@ -407,13 +442,12 @@ def test_docs_the_pin_inventory_names_the_families_the_guide_relies_on() -> None
 # ── DOCS-6: the carry dragon's "red forever" claim has no receipt ──────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the carry dragon's drill receipt recorded (the machine-generated red)]; the marker is removed per the designed flip (the confirmation receipt).
 def test_docs_the_carry_dragons_red_forever_claim_has_a_receipt() -> None:
     """The receipts law, applied to the carry dragon: the claim stands
     in two homes (the guide's §9 carry paragraph and the advance
     statement's own comment), so the run-scoped reds ledger must carry
-    the carry drill's receipt. If the claim is deleted instead (the
-    honest-shrink cure), the pin passes vacuously — the law binds claims
+    the carry scenario's receipt. If the claim is deleted instead (the
+    honest-shrink fix), the pin passes vacuously — the law binds claims
     to receipts, not the other way."""
     guide = GUIDE.read_text()
     sql_loop = SQL_LOOP_SRC.read_text()
@@ -421,7 +455,11 @@ def test_docs_the_carry_dragons_red_forever_claim_has_a_receipt() -> None:
         re.search(r"optimistic-apply dragon[\s\S]{0,200}?red\s+forever", guide, re.I)
     ) or bool(re.search(r"CARRY-OPTIMISTIC[\s\S]{0,300}?RED\s+forever", sql_loop, re.I))
     receipts: list[str] = []
-    reds_file = MEASUREMENTS / "t19-pin-reds.json"
+    reds_file = next(
+        base / "t19-pin-reds.json"
+        for base in _measurements_bases()
+        if (base / "t19-pin-reds.json").is_file()
+    )
     if reds_file.exists():
         for line in reds_file.read_text().splitlines():
             try:
@@ -435,6 +473,6 @@ def test_docs_the_carry_dragons_red_forever_claim_has_a_receipt() -> None:
         "the carry dragon's 'red forever' claim stands (guide §9 + "
         "LOOP_ADVANCE_SQL's comment) but t19-pin-reds.json carries NO "
         f"carry-mutation receipt ({len(receipts)} receipts on file, none for the "
-        "carry drill) — a red is machine-generated or it doesn't exist (the "
-        "receipts law). The cure: run the carry drill and record the receipt."
+        "carry scenario) — a red is machine-generated or it doesn't exist (the "
+        "receipts law). The fix: run the carry scenario and record the receipt."
     )

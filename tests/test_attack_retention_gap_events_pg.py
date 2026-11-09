@@ -3,8 +3,8 @@
 trailing-watermark consumer can test its cursor against.
 
 The loss class these pins close: a ``watch_reclaims`` consumer parked at
-cursor K while event retention deletes ``(K, K+n]`` used to resume into a
-silent skip to live - the surviving rows returned, no error anywhere, the
+cursor K while event retention deletes ``(K, K+n]`` must never resume into a
+silent skip to live (the surviving rows returned, no error anywhere, the
 consumer free to believe it saw everything. The fix is the event-prune
 watermark (``job_events_prune_state``, migration 01.00.20_02): each deleter
 advances ``pruned_through_id`` to the highest event id its statement deleted,
@@ -53,7 +53,7 @@ from taskq.worker.leader import prune_terminal_jobs
 pytestmark = pytest.mark.integration
 
 _RETENTION = timedelta(days=1)
-#: The outbox arm's age: far past RETENTION x MULTIPLIER, so the sweep's
+#: The outbox arm's age: far past retention x multiplier, so the sweep's
 #: carve-out has lapsed for these rows and the age-cap arm deletes them.
 _OUTBOX_AGE = _RETENTION * RECLAIM_OUTBOX_RETENTION_MULTIPLIER * 2
 
@@ -177,7 +177,7 @@ class TestSweepAdvancesWatermark:
         assert count == 3, "the age-capped outbox arm must delete all three rows"
 
         # The old silent behavior at the backend layer: the poll answers
-        # zero rows and no error. The watermark is what makes the STREAM
+        # zero rows and no error. The watermark is what makes the stream
         # loud about why.
         assert await backend.poll_reclaim_events(e1) == []
         assert await backend.event_prune_watermark() == e3, (

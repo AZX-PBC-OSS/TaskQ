@@ -106,7 +106,7 @@ class ProbeResult(BaseModel):
 
 
 #: body-entry stamps, keyed by job id. Written by the actor body and read
-#: by the driver on the SAME event loop — no lock needed, and the same
+#: by the driver on the same event loop — no lock needed, and the same
 #: loop discipline the worker itself runs under.
 _STARTS: dict[UUID, float] = {}
 _ENDS: dict[UUID, float] = {}

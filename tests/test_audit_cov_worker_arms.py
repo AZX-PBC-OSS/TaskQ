@@ -1,6 +1,6 @@
 """Audit-coverage pins: the worker hot paths' arms the suite never ran.
 
-Every test here was written red-first against a specific uncovered line
+Every test here was written against a specific uncovered line
 (the audit-cov census, branch feat/audit-coverage); each documents the
 arm it closes, and each was mutation-proven (flipping the target line
 makes the test fail).
@@ -139,7 +139,7 @@ async def test_slot_conn_repair_returns_when_pool_already_carries_the_hook() -> 
     assert conn.terminated is False
 
 
-# ── the LOOP-scope connection cache's transaction-conn arm ──────────────
+# ── the loop-scope connection cache's transaction-conn arm ──────────────
 
 
 async def test_loop_scope_connection_cache_selects_the_transaction_conn() -> None:
@@ -154,7 +154,7 @@ async def test_loop_scope_connection_cache_selects_the_transaction_conn() -> Non
     registry.register_value(
         asyncpg.Connection,
         Scope.LOOP,
-        sentinel,  # type: ignore[arg-type]  # Why: the registry-trust contract: the value under the asyncpg.Connection key IS the transaction connection, a test double stands in
+        sentinel,  # type: ignore[arg-type]  # Why: the registry-trust contract: the value under the asyncpg.Connection key is the transaction connection, a test double stands in
     )
 
     captured: list[object] = []
@@ -203,7 +203,7 @@ async def test_loop_scope_connection_cache_selects_the_transaction_conn() -> Non
         finally:
             dispatch_mod.consume_one_job = original_consume  # type: ignore[assignment]
 
-    # The cache-backed seam: the LOOP-scope registration is visible to the
+    # The cache-backed seam: the loop-scope registration is visible to the
     # dispatch path's own read, so the consumer gets the connection as
     # the transaction connection (registry-trust, no isinstance).
     assert captured == [sentinel, sentinel]
@@ -546,24 +546,6 @@ async def _ok_actor(job: Any, ctx: Any) -> object:
     # removes the buffer it installed — the issue-461 map hygiene).
     await ctx.progress(step=1)
     return {"ok": True}
-
-
-# ── the transactional path's KeyboardInterrupt re-raise ─────────────────
-
-
-def test_transactional_keyboard_interrupt_arm_is_defensive_unreachable() -> None:
-    """``KeyboardInterrupt`` keeps operator-intent semantics everywhere.
-    AUDIT CLASSIFICATION (c) — defensive-unreachable through an actor
-    body: a KeyboardInterrupt raised inside the attempt task never reaches
-    the ``except BaseException`` capture at the shielded await —
-    ``Task.__step`` re-raises KI bare into the loop before
-    ``set_exception`` can deliver it (the same mechanism the
-    SystemExit-carrier conversion documents). The capture's KI arm guards
-    a KI the loop delivers into the main coroutine itself; the reachable
-    KI contract (propagate raw, the row stays running for lease-reclaim)
-    is pinned on the autonomous path by
-    tests/test_attempt_baseexception_capture.py.
-    """
 
 
 # ── the transactional success path's state-change publish ───────────────

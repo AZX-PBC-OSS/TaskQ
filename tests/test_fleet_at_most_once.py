@@ -181,7 +181,7 @@ async def test_a_job_interrupted_mid_run_is_retried_not_duplicated(
         async def _hang(_payload: FleetPayload, _ctx: object) -> str:
             started.set()
             # A job that is genuinely still working when its pod is
-            # taken away: the wait IS the condition under test, and it
+            # taken away: the wait is the condition under test, and it
             # is released by the test rather than by elapsed time.
             await release.wait()
             return "finished-after-interruption"

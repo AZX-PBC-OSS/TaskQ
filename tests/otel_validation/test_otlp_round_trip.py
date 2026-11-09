@@ -2,7 +2,7 @@
 
 The lane proves TaskQ's OTLP export path end to end, the way a vendor
 backend ingests it: a real ``taskq worker`` process (the CLI, so
-``configure_exporters`` runs the production wiring), configured ONLY through
+``configure_exporters`` runs the production wiring), configured only through
 the standard OTel environment variables, exports spans and metrics over gRPC
 to a real collector container, and the assertions read the collector's
 exported file output. Nothing here touches TaskQ's test doubles: the jobs run
@@ -125,7 +125,7 @@ def _poll_for_export(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, A
 def _run_worker(endpoint: str, pg_dsn: str, schema_name: str, cwd: Path) -> None:
     """Run the real worker CLI against the collector and the shared Postgres.
 
-    The ONLY configuration the subprocess gets is the standard OTel
+    The only configuration the subprocess gets is the standard OTel
     environment variables, exactly what the documented vendor setups set:
     the worker's own auto-configuration (wp5: the CLI installs SDK exporters
     from the environment before ``worker_main`` records anything) must do the

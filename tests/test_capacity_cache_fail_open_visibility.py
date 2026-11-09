@@ -13,7 +13,7 @@ there is no stored data at all, so every enqueue enforces the code literal
 instead of the operator's cap, indefinitely while the backend stays sick.
 
 These tests do not change the fail-open behaviour -- they pin that it stays
-fail-open AND is now observable, and that the two degradation modes are
+fail-open and is now observable, and that the two degradation modes are
 distinguishable.
 """
 

@@ -7,14 +7,14 @@ instead of the ``Any`` that ``structlog.get_logger`` returns.
 ## The operational-event-stream verbosity knob (``TASKQ_LOG_EVENTS_LEVEL``)
 
 Every state change a worker makes is durably recorded in the ``job_events``
-ledger FIRST (the terminal write and the heartbeat ledger writes commit the
+ledger first (the terminal write and the heartbeat ledger writes commit the
 event row in the same transaction as the state itself). The JSON log line is
 a STREAMING DUPLICATE of that ledger row: it costs the full structlog chain
 plus a stream write on the event loop, and the hot-path audit measured that
 duplicated per-job logging at ~23% of the worker's on-CPU time (two
 ``state-change`` INFO lines per job through structlog -> stdlib -> JSON).
 This module implements the knob that trades that duplicate stream away
-WITHOUT ever touching the durable ledger: ``job_events`` keeps every event
+without ever touching the durable ledger: ``job_events`` keeps every event
 at every level, and the call sites stay unconditional — the filter below
 decides, so a call site can never drift from the setting.
 
@@ -33,7 +33,7 @@ worker bootstrap and the CLI). Four values, case-insensitive:
     watchdog trips, the backpressure refusals. The happy-path per-job
     lines (``state-change``, ``cancel_phase_change``) and the
     once-per-process lifecycle INFO lines are dropped. Anomaly events
-    survive EVEN WHEN logged at INFO (``cron-fire-budget-deferred``,
+    survive even WHEN logged at INFO (``cron-fire-budget-deferred``,
     ``cron-schedule-auto-disable-reverted`` — both emitted at INFO by
     the cron loop), because the classification is by event name, not by
     stdlib level — the operator who drops to ``warning`` asked the happy
@@ -46,15 +46,11 @@ worker bootstrap and the CLI). Four values, case-insensitive:
     For deployments consuming OTel spans or tailing ``job_events``
     directly: the state-change lines are gone entirely, and the
     INFO-method lines of CLASSIFIED anomalies go too. WARNING-and-above
-    anomalies STILL emit (``job-failed``, ``heartbeat-tick-failure``,
+    anomalies still emit (``job-failed``, ``heartbeat-tick-failure``,
     ``terminal-write-failed``, ``worker-watchdog-trip``): ``off`` turns
     off the event STREAM, never the operator's sight of failures.
     Unclassified events FAIL OPEN here as at every other level: they
-    pass at every method. (The first cut of this filter dropped every
-    INFO/DEBUG-method event at ``off``, classified or not — which
-    silently failed CLOSED on unclassified INFO events and broke this
-    contract. Found by red-team; fixed: the INFO-method drop now applies
-    only to names the classification table has actually met.)
+    pass at every method.
 ``debug``
     Everything ``info`` emits PLUS the DEBUG_ONLY per-tick internals:
     the loop-lag traces and the poll-cadence details (see the
@@ -72,7 +68,7 @@ Event (family)                         Class       Rationale / boundary case
 =====================================  ==========  ===========================
 ``state-change``                       HAPPY       The per-job duplicate of
                                                    the ``job_events`` row the
-                                                   SAME transaction just
+                                                   same transaction just
                                                    committed; the ledger is
                                                    the audit trail, the log
                                                    line is the copy.
@@ -101,7 +97,7 @@ applied``                                           same sweeps classify
 lifecycle INFO lines                   HAPPY       Once per process, not per
 (``health-server-*``,                              job, but they are the
 ``pool-draining``,                                 happy path; ``warning``
-``pool-using-provided``,                           promises ONLY the
+``pool-using-provided``,                           promises only the
 ``producer-*``,                                    anomaly stream.
 ``drain-monitor-exit``,
 ``workgroup-shutdown-*``,
@@ -201,7 +197,7 @@ lifecycle INFO lines                   HAPPY       Once per process, not per
 ``poll-cadence``                                   trace and the producer's
                                                    poll-cadence detail: new
                                                    per-tick call sites that
-                                                   exist ONLY for ``debug``,
+                                                   exist only for ``debug``,
                                                    emitted at stdlib INFO so
                                                    this filter (not the root
                                                    level) owns their
@@ -215,7 +211,7 @@ Boundary cases, argued:
   state-change transaction; the INFO line re-reports it to a different
   medium. Suppressing the line at ``warning``/``off`` deletes no
   information the ledger does not already hold durably — that is why
-  ``state-change`` is the FIRST event classified HAPPY, and why the
+  ``state-change`` is the first event classified HAPPY, and why the
   ledger is asserted untouched by the level tests
   (``tests/system_e2e/test_log_events_levels.py``).
 - *isolate completions stay at ``warning``*: the mission for
@@ -223,13 +219,13 @@ Boundary cases, argued:
   itself IS the anomaly, whatever stdlib level it happens to carry
   (``isolate-self-complete`` is emitted at WARNING by the heartbeat's
   shutdown path; ``isolate-self-failure`` too).
-- *a successful reclaim has NO log line at any level*:
+- *a successful reclaim has no log line at any level*:
   ``sweep-drained-pending-reservation-reclaims`` is emitted at stdlib
   DEBUG (worker/_leader_sweeps.py), so the root INFO level gates it
   before this filter ever sees it — at ``warning``, at ``off``, and
-  even at ``debug`` (the knob never raises the root level). A
-  red-team kill -9/reclaim run proved it: the surviving worker's
-  stream shows nothing about the reclaim at any knob setting. The
+  even at ``debug`` (the knob never raises the root level). The
+  surviving worker's stream shows nothing about the reclaim at any
+  knob setting. The
   ``job_events`` ledger rows are the reclaim's audit trail; the
   failed-reclaim WARNING (``sweep-drain-pending-reservation-reclaims-
   failed``) is the log-visible half. Do not promote the DEBUG line to
@@ -242,11 +238,11 @@ Boundary cases, argued:
 ### Where the knob applies
 
 The filter is a structlog processor (``_events_level_filter``) installed
-in :func:`_shared_processors` immediately AFTER
+in :func:`_shared_processors` immediately after
 ``func:`structlog.stdlib.filter_by_level`` and, like it, deliberately
 UNWRAPPED by ``_safe_processor_wrapper``: ``DropEvent`` is a
 ``BaseException`` the wrapper would let through anyway, and the filter's
-whole job is to be the cheapest point BEFORE the serialization cost
+whole job is to be the cheapest point before the serialization cost
 (before ``merge_contextvars``, the renderers, the scrubbers — the entire
 per-line cost the audit measured). It is a filter, not per-call-site
 branching: the call sites stay unconditional, the classification table
@@ -288,13 +284,13 @@ _logging_configured: bool = False
 #
 # The classification table. Full semantics, the boundary cases, and the
 # level grid live in this module's docstring and configuration.md; these
-# are the sets the filter consults. Membership is by EXACT event name
-# (no prefixes): an event not in any set FAILS OPEN - it passes at every
+# are the sets the filter consults. Membership is by exact event name
+# (no prefixes): an event not in any set fails open - it passes at every
 # level, so a future event can never be silently suppressed by a stale
 # table. The failure-visibility bias is the contract.
 #
 # HAPPY_PATH: the streaming duplicates of job_events rows and the
-# lifecycle INFO lines. Dropped at `warning` and `off`.
+# lifecycle info lines. Dropped at `warning` and `off`.
 _HAPPY_PATH_EVENTS: frozenset[str] = frozenset(
     {
         "state-change",
@@ -302,17 +298,17 @@ _HAPPY_PATH_EVENTS: frozenset[str] = frozenset(
         "heartbeat-tick-success",
         "heartbeat-post-tx-deferred",
         "dispatch",
-        # Sweep/prune/archive completions (their failures are ANOMALY,
-        # below). The names are the EMITTED ones — the prune family's
+        # Sweep/prune/archive completions (their failures are anomaly,
+        # below). The names are the emitted ones — the prune family's
         # completion lines are "prune-completed" and "batches pruned"
         # (worker/_leader_sweeps.py), the archive-expiry family's is
         # "archive-expiry-completed"; a table entry under a name no call
-        # site emits is a dead classification (found by red-team).
+        # site emits is a dead classification.
         "prune-completed",
         "batches pruned",
         "archive-expiry-completed",
         "keepalive-applied",
-        # Lifecycle INFO lines (once per process, but the happy path).
+        # Lifecycle info lines (once per process, but the happy path).
         "health-server-started",
         "health-server-stopped",
         "health-http-server-started",
@@ -332,7 +328,7 @@ _HAPPY_PATH_EVENTS: frozenset[str] = frozenset(
         "otel-exporter-configured",
         "otel-exporter-autoconfigure-disabled",
         "otel-exporter-sdk-disabled",
-        # Sweep completions (their failures are ANOMALY, below).
+        # Sweep completions (their failures are anomaly, below).
         "stale-batches-completed",
         "sweep-evicted-idle-keyed-reservations",
         "sweep-evicted-idle-keyed-rate-limits",
@@ -342,10 +338,10 @@ _HAPPY_PATH_EVENTS: frozenset[str] = frozenset(
     }
 )
 
-# ANOMALY: the failure/anomaly stream - failed ticks, isolates, reclaims,
+# anomaly: the failure/anomaly stream - failed ticks, isolates, reclaims,
 # watchdog trips, backpressure refusals, sweep/cron failures. Kept at
-# `warning` EVEN WHEN logged at INFO (the classification is by name, not
-# stdlib level); at `off` only the WARNING-and-above of these survive.
+# `warning` even when logged at info (the classification is by name, not
+# stdlib level); at `off` only the warning-and-above of these survive.
 _ANOMALY_EVENTS: frozenset[str] = frozenset(
     {
         "job-failed",
@@ -425,9 +421,9 @@ _ANOMALY_EVENTS: frozenset[str] = frozenset(
     }
 )
 
-# DEBUG_ONLY: the per-tick internals the `debug` level ADDS - new call
+# DEBUG_ONLY: the per-tick internals the `debug` level adds - new call
 # sites (the loop scheduler-lag trace, the producer's poll-cadence
-# detail) that exist for no other level. Emitted at stdlib INFO so THIS
+# detail) that exist for no other level. Emitted at stdlib info so this
 # filter, not the root logger level, owns their visibility; dropped at
 # info/warning/off, which is what keeps the default stream
 # byte-identical to the pre-knob worker.
@@ -438,7 +434,7 @@ _DEBUG_ONLY_EVENTS: frozenset[str] = frozenset({"loop-lag", "poll-cadence"})
 # WorkerSettings.log_events_level value in).
 _events_level: str = "info"
 
-# The valid levels. Declared HERE too (settings.py's validator has its own
+# The valid levels. Declared here too (settings.py's validator has its own
 # copy): obs/_structlog must not import taskq.settings at module load, and
 # the drift is pinned by tests/test_obs_log_events_level.py asserting the
 # two frozensets equal.
@@ -470,7 +466,7 @@ def _events_level_filter(
     chain, immediately after ``filter_by_level`` and, like it,
     deliberately UNWRAPPED by ``_safe_processor_wrapper`` (``DropEvent``
     is a ``BaseException`` the wrapper would let through anyway, and the
-    filter's whole job is to be the cheapest gate BEFORE the
+    filter's whole job is to be the cheapest gate before the
     serialization cost). The call sites stay unconditional - this filter
     decides, so a call site cannot drift from the setting.
 
@@ -492,21 +488,18 @@ def _events_level_filter(
     if _events_level == "info":
         return event_dict
     # warning / off: the happy path goes (at any method — every HAPPY_PATH
-    # member is emitted at INFO or DEBUG, verified across src/).
+    # member is emitted at info or debug, verified across src/).
     if name in _HAPPY_PATH_EVENTS:
         raise structlog.DropEvent
     if _events_level == "warning":
-        # Anomalies (any stdlib level) and WARNING+ pass.
+        # Anomalies (any stdlib level) and warning+ pass.
         return event_dict
-    # off: classified anomalies at INFO/DEBUG method go (the table's
-    # documented "INFO-level anomaly lines go too"); everything classified
-    # ANOMALY at WARNING-and-above still emits. UNCLASSIFIED events FAIL
-    # OPEN here too — they pass at every method — so the contract "a
+    # off: classified anomalies at info/debug method go (the table's
+    # documented "info-level anomaly lines go too"); everything classified
+    # anomaly at warning-and-above still emits. unclassified events fail
+    # open here too — they pass at every method — so the contract "a
     # future event can never be silently suppressed by a stale table"
-    # holds at every level, not just at warning. (This arm previously
-    # dropped EVERY info/debug-method event, classified or not, which
-    # silently failed CLOSED on unclassified INFO events: a real event
-    # the table had not met yet vanished at off. Found by red-team.)
+    # holds at every level, not just at warning.
     if name in _ANOMALY_EVENTS and method in ("info", "debug"):
         raise structlog.DropEvent
     return event_dict
@@ -638,14 +631,14 @@ def _shared_processors() -> list[structlog.types.Processor]:
     return [
         # First, and deliberately unwrapped: a call below the configured
         # level must cost nothing beyond this level comparison, so the
-        # per-job DEBUG sites do not run the whole chain for a line stdlib
+        # per-job debug sites do not run the whole chain for a line stdlib
         # then drops. Unwrapped because ``DropEvent`` is a ``BaseException``
         # that ``_safe_processor_wrapper`` would let through anyway, and the
         # comparison itself cannot raise.
         structlog.stdlib.filter_by_level,
         # Second, and equally unwrapped: the TASKQ_LOG_EVENTS_LEVEL knob
         # (see the module docstring's classification table). The cheapest
-        # point BEFORE the serialization cost - one frozenset lookup on
+        # point before the serialization cost - one frozenset lookup on
         # the event name, then the suppressed line is gone before
         # merge_contextvars, the renderers, or the scrubbers run.
         _events_level_filter,
@@ -659,7 +652,7 @@ def _shared_processors() -> list[structlog.types.Processor]:
         # Last before the formatter handoff: final scrub of exception-bearing
         # fields so both renderers (and any future one) see scrubbed values.
         _safe_processor_wrapper(_scrub_exception_fields),
-        # SHARED, not formatter-local: whatever survives this chain becomes
+        # shared, not formatter-local: whatever survives this chain becomes
         # ``record.msg`` and is read by every root handler, not just TaskQ's.
         # A raw exception object or ``sys.exc_info()`` triple left on the event
         # dict is therefore an export surface for any vendor handler that
@@ -681,7 +674,7 @@ def _install_default_chain() -> None:
     every record and let stdlib drop the line afterwards, roughly six
     times the filtered cost per enqueue log. The installed chain mirrors
     the configured one's shape: :func:`structlog.stdlib.filter_by_level`
-    FIRST and unwrapped, so a call below the effective level costs one
+    first and unwrapped, so a call below the effective level costs one
     comparison. The level it filters at is the stdlib effective level of
     the emitting logger, i.e. the embedding application's own root level:
     this configuration never raises or lowers it, and the application
@@ -690,14 +683,14 @@ def _install_default_chain() -> None:
     application configuring structlog itself after importing taskq
     overrides this one the same way).
 
-    The default is installed ONLY when structlog is still unconfigured:
+    The default is installed only when structlog is still unconfigured:
     an application that ran its own ``structlog.configure`` before
     importing taskq keeps its chain untouched, because ``configure``
     replaces the process-global config and silently stealing it would be
     an import side effect with no fix except reconfiguring. Note the
     contract for the never-configured app: pre-setup records render as
     JSON through stdlib logging (root-level filtered, the application's
-    own handlers), not plain-text stdout, which is the cost fix AND the
+    own handlers), not plain-text stdout, which is the cost fix and the
     output change on purpose.
 
     ``cache_logger_on_first_use`` stays False: a logger materialized
@@ -728,7 +721,7 @@ def _install_default_chain() -> None:
         # which only this factory produces, and routing through stdlib
         # logging means TaskQ's pre-setup records reach the embedding
         # application's own handlers (or stdlib's last-resort handler for
-        # WARNING and above) instead of printing to stdout unconditionally.
+        # warning and above) instead of printing to stdout unconditionally.
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=False,
     )
@@ -897,7 +890,7 @@ def log_cancel_phase_change(
     """Emit an INFO log line with ``kind="cancel_phase_change"``.
 
     ``from_phase`` and ``to_phase`` are the cancel-phase integers before
-    and after the escalation.  ``cancel_observed_at`` is NOT included, it
+    and after the escalation.  ``cancel_observed_at`` is not included, it
     is per-handler context, not part of the canonical schema.
     """
     log.info(

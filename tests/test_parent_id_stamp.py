@@ -3,7 +3,7 @@
 LIB-2 (issue #670). The parent context already flows as a contextvar
 pair: ``set_parent_tags``/``parent_tags`` for tag inheritance
 (``client/_enqueuer.py``), set at worker entry (``worker/run.py`` and
-``worker/_consumer.py``). The ledger stamp rides the SAME flow as a
+``worker/_consumer.py``). The ledger stamp rides the same flow as a
 sibling contextvar — set together at worker entry, read by every
 child-creating enqueue arm, reset with the same finally.
 
@@ -185,7 +185,7 @@ async def test_sub_job_enqueuer_without_context_stamps_nothing() -> None:
 
 
 async def test_stamp_is_independent_of_tag_inheritance() -> None:
-    """inherit_tags=False suppresses tag inheritance, NOT the ledger stamp.
+    """inherit_tags=False suppresses tag inheritance, not the ledger stamp.
 
     The ledger is exact accounting; tags are decoration. A child that
     suppresses its parent's tags is still the parent's child.
@@ -219,7 +219,7 @@ def test_set_parent_job_id_scopes_to_the_task_not_the_worker() -> None:
     The stale-contextvar attack: a worker entry that forgets its reset
     would leak one job's parent id into every later enqueue on the
     loop. The contract the entry sites (run.py, _consumer.py) rely on:
-    the token reset is the ONLY way the context unwinds, and the unset
+    the token reset is the only way the context unwinds, and the unset
     default is None.
     """
     assert current_parent_id() is None
@@ -266,7 +266,7 @@ async def test_concurrent_fan_outs_stamp_in_isolation() -> None:
 
 
 def test_parent_tags_cm_sets_and_resets_both_contextvars() -> None:
-    """The worker entry's one context manager: tags AND the parent id, reset on all exits."""
+    """The worker entry's one context manager: tags and the parent id, reset on all exits."""
     parent_id = new_job_id()
 
     with pytest.raises(RuntimeError, match="boom"), parent_tags(("t",), job_id=parent_id):

@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
+import structlog.testing
 
 from taskq import migrate as migrate_mod
 from taskq._ids import new_job_id, new_uuid
@@ -398,14 +399,14 @@ async def test_atomicity_on_error(pg_conn: asyncpg.Connection, settings: TaskQSe
 
 # ── Column round-trip fidelity (positional-hazard regression) ──
 #
-# The archive INSERT used to be `INSERT INTO jobs_archive SELECT j.*, now(),
-# now() + $4` -- relying on `jobs` and `jobs_archive` sharing physical column
-# order. ALTER TABLE ADD COLUMN appends at the end of each table's own order
+# The archive INSERT must never be a positional `INSERT INTO jobs_archive
+# SELECT j.*, now(), now() + $4` -- that relies on `jobs` and `jobs_archive`
+# sharing physical column order. ALTER TABLE ADD COLUMN appends at the end of each table's own order
 # (e.g. idempotency_scope), silently breaking that assumption: the new column
 # landed in archived_at's position and the sweep failed with a type error.
 # The sweep now names every column explicitly on both sides
 # (_JOBS_COLUMNS_CSV in _leader_shared.py). These tests lock the mapping in:
-# EVERY mirrored column must round-trip byte-for-byte, and the two
+# every mirrored column must round-trip byte-for-byte, and the two
 # archive-only trailing columns must be real timestamps. On the unguarded SQL
 # the first test fails outright (text → timestamptz type error).
 
@@ -469,7 +470,7 @@ async def _fetch_single(
 async def test_archive_move_preserves_every_mirrored_column(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """Seed a terminal job with a distinctive value in EVERY mirrored
+    """Seed a terminal job with a distinctive value in every mirrored
     column (including a non-default idempotency_scope) and assert the
     archived row is byte-for-byte identical in every one of them."""
     await _apply(pg_conn, settings)
@@ -1159,7 +1160,7 @@ async def test_concurrent_archive_expiry_lock(
         await conn2.close()
 
 
-# ── C10: prune cutoff anchored to the server clock ─────────────────
+# ── Prune cutoff anchored to the server clock ─────────────────
 
 
 async def test_prune_cutoff_anchored_to_server_clock(
@@ -1235,7 +1236,7 @@ async def _prune_with_retry_in_flight(
     retry_tx = retry_conn.transaction()
     await retry_tx.start()
     # fetchrow, exactly as the backend's retry_job reads it: the
-    # statement's row presence IS the retry's success signal (the
+    # statement's row presence is the retry's success signal (the
     # execute tag is always "SELECT 1").
     retried = await retry_conn.fetchrow(retry_sql, jid)
     assert retried is not None, "fixture broken: the retry did not match the seeded row"
@@ -1276,7 +1277,7 @@ async def test_prune_never_deletes_a_row_a_concurrent_retry_retried(
     ``retry_job`` flipped the row back to pending (its caller already
     told the operator the retry landed), and the delete arm's lock-time
     re-check met the version the retry had committed - the row stayed
-    live AND archived: a ghost that wedges every later prune batch on
+    live and archived: a ghost that wedges every later prune batch on
     the archive's primary key once the retried job re-terminalizes and
     re-enters the window.
 
@@ -1290,7 +1291,7 @@ async def test_prune_never_deletes_a_row_a_concurrent_retry_retried(
     own commit. The interleaving is fixed by
     :func:`_prune_with_retry_in_flight`, and the invariants asserted
     here are: the retry's UPDATE matched the row, so after the prune the
-    row is still live and claimable, the archive holds NO row for it,
+    row is still live and claimable, the archive holds no row for it,
     and the prune reports no deletion.
 
     The retry runs as the raw rendered statement ``retry_job`` issues,
@@ -1465,7 +1466,7 @@ async def test_prune_write_statement_rechecks_retention_age_at_lock_time(
     The interleaving the two race pins above cannot produce: their
     re-terminalize stamps the row back into the past, but a real re-run
     stamps ``finished_at = clock_timestamp()`` (mark_succeeded /
-    mark_failed). When the retry AND the re-run both commit in the gap
+    mark_failed). When the retry and the re-run both commit in the gap
     between the prune's two statements, the row is terminal again (the
     status re-check passes) but zero seconds old. The lock-time
     re-check must verify every candidate predicate, not just the
@@ -1552,3 +1553,176 @@ async def test_prune_write_statement_rechecks_retention_age_at_lock_time(
         jid,
     )
     assert ghost == 0
+
+
+# ── The mock-subtraction conversions (the fake arms' survivors) ────────
+#
+# The fake arms tests/test_leader.py once kept for these two contracts are
+# deleted (the mock auditor's subtraction): the entry points' schema
+# validation and the batch statement-timeout's capture/restore ride the real
+# connection here, where the probe is the real server, not a scripted
+# catalog.
+
+
+async def test_prune_rejects_a_non_identifier_schema_before_any_sql(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """prune_terminal_jobs validates the schema identifier at its typed
+    boundary: a non-identifier schema raises ValueError before a single
+    statement runs - no interpolation ever sees the value."""
+    with pytest.raises(ValueError, match="invalid schema"):
+        await prune_terminal_jobs(
+            pg_conn,
+            retention_per_status={"succeeded": timedelta(days=30)},
+            archive_retention=timedelta(days=365),
+            schema="bad schema",
+        )
+    # The proof the raise beat the SQL: the connection is still healthy
+    # and the session untouched (a statement would have logged in
+    # pg_stat_activity; a broken one errored the conn).
+    assert not pg_conn.is_closed()
+
+
+async def test_archive_expiry_rejects_a_non_identifier_schema_before_any_sql(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """archive_expiry_sweep validates the schema identifier the same way."""
+    with pytest.raises(ValueError, match="invalid schema"):
+        await archive_expiry_sweep(pg_conn, schema="bad;schema")
+    assert not pg_conn.is_closed()
+
+
+async def test_prune_batches_run_under_a_server_timeout_and_restore_the_session(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """The prune batch's statement_timeout is SERVER-side (SET LOCAL inside
+    the batch transaction) and leaves no residue: after the drain, the
+    SESSION's statement_timeout is exactly what it was before - the
+    capture/restore contract the backend sweeps pin in
+    tests/test_rt_sweeps_timeout_leak.py, now pinned for the leader's own
+    prune family on a real connection."""
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    await _seed_terminal_jobs_bulk(
+        pg_conn,
+        count=5,
+        status="succeeded",
+        finished_at=datetime.now(UTC) - timedelta(days=31),
+        schema=schema,
+    )
+    before = await pg_conn.fetchval("SELECT current_setting('statement_timeout')")
+    result = await prune_terminal_jobs(
+        pg_conn,
+        retention_per_status={"succeeded": timedelta(days=30)},
+        archive_retention=timedelta(days=365),
+        batch_size=10,
+        schema=schema,
+        statement_timeout_ms=4321,
+    )
+    assert result.total_deleted == 5, "the seeded rows must drain (the batch ran)"
+    after = await pg_conn.fetchval("SELECT current_setting('statement_timeout')")
+    assert after == before, (
+        f"the prune drain leaked its statement_timeout into the session: "
+        f"{before!r} before, {after!r} after"
+    )
+
+
+async def test_archive_expiry_batches_run_under_a_server_timeout_and_restore_the_session(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """The archive-expiry batch carries the same server-side bound and the
+    same restore."""
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    now = datetime.now(UTC)
+    await _seed_archive_rows_bulk(
+        pg_conn,
+        count=7,
+        expire_at=now - timedelta(hours=1),
+        finished_at=now - timedelta(days=31),
+        schema=schema,
+    )
+    before = await pg_conn.fetchval("SELECT current_setting('statement_timeout')")
+    result = await archive_expiry_sweep(
+        pg_conn, batch_size=7, schema=schema, statement_timeout_ms=4321
+    )
+    assert result.total_deleted == 7, "the seeded rows must drain (the batch ran)"
+    after = await pg_conn.fetchval("SELECT current_setting('statement_timeout')")
+    assert after == before, (
+        f"the archive-expiry drain leaked its statement_timeout into the "
+        f"session: {before!r} before, {after!r} after"
+    )
+
+
+# ── _load_actor_retention_overrides (converted from the fake arms) ─────
+
+
+async def test_load_actor_retention_overrides_parses_every_valid_row(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """Per-actor overrides parse to timedeltas, one entry per valid row."""
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    for actor, days in (("telemetry_ingest", 7), ("audit_critical", 365)):
+        await pg_conn.execute(
+            f"""INSERT INTO {schema}.actor_config (actor, max_concurrent, queue, metadata)
+                VALUES ($1, 5, 'default', $2::jsonb)""",  # noqa: S608
+            actor,
+            f'{{"retention_days": {days}}}',
+        )
+    overrides = await _load_actor_retention_overrides(pg_conn, schema=schema)
+    assert overrides == {
+        "telemetry_ingest": timedelta(days=7),
+        "audit_critical": timedelta(days=365),
+    }
+
+
+async def test_load_actor_retention_overrides_isolates_invalid_rows(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """Invalid rows are skipped with a warning that never carries the raw
+    value (a log-extraction cardinality rule): the valid rows still load."""
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    await pg_conn.executemany(
+        f"""INSERT INTO {schema}.actor_config (actor, max_concurrent, queue, metadata)
+            VALUES ($1, 5, 'default', $2::jsonb)""",  # noqa: S608
+        [
+            ("numeric", '{"retention_days": 7}'),
+            ("legacy_text", '{"retention_days": "30"}'),
+            ("too_large", '{"retention_days": 4000000000}'),
+            ("malformed", '{"retention_days": "not-a-number"}'),
+            ("json_null", '{"retention_days": null}'),
+        ],
+    )
+    with structlog.testing.capture_logs() as captured:
+        result = await _load_actor_retention_overrides(pg_conn, schema=schema)
+    assert result == {
+        "numeric": timedelta(days=7),
+        "legacy_text": timedelta(days=30),
+    }
+    warnings = [e for e in captured if e["event"] == "actor-retention-override-invalid"]
+    assert {e["actor"] for e in warnings} == {"too_large", "malformed", "json_null"}
+    assert all(e["log_level"] == "warning" for e in warnings)
+    assert all("value" not in e for e in warnings)
+
+
+async def test_load_actor_retention_overrides_no_rows_is_empty(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """No actor carries the override key: an empty mapping, no error."""
+    await _apply(pg_conn, settings)
+    result = await _load_actor_retention_overrides(pg_conn, schema=settings.schema_name)
+    assert result == {}
+
+
+async def test_load_actor_retention_overrides_invalid_schema_is_fail_open(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """A non-identifier schema answers the FAIL-OPEN empty mapping - the
+    loader's typed boundary validates before interpolating, and an
+    unparseable schema is an empty override set, never a raised error
+    through the sweep loop and never a tainted statement."""
+    result = await _load_actor_retention_overrides(pg_conn, schema="bad;schema")
+    assert result == {}
+    assert not pg_conn.is_closed()

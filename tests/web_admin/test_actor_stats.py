@@ -7,19 +7,35 @@ terminal-only live side, the window bound's clock), the JSON wrapper's
 passthrough contract, the merged actors-table rendering (executor
 columns, failure share, last error class, window toggle, history-only
 actors, truncation notice), and the window selector's closed-set parse.
+The row-driven arms run the real router over the module's real pool (the
+tests/test_web_admin_actors.py pattern); the binding/order pins wrap the
+real pool in a recording proxy - COUNT, DON'T ANSWER.
 """
 
+# ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
+# identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
+# header's own rule for the real-PG seeding this file carries).
+
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import asyncpg
+import httpx
 import pytest
 
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
-from fastapi import HTTPException
+from fastapi import (
+    FastAPI,  # Why: importorskip guard must precede.
+    HTTPException,
+)
 
-from taskq.web.admin import create_router
+from taskq._ids import new_uuid
+from taskq.testing.fixtures import ModulePgSchema
+from taskq.web.admin import create_router, setup_admin_state
 from taskq.web.admin._actor_stats import (
     STATS_LIMIT,
     STATS_WINDOWS,
@@ -28,7 +44,7 @@ from taskq.web.admin._actor_stats import (
     resolve_stats_window,
 )
 
-from . import StubRecord, _StubPool
+from . import _StubPool
 
 # ── Configurable stub pool/connection ───────────────────────────────────
 
@@ -36,96 +52,188 @@ from . import StubRecord, _StubPool
 pytestmark = [pytest.mark.fastapi]
 
 
-class _FetchConn:
-    """Connection returning preset ``fetch`` results in call order, and
-    recording each call's (query, args) so parameter binding is
-    assertable."""
-
-    def __init__(self, fetch_results: list[list[StubRecord]]) -> None:
-        self._results: list[list[StubRecord]] = list(fetch_results)
-        self.calls: list[tuple[str, tuple[object, ...]]] = []
-
-    async def fetch(self, query: str, *args: object) -> list[StubRecord]:
-        self.calls.append((query, args))
-        if self._results:
-            return self._results.pop(0)
-        return []
-
-    async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
-        return None
-
-    async def fetchval(self, query: str, *args: object) -> object:
-        if query.strip() == "SELECT clock_timestamp()":
-            # The router's clock-offset probe: answer like Postgres would.
-            return datetime.now(UTC)
-        return None
-
-    async def execute(self, query: str, *args: object) -> str:
-        return ""
+# ── the real-PG tier ─────────────────────────────────────────────────────
 
 
-class _FetchAcquireCtx:
-    def __init__(self, conn: _FetchConn) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> _FetchConn:
-        return self._conn
-
-    async def __aexit__(self, *args: object) -> None:
-        pass
-
-
-class _FetchPool:
-    """Minimal pool duck type yielding a single configurable connection."""
-
-    def __init__(self, conn: _FetchConn) -> None:
-        self._conn = conn
-
-    def acquire(self, *, timeout: float | None = None) -> _FetchAcquireCtx:
-        return _FetchAcquireCtx(self._conn)
-
-
-def _build_app(pool: object, monkeypatch: pytest.MonkeyPatch) -> Any:
-    """Build a TestClient with the admin router (auto-discovered)."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    bundle = create_router(pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from taskq.web.admin import setup_admin_state
-
+def _stats_app(pool: asyncpg.Pool, schema: str) -> FastAPI:
+    bundle = create_router(pool, schema=schema, base_path="")
     app = FastAPI()
     setup_admin_state(app, bundle)
     app.include_router(bundle.router)
-    return TestClient(app)
+    return app
 
 
-def _summary_row(actor: str = "send_email") -> StubRecord:
-    """One actor_config summary row as list_actor_summaries returns it."""
-    return StubRecord(
-        actor=actor,
-        queue="default",
-        max_concurrent=4,
-        max_pending=100,
-        updated_at="2025-01-01T00:00:00+00:00",
-        active_job_count=2,
-        enabled_schedule_count=1,
+class _StatsRecordingPool:
+    """Recording proxy over the real pool: records every statement and
+    parameter list, then lets the real read proceed untouched - COUNT,
+    DON'T ANSWER (the house pattern of
+    tests/test_cancel_where_bounded.py::_StatementRecordingPool)."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    @asynccontextmanager
+    async def acquire(self, **kwargs: object) -> AsyncGenerator[Any, None]:
+        async with self._pool.acquire(**kwargs) as conn:  # type: ignore[call-overload]  # Why: the real pool's acquire timeout kwarg passes through untouched.
+            outer = self
+
+            class _Recorder:
+                def __init__(self, inner: Any) -> None:
+                    self._inner = inner
+
+                async def fetch(self, sql: str, *args: object) -> Any:
+                    outer.calls.append((sql, args))
+                    return await self._inner.fetch(sql, *args)
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(self._inner, name)
+
+            yield _Recorder(conn)
+
+
+class _StatsRecordingConn:
+    """Recording proxy over one real connection for direct helper calls:
+    records (sql, args) and delegates every read."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def fetch(self, sql: str, *args: object) -> Any:
+        self.calls.append((sql, args))
+        return await self._conn.fetch(sql, *args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+async def _seed_terminal_job_with_attempt(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    actor: str,
+    status: str = "failed",
+    error_class: str | None = "ValueError",
+    duration_ms: int = 90,
+    age: timedelta | None = None,
+    in_archive: bool = False,
+) -> None:
+    """One terminal job row with one completed attempt (the stats read's
+    own inputs). *age* back-dates the row for window tests."""
+    shift = f"- interval '{int(age.total_seconds())} seconds'" if age is not None else ""
+    table = "jobs_archive" if in_archive else "jobs"
+    extra_cols = ", archived_at, expire_at" if in_archive else ""
+    extra_vals = (
+        ", clock_timestamp() + interval '30 days', clock_timestamp() + interval '365 days'"
+        if in_archive
+        else ""
+    )
+    jid = new_uuid()
+    await conn.execute(
+        f"""INSERT INTO "{schema}".{table} (
+                id, actor, queue, payload, status, max_attempts, retry_kind,
+                started_at, finished_at, error_class, error_message{extra_cols})
+            VALUES ($1, $2, 'default', '{{}}'::jsonb,
+                '{status}'::"{schema}".job_status, 3, 'transient',
+                clock_timestamp() {shift},
+                clock_timestamp() {shift}, $3, 'boom'{extra_vals})""",
+        jid,
+        actor,
+        error_class,
+    )
+    await conn.execute(
+        f"""INSERT INTO "{schema}".{"job_attempts_archive" if in_archive else "job_attempts"} (
+                job_id, attempt, started_at, finished_at, outcome,
+                error_class, duration_ms)
+            VALUES ($1, 1, clock_timestamp() {shift},
+                clock_timestamp() {shift}, 'failed', $2, $3)""",
+        jid,
+        error_class,
+        duration_ms,
     )
 
 
-def _stats_row(actor: str = "send_email", **overrides: Any) -> StubRecord:
-    """One per-actor stats row as fetch_actor_stats returns it."""
-    row: dict[str, Any] = {
-        "actor": actor,
-        "total": 10,
-        "failed": 2,
-        "p50_duration_ms": 90,
-        "p95_duration_ms": 200,
-        "last_activity_at": datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC),
-        "last_error_class": "ValueError",
-    }
-    row.update(overrides)
-    return StubRecord(**row)
+async def test_fetch_actor_stats_binds_the_window_as_a_parameter(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """A windowed read binds the duration and lets the server anchor it;
+    the all-time read sends no parameter at all."""
+    conn = _StatsRecordingConn(module_pg_pool)  # pyright: ignore[reportArgumentType]  # Why: the recorder satisfies the fetch surface the helper uses.
+    await fetch_actor_stats(conn, schema=module_pg_schema.schema_name)  # pyright: ignore[reportArgumentType]
+    assert conn.calls[0][1] == ()
+
+    conn = _StatsRecordingConn(module_pg_pool)  # pyright: ignore[reportArgumentType]
+    await fetch_actor_stats(  # pyright: ignore[reportArgumentType]
+        conn, schema=module_pg_schema.schema_name, window=timedelta(hours=24)
+    )
+    assert conn.calls[0][1] == (timedelta(hours=24),)
+
+    with pytest.raises(ValueError, match="positive"):
+        await fetch_actor_stats(  # pyright: ignore[reportArgumentType]
+            conn, schema=module_pg_schema.schema_name, window=timedelta(0)
+        )
+
+
+# ── GET /api/history/stats: thin wrapper over the helper ────────────────
+
+
+async def test_history_stats_passthrough_includes_last_activity_and_error(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The JSON endpoint returns the aggregate read's rows under "actors":
+    the totals, percentiles and last error class are the real rows'."""
+    schema = module_pg_schema.schema_name
+    await _seed_terminal_job_with_attempt(clean_pg_conn, schema, actor="send_email", duration_ms=90)
+    app = _stats_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/history/stats")
+    assert response.status_code == 200
+    actors = response.json()["actors"]
+    assert len(actors) == 1
+    assert actors[0]["actor"] == "send_email"
+    assert actors[0]["total"] == 1
+    assert actors[0]["failed"] == 1
+    assert actors[0]["p50_duration_ms"] == 90
+    assert actors[0]["p95_duration_ms"] == 90
+    assert actors[0]["last_activity_at"] is not None
+    assert actors[0]["last_error_class"] == "ValueError"
+
+
+async def test_history_stats_passes_the_window_through(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """?window= reaches the aggregate read as a bound duration; the
+    all-time default sends none."""
+    recording = _StatsRecordingPool(module_pg_pool)
+    app = _stats_app(recording, module_pg_schema.schema_name)  # pyright: ignore[reportArgumentType]  # Why: the recording proxy satisfies the checkout surface.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/api/history/stats?window=24h")).status_code == 200
+    windowed = [args for _sql, args in recording.calls if args]
+    assert windowed == [(timedelta(hours=24),)]
+
+
+async def test_history_stats_rejects_unknown_window(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The endpoint 400s on an unknown window, same closed set as the page."""
+    recording = _StatsRecordingPool(module_pg_pool)
+    app = _stats_app(recording, module_pg_schema.schema_name)  # pyright: ignore[reportArgumentType]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/history/stats?window=ludicrous")
+    assert response.status_code == 400
+    assert recording.calls == [], "a rejected window must not reach the database"
 
 
 # ── SQL shape ────────────────────────────────────────────────────────────
@@ -180,7 +288,7 @@ def test_stats_sql_unions_the_live_terminal_population() -> None:
 
 
 def test_stats_sql_window_bounds_both_sides_with_a_stable_clock() -> None:
-    """A window bounds BOTH sides by finished_at, bound once as ``$1`` and
+    """A window bounds both sides by finished_at, bound once as ``$1`` and
     referenced twice, and anchored to ``statement_timestamp()`` (STABLE),
     not ``clock_timestamp()`` (VOLATILE): an aggregate has no LIMIT to
     hide a post-scan Filter behind, and a VOLATILE bound cannot be a
@@ -195,7 +303,7 @@ def test_stats_sql_window_bounds_both_sides_with_a_stable_clock() -> None:
         "Filter over the whole archive population"
     )
     # The archive side composes its own WHERE; the live side already
-    # filters terminal statuses, so the window rides as an AND.
+    # filters terminal statuses, so the window rides as an and.
     assert "job_attempts_archive a ON a.job_id = j.id\n    WHERE j.finished_at >=" in sql
     assert "status IN ('abandoned', 'cancelled', 'crashed', 'failed', 'succeeded')\n" in sql
     assert "    AND j.finished_at >=" in sql
@@ -203,7 +311,7 @@ def test_stats_sql_window_bounds_both_sides_with_a_stable_clock() -> None:
 
 def test_stats_sql_last_error_class_takes_the_most_recent_non_null() -> None:
     """last_error_class is the actor's most recent row that carries one,
-    ordered by finished_at DESC NULLS LAST so a pathological NULL-
+    ordered by finished_at DESC NULLS last so a pathological NULL-
     finished_at row cannot shadow a stamped one."""
     sql = _build_stats_sql("taskq", per_queue=False)
     assert "ORDER BY u.finished_at DESC NULLS LAST" in sql
@@ -233,88 +341,41 @@ def test_resolve_stats_window_rejects_unknown_values_with_400() -> None:
     assert "24hr" in exc_info.value.detail
 
 
-@pytest.mark.asyncio
-async def test_fetch_actor_stats_binds_the_window_as_a_parameter() -> None:
-    """A windowed read binds the duration and lets the server anchor it;
-    the all-time read sends no parameter at all."""
-    conn = _FetchConn(fetch_results=[[]])
-    await fetch_actor_stats(conn, schema="taskq")  # pyright: ignore[reportArgumentType]  # Why: test duck-type connection.
-    assert conn.calls[0][1] == ()
-
-    conn = _FetchConn(fetch_results=[[]])
-    await fetch_actor_stats(  # pyright: ignore[reportArgumentType]  # Why: test duck-type connection.
-        conn, schema="taskq", window=timedelta(hours=24)
-    )
-    assert conn.calls[0][1] == (timedelta(hours=24),)
-
-    with pytest.raises(ValueError, match="positive"):
-        await fetch_actor_stats(  # pyright: ignore[reportArgumentType]  # Why: test duck-type connection.
-            conn, schema="taskq", window=timedelta(0)
-        )
-
-
 # ── GET /api/history/stats: thin wrapper over the helper ────────────────
 
 
-def test_history_stats_passthrough_includes_last_activity_and_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The JSON endpoint returns the helper's rows unchanged under "actors"."""
-    rows = [_stats_row()]
-    conn = _FetchConn(fetch_results=[rows])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    response = client.get("/api/history/stats")  # pyright: ignore[reportUnknownMemberType]
-    assert response.status_code == 200  # pyright: ignore[reportUnknownVariableType]
-    actors = response.json()["actors"]  # pyright: ignore[reportUnknownVariableType]
-    assert len(actors) == 1
-    assert actors[0]["actor"] == "send_email"
-    assert actors[0]["total"] == 10
-    assert actors[0]["failed"] == 2
-    assert actors[0]["p50_duration_ms"] == 90
-    assert actors[0]["p95_duration_ms"] == 200
-    assert actors[0]["last_activity_at"] is not None
-    assert actors[0]["last_error_class"] == "ValueError"
-
-
-def test_history_stats_passes_the_window_through(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """?window= reaches the helper as a bound duration; the all-time
-    default sends none."""
-    conn = _FetchConn(fetch_results=[[]])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    assert client.get("/api/history/stats?window=24h").status_code == 200  # pyright: ignore[reportUnknownMemberType]
-    assert conn.calls[0][1] == (timedelta(hours=24),)
-
-
-def test_history_stats_rejects_unknown_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The endpoint 400s on an unknown window, same closed set as the page."""
-    conn = _FetchConn(fetch_results=[[]])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    response = client.get("/api/history/stats?window=ludicrous")  # pyright: ignore[reportUnknownMemberType]
-    assert response.status_code == 400  # pyright: ignore[reportUnknownVariableType]
-    assert conn.calls == [], "a rejected window must not reach the database"
-
-
-def test_history_stats_empty_pool_returns_empty_actors(
-    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+async def test_history_stats_empty_pool_returns_empty_actors(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """With no rows at all the endpoint returns {"actors": []}."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    client = _build_app(stub_pool, monkeypatch)
-    response = client.get("/api/history/stats")  # pyright: ignore[reportUnknownMemberType]
-    assert response.status_code == 200  # pyright: ignore[reportUnknownVariableType]
-    assert response.json() == {"actors": []}  # pyright: ignore[reportUnknownVariableType]
+    from taskq.testing.pg import reset_schema
+
+    await reset_schema(clean_pg_conn, module_pg_schema.schema_name, actors=[])
+    app = _stats_app(module_pg_pool, module_pg_schema.schema_name)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/history/stats")
+    assert response.status_code == 200
+    assert response.json() == {"actors": []}
 
 
 # ── fetch_actor_stats helper ─────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_fetch_actor_stats_returns_dicts() -> None:
+async def test_fetch_actor_stats_returns_dicts(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """fetch_actor_stats maps rows to dicts for the callers."""
-    conn = _FetchConn(fetch_results=[[_stats_row(actor="a"), _stats_row(actor="b")]])
-    rows = await fetch_actor_stats(conn, schema="taskq")  # pyright: ignore[reportArgumentType]  # Why: test duck-type connection.
+    for actor in ("a", "b"):
+        await _seed_terminal_job_with_attempt(
+            clean_pg_conn, module_pg_schema.schema_name, actor=actor
+        )
+    rows = await fetch_actor_stats(clean_pg_conn, schema=module_pg_schema.schema_name)
     assert [r["actor"] for r in rows] == ["a", "b"]
     assert isinstance(rows[0], dict)
 
@@ -332,127 +393,267 @@ def test_actors_route_registered_via_discovery(
     assert "/actors" in route_paths  # pyright: ignore[reportUnknownVariableType]
 
 
-def test_actors_page_returns_html(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_actors_page_returns_html(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """GET /actors returns 200 with text/html content type."""
-    client = _build_app(_FetchPool(_FetchConn(fetch_results=[[], []])), monkeypatch)
-    response = client.get("/actors")  # pyright: ignore[reportUnknownMemberType]
-    assert response.status_code == 200  # pyright: ignore[reportUnknownVariableType]
-    assert "text/html" in response.headers.get("content-type", "")  # pyright: ignore[reportUnknownVariableType]
+    app = _stats_app(module_pg_pool, module_pg_schema.schema_name)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/actors")
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
 
 
-def test_actors_page_empty_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With no config rows and no stats the page renders its empty state."""
-    client = _build_app(_FetchPool(_FetchConn(fetch_results=[[], []])), monkeypatch)
-    response = client.get("/actors")  # pyright: ignore[reportUnknownMemberType]
-    assert "No actor_config rows." in response.text  # pyright: ignore[reportUnknownVariableType]
+async def test_actors_page_empty_state(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """With no config rows and no stats the page renders its empty state.
+    The reset re-seeds the default actors, so the empty state is produced
+    by truncating without the re-seed."""
+    from taskq.testing.pg import reset_schema
+
+    await reset_schema(clean_pg_conn, module_pg_schema.schema_name, actors=[])
+    app = _stats_app(module_pg_pool, module_pg_schema.schema_name)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/actors")
+    assert "No actor_config rows." in response.text
 
 
 # ── GET /actors: merged executor stats rendering ─────────────────────────
 
 
-def test_actors_page_renders_executor_stats(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_actors_page_renders_executor_stats(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """The actors table renders jobs total, failure share, last error
-    class, percentiles, and activity."""
-    conn = _FetchConn(fetch_results=[[_summary_row()], [_stats_row()]])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    response = client.get("/actors")  # pyright: ignore[reportUnknownMemberType]
-    assert response.status_code == 200  # pyright: ignore[reportUnknownVariableType]
-    html = response.text  # pyright: ignore[reportUnknownVariableType]
+    class, percentiles, and activity - the real rows' aggregate."""
+    from taskq.actor_config import ActorConfig
+    from taskq.worker.startup import sync_actor_config
+
+    schema = module_pg_schema.schema_name
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="send_email", max_concurrent=4, queue="default")],
+        schema=schema,
+    )
+    await _seed_terminal_job_with_attempt(clean_pg_conn, schema, actor="send_email", duration_ms=90)
+    app = _stats_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/actors")
+    assert response.status_code == 200
+    html = response.text
     assert ">Jobs<" in html
     assert ">Last Error<" in html
     assert "p50 / p95 (ms)" in html
-    assert "10" in html  # jobs total
-    assert "2 (20.0%)" in html  # failure count and share
+    assert "1" in html  # jobs total
+    assert "1 (100.0%)" in html  # failure count and share
     assert "ValueError" in html  # last error class
-    assert "90 / 200" in html  # p50 / p95
+    assert "90 / 90" in html  # p50 / p95
 
 
-def test_actors_page_renders_the_window_toggle(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_actors_page_renders_the_window_toggle(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """The toggle renders every window plus the all-time default, marks
     the active one, and links each to the windowed page."""
-    conn = _FetchConn(fetch_results=[[_summary_row()], [_stats_row()]])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    html = client.get("/actors").text  # pyright: ignore[reportUnknownVariableType]
-    assert "window=all" in html
-    for w in STATS_WINDOWS:
-        assert f"window={w}" in html
-    # All time is the active window on an unfiltered load: the default
-    # the docs state, not a hidden one.
-    assert "All time" in html
+    from taskq.actor_config import ActorConfig
+    from taskq.worker.startup import sync_actor_config
 
-    html = client.get("/actors?window=24h").text  # pyright: ignore[reportUnknownVariableType]
-    assert "border-blue-500" in html, "the active window must be visually marked"
+    schema = module_pg_schema.schema_name
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="send_email", max_concurrent=4, queue="default")],
+        schema=schema,
+    )
+    await _seed_terminal_job_with_attempt(clean_pg_conn, schema, actor="send_email")
+    app = _stats_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        all_time = await client.get("/actors")
+        assert "window=all" in all_time.text
+        for w in STATS_WINDOWS:
+            assert f"window={w}" in all_time.text
+        # All time is the active window on an unfiltered load: the default
+        # the docs state, not a hidden one.
+        assert "All time" in all_time.text
+
+        windowed = await client.get("/actors?window=24h")
+    assert "border-blue-500" in windowed.text, "the active window must be visually marked"
 
 
-def test_actors_page_window_reaches_the_stats_read(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_actors_page_window_reaches_the_stats_read(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """?window=24h binds the duration on the stats read; the default
     binds nothing: the operator's toggle is not cosmetic."""
-    conn = _FetchConn(fetch_results=[[], []])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    client.get("/actors?window=7d")  # pyright: ignore[reportUnknownMemberType]
-    # Call order: list_actor_summaries first, then the stats read.
-    stats_call = conn.calls[1]
-    assert stats_call[1] == (timedelta(days=7),)
+    schema = module_pg_schema.schema_name
+    recording = _StatsRecordingPool(module_pg_pool)
+    app = _stats_app(recording, schema)  # pyright: ignore[reportArgumentType]  # Why: the recording proxy satisfies the checkout surface.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.get("/actors?window=7d")
+    stats_calls = [args for sql, args in recording.calls if "percentile_cont" in sql]
+    assert stats_calls == [(timedelta(days=7),)], (
+        f"the windowed page must bind 7d on the stats read: {recording.calls!r}"
+    )
 
-    conn = _FetchConn(fetch_results=[[], []])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    client.get("/actors")  # pyright: ignore[reportUnknownMemberType]
-    assert conn.calls[1][1] == ()
+    recording = _StatsRecordingPool(module_pg_pool)
+    app = _stats_app(recording, schema)  # pyright: ignore[reportArgumentType]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.get("/actors")
+    stats_calls = [args for sql, args in recording.calls if "percentile_cont" in sql]
+    assert stats_calls == [()]
 
 
-def test_actors_page_rejects_unknown_window(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_actors_page_rejects_unknown_window(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """An unknown window value is a clean 400, not a silent all-time."""
-    conn = _FetchConn(fetch_results=[[], []])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    response = client.get("/actors?window=42d")  # pyright: ignore[reportUnknownMemberType]
-    assert response.status_code == 400  # pyright: ignore[reportUnknownVariableType]
-    assert conn.calls == [], "a rejected window must not reach the database"
+    recording = _StatsRecordingPool(module_pg_pool)
+    app = _stats_app(recording, module_pg_schema.schema_name)  # pyright: ignore[reportArgumentType]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/actors?window=42d")
+    assert response.status_code == 400
+    assert recording.calls == [], "a rejected window must not reach the database"
 
 
-def test_actors_page_config_actor_without_stats_renders_dashes(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_actors_page_config_actor_without_stats_renders_dashes(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """A config actor with no completed history renders placeholder dashes, not zeros."""
-    conn = _FetchConn(fetch_results=[[_summary_row(actor="cold_actor")], []])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    response = client.get("/actors")  # pyright: ignore[reportUnknownMemberType]
-    html = response.text  # pyright: ignore[reportUnknownVariableType]
+    from taskq.actor_config import ActorConfig
+    from taskq.worker.startup import sync_actor_config
+
+    schema = module_pg_schema.schema_name
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="cold_actor", max_concurrent=4, queue="default")],
+        schema=schema,
+    )
+    app = _stats_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/actors")
+    html = response.text
     assert "cold_actor" in html
     assert "history only" not in html
 
 
-def test_actors_page_stats_only_actor_has_no_deregister_form(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_actors_page_stats_only_actor_has_no_deregister_form(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """A stats-only actor (no config row) renders without a deregister form."""
-    conn = _FetchConn(fetch_results=[[], [_stats_row(actor="ghost_actor", total=5, failed=0)]])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    response = client.get("/actors")  # pyright: ignore[reportUnknownMemberType]
-    html = response.text  # pyright: ignore[reportUnknownVariableType]
+    schema = module_pg_schema.schema_name
+    await _seed_terminal_job_with_attempt(
+        clean_pg_conn, schema, actor="ghost_actor", status="succeeded", error_class=None
+    )
+    app = _stats_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/actors")
+    html = response.text
     assert "ghost_actor" in html
     assert "/actors/ghost_actor/deregister" not in html
     assert "history only" in html
-    assert "5" in html
 
 
-def test_actors_page_shows_truncation_notice(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A stats read at the cap renders the truncation notice."""
-    rows = [_stats_row(actor=f"actor_{i}") for i in range(STATS_LIMIT)]
-    conn = _FetchConn(fetch_results=[[], rows])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    response = client.get("/actors")  # pyright: ignore[reportUnknownMemberType]
-    assert "most active actors" in response.text  # pyright: ignore[reportUnknownVariableType]
+async def test_actors_page_shows_truncation_notice(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """A stats read at the cap renders the truncation notice: one terminal
+    row on each of STATS_LIMIT distinct actors."""
+    schema = module_pg_schema.schema_name
+    await clean_pg_conn.executemany(
+        f"""INSERT INTO "{schema}".jobs (
+                id, actor, queue, payload, status, max_attempts, retry_kind,
+                started_at, finished_at, error_class, error_message)
+            VALUES ($1, $2, 'default', '{{}}'::jsonb,
+                'failed'::"{schema}".job_status, 3, 'transient',
+                clock_timestamp(), clock_timestamp(), 'ValueError', 'boom')""",
+        [(new_uuid(), f"actor_{i}") for i in range(STATS_LIMIT)],
+    )
+    app = _stats_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/actors")
+    assert "most active actors" in response.text
 
 
-def test_actors_page_no_truncation_notice_under_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_actors_page_no_truncation_notice_under_cap(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """Under the cap no truncation notice renders."""
-    conn = _FetchConn(fetch_results=[[_summary_row()], [_stats_row()]])
-    client = _build_app(_FetchPool(conn), monkeypatch)
-    response = client.get("/actors")  # pyright: ignore[reportUnknownMemberType]
-    assert "most active actors" not in response.text  # pyright: ignore[reportUnknownVariableType]
+    schema = module_pg_schema.schema_name
+    await _seed_terminal_job_with_attempt(clean_pg_conn, schema, actor="send_email")
+    app = _stats_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/actors")
+    assert "most active actors" not in response.text
 
 
 # ── _merge_actor_stats unit behavior ─────────────────────────────────────
+
+
+def _summary_row(actor: str = "send_email") -> dict[str, Any]:
+    """One actor_config summary row as list_actor_summaries returns it."""
+    return {
+        "actor": actor,
+        "queue": "default",
+        "max_concurrent": 4,
+        "max_pending": 100,
+        "updated_at": "2025-01-01T00:00:00+00:00",
+        "active_job_count": 2,
+        "enabled_schedule_count": 1,
+    }
+
+
+def _stats_row(actor: str = "send_email", **overrides: Any) -> dict[str, Any]:
+    """One per-actor stats row as fetch_actor_stats returns it."""
+    row: dict[str, Any] = {
+        "actor": actor,
+        "total": 10,
+        "failed": 2,
+        "p50_duration_ms": 90,
+        "p95_duration_ms": 200,
+        "last_activity_at": datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC),
+        "last_error_class": "ValueError",
+    }
+    row.update(overrides)
+    return row
 
 
 def test_merge_actor_stats_appends_stats_only_actors_hot_first() -> None:

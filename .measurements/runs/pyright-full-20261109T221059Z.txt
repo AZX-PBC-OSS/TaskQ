@@ -1,0 +1,5 @@
+# pyright FULL at the re-stamp head 4441dd642fbd47501d2830eba3622869551d68d5
+venv .venv subdirectory not found in venv path /tmp/opencode/evidence-restamp-4441.
+0 errors, 0 warnings, 0 informations
+rc=0
+head: 4441dd642fbd47501d2830eba3622869551d68d5

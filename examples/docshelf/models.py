@@ -24,7 +24,7 @@ class DocPayload(BaseModel):
 
 class DeliveryBatch(BaseModel):
     """One feed delivery — at-least-once: the feed may re-deliver the
-    SAME delivery (same id) or overlapping documents under a new id."""
+    same delivery (same id) or overlapping documents under a new id."""
 
     delivery_id: str
     docs: list[DocPayload]
@@ -65,7 +65,7 @@ class DocWork(BaseModel):
     """One document's post-extraction bundle: the document's chunks are
     all extracted (the map's item = the DOCUMENT — a 500-doc batch fans
     500 children, inside the engine's 1000-parent join bound; the chunk
-    fan-out lives INSIDE each item as the mock API's per-chunk calls)."""
+    fan-out lives inside each item as the mock API's per-chunk calls)."""
 
     doc_id: str
     n_chunks: int
@@ -96,7 +96,7 @@ class SubDone(BaseModel):
 
 class SubFailed(BaseModel):
     """The child flow's typed FAILURE delivery — a child's failure lands
-    HERE in the parent, never silent."""
+    here in the parent, never silent."""
 
     kind: Literal["sub_failed"] = "sub_failed"
     doc_id: str
@@ -128,7 +128,7 @@ class ContractDoc(BaseModel):
     tags: list[str]
     # The document's child-flow outcome rides the element (the digest
     # reads it off the arms' outputs — the route join's typed sum is the
-    # ONE parent the digest consumes).
+    # one parent the digest consumes).
     spawned_child: bool = False
     child_error_class: str | None = None
     child_error_message: str | None = None
@@ -208,7 +208,7 @@ class ShelfDigest(BaseModel):
 
 class SubAnalysisIn(BaseModel):
     """The child flow's input: the parent's identity + the doc's chunks
-    + the batch's shape (how many siblings the parent spawned — the LAST
+    + the batch's shape (how many siblings the parent spawned — the last
     tail to finish assembles and delivers the batch's typed payload).
 
     The parent's flow id rides the INPUT (the run carries its input;
@@ -231,7 +231,7 @@ class SubAnalysisReport(BaseModel):
 
 class SubBatchDone(BaseModel):
     """The BATCH payload the last-finishing child tail delivers into the
-    parent's ONE hold: every child's typed outcome, assembled from the
+    parent's one hold: every child's typed outcome, assembled from the
     durable result rows."""
 
     kind: Literal["sub_batch_done"] = "sub_batch_done"

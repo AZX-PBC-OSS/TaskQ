@@ -1,7 +1,7 @@
 """The mock transaction feed — the at-least-once world's producer side.
 
 A batch is generated from a spec (the test/drill's construction), and
-the feed's delivery is AT-LEAST-ONCE: ``deliver()`` may hand the SAME
+the feed's delivery is AT-LEAST-once: ``deliver()`` may hand the same
 batch to the pipeline twice (the duplicate-feed drill's world). The
 pipeline's answer to re-delivery is the run-key arbiter + idempotent
 writes — never a batch id blacklist.
@@ -21,7 +21,7 @@ class BatchSpec:
 
     batch_id: str
     count: int
-    #: Every Nth transaction is HIGH risk (amount at/above the
+    #: Every Nth transaction is high risk (amount at/above the
     #: threshold) — 0 means none.
     high_every: int = 0
     seed: int = 0
@@ -33,8 +33,8 @@ _CHANNELS = ("web", "pos", "ach")
 
 def build_batch(spec: BatchSpec) -> Batch:
     """One batch from one spec — DETERMINISTIC (same spec, same batch):
-    the re-delivery carries the SAME transactions, byte for byte."""
-    rng = random.Random(f"feed:{spec.batch_id}:{spec.seed}")  # noqa: S311  # Why: the feed is deterministic per spec (the re-delivery carries the SAME batch).
+    the re-delivery carries the same transactions, byte for byte."""
+    rng = random.Random(f"feed:{spec.batch_id}:{spec.seed}")  # noqa: S311  # Why: the feed is deterministic per spec (the re-delivery carries the same batch).
     txns = [
         TransactionRecord(
             txn_id=f"{spec.batch_id}-T{i:05d}",
@@ -51,7 +51,7 @@ def build_batch(spec: BatchSpec) -> Batch:
 @dataclass
 class MockFeed:
     """The feed: delivers batches, and (the at-least-once world) may
-    deliver any batch AGAIN — tracked here so the drills can assert the
+    deliver any batch again — tracked here so the drills can assert the
     pipeline's answer, and the delivery ledger shows the re-delivery."""
 
     deliveries: list[str] = field(default_factory=list)
@@ -61,5 +61,5 @@ class MockFeed:
         return batch.batch_id
 
     async def redeliver(self, batch: Batch) -> str:
-        """The re-delivery: the SAME batch, byte for byte, again."""
+        """The re-delivery: the same batch, byte for byte, again."""
         return await self.deliver(batch)

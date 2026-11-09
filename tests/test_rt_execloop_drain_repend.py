@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team: DRAINING must re-pend rows the worker claimed but never started (E1).
+"""Adversarial review: DRAINING must re-pend rows the worker claimed but never started (E1).
 
 Contract under attack: ``drain_local_queue_to_pending`` must re-pend every row
 this worker CLAIMED but never started executing - the rows sitting in the
@@ -10,7 +10,7 @@ Hypothesis (verified against the current tree): the drain UPDATE requires
 ``started_at IS NULL`` (src/taskq/worker/shutdown.py:106) while the dispatch
 claim CTE stamps ``started_at = clock_timestamp()`` AT CLAIM
 (src/taskq/backend/_dispatch_sql.py:191). Every local_queue row is therefore
-running + locked + ``started_at IS NOT NULL``, so DRAINING matches zero rows.
+running + locked + ``started_at IS not NULL``, so DRAINING matches zero rows.
 
 This test claims rows through the REAL dispatch CTE
 (``DISPATCH_STRICT_FIFO_SQL``) rather than fabricating rows by hand, so the
@@ -85,8 +85,8 @@ async def test_drain_re_pends_dispatch_claimed_rows(pg_dsn: str) -> None:
         # Stamp the rows due 60 s in the past - the dispatch family's clock
         # discipline (test_dispatch_window_expansion.py seeds the same
         # margin): the claim CTE's candidacy predicate compares
-        # scheduled_at against the DATABASE clock (statement_timestamp()),
-        # while create_pending_job's default stamps the APPLICATION clock
+        # scheduled_at against the database clock (statement_timestamp()),
+        # while create_pending_job's default stamps the application clock
         # - a cross-domain comparison that reads not-yet-due whenever the
         # container clock lags the host by more than the seed-to-claim
         # gap (observed in a coverage-weighted full run as "dispatch must
@@ -102,7 +102,7 @@ async def test_drain_re_pends_dispatch_claimed_rows(pg_dsn: str) -> None:
         ]
 
         # Claim exactly as the worker's producer does: the real dispatch CTE,
-        # which stamps started_at = clock_timestamp() AT CLAIM.
+        # which stamps started_at = clock_timestamp() at claim.
         claimed = await dispatch_claim_rows(
             conn,
             sql=DISPATCH_STRICT_FIFO_SQL.format(schema=schema),

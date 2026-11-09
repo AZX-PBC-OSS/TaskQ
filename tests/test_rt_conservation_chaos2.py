@@ -17,7 +17,7 @@ The compositions:
    The ladder's unheld walk owes its abandon (whose fused INSERT writes
    the executed attempt's ledger row) while the reconcile reads the same
    row as "a claim that never reached an actor" and refunds the attempt
-   whose body already ran.  ONE row, TWO owners: the pin holds only if
+   whose body already ran.  one row, TWO owners: the pin holds only if
    the reconcile defers to the poll's own ownership contract.
 2. the sighting map's drops x a claim->register handoff completing
    mid-drain: a row the poll stops returning drops its stamp (a
@@ -143,7 +143,7 @@ async def consv2_fenced(payload: Consv2Payload, ctx: JobContext[Consv2Payload]) 
 
 @actor(name="consv2_progress", queue=_QUEUE)
 async def consv2_progress(payload: Consv2Payload, ctx: JobContext[Consv2Payload]) -> None:
-    # Progress FIRST (the seq surface is the seam under test while the
+    # Progress first (the seq surface is the seam under test while the
     # body runs), then the long tail; the effect lands only when the body
     # reaches its end (the completion-recording doctrine: an interrupted
     # attempt - the isolate's release, which writes no attempt row by
@@ -270,7 +270,7 @@ async def _run_unheld_walk_composition(
 
     The flag arms while each body runs, the body's retry write matches no
     arm, the consumer deregisters, and the row is unheld, running,
-    flagged.  From there TWO owners act on the ONE row: the ladder's
+    flagged.  From there TWO owners act on the one row: the ladder's
     unheld walk (graces, then the abandon whose fused INSERT writes the
     executed attempt's ledger row) and the reconcile (started_at older
     than the lease, nothing holds the row: refund the attempt, un-stamp
@@ -302,20 +302,17 @@ async def _run_unheld_walk_composition(
 
             job_ids = await _wait_running(conn, schema, tag, want=jobs, cap_secs=20.0)
 
-            # THE STATE-KEYED ARM (the condition-not-clock discipline —
-            # the contended leg's flake cure): the flag arms when the
-            # body's OWN record lands in the effects table, not when the
-            # CLAIM is observed. The claim-keyed arm raced the body's
-            # own progress: under load, the arming UPDATEs could land
-            # after a body had already slept its full second and written
-            # its retry UNFENCED - a legitimate retry (conserved, two
-            # runs on two attempts), but the composition's primary shape
-            # (one run, the write fenced) then failed to fire and the
-            # label asserts read the wrong state. The effects row is the
-            # body's own state transition - written the instant before
-            # its post-record sleep - so arming on it is arming while
-            # the body provably sleeps (a ~10x margin to the sleep's
-            # end), keyed to a condition, never to the claim's clock.
+            # the flag arms when the body's own record lands in the effects
+            # table, not when the claim is observed. The claim-keyed arm raced
+            # the body's own progress: under load, the arming UPDATEs could
+            # land after a body had already slept its full second and written
+            # its retry unfenced - a legitimate retry (conserved, two runs on
+            # two attempts), but the composition's primary shape (one run, the
+            # write fenced) then failed to fire and the label asserts read the
+            # wrong state. The effects row is the body's own state transition -
+            # written the instant before its post-record sleep - so arming on
+            # it is arming while the body provably sleeps (a ~10x margin to the
+            # sleep's end), keyed to a condition, never to the claim's clock.
             for job_id in job_ids:
                 deadline = time.monotonic() + 20.0
                 while time.monotonic() < deadline:
@@ -341,23 +338,20 @@ async def _run_unheld_walk_composition(
         finally:
             await stack.aclose()
 
-        # THE OWNERSHIP DISCRIMINATION READS STATE, NOT THE CLOCK (the
-        # contended leg's flake cure - the tight-lease timing window
-        # widened to the BEHAVIORAL bound). The composition's premise is
-        # a lease tight enough that the reconcile's started_at age test
-        # comes due before the walk's graces have run; WHICH owner
-        # terminalises a row - the walk's abandon or the reclaim's
-        # honoured-cancel branch (the +60s carve-out's own arm) - is a
-        # function of wall-clock starvation the test cannot pin (under
-        # -n battery load a worker's loop can starve past its watchdog
-        # budget and force-exit, leaving its rows to the reclaim). The
-        # DISCIPLINE: the invariant (nothing lost, nothing duplicated,
-        # every executed attempt keeps its claim row - the refund's
+            # the ownership discrimination reads state, not the clock . The
+        # composition's premise is a lease tight enough that the reconcile's
+        # started_at age test comes due before the walk's graces have run;
+        # which owner terminalises a row - the walk's abandon or the reclaim's
+        # honoured-cancel branch - is a function of wall-clock starvation the
+        # test cannot pin (under -n battery load a worker's loop can starve
+        # past its watchdog budget and force-exit, leaving its rows to the
+        # reclaim). The discipline: the invariant (nothing lost, nothing
+        # duplicated, every executed attempt keeps its claim row - the refund's
         # effects-orphan class is the pin's real substance, and
-        # ``_assert_balanced_ledgers`` holds it UNCONDITIONALLY below)
-        # is asserted on EVERY trial; the terminal LABEL is the
-        # state-conditional leg - each owner's shape is asserted in
-        # full, whichever the state shows.
+        # ``_assert_balanced_ledgers`` holds it unconditionally below) is
+        # asserted on every trial; the terminal label is the state-conditional
+        # leg - each owner's shape is asserted in full, whichever the state
+        # shows.
         abandoned = counts.get("abandoned", 0)
         cancelled = counts.get("cancelled", 0)
         unexpected = {k: v for k, v in counts.items() if k not in ("abandoned", "cancelled")}
@@ -382,10 +376,9 @@ async def _run_unheld_walk_composition(
             )
             assert ledger, f"job {job_id}: no attempt row behind a terminal row"
             if status == "abandoned":
-                # THE WALK'S SHAPE (the primary composition): the abandon
-                # owns the row - the executed attempt kept its ledger row
-                # (the abandon's fused INSERT, not the reconcile's refund,
-                # decided the attempt), the origin is stamped.
+                # the abandon owns the row - the executed attempt kept its
+                # ledger row (the abandon's fused INSERT, not the reconcile's
+                # refund, decided the attempt), the origin is stamped.
                 attempt = await conn.fetchval(
                     f'SELECT attempt::int FROM "{schema}".jobs WHERE id = $1',
                     job_id,
@@ -416,7 +409,7 @@ async def _run_unheld_walk_composition(
                     f"job {job_id}: the abandon did not stamp its origin: {error_class!r}"
                 )
                 if runs == 1:
-                    # The flag fenced the FIRST write (the composition's
+                    # The flag fenced the first write (the composition's
                     # primary shape): the attempt counter never moved.
                     assert attempt == 1, f"job {job_id}: attempt refunded to {attempt}"
                     assert [int(r["attempt"]) for r in ledger] == [1], (
@@ -424,10 +417,9 @@ async def _run_unheld_walk_composition(
                         f"{[dict(r) for r in ledger]}"
                     )
             else:  # 'cancelled' - the reclaim's honoured-cancel branch
-                # THE RECLAIM'S SHAPE: the operator's intent is the
-                # honest terminal label; the attempt row records what
-                # happened to the attempt (conserved - the invariants
-                # below hold it).
+                # the operator's intent is the honest terminal label; the
+                # attempt row records what happened to the attempt (conserved -
+                # the invariants below hold it).
                 assert ledger[-1]["outcome"] in ("cancelled", "crashed"), (
                     f"job {job_id}: the reclaim's attempt row mislabelled: "
                     f"{[dict(r) for r in ledger]}"
@@ -468,7 +460,7 @@ async def test_unheld_walk_x_claim_loss_reconcile_contended_tight_lease(
     trial: int,
 ) -> None:
     """Contended: a lease tight enough that the reconcile's started_at
-    age test comes due BEFORE the walk's graces have run.  Two workers,
+    age test comes due before the walk's graces have run.  Two workers,
     four fenced rows: the reconcile must defer every one of them to the
     poll's ownership contract, or an executed attempt loses its ledger
     row to a refund."""
@@ -609,7 +601,7 @@ async def test_sighting_map_drop_then_reappear_reobserves_fresh_graces(
         assert not rig.controller._pending_abandons  # pyright: ignore[reportPrivateUsage]
 
         # The poll stops returning the row: terminalise it out from under
-        # the sighting map. Tick 2: the stamp must DROP.
+        # the sighting map. Tick 2: the stamp must drop.
         await conn.execute(
             f"UPDATE \"{schema}\".jobs SET status = 'cancelled', finished_at = clock_timestamp() "
             "WHERE id = $1",
@@ -619,7 +611,7 @@ async def test_sighting_map_drop_then_reappear_reobserves_fresh_graces(
         assert job_id not in rig.controller._unheld_observed_at  # pyright: ignore[reportPrivateUsage]
 
         # The row reappears (re-armed at phase 1, running again): the
-        # re-observation must be FRESH - one second out, the stale stamp
+        # re-observation must be fresh - one second out, the stale stamp
         # would have the escalation already due.
         await conn.execute(
             f"UPDATE \"{schema}\".jobs SET status = 'running', finished_at = NULL, "
@@ -703,9 +695,9 @@ async def test_drain_delivers_to_the_current_entry_mid_drain_handoff(
         )
         assert status == "abandoned", f"the unheld abandon never applied: {status}"
 
-        # The handoff: a live attempt registers the SAME key (a re-claim
-        # took the row and its registry entry). A LATER drain delivery
-        # for that row resolves the CURRENT entry.
+        # The handoff: a live attempt registers the same key (a re-claim
+        # took the row and its registry entry). A later drain delivery
+        # for that row resolves the current entry.
         live_started = asyncio.Event()
         live_cancelled = asyncio.Event()
 
@@ -719,7 +711,7 @@ async def test_drain_delivers_to_the_current_entry_mid_drain_handoff(
         await live_started.wait()
         await rig.deps.active_jobs.register(job_id, task, _make_ctx(job_id, rig.worker_id))
 
-        # Queue a SECOND abandon for the same row through the walk (the
+        # Queue a second abandon for the same row through the walk (the
         # row is terminal now, so seed the queue directly: the drain's
         # delivery is the seam under test, the queueing arm is pinned by
         # the walk tests above). queued_entry is None: the unheld class.
@@ -842,7 +834,7 @@ async def test_drain_delivery_contended_replaced_entry_never_takes_two_cancels(
         await rig.deps.active_jobs.register(job_id, stale_task, _make_ctx(job_id, rig.worker_id))
 
         # The re-claim replaces the key with the live attempt's entry
-        # (register's key-scoped absorb). The stale entry is NOT the
+        # (register's key-scoped absorb). The stale entry is not the
         # registry's any more.
         live_task = _sleeper_task()
         live_task.add_done_callback(_track_cancelled)
@@ -938,7 +930,7 @@ async def test_sigkill_mid_shield_the_detached_abandon_conerves(
     trial: int,
 ) -> None:
     """The drain's abandon write is detached under ``shield_with_retrieval``;
-    the process dies INSIDE the shield window. The write either committed
+    the process dies inside the shield window. The write either committed
     server-side (row 'abandoned', fused attempt row present) or rolled
     back with the dying connection (row still running, flagged, lease
     lapsing; the next leader's reclaim owns it). Both shapes are
@@ -1042,9 +1034,9 @@ async def test_cancel_seq_override_survives_a_same_worker_reclaim(
 ) -> None:
     """A live row is re-pended out from under its consumer (the lease
     lapse the reclaim sweep writes, seeded the sanctioned way) and the
-    SAME worker re-claims it: the new attempt installs its buffer under
+    same worker re-claims it: the new attempt installs its buffer under
     the same key, then the operator's cancel wave drives the LADDER's
-    delivery - every unwind reading the buffer ITS OWN attempt installed.
+    delivery - every unwind reading the buffer ITS own attempt installed.
     The seq surface must survive the composition: the durable
     progress_seq never regresses, it ADVANCES again after the re-claim
     (a stale exit that evicted the live buffer would stall the flush
@@ -1122,7 +1114,7 @@ async def test_cancel_seq_override_survives_a_same_worker_reclaim(
             # the reclaim sweep's re-pend arm writes (pending, unlocked,
             # claimable now), applied while the consumers run. The
             # worker's dispatch re-claims within a poll interval and the
-            # new attempts install THEIR buffers under the same keys.
+            # new attempts install their buffers under the same keys.
             for job_id in job_ids:
                 await conn.execute(
                     f"UPDATE \"{schema}\".jobs SET status = 'pending', "
@@ -1133,7 +1125,7 @@ async def test_cancel_seq_override_survives_a_same_worker_reclaim(
                     job_id,
                 )
 
-            # The re-claim fired: the attempt counter moved, and the NEW
+            # The re-claim fired: the attempt counter moved, and the new
             # attempts' progress flushes advance the durable surface past
             # the stale attempts' tail (the fence's substance: a stale
             # exit that evicted the live buffer would stall it).
@@ -1167,7 +1159,7 @@ async def test_cancel_seq_override_survives_a_same_worker_reclaim(
                 "buffers and the flush loop stopped draining them"
             )
 
-            # The cancel wave: phase 2 arms on the LIVE (re-claimed)
+            # The cancel wave: phase 2 arms on the live (re-claimed)
             # attempts; the ladder's delivery unwinds them through the
             # terminal seq override, each reading the buffer it installed.
             await conn.execute(

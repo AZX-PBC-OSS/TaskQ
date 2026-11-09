@@ -1,15 +1,15 @@
-"""The flow API's app surface (T09): ``WorkflowApp`` — the authoring
+"""The flow API's app surface: ``WorkflowApp`` — the authoring
 entry — ``@app.actor`` / ``@app.workflow``, the compiled workflow, and the
 signal channel's TYPED-GATE door.
 
 ``@app.actor`` is a DIFFERENT decorator from ``taskq.actor`` but composes
-with the SAME machinery: the decorated function is registered into the
+with the same machinery: the decorated function is registered into the
 workflow definition registry (D1 — the only body source), and
 :meth:`WorkflowActor.actor_config` projects it into the estate's
 ``ActorConfig`` carrier so the config-sync, the drift guards, the
 deregistration guards, the admin's actors page and ``TASKQ_QUEUES_STRICT``'s
 fail-fast all SEE workflow actors — no second, invisible actor population
-(GAPS-ESTATE F3). The vanilla path is untouched: this decorator adds
+(). The vanilla path is untouched: this decorator adds
 registrations, it never edits an existing one (the byte-identity pin
 holds).
 
@@ -17,7 +17,7 @@ The channel is a PER-WORKFLOW object created by :meth:`WorkflowApp.channel`
 — its registry is the declared gates (keyed by gate name); its lifetime is
 the workflow definition's (module-level through the app, never a global
 singleton). ``channel.gate(Model) → TypedGate[Model]`` binds the payload
-type ONCE at the gate; the wrong model is simply not assignable at the
+type once at the gate; the wrong model is simply not assignable at the
 deliver call site (the classic ``(type[P], P)`` signature is the documented
 dead door — both solvers unify ``P = A | B``).
 """
@@ -26,19 +26,33 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal, cast, overload
+from datetime import timedelta
+from typing import TYPE_CHECKING, Final, Literal, cast, overload
 
 from pydantic import BaseModel
 
+from taskq.actor_config import (
+    CAPACITY_OWNER_OPERATOR,
+    CapacityOwner,
+    validate_capacity_owner,
+)
+from taskq.constants import check_max_attempts_domain, check_priority_domain
+from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.workflows._emit import EMIT_MAX_IN_FLIGHT_DEFAULT
+from taskq.workflows._types import duration_seconds
 from taskq.workflows.api._graph import (
     BuildGraph,
     NodeDecl,
     Promise,
+    check_start_to_close_decl,
     record_under,
     route_child_key,
 )
 from taskq.workflows.definitions import DuplicateWorkflowError
+
+if TYPE_CHECKING:
+    from taskq.workflows.api._validate import WorkflowValidationError
+    from taskq.workflows.chain import Chain
 
 __all__ = [
     "CompiledWorkflow",
@@ -47,6 +61,14 @@ __all__ = [
     "WorkflowActor",
     "WorkflowApp",
 ]
+
+
+#: The workflow actor's decorator defaults for the retry terms. They
+#: exist so the step() fold can tell a declared term from a default:
+#: only a value different from these folds into the node — a bare
+#: ``@app.actor()`` never changes a step's retry shape.
+ACTOR_MAX_ATTEMPTS_DEFAULT: Final = 3
+ACTOR_RETRY_KIND_DEFAULT: Final = "transient"
 
 
 class WorkflowActor:
@@ -65,21 +87,64 @@ class WorkflowActor:
         retry_kind: str,
         capture_policy: str,
         redact: Callable[[dict[str, object]], dict[str, object]] | None,
+        max_concurrent: int | None = None,
+        reservations: (
+            list[ConcurrencyReservation] | tuple[ConcurrencyReservation, ...] | None
+        ) = None,
+        result_ttl: timedelta | float | None = None,
+        priority: int | None = None,
+        capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
+        start_to_close: timedelta | None = None,
     ) -> None:
         self._fn = fn
         self.name = name
         self.queue = queue
+        from taskq.workflows._policy import canonical_retry_kind
+
+        check_max_attempts_domain(max_attempts)
         self.max_attempts = max_attempts
+        canonical_retry_kind(
+            retry_kind, what="actor retry_kind"
+        )  # validate only; preserve the public authoring alias
         self.retry_kind = retry_kind
         self.capture_policy = capture_policy
         self.redact = redact
+        # the capacity terms . The projection carries these into the cohort's
+        # ActorConfig — the same seed-only capacity law as vanilla actors: the
+        # declaration seeds the row; the operator owns it thereafter
+        # (ActorsClient.set_capacity).
+        self.max_concurrent = max_concurrent
+        self.reservations = list(reservations) if reservations else []
+        self.result_ttl = duration_seconds(result_ttl)
+        # the handle's enqueue default for its nodes' rows — the wiring folds
+        # it into the node decl when the step declares none (the capacity-terms
+        # flow's own shape). ``None`` = nothing declared — the column default
+        # applies. not an actor_config axis: like the vanilla
+        # ``ActorRef.priority``, it rides the handle and the enqueue, never the
+        # config row.
+        self.priority = priority
+        # the handle's default for its nodes' rows — the wiring folds it into
+        # the node decl when the step declares none (the priority fold's own
+        # shape). ``None`` = nothing declared — the row's column NULL (the
+        # worker's default_start_to_close applies at the enforcement). Like
+        # priority, not an actor_config axis: the deadline is the row's own
+        # column value, and two steps of one actor may declare different bounds
+        # with no conflict law.
+        self.start_to_close = start_to_close
+        # "operator" (the default) keeps the estate's seed-only law — the
+        # stored row wins every conflict after first boot. "code" hands
+        # max_concurrent/result_ttl to the declaration: the config sync's
+        # upsert rewrites them from the projected literal on every boot. The
+        # declaration rides the handle into the wiring (the decl), the
+        # projection's capacity terms, and the ActorConfig the sync consumes.
+        self.capacity_owner = capacity_owner
 
     @property
     def fn(self) -> Callable[..., Awaitable[object]]:
         return self._fn
 
-    # Callable-preserving: the DIRECT (unit-test) call has the body's own
-    # signature — (ctx, *data). The WIRING never calls this; it goes
+    # Callable-preserving: the direct (unit-test) call has the body's own
+    # signature — (ctx, *data). The wiring never calls this; it goes
     # through the recorder's verbs (wf.step(...)), which resolve bodies
     # from the definition registry (D1).
     async def __call__(self, ctx: object, /, *args: object) -> object:
@@ -88,26 +153,33 @@ class WorkflowActor:
     def __getattr__(self, attr: str) -> object:
         return getattr(self._fn, attr)
 
-    def actor_config(self, workflow_name: str) -> dict[str, object]:
-        """The F3 projection: the ``ActorConfig``-compatible carrier the
-        estate's config-sync and guards consume (the same shape
-        ``ActorRef`` produces at worker startup). A workflow actor is
-        VISIBLE to every existing guard by construction — the drift
-        machinery, the deregistration guards, the admin page,
-        ``TASKQ_QUEUES_STRICT`` (pin 9)."""
+    def actor_config(self) -> dict[str, object]:
+        """the ACTOR-CONFIG CARRIER, IN the REAL PROJECTION'S one VOCABULARY
+        (never two name schemes): the ``ActorConfig`` field set the
+        estate's config-sync and guards consume, keyed exactly as
+        ``project_workflow_actor_configs`` keys the rows. The handle's
+        declared name + queue are its placement face; the CAPACITY TERMS
+        ride the row (the reservations do not — no field on
+        ``ActorConfig``; the ensure-slots pass owns their
+        materialization). The pre-fix carrier spoke a SECOND vocabulary
+        (a workflow-namespaced actor name, the ``ActorRef``'s
+        max_attempts/retry_kind fields, a ``workflow_name`` parameter) —
+        a tests-only divergence from the projection it mirrored."""
         return {
-            "actor": f"{workflow_name}.{self.name}",
+            "actor": self.name,
             "queue": self.queue,
-            "max_attempts": self.max_attempts,
-            "retry_kind": self.retry_kind,
+            "max_concurrent": self.max_concurrent,
+            "result_ttl": self.result_ttl,
+            "metadata": {"workflow_actor": True},
+            "capacity_owner": self.capacity_owner,
         }
 
 
 class TypedGate[G: BaseModel]:
     """The BOUND-DOOR form (Package B, finding 1): the payload type is
-    bound ONCE at the gate; the wrong model is not assignable at the
+    bound once at the gate; the wrong model is not assignable at the
     deliver call site. One door, two addresses: by ``(run, node, gate)``
-    for the wire form, by hold id for the reply form (T10's client)."""
+    for the wire form, by hold id for the reply form (the client's forms)."""
 
     def __init__(self, channel: SignalChannel, *payload_models: type[BaseModel]) -> None:
         self._channel = channel
@@ -117,7 +189,7 @@ class TypedGate[G: BaseModel]:
 
 class SignalChannel:
     """The per-workflow signal channel: the declared gates' registry. Its
-    runtime delivery is wired by T10's HITL module (the row is the truth);
+    runtime delivery is wired by the HITL module (the row is the truth);
     the DECLARATION is the compile's — mermaid's hold nodes and the
     validate warnings read it from here."""
 
@@ -126,8 +198,8 @@ class SignalChannel:
         self._gates: dict[str, TypedGate[BaseModel]] = {}
 
     def gate[G: BaseModel](self, *payload_models: type[G]) -> TypedGate[G]:
-        """Bind the payload type(s) ONCE at the gate. The delivery
-        runtime (the CAS'd resume, the refusal shape) is T10's HITL
+        """Bind the payload type(s) once at the gate. The delivery
+        runtime (the CAS'd resume, the refusal shape) is the HITL
         module — the DECLARATION is the compile's: this registry is what
         the mermaid render's hold nodes, the validate warnings and the
         typed delivery all read."""
@@ -140,8 +212,8 @@ class SignalChannel:
 
 @dataclass(frozen=True, slots=True)
 class CompiledWorkflow:
-    """The compile's product: the spelled graph, lowered-ready — the SAME
-    module compiles to the SAME graph, byte-stable (the Mermaid golden's
+    """The compile's product: the spelled graph, lowered-ready — the same
+    module compiles to the same graph, byte-stable (the Mermaid golden's
     law). Validation and Mermaid are PURE functions of this object."""
 
     name: str
@@ -149,37 +221,40 @@ class CompiledWorkflow:
     sunk: tuple[str, ...]
     terminal: str | None
     channel: SignalChannel
-    #: THE DEPS SEAM'S BOUND INSTANCE (the DI capability): the app's ONE
-    #: instance, bound at the door (``WorkflowApp(deps=…)``) and carried
-    #: by the compile — validate's E12-deps-contract rule reads it (the
-    #: bodies' declared deps parameters are checked against THE BINDING),
-    #: and every runner door (the direct door, the packaged ``run``, the
-    #: worker-hosted ``_runner_for``) hands the SAME instance to the body
-    #: invocations. ``None`` = the app binds no deps — a body declaring
-    #: the deps shape is E12's refusal.
+    #: the app's one instance, bound at the door (``WorkflowApp(deps=…)``) and
+    #: carried by the compile — validate's E12-deps-contract rule reads it (the
+    #: bodies' declared deps parameters are checked against the binding), and
+    #: every runner door (the direct door, the packaged ``run``, the
+    #: worker-hosted ``_runner_for``) hands the same instance to the body
+    #: invocations. ``None`` = the app binds no deps — a body declaring the
+    #: deps shape is E12's refusal.
     deps: object | None = None
     input_type: object = None
-    #: The workflow's declared chains (T20) — the chain SOURCE node owns
+    #: The workflow's declared chains — the chain source node owns
     #: its Chain; the runner resolves chain-step routes from here.
-    chains: tuple[object, ...] = ()
-    #: THE MAX-IN-FLIGHT BOUND (T20 / DH9): the RUN's admission control,
-    #: declared at the workflow level; the runner hands it to every
-    #: ``ctx.emit_batch``. ``None`` = the explicit unbounded.
+    chains: tuple[Chain, ...] = ()
+    #: the run's admission control, declared at the workflow level; the runner
+    #: hands it to every ``ctx.emit_batch``. ``None`` = the explicit unbounded.
     max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT
-    #: The cross-graph smuggles the wiring verbs recorded (attack-3 M3's
-    #: cure): ``(consumer_key, parent_key)`` pairs — validate's E7 reads
+    #: The cross-graph smuggles the wiring verbs recorded (the smuggle defect's
+    #: fix): ``(consumer_key, parent_key)`` pairs — validate's E7 reads
     #: it.
     smuggled: tuple[tuple[str, str], ...] = ()
     #: The app's declared queue universe (``"default"`` + every workflow
-    #: actor's queue + TASKQ_QUEUES' names — attack-3 M5's cure):
+    #: actor's queue + TASKQ_QUEUES' names — the fail-fast's fix):
     #: validate's W2 reads it; ``None`` = no universe declared, nothing
-    #: to convict.
+    #: to reject.
     known_queues: frozenset[str] | None = None
-    # THE DECLARED POLICIES (§10.3 — the capture writer + the redact
-    # chain read them FROM THE COMPILE; the runner never hardcodes the
+    # the declared policies (§10.3 — the capture writer + the redact
+    # chain read them FROM the compile; the runner never hardcodes the
     # default past this point — the declaration is the only source).
     capture: Literal["none", "errors-only", "all"] = "errors-only"
     redact: Callable[[dict[str, object]], dict[str, object]] | None = None
+    #: the escalation consumer rows' address (D1) and the loop node's fallback
+    #: placement. The current defaults ("workflow"/ "default") for non-adopters
+    #: — no behavior change.
+    def_actor: str = "workflow"
+    def_queue: str = "default"
 
     def node_keys(self) -> list[str]:
         """The compiled node keys (the wiring's census)."""
@@ -190,15 +265,18 @@ class CompiledWorkflow:
         return list(self.nodes[key].parents)
 
     def skip_predicate(self, key: str) -> object | None:
-        """The node's dispatch-time skip predicate (cut #4), if declared."""
+        """The node's dispatch-time skip predicate, if declared."""
         return self.nodes[key].skip
 
-    def validate(self) -> None:
+    def validate(self) -> tuple[WorkflowValidationError, ...]:
         """The checker-independent validator (the totality refusals) —
-        :mod:`taskq.workflows.api._validate`."""
+        :mod:`taskq.workflows.api._validate`. Returns the same
+        diagnostics :func:`validate_compiled` returns — the one-pass
+        report (rule → severity → message), empty when clean; the
+        ERRORs also raise."""
         from taskq.workflows.api._validate import validate_compiled
 
-        validate_compiled(self)
+        return validate_compiled(self)
 
     def mermaid(self) -> str:
         """The compile-time Mermaid emission (byte-stable) —
@@ -212,12 +290,11 @@ class WorkflowApp:
     """The authoring surface: one app, many workflows; the definitions'
     registry is shared with the engine (D1 — no second registry).
 
-    THE DEPS SEAM'S DOOR (the DI capability — SAI migration blocker #1):
-    ``WorkflowApp(deps=…)`` binds ONE deps instance at the door — the
+    ``WorkflowApp(deps=…)`` binds one deps instance at the door — the
     app's bodies that declare the deps parameter (``(ctx, params,
-    deps)``) receive THE instance; the compile carries it (E12 checks
+    deps)``) receive the instance; the compile carries it (E12 checks
     the bodies' declarations against the binding at build), and every
-    runner door hands the SAME instance to every body invocation — the
+    runner door hands the same instance to every body invocation — the
     step bodies, the map's item children, the loop driver's bodies, the
     hold-wake's re-execution. The instance is held as ``object`` through
     the runner — the runner never inspects it; the TYPING is proven at
@@ -225,21 +302,35 @@ class WorkflowApp:
     ``deps.*`` reads against the declared type) and at build (E12's
     runtime check of the binding against the declared type)."""
 
-    def __init__(self, *, actor: str = "wf", deps: object | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        actor: str = "wf",
+        deps: object | None = None,
+        queues_strict: bool = False,
+    ) -> None:
         self._actor = actor
         self._deps: object | None = deps
+        # the app's own definition carries the strict contract in code — the
+        # fleet that needs this face cannot coordinate a fleet-wide env var
+        # (its workers each subscribe to a queue subset), but every worker
+        # child already imports this app. The boot gate reads it off the app
+        # registry (``any_app_declares_strict_queues``); the env
+        # (``TASKQ_QUEUES_STRICT``) can only add strictness, never silence this
+        # declaration. Default False: no declaration = the env's own arm,
+        # today's behavior byte-identically.
+        self.queues_strict = queues_strict
         self._workflows: dict[str, Callable[..., object]] = {}
         #: The app's declared queue universe (the workflow actors'
         #: queues — validate's W2 rule reads the compiled projection;
-        #: attack-3 M5's cure).
+        #: the fail-fast's fix).
         self._actor_queues: set[str] = set()
-        # THE APP REGISTRY (the worker-hosted execution seam): the app
-        # registers weakly, so the boot projection can find every
-        # IMPORTED app — the projection compiles their workflows (the
-        # D1 registry's population in the worker's process) and projects
-        # the (actor, queue) cohorts the estate's actor_config sees (the
-        # F3 law's call site). The lazy import keeps the seam's module
-        # graph out of the authoring surface's own import time.
+        # the app registers weakly, so the boot projection can find every
+        # imported app — the projection compiles their workflows (the D1
+        # registry's population in the worker's process) and projects the
+        # (actor, queue) cohorts the estate's actor_config sees (the visibility
+        # law's call site). The lazy import keeps the seam's module graph out
+        # of the authoring surface's own import time.
         from taskq.workflows._worker_execution import register_app
 
         register_app(self)
@@ -252,10 +343,19 @@ class WorkflowApp:
         *,
         name: str | None = None,
         queue: str = "default",
-        max_attempts: int = 3,
-        retry_kind: str = "transient",
-        capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
+        max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
+        retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
+        capture_policy: Literal["none", "errors-only", "all"] | None = None,
+        capture: Literal["none", "errors-only", "all"] | None = None,
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
+        max_concurrent: int | None = None,
+        reservations: (
+            list[ConcurrencyReservation] | tuple[ConcurrencyReservation, ...] | None
+        ) = None,
+        result_ttl: timedelta | float | None = None,
+        priority: int | None = None,
+        capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
+        start_to_close: timedelta | None = None,
     ) -> WorkflowActor: ...
 
     @overload
@@ -266,10 +366,19 @@ class WorkflowApp:
         *,
         name: str | None = None,
         queue: str = "default",
-        max_attempts: int = 3,
-        retry_kind: str = "transient",
-        capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
+        max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
+        retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
+        capture_policy: Literal["none", "errors-only", "all"] | None = None,
+        capture: Literal["none", "errors-only", "all"] | None = None,
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
+        max_concurrent: int | None = None,
+        reservations: (
+            list[ConcurrencyReservation] | tuple[ConcurrencyReservation, ...] | None
+        ) = None,
+        result_ttl: timedelta | float | None = None,
+        priority: int | None = None,
+        capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
+        start_to_close: timedelta | None = None,
     ) -> Callable[[Callable[..., Awaitable[object]]], WorkflowActor]: ...
 
     def actor(
@@ -279,26 +388,97 @@ class WorkflowApp:
         *,
         name: str | None = None,
         queue: str = "default",
-        max_attempts: int = 3,
-        retry_kind: str = "transient",
-        capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
+        max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
+        retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
+        capture_policy: Literal["none", "errors-only", "all"] | None = None,
+        capture: Literal["none", "errors-only", "all"] | None = None,
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
+        max_concurrent: int | None = None,
+        reservations: (
+            list[ConcurrencyReservation] | tuple[ConcurrencyReservation, ...] | None
+        ) = None,
+        result_ttl: timedelta | float | None = None,
+        priority: int | None = None,
+        capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
+        start_to_close: timedelta | None = None,
     ) -> WorkflowActor | Callable[[Callable[..., Awaitable[object]]], WorkflowActor]:
         """``@app.actor`` — the workflow step decorator: registers the
         body into the workflow definition registry (D1) and projects the
-        F3 carrier. The redact hook POST-COMPOSES on the capture chain
-        (chain → hook, never a replacement — pin 11's composed-anyway)."""
+        actor-config carrier. The redact hook POST-COMPOSES on the capture chain
+        (chain → hook, never a replacement — pin 11's composed-anyway).
+        ``priority=`` is the actor's declared enqueue DEFAULT for its
+        nodes' rows (the vanilla ``@actor(priority=)`` face; the step's
+        own ``priority=`` overrides, the run's per-call overrides both).
+        ``start_to_close=`` is the actor's declared DEADLINE DEFAULT for
+        its nodes' rows (the vanilla ``@actor(start_to_close=)`` face —
+        a timedelta, the positive-domain law shared; the step's own
+        ``start_to_close=`` overrides)."""
 
         def decorate(body: Callable[..., Awaitable[object]]) -> WorkflowActor:
+            from taskq.workflows.api._graph import reservation_names
+
             actor_name = name or body.__name__
+            # the refusal at the declaration site, before anything is
+            # registered.
+            for field, value in (("max_concurrent", max_concurrent),):
+                if value is not None and (
+                    not isinstance(value, int) or isinstance(value, bool) or value < 0  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: runtime guard against callers that bypass the type checker (actor.py's own law); the bool arm refuses True/False passing as 1/0.
+                ):
+                    raise ValueError(
+                        f"the workflow actor {actor_name!r}'s {field} must be a "
+                        f"non-negative int or None, got {value!r}"
+                    )
+                    # the declaration is exactly one of the two owner names — anything
+            # else is the refused declaration, never a silent anything.
+            validate_capacity_owner(capacity_owner, what=f"the workflow actor {actor_name!r}'s")
+            # a KeyedReservationRef (or any other unnamed shape) in
+            # reservations= is the loud refusal at the declaration site — never
+            # a silently-dropped cap.
+            reservation_names(
+                tuple(reservations or ()), what=f"the workflow actor {actor_name!r}'s reservations"
+            )
+            # the declaration-site refusal, before anything registers.
+            if priority is not None:
+                check_priority_domain(
+                    priority, what=f"the workflow actor {actor_name!r}'s priority"
+                )
+                # the refusal before anything registers.
+            check_start_to_close_decl(start_to_close, what=f"the workflow actor {actor_name!r}'s")
+            # ``capture_policy=``; ``capture=`` rides as the alias. Both
+            # spellings carry the None sentinel, so a declared value is visible
+            # as a declared value: two declared values that disagree are
+            # refused (naming both) — never a silent winner decided by which
+            # kwarg the author happened to pass.
+            if capture_policy is not None and capture is not None and capture_policy != capture:
+                raise ValueError(
+                    f"capture_policy={capture_policy!r} and capture={capture!r} are both given "
+                    "and disagree — the capture policy is ONE value; pass capture_policy= only"
+                )
+            resolved_capture_policy = capture_policy if capture_policy is not None else capture
+            if resolved_capture_policy is None:
+                resolved_capture_policy = "errors-only"
+            elif resolved_capture_policy not in ("none", "errors-only", "all"):
+                # A declared value (the empty string included) is a
+                # declaration, not a default: the invalid shape is
+                # refused at the declaration site.
+                raise ValueError(
+                    f"capture_policy={resolved_capture_policy!r} is not one of "
+                    "'none'/'errors-only'/'all'"
+                )
             handle = WorkflowActor(
                 body,
                 name=actor_name,
                 queue=queue,
                 max_attempts=max_attempts,
                 retry_kind=retry_kind,
-                capture_policy=capture_policy,
+                capture_policy=resolved_capture_policy,
                 redact=redact,
+                max_concurrent=max_concurrent,
+                reservations=reservations,
+                result_ttl=result_ttl,
+                priority=priority,
+                capacity_owner=capacity_owner,
+                start_to_close=start_to_close,
             )
             self._actor_queues.add(queue)
             return handle
@@ -311,21 +491,37 @@ class WorkflowApp:
         self,
         name: str,
         *,
-        capture: Literal["none", "errors-only", "all"] = "errors-only",
+        actor: str | None = None,
+        queue: str | None = None,
+        capture_policy: Literal["none", "errors-only", "all"] | None = None,
+        capture: Literal["none", "errors-only", "all"] | None = None,
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT,
     ) -> Callable[[Callable[[], Promise[R]]], Callable[[], Promise[R]]]:
-        """``@app.workflow(name, capture=…, redact=…, max_in_flight=…)``
-        — the per-workflow declaration (§10.3's policies). The
-        declaration is what T04's capture writer and every export surface
-        consume; ``redact=fn`` POST-COMPOSES on the default chain's
-        output (it can only redact more, never less — TORS-REV-0.16 §G1).
+        """``@app.workflow(name, actor=…, queue=…, capture=…, redact=…,
+        max_in_flight=…)`` — the per-workflow declaration (the
+        policies). The declaration is what the capture writer and every
+        export surface consume; ``redact=fn`` POST-COMPOSES on the
+        default chain's output (it can only redact more, never less —
+        TORS-REV-0.16 §G1).
 
-        THE SIGNATURE TELLS THE TRUTH (the type-mechanism round, then the
+        ``actor=``/``queue=`` declare the WORKFLOWDEF's own (actor,
+        queue) pair — the address of the rows addressed by the
+        DEFINITION rather than by a node decl: the loop's ESCALATION
+        consumer rows (D1: ``escalation_bindings`` reads the definition)
+        and the LOOP NODE's fallback placement (the loop's own rows fall
+        back to the workflow's declared cohort instead of the hardcoded
+        ``("wf", "default")``). The values ride the same one-queue law
+        the node cohorts keep (the projection's conflict refusal — one
+        actor name, one queue; the split placement is expressed with
+        DISTINCT actor names). Unset = the CURRENT values
+        ("workflow"/"default") — no behavior change for non-adopters.
+
+        the SIGNATURE TELLS the TRUTH (the type-mechanism round, then the
         TYPED-DOOR round): the build function is SYNC and PURE
         (``get``'s docstring — the recorder's verbs never await), and its
         return IS the terminal promise — so the decorator takes
-        ``Callable[[], Promise[R]]``, NOT ``Callable[[], object]``.
+        ``Callable[[], Promise[R]]``, not ``Callable[[], object]``.
         :class:`Promise` is COVARIANT, so every ``Promise[X]`` is a
         ``Promise[object]`` — the whole fleet's builders satisfy the door,
         R carried intact through the generic (the registry's root keeps
@@ -337,7 +533,7 @@ class WorkflowApp:
         checkers). The type story no longer dies at the first line the
         user writes: the builder's own signature is the typed door.
 
-        THE MAX-IN-FLIGHT BOUND (T20 / DH9): the RUN's admission control
+        The RUN's admission control
         — how many non-terminal rows the run may materialize. The emit
         admits its WHOLE page under the bound; a fast source outpacing
         its workers BLOCKS at the bound (the generator's laziness is the
@@ -345,21 +541,53 @@ class WorkflowApp:
         shipped fence-ON (``EMIT_MAX_IN_FLIGHT_DEFAULT``); ``None`` is
         the EXPLICIT unbounded (the author takes the dragon).
 
-        THE SIGNAL CHANNEL is NOT a declaration param (the ergonomic
-        tail's cure): the old ``channel=`` was accepted and silently
+        The signal channel is not a declaration param: a ``channel=``
+        declaration would be accepted and silently
         DROPPED — a declaration that does nothing is a lie wearing the
         signature. The signal channel is the app's own method:
-        :meth:`channel` (the declared gates' registry) — ONE name, one
-        surface (the glossary law)."""
+        :meth:`channel` (the declared gates' registry) — one name, one
+        surface.
+        """
+        # The placement's declaration-site guard: the placement
+        # names a real actor and a real queue — a non-str (or empty)
+        # value is the refused declaration, never a silent anything.
+        for field_name, value in (("actor", actor), ("queue", queue)):
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()  # pyright: ignore[reportUnnecessaryIsInstance] — runtime guard against callers that bypass the type checker.
+            ):
+                raise ValueError(
+                    f"the workflow {name!r}'s {field_name}= must be a "
+                    f"non-empty string or None (the current default), got {value!r}"
+                )
         if name in self._workflows:
             raise DuplicateWorkflowError(f"workflow {name!r} is already declared on this app")
+
+            # ``capture_policy=``; ``capture=`` rides as the alias. Both spellings
+        # carry the None sentinel: two declared values that disagree are
+        # refused (naming both) — never a silent winner decided by argument
+        # order. The refusal precedes the registration: a caught ValueError
+        # must not leave a half-registered workflow behind.
+        if capture_policy is not None and capture is not None and capture_policy != capture:
+            raise ValueError(
+                f"capture_policy={capture_policy!r} and capture={capture!r} are both given "
+                "and disagree — the capture policy is ONE value; pass capture_policy= only"
+            )
+        resolved_capture = capture_policy if capture_policy is not None else capture
+        if resolved_capture is None:
+            resolved_capture = "errors-only"
+        elif resolved_capture not in ("none", "errors-only", "all"):
+            raise ValueError(
+                f"capture_policy={resolved_capture!r} is not one of 'none'/'errors-only'/'all'"
+            )
 
         def decorate(build_fn: Callable[[], Promise[R]]) -> Callable[[], Promise[R]]:
             self._workflows[name] = build_fn
             build_fn.__wf_name__ = name  # type: ignore[attr-defined]  # Why: the declaration rides the function; the app is the registry.
-            build_fn.__wf_capture__ = capture  # type: ignore[attr-defined]
+            build_fn.__wf_capture__ = resolved_capture  # type: ignore[attr-defined]  # Why: the definition's capture policy rides the build fn as data — the function-attribute face is this decorator's own contract.
             build_fn.__wf_redact__ = redact  # type: ignore[attr-defined]
             build_fn.__wf_max_in_flight__ = max_in_flight  # type: ignore[attr-defined]  # Why: the declaration rides the function — the compile reads it.
+            build_fn.__wf_actor__ = actor  # type: ignore[attr-defined]
+            build_fn.__wf_queue__ = queue  # type: ignore[attr-defined]
             return build_fn
 
         return decorate
@@ -371,7 +599,7 @@ class WorkflowApp:
     @property
     def deps(self) -> object | None:
         """The app's bound deps instance (``None`` = none bound — a body
-        declaring the deps shape is E12's refusal). THE instance: every
+        declaring the deps shape is E12's refusal). the instance: every
         body invocation receives this object, never a copy."""
         return self._deps
 
@@ -395,12 +623,10 @@ class WorkflowApp:
         through: an invalid graph raises here (the door), never at
         first claim."""
         compiled = self._compile(name)
-        # THE REGISTRATION DOOR VALIDATES (the E8-late seam's cure —
-        # F-LOOP-7's finding): compile + register is the LAST compile-time
+        # The registration door validates: compile + register is the last compile-time
         # seam a fleet passes through before rows exist; an invalid graph
         # registered here is a fleet that refuses at first claim, never at
-        # compile — E8's own docstring's claim ("refuse at compile") made
-        # true. Errors raise; warnings report (the zero-warning-budget
+        # compile. Errors raise; warnings report (the zero-warning-budget
         # pins' teeth read them, the door never refuses on a warning).
         from taskq.workflows.api._validate import validate_compiled
 
@@ -408,16 +634,15 @@ class WorkflowApp:
         build_fn = self._workflows.get(name)
         assert build_fn is not None  # _compile raised on a missing name already
         _register_bodies(compiled, redact=getattr(build_fn, "__wf_redact__", None))
-        # THE COMPILED CACHE (the worker-hosted execution door's D1
-        # lookup): the compiled graph is recorded under its registered
-        # name — the SAME global namespace the definition registry keys.
+        # the compiled graph is recorded under its registered name — the same
+        # global namespace the definition registry keys.
         from taskq.workflows._worker_execution import record_compiled
 
         record_compiled(name, compiled)
         return compiled
 
     def _compile(self, name: str) -> CompiledWorkflow:
-        """Compile WITHOUT the registration door — the validator's own
+        """Compile without the registration door — the validator's own
         probe seam. The door raises on an invalid graph (that is its
         job); the validator's pins need the compiled graph OF an invalid
         graph (the diagnostics are the pin's subject). Anything that
@@ -427,6 +652,11 @@ class WorkflowApp:
         if build_fn is None:
             raise KeyError(f"workflow {name!r} is not declared on this app")
         graph = BuildGraph()
+        # the decorator's declaration rides the build fn; the recorder carries
+        # it so the loop's fallback placement (the wiring verbs run here)
+        # resolves the same cohort the definition's own rows will stamp.
+        graph.declared_actor = getattr(build_fn, "__wf_actor__", None)
+        graph.declared_queue = getattr(build_fn, "__wf_queue__", None)
         returned = record_under(graph, build_fn)
         if graph.terminal is None:
             if isinstance(returned, Promise):
@@ -451,12 +681,16 @@ class WorkflowApp:
             max_in_flight=getattr(build_fn, "__wf_max_in_flight__", EMIT_MAX_IN_FLIGHT_DEFAULT),
             capture=getattr(build_fn, "__wf_capture__", "errors-only"),
             redact=getattr(build_fn, "__wf_redact__", None),
+            # the declared face, defaulted to the current values for the
+            # non-adopter.
+            def_actor=graph.declared_actor or "workflow",
+            def_queue=graph.declared_queue or "default",
         )
 
     def _known_queues(self) -> frozenset[str]:
         """The app's declared queue universe: ``default`` + the workflow
         actors' queues + TASKQ_QUEUES' names (the strict boot's own list
-        — the same universe the worker's fail-fast reads; attack-3 M5's
+        — the same universe the worker's fail-fast reads; the fail-fast's
         build-side face)."""
         import os
 
@@ -473,17 +707,16 @@ def _register_bodies(
 ) -> None:
     """D1: the compiled nodes' bodies go into the DEFINITION REGISTRY —
     the dispatch resolves them from there, never from a per-call map.
-    The map's CHILDREN resolve under their OWN step keys
+    The map's CHILDREN resolve under their own step keys
     (``<map>.item`` — the fork's per-item identity): the alias is the
     same body, registered under the key the child rows carry.
 
-    THE ESCALATION STEP (attack-3 H1's cure): a loop declaring
+    The escalation step: a loop declaring
     ``on_exhausted="escalate"`` registers ITS escalation body under the
     ``loop.escalation`` step key — the author's ``escalates_to=`` body,
     or the framework default. The outbox's consumer job resolves its
-    body from HERE (D1) at claim: the escalation is never the
-    ``loop_escalation``-actor ghost (a hardcoded binding whose body
-    never resolves). ONE escalation step per workflow: two loops
+    body from here (D1) at claim, so the escalation is never a
+    dead letter. one escalation step per workflow: two loops
     declaring DIFFERENT escalation bodies is the refused shadow."""
     from taskq.workflows.api._loop import (
         ESCALATION_STEP_KEY,
@@ -503,23 +736,23 @@ def _register_bodies(
     for node in compiled.nodes.values():
         if node.body is not None:
             bodies[node.key] = node.body
-        # The map's CHILDREN resolve under their OWN step keys
+        # The map's children resolve under their own step keys
         # (``<source>.item`` — the fork's per-item identity): the alias
         # is the item body, registered under the key the child rows
         # carry.
         if node.map_item is not None:
             bodies[f"{node.key}.item"] = node.map_item
-        # THE TYPED ROUTE'S ARMS (T27) resolve under their OWN derived
-        # keys (``<source>.item:<type-tag>`` — the row's step_key NAMES
-        # its arm): each arm's body registered under the key its child
-        # rows carry (the same D1 doctrine, one arm per key — the arms'
-        # bodies are distinct by the route's own totality).
+            # the typed route's arms resolve under their own derived keys
+        # ````(``<source>.item:<type-tag>`` — the row's step_key names its
+        # arm): each arm's body registered under the key its child rows carry
+        # (the same D1 doctrine, one arm per key — the arms' bodies are
+        # distinct by the route's own totality).
         if node.map_arms is not None:
             for tag, arm in node.map_arms.items():
                 bodies[route_child_key(node.key, tag)] = arm.body
         if node.loop_spec is not None:
             # The loop attachment's declared type (the compile-visible
-            # LoopSpec — the NodeDecl field IS typed).
+            # LoopSpec — the NodeDecl field is typed).
             spec = node.loop_spec
             loop_policies[node.key] = spec.on_exhausted
             if spec.on_exhausted == "escalate":
@@ -535,29 +768,41 @@ def _register_bodies(
                         "fold them"
                     )
                 escalation_body = candidate
-        # THE MAP'S DECLARED AGGREGATE (T21): keyed by the SOURCE node's
-        # step key — the children's PARENT (the read surfaces resolve by
-        # the parent row's own step key; the durable leg is the flow
-        # root's stamped workflow name).
+                # keyed by the source node's step key — the children's parent (the read
+        # surfaces resolve by the parent row's own step key; the durable leg is
+        # the flow root's stamped workflow name).
         if node.map_aggregate is not None:
             aggregates[node.key] = node.map_aggregate
     if escalation_body is not None:
         bodies[ESCALATION_STEP_KEY] = escalation_body
-    # THE CHAIN STEP BODIES (T20): registered under their own step keys
-    # (D1 — the emitted + fork-spawned chain rows resolve their bodies
-    # from the registry; the chain's steps have no compiled NodeDecl).
-    from taskq.workflows.chain import Chain
+        # registered under their own step keys (D1 — the emitted + fork-spawned
+    # chain rows resolve their bodies from the registry; the chain's steps have
+    # no compiled NodeDecl).
 
     for chain_decl in compiled.chains:
-        chain = cast("Chain", chain_decl)
+        chain = chain_decl
         for step_key, chain_step in chain.steps.items():
             if chain_step.body is not None:
-                bodies.setdefault(step_key, chain_step.body)
+                bodies.setdefault(step_key, cast("StepBody", chain_step.body))
+    from taskq.workflows._effects import collect_terminal_effects
+
+    for step_key, registered in collect_terminal_effects(compiled).items():
+        if step_key in bodies and bodies[step_key] is not registered.effect.body:
+            raise DuplicateStepBodyError(
+                f"workflow {compiled.name!r} terminal-effect handler {step_key!r} collides "
+                "with a different registered body"
+            )
+        bodies[step_key] = cast("StepBody", registered.effect.body)
     if bodies or aggregates or loop_policies:
         get_registry().register(
             WorkflowDef(
                 name=compiled.name,
                 bodies=bodies,
+                # the decorator's declared (actor, queue) — the escalation
+                # consumer rows' address (D1: escalation_bindings reads this),
+                # defaulted to the current values for the non-adopter.
+                actor=compiled.def_actor,
+                queue=compiled.def_queue,
                 capture_policy="errors-only",
                 redact=redact,  # type: ignore[arg-type]  # Why: the app's redact declaration rides the registered definition — the hold-context chain's hook (the same callable the capture path composes).
                 loop_policies=loop_policies,

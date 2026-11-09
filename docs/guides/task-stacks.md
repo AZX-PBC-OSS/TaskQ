@@ -114,7 +114,7 @@ AND-join):
 
 ```python no-exec — not executed: verbatim fragment of examples/workflows.py (verified: tests/test_wf_demo_legs.py drives this file)
 barrier = gather([summaries, entities], on_failure="fail_closed")
-maybe_labels = gather([labels], on_failure="maybe")
+collected_labels = gather([labels], on_failure="collect")
 sink(routed)
 
 review = loop(
@@ -130,7 +130,7 @@ published = step(
     publish_body,
     review,
     barrier,
-    maybe_labels,
+    collected_labels,
     enriched,
     key="publish",
     actor="wf-demo-publish",
@@ -141,7 +141,7 @@ return build(published)
 
 The E-rules check the graph at compile: a consumer's params must match
 what its producers declare (a single-model producer feeds the param
-BARE; the list shape is the JOIN's — the mis-wiring reds as
+BARE; the list shape is the JOIN's — the mis-wiring fails as
 `E5-incompatible-consumer` before any run exists), dangling edges and
 eternal waits are named errors, and the SAME module compiles
 byte-identically (the Mermaid diagram cannot disagree with the types).

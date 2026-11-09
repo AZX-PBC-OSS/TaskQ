@@ -68,12 +68,12 @@ def _wait_ready(ready_marker: Path, proc: subprocess.Popen[str], cap_secs: float
 def test_live_child_exits_promptly_on_sigterm_without_sigkill(tmp_path: Path) -> None:
     """A live child with a graceful SIGTERM handler exits promptly through
     that handler - no 10s ``communicate`` stall, no SIGKILL escalation."""
-    # The child installs the graceful handler FIRST and touches the ready
-    # marker SECOND: the marker is the observable "past startup, handler
+    # The child installs the graceful handler first and touches the ready
+    # marker second: the marker is the observable "past startup, handler
     # armed, parked in its sleep", so the measured section contains no
     # window where the SIGTERM could land on the kernel's default
     # disposition (or on an inherited SIG_IGN - see the disposition-leak
-    # pin in test_worker_main.py - which would DISCARD the signal and
+    # pin in test_worker_main.py - which would discard the signal and
     # force the helper's SIGKILL escalation).
     ready_marker = tmp_path / "child_ready"
     proc = _spawn(
@@ -104,7 +104,7 @@ def test_live_child_exits_promptly_on_sigterm_without_sigkill(tmp_path: Path) ->
 
 
 def test_live_default_disposition_child_dies_to_sigterm(tmp_path: Path) -> None:
-    """A live child with NO handler dies by the kernel's default SIGTERM
+    """A live child with no handler dies by the kernel's default SIGTERM
     death - promptly, without the helper's SIGKILL escalation."""
     # No handler is installed: the child parks in ``time.sleep`` with the
     # disposition it was spawned with (SIG_DFL - the worker's own baseline,

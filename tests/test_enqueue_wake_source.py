@@ -1,8 +1,8 @@
 """The ``tr_notify_job_insert`` trigger is the sole wake source for inserts.
 
-Every enqueue path used to follow its INSERT with its own
-``SELECT pg_notify(wake_channel, '')`` - a statement the trigger already
-issues for every pending row, on the same channel with the same empty
+No enqueue path follows its INSERT with its own
+``SELECT pg_notify(wake_channel, '')`` - the trigger already
+issues that statement for every pending row, on the same channel with the same empty
 payload. Inside one transaction Postgres coalesces the pair, so on the pool
 path the app-side statement was pure cost; on a caller's bare connection
 the INSERT and the notify were two transactions and every listener was

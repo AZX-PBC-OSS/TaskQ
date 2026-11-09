@@ -369,18 +369,18 @@ async def _peek_redis_log(
     # sorted set can still hold aged-out entries after the window empties
     # with no intervening acquire. Count only members whose score is
     # inside the window, exclusive lower bound at ``now - window``, the
-    # exact boundary the acquire script's ZREMRANGEBYSCORE evicts up to ,
-    # measured against the store's clock (``TIME``), the domain the
-    # scores live in. ZCARD would count the whole key and overstate
+    # exact boundary the acquire script's zremrangebyscore evicts up to ,
+    # measured against the store's clock (``time``), the domain the
+    # scores live in. zcard would count the whole key and overstate
     # exhaustion while the next acquire is allowed.
     now_ms = await redis_time_seconds(redis_client) * 1000
     if not math.isfinite(now_ms):
-        # Why the DERIVED value gets its own guard: the seconds fields
+        # Why the derived value gets its own guard: the seconds fields
         # can each pass the clock read's finiteness check yet overflow
         # the millisecond derivation (1e306 * 1000 = inf, silently), and
         # every window comparison below runs in that domain. A clock no
         # honest store can report is the sentinel, the same verdict as a
-        # malformed TIME reply.
+        # malformed time reply.
         raise RateLimitStoreCorrupt(
             f"sliding-window log peek read a non-finite store clock (TIME): {now_ms!r}"
         )
@@ -397,7 +397,7 @@ async def _peek_redis_log(
             f"sliding-window log peek read a non-numeric ZCARD: {zcount_raw!r}"
         ) from exc
     if count < 0:
-        # A negative window count is a lie (a ZCARD reply is a cardinality);
+        # A negative window count is a lie (a zcard reply is a cardinality);
         # a count above limit is honest and only overstates exhaustion,
         # the fail-closed direction, so it is not a lie verdict.
         raise RateLimitStoreCorrupt(f"sliding-window log peek read a negative count: {count}")
@@ -409,9 +409,9 @@ async def _peek_redis_log(
             key, f"({cutoff_ms}", "+inf", start=0, num=1, withscores=True
         )
         if not isinstance(oldest, (list, tuple)):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the stub types zrangebyscore as ZSetRangeResponse (list/tuple), but the declared type is exactly what a lying reply violates at runtime - the RESP3 map and the set both arrive through this untyped boundary, so the runtime shape check is the defense, not a redundancy.
-            # Why the CONTAINER gets its own shape check before the
+            # Why the container gets its own shape check before the
             # element access: the pair-arity check below validates the
-            # ELEMENT's shape, but ``oldest[0]`` indexes the raw
+            # element's shape, but ``oldest[0]`` indexes the raw
             # zrangebyscore reply itself - a RESP3 map (a dict) raises
             # bare KeyError on the integer index and a set raises
             # TypeError, and neither is in any guarded conversion
@@ -419,9 +419,9 @@ async def _peek_redis_log(
             # honest withscores reply is a list of pairs, so a
             # non-sequence container is the same verdict as every
             # other reply lie: the store-corrupt sentinel, the family
-            # the truncated-pair check below already speaks. The EMPTY
+            # the truncated-pair check below already speaks. The empty
             # list stays accepted: it is the honest count-vs-read race
-            # (the member aged out between ZCOUNT and ZRANGEBYSCORE,
+            # (the member aged out between zcount and zrangebyscore,
             # pinned by ``test_peek_log_oldest_empty_race``), not a
             # container lie.
             raise RateLimitStoreCorrupt(
@@ -430,7 +430,7 @@ async def _peek_redis_log(
         if oldest:
             oldest_entry = oldest[0]
             if isinstance(oldest_entry, (list, tuple)) and len(oldest_entry) != 2:
-                # Why the pair arity is checked BEFORE the conversion: a
+                # Why the pair arity is checked before the conversion: a
                 # truncated withscores "pair" ([(b"req1",)] or [()])
                 # raises bare IndexError on the element access, and
                 # IndexError is in no guarded conversion family - the
@@ -450,7 +450,7 @@ async def _peek_redis_log(
                 )  # pyright: ignore[reportUnknownArgumentType]  # Why: redis-py zrangebyscore return type is untyped in the stub; isinstance narrowing is sufficient at runtime.
             except (TypeError, ValueError, OverflowError) as exc:
                 # Why the conversion has its own family: the score element
-                # of a lying withscores pair is converted BEFORE the finite
+                # of a lying withscores pair is converted before the finite
                 # and window checks below can speak - a big int past
                 # float's range raises OverflowError and a nested element
                 # raises TypeError, and neither is a ValueError, so an
@@ -499,15 +499,15 @@ async def _peek_redis_gcra(
 
     now_ms = await redis_time_seconds(redis_client) * 1000
     if not math.isfinite(now_ms):
-        # Why the DERIVED value gets its own guard: the seconds fields
+        # Why the derived value gets its own guard: the seconds fields
         # can each pass the clock read's finiteness check yet overflow
         # the millisecond derivation (1e306 * 1000 = inf, silently).
-        # With an honest-shaped TAT that inf makes ``tat = max(tat, inf)
+        # With an honest-shaped tat that inf makes ``tat = max(tat, inf)
         # = inf`` and ``tat - now_ms = nan`` (``inf - inf``), so the
         # remaining estimate's ``int(nan)`` crashed with ValueError (and
         # ``int(-inf)`` with OverflowError) - crash classes this
         # boundary exists to kill. A clock no honest store can report is
-        # the sentinel, the same verdict as a malformed TIME reply.
+        # the sentinel, the same verdict as a malformed time reply.
         raise RateLimitStoreCorrupt(
             f"sliding-window GCRA peek read a non-finite store clock (TIME): {now_ms!r}"
         )
@@ -515,7 +515,7 @@ async def _peek_redis_gcra(
     try:
         tat = float(tat_raw) if tat_raw else now_ms
     except (TypeError, ValueError, OverflowError) as exc:
-        # A TAT value no honest SET could have written (the script writes
+        # A tat value no honest set could have written (the script writes
         # Lua tostring() of a number) is a store lie, failed closed as
         # the outage it is indistinguishable from, never a ValueError
         # crash with no provenance. OverflowError joins the family:
@@ -533,8 +533,8 @@ async def _peek_redis_gcra(
         remaining = float(max(0, int((delay_tolerance_ms - (tat - now_ms)) / emission_interval_ms)))
     except (TypeError, ValueError, OverflowError) as exc:
         # Why the arithmetic conversion joins the sentinel family: the
-        # clock and TAT guards bound each input to finite, but a finite
-        # TAT against a finite extreme clock can still overflow the
+        # clock and tat guards bound each input to finite, but a finite
+        # tat against a finite extreme clock can still overflow the
         # difference to +-inf (and inf - inf is nan), and int(nan) is a
         # ValueError while int(+-inf) is an OverflowError - siblings of
         # neither TypeError nor ValueError, the crash classes this
@@ -549,7 +549,7 @@ async def _peek_redis_gcra(
     if is_exhausted:
         new_tat = tat + emission_interval_ms
         allow_at = new_tat - delay_tolerance_ms
-        # Why the hint goes through token_bucket._retry_after: the TAT
+        # Why the hint goes through token_bucket._retry_after: the tat
         # validation above admits any finite float, and a lying GET
         # answering b"1e300" passes every numeric check here yet
         # overflows timedelta(milliseconds=...) at this arm (an

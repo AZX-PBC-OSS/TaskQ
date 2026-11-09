@@ -1,21 +1,21 @@
 """The workflows engine's named statement constants — the bundle
-(GAPS-ESTATE F10).
+().
 
 Workflow SQL lives as named statement constants — the
 ``backend/_sql_templates.py`` / ``_dispatch_sql.py`` pattern, never inline
 f-strings at call sites. The constants live in their concern's module
 (``_sql_finalize`` / ``_sql_sweep`` / ``_sql_ledger``); THIS module is the
 bundle: :meth:`WorkflowSql.build` renders every constant for one validated
-schema (the schema identifier is the ONLY interpolated value — validated
+schema (the schema identifier is the only interpolated value — validated
 via ``taskq.constants.require_schema``; every caller-controlled value uses
 asyncpg ``$N`` positional parameter binding).
 
-THE JSONB LANDMINE (the fanout proof's cut #1, HIGH — the rule's test
+the JSONB LANDMINE (the fanout proof's, HIGH — the rule's test
 lives in the engine pins): asyncpg parses ``$N`` as a parameter placeholder
-EVEN INSIDE a quoted JSONB literal. An f-string that renders
+even inside a quoted JSONB literal. An f-string that renders
 ``'{"peer":$3}'::jsonb`` fails with ``invalid input syntax for type json``
 on every attempt. The rule: parameterize all JSON (``$3::jsonb`` with a
-dict param), NEVER interpolate into a JSONB literal. The literal jsonb
+dict param), never interpolate into a JSONB literal. The literal jsonb
 shapes here interpolate nothing.
 
 Multi-row writes (fork fan-out, sweep fires, drain consumers) bind PARALLEL
@@ -31,7 +31,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-from taskq.constants import require_schema
+from taskq._sql_render import render as shared_render
+from taskq.backend._sql_fragments import MIN_DEFERRAL_INTERVAL_SQL
+from taskq.constants import (
+    PRIORITY_STAMP_INT_PATTERN,
+    SMALLINT_MAX,
+    SMALLINT_MIN,
+    require_schema,
+)
 from taskq.workflows._sql_finalize import (
     COLLECT_FAN_IN_APPEND_SQL,
     COLLECT_FAN_IN_SQL,
@@ -50,6 +57,7 @@ from taskq.workflows._sql_finalize import (
     FORK_EDGES_SQL,
     FORK_JOIN_CONSUMERS_SQL,
     FORK_JOIN_NODE_SQL,
+    NODE_DEFER_SQL,
     NODE_EDGE_SQL,
     NODE_INSERT_SQL,
     OUTBOX_INSERT_SQL,
@@ -85,8 +93,11 @@ from taskq.workflows._sql_status import (
     WORKFLOW_ROOT_MAINTAIN_SQL,
 )
 from taskq.workflows._sql_sweep import (
+    EDGE_RETENTION_SQL,
     HOLD_STAMP_RECONCILE_SQL,
     JOIN_BODY_UNAVAILABLE_SQL,
+    JOIN_FIRE_RETENTION_SQL,
+    NODE_PROGRESS_RETENTION_SQL,
     NODELESS_ROOT_REAP_SQL,
     OUTBOX_DRAIN_CONSUMERS_SQL,
     OUTBOX_DRAIN_FLIP_SQL,
@@ -94,7 +105,9 @@ from taskq.workflows._sql_sweep import (
     OUTBOX_RETENTION_SQL,
     PHANTOM_REAP_SQL,
     REDERIVE_SWEEP_SQL,
+    SIGNALS_RETENTION_SQL,
     STEP_CACHE_RETENTION_SQL,
+    STEP_LEDGER_RETENTION_SQL,
     SWEEP_FIRE_SQL,
 )
 
@@ -111,26 +124,42 @@ __all__ = [
 #: to the Python frozenset is pinned by test.
 TERMINAL_SQL_SET: Final[str] = "('succeeded','failed','cancelled','crashed','abandoned')"
 
-#: metadata.blocking_reason values (the blocked-row representation, T03:
+#: metadata.blocking_reason values (the blocked-row representation:
 #: carried on the row's metadata jsonb, never a new ENUM).
 BLOCKING_REASON_JOIN: Final[str] = "join"
 BLOCKING_REASON_ORPHAN_PARENT: Final[str] = "orphan_parent"
-#: The fail-closed block (T06): a join whose parent TERMINAL-failed — the
-#: joined node's side of the counter is RESOLVED by this stamp (the
+#: The fail-closed block: a join whose parent terminal-failed — the
+#: joined node's side of the counter is resolved by this stamp (the
 #: rederive locks 'join' rows only); metadata.failed_parent names it.
 BLOCKING_REASON_FAILED_PARENT: Final[str] = "failed_parent"
-#: The loudness stamp (R2-2): a fired join whose reducer body resolved
-#: NOWHERE — the consumers' delivery continues (the delivery contract),
+#: The loudness stamp: a fired join whose reducer body resolved
+#: nowhere — the consumers' delivery continues (the delivery contract),
 #: but the record names the defect instead of looking healthy.
 BLOCKING_REASON_BODY_UNAVAILABLE: Final[str] = "body_unavailable"
-#: The flow-fenced join (the phase-2 attack's H2): a never-fired join row
-#: whose resolution the FLOW'S OWN DEATH fenced — the fire's flow-status
+#: The flow-fenced join: a never-fired join row
+#: whose resolution the flow's own death fenced — the fire's flow-status
 #: leg refuses a terminal flow, so the join can never fire again. The
 #: sweep's flow-fenced arm stamps it (the blocked-with-reason terminal
-#: state); a join with a FAILED parent is stamped 'failed_parent' (the
+#: state); a join with a failed parent is stamped 'failed_parent' (the
 #: failure is the cause) — this name is for the join whose parents all
 #: terminalized fine and whose fire the flow's death fenced anyway.
 BLOCKING_REASON_FLOW_DEAD: Final[str] = "flow_dead"
+
+#: The bundle's token substitutions beyond ``{schema}`` (the shared
+#: render applies the validated schema itself, first): the terminal
+#: status set, the deferral floor (the vanilla mark_snoozed's own
+#: guard — a fixed fragment rendered from the shared constant, never
+#: caller input; NODE_DEFER_SQL is its only consumer), the
+#: run-priority stamp's SQL face (the grammar and the smallint domain
+#: are the shared constants — resolve_priority_stamp's own parse reads
+#: the same law) and the smallint bounds.
+_CANONICAL_SUBS: Final[tuple[tuple[str, str], ...]] = (
+    ("{terminal}", TERMINAL_SQL_SET),
+    ("{min_deferral_interval}", MIN_DEFERRAL_INTERVAL_SQL),
+    ("{priority_stamp_int_pattern}", PRIORITY_STAMP_INT_PATTERN),
+    ("{smallint_min}", str(SMALLINT_MIN)),
+    ("{smallint_max}", str(SMALLINT_MAX)),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +194,11 @@ class WorkflowSql:
     hold_stamp_reconcile: str
     outbox_retention: str
     step_cache_retention: str
+    edge_retention: str
+    join_fire_retention: str
+    step_ledger_retention: str
+    signals_retention: str
+    node_progress_retention: str
     ledger_claim: str
     ledger_memoized: str
     ledger_terminal: str
@@ -175,6 +209,7 @@ class WorkflowSql:
     nodeless_root_reap: str
     node_insert: str
     node_edge: str
+    node_defer: str
     flow_status: str
     flow_run_insert: str
     flow_run_read: str
@@ -183,7 +218,7 @@ class WorkflowSql:
     workflow_map_progress: str
     workflow_map_progress_sources: str
     workflow_root_maintain: str
-    # T21's progress surface (the two-channel persistence + the faces).
+    # The progress surface (the two-channel persistence + the faces).
     progress_state_upsert: str
     progress_stream_append: str
     progress_ring_prune: str
@@ -206,18 +241,11 @@ class WorkflowSql:
         ``backend/_sql_templates.render``).
         """
         require_schema(schema)
-        subs: Final[tuple[tuple[str, str], ...]] = (
-            ("{schema}", schema),
-            ("{terminal}", TERMINAL_SQL_SET),
-        )
 
         def render(template: str) -> str:
-            out = template
-            for token, value in subs:
-                out = out.replace(token, value)
-            # The doubled braces in the jsonb shape literals are the
-            # migration-runner convention; substitution needs them single.
-            return out.replace("{{", "{").replace("}}", "}")
+            """One statement's render (the shared helper's substitution:
+            the token table above, then the doubled braces un-doubled)."""
+            return shared_render(template, schema, subs=_CANONICAL_SUBS, collapse_braces=True)
 
         return WorkflowSql(
             schema=schema,
@@ -248,6 +276,11 @@ class WorkflowSql:
             hold_stamp_reconcile=render(HOLD_STAMP_RECONCILE_SQL),
             outbox_retention=render(OUTBOX_RETENTION_SQL),
             step_cache_retention=render(STEP_CACHE_RETENTION_SQL),
+            edge_retention=render(EDGE_RETENTION_SQL),
+            join_fire_retention=render(JOIN_FIRE_RETENTION_SQL),
+            step_ledger_retention=render(STEP_LEDGER_RETENTION_SQL),
+            signals_retention=render(SIGNALS_RETENTION_SQL),
+            node_progress_retention=render(NODE_PROGRESS_RETENTION_SQL),
             ledger_claim=render(LEDGER_CLAIM_SQL),
             ledger_memoized=render(LEDGER_MEMOIZED_SQL),
             ledger_terminal=render(LEDGER_TERMINAL_SQL),
@@ -258,6 +291,7 @@ class WorkflowSql:
             nodeless_root_reap=render(NODELESS_ROOT_REAP_SQL),
             node_insert=render(NODE_INSERT_SQL),
             node_edge=render(NODE_EDGE_SQL),
+            node_defer=render(NODE_DEFER_SQL),
             flow_status=render(FLOW_STATUS_SQL),
             flow_run_insert=render(FLOW_RUN_INSERT_SQL),
             flow_run_read=render(FLOW_RUN_READ_SQL),

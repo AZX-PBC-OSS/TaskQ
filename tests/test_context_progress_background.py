@@ -182,7 +182,7 @@ async def test_redis_publish_failure_does_not_propagate_to_caller() -> None:
 
 
 async def test_multiple_rapid_progress_calls_coalesce_into_one_in_flight_task() -> None:
-    """N rapid progress() calls share ONE in-flight publish per job; the
+    """N rapid progress() calls share one in-flight publish per job; the
     later calls latch and the in-flight task drains them, and the set is
     empty again once everything lands."""
     redis_client = AsyncMock()

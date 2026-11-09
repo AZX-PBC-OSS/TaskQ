@@ -1,4 +1,4 @@
-"""Red-team probe (Postgres): does the batch enqueue path surface
+"""Adversarial review probe (Postgres): does the batch enqueue path surface
 ``JobHandle.deduplicated_onto_terminal`` correctly, matching the
 single-enqueue and in-memory-backend behaviour?
 

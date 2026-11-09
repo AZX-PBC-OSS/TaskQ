@@ -63,7 +63,7 @@ def test_cli_help_markers_survive_ci_colorization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The run-36369327985 reproduction: typer force-colorizes help output
-    whenever ``GITHUB_ACTIONS`` is set - which is EVERY GitHub runner - so
+    whenever ``GITHUB_ACTIONS`` is set - which is every GitHub runner - so
     the same CLI test that is green locally meets ANSI escapes interleaved
     inside its markers in CI. ``FORCE_COLOR`` and ``PY_COLORS`` trigger the
     identical path (typer/rich_utils.py FORCE_TERMINAL). The helper must

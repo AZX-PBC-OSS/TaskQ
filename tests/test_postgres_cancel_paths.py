@@ -426,7 +426,7 @@ class TestEquivalence:
         mem_events = await memory_jobs.get_events(mem_job_id)
 
         # ── PG backend ───────────────────────────────────────────
-        # The job reaches 'running' through the REAL enqueue + dispatch
+        # The job reaches 'running' through the real enqueue + dispatch
         # path, exactly like the memory side: a claim deliberately writes
         # no job_events row (the events diet - backend/_dispatch.py), so
         # a fixture-injected one would count an event production never

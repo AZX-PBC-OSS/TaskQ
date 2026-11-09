@@ -1,4 +1,4 @@
-"""Red-team attacks on two boundary gaps the bounded-batch fix left open.
+"""Adversarial review attacks on two boundary gaps the bounded-batch fix left open.
 
 Both target the fix's own stated invariant - a degenerate row cap must
 fail loudly at the typed boundary, before any SQL runs - at the two
@@ -64,7 +64,7 @@ _DSN = "postgresql://taskq:taskq@localhost:5432/taskq"
 class _TouchRaisesConn:
     """A connection stand-in whose every use is a test failure.
 
-    The degenerate bound must be rejected at the typed boundary BEFORE
+    The degenerate bound must be rejected at the typed boundary before
     any database access, so any method call reaching this object means
     validation did not run first. Mirrors the ``_TouchRaisesConn`` /
     ``_TouchRaisesPool`` stand-ins in

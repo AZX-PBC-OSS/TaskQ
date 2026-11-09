@@ -112,7 +112,11 @@ class _RaisingResolveConn:
     """Fails the queue-mode resolve statement -- the raise site that never
     even reaches ``dispatch_batch``'s own span/telemetry: a lock timeout
     or connection reset while resolving ``queues.mode`` before the
-    dispatch CTE is ever issued."""
+    dispatch CTE is ever issued.
+
+    fail-closed-exempt: the dispatch resolve raise-site injection — the
+    named resolve statement raises while the round's other statements
+    answer their empty shapes, so the round reaches the raise site."""
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, str]]:
         if ".queues WHERE" in sql:
@@ -188,7 +192,11 @@ async def test_queue_mode_resolution_failure_still_emits_telemetry(
 class _ProbeFailingConn:
     """The claim returns empty; the claimable-rows probe raises -- a
     statement timeout or connection reset on the window-expansion gate,
-    the third raise site a dispatch round can take."""
+    the third raise site a dispatch round can take.
+
+    fail-closed-exempt: the claimable-probe raise-site injection — the
+    named probe statement raises while the claim answers empty, so the
+    round reaches the window-expansion gate."""
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, str]]:
         if "ac.queue = ANY($1::text[])" in sql:
@@ -384,7 +392,7 @@ async def test_cancelled_acquire_records_wait_not_failure(
     )
 
 
-# ── red-team: does the failure counter name the failure class? ──────────
+# ── adversarial review: does the failure counter name the failure class? ──────────
 
 
 async def test_dispatch_failure_counter_names_the_failure_class(

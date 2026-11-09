@@ -1,6 +1,6 @@
 # Production Deployment
 
-TaskQ is an async-native, Postgres-backed background job library for Python 3.12+. This guide covers running TaskQ workers, the admin UI, and supporting infrastructure in production: container orchestration, database and Redis configuration, observability, scaling, and security hardening.
+TaskQ is an async-native, Postgres-backed background job library for Python 3.12+. The production surfaces: running TaskQ workers, the admin UI, and supporting infrastructure — container orchestration, database and Redis configuration, observability, scaling, and security hardening.
 
 !!! warning "Pre-1.0 stability"
     TaskQ is pre-1.0. Breaking changes (including schema changes) may land in
@@ -784,8 +784,8 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
     ```
 
     At TaskQ's defaults (85 / 30 / 10) the modelled worst case is **82s**, so
-    `terminationGracePeriodSeconds: 90` is a safe value at defaults, not the
-    `60`-ish the old advice implied. (The default grace covers the model with
+    `terminationGracePeriodSeconds: 90` is a safe value at defaults; a
+    `60`-ish figure under-counts the modelled closes. (The default grace covers the model with
     3s to spare, but the ~87s sibling-crash path, nine sequential closes
     where the orchestrated leader-conn close never ran, including the
     conditional per-slot pool, now exceeds the default by 2s on per-slot

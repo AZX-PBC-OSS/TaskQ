@@ -1,4 +1,4 @@
-"""The compile-time Mermaid emission (T09, §10.1) — a PURE function of the
+"""The compile-time Mermaid emission (§10.1) — a PURE function of the
 wiring: same module → same Mermaid, byte-stable, golden-testable.
 
 * edge labels = the promise types (the data that flows, spelled on the
@@ -6,13 +6,13 @@ wiring: same module → same Mermaid, byte-stable, golden-testable.
 * node shapes by kind — stadium ``([])`` = map source, hexagon ``{{}}`` =
   collapsed map (the join), rectangle ``[]`` = plain actor, ``[[(...)]]
   ``-shaped ``[(...)]`` = the HITL interrupt points (the declared gates,
-  rendered with their signal types + timeout policy — T10's gate consumes
+  rendered with their signal types + timeout policy — the hold gate consumes
   the same declaration);
 * deterministic order: nodes and edges iterate in SORTED key order, so
   the emission never depends on dict insertion order (the byte-stability
   law).
 
-THE DIAGRAM-LIES PROPERTY (the acceptance gate): every node/edge in the
+Every node/edge in the
 compiled graph appears in the emission and nothing else does — the
 property test re-derives the emitted nodes/edges from the graph object
 and compares. One source of truth for both.
@@ -21,6 +21,8 @@ and compares. One source of truth for both.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
+from taskq.workflows._types import duration_seconds
 
 if TYPE_CHECKING:
     from taskq.workflows.api._app import CompiledWorkflow
@@ -41,7 +43,7 @@ def _body_name(body: object) -> str:
 def _shape(node_kind: str, gated: bool) -> tuple[str, str]:
     """(open, close) delimiters per node kind — the §10.1 vocabulary."""
     if gated:
-        return ("([(", ")])")  # the HOLD node — the HITL interrupt point
+        return ("([(", ")])")  # the hold node — the hitl interrupt point
     if node_kind in ("map_source", "route_source"):
         return ("([", "])")
     if node_kind == "map_join":
@@ -69,20 +71,21 @@ def render_mermaid(compiled: CompiledWorkflow) -> str:
         node = compiled.nodes[key]
         gated = bool(node.gates)
         glyph = " ⇅" if gated else ""
-        # THE FORK-CARRYING NODE'S SHAPE (the rv4 cure — the Mermaid
-        # arms' render): a node carrying the plain map's item body or
-        # the typed route's arms IS a map source — it finalizes into
-        # fork children the rows will name. The pre-cure render drew it
-        # as the plain rectangle (the route's branches invisible — the
-        # diagram lied about the fork the wiring declared); the stadium
-        # + the arms ON the label render the branches the compile
-        # carries (byte-stable: sorted tags, declared body names).
+        # A fork-carrying node's shape: a node carrying the plain map's
+        # item body or
+        # the typed route's arms is a map source — it finalizes into
+        # fork children the rows will name. The stadium
+        # + the arms on the label render the branches the compile
+        # carries (byte-stable: sorted tags, declared body names); the
+        # plain rectangle would hide the route's branches.
         is_map_source = node.map_item is not None or node.map_arms is not None
         open_, close = _shape("route_source" if is_map_source else node.kind, gated)
         gate_note = ""
         if gated:
             policies = ",".join(
-                f"{g.name}{'/' + str(g.timeout_s) + 's' if g.timeout_s is not None else '/∞'}"
+                f"{g.name}/{duration_seconds(g.timeout_s)}s"
+                if g.timeout_s is not None
+                else f"{g.name}/∞"
                 for g in node.gates
             )
             gate_note = f" ⏳{policies}"

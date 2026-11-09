@@ -72,8 +72,8 @@ def _make_app(config: SAMLAuthConfig, base_path: str = "/admin") -> FastAPI:
 
 
 def _client(app: FastAPI) -> TestClient:
-    # python3-saml validates the ACS URL against a multi-label-domain regex;
-    # use a base_url with a dotted host so it matches the configured ACS URL.
+    # python3-saml validates the acs URL against a multi-label-domain regex;
+    # use a base_url with a dotted host so it matches the configured acs URL.
     return TestClient(app, base_url=_TEST_BASE_URL)
 
 
@@ -133,7 +133,7 @@ def _assertion_id(response_b64: str) -> str:
     return match.group(1)
 
 
-# ── Full login → ACS callback → session → authorized request round trip ───
+# ── Full login → acs callback → session → authorized request round trip ───
 
 
 def test_full_round_trip_default_auth_only() -> None:
@@ -188,7 +188,7 @@ def test_login_succeeds_when_idp_acs_post_is_genuinely_cross_site() -> None:
 
     request_id = _do_login(client)
 
-    # What a real browser does on the cross-site ACS POST from the IdP: the
+    # What a real browser does on the cross-site acs POST from the IdP: the
     # correlation cookie is withheld. The fresh client shares no cookie jar
     # with the one that performed /login, but carries a valid, correctly
     # signed assertion answering that real pending AuthnRequest - exactly
@@ -391,7 +391,7 @@ def test_saml_logout_by_get_is_refused() -> None:
     assert "taskq_session=" not in resp.headers.get("set-cookie", "")
 
 
-# ── Cross-site ACS must not be bought by weakening cookie policy ──────────
+# ── Cross-site acs must not be bought by weakening cookie policy ──────────
 
 
 def _request_cookie_header(resp: Any) -> str:
@@ -551,7 +551,7 @@ def test_callback_on_a_sibling_replica_sharing_session_secret_succeeds() -> None
     this test pins as fixed.
     """
     config = _config()
-    # Two bundles from one config (same session_secret, same SP/IdP pair):
+    # Two bundles from one config (same session_secret, same sp/IdP pair):
     # the deployment shape of two replicas (or two worker processes) of one
     # admin mount.
     replica_a = _make_app(config)
@@ -560,7 +560,7 @@ def test_callback_on_a_sibling_replica_sharing_session_secret_succeeds() -> None
 
     request_id = _do_login(client_a)
     # The browser carries replica A's cookie to whichever replica receives
-    # the IdP's ACS POST (here replica B, which never saw the login).
+    # the IdP's acs POST (here replica B, which never saw the login).
     correlation_cookie = _correlation_cookie(client_a)
     saml_response = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
 
@@ -704,7 +704,7 @@ def test_a_second_distinct_assertion_answering_the_same_request_id_is_refused() 
     """The AuthnRequest ID is single-use server-side, not just cookie-side.
 
     The follow-up review's demonstration this pins: after a successful
-    cookie-path login, re-POST on the SAME (issuing) process with the
+    cookie-path login, re-POST on the same (issuing) process with the
     captured correlation cookie re-supplied and a FRESH assertion ID
     answering the same request ID. Signature, timestamps and the
     cookie↔InResponseTo binding all still pass, and the replay cache

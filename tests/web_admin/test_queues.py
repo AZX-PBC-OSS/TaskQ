@@ -1,22 +1,50 @@
 """Tests for queue routes and templates in taskq.web.admin."""
 
+# ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
+# identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
+# header's own rule for the real-PG seeding this file carries).
+
+import re
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any
 
+import asyncpg
+import httpx
 import pytest
 
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
-from taskq.web.admin import create_router
+from fastapi import FastAPI  # Why: importorskip guard must precede.
 
-from . import StubRecord, _StubPool
+from taskq._ids import new_uuid
+from taskq.testing.fixtures import ModulePgSchema
+from taskq.web.admin import create_router, setup_admin_state
+
+from . import _StubPool
 
 # ── Queue routes: discovery and registration ───────────────────────────
 
 
 pytestmark = [pytest.mark.fastapi]
+
+
+def _admin_app(pool: asyncpg.Pool, schema: str) -> FastAPI:
+    bundle = create_router(pool, schema=schema, base_path="")
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    return app
+
+
+async def _render_queues_page(pool: asyncpg.Pool, schema: str) -> str:
+    app = _admin_app(pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/queues")
+    assert resp.status_code == 200
+    return resp.text
 
 
 def test_queue_routes_registered_via_discovery(
@@ -366,47 +394,69 @@ def test_queue_detail_queries_select_retry_kind() -> None:
 # partial indexes with the batches page's 200-row cap.
 
 
-class _ScriptedConn:
-    """Connection returning preset ``fetch`` results in call order."""
-
-    def __init__(self, fetch_results: list[list[StubRecord]]) -> None:
-        self._results = list(fetch_results)
-
-    async def fetch(self, query: str, *args: object) -> list[StubRecord]:
-        if self._results:
-            return self._results.pop(0)
-        return []
-
-    async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
-        return None
-
-    async def fetchval(self, query: str, *args: object) -> object:
-        if query.strip() == "SELECT clock_timestamp()":
-            # The router's clock-offset probe: answer like Postgres would.
-            return datetime.now(UTC)
-        return None
-
-    async def execute(self, query: str, *args: object) -> str:
-        return ""
+async def _seed_pending_job(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    queue: str,
+    actor: str = "test_actor",
+) -> None:
+    """One minimal pending job row (the batch-detail pack's insert shape)."""
+    await conn.execute(
+        f"""INSERT INTO "{schema}".jobs (
+                id, actor, queue, payload, payload_schema_ver, max_attempts,
+                retry_kind, status, priority, attempt, metadata,
+                created_at, scheduled_at)
+            VALUES ($1, $2, $3, '{{}}'::jsonb, 1, 3, 'transient', 'pending', 0, 0,
+                '{{}}'::jsonb, now(), now())""",
+        new_uuid(),
+        actor,
+        queue,
+    )
 
 
-class _ScriptedAcquireCtx:
-    def __init__(self, conn: _ScriptedConn) -> None:
-        self._conn = conn
+async def test_queue_overview_merges_live_workers_and_stranded(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """GET /queues merges the live-worker and stranded reads into the per-queue
+    rows, over real rows: three live workers heartbeating on 'default' make
+    its Live Workers cell green with 3, and four pending rows whose actor has
+    no actor_config row land on 'stuck' with the stranded badge carrying
+    their count - the no-actor-config strand shape, computed by the page's
+    own stranded SQL."""
+    schema = module_pg_schema.schema_name
+    for _ in range(3):
+        await clean_pg_conn.execute(
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) '
+            "VALUES ($1, $2, 1234, $3::text[])",
+            new_uuid(),
+            "worker-live",
+            ["default"],
+        )
+    for _ in range(5):
+        await _seed_pending_job(clean_pg_conn, schema, queue="default")
+    for _ in range(4):
+        await _seed_pending_job(clean_pg_conn, schema, queue="stuck", actor="no_config_actor")
 
-    async def __aenter__(self) -> _ScriptedConn:
-        return self._conn
-
-    async def __aexit__(self, *args: object) -> None:
-        pass
-
-
-class _ScriptedPool:
-    def __init__(self, conn: _ScriptedConn) -> None:
-        self._conn = conn
-
-    def acquire(self, *, timeout: float | None = None) -> _ScriptedAcquireCtx:
-        return _ScriptedAcquireCtx(self._conn)
+    html = await _render_queues_page(module_pg_pool, schema)
+    assert "Live Workers" in html
+    assert "Stranded" in html
+    badge = re.search(
+        r'title="Pending/scheduled jobs here can never dispatch[^"]*">(\d+)</span>', html
+    )
+    assert badge is not None and badge.group(1) == "4", (
+        "the stranded badge must carry the real stranded count for the "
+        f"no-config actor's queue, got: {badge and badge.group(1)!r}"
+    )
+    live = re.search(r"text-green-600[^>]*>(\d+)</span>", html)
+    assert live is not None and live.group(1) == "3", (
+        "the live-workers cell must carry the real live-worker count, got "
+        f"{live and live.group(1)!r}"
+    )
+    # The stranded queue's own row rendered (its count rides the merge).
+    assert "stuck" in html
 
 
 def test_queue_list_renders_live_workers_and_stranded(
@@ -460,42 +510,6 @@ def test_queue_list_defaults_new_columns_when_absent(
     assert "default" in html
 
 
-def test_queue_overview_merges_live_workers_and_stranded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """GET /queues merges the live-worker and stranded reads into the per-queue rows."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from taskq.web.admin import setup_admin_state
-
-    overview = [
-        StubRecord(
-            queue="default",
-            pending_count=5,
-            scheduled_count=2,
-            running_count=1,
-            failed_count=0,
-        )
-    ]
-    orphans: list[StubRecord] = []
-    workers = [StubRecord(queue="default", worker_count=3)]
-    stranded = [StubRecord(queue="default", stranded_count=4)]
-    conn = _ScriptedConn(fetch_results=[overview, orphans, workers, stranded])
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    bundle = create_router(_ScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    app = FastAPI()
-    setup_admin_state(app, bundle)
-    app.include_router(bundle.router)
-    client = TestClient(app)
-    response = client.get("/queues")
-    assert response.status_code == 200
-    assert "Live Workers" in response.text
-    assert "Stranded" in response.text
-    # The stranded badge carries the count and its remediation hint.
-    assert "can never dispatch" in response.text
-
-
 def test_queue_pressure_reads_are_parameterized_and_bounded() -> None:
     """The live-worker and stranded reads take the liveness window as $1,
     bound the server clock with statement_timestamp(), and cap their rows."""
@@ -545,7 +559,7 @@ def test_queue_live_workers_read_matches_the_leader_sampler_shape() -> None:
 #
 # The overview GROUP BY ran with no LIMIT (unbounded under high queue-label
 # cardinality) while the page double-fetched: the full-page meta refresh
-# AND the htmx poll both fired, because only jobs set suppress_refresh.
+# and the htmx poll both fired, because only jobs set suppress_refresh.
 
 
 def test_queue_overview_sql_caps_its_rows() -> None:
@@ -562,7 +576,7 @@ def test_queue_overview_sql_caps_its_rows() -> None:
 def test_queue_overview_page_uses_exactly_one_refresh_transport_per_mode(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
-    """The queues page never runs BOTH refresh transports at once (that
+    """The queues page never runs both refresh transports at once (that
     double-fetch was #337's complaint), and polling mode keeps its no-JS
     liveness (test_web_admin_integration pins the meta refresh there):
     POLLING mode renders the meta refresh and no htmx poll; REALTIME mode
@@ -634,65 +648,41 @@ def test_queue_overview_poll_fragment_carries_the_poll_attributes(
     assert "hx-trigger" in html and "hx-select" in html and "hx-swap" in html
 
 
-def test_queue_overview_renders_truncation_notice_when_the_cap_bites(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_queue_overview_renders_truncation_notice_when_the_cap_bites(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """At the row cap the page says so, the batches page's own idiom:
-    a capped read-only render must never read as the whole population."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from taskq.web.admin import setup_admin_state
+    a capped read-only render must never read as the whole population.
+    Seeded over real rows: one pending job on each of _QUEUE_ROW_CAP distinct
+    queue labels makes the GROUP BY return exactly the cap."""
     from taskq.web.admin.queues import _QUEUE_ROW_CAP
 
-    overview = [
-        StubRecord(
-            queue=f"queue-{i}",
-            pending_count=1,
-            scheduled_count=0,
-            running_count=0,
-            failed_count=0,
-        )
-        for i in range(_QUEUE_ROW_CAP)
-    ]
-    conn = _ScriptedConn(
-        fetch_results=[overview, [], [], []],
+    schema = module_pg_schema.schema_name
+    await clean_pg_conn.executemany(
+        f"""INSERT INTO "{schema}".jobs (
+                id, actor, queue, payload, payload_schema_ver, max_attempts,
+                retry_kind, status, priority, attempt, metadata,
+                created_at, scheduled_at)
+            VALUES ($1, 'test_actor', $2, '{{}}'::jsonb, 1, 3, 'transient',
+                'pending', 0, 0, '{{}}'::jsonb, now(), now())""",
+        [(new_uuid(), f"queue-{i:03d}") for i in range(_QUEUE_ROW_CAP)],
     )
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    bundle = create_router(_ScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    app = FastAPI()
-    setup_admin_state(app, bundle)
-    app.include_router(bundle.router)
-    client = TestClient(app)
-    response = client.get("/queues")
-    assert response.status_code == 200
-    assert "Showing the" in response.text, "a capped overview must tell the operator the cap bit"
+    html = await _render_queues_page(module_pg_pool, schema)
+    assert "Showing the" in html, "a capped overview must tell the operator the cap bit"
 
 
-def test_queue_overview_no_truncation_notice_under_the_cap(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_queue_overview_no_truncation_notice_under_the_cap(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """Under the cap no notice renders: the page must not cry wolf."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from taskq.web.admin import setup_admin_state
-
-    overview = [
-        StubRecord(
-            queue="default", pending_count=1, scheduled_count=0, running_count=0, failed_count=0
-        )
-    ]
-    conn = _ScriptedConn(fetch_results=[overview, [], [], []])
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    bundle = create_router(_ScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    app = FastAPI()
-    setup_admin_state(app, bundle)
-    app.include_router(bundle.router)
-    client = TestClient(app)
-    response = client.get("/queues")
-    assert response.status_code == 200
-    assert "Showing the" not in response.text
+    schema = module_pg_schema.schema_name
+    await _seed_pending_job(clean_pg_conn, schema, queue="default")
+    html = await _render_queues_page(module_pg_pool, schema)
+    assert "Showing the" not in html
 
 
 # ── Issue #337: unknown filter params are refused, not silently dropped ──
@@ -701,7 +691,7 @@ def test_queue_overview_no_truncation_notice_under_the_cap(
 def test_queue_overview_rejects_unknown_filter_params(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
-    """The overview declares no filters, so ANY query param is undeclared:
+    """The overview declares no filters, so any query param is undeclared:
     FastAPI would drop it and 200-unfiltered; the page 400s instead."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     client = make_app()

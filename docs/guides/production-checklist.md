@@ -52,7 +52,10 @@ teaches it. Nothing here is new law; this page COLLECTS.
       → [docshelf.md — F2](docshelf.md)
 - [ ] **`TASKQ_QUEUES_STRICT` fail-fast** — a worker projected onto a
       queue its app cannot see refuses to boot loudly. Keep it on in
-      production.
+      production — declare it in code on the app
+      (`WorkflowApp(queues_strict=True)`) or via the env; the faces
+      OR-combine and the env can only add strictness, never silence a
+      declared contract.
       → [workers.md](workers.md), [configuration.md](configuration.md)
 - [ ] **Versioning contract (the stamp read):** a workflow definition
       carries a content stamp; a redeploy that renames or removes a
@@ -125,7 +128,7 @@ teaches it. Nothing here is new law; this page COLLECTS.
 - A workflow run's state is the ROWS — a crash anywhere (worker SIGKILL,
   deploy, failover) resumes from the ledger: succeeded substeps REPLAY
   free, held waits re-park, the cursor never rewinds (GREATEST).
-  → [workflows.md — the resume law](workflows.md), [docshelf.md — the crash drills](docshelf.md)
+  → [workflows.md — the resume law](workflows.md), [docshelf.md — the crash scenarios](docshelf.md)
 - A hold is a row: the worker's slot is RELEASED while the body waits on
   a human or a deadline — one worker can carry thousands of parked
   flows. The hold identity is

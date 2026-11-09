@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""RED-TEAM pins: the redis fallback is one admission, never a replay (S6).
+"""The adversarial-review pins: the redis fallback is one admission, never a replay (S6).
 
 #421's widening: the rate-limit acquire's PG fallback absorbs the
 ``ResponseError`` siblings that mean "this store cannot serve right now"
@@ -17,7 +17,7 @@ dead-redis double (a real ``redis.asyncio.Redis`` whose script seam raises)
 and the real worker pool:
 
 * the actor runs exactly once per job (the fallback admission is clean),
-* exactly ONE redis acquire per dispatch (never a replay),
+* exactly one redis acquire per dispatch (never a replay),
 * the job terminalizes ``succeeded`` exactly once, no failure accounting,
 * the bucket ledger lives in the REAL ``rate_limit_buckets`` table and
   reflects exactly the admissions (two dispatches spend two tokens).
@@ -192,7 +192,7 @@ class _ScopeStack:
 async def test_fallback_admission_is_one_independent_pg_decision(
     pg_dsn: str, error: Exception
 ) -> None:
-    """A readonly/oom rejection mid-dispatch: the fallback makes ONE
+    """A readonly/oom rejection mid-dispatch: the fallback makes one
     independent PG decision per admission. Two jobs through the same bucket
     mean exactly two redis acquires (one each, never a replay), two clean
     admissions, two succeeded rows, and a bucket ledger in the REAL table

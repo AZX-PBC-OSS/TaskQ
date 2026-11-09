@@ -23,13 +23,13 @@ the resilience defaults over the fork-guard:
 - ``retry`` — :class:`~redis.asyncio.retry.Retry` with
   :class:`~redis.backoff.ExponentialBackoff` (0.02s base, 0.1s cap, 1
   attempt) and ``retry_on_error=[ConnectionError, TimeoutError]``. The
-  retry is inherited by EVERY connection the pool hands out — including a
+  retry is inherited by every connection the pool hands out — including a
   pubsub connection, whose blocked ``get_message`` read reconnects and
   re-subscribes (via redis-py's ``on_connect`` callback) instead of
-  escaping the kill/idle-drop into the consumer. ONE attempt is the
+  escaping the kill/idle-drop into the consumer. one attempt is the
   doctrine (see ``RETRY_RETRIES``): the retry buys the reconnect, never
   the outage — a multi-attempt budget measured starving the worker's
-  dispatcher tick on real CI runners (PR #647).
+  dispatcher tick on real CI runners.
 
 ``socket_timeout`` IS pinned — to redis-py 8.x's own asyncio default
 (5s, ``redis._defaults.DEFAULT_SOCKET_TIMEOUT``). This is a
@@ -39,7 +39,7 @@ blocking read is unaffected by it either way (``PubSub.parse_response``
 hands ``math.inf`` to ``read_response`` when ``block=True``,
 overriding the socket timeout explicitly). The pin exists because the
 bounded wall of the fail-closed surfaces DEPENDS on it: the rate
-limiter's ``with_pg_fallback`` wraps its redis call in NO
+limiter's ``with_pg_fallback`` wraps its redis call in no
 application-level ``wait_for`` — against a black-holed broker (a
 peer that accepts TCP and never answers) the only bound on each read
 is the socket timeout, and the limiter's
@@ -76,10 +76,9 @@ RETRY_RETRIES: int = 1
 ONE attempt, deliberately. The retry buys the RECONNECT — a command that
 consumed a dropped pooled connection gets exactly one fresh-connect
 attempt, which lands in milliseconds when the broker is alive — and never
-the OUTAGE: the fail-closed surfaces own that. The original draft's
-3-attempt/1.0s-cap budget was measured (PR #647's CI, 3/3 runs, both
-supported Pythons) starving the worker's dispatcher of its funded tick
-budget: the rate limiter's acquire runs inside the dispatcher's
+the OUTAGE: the fail-closed surfaces own that. An earlier draft's
+3-attempt/1.0s-cap budget was measured (3/3 runs, both supported Pythons)
+starving the worker's dispatcher of its funded tick budget: the rate limiter's acquire runs inside the dispatcher's
 ~4.5s funded tick, and a 3-attempt retry multiplies every dead-broker
 command to ~0.35s — the acquire alone consumed the tick, the claim rolled
 back with it, and the probe's cancel escalation never landed (zero
@@ -98,6 +97,22 @@ this default today. It is stated explicitly so the fail-closed surfaces'
 bounded wall (see the module docstring) survives a redis-py minor that
 reverts the default to ``None``. Pubsub blocking reads override it with
 ``math.inf`` — this value never bounds a blocked pubsub read.
+"""
+
+SOCKET_CONNECT_TIMEOUT_SECS: float = 5.0
+"""Dialing budget, pinned to redis-py 8.x's asyncio default.
+
+The connect phase's only bound otherwise: redis-py 8 defaults
+``socket_connect_timeout`` to 5s independently of ``socket_timeout``, so
+the fail-closed bounded wall already includes it (a black-holed broker
+- a peer that drops SYN - burns this budget per attempt, and the rate
+limiter's ≈42s acquire measurement assumes it). Stated explicitly for
+the same reason as ``SOCKET_TIMEOUT_SECS``: a redis-py minor that moves
+the default would silently move the wall this tree's fail-closed math
+stands on. The TEST broker fixtures dial with a different, deliberately
+generous budget — ``taskq.testing.fixtures.TEST_REDIS_CONNECT_TIMEOUT_SECS``
+— because a loaded runner's container DNS is setup weather, not
+unavailability.
 """
 
 
@@ -136,6 +151,7 @@ def build_redis_client(url: str, *, decode_responses: bool = False) -> Any:
         health_check_interval=HEALTH_CHECK_INTERVAL_SECS,
         socket_keepalive=True,
         socket_timeout=SOCKET_TIMEOUT_SECS,
+        socket_connect_timeout=SOCKET_CONNECT_TIMEOUT_SECS,
         retry=Retry(
             ExponentialBackoff(cap=RETRY_BACKOFF_CAP_SECS, base=RETRY_BACKOFF_BASE_SECS),
             retries=RETRY_RETRIES,

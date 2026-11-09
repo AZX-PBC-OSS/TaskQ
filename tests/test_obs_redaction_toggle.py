@@ -33,7 +33,7 @@ from taskq.worker._bootstrap import (
 )
 
 #: Shaped like the tenant identifiers TaskQ's idempotency/identity/fairness
-#: keys actually carry. Lives in DETAIL, the only value-bearing line.
+#: keys actually carry. Lives in detail, the only value-bearing line.
 CANARY = "tenant-4417-SSN-078051120"
 
 DIAGNOSTIC = "duplicate key value violates unique constraint"
@@ -43,8 +43,8 @@ DIAGNOSTIC = "duplicate key value violates unique constraint"
 HINT = 'Perhaps you meant to reference the column "jobs.queue".'
 CONTEXT = "PL/pgSQL function taskq.enqueue(text) line 12 at SQL statement"
 
-#: Asserted instead of HINT/CONTEXT themselves: both channels JSON-encode, so
-#: the double quotes inside a real HINT arrive as ``\"`` and a literal-substring
+#: Asserted instead of hint/context themselves: both channels JSON-encode, so
+#: the double quotes inside a real hint arrive as ``\"`` and a literal-substring
 #: check would fail on the escaping rather than on the redaction. These markers
 #: are quote-free and unique to the line they prove survived.
 HINT_MARKER = "Perhaps you meant to reference the column"

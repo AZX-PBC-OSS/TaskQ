@@ -4,9 +4,9 @@ Red (proven live at the audit base): two ``taskq worker`` boots on one
 host with no explicit configuration both targeted the static default
 ``/tmp/taskq_health.sock``. The second logged
 ``health-server-unavailable`` and kept running, and ``taskq health``
-then silently answered with the FIRST worker's state (exit 0, a healthy
+then silently answered with the first worker's state (exit 0, a healthy
 body) — the cross-report that made the worker that just warned look
-healthy. The fix: a worker booted with NO explicit configuration (no
+healthy. The fix: a worker booted with no explicit configuration (no
 ``--health-socket-path``, no ``TASKQ_HEALTH_SOCKET_PATH`` in the
 environment or the .env cascade) binds ``/tmp/taskq_health_<pid>.sock``
 instead; every explicit spelling stays authoritative verbatim.
@@ -59,7 +59,7 @@ def _invoke_worker(monkeypatch: pytest.MonkeyPatch, *extra: str):  # type: ignor
 def test_no_explicit_config_mints_a_pid_unique_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The first-run shape: nothing configured, the worker does NOT bind
+    """The first-run shape: nothing configured, the worker does not bind
     the shared static default."""
     monkeypatch.delenv("TASKQ_HEALTH_SOCKET_PATH", raising=False)
     settings = _invoke_worker(monkeypatch)
@@ -131,7 +131,7 @@ def test_unreachable_without_env_hints_at_the_per_pid_discovery_contract(
 
 
 def test_unreachable_with_env_override_stays_plain(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The hint is the NO-CONFIG discovery contract's other half only: an
+    """The hint is the no-CONFIG discovery contract's other half only: an
     operator who set an explicit path (here, one that does not exist)
     gets the plain unreachable line, no per-pid noise."""
     monkeypatch.setenv("TASKQ_HEALTH_SOCKET_PATH", "/nonexistent-rt667/probe.sock")

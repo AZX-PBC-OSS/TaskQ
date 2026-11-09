@@ -222,11 +222,11 @@ def _payload_factory_pool() -> _FactoryPoolState:
     Retirement fires when every thread of the current pool is stranded on
     a call its waiter abandoned: that pool can never serve new work, so
     new work gets a fresh pool instead of queueing behind residue for the
-    rest of the process's life. The retired pool is shut down WITHOUT
+    rest of the process's life. The retired pool is shut down without
     waiting, waiting is exactly what cannot be done, its threads are
     parked in unkillable user code; they finish (and the pool drains its
     queue) whenever the factories return. Queued calls are deliberately
-    NOT cancelled: their waiters hold their own per-factory deadlines and
+    not cancelled: their waiters hold their own per-factory deadlines and
     time out on them, so retirement injects no new exception shape into a
     tick.
     """
@@ -356,7 +356,7 @@ async def resolve_payload(
             except SystemExit as exc:
                 # The factory's own SystemExit, delivered by the executor
                 # future's throw into this frame (the future is a bare
-                # Future, awaited in THIS task, so the conversion here
+                # Future, awaited in this task, so the conversion here
                 # catches it in-frame before the tick's except boundary
                 # has to). Left raw it escapes the per-schedule
                 # ``except Exception`` and the tick task dies with the
@@ -469,7 +469,7 @@ def _compute_next_fire_after_walking(
     result preserves the schedule's timezone.
 
     DST handling:
-      - **Gaps** (spring-forward): a cron match that falls INSIDE a gap
+      - **Gaps** (spring-forward): a cron match that falls inside a gap
         (e.g. 02:30 on a day where 02:00→03:00) fires once at the gap's
         END instant: the fire still happens that day, delayed by the
         gap's length.  This is croniter's own aware-seed resolution,
@@ -533,7 +533,7 @@ def _compute_next_fire_after_walking(
     # occurrence, all of the range's fold-0 instants precede all of
     # its fold-1 instants, and the naive walk cannot express that
     # ordering.  It answers the next wall match's fold-0 interpretation
-    # (an instant BEFORE the seed) or, under ``allof``, a pair whose
+    # (an instant before the seed) or, under ``allof``, a pair whose
     # first member precedes the seed, a function named
     # ``compute_next_fire_after`` may never answer at or before its
     # seed.  ``allof`` owes the fold-1 occurrence of the next in-range
@@ -595,7 +595,7 @@ def _compute_next_fire_after_walking(
         # The candidate's earlier occurrence is at or before the seed: the
         # seed itself was that occurrence (the slot just fired at the
         # earlier instant, croniter answered the fold-1 replay). Under
-        # ``skip``/``firstof`` the repeated range counts as ONE slot at the
+        # ``skip``/``firstof`` the repeated range counts as one slot at the
         # earlier occurrence, so the replay is owed nothing -- returning the
         # fold-0 instant again would answer at or before the seed, the
         # fixed point that leaves ``next_fire_at`` unadvanced and re-fires
@@ -668,7 +668,7 @@ def _next_fold1_fire(
     after the seed's wall, the fold-0 pass's remaining matches, but
     it cannot see the fold-1 pass at all: those matches' walls sit at
     or before the seed's wall.  Once the fold-0 pass owes nothing more,
-    the next owed fire is the fold-1 pass's FIRST match, and only this
+    the next owed fire is the fold-1 pass's first match, and only this
     computation can name it.  That match is the seed's own match's twin
     in the founding case (a single match in the range), the MATCH's
     twin, not the seed's, when the seed sits past it, and the

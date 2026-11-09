@@ -1,7 +1,6 @@
-"""THE TYPED-OUTCOME CHAIN SURFACE (T20) — the router: conditional edges
-over a step's OWN typed outcomes, total or refused.
+"""TYPED-OUTCOME CHAIN SURFACE — the router: conditional edges
+over a step's own typed outcomes, total or refused.
 
-THE SPIKE'S PICKED SHAPE (PROOF.md §4 — the ergonomics bar):
 
     CHAIN = Chain(
         name="application-enrichment",
@@ -18,23 +17,23 @@ THE SPIKE'S PICKED SHAPE (PROOF.md §4 — the ergonomics bar):
 
 A chain step's body is an ordinary typed-outcome coroutine (its return IS
 the route's decision); the conditional edge is a dict keyed by the body's
-OWN outcome enum; the terminal is ``DONE``; the totality fence is
+own outcome enum; the terminal is ``DONE``; the totality fence is
 invisible until violated.
 
-TOTALITY IS THE FENCE, at TWO doors (the asymmetry doctrine — refuse
+TOTALITY IS the FENCE, at TWO doors (the asymmetry doctrine — refuse
 loudly, never silently drop):
 
 1. DECLARATION TIME: :class:`Chain` refuses a route that is not total
    over its step's outcome enum — the outcome a route drops would
-   silently strand a record's chain (a coding error, convicted before
+   silently strand a record's chain (a coding error, rejected before
    any row exists; the same shape as ``validate_fork``'s refusals).
 2. RUN TIME: :class:`RouterNotTotal` — an outcome with no arm (a body
    that returned a foreign value) fails the step LOUDLY with
    ``error_class='RouterNotTotal'``: the record names the defect; the
    record's chain visibly dies, never vanishes.
 
-THE ROUTE RIDES THE CERTIFIED FORK: a chain step's finalize forks AT MOST
-ONE child (the route's next step — no fan-in, no join); the record's
+A chain step's finalize forks AT MOST
+one child (the route's next step — no fan-in, no join); the record's
 identity (``map_index``) and trace ride forward on the child, and the
 chain instantiates per record through the certified fork-at-finalize
 machinery. The run completes from the rows (the shipped root-finalize
@@ -45,12 +44,23 @@ from __future__ import annotations
 
 import enum
 import types
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from pydantic import BaseModel
 
+from taskq.workflows._policy import (
+    ExecutionPolicy,
+    ResolvedExecutionPolicy,
+    WorkflowPolicyError,
+    resolve_execution_policy,
+)
 from taskq.workflows._types import ChildSpec, EmitChild, ForkSpec
+
+if TYPE_CHECKING:
+    from taskq.workflows.api._app import WorkflowActor
+    from taskq.workflows.api._ctx import StepContext
 
 __all__ = [
     "DONE",
@@ -64,7 +74,7 @@ __all__ = [
 ]
 
 #: The chain's terminal route: a body outcome that ends the record's
-#: chain (the step's finalize carries NO fork — the chain ends here).
+#: chain (the step's finalize carries no fork — the chain ends here).
 DONE = "__done__"
 
 
@@ -73,15 +83,15 @@ def type_tag(cls: type) -> str:
     canonical ``module.qualname`` — the tag the router matches a body's
     returned ELEMENT against (``type(element)``), and the tag the
     declaration's totality check compares the route's keys to. PUBLIC
-    since T27: the graph-level typed route (``api/_graph.route``) shares
-    the tag — the dispatch key is ONE vocabulary at both levels (the
+    since the graph-level typed route landed: the graph-level typed route (``api/_graph.route``) shares
+    the tag — the dispatch key is one vocabulary at both levels (the
     chain's steps and the graph's arms route the same union the same
     way)."""
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
 class RouterNotTotal(Exception):
-    """An outcome arrived at a route with no arm for it. THE LOUD REFUSAL:
+    """An outcome arrived at a route with no arm for it. the LOUD REFUSAL:
     the runner converts this to a terminal-FAILED finalize carrying
     ``error_class='RouterNotTotal'`` — the record names the defect; the
     record's chain visibly dies instead of silently dropping. (With a
@@ -91,20 +101,20 @@ class RouterNotTotal(Exception):
 
 
 class Route:
-    """The conditional edge map for ONE chain step: outcome → next step
+    """The conditional edge map for one chain step: outcome → next step
     (a step key of the chain, or :data:`DONE`).
 
     TWO dispatch vocabularies (the type-tagged route — the routing
-    proof's cure — beside the original enum face):
+    proof's fix — beside the original enum face):
 
-    * THE ENUM FACE: the keys are the members of the step body's outcome
+    * the ENUM FACE: the keys are the members of the step body's outcome
       enum — the LITERAL TAG (the member's ``.value`` string) is the
       dispatch key; the record rides the row's payload VERBATIM.
-    * THE TYPE-TAGGED FACE: the keys are the member TYPES of the step
+    * the TYPE-TAGGED FACE: the keys are the member TYPES of the step
       body's payload UNION (``Step.outcomes=Summary | Unreadable``) —
       the body returns the union ELEMENT itself and the router
       dispatches on the element's runtime TYPE; on a type-tagged arm the
-      ELEMENT IS THE RECORD (the arm's body declares its arm's type —
+      ELEMENT IS the RECORD (the arm's body declares its arm's type —
       the narrowed arms in the editor — and the typed boundary
       re-validates the round-trip, so a mis-routed element dies LOUDLY
       in the coercion).
@@ -118,7 +128,7 @@ class Route:
 
     def __init__(self, routes: dict[enum.Enum | type, str | None]) -> None:
         # The keys normalize: an enum member through its enum value (the
-        # literal tag); a payload CLASS through its type-tag. A NON-enum,
+        # literal tag); a payload class through its type-tag. A non-enum,
         # non-type key — a raw string — is the declaration-time refusal's
         # other face: bind() names it 'unknown' below.
         normalized: dict[str, str | None] = {}
@@ -182,7 +192,7 @@ class Route:
 
 
 @dataclass(frozen=True, slots=True)
-class Step:
+class Step[RecordT, OutcomeT]:
     """One chain step: the body, the body's typed outcome vocabulary, the
     route over it. The body signature: ``body(ctx, item) -> Outcome`` —
     the item is the record riding the row (the chain's steps share the
@@ -191,30 +201,59 @@ class Step:
 
     The outcome vocabulary (``outcomes``) is EITHER the body's outcome
     ENUM (the literal-tag face: the body returns the enum member, the
-    record rides verbatim) OR the body's payload UNION — the member
+    record rides verbatim) or the body's payload UNION — the member
     TYPES key the type-tagged route (the body returns the union ELEMENT
     itself; on a type-tagged arm the element IS the record)."""
 
-    body: Any
+    body: Callable[[StepContext, RecordT], Awaitable[OutcomeT]] | WorkflowActor
     outcomes: type[enum.Enum] | types.UnionType | type[object]
     route: Route | None = None  # None = the chain's terminal step
+    policy: ExecutionPolicy | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Chain:
-    """The chain declared ONCE, instantiated per record (each emit inserts
+    """The chain declared once, instantiated per record (each emit inserts
     the start step's row; each step's finalize forks the route's next
     step). ``start`` names the entry step key."""
 
     name: str
     start: str
-    steps: dict[str, Step]
+    # A chain is heterogeneous by design. Individual Step values retain their
+    # record/outcome types; only this routing container erases those parameters.
+    steps: dict[str, Step[Any, Any]]
     #: The chain steps' placement (every row of the chain — the fork's
     #: children and the emit's starts alike — lands here).
     actor: str = "wf"
     queue: str = "default"
+    default_policy: ExecutionPolicy | None = None
 
     def __post_init__(self) -> None:
+        if self.default_policy is not None:
+            default_actor = self.default_policy.actor
+            default_queue = self.default_policy.queue
+            from taskq.workflows._policy import CLEAR_POLICY
+
+            if (
+                self.actor != "wf"
+                and default_actor is not CLEAR_POLICY
+                and default_actor is not None
+                and default_actor != self.actor
+            ):
+                raise WorkflowPolicyError(
+                    f"chain {self.name!r} actor={self.actor!r} contradicts "
+                    f"default_policy.actor={default_actor!r}"
+                )
+            if (
+                self.queue != "default"
+                and default_queue is not CLEAR_POLICY
+                and default_queue is not None
+                and default_queue != self.queue
+            ):
+                raise WorkflowPolicyError(
+                    f"chain {self.name!r} queue={self.queue!r} contradicts "
+                    f"default_policy.queue={default_queue!r}"
+                )
         if self.start not in self.steps:
             raise ValueError(f"chain {self.name!r}: start {self.start!r} is not a step")
         for key, step in self.steps.items():
@@ -227,6 +266,30 @@ class Chain:
                             f"{nxt!r}, which is not a step"
                         )
 
+    def resolved_policy(
+        self,
+        step_key: str,
+        *,
+        payload_values: Sequence[object] = (),
+        run_priority: int | None = None,
+        resolve_names: bool = True,
+    ) -> ResolvedExecutionPolicy:
+        """The sole target resolver used by starts, forks, boot and the ladder."""
+        try:
+            step = self.steps[step_key]
+        except KeyError:
+            raise KeyError(f"chain {self.name!r} has no step {step_key!r}") from None
+        return resolve_execution_policy(
+            step_policy=step.policy,
+            default_policy=self.default_policy,
+            body=step.body,
+            compatibility_actor=self.actor,
+            compatibility_queue=self.queue,
+            payload_values=payload_values,
+            run_priority=run_priority,
+            resolve_names=resolve_names,
+        )
+
     def next_child(
         self,
         step_key: str,
@@ -234,26 +297,27 @@ class Chain:
         *,
         payload: dict[str, object] | None,
         map_index: int | None,
+        run_priority: int | None = None,
     ) -> ChildSpec | None:
-        """The router's decision for ONE step's outcome — the fork's child
+        """The router's decision for one step's outcome — the fork's child
         spec (or ``None`` = the chain ends here). Raises
         :class:`RouterNotTotal` loudly when the outcome has no arm.
 
-        THE TYPE-TAGGED FACE: a non-enum, non-str outcome is a union
+        A non-enum, non-str outcome is a union
         ELEMENT — its runtime type is the dispatch key, and on its arm
-        the ELEMENT IS THE RECORD (the child's ``wf_item`` is the
+        the ELEMENT IS the RECORD (the child's ``wf_item`` is the
         element, jsonb-encoded; the arm's body declares its arm's type
         and the typed boundary re-validates).
 
-        THE PER-RECORD IDENTITY RIDES map_index (the refuted-claim
+        the PER-RECORD IDENTITY RIDES map_index (the refuted-claim
         discipline): the certified fork's idempotency key and the
         step-ledger's arbiter both discriminate siblings by it — the
-        record's index rides EVERY row of its chain, and the child
+        record's index rides every row of its chain, and the child
         carries it forward. Without it, two records' children of one step
-        collide onto one row (the spike's 198 UniqueViolations).
+        collide onto one row (the measured 198 UniqueViolations).
 
-        THE TRACE IS THE FORK'S OWN DOOR (the accept-and-ignore hunt's
-        cure): ``next_child`` once accepted ``trace_id=`` and consumed
+        the TRACE IS the FORK'S own DOOR (the accept-and-ignore hunt's
+        fix): ``next_child`` once accepted ``trace_id=`` and consumed
         nothing — the trace actually propagates through
         :func:`chain_fork`'s ``trace_id=`` (the caller passes both legs
         the same row value). The decorative kwarg is GONE; the fork's
@@ -266,29 +330,41 @@ class Chain:
         elif isinstance(outcome, str):
             outcome_str = outcome
         else:
-            # THE TYPE-TAGGED FACE: the body returned the union ELEMENT
-            # itself — the element's runtime TYPE is the dispatch key.
+            # the body returned the union element itself — the element's
+            # runtime type is the dispatch key.
             outcome_str = type_tag(type(outcome))
         nxt = step.route.next_step(outcome_str)
         if nxt is DONE or nxt is None:
             return None
         if not isinstance(outcome, (enum.Enum, str)):
-            # THE ELEMENT IS THE RECORD (the type-tagged arm's law): the
-            # body's returned union element rides the fork as the
-            # child's wf_item — the arm's body declares its arm's type
-            # and the typed boundary re-validates the round-trip (a
-            # mis-routed element dies LOUDLY in the coercion). The
-            # enum face's verbatim-payload law is untouched.
+            # the body's returned union element rides the fork as the child's
+            # wf_item — the arm's body declares its arm's type and the typed
+            # boundary re-validates the round-trip (a mis-routed element dies
+            # loudly in the coercion). The enum face's verbatim-payload law is
+            # untouched.
             element: object = (
                 outcome.model_dump(mode="json") if isinstance(outcome, BaseModel) else outcome
             )
             payload = {"wf_item": element}
+        record_value: object = (
+            outcome if not isinstance(outcome, (enum.Enum, str)) else (payload or {}).get("wf_item")
+        )
+        target = self.resolved_policy(
+            nxt,
+            payload_values=(record_value,),
+            run_priority=run_priority,
+        )
         return ChildSpec(
             step_key=nxt,
-            actor=self.actor,
-            queue=self.queue,
+            actor=target.actor,
+            queue=target.queue,
             payload=payload,
             map_index=map_index,
+            rate_limits=target.rate_limits,
+            reservations=target.reservations,
+            priority=target.priority,
+            start_to_close=target.start_to_close,
+            retry=target.retry,
         )
 
 
@@ -298,19 +374,30 @@ def chain_start(
     *,
     map_index: int,
     trace_id: str,
+    run_priority: int | None = None,
 ) -> EmitChild:
     """One record's chain START (the emit's child spec): the chain's entry
     step, the record riding the row's payload under the item key (every
     chain step's body receives it — the fork carries the payload
     verbatim), the record's identity stamped at emit (the refuted-claim
     discipline — map_index + trace_id are REQUIRED here)."""
+    target = chain.resolved_policy(
+        chain.start,
+        payload_values=(item,),
+        run_priority=run_priority,
+    )
     return EmitChild(
         step_key=chain.start,
-        actor=chain.actor,
-        queue=chain.queue,
+        actor=target.actor,
+        queue=target.queue,
         payload={"wf_item": item},
         trace_id=trace_id,
         map_index=map_index,
+        rate_limits=target.rate_limits,
+        reservations=target.reservations,
+        priority=target.priority,
+        start_to_close=target.start_to_close,
+        retry=target.retry,
     )
 
 
@@ -319,9 +406,9 @@ def chain_fork(
     *,
     trace_id: str | None,
     max_attempts: int = 3,
-    retry_kind: str = "transient",
+    retry_kind: Literal["transient", "indefinite", "non_retryable", "permanent"] = "transient",
 ) -> ForkSpec | None:
-    """The fork a chain step's finalize carries: AT MOST ONE child (no
+    """The fork a chain step's finalize carries: AT MOST one child (no
     fan-in, no join — the route rides the certified fork-at-finalize
     machinery), the record's trace riding to it. ``None`` = the chain
     ends here (the finalize carries no fork)."""
@@ -331,6 +418,6 @@ def chain_fork(
         children=(child,),
         join=None,
         trace_id=trace_id,
-        max_attempts=max_attempts,
-        retry_kind=retry_kind,
+        max_attempts=child.resolved_max_attempts or max_attempts,
+        retry_kind=child.resolved_retry_kind or retry_kind,
     )

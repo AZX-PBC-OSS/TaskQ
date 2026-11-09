@@ -1,4 +1,4 @@
-"""SQL-exception routing pins: the (site x family) cells that used to leak.
+"""SQL-exception routing pins: the (site x family) refusal cells.
 
 Three leak classes this file pins, each against the shared classification
 doctrine in ``taskq.worker._transient`` ("any shape a site learns, every
@@ -14,7 +14,7 @@ site learns"):
   deadline but not the server-side one or raw socket death: a raise in a
   ``finally`` REPLACES the in-flight shutdown exception;
 * the 500-lesson: an exception whose own ``__str__``/``__repr__`` raises
-  (actor code is the author) converted INSIDE the handlers that were
+  (actor code is the author) converted inside the handlers that were
   classifying it, escaping the per-attempt capture contract and stranding
   the row ``running`` until lease expiry (a false ``WorkerCrashed`` audit
   trail).
@@ -88,7 +88,7 @@ class _MetaNameRaises(type):
     fallback's own interpolation is then uncontrolled input too."""
 
     @property
-    def __name__(cls) -> str:  # type: ignore[reportIncompatibleVariableOverride]  # Why: the raising __name__ IS the probe; a metaclass may shadow type.__name__.
+    def __name__(cls) -> str:  # type: ignore[reportIncompatibleVariableOverride]  # Why: the raising __name__ is the probe; a metaclass may shadow type.__name__.
         raise RuntimeError("__name__ is a lie")
 
 
@@ -121,7 +121,7 @@ def _mock_deps() -> Mock:
     deps = Mock()
     deps.notify_reconnect_lock = (
         asyncio.Lock()
-    )  # Why: reconnect serializes on a real lock; a bare Mock fails the async-CM protocol.
+    )  # Why: reconnect serializes on a real lock; a bare Mock fails the async-cm protocol.
     deps.settings = _worker_settings()
     deps.owns_notify_conn = True
     return deps
@@ -282,7 +282,7 @@ async def test_notify_teardown_unlisten_server_cancel_is_suppressed() -> None:
 async def test_hostile_str_actor_exception_is_captured_not_fatal() -> None:
     """_handle_generic_exception must complete for an exception whose
     __str__ raises: the row records the actor's failure with the constant
-    marker, the job does NOT strand running until lease expiry."""
+    marker, the job does not strand running until lease expiry."""
     from dataclasses import replace
 
     backend = InMemoryBackend(clock=FakeClock(_NOW))
@@ -364,7 +364,7 @@ def test_safe_repr_survives_a_base_exception_shaped_repr() -> None:
     rendered = "<no call>"
     try:
         rendered = safe_repr(_BaseExceptionShapedRepr())
-    # Why: the pin asserts NO escape; any escape is captured and asserted on as text.
+    # Why: the pin asserts no escape; any escape is captured and asserted on as text.
     except BaseException as trapped:
         rendered = f"ESCAPED: {type(trapped).__name__}"
     assert "repr() failed" in rendered, rendered
@@ -386,7 +386,7 @@ def test_doubly_hostile_exception_degrades_through_both_guards() -> None:
     outcome = "<no call>"
     try:
         outcome = safe_repr(exc)
-    # Why: the pin asserts NO escape; any escape is captured and asserted on as text.
+    # Why: the pin asserts no escape; any escape is captured and asserted on as text.
     except BaseException as trapped:
         outcome = f"ESCAPED: {type(trapped).__name__}"
     assert "repr() failed" in outcome, outcome
@@ -395,7 +395,7 @@ def test_doubly_hostile_exception_degrades_through_both_guards() -> None:
 
 async def test_retry_hook_failure_log_survives_hostile_repr() -> None:
     """_invoke_hook's contract is 'a raising hook never propagates'; a hook
-    exception whose __repr__ ALSO raises must not convert inside the
+    exception whose __repr__ also raises must not convert inside the
     swallow and escape the contract."""
     from taskq.retry import _invoke_hook
 

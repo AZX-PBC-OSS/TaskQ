@@ -120,7 +120,7 @@ async def test_get_redis_pool_bounds_teardown_close(monkeypatch: pytest.MonkeyPa
     import taskq.ratelimit._provider as provider_mod
 
     # Why raising=False: unguarded the module has no CLOSE_TIMEOUT_SECS seam,
-    # so the RED state must demonstrate the teardown wedge (outer timeout),
+    # so the red state must demonstrate the teardown wedge (outer timeout),
     # not an AttributeError from the shrink.
     monkeypatch.setattr(provider_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
     fake = _HungRedis()
@@ -131,7 +131,7 @@ async def test_get_redis_pool_bounds_teardown_close(monkeypatch: pytest.MonkeyPa
     )
 
     # Why the outer timeout: unguarded, the provider's finally awaited
-    # client.aclose() unbounded, so the RED state wedges here instead of
+    # client.aclose() unbounded, so the red state wedges here instead of
     # failing fast.
     with structlog.testing.capture_logs() as captured:
         async with asyncio.timeout(5):

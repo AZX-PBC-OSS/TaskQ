@@ -296,14 +296,14 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     metadata_dict.pop("batch_id", None)
     # Security boundary, same class: "cron_schedule_id" is the provenance
     # stamp the cron tick writes on its own fires and pre-scheduled twins ,
-    # the DST twin-coverage walk counts a row bearing the planning
+    # the dst twin-coverage walk counts a row bearing the planning
     # schedule's id as that schedule's delivery. A caller-supplied value
     # would let any on-demand enqueue self-assert membership in a victim
     # schedule's delivery set and silently skip its owed occurrences, so it
     # is stripped here exactly like batch_id. The tick mints the stamp
     # itself, on args it builds directly, it never crosses this boundary.
     metadata_dict.pop("cron_schedule_id", None)
-    # Library-side batch stamping, INSIDE the boundary: the strip above runs
+    # Library-side batch stamping, inside the boundary: the strip above runs
     # first regardless, so a caller-supplied batch_id can never survive, and
     # the only value that lands here is the library's own. Accepting the stamp
     # as a parameter (instead of the caller re-constructing args via
@@ -356,7 +356,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     # AfterValidator only fires inside pydantic model validation), so the
     # charset check must run here explicitly, for the per-call override
     # and the actor-declared default alike. Without it a typo'd queue name
-    # strands jobs on a queue no worker's ``queue = ANY($1)`` ever matches.
+    # strands jobs on a queue no worker's ``queue = any($1)`` ever matches.
     _validate_queue_name(resolved_queue)
 
     return EnqueueArgs(
@@ -388,7 +388,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
         unique_states=resolved_unique_states,  # type: ignore[arg-type]  # Why: tuple[str, ...] from caller and tuple[JobStatus, ...] from ActorRef both satisfy the runtime contract; JobStatus is Literal[str, ...]
         metadata=metadata_dict,
         tags=_validate_and_dedup_tags(tags),
-        # LIB-2: the fan-out ledger stamp — the caller (the enqueue arm)
+        # the fan-out ledger stamp — the caller (the enqueue arm)
         # read the ambient parent context and passed it here, the
         # builder stays pure (no contextvar read inside).
         parent_id=parent_id,
@@ -416,8 +416,8 @@ def build_batch_args(
     just admitted; when omitted, each actor's literal is used, exactly
     as before.
 
-    ``parent_id`` is the fan-out ledger stamp (LIB-2): the caller read
-    the ambient parent context ONCE per call and passed it here, every
+    ``parent_id`` is the fan-out ledger stamp: the caller read
+    the ambient parent context once per call and passed it here, every
     item carries it. Pure like the rest of the module — no contextvar
     read inside.
     """
@@ -442,7 +442,7 @@ def build_batch_args(
             start_to_close=item.start_to_close,
             max_pending=item_max_pending,
             tags=item.tags,
-            # The H5 strip-then-stamp boundary runs inside
+            # The strip-then-stamp boundary runs inside
             # build_enqueue_args: any batch_id on item.metadata is stripped
             # before the library's own batch_id is stamped.
             stamp_batch_id=batch_id_str,

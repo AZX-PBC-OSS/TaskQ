@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""RED-TEAM pins: archived keys free at prune (S3) and batch exactly-once (S4).
+"""The adversarial-review pins: archived keys free at prune (S3) and batch exactly-once (S4).
 
 Scenario 3 - an ARCHIVED job re-enqueued with the same idempotency key. The
 product decision, from the docs (``docs/guides/jobs-clients.md``:
@@ -19,10 +19,10 @@ forever) is the lifetime-key pin the scope column exists to remove. Pinned:
   path - a bulk import Postgres accepts - and a cap-discount against a row
   that does not exist).
 
-Scenario 4 - batch enqueue with a duplicate key INSIDE one batch, a batch
+Scenario 4 - batch enqueue with a duplicate key inside one batch, a batch
 that fails mid-way, and the retry. Pinned on real Postgres and on the twin:
 
-* a same-actor pair repeated inside one ``enqueue_batch`` dedupes to ONE job
+* a same-actor pair repeated inside one ``enqueue_batch`` dedupes to one job
   (both items get the same handle),
 * a mid-batch ``IdempotencyKeyActorMismatchError`` admits NOTHING (the whole
   batch is withdrawn), and the resubmission after the fix admits each item
@@ -75,7 +75,7 @@ async def _drop_schema(pg_dsn: str, schema: str) -> None:
 async def test_archived_job_key_is_free_terminal_live_row_still_dedupes(pg_dsn: str) -> None:
     """The decision pin: dedupe horizon ends at the prune.
 
-    While the terminal row is LIVE its key still dedupes to the SAME id
+    While the terminal row is LIVE its key still dedupes to the same id
     (the key is pinned to the dead job until it ages out). Once the prune
     archives the row (moved to ``jobs_archive``, deleted from ``jobs``) the
     same key enqueues a NEW job: a new id, was-not-existing semantics,
@@ -88,7 +88,7 @@ async def test_archived_job_key_is_free_terminal_live_row_still_dedupes(pg_dsn: 
         args = make_enqueue_args(idempotency_key=str(key))
         row1 = await backend.enqueue(args)
 
-        # Terminal but LIVE: the key still dedupes to the same id.
+        # Terminal but live: the key still dedupes to the same id.
         again = make_enqueue_args(idempotency_key=str(key))
         row_dedup = await backend.enqueue(again)
         assert row_dedup.id == row1.id, (
@@ -121,7 +121,7 @@ async def test_archived_job_key_is_free_terminal_live_row_still_dedupes(pg_dsn: 
             )
         assert result.archived == 1, f"the prune must archive the row; got {result}"
 
-        # Archived: the key is FREE. Re-enqueue is a new business request.
+        # Archived: the key is free. Re-enqueue is a new business request.
         reenqueue = make_enqueue_args(idempotency_key=str(key))
         row2 = await backend.enqueue(reenqueue)
         assert row2.id != row1.id, (
@@ -159,7 +159,7 @@ def _two_items_same_key(actor: str, scope: str, key: str) -> list[EnqueueArgs]:
 
 
 async def test_in_batch_duplicate_key_dedupes_to_one_job(pg_dsn: str) -> None:
-    """A same-actor (scope, key) pair repeated INSIDE one enqueue_batch
+    """A same-actor (scope, key) pair repeated inside one enqueue_batch
     dedupes: both items resolve to the same job, one row exists."""
     stack, deps, backend, schema = await _fresh_backend(pg_dsn)
     scope = f"rt-bscope-{new_base62()}"
@@ -263,7 +263,7 @@ async def test_twin_in_batch_duplicate_and_archived_key_fast_path() -> None:
     """Twin differential, scenarios 3 and 4.
 
     The mirror must agree with Postgres on the in-batch duplicate (dedupe to
-    one job) AND on the archived key (free after the archive: the fast path
+    one job) and on the archived key (free after the archive: the fast path
     accepts it and the cap preflight does not discount against it). The stale
     index entry is the red this pin exists to hold: a phantom
     ``DuplicateIdempotencyKeyError`` for a key Postgres has already freed,
@@ -309,7 +309,7 @@ async def test_twin_in_batch_duplicate_and_archived_key_fast_path() -> None:
     assert result.archived == 1, "the twin archive must move the terminal row"
 
     # The fast path accepts the freed key exactly like Postgres' COPY,
-    # checked BEFORE anything re-registers the pair.
+    # checked before anything re-registers the pair.
     count = await backend.enqueue_batch_fast(
         [make_enqueue_args(idempotency_key="rt-twin-arch", scheduled_at=past)]
     )
@@ -318,7 +318,7 @@ async def test_twin_in_batch_duplicate_and_archived_key_fast_path() -> None:
         "import reusing it, Postgres' COPY does (the index is over live rows). "
         "A phantom DuplicateIdempotencyKeyError here is the stale-index red."
     )
-    # ...and a second fast item on the now-live pair refuses (it IS stored).
+    # ...and a second fast item on the now-live pair refuses (it is stored).
     with pytest.raises(DuplicateIdempotencyKeyError):
         await backend.enqueue_batch_fast(
             [make_enqueue_args(idempotency_key="rt-twin-arch", scheduled_at=past)]
@@ -352,9 +352,9 @@ async def test_twin_in_batch_duplicate_and_archived_key_fast_path() -> None:
         make_enqueue_args(idempotency_key="rt-twin-cap-live", scheduled_at=past)
     )
     assert live_pending.status == "pending"
-    # A NEW item with the archived pair is NOT a dedup hit (the row is
+    # A new item with the archived pair is not a dedup hit (the row is
     # gone), it counts toward the cap, and the batch refuses it. The cap
-    # rides the ARGS (batch_cap_groups groups carried caps only, the shape
+    # rides the args (batch_cap_groups groups carried caps only, the shape
     # the client resolves from actor config), so the item carries it.
     from taskq.exceptions import BatchMaxPendingExceededError
 

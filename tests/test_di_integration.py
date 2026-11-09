@@ -144,14 +144,14 @@ async def test_worker_startup_with_default_providers(
     result = task.result()
     assert result == 0, f"worker exited with code {result}, expected 0"
 
-    # DoD: WorkerSettings is in the registry at PROCESS scope.
+    # DoD: WorkerSettings is in the registry at process scope.
     # The registry is internal to _main; we verify the observable
     # consequence: _main completed bootstrap without error (the
     # validate + scope-bootstrap path all depend on
-    # WorkerSettings at PROCESS being resolvable).
+    # WorkerSettings at process being resolvable).
 
 
-# ── Neo4jClient-like ACM at LOOP scope ──────────────
+# ── Neo4jClient-like acm at loop scope ──────────────
 
 
 class _Neo4jClientACM:
@@ -218,7 +218,7 @@ async def test_acm_at_loop_scope(pg_dsn: str) -> None:
 
 async def _db_session_provider(
     pool: asyncpg.Pool,
-) -> AsyncIterator[object]:  # pyright: ignore[reportReturnType] # Why: pool.acquire() yields PoolConnectionProxy, not asyncpg.Connection; runtime delegates all Connection methods - the proxy IS the connection for callers
+) -> AsyncIterator[object]:  # pyright: ignore[reportReturnType] # Why: pool.acquire() yields PoolConnectionProxy, not asyncpg.Connection; runtime delegates all Connection methods - the proxy is the connection for callers
     async with pool.acquire() as conn:
         yield conn
 
@@ -264,7 +264,7 @@ async def test_db_session_provider_with_real_pool(pg_dsn: str) -> None:
     await process_scope.shutdown()
 
 
-# ── Mixed-scope lifecycle (ACM + async-gen) ────────
+# ── Mixed-scope lifecycle (acm + async-gen) ────────
 
 
 async def test_mixed_scope_lifecycle(pg_dsn: str) -> None:

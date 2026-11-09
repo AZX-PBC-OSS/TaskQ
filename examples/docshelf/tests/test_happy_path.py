@@ -1,4 +1,4 @@
-"""THE HAPPY PATH DRILL — a 50-document shelf, end to end, on real
+"""the HAPPY PATH DRILL — a 50-document shelf, end to end, on real
 worker processes: ingest → chunk → extract → child-analyze → aggregate →
 route → digest, the typed receipt EXACT, the chunk fan-out's concurrency
 MEASURED (the overlap is real, not asserted)."""
@@ -56,14 +56,14 @@ async def test_happy_path_50_documents(
     assert len(flow_ids) == 1, "50 docs fit one page"
     flow_id = flow_ids[0]
 
-    # REAL WORKERS: two processes, 8 slots each (the fleet).
+    # real workers: two processes, 8 slots each (the fleet).
     await workers.spawn_ready(pool, tag="happy-a", max_concurrency=8)
     await workers.spawn_ready(pool, tag="happy-b", max_concurrency=8)
 
     status = await await_terminal(pool, schema, flow_id, timeout_s=240)
     assert status == "succeeded", f"the happy path terminal-failed: {status}"
 
-    # THE TYPED RECEIPT, DECODED — every document in EXACTLY one arm.
+    # the typed receipt, decoded — every document in exactly one arm.
     runner = FlowRunner(SHELF_APP.get("docshelf_batch"), pool, schema)
     result = await runner.result(flow_id)
     digest = ShelfDigest.model_validate(result)
@@ -77,22 +77,22 @@ async def test_happy_path_50_documents(
     # the child-flow face: the 50-doc corpus deterministically includes large docs
     assert digest.child_flows_spawned >= 1, digest.child_flows_spawned
 
-    # THE REGISTER: exactly 50 rows (the ingest idempotency's receipt).
+    # exactly 50 rows (the ingest idempotency's receipt).
     n_docs = await pool.fetchval(
         f'SELECT count(*) FROM "{schema}".docshelf_documents WHERE doc_id LIKE $1',  # noqa: S608  # Why: the interpolated value is the app's settings-validated schema identifier; every caller-controlled value is $N-bound.
         "happy-%",  # Why: the interpolated value is the app's settings-validated schema identifier; every caller-controlled value is $N-bound.
     )
     assert int(n_docs) == 50
 
-    # THE EXTRACTION LEDGER: every chunk exactly ONE success; no chunk terminal-failed.
+    # every chunk exactly one success; no chunk terminal-failed.
     summary = await store.api_call_summary(pool, schema)
     n_success = sum(1 for per_chunk in summary.values() if per_chunk.get("success", 0) >= 1)
     assert n_success == digest.total_chunks, (
         f"{n_success} chunks extracted, the digest says {digest.total_chunks}"
     )
 
-    # THE CHILD FLOWS: every spawned child terminalized succeeded; the
-    # links are rows (the operator's parent↔child join).
+    # every spawned child terminalized succeeded; the links are rows (the
+    # operator's parent↔child join).
     links = await store.child_links(pool, schema)
     mine = [lnk for lnk in links if lnk["parent_run_id"] == flow_id]
     assert len(mine) == digest.child_flows_spawned
@@ -105,17 +105,16 @@ async def test_happy_path_50_documents(
         )
         assert child_status == "succeeded", f"child {link['child_run_id']} terminal: {child_status}"
 
-    # THE DIGEST ROW published exactly once.
+    # the digest row published exactly once.
     n_digests = await pool.fetchval(
         f'SELECT count(*) FROM "{schema}".docshelf_digests WHERE delivery_id = $1',  # noqa: S608  # Why: the interpolated value is the app's settings-validated schema identifier; every caller-controlled value is $N-bound.
         delivery_id,  # Why: the interpolated value is the app's settings-validated schema identifier; every caller-controlled value is $N-bound.
     )
     assert int(n_digests) == 1
 
-    # THE CONCURRENCY IS REAL: the extraction map's children (the
-    # DOCUMENTS — the map partitions by document) OVERLAP on the
-    # timeline (30-200 ms jittered per-chunk work inside each, many
-    # workers).
+    # the extraction map's children (the documents — the map partitions by
+    # document) overlap on the timeline (30-200 ms jittered per-chunk work
+    # inside each, many workers).
     rows = await pool.fetch(
         f'SELECT started_at, finished_at FROM "{schema}".jobs '  # noqa: S608  # Why: the interpolated value is the app's settings-validated schema identifier; every caller-controlled value is $N-bound.
         "WHERE metadata->>'flow_id' = $1 AND step_key = 'ingest.item' AND finished_at IS NOT NULL",

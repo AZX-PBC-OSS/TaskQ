@@ -192,7 +192,7 @@ async def workgroup_supervisor(
 
     Writes the workgroup TOML to ``tmp_path``, spawns ``taskq workgroup
     start`` (the console script next to ``sys.executable``; there is no
-    ``taskq.__main__``), and gates readiness on BOTH labels showing a
+    ``taskq.__main__``), and gates readiness on both labels showing a
     fresh post-register heartbeat (``last_seen_at > started_at``) with a
     non-NULL ``workgroup_instance`` - the same post-register proof as the
     container fixtures, so a child stuck between register and the first

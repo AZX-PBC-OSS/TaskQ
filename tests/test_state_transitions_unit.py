@@ -4,7 +4,7 @@ Each test asserts the post-state via ``backend.get``, the AttemptRow side
 effect via ``backend.get_attempts``, and the EventRow side effect via
 ``backend.get_events``.
 
-PG-specific isolate_self bypass paths are NOT in scope here - they are
+PG-specific isolate_self bypass paths are not in scope here - they are
 exercised against PG via the existing isolate_self test patterns.
 """
 
@@ -798,7 +798,7 @@ async def test_running_to_crashed_reclaim(
     )
 
 
-# ── running → pending [BYPASS] via reclaim_expired_locks ────────
+# ── running → pending [bypass] via reclaim_expired_locks ────────
 
 
 async def test_running_to_pending_bypass_reclaim(
@@ -808,7 +808,7 @@ async def test_running_to_pending_bypass_reclaim(
     # retry_jitter=0.0 doubles the fleet randomness at the boundary: the
     # sweep stamps the row's own retry-curve backoff (mirroring
     # _RECLAIM_RAW_BACKOFF_SQL's per-row random()), so a jittered row
-    # reschedules to ANY instant in the envelope and the exact-timestamp
+    # reschedules to any instant in the envelope and the exact-timestamp
     # assertion below could never be deterministic against one.
     job_id, _worker_id = await _enqueue_and_dispatch(
         memory_jobs, max_attempts=3, retry_kind="transient", retry_jitter=0.0

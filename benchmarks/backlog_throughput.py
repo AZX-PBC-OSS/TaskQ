@@ -70,7 +70,7 @@ from tors_harness import (
 
 from taskq._ids import new_job_id  # pyright: ignore[reportPrivateUsage]
 from taskq.backend._enqueue import (  # pyright: ignore[reportPrivateUsage]
-    _enqueue_batch_fast,  # Why: the private function IS the COPY enqueue path; the seed must ride the production hot path.
+    _enqueue_batch_fast,  # Why: the private function is the COPY enqueue path; the seed must ride the production hot path.
 )
 from taskq.backend._protocol import EnqueueArgs  # pyright: ignore[reportPrivateUsage]
 from taskq.backend._sql_templates import render  # pyright: ignore[reportPrivateUsage]
@@ -102,7 +102,7 @@ CLAIM_WIDTHS = [1, 50]  # dispatch_batch limit per shape
 LOCK_LEASE = timedelta(seconds=30)
 
 #: Wake samples per arm per checkpoint, enqueue → body entry on a real
-#: worker. The depth backlog parks on a queue with NO registered actor
+#: worker. The depth backlog parks on a queue with no registered actor
 #: (dispatch never claims it); probe jobs ride their own queue, so each
 #: sample's claim is uncontended by the backlog while the backlog's plan
 #: pressure — the thing being measured — is fully present.
@@ -302,7 +302,7 @@ async def claim_ladder(pg_dsn: str, checkpoints: list[int]) -> list[dict[str, An
                     assert len(rows) <= width
                     samples.append(dt)
                     # Bookkeeping, not measurement: put the claimed rows
-                    # BACK on the queue (pending, attempt reset), so the
+                    # back on the queue (pending, attempt reset), so the
                     # depth the next round sees is exactly the
                     # checkpoint's — at depth 1k the 200 x 50 rounds
                     # would otherwise drain their own backlog (measured:
@@ -346,7 +346,7 @@ class WakePayload(BaseModel):
 
 #: body-entry stamps keyed by job id, written by the module-level probe
 #: actor and popped by the driver on the same event loop (the worker runs
-#: in THIS process — the latency ladder's shared-clock doctrine). Samples
+#: in this process — the latency ladder's shared-clock doctrine). Samples
 #: are sequential, one probe job in flight per arm.
 _STARTS: dict[Any, float] = {}
 
@@ -372,8 +372,8 @@ async def _wake_body(payload: WakePayload, ctx: JobContext[WakePayload]) -> dict
 class _WakeProbe:
     """One real worker (``worker_main_async``), notify or poll arm.
 
-    Each arm gets its OWN (actor, queue) pair (``wake_probe_notify`` /
-    ``wake_probe_poll`` on separate queues) and registers ONLY that actor:
+    Each arm gets its own (actor, queue) pair (``wake_probe_notify`` /
+    ``wake_probe_poll`` on separate queues) and registers only that actor:
     the arms run interleaved sample by sample, and disjoint queues are what
     keeps one arm's worker from claiming the other's probe jobs. The depth
     backlog (actor ``depth_actor``) has no registered actor on either
@@ -388,7 +388,7 @@ class _WakeProbe:
         data: dict[str, str] = {
             "TASKQ_PG_DSN": pg_dsn,
             "TASKQ_SCHEMA_NAME": SCHEMA,
-            # The worker's dispatch claims only its OWN queue set; without
+            # The worker's dispatch claims only its own queue set; without
             # this the worker registers queues=['default'] and never
             # claims the wake probes (measured: the soak's worker sat
             # pending on exactly this).
@@ -638,10 +638,10 @@ async def main() -> None:
             "wake_q_poll",
         )
         # The depth backlog's actor needs a registered (actor, queue) row:
-        # dispatch's capacity chain enumerates REGISTERED actors only, so
+        # dispatch's capacity chain enumerates registered actors only, so
         # without it the claim admits nothing (measured: 0 rows claimed).
         # The wake worker still never touches this queue — its dispatch
-        # rides its OWN registry's queues, and 'depth_actor' is not in it.
+        # rides its own registry's queues, and 'depth_actor' is not in it.
         await conn.execute(
             f'INSERT INTO "{SCHEMA}".actor_config (actor, queue) VALUES ($1, $2) '  # noqa: S608
             "ON CONFLICT DO NOTHING",

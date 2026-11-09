@@ -1,0 +1,6 @@
+# THE FAST TIER at -n 8 (pytest -n 8 -m 'not slow and not load_sensitive') at the re-stamp head 4441dd642fbd47501d2830eba3622869551d68d5
+SKIPPED [3] tests/test_atk_upgrade_kill_mid_migration.py:154: boundary beyond this file's statement count
+SKIPPED [1] tests/test_backend_equivalence.py:670: connection-loss test requires PostgresBackend
+14129 passed, 15 skipped, 151 warnings in 680.27s (0:11:20)
+rc=0
+head: 4441dd642fbd47501d2830eba3622869551d68d5

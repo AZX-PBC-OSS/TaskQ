@@ -37,7 +37,7 @@ from asyncpg.exceptions import InvalidPasswordError
 
 # Why: typer >=0.27 vendors click under typer._click and its group classes
 # raise/annotate against the vendored module, not any site-packages click.
-# _WorkerCommandGroup overrides resolve_command, so it must use the SAME
+# _WorkerCommandGroup overrides resolve_command, so it must use the same
 # Context/Command/UsageError objects the base class does.
 from typer._click.core import Command, Context
 from typer._click.exceptions import UsageError
@@ -246,7 +246,7 @@ job_app = typer.Typer(
 )
 app.add_typer(job_app, name="job")
 
-# The workflow-run surface (T12): one question, one command — stuck →
+# The workflow-run surface: one question, one command — stuck →
 # status, deliver → signal, reply → resolve, stop → cancel, retry-a-
 # failed-node → retry, inventory → list. The analysis lives in
 # taskq.workflows._cli (the _doctor seam); the write verbs call the
@@ -336,18 +336,18 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
             )
             raise typer.Exit(code=1)
         # Duplicate names are refused, not collapsed. A dict comprehension
-        # silently let the LAST duplicate win: two distinct handlers
+        # silently let the last duplicate win: two distinct handlers
         # registered under one name booted with actor_count == 1 and every
         # dispatch for the loser ran the winner's code, the worst failure
         # mode a registry can have (the wrong function executes, no
         # symptom anywhere). The duplicate name is a programming error,
-        # refused at load: the message names the collision and BOTH
+        # refused at load: the message names the collision and both
         # registration sites (each handler's module + qualname), the same
         # loud-refusal contract as the empty-registry guard below. The
-        # exact-same ActorRef object listed twice is NOT a collision: the
+        # exact-same ActorRef object listed twice is not a collision: the
         # dispatch behavior is byte-identical (one function, one config),
-        # so collapsing it preserves the old shape for restart/registry-
-        # rebuild flows that may re-list an entry.
+        # so collapsing it preserves the behavior restart/registry-
+        # rebuild flows that re-list an entry rely on.
         registry = {}
         for ref in items:
             existing = registry.get(ref.name)
@@ -371,11 +371,54 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
         raise typer.Exit(code=1)
 
     if not registry:
-        typer.echo(
-            f"actor registry at {actors} is empty, a worker with no actors "
-            "dispatches nothing; refusing to boot",
-            err=True,
+        from taskq.workflows._worker_execution import (
+            WorkflowActorCapacityConflictError,
+            WorkflowActorQueueConflictError,
+            iter_imported_apps,
+            project_with_failures,
         )
+
+        try:
+            cohorts, failures = project_with_failures()
+        except (WorkflowActorCapacityConflictError, WorkflowActorQueueConflictError) as exc:
+            # two healthy declarations fighting over one actor's queue or
+            # capacity is the drift the projection refuses — the operator reads
+            # the reason and exits, never a traceback.
+            typer.echo(
+                f"the workflow declarations at {actors} conflict, refusing to boot: {exc}",
+                err=True,
+            )
+            raise typer.Exit(code=1) from exc
+        if cohorts:
+            typer.echo(
+                f"actor registry at {actors} is empty; the imported "
+                "WorkflowApp mounts runnable workflow cohorts, so the "
+                "worker dispatches workflow steps only",
+                err=True,
+            )
+            return {}
+        if iter_imported_apps():
+            # An app is mounted and nothing runnable projects: name the
+            # defects (the compile failures; the empty graphs) — the
+            # operator is never told to import what already imported.
+            reasons = failures or [
+                "the app declares no runnable workflow (the app is empty, "
+                "or its builders wire no nodes)"
+            ]
+            typer.echo(
+                f"nothing to dispatch at {actors}: the actor registry is "
+                "empty and the imported WorkflowApp projects no runnable "
+                "workflow; refusing to boot. The defects:\n  " + "\n  ".join(reasons),
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"nothing to dispatch at {actors}: the actor registry is "
+                "empty and no WorkflowApp is imported in the module — a "
+                "worker with no actors and no workflows dispatches "
+                "nothing; refusing to boot",
+                err=True,
+            )
         raise typer.Exit(code=1)
     return registry
 
@@ -632,12 +675,12 @@ def worker(
         # collision point: two workers on one host left the second with no
         # socket at all (its ``health-server-unavailable`` warning, boot
         # continuing) while ``taskq health`` silently answered with the
-        # FIRST worker's state, the cross-report that made the worker that
+        # first worker's state, the cross-report that made the worker that
         # just warned look healthy. A pid-unique path makes every
         # co-located worker own its socket; an explicit value here or in
         # the cascade stays authoritative verbatim, including one spelled
-        # as the old default (that operator asked for the shared path and
-        # keeps its collision warning).
+        # as the static shared path (that operator asked for the shared
+        # path and keeps its collision warning).
         settings.health_socket_path = default_worker_health_socket_path()
     connections, pg_provider = _credential_connections(
         settings,
@@ -695,12 +738,12 @@ def worker(
     # process is not gone yet: the exit path, interpreter teardown, atexit
     # hooks and thread joins all still run, and a loaded host stretches
     # every one of them. A signal in that window kills the process with
-    # -15 and ERASES the drain's verdict (the observed fleet-wide-storm
+    # -15 and erases the drain's verdict (the observed fleet-wide-storm
     # shape - the orchestrator's redundant stop-signal landing after one
     # pod had already drained cleanly). The escalation contract only has
     # meaning while the loop lives; once it is closed there is nothing
     # left to escalate, so SIGTERM is ignored and the exit status stays
-    # the drain's. This guard lives HERE - the process is genuinely about
+    # the drain's. This guard lives here - the process is genuinely about
     # to die - and not in ``worker_main``: an ignored disposition set in a
     # library function is inherited by every process that host forks
     # afterwards (the proven -9 leak), while an entrypoint's next act is
@@ -856,7 +899,7 @@ async def _status(settings: TaskQSettings, *, conn_factory: ConnFactory | None =
         applied = await migrate_mod.list_applied(conn, settings.schema_name)
         # checksum_drifts' docstring promises status shares the drift report
         # with migrate up's refusal — an operator checking a drifted ledger
-        # must see it HERE, not discover it as a deploy-time refusal. The
+        # must see it here, not discover it as a deploy-time refusal. The
         # connection is the one this command owns; the call is read-only.
         drifts = await migrate_mod.checksum_drifts(conn, schema=settings.schema_name)
     finally:
@@ -896,7 +939,7 @@ async def _up(
     allow_checksum_drift: bool = False,
     conn_factory: ConnFactory | None = None,
 ) -> None:
-    # Why locked: the README names `taskq migrate up` as THE deploy step, and a
+    # Why locked: the readme names `taskq migrate up` as the deploy step, and a
     # container platform will start two replicas or retry a failed job, so "run
     # it once, sequentially" is not something the caller can guarantee.
     # Unlocked, the loser of a concurrent race against a virgin schema hits a
@@ -905,7 +948,7 @@ async def _up(
     #
     # Why the lock is taken here rather than by delegating to
     # apply_pending_locked: this path owns the connection so it can run
-    # _report_up_failure diagnostics on it AFTER a failure, and
+    # _report_up_failure diagnostics on it after a failure, and
     # apply_pending_locked converts failures into SystemExit before that could
     # run. Both paths serialize on the same advisory lock via the shared
     # migration_advisory_lock helper, so there is no second lock protocol.
@@ -988,7 +1031,7 @@ def migrate_disable_hypertables(
     rows return into a table whose shape is the bundled migrations' own output
     (count- and twin-verified at every hand-off — see
     ``docs/guides/timescaledb.md``). Flip ``TASKQ_TIMESCALEDB_HYPERTABLES``
-    off FIRST: with the flag still true this refuses loudly (the library-level
+    off first: with the flag still true this refuses loudly (the library-level
     gate is a zero-statement no-op; the CLI does not let a mistyped invocation
     look like a completed disable). A crashed run converges on the re-run.
     """
@@ -1014,7 +1057,7 @@ async def _disable_hypertables(
     *,
     conn_factory: ConnFactory | None = None,
 ) -> None:
-    """The ``migrate disable-hypertables`` body: the SAME advisory-lock and
+    """The ``migrate disable-hypertables`` body: the same advisory-lock and
     settings flow as ``migrate up`` (the deploy step's conversion and this
     disable serialize on the same migration advisory lock; WorkerSettings
     re-reads the same cascade the workers run with), with ``migrate up``'s
@@ -1318,7 +1361,7 @@ def actor_config_move_queue(
     actor: Annotated[str, typer.Argument(help="Actor name to move.")],
     new_queue: Annotated[str, typer.Argument(help="Target queue name.")],
 ) -> None:
-    """Move an actor to a different queue in ONE operator action.
+    """Move an actor to a different queue in one operator action.
 
     Rewrites the stored queue assignment, carries the old queue's mode and
     max_concurrent to the target when the target has no row of its own, and
@@ -1373,7 +1416,7 @@ async def _actor_config_move_queue(
         # committed before it are real progress and the drain's queue
         # predicate skips rows already moved, so the only action is to run
         # the command again, which is a refusal to report, not a crash.
-        # The error text is not echoed: the server appends DETAIL quoting
+        # The error text is not echoed: the server appends detail quoting
         # row values, which must not cross this boundary.
         typer.echo(
             f"move-queue of actor {actor!r} onto {new_queue!r} aborted: a drain batch "
@@ -1518,7 +1561,7 @@ def _print_actor_diff(
         # Registry-only actor: nothing has ever seeded a row. Enforcement
         # differs per field: the dispatch CTE builds its candidate gate
         # FROM actor_config (inner join), so with no row the actor is
-        # NEVER dispatched, max_concurrent is effectively 0, not the
+        # never dispatched, max_concurrent is effectively 0, not the
         # literal. max_pending / result_ttl enforcement can see the code
         # literal, so those fall back to it.
         assert ref is not None  # row is None only when the name came from the registry
@@ -1757,7 +1800,7 @@ async def _list_worker_stall_tallies(
             # A plain asyncpg.connect returns jsonb as text: the doctor's
             # reporting connection registers no codec, so the heartbeat's
             # tally arrives as a JSON string here (measured: the dict
-            # check alone silently dropped EVERY live tally).
+            # check alone silently dropped every live tally).
             try:
                 # orjson raises JSONDecodeError, a ValueError subclass, so
                 # the except below catches it unchanged. via _json per the
@@ -1829,9 +1872,8 @@ def doctor(
     except (SystemExit, typer.Exit):
         raise
     except Exception as exc:
-        # An unreachable Postgres used to escape as a raw traceback (the
-        # connect's OSError, exit 1), a shape no other CLI failure surface
-        # shows. The report's own contract is a rendered answer, so the
+        # An unreachable Postgres is a rendered answer, never a raw
+        # traceback: the report's own contract is a rendered answer, so the
         # connection failure gets the same treatment every other CLI
         # failure gets: migrate up's two-line pattern, the cause's
         # headline and the one action to take, no traceback.
@@ -1915,7 +1957,7 @@ async def _doctor(
     )
 
     # The one finding that needs an operator-supplied number: the platform's
-    # stop grace (Kubernetes terminationGracePeriodSeconds, ACA/ECS stop
+    # stop grace (Kubernetes terminationGracePeriodSeconds, aca/ecs stop
     # timeout, compose stop_grace_period, systemd TimeoutStopSec) is
     # invisible to the running worker, and when it sits below the worker's
     # own modelled worst case the orchestrator SIGKILLs the teardown
@@ -1959,7 +2001,7 @@ async def _report_up_failure(conn: asyncpg.Connection | None, schema: str, exc: 
     The diagnosis lives in :mod:`taskq.migrate` (shared with the
     worker/startup path).
 
-    The report must NEVER mask the original error: when the conn was never
+    The report must never mask the original error: when the conn was never
     acquired (connect itself failed) or the diagnosis itself raises, the
     fallback is the generic two-line report, the original error's headline
     and the fix-and-re-run action.
@@ -1993,13 +2035,13 @@ async def _health_request(settings: WorkerSettings, path: str) -> int:
             and settings.health_socket_path
             == WorkerSettings.get_fields()["health_socket_path"][1].default  # pyright: ignore[reportAttributeAccessIssue,reportIndexIssue]  # Why: the field's static fallback literal, read rather than restated so the two cannot drift (get_fields is the settings base's own reflection API; [1] is the FieldInfo).
         ):
-            # The probe ran with NO explicit path anywhere in the cascade,
+            # The probe ran with no explicit path anywhere in the cascade,
             # so it aimed at the static fallback that an unconfigured
             # worker no longer binds (it mints /tmp/taskq_health_<pid>.sock
             # at boot). The unreachable line alone would send the operator
             # hunting for a worker that is perfectly healthy; the hint is
             # the per-pid discovery contract's other half. An operator who
-            # DID set an explicit path (here or in the cascade) gets the
+            # did set an explicit path (here or in the cascade) gets the
             # plain line: their value was honored verbatim.
             typer.echo(
                 "hint: with no explicit path an unconfigured worker binds a "
@@ -2102,7 +2144,7 @@ def _build_sso_bundle(settings: TaskQSettings, base_path: str) -> Any | None:
             session_secret=saml.session_secret.get_secret_value(),
             # Must be threaded through explicitly, exactly as the OIDC branch above does:
             # SAMLAuthConfig carries its own 28800 default, so omitting this silently pinned
-            # every SAML deployment to 8h and made TASKQ_SAML_SESSION_MAX_AGE_SECONDS, a
+            # every saml deployment to 8h and made TASKQ_SAML_SESSION_MAX_AGE_SECONDS, a
             # documented, `ge=60`-validated knob, a no-op. It bounds the itsdangerous
             # signature max_age (auth/_session.py), i.e. how long a stolen admin cookie stays
             # valid, so an operator shortening it must actually take effect.
@@ -2127,7 +2169,7 @@ async def _build_ui_pool(pool_factory: PoolFactory) -> asyncpg.Pool:
     the factory would park `taskq ui serve` forever before any request is
     served, and a hung rotation would park the reload loop with the old
     pool still serving and nothing reporting it. _UI_FACTORY_TIMEOUT_SECS
-    is the SAME bound the worker applies to its bootstrap and reload
+    is the same bound the worker applies to its bootstrap and reload
     factory calls (worker/deps.py).
     """
     try:
@@ -2265,7 +2307,7 @@ def _ui_serve(
     auth_dependency = sso_bundle.dependency if sso_bundle is not None else None
 
     health_deps: list[Any] = []
-    # Unwrap for the set-check, None-safe: a SecretStr is ALWAYS truthy (even
+    # Unwrap for the set-check, None-safe: a SecretStr is always truthy (even
     # the empty default), so `if settings.health_token:` would enable token
     # auth with an empty token; and an unset field loads as None, not "".
     if settings.health_token is not None and settings.health_token.get_secret_value():
@@ -2355,7 +2397,7 @@ def _ui_serve(
                 await close_pool_bounded(application.state.pg_pool, "ui-admin", CLOSE_TIMEOUT_SECS)
 
             # Why a pushed callback instead of stack.enter_async_context(pool):
-            # Pool.__aexit__ closes UNBOUNDED, a dead PG would wedge UI
+            # Pool.__aexit__ closes unbounded, a dead PG would wedge UI
             # shutdown. The bounded helper terminates the pool on
             # timeout and never raises.
             stack.push_async_callback(_close_ui_pool)
@@ -2391,7 +2433,7 @@ def _ui_serve(
                         ) from exc
 
                 # Why not stack.enter_async_context(client): Redis.__aexit__
-                # calls aclose() UNBOUNDED (and shielded), a hung broker
+                # calls aclose() unbounded (and shielded), a hung broker
                 # would wedge UI shutdown. initialize()
                 # preserves __aenter__'s eager-setup semantics; the pushed
                 # callback bounds the close instead (taskq._close
@@ -2404,7 +2446,7 @@ def _ui_serve(
                     # the pool close above).
                     await close_redis_bounded(client, "ui-admin", CLOSE_TIMEOUT_SECS)
 
-                # Why push BEFORE initialize(): from_url() has already
+                # Why push before initialize(): from_url() has already
                 # allocated the connection pool, so if initialize() raises
                 # (broker down) the failed eager setup must still release it
                 # , the unwind runs the pushed callback through the bounded
@@ -2616,7 +2658,7 @@ def ui_serve(
         # the factory-path twin of the create_pool bound in the lifespan,
         # or the credential-provider deployment would be the one unbounded
         # admin pool left standing. (The migrate conn_factory below is
-        # deliberately NOT bounded: DDL may legitimately exceed a
+        # deliberately not bounded: DDL may legitimately exceed a
         # per-query budget.)
         pool_factory = make_pg_pool_factory(
             resolved_dsn,
@@ -2971,7 +3013,7 @@ def _format_insights_duration(seconds: float | None) -> str:
 # ── insights ───────────────────────────────────────────────────────────
 #
 # The terminal surface for taskq.insights (the pure-read SQL layer over
-# the job ledger). NO hand-written SQL here: every row the command prints
+# the job ledger). no hand-written SQL here: every row the command prints
 # comes from the module's fetchers, so the CLI and any other consumer of
 # the layer answer the operator's question with one definition. The
 # doctor's read-only discipline holds: the fetchers are SELECT-only, the
@@ -3025,7 +3067,7 @@ def insights(
 ) -> None:
     """Render the operational-insights SQL layer as operator tables.
 
-    Read-only like `taskq doctor`: every statement is a SELECT over BOTH
+    Read-only like `taskq doctor`: every statement is a SELECT over both
     retention tiers (live `jobs` + `jobs_archive`), the command issues no
     write, and it exits 0 whether or not there is anything to report.
     Safe to run against production mid-incident.
@@ -3064,7 +3106,7 @@ def insights(
       not a promise: it assumes the next window looks like the last
       one, that the queue's workers stay up, and that nothing enqueues
       behind the current depth. A queue whose window carried no
-      completions has NO estimate: its eta renders `no traffic in
+      completions has no estimate: its eta renders `no traffic in
       window` — never 0, which would read as "already drained". Widen
       `--window` (up to the archive retention floor) before trusting
       anything else.
@@ -3074,12 +3116,12 @@ def insights(
       schedule enqueued in the window), `cleared` (of those,
       terminalised), `outstanding` (the schedule's non-terminal backlog
       right now, windowless), `verdict`. `!! runaway trending` marks
-      fires > cleared in BOTH the current and the prior equal window —
+      fires > cleared in both the current and the prior equal window —
       two consecutive windows of fan-out outrunning clearance is the
       runaway shape; one window is a burst. Confounds: a DST `allof`
       schedule legitimately doubles a fire in the overlap hour (read
       the verdict against the schedule's dst_strategy), and a
-      budget-deferred fire enqueues NO row, so a deferral reads as zero
+      budget-deferred fire enqueues no row, so a deferral reads as zero
       fires here — its record is the `taskq.cron.budget_deferrals`
       counter, not this ledger.
 
@@ -3374,12 +3416,12 @@ _JOB_SHOW_COLUMNS: Final = (
     "error_message",
     "idempotency_key",
     "tags",
-    # THE 3AM FACES (the observability lane's cure): the lease columns
-    # (the lost-worker drill's "the worker died" vs "the work is slow"
+    # The 3am faces: the lease columns
+    # (the lost-worker probe's "the worker died" vs "the work is slow"
     # distinction — the reclaim sweep's input is lock_expires_at) + the
     # metadata jsonb (the cross-run cache hit's receipt lives at
-    # metadata.wf_cache_hit; the audit drill's provenance face). The
-    # RENDER stays conditional: a terminal row's lease face is history,
+    # metadata.wf_cache_hit; the provenance face). The
+    # render stays conditional: a terminal row's lease face is history,
     # not liveness, and only the receipt is ever printed from metadata.
     "locked_by_worker",
     "last_heartbeat_at",
@@ -3495,32 +3537,28 @@ async def _job_show(
     _render_lease_face(row)
     _render_cache_hit(row)
     if row["error_class"] is not None:
-        # THE DB-SOURCED TEXT'S DISCIPLINE (finding 14's cure — the
-        # job-show seat's own face): error_class is written by the
-        # ladder/reaper paths as a class name, but the COLUMN is text —
-        # a hand-crafted or legacy row's value flows to the tty here
-        # RAW (multi-line, ANSI-carrying, unbounded). The same
-        # `_bounded_line` law the wf CLI's error-class seat carries
-        # (collapse + the 60-class bound — one home, never a second
-        # implementation).
+        # error_class is written by the ladder/reaper paths as a class name,
+        # but the column is text — a hand-crafted or legacy row's value flows
+        # to the tty here raw (multi-line, ansi-carrying, unbounded). The same
+        # `_bounded_line` law the wf CLI's error-class seat carries (collapse +
+        # the 60-class bound — one home, never a second implementation).
         from taskq.workflows._cli import (
-            _bounded_line,  # pyright: ignore[reportPrivateUsage]  # Why: the bound's ONE home is the wf CLI's own private — the discipline is imported, never duplicated.
+            _bounded_line,  # pyright: ignore[reportPrivateUsage]  # Why: the bound's one home is the wf CLI's own private — the discipline is imported, never duplicated.
         )
 
         typer.echo(f"error_class: {_bounded_line(row['error_class'], 60)}")
-        # THE DB-SOURCED TEXT'S DISCIPLINE (the class seat: the job-show's
+        # the DB-SOURCED text's discipline (the class seat: the job-show's
         # own face) — the collapse + the bound, never a raw multi-line or
         # escape-carrying blob in a line-oriented shell surface.
         typer.echo(f"error_message: {_format_event_detail(row['error_message'])}")
     if row["idempotency_key"] is not None:
         typer.echo(f"idempotency_key: {row['idempotency_key']}")
-    # THE TAGS LINE (the recurring-run's display identity): tags are the
-    # operator's grouping/filtering surface everywhere else (the
-    # cancel-where/GIN-index face), so the pointed read names them too —
-    # an absent set prints `(none)`, distinguishable from silence.
-    # The text[] column's decode shape is annotated at the row read (the
-    # Any-contract walk's boundary: asyncpg's accessor hands back Any;
-    # the annotation + the isinstance guard below bound the walk's input).
+        # tags are the operator's grouping/filtering surface everywhere else (the
+    # cancel-where/gin-index face), so the pointed read names them too — an
+    # absent set prints `(none)`, distinguishable from silence. The text[]
+    # column's decode shape is annotated at the row read (the Any-contract
+    # walk's boundary: asyncpg's accessor hands back Any; the annotation + the
+    # isinstance guard below bound the walk's input).
     tags_row: list[object] | None = row["tags"]
     tags: list[str] = [str(member) for member in tags_row] if isinstance(tags_row, list) else []
     typer.echo("tags: " + (", ".join(tags) if tags else "(none)"))
@@ -3548,7 +3586,7 @@ _LEASE_LIVE_STATUSES: Final[frozenset[str]] = frozenset({"pending", "scheduled",
 
 
 def _render_lease_face(row: Any) -> None:
-    """THE LEASE FACE (the lost-worker drill's cure — ``job show``'s
+    """the LEASE FACE (the lost-worker probe's fix — ``job show``'s
     liveness section): who holds the row, when the holder last breathed,
     when the lease lapses — and, past the lapse, the LAPSED verdict: the
     holder is presumed dead and the reclaim sweep repends the row within
@@ -3584,7 +3622,7 @@ def _render_lease_face(row: Any) -> None:
 
 
 def _render_cache_hit(row: Any) -> None:
-    """THE CACHE-HIT RECEIPT (the audit drill's cure — the provenance
+    """the CACHE-HIT RECEIPT (the provenance face — the provenance
     face): the cross-run step cache's hit stamp (metadata.wf_cache_hit:
     the address + the producing run's id + the store instant) printed
     when present. A step that never executed must not read like one that
@@ -3638,7 +3676,7 @@ def _print_blob_field(name: str, value: Any) -> None:
 # through the same Backend the admin UI's POST routes call, so a CLI
 # cancel and an admin-UI cancel are one mechanism, not two write paths
 # that can drift: write_cancel_request / retry_job / cancel_where carry
-# the EPQ guards, the job_events writes, and the cooperative-cancel
+# the epq guards, the job_events writes, and the cooperative-cancel
 # signalling. A short-lived TaskQ client (the public facade that owns
 # the pool + PostgresBackend + JobsClient wiring) is the connection
 # lifecycle here -- a bare asyncpg connection cannot run the backend's
@@ -3882,7 +3920,7 @@ async def _job_cancel_where(
     reason: str | None,
     dry_run: bool,
 ) -> None:
-    # The empty-filter guard fires HERE, before any connection is opened,
+    # The empty-filter guard fires here, before any connection is opened,
     # with the backend's EmptyFilterError as the semantic twin: the client
     # layer raises the same refusal a call further down would, but failing
     # before the pool exists keeps the loud guardrail from costing a
@@ -3892,7 +3930,7 @@ async def _job_cancel_where(
     created_before: datetime | None = None
     if older_than is not None:
         # The cutoff comes from this process's clock while created_at is
-        # stamped by the database's; the skew that mixes is NTP-scale, and
+        # stamped by the database's; the skew that mixes is ntp-scale, and
         # --dry-run re-derives the same cutoff, so the preview answers for
         # the write that follows it.
         created_before = datetime.now(UTC) - _parse_older_than(older_than)
@@ -4077,22 +4115,23 @@ def _format_event_detail(detail: Any) -> str:
     return text[: _EVENT_DETAIL_LINE_LIMIT - len(suffix)] + suffix
 
 
-# ── flows: the workflow-run surface (T12) ───────────────────────────────
+# ── flows: the workflow-run surface ───────────────────────────────
 #
 # One question, one command: stuck → status, deliver → signal, reply →
-# resolve, stop → cancel, retry-a-failed-node → retry, inventory → list.
+# resolve, abandon-a-wait → abandon, stop → cancel,
+# retry-a-failed-node → retry, inventory → list.
 # The analysis lives in taskq.workflows._cli (the _doctor seam); the
 # write verbs call the engine's module-level run-operator functions — the
 # same functions the FlowRunner methods delegate to, never a second write
 # path. Every write rides its engine-owned audit row (the same-tx
 # guarantee); the CLI names its principal explicitly (``cli:<user>``) —
-# "who did this" is a ROW for every surface, the shell included.
+# "who did this" is a row for every surface, the shell included.
 
 _FLOWS_LIST_LIMIT: Final[int] = 20
 
 
 def _cli_principal() -> str:
-    """The CLI's audit subject: THE KERNEL'S WORD (F-CLI-3's cure) —
+    """The CLI's audit subject: the KERNEL'S WORD (F-CLI-3's fix) —
     ``os.getuid()`` through ``pwd``, never the environment. ``getpass.
     getuser()`` reads ``LOGNAME``/``USER`` first, so
     ``LOGNAME=postgres taskq flows resolve …`` wrote the mutation as
@@ -4142,20 +4181,20 @@ async def _flows_pool(settings: TaskQSettings) -> AsyncGenerator[asyncpg.Pool, N
         await close_pool_bounded(pool, "flows", CLOSE_TIMEOUT_SECS)
 
 
-# The cross-run step cache's operator surface (T25 — the cache-cures
-# round's CURE 5, THE POISON PILL DOOR): a well-shaped lie at a known
+# The cross-run step cache's operator surface (the cache's
+# round's fix 5, the poison pill door): a well-shaped lie at a known
 # address serves every future run until TTL — with no verb, no endpoint,
 # and no hit log, the operator's only face was the lie itself. This is
-# the door: `taskq wf cache list` shows the rows AND the hits' receipts
-# (the observability), `taskq wf cache evict` takes rows out (DRY-RUN by
-# default — the operator sees what WOULD go before it goes).
+# the door: `taskq wf cache list` shows the rows and the hits' receipts
+# (the observability), `taskq wf cache evict` takes rows out (dry-run by
+# default — the operator sees what would go before it goes).
 wf_app = typer.Typer(
     no_args_is_help=True,
     help="Operate on the workflow engine's cross-run state (the step cache).",
 )
 cache_app = typer.Typer(
     no_args_is_help=True,
-    help="Inspect and evict the cross-run step cache (the T25 surface).",
+    help="Inspect and evict the cross-run step cache.",
 )
 wf_app.add_typer(cache_app, name="cache")
 app.add_typer(wf_app, name="wf")
@@ -4177,7 +4216,7 @@ def _cache_row_select_sql(where: str) -> str:
 async def _cache_matching_addresses(
     conn: asyncpg.Connection, schema: str, *, step_key: str | None, flow: str | None
 ) -> list[str]:
-    """The addresses the filters name: --step reads the step's OWN
+    """The addresses the filters name: --step reads the step's own
     wf_cache_hit receipts (the node rows' metadata — the only place the
     address ↔ step-key pairing exists), --flow the producing run's rows
     (the cache row's run_id IS the producing run's id)."""
@@ -4212,7 +4251,7 @@ def cache_list(
     ] = "",
     limit: Annotated[int, typer.Option("--limit", help="How many rows to show.")] = 50,
 ) -> None:
-    """The step cache's rows AND the hits' receipts — the cache's
+    """The step cache's rows and the hits' receipts — the cache's
     observability face (the poison-pill door's first half)."""
     if limit < 1:
         typer.echo(f"invalid --limit {limit}: the limit counts rows and must be >= 1", err=True)
@@ -4420,7 +4459,7 @@ def flows_list(
 ) -> None:
     """Which runs exist, newest first, with their derived statuses."""
     if limit < 1:
-        # TRIO-3: a negative/zero limit is a NAMED refusal (the SQL's
+        # TRIO-3: a negative/zero limit is a named refusal (the SQL's
         # LIMIT clause rejects it as a bare InvalidRowCountInLimitClauseError
         # traceback otherwise).
         typer.echo(f"invalid --limit {limit}: the limit counts runs and must be >= 1", err=True)
@@ -4449,7 +4488,7 @@ async def _flows_list(settings: TaskQSettings, limit: int) -> None:
                 ORDER BY created_at DESC
                 LIMIT $1
             )
-            SELECT r.id, r.workflow, r.status AS root_status, r.created_at,
+            SELECT r.id, r.workflow, r.actor, r.status AS root_status, r.created_at,
                    n.status AS node_status, n.deps_pending,
                    n.metadata->>'blocking_reason' AS blocking_reason,
                    n.step_key,
@@ -4591,18 +4630,14 @@ async def _flows_status(
             typer.echo("Action: taskq flows list shows the recent runs.", err=True)
             raise typer.Exit(code=1)
         node_rows = await conn.fetch(wsql.workflow_nodes, parsed)
-        # THE ONE-READ LAW (the engine-faces lane's cure): the 3am
-        # columns ride the ENGINE query — WORKFLOW_NODES_SQL selects
-        # started_at + the failed_parent stamp + the lease face's columns
-        # at the source. The supplement read this seat used to carry (a
-        # second, CLI-owned jobs fetch keyed by the row id) is RETIRED:
-        # two reads where one suffices was the engine query's missing
-        # columns forcing the workaround.
-        # THE §22.1 STAMPS (rv5-t5's cure — the drift face's data) ride
-        # THE SAME READ: WORKFLOW_NODES_SQL carries j.code_version, so
-        # the drift face derives from the node rows themselves (a run
-        # redeployed mid-flight carries >1 DISTINCT stamp on its rows —
-        # the stamps are the record, the rows are the truth, ONE read).
+        # The 3am columns ride the engine query — WORKFLOW_NODES_SQL
+        # selects started_at + the failed_parent stamp + the lease
+        # face's columns at the source; one read per run, no CLI-owned
+        # supplement fetch. The drift face's stamps ride the same read:
+        # WORKFLOW_NODES_SQL carries j.code_version, so the drift face
+        # derives from the node rows themselves (a run redeployed
+        # mid-flight carries >1 distinct stamp on its rows — the rows
+        # are the truth, one read).
         stamps = [
             (str(r["step_key"]), r["code_version"])
             for r in node_rows
@@ -4628,15 +4663,12 @@ async def _flows_status(
             absorbed=row["absorbed"],
             error_class=row["error_class"],
             error_message=row["error_message"],
-            # THE ATTEMPT COUNTERS RIDE THE READ (attack-4
-            # F-P4-WHYSTUCK-LADDER-LIE's cure): the dataclass defaults
-            # (0 / 3) made every failed row report "ladder headroom 3" —
-            # the read must carry the row's own counters.
+            # the dataclass defaults (0 / 3) made every failed row report
+            # "ladder headroom 3" — the read must carry the row's own counters.
             max_attempts=row["max_attempts"],
             attempt=row["attempt"],
-            # THE 3AM FIELDS (the ENGINE query's own columns — the one
-            # read): the row id + started_at + the failed_parent stamp +
-            # the lease face's columns.
+            # the row id + started_at + the failed_parent stamp + the lease
+            # face's columns.
             job_id=str(row["id"]),
             started_at=row["started_at"],
             failed_parent=row["failed_parent"],
@@ -4650,12 +4682,11 @@ async def _flows_status(
         )
         for row in node_rows
     ]
-    # THE VERSIONING-WEDGE SURFACE (the timer-cures lane's cure 5): with
-    # --app, the run's node inventory is checked against the CURRENT
-    # registry's compiled graph — a node the current code no longer
-    # declares is a zombie's home, and the status NAMES it (the drift
-    # the docs' §6 wedge paragraph teaches). Without --app, no drift
-    # check runs (the honest absence: nothing to compare against).
+    # with --app, the run's node inventory is checked against the current
+    # registry's compiled graph — a node the current code no longer declares is
+    # a zombie's home, and the status names it (the drift the docs' §6 wedge
+    # paragraph teaches). Without --app, no drift check runs (the honest
+    # absence: nothing to compare against).
     registry_node_keys: list[str] | None = None
     if app_ref is not None and root["workflow"]:
         app_obj = _load_flows_app(app_ref)
@@ -4688,9 +4719,8 @@ async def _flows_status(
         nodes=nodes,
         cancel_in_flight=root["cancel_requested_at"] is not None,
         registry_node_keys=registry_node_keys,
-        # THE STAMPS' DRIFT FACE (rv5-t5's cure): the run's OWN rows'
-        # §22.1 stamps — one coherent drift section with the stranded
-        # face above.
+        # the run's own rows' stamps — one coherent drift section with the
+        # stranded face above.
         code_version_stamps=stamps,
     ):
         typer.echo(line)
@@ -4706,7 +4736,7 @@ def _held_context(run_id: str, signal_row: Any) -> Any:
     if isinstance(payload, str):
         payload = json_loads(payload)
     # The row's jsonb decodes to a json dict; the reason/tool/args keys
-    # ride INSIDE it until the deliver overwrites the payload (T10's
+    # ride inside it until the deliver overwrites the payload (the hold
     # deliver-no-drop shape).
     doc = cast(dict[str, object], payload) if isinstance(payload, dict) else {}
     raw_reason = doc.get("reason")
@@ -4782,25 +4812,24 @@ def _validate_through_gate(
     signal_name: str,
     payload: dict[str, object],
 ) -> dict[str, object]:
-    """THE TYPED DOOR (T09's bound gates; the hitl-proof's send
+    """the TYPED DOOR (the bound gates; the send
     boundary): the shell's JSON payload re-validates against the gate's
-    declared models BEFORE any row moves. A wrong payload answers the
+    declared models before any row moves. A wrong payload answers the
     NAMED pydantic error and nothing is delivered — no untyped deliver
-    surface ships."""
-    from pydantic import ValidationError
-
-    from taskq.workflows._cli import gate_models_for
+    surface ships. The validation core is the shared
+    ``validate_gate_payload`` (the admin's twin body); the resolution
+    and the refusal rendering are this surface's own."""
+    from taskq.workflows._cli import gate_models_for, validate_gate_payload
     from taskq.workflows.api._validate import WorkflowValidationError
 
     try:
         models = gate_models_for(app_obj, workflow, node_key)
     except KeyError as exc:
-        # THE NAMED REFUSAL (attack-4 F-P4-CLI-KEYERROR-TRACEBACK's cure):
-        # the stale-deploy world — the run's workflow is not declared on
-        # THIS app (the --app module predates the run, or the node key
-        # does not exist on the declared workflow). The admin's twin
-        # catches KeyError; the CLI's contract is the same: the NAMED
-        # error + exit 1, never a rich traceback.
+        # the stale-deploy world — the run's workflow is not declared on this
+        # app (the --app module predates the run, or the node key does not
+        # exist on the declared workflow). The admin's twin catches KeyError;
+        # the CLI's contract is the same: the named error + exit 1, never a
+        # rich traceback.
         typer.echo(
             f"{exc.args[0] if exc.args else exc!r} — the typed door cannot "
             f"validate signal {signal_name!r} against this app; pass the "
@@ -4810,12 +4839,11 @@ def _validate_through_gate(
         )
         raise typer.Exit(code=1) from None
     except WorkflowValidationError as exc:
-        # THE DOOR'S OWN REPORT IS THE REFUSAL (the registration door's
-        # CLI face — found by THIS lane's attack round: app.get() validates
-        # since the F-LOOP-7 cure, so an INVALID graph's compile error
-        # escaped the typed door as a rich traceback — the diagnostics-
-        # first law's own violation). The validation report NAMES the rule
-        # + the fix; the operator's terminal carries it, exit 1.
+        # The registration door's CLI face: app.get() validates, so an
+        # invalid graph's compile error surfaces here; render the door's
+        # own validation report rather than a rich traceback. The report
+        # names the rule and the fix; the operator's terminal carries
+        # it, exit 1.
         typer.echo(
             f"the run's workflow {workflow!r} does not validate on this "
             f"app — {exc} (fix the definition and redeploy; the typed "
@@ -4830,34 +4858,15 @@ def _validate_through_gate(
             err=True,
         )
         raise typer.Exit(code=1)
-    members = signal_name.split("|")
-    candidates = [m for m in models if m.__name__ in members]
-    if not candidates:
-        typer.echo(
-            f"the hold declares signal {signal_name!r} but the node's bound gates are "
-            f"{[m.__name__ for m in models]} — the shapes cannot match",
-            err=True,
-        )
+        # fallback_all=False. the gates resolved for the named workflow; no
+    # candidate naming the signal is the shapes-cannot-match refusal, never a
+    # validate-everything fallback.
+    dumped, refusal = validate_gate_payload(models, signal_name, payload, fallback_all=False)
+    if dumped is None:
+        assert refusal is not None  # the shared core always states its reason
+        typer.echo(refusal, err=True)
         raise typer.Exit(code=1)
-    errors: list[str] = []
-    for model in candidates:
-        try:
-            validated = model.model_validate(payload)
-        except ValidationError as exc:
-            errors.append(
-                f"{model.__name__}: "
-                + "; ".join(
-                    f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in exc.errors()
-                )
-            )
-            continue
-        dumped = validated.model_dump(mode="json")
-        return dict(dumped)  # type: ignore[arg-type]  # Why: model_dump(mode='json') returns dict[str, Any]; the gate's models are object-valued pydantics and the delivered payload is the row's jsonb.
-    typer.echo(
-        f"pydantic refused the payload for signal {signal_name!r}: " + " | ".join(errors),
-        err=True,
-    )
-    raise typer.Exit(code=1)
+    return dumped
 
 
 async def _workflow_name_of(pool: asyncpg.Pool, schema: str, run_id: UUID) -> tuple[str, str, str]:
@@ -4960,6 +4969,26 @@ def _echo_delivery(result: Any, hold_id: str) -> None:
         raise typer.Exit(code=1)
 
 
+def _echo_abandon(result: Any, hold_id: str) -> None:
+    """The abandon's DeliveryResult rendering (the same exit-code
+    contract the resolve verb keeps: delivered → 0, no-op → 0 with the
+    note, refused → 1) — the delivered arm's own line: the wait fails
+    closed on its next drive, the body sees ``Expired``."""
+    from taskq.workflows.api._hitl import DeliveryResult
+
+    assert isinstance(result, DeliveryResult)
+    if result.status == "delivered":
+        typer.echo(
+            f"abandoned: hold {hold_id} — the wait fails closed on its next "
+            "drive (the body sees Expired)"
+        )
+    elif result.status == "no-op":
+        typer.echo(f"no-op: hold {hold_id} — {result.reason}")
+    else:
+        typer.echo(f"refused: {result.reason}", err=True)
+        raise typer.Exit(code=1)
+
+
 @flows_app.command("resolve")
 def flows_resolve(
     hold_id: Annotated[str, typer.Argument(help="The hold's id (the reply handle).")],
@@ -5022,9 +5051,9 @@ async def _flows_resolve(
                 str(hold_id), validated, reason=reason, principal=_cli_principal()
             )
         except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
-            # THE RACE'S HONEST LOSER (the same deadlock-refusal the cancel
+            # the race's honest loser (the same deadlock-refusal the cancel
             # verb carries — the two verbs' cascades can deadlock; PG kills
-            # one writer; the CLI's answer is the NAMED refusal with the
+            # one writer; the CLI's answer is the named refusal with the
             # remedy, never a rich traceback — the diagnostics-first law).
             typer.echo(
                 f"the hold {hold_id}'s writers raced and PG resolved the "
@@ -5035,6 +5064,53 @@ async def _flows_resolve(
             )
             raise typer.Exit(code=1) from None
         _echo_delivery(result, str(hold_id))
+
+
+@flows_app.command("abandon")
+def flows_abandon(
+    hold_id: Annotated[str, typer.Argument(help="The hold's id (the reply handle).")],
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Why — recorded on the audit row.")
+    ] = None,
+) -> None:
+    """Abandon a hold by id (the operator door: the wait fails closed on
+    its next drive — the body sees ``Expired``). Timer holds refuse: the
+    clock is their only resolver."""
+    settings = TaskQSettings.load()
+    try:
+        parsed = UUID(hold_id)
+    except ValueError:
+        typer.echo(f"invalid hold id (expected a UUID): {hold_id!r}", err=True)
+        raise typer.Exit(code=1) from None
+    asyncio.run(_flows_abandon(settings, parsed, reason))
+
+
+async def _flows_abandon(
+    settings: TaskQSettings,
+    hold_id: UUID,
+    reason: str | None,
+) -> None:
+    from taskq.workflows.api._hitl import HitlClient
+
+    async with _flows_pool(settings) as pool:
+        client = HitlClient(pool, schema=settings.schema_name)
+        try:
+            result = await client.abandon(str(hold_id), reason=reason, principal=_cli_principal())
+        except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
+            # the race's honest loser (the same deadlock-refusal the
+            # resolve and cancel verbs carry — the verbs' cascades can
+            # deadlock; PG kills one writer; the CLI's answer is the
+            # named refusal with the remedy, never a rich traceback —
+            # the diagnostics-first law).
+            typer.echo(
+                f"the hold {hold_id}'s writers raced and PG resolved the "
+                "deadlock in another writer's favour — the hold is being "
+                "abandoned OR resolved/cancelled by the winner; re-run this "
+                "verb (or `taskq flows status`) to see the settled state",
+                err=True,
+            )
+            raise typer.Exit(code=1) from None
+        _echo_abandon(result, str(hold_id))
 
 
 @flows_app.command("cancel")
@@ -5053,8 +5129,8 @@ def flows_cancel(
 
     async def run() -> None:
         async with _flows_pool(settings) as pool:
-            # F-CLI-2: the GHOST distinguished from the terminal — a run id
-            # that exists in NO table is the honest rc=1 refusal (the same
+            # F-CLI-2: the ghost distinguished from the terminal — a run id
+            # that exists in no table is the honest rc=1 refusal (the same
             # answer `flows status` gives), never a silent "no-op" with
             # rc=0 over an id that names nothing.
             exists = await pool.fetchval(
@@ -5079,9 +5155,9 @@ def flows_cancel(
                     principal=_cli_principal(),
                 )
             except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
-                # THE RACE'S HONEST LOSER (the resolve/cancel race pin's
-                # conviction — the two verbs' cascades can deadlock: PG
-                # kills one writer, and the CLI's answer must be the NAMED
+                # the race's honest loser (the resolve/cancel race pin's
+                # — the two verbs' cascades can deadlock: PG
+                # kills one writer, and the CLI's answer must be the named
                 # refusal with the remedy, never a rich traceback — the
                 # diagnostics-first law). The winner's own voice is honest;
                 # the loser retries by re-running the verb.
@@ -5135,6 +5211,22 @@ def flows_retry(
         except WorkflowRunError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from None
+        except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
+            # the race's honest loser (the same named pair the cancel and
+            # resolve verbs carry — the retry's own writers can deadlock a
+            # laggard's exactly the same way, and PG kills one writer; the
+            # CLI's answer is the named refusal with the remedy, never a
+            # rich traceback — the diagnostics-first law). The winner's own
+            # voice is honest; the loser re-runs this verb (or `taskq flows
+            # status`) to see the settled state.
+            typer.echo(
+                f"the run {parsed}'s writers raced and PG resolved the "
+                "deadlock in another writer's favour — the node is being "
+                "re-opened OR the run cancelled by the winner; re-run this "
+                "verb (or `taskq flows status`) to see the settled state",
+                err=True,
+            )
+            raise typer.Exit(code=1) from None
         if reopened:
             typer.echo(
                 f"re-opened {reopened} row(s): node {node!r} re-pends, its blocked "
@@ -5142,8 +5234,9 @@ def flows_retry(
             )
         else:
             typer.echo(
-                f"nothing re-opened: node {node!r} is live, unknown to run {parsed}, "
-                "or spent past the attempt ceiling",
+                f"nothing re-opened: node {node!r} is live (not terminal-failed), "
+                f"unknown to run {parsed}, or is the run's own root — the root key "
+                "'__flow__' is refused; re-run the flow instead of the root node",
                 err=True,
             )
             typer.echo("Action: taskq flows status shows the node's current state.", err=True)

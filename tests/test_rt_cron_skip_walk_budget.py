@@ -1,4 +1,4 @@
-"""Red-team attack: the catch-up skip-count walk versus the tick's deadline.
+"""Adversarial review attack: the catch-up skip-count walk versus the tick's deadline.
 
 ``_plan_fire``'s beyond-window branch counts the dropped slots by hopping
 the schedule forward one ``compute_next_fire_after`` call per occurrence,
@@ -187,7 +187,7 @@ class TestSkipWalkInsideTickBudget:
             elapsed = time.monotonic() - t0
 
         assert fired == 1
-        # The tick's deadline is 5s at defaults; the walk may budget a SLICE
+        # The tick's deadline is 5s at defaults; the walk may budget a slice
         # of it, never the whole thing. One second is generous for a bounded
         # walk and still far under the deadline.
         assert elapsed < 1.0, (

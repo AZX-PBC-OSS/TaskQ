@@ -111,7 +111,7 @@ async def test_compute_health_all_healthy() -> None:
     assert report.is_leader is False
 
 
-# ── compute_health with shutdown_phase=DRAINING ─────────────────
+# ── compute_health with shutdown_phase=draining ─────────────────
 
 
 async def test_compute_health_draining() -> None:
@@ -178,7 +178,7 @@ async def test_compute_health_uses_dispatcher_pool() -> None:
 async def test_compute_health_no_redis_ready() -> None:
     """compute_health with redis_url=None is fully ready (PG healthy).
 
-    Asserts redis_configured=False AND ready=True. (.)
+    Asserts redis_configured=False and ready=True. (.)
     """
     deps = _make_deps()
 
@@ -484,7 +484,7 @@ def _cleanup_sock_files() -> Iterator[None]:  # pyright: ignore[reportUnusedFunc
             os.unlink(path)
 
 
-# ── Readiness 503 body schema with CANCELLING ───────────────────
+# ── Readiness 503 body schema with cancelling ───────────────────
 
 
 async def test_readiness_503_body_schema() -> None:
@@ -523,7 +523,7 @@ async def test_stale_socket_cleanup() -> None:
     """Stale socket cleanup.
 
     Create a regular file at the chosen socket path. Call
-    HealthServer.start(deps). Assert no OSError raised AND the
+    HealthServer.start(deps). Assert no OSError raised and the
     server is listening. Then stop() and assert the file is gone.
     (.)
     """

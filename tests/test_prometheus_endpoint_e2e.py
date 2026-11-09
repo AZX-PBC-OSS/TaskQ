@@ -1,7 +1,7 @@
 """End-to-end pin: the documented Prometheus endpoint serves ``taskq_*``
 series after real worker activity against real Postgres.
 
-The adopter red team's repro shape, held green: follow the documented
+The adopter adversarial review's repro shape, held green: follow the documented
 quick-start (``pip install taskq-py[prometheus]``, no ``OTEL_*`` env vars),
 run real work, scrape ``GET /jobs/health/metrics`` as mounted by
 ``taskq ui serve`` - the served text must contain the ``taskq_*`` series
@@ -117,7 +117,7 @@ def test_served_metrics_contain_taskq_series_after_real_worker_activity(
     the exact documented quick-start state."""
     env = {
         # Scrub any ambient OTEL_*/TASKQ_* configuration: the documented
-        # quick-start sets neither, and an inherited OTEL provider env var
+        # quick-start sets neither, and an inherited otel provider env var
         # would change which wiring branch runs.
         key: value
         for key, value in os.environ.items()

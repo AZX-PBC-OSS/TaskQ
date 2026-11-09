@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 
-"""Red-team attacks on ``enqueue_with_conn``'s caller-owned connection.
+"""Adversarial review attacks on ``enqueue_with_conn``'s caller-owned connection.
 
 The caller owns the connection handed to ``enqueue_with_conn``; the
 contract under attack is what TaskQ hands BACK on a typed refusal.
@@ -19,7 +19,7 @@ Three refusals, three shapes:
   singleton insert and loses): the raw UniqueViolationError is a
   STATEMENT error - it aborts the caller's whole transaction, and the
   typed ``SingletonCollisionError`` conversion does not undo that. The
-  red finding: the SAME typed error leaves the caller's transaction
+  red finding: the same typed error leaves the caller's transaction
   dead on this detection path but alive on the preflight path. The
   desired observable is parity - a catchable typed refusal that leaves
   the transaction usable (savepoint-protect the insert, or roll back to

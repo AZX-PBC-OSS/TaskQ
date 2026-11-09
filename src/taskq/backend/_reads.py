@@ -56,7 +56,7 @@ async def _get(pool: "asyncpg.Pool", sql: SqlTemplates, job_id: JobId) -> JobRow
     """One job row by id, hot table first, archive tier on a hot miss.
 
     The same jobs-then-archive fallback ``taskq job show`` applies
-    (issue #314): a terminal row survives its prune only in
+    (the archive fallback): a terminal row survives its prune only in
     ``jobs_archive``, so answering the hot table alone reported an
     archived job as if it never existed -- ``None`` to ``JobsClient.get``
     and a bare ``KeyError`` from every ``JobHandle`` read-back, while the
@@ -153,7 +153,7 @@ async def _count_pending_jobs_by_queue(
     queues: list[str],
 ) -> dict[str, int]:
     """Grouped pending+scheduled counts per queue (the admission count the
-    max_pending cap governs), the LIB-2 backpressure read's DEPTH half.
+    max_pending cap governs), the backpressure read's DEPTH half.
 
     One indexed aggregate per call (``jobs_queue_status``-served, the
     count_active_jobs pattern); a queue with no pending/scheduled rows
@@ -172,12 +172,12 @@ async def _count_pending_children_by_queue(
     sql: SqlTemplates,
     parent_id: JobId,
 ) -> dict[str, int]:
-    """The parent's pending children, exact and grouped by queue (the LIB-2
-    backpressure read's FAN-OUT half), served by the partial index
+    """The parent's pending children, exact and grouped by queue (the
+    backpressure read's FAN-out half), served by the partial index
     ``jobs_parent_pending_idx`` whose predicate the count's quals repeat
     verbatim.
 
-    ``parent_id`` is a plain column, NO foreign key (see
+    ``parent_id`` is a plain column, no foreign key (see
     01.00.23_01_pre_jobs_parent_id.sql): a purged or never-existed
     parent is the same defined-empty result, the count never joins to
     the parent row.
@@ -211,7 +211,7 @@ async def _get_actor_queues(
     Actor name -> the queue its stored assignment routes to, one row per
     actor. Consumed through the client-side TTL cache beside
     :func:`_get_actor_max_pending` (the same refresh cadence, never per
-    enqueue) so an enqueue can tell whether ANY registered actor routes
+    enqueue) so an enqueue can tell whether any registered actor routes
     to the queue it is writing: a queue absent from the snapshot is one
     no registration ever served, the enqueue-time half of the stranded-
     jobs detection (the leader sweep's ``unserved_queue`` arm is the
@@ -232,7 +232,7 @@ async def _get_attempts(
 
     The prune moves the job's attempt rows to ``job_attempts_archive``
     in the same statement that moves the job row to ``jobs_archive``
-    (issue #314's tier pair): answering the hot table alone reported an
+    (the tier pair): answering the hot table alone reported an
     archived job's history as empty while the same job's ``get`` answered
     its archived row -- the row claimed an attempt happened, the history
     claimed nothing did. An empty hot read for a LIVE job (never started,

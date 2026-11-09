@@ -1,6 +1,6 @@
 """Tests for the ``memory_jobs`` fixture and taskq.testing public surface.
 
-``taskq.backend`` must NOT expose FakeClock, InMemoryBackend,
+``taskq.backend`` must not expose FakeClock, InMemoryBackend,
 run_until_drained, or tick_cancel_polling. ``taskq.testing`` must
 expose these names.
 
@@ -39,32 +39,32 @@ async def test_memory_jobs_clock_starts_at_epoch(memory_jobs: InMemoryBackend) -
     assert memory_jobs._clock.now() == datetime(2025, 1, 1, tzinfo=UTC)  # type: ignore[reportPrivateUsage]
 
 
-# ── taskq.backend must NOT expose test-only names ─────────────
+# ── taskq.backend must not expose test-only names ─────────────
 
 
 def test_backend_does_not_expose_fake_clock() -> None:
-    """FakeClock is NOT accessible from taskq.backend."""
+    """FakeClock is not accessible from taskq.backend."""
     import taskq.backend
 
     assert not hasattr(taskq.backend, "FakeClock")
 
 
 def test_backend_does_not_expose_in_memory_backend() -> None:
-    """InMemoryBackend is NOT accessible from taskq.backend."""
+    """InMemoryBackend is not accessible from taskq.backend."""
     import taskq.backend
 
     assert not hasattr(taskq.backend, "InMemoryBackend")
 
 
 def test_backend_does_not_expose_run_until_drained() -> None:
-    """run_until_drained is NOT accessible from taskq.backend."""
+    """run_until_drained is not accessible from taskq.backend."""
     import taskq.backend
 
     assert not hasattr(taskq.backend, "run_until_drained")
 
 
 def test_backend_does_not_expose_tick_cancel_polling() -> None:
-    """tick_cancel_polling is NOT accessible from taskq.backend."""
+    """tick_cancel_polling is not accessible from taskq.backend."""
     import taskq.backend
 
     assert not hasattr(taskq.backend, "tick_cancel_polling")
@@ -161,7 +161,7 @@ async def test_backend_pair_memory_without_integration_marker(
     automatically skipped via ``pytest.skip`` so the unit tier stays
     container-free.
 
-    This test is intentionally NOT marked ``@pytest.mark.integration``.
+    This test is intentionally not marked ``@pytest.mark.integration``.
     When collected, pytest will produce two variants:
     - ``memory``: passes (runs this body).
     - ``pg``: SKIPPED (the guard in the fixture fires).

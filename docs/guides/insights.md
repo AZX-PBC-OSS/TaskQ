@@ -481,7 +481,7 @@ from those seeded runs.
 
 ---
 
-## The workflow-debug SQL recipes (T08)
+## The workflow-debug SQL recipes
 
 Per-run reads, bounded by the run's own node count; every read is
 index-driven (`jobs_wf_flow_nodes_idx`, 01.00.25_02 — the index
@@ -493,7 +493,7 @@ status panel
 and the `taskq.wf_progress_nodes_total` gauge share the grouped read (one
 query per status read — the query-count pin).
 
-**The grouped status rollup (the run's status panel — the §17.5
+**The grouped status rollup (the run's status panel — the
 derivation's input):**
 
 ```sql

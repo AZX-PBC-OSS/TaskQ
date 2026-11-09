@@ -266,7 +266,7 @@ async def test_watch_reclaims_visibility_risk_probe_warns_by_default(
 
     with structlog.testing.capture_logs() as captured:
         # The row must land only after the probe has run and warned: in
-        # this poll transport the poll PRECEDES the probe (see
+        # this poll transport the poll precedes the probe (see
         # _watch_reclaims_poll), so a row landing early is delivered by
         # the first poll and _collect closes the generator before the
         # probe ever runs - with a fixed producer delay the warning
@@ -354,7 +354,7 @@ class _FakeListenConn:
         self.listener_channels: list[str] = []
         self.close_calls = 0
         # Why an event alongside the channel list: the list is the
-        # assertion surface; the event is the WAIT surface - a test that
+        # assertion surface; the event is the wait surface - a test that
         # needs "LISTEN registered" (before killing the conn, or before
         # producing events the NOTIFY path must catch) can wait for this
         # instead of sleeping a fixed interval that races the generator's
@@ -409,7 +409,7 @@ async def _wait_for_listen_registered(
     *,
     timeout: float = 5.0,  # noqa: ASYNC109 # Why: polling-loop timeout for _wait_for_listen_registered; not an anyio cancel scope
 ) -> None:
-    """Bounded wait until ``conns[index]`` exists AND has LISTEN registered.
+    """Bounded wait until ``conns[index]`` exists and has LISTEN registered.
 
     ``add_listener`` sets the conn's ``listener_registered`` event exactly
     where the observable flips, so this waits precisely as long as the
@@ -464,7 +464,7 @@ async def test_watch_reclaims_pg_reconnects_after_listen_conn_death(
         assert len(conns) == 1
         conns[0].kill()
         # Bounded wait for the reconnect (conns[1] + LISTEN re-registered
-        # on it) BEFORE producing the event: _collect closes the generator
+        # on it) before producing the event: _collect closes the generator
         # once the event is delivered, so a reconnect that loses a race
         # to a fixed sleep can never happen afterwards - the
         # len(conns) == 2 assert below would fail permanently.
@@ -560,7 +560,7 @@ async def test_watch_reclaims_pg_pool_error_propagates_not_misdiagnosed(
         raise AssertionError("generator finished without yielding")
 
     task = asyncio.create_task(_first_event())
-    # LISTEN registered AND the first (successful) poll completed before
+    # LISTEN registered and the first (successful) poll completed before
     # the synthetic NOTIFY: without registration fire_notify() drives
     # nothing (the task would time out), and without poll the failure
     # would fire from the regular poll instead of _catch_up_after_notify
@@ -610,7 +610,7 @@ async def test_watch_reclaims_pg_degraded_loop_drains_full_batches() -> None:
     poll_timeout to deliver.
 
     Ordering is the whole pin: the 250-event backlog is created only
-    AFTER the 'watch-reclaims-listen-connection-lost' log line proves
+    after the 'watch-reclaims-listen-connection-lost' log line proves
     the generator is inside the fallback loop.  Events created before
     the kill would drain through the *healthy* loop's full-batch
     continue and the fallback loop would never run - an earlier revision
@@ -729,7 +729,7 @@ async def test_watch_reclaims_pg_reconnect_attempt_is_timeboxed(
     task = asyncio.create_task(_collect(gen, n=1))
     await _wait_for_listen_registered(conns)
     conns[0].kill()
-    # Bounded wait until the first hanging reconnect attempt has STARTED:
+    # Bounded wait until the first hanging reconnect attempt has started:
     # the pin is that a timeboxed attempt does not stall the degraded
     # poll loop, so the row must land only after an attempt is (or was)
     # in flight - with a fixed sleep the row could beat the first
@@ -814,7 +814,7 @@ async def test_watch_reclaims_pg_teardown_removes_termination_listener_when_unli
     None
 ):
     """If UNLISTEN fails during teardown (connection dropped mid-shutdown),
-    the termination listener must STILL be removed - otherwise a shared,
+    the termination listener must still be removed - otherwise a shared,
     caller-owned listen_conn accumulates dead callbacks closing over dead
     generator frames on every watch_reclaims() call."""
     backend = _make_backend()
@@ -863,7 +863,7 @@ async def test_watch_reclaims_pg_cancellation_inside_degraded_loop_closes_owned_
         # add_listener raise instead of entering the degraded loop.
         await _wait_for_listen_registered(conns)
         conns[0].kill()
-        # Cancel only once the generator is provably INSIDE the degraded
+        # Cancel only once the generator is provably inside the degraded
         # loop (the 'connection-lost' line is its entry marker) - with the
         # old fixed sleep the cancel could land in the healthy loop and
         # this teardown-only pin would pass vacuously.
@@ -902,7 +902,7 @@ async def test_watch_reclaims_pg_notify_during_backlog_drain_not_discarded(
         calls["n"] += 1
         if calls["n"] == 1:
             events = await real_poll(after_id, *args, **kwargs)
-            # A new reclaim commits AND notifies while the loop is still
+            # A new reclaim commits and notifies while the loop is still
             # draining this batch - the wake must survive until the loop
             # next waits on it.
             conn.fire_notify()
@@ -943,7 +943,7 @@ async def test_visibility_probe_hang_does_not_stall_delivery(
     client = _make_client(backend)
 
     # Why an event at probe entry: the row must land while the probe is
-    # actually hung - in this poll transport the poll PRECEDES the probe,
+    # actually hung - in this poll transport the poll precedes the probe,
     # so a row landing early is delivered by the first poll and the
     # generator closes before the hang is ever exercised. A fixed producer
     # delay let the test pass vacuously under load.
@@ -1130,7 +1130,7 @@ async def test_watch_reclaims_pg_listen_delivers_promptly(pg_dsn: str) -> None:
         # bounded catch-up poll delivered this, not the poll-timeout
         # fallback alone (which would have taken ~30s).
         # Derived bound: NOTIFY delivery is sub-second; 6.0 s = 5x that,
-        # while the poll-timeout fallback this must NOT be would cost ~30s
+        # while the poll-timeout fallback this must not be would cost ~30s
         # (poll_timeout). The enclosing wait_for(8.0) guard keeps the pin
         # strictly inside the collection window.
         assert elapsed < 6.0
@@ -1142,11 +1142,11 @@ async def test_watch_reclaims_pg_listen_delivers_promptly(pg_dsn: str) -> None:
 async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> None:
     """pg_terminate_backend kills watch_reclaims()'s dedicated LISTEN
     connection mid-stream.  asyncpg does
-    NOT raise into the consume loop when this happens - the death is
+    not raise into the consume loop when this happens - the death is
     detected via the termination listener / is_closed() checks; the
     generator falls back to polling and delivers the pending event, then
     RE-ESTABLISHES the LISTEN connection - asserted via the
-    'watch-reclaims-listen-reconnected' log line AND a live LISTEN pid in
+    'watch-reclaims-listen-reconnected' log line and a live LISTEN pid in
     pg_stat_activity, so the reconnect machinery cannot silently rot -
     and keeps delivering afterwards."""
     from taskq.backend.postgres import PostgresBackend

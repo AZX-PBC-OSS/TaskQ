@@ -116,7 +116,7 @@ async def test_repair_path_applies_the_hook_once_per_physical_connection() -> No
             job_id=job_id,
         )
 
-    # Once per PHYSICAL connection: two proxies wrapping physical_a ran
+    # Once per physical connection: two proxies wrapping physical_a ran
     # the hook once (the first one), physical_b's first acquire ran once.
     assert applied_to == [proxy_a1, proxy_b1]
 
@@ -159,7 +159,7 @@ async def test_repair_path_survives_a_hook_exception_with_a_hostile_str() -> Non
     the acquire classification entirely."""
     applied_to: list[object] = []
 
-    class _UnprintableStr(Exception):  # noqa: N818  # Why: the name IS the mutation probe, matching the pin file's actor-shaped exception class.
+    class _UnprintableStr(Exception):  # noqa: N818  # Why: the name is the mutation probe, matching the pin file's actor-shaped exception class.
         def __str__(self) -> str:
             raise TypeError("__str__ is a lie")
 

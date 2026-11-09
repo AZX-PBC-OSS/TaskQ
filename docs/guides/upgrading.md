@@ -44,13 +44,20 @@ This is a deliberate tradeoff, not a missing feature:
    applied, without changing anything.
 
 4. **Apply migrations explicitly**, from a pre-deploy job or init container,
-   before any worker starts:
+   before any worker starts — in the phased order the rolling-deploy law
+   defines ([Deployment](deployment.md): the pre phase while the workers
+   roll, the post phase once by hand after the last worker is up):
 
    ```shell
-   taskq migrate up
+   taskq migrate up --phase pre      # the pre-deploy job, before the roll
+   # ... roll the workers ...
+   taskq migrate up --phase post     # once, by hand, after the roll completes
    ```
 
-   Workers never self-migrate. `TASKQ_MIGRATE_ON_START=true` is honoured only
+   A bare `taskq migrate up` applies BOTH phases at once: the post phase
+   lands immediately, and an old worker still running at that moment
+   cannot write the workflow rows the new schema requires. Workers never
+   self-migrate. `TASKQ_MIGRATE_ON_START=true` is honoured only
    by `taskq ui serve`; a worker warns and ignores it, and refuses to boot
    while a pre-phase migration is pending, so relying on it there produces a
    crash-loop rather than a migrated schema. N replicas racing to migrate is
@@ -121,6 +128,35 @@ non-transactional migrations with `(no transaction)`, and the
 adds that column when recording the next migration, so deployments upgraded
 from older TaskQ versions need no manual step; rows applied before the column
 existed read `true`.
+
+## Workflow terminal effects / run incarnation (01.00.38 + 01.00.41)
+
+Apply all three PRE files, in this order, before deploying authors/workers that
+declare `RetrySpec.on_exhaustion`:
+
+1. `01.00.38_01_pre_wf_worker_capability.sql` — the nullable
+   `jobs`/`jobs_archive` `required_worker_schema` column and the physical
+   entry-to-running claim trigger. Every effect-producing root's create
+   transaction names this column, so it must exist before any such run is
+   created.
+2. `01.00.41_01_pre_wf_run_epoch.sql` — nullable legacy-compatible root
+   `run_epoch` storage (new roots begin at 1; only explicit locked reopen
+   advances it).
+3. `01.00.41_02_pre_wf_terminal_effect_intents.sql` — the stable physical
+   intent arbiter.
+
+Existing rows retain NULL epochs/requirements and existing outbox rows remain
+unchanged. (Applying the two 01.00.41 files without `01.00.38_01` fails at
+`FlowRunner.create_flow()` with
+`column "required_worker_schema" of relation "jobs" does not exist` — the
+create path stamps the requirement on the root and its rows.)
+
+Guarded effect-producing workflows stamp the actual worker schema requirement and
+refuse direct in-process execution. Upgrade all fleet workers serving their
+queues before creating such runs; an insufficient/missing actual boot capability
+(the worker's boot-stamped `workflow_execution_schema` metadata) fails at the
+physical entry-to-running trigger before body execution. Do not manufacture
+worker metadata or use queue membership as an upgrade assertion.
 
 ## If a migration goes wrong
 
@@ -494,6 +530,104 @@ value vs the raw row, new concrete names materialize fresh full-capacity
 buckets alongside old ones (a temporary over-admission window). Drain
 affected queues before deploying payload model changes that affect key
 derivation.
+
+### Workflow rows carry a fairness cohort
+
+> **Unreleased.** The dispatch BEHAVIOR change is confined to
+> `round_robin` queues hosting workflows; the STORAGE rides every
+> workflow row on every queue mode.
+
+Every claimable workflow row (static steps, fork/emit children, join
+nodes, outbox-drained consumers) is now born with its run's `flow_id`
+as `jobs.fairness_key`, so on a `round_robin` queue each workflow run
+dispatches as its own cohort — previously every workflow row collapsed
+into the single `__null__` cohort and drained as one FIFO stream, and
+a deep run could starve a shallow one. Queues serving no workflows see
+no dispatch change; vanilla enqueue callers still pass `fairness_key`
+explicitly. On `strict_fifo` queues the stamp is stored and ignored
+(the claim order is unchanged).
+
+**The storage face (every queue mode):** the stamp is a 36-char uuid
+text on every workflow row — about 40 B on the row itself, live until
+the row archives/prunes — and, while the row is `pending`, the same
+value in the probe indexes' key columns: the common pending probe
+(`jobs_round_robin_probe_idx`, partial on `pending`) carries EVERY
+pending row's stamp, and the population probes add a SECOND entry per
+pending wf row — `jobs_unrouted_round_robin_probe_idx` for the
+producer-placed rows, `jobs_assignment_routed_probe_idx` for the
+re-pended rows (the entries leave when the row leaves `pending`).
+Vanilla rows carry NULL: no workflow-face storage, no workflow-face
+index change (a producer's own user cohort rides the same indexes by
+design).
+
+**The pre-upgrade face:** rows still `pending` from the pre-stamp code
+keep the NULL cohort — the old code stamps nothing and no re-pend path
+ever touches the column — so they drain in the `__null__` FIFO cohort
+until they terminalize. The post-phase migration backfills the cohort
+for EVERY workflow row — terminal rows included (the full-history
+top-up: one statement over the flow-nodes expression index, the
+write-once column takes its value once) — and adds the structural
+backstop (`jobs_wf_fairness_cohort_check`, `NOT VALID`): every workflow
+row written after it carries its run's cohort — a regression's
+unstamped insert is refused by the database itself.
+
+**The deploy face (the HOW):** apply `taskq migrate up --phase pre` as
+the pre-deploy job while the workers roll (the pre phase for this
+feature is empty — the stamp rides the existing column); apply
+`taskq migrate up --phase post` once, by hand, AFTER THE LAST WORKER IS
+UP. The new CHECK constraint lands `NOT VALID` and needs one validation
+pass (the same two-phase pattern the denial-counters and retry-curve
+migrations document):
+
+```sql
+-- find a violator before validating (the constraint's own predicate,
+-- reversed): a workflow row whose cohort stamp does not match its run
+SELECT j.id, j.metadata->>'flow_id' AS run_id, j.fairness_key
+FROM jobs j
+WHERE j.step_key <> '__flow__'
+  AND j.metadata ? 'flow_id'
+  AND j.fairness_key IS DISTINCT FROM j.metadata->>'flow_id';
+
+-- fix a violator by restamping it from its run (the backfill's own shape):
+UPDATE jobs j
+SET fairness_key = j.metadata->>'flow_id'
+WHERE j.step_key <> '__flow__'
+  AND j.metadata ? 'flow_id'
+  AND j.fairness_key IS DISTINCT FROM j.metadata->>'flow_id';
+
+-- validate (shares the table briefly; safe once no violator remains):
+ALTER TABLE jobs VALIDATE CONSTRAINT jobs_wf_fairness_cohort_check;
+```
+
+The finder's query states the COMMON violator shapes (the linked
+workflow row whose cohort stamp disagrees with its run); it is a
+finding aid, not the contract's teeth — the CHECK's own predicate also
+covers the pathological rows this query cannot name (a JSON-null
+`flow_id` link with a NULL stamp, a linked row with a NULL `step_key`
+whose stamp is not its link — NULL or wrong), and the `VALIDATE CONSTRAINT` itself fails loudly on ANY surviving
+violator. Run the VALIDATE even if the finder reads empty; an empty
+finder is not a clean bill.
+
+ THE BREAKAGE, PLAINLY: once the post phase is applied, an
+old worker cannot write workflow WORK — the flow ROOT row is exempt
+(its insert passes), but the STATIC NODE INSERTS are refused, so the
+old worker's `create_flow` still fails, and its forks and emits refuse
+the same way. The mixed old/new worker wave is viable in the
+PRE-PHASE WINDOW ONLY; schedule the post phase after the wave
+completes. The restart-based path cannot do this for you:
+`TASKQ_MIGRATE_ON_START` (honoured only by `taskq ui serve`) and the
+lifecycle migration path apply the PRE PHASE BY DEFAULT — the post
+phase stays behind an explicit `taskq migrate up --phase post` on an
+operator's decision, never a process lifecycle event.
+
+**The keyed rolling-deploy face:** a keyed admission term's concrete
+name (`base:key`) is stamped onto the row at the fork, and the worker
+that CLAIMS the row materializes the bucket. During a rolling deploy,
+an OLD worker claiming a keyed-stamped row cannot resolve the concrete
+name against its own (pre-keyed) registry — the row PARKS budget-free
+(the fail-closed arm, the warning naming the bucket) until the
+upgraded workers claim it. The row is never admitted unprotected and
+never lost; the run resumes when the upgrade wave reaches its queue.
 
 ### Dispatch-path malformed payloads fail immediately
 
@@ -1958,15 +2092,15 @@ changelog becomes the authoritative record and these notes age out.
 
 The workflow round's pending notes, moved here from hand-written
 `CHANGELOG.md` blocks (the generator owns that file — these entries were
-invisible to the release-notes pipeline there; CERT2 F-CERT2-1's cure —
+invisible to the release-notes pipeline there; CERT2 F-CERT2-1's resolution —
 nothing was lost, the move is documented here).
 
 
 ### Added
 
-* **Admin (T11): the workflow-run explorer** — the runs list + the run
+* **Admin: the workflow-run explorer** — the runs list + the run
   page (`/taskq/workflows/{id}`): the rows-alone Mermaid graph (the
-  collapsed map = one hexagon + the done/total counter), the node drill
+  collapsed map = one hexagon + the done/total counter), the node detail
   panel (the attempts, the trace id, the captured error, one upstream
   hop, the attempt ledger), the holds & decisions panel (the waiting-on
   state + the declared payload schema + the prefilled example), the
@@ -1982,14 +2116,14 @@ nothing was lost, the move is documented here).
   through the MOUNTED WorkflowApp's bound gates (`create_router(
   workflow_app=...)`); without definitions the doors answer 501 — no
   untyped deliver surface ships.
-* **CLI (T12): `taskq flows`** — list/status/holds/signal/resolve/
+* **CLI: `taskq flows`** — list/status/holds/signal/resolve/
   cancel/retry: one question, one command; the analysis lives in the
   pure module (`workflows/_cli.py`, the `_doctor` seam — the shared
-  §17.5 derivation + the why-stuck arm); the typed door validates the
+  status derivation + the why-stuck arm); the typed door validates the
   shell's JSON against the bound gates (the named pydantic refusal; the
   hold survives); the write verbs ride the engine's audit rows with the
   `cli:<user>` principal; the read verbs are read-only (pinned).
-* **Examples (T13): the doc-ingest pipeline** — the nine shapes
+* **Examples: the doc-ingest pipeline** — the nine shapes
   (heterogeneous fork, batch collect with the partial failures, the
   typed HITL hold inside the budget-capped loop, the worked duality of
   the edge policies, the union routing with `assert_never`, the typed
@@ -1998,7 +2132,7 @@ nothing was lost, the move is documented here).
   the examples lane: the join fires exactly once across 3 rounds; the
   cron slot's idempotency live). The grep gate: zero case-study strings
   in the shipped tree.
-* **Demo (T16): the doc_ingest graph LIVE** — `examples/workflows.py` +
+* **Demo: the doc_ingest graph LIVE** — `examples/workflows.py` +
   the app's trigger route (the F3 envelope) + the mounted WorkflowApp +
   the in-process drive loop; the admin's run explorer renders the
   demo's runs live.
@@ -2039,7 +2173,7 @@ nothing was lost, the move is documented here).
 
 ### Added
 
-* **Workflows (T06):** the failed-parent propagation — a parent's TERMINAL
+* **Workflows:** the failed-parent propagation — a parent's TERMINAL
   failure resolves the joins counting it by the edge's declared
   `failure_policy`: `fail_closed` (the default) blocks the join (the record
   names the failed parent), peer-cancels the running siblings
@@ -2047,12 +2181,12 @@ nothing was lost, the move is documented here).
   `collect` fans the failure in as a typed `FailureInfo` item (the estate's
   `ErrorInfo` envelope, the full attempt history) and fires the join with
   the partial result. A skip fans in with zero ledger rows.
-* **Workflows (T07):** the declared maximum fan-in per join (1000) refused
+* **Workflows:** the declared maximum fan-in per join (1000) refused
   at validate with the child-driven alternative named; the child-driven
   escape (`JoinSpec(child_driven=True)`) counts terminal children from the
   edge ledger; the `maybe` edge policy (absorbed + SURFACED); the scale
   curve pinned across the boundary (the refit + the 100k-edge plan assert).
-* **Workflows (T08):** the status + progress rollup — the §17.5 derivation
+* **Workflows:** the status + progress rollup — the status derivation
   table (the absorbed-failure clause stated first), the rows-only
   reconstruction (the two-source rule: the ledger for the attempted
   terminals, the node row's error jsonb for the never-granted ones), the
@@ -2336,6 +2470,84 @@ nothing was lost, the move is documented here).
   reads the server clock and the row together), so application/database
   clock divergence cannot corrupt an assertion; liveness freshness is
   bounded by the missed-at-most-one-tick contract.
+
+### Workflow steps default to the `default` queue
+
+> **Unreleased.** Strict-mode workers (`TASKQ_QUEUES_STRICT=1`, or the
+> app declaring `WorkflowApp(queues_strict=True)`) that import a
+> WorkflowApp whose cohorts project onto queues the worker does
+> not consume now refuse the boot (`WorkflowQueueUnconsumedError`);
+> non-strict boots warn. Deployments whose workers consume `default` are
+> unaffected. The audit: every `step(`/` map_source(`/`route(` wiring in
+> a WorkflowApp, and the queue set each worker actually consumes.
+
+Every workflow wiring verb places its node on the `default` queue unless
+told otherwise (`step`'s `queue=`, the map's `map_queue=`, the typed
+route's `RouteArm` fallback, the `Chain`'s rows, the loop's nodes) — the
+same default the vanilla `@actor` carries. The trap is the deployment
+shape, not the default: a fleet whose workers are queue specialists
+(each consuming its own `TASKQ_QUEUES` subset, nobody consuming
+`default`) never claims the workflow's rows. The strand is silent by
+construction: the fork's INSERT succeeds, the dispatch claim matches
+only the claiming worker's own queues, so the rows sit pending forever
+with no error and no log — the workflow face of the "jobs stranded on a
+queue no worker drains" failure mode.
+
+**The discipline — declare the queue when your workers don't run
+`default`:** pass `queue=` explicitly on the wiring verbs (and the
+per-arm / per-chain placements), keeping the one-actor-one-queue
+placement law — a heterogeneous placement is distinct actor names per
+queue (see
+[Workflows](workflows.md#the-split-placement-one-actor-one-queue-the-design-law)).
+
+**The boot-time loud check (the app's `queues_strict=True` declaration
+OR `TASKQ_QUEUES_STRICT`):** every
+worker that imports the app projects its cohorts, and a boot whose
+consumed set names none of a projected cohort's queues fails LOUD —
+gated on the vanilla queues' own opt-in law: strict mode
+(`TASKQ_QUEUES_STRICT=1`) REFUSES the boot —
+`WorkflowQueueUnconsumedError` (a `RuntimeError`) naming the unconsumed
+queues, the consumed set, and the two remedies: add each queue to a
+worker's `TASKQ_QUEUES` / `--queues`, or route the step elsewhere
+(`step(..., queue=...)` / `@app.actor(queue=...)`). Non-strict boots
+proceed with the ONE aggregated `workflow-cohorts-on-unconsumed-queues`
+warning (the vanilla warning's own shape, the remedy spelled: a sibling
+worker in the fleet may consume the queue — a per-queue worker
+specialization legitimately imports the shared apps module while its
+siblings run the foreign queues). The gate has a second, app-declared
+face: `WorkflowApp(queues_strict=True)` declares the strictness in
+CODE, riding the app every worker child already imports (a
+heterogeneous fleet whose children each subscribe to a queue subset
+cannot coordinate a fleet-wide env var). The faces OR-combine — the
+boot refuses when EITHER is set — and the env can only ADD strictness:
+ops tightening stays possible; silently disabling a declared contract
+is not a thing. One app's declaration tightens the gate for every
+co-resident app too: in a process importing several apps,
+`queues_strict=True` on ONE app makes the gate strict over the WHOLE
+projected cohort set — a co-resident app's sibling-served cohorts
+refuse as well (the refusal names the queues and the remedy). The check
+runs before the cohorts'
+`actor_config` sync, so a refusing process writes nothing; a worker
+consuming nothing at all keeps the separate `worker-consumes-no-queues`
+warning.
+
+### The admin SSE gained a fifth topic: `holds`
+
+> **Unreleased.** Breaking for any consumer that derives resource budgets
+> from the admin SSE topic vocabulary: a budget derived from the topic
+> list under-counts by one.
+
+The admin's `GET /admin/sse/{topic}` endpoint validates `topic` against
+a closed vocabulary; the workflow round added **`holds`** (the
+hold/decision stream the run explorer's holds panel rides) alongside the
+existing `jobs`, `workers`, `queues` and `history`. Anything that
+enumerates the topic list to size its own resources — a semaphore keyed
+per topic, a connection-pool budget allocated per topic — now
+under-counts by one: the fifth topic's connections arrive and no budget
+was reserved for them. Count `holds` (found live: a downstream portal's
+pool budget keyed on the topic list came up one short). The endpoint is
+capped per topic by `TASKQ_ADMIN_MAX_SSE_CONNECTIONS`; see
+[the admin UI](admin-ui.md#get-adminssetopic).
 
 ### Bulk enqueues partition `max_pending` admission per actor
 
@@ -2742,6 +2954,22 @@ and keep that flag in its deploy pipeline — every run logs the drift as a
 warning, which is the honest state: that database's ledger refers to SQL
 that no longer exists anywhere.
 
+## The workflow round's leader-sweep arms, on by default
+
+Two leader-sweep arms switch ON with this upgrade and start acting at
+the first post-upgrade sweep — no flag, no migration step:
+
+- the **workflow outbox arm** (the fired joins' consumer deliveries):
+  delivered outbox rows past the retention period prune, one bounded
+  batch per pass — the period defaults to 24h;
+- the **step-cache sweep**: the cross-run cache's expired results prune
+  on the leader's cadence — the sweep period defaults to 1h.
+
+The other five flow-history retention arms stay OFF until an operator
+sets their retention period (the zero-means-off setting: nothing is
+armed until a period is declared). The two on-by-default arms delete
+only EXPIRED or DELIVERED data — never a run's history.
+
 ## The workflow round (01.00.24) — the DAG engine's schema
 
 Migrations `01.00.24_01/_02/_03` ship the workflow engine's DDL: the five
@@ -2764,23 +2992,18 @@ definition is not registered in the healer's process delivers its
 declared consumers off an un-reduced join — keep the definitions
 imported in every worker.
 
-**The round was amended in place before landing.** The step ledger's
-claim arbiter keys `(flow_id, step_key, COALESCE(map_index, -1), attempt)`
-— map children of one step key are different claims — which is an
-expression index (`wf_step_ledger_claim_uniq`, in `_03`; a UNIQUE
-constraint cannot carry an expression), so the table's bare
-`UNIQUE (flow_id, step_key, attempt)` constraint was removed from `_02`'s
-`CREATE TABLE`. Because **none of these files ever shipped in a release**
-(the branch is the round's first publication), no `_variants/` entry is
-owed: variant history exists for databases that applied PREVIOUSLY
-PUBLISHED bytes, and no database ever applied these. If you applied a
-pre-release build that carried the older constraint: the files' checksums
-changed, and `taskq migrate status` will name the drift — the cure is the
-same as the published-variants discipline below, except the honest
-bookkeeping here is "this pre-release build's ledger refers to a draft of
-01.00.24 that was never published"; re-run the round's files on a fresh
-schema (they are idempotent-ordered, additive DDL) rather than
-legitimising a draft checksum with a variant.
+**The migration header says "no `post_` phase ever ships for v1 (a
+forever rule)" — the header is checksum-frozen and can no longer be
+edited, and the statement it makes is now out of date: the workflow
+round's own `01.00.37_01_post_wf_fairness_cohort_check` IS a `post_`
+phase. The exception in full: the no-post rule protects the row shape a
+pre-workflow worker reads; the fairness cohort's post phase writes ONLY
+the `fairness_key` column's values (the stamp the pre-upgrade rows read
+as NULL) and a CHECK constraint — no column added, no row shape
+changed — so the rule's guarantee (old workers read the row unchanged)
+holds while the post phase lands. The header's own deployment sequence
+(pre → the code roll → the post phase) is the sequence this guide's
+steps above spell.
 
 Two indexes the sweep arms lean on: `wf_step_ledger_running_idx` (the
 phantom reaper's `status='running'` partial) and
@@ -2812,3 +3035,45 @@ and the guard degrades to fail-closed refusal if an install loses them) —
 adding one is a PR, never a runtime knob. Never add a variant for a file
 that has not actually shipped amended bytes: a variant legitimises a
 checksum forever.
+
+## The flow-history retention round (01.00.35) — the sweep arms' indexes
+
+Migration `01.00.35_01` builds the `flow_id` indexes the flow-history
+retention arms' delete legs lean on (`wf_edge`, `wf_join_fire` — the
+file's own checked-against-the-existing-set analysis explains why the
+other three ledger tables need none). See [Workflows](workflows.md) for
+the arms' contract.
+
+**The migration's bytes are frozen.** Once a migration file exists on any
+branch a database could have applied, its bytes are checksum-frozen — tag or
+no tag. The ledger's checksum covers every byte, comments included, so a
+comment-only edit (a name scrub included) is checksum drift for every
+database that applied the original bytes: the drift warning fires on that
+database's next `migrate` and never stops. A documentation scrub that cannot
+preserve bytes does not touch migrations; prose fixes ride the next
+migration that touches the same tables, or not at all.
+
+## The adoption checklist
+
+The whole sequence, in order — each step's failure stops the upgrade at
+the step that can still fix it:
+
+1. **Bump the pin** (`taskq-py==<new version>`), sync, and confirm the
+   app imports.
+2. **`taskq migrate status`** — expect the new round's count pending and
+   **zero drift**. A drift line here means a database applied bytes this
+   tree no longer ships: stop and reconcile before anything else.
+3. **The pre-phase job**: `taskq migrate up --phase pre` — additive DDL,
+   safe against every running worker.
+4. **Roll the workers.** The mixed fleet is safe in this window: old
+   workers read the new row shape unchanged; new workers read the old
+   rows unchanged.
+5. **The post phase, once, by hand**: `taskq migrate up --phase post` —
+   after the LAST worker is up. Never a bare `taskq migrate up` ahead of
+   the roll: the post phase lands immediately and old workers lose the
+   ability to write workflow rows.
+6. **Validate the backfill** (the round's VALIDATE step above): find a
+   violator, fix it, `ALTER TABLE ... VALIDATE CONSTRAINT`.
+7. **`taskq migrate status` again** — zero pending, zero drift — then
+   one smoke flow end to end (`taskq flows list` shows the run; the run
+   page renders its graph).

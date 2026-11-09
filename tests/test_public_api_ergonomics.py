@@ -1,4 +1,4 @@
-"""Public-API ergonomics: pins where the surface's contract used to mislead.
+"""Public-API ergonomics: pins where the surface's contract can mislead.
 
 Every test here exists because a real user reading a docstring (or an error
 message) was promised something the code did not deliver, or was handed an
@@ -94,10 +94,10 @@ def _silent_pubsub() -> MagicMock:
 
 # ── TaskQ constructor: rejected combinations say so at construction ──────
 #
-# The class docstring used to claim reload_interval was "ignored" for
-# dsn=/pool= — the code rejects it with a ValueError. A user who believed
-# the docstring either hit an inexplicable crash or, worse, dropped the
-# parameter and silently never got rotation. These pins hold the TRUE
+# The class docstring must never claim reload_interval is "ignored" for
+# dsn=/pool= — the code rejects it with a ValueError. A user who believes
+# the docstring either hits an inexplicable crash or, worse, drops the
+# parameter and silently never gets rotation. These pins hold the true
 # contract: rejected combinations raise, loudly, naming the remedy.
 
 
@@ -205,10 +205,10 @@ def test_cancel_missing_job_raises_key_error_naming_the_id() -> None:
         asyncio.run(client.close())
 
 
-# ── progress_stream on an already-terminal job (RED-PROVEN FIX) ──────────
+# ── progress_stream on an already-terminal job (red-proven fix) ──────────
 #
 # The Redis arm of JobHandle.progress_stream() never read the job's current
-# row before subscribing: for a job that was ALREADY terminal when the call
+# row before subscribing: for a job that was already terminal when the call
 # was made, the channel is silent, nothing re-fetched the row, and the
 # generator yielded nothing and never returned — a permanent hang, against
 # a docstring promising "yields events until a terminal=True event is
@@ -267,9 +267,15 @@ async def test_progress_stream_redis_missed_terminal_message_is_bounded() -> Non
     async with asyncio.timeout(10):
         async for event in handle.progress_stream():
             events.append(event)
-    assert len(events) == 1
-    assert events[0].terminal is True
-    assert events[0].status == "succeeded"
+    # Native replay (see tests/test_progress_stream.py): the snapshot row
+    # (running, seq 1) is now the first event, then the on-timeout
+    # re-fetch delivers the terminal event the wire lost. The contract
+    # under test — bounded termination on a missed terminal message —
+    # is unchanged.
+    assert len(events) == 2
+    assert (events[0].kind, events[0].seq, events[0].terminal) == ("progress", 1, False)
+    assert events[1].terminal is True
+    assert events[1].status == "succeeded"
 
 
 # ── The import surface: every __all__ name survives `from taskq import X` ─

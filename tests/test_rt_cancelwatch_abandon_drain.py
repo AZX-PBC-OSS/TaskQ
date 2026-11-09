@@ -1,4 +1,4 @@
-"""Red-team: phase-3 abandonment drain failure modes in ``_CancelController``.
+"""Adversarial review: phase-3 abandonment drain failure modes in ``_CancelController``.
 
 Two attacking interleavings around ``run_post_tx``'s drain of
 ``_pending_abandons``:
@@ -11,7 +11,7 @@ Two attacking interleavings around ``run_post_tx``'s drain of
    write RAISES (a mere pool-acquire ``TimeoutError`` is enough), the entry
    keeps ``ABANDON_PENDING`` - and no arm in ``run_in_tx`` ever matches
    ``ABANDON_PENDING`` again: the phase-1 arm needs ``< COOPERATIVE``, the
-   re-issue arm needs ``== COOPERATIVE`` or ``(>= FORCED AND db ==
+   re-issue arm needs ``== COOPERATIVE`` or ``(>= FORCED and db ==
    COOPERATIVE)``, and the phase-3 queueing arm needs ``== FORCED`` exactly.
    The not-applied fallback in ``run_post_tx`` (entry back to ``FORCED``)
    only covers the ``False`` return, never the exception.  One transient
@@ -26,7 +26,7 @@ Two attacking interleavings around ``run_post_tx``'s drain of
    reclaimed (``locked_by_worker`` no longer this worker) the poll stays
    silent, yet the abandon is re-issued every tick, unbounded.  Because
    ``mark_abandoned`` is deliberately worker-unfenced (guard: ``status =
-   'running' AND cancel_phase = 2``), a stale entry can terminate a
+   'running' and cancel_phase = 2``), a stale entry can terminate a
    re-dispatched attempt now owned by ANOTHER worker - the PG-level proof
    is in ``tests/test_rt_cancelwatch_cross_worker_abandon.py``; this file
    pins the controller-level contract.
@@ -226,7 +226,7 @@ async def test_phase3_abandon_not_issued_for_job_absent_from_own_poll() -> None:
     """A tick whose own poll no longer returns the job must not abandon it.
 
     The poll (``POLL_CANCEL_FLAGS_SQL``) is fenced on ``locked_by_worker =
-    $1 AND cancel_requested_at IS NOT NULL AND status = 'running'`` - the
+    $1 and cancel_requested_at IS not NULL and status = 'running'`` - the
     exact set of rows an abandon from THIS worker is entitled to touch.
     Once a reclaim has moved the row to another holder, the poll goes
     silent, but the phase-3 arm queues on local state alone; because
@@ -242,7 +242,7 @@ async def test_phase3_abandon_not_issued_for_job_absent_from_own_poll() -> None:
     await deps.active_jobs.register(job_id, sleeper, _make_ctx())
     entry = deps.active_jobs.get(job_id)
     assert entry is not None
-    # Stale in-memory state from before the reclaim: already FORCED, both
+    # Stale in-memory state from before the reclaim: already forced, both
     # deadlines long past.
     entry.cancel_phase = CancelPhase.FORCED
     entry.cancel_observed_at = asyncio.get_running_loop().time() - 100.0
@@ -282,7 +282,7 @@ async def test_phase3_abandon_not_issued_for_job_absent_from_own_poll() -> None:
 
 async def test_shutdown_owns_held_abandons_the_drain_writes_the_operators_verdict() -> None:
     """While the shutdown orchestration is active, a HELD abandon drains as
-    the operator's OWN verdict (``mark_cancelled``), never ``mark_abandoned``.
+    the operator's own verdict (``mark_cancelled``), never ``mark_abandoned``.
 
     The orchestration runs while the heartbeat keeps ticking (the loop
     exits only on ``shutdown_event``, set at the orchestration's end), so

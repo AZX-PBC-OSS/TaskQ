@@ -14,12 +14,17 @@ than duplicating it.
 The semaphore is keyed by endpoint family and limit, and is process-local.
 Multiple worker processes each get their own budget, which is the same
 semantics the admin endpoint already had.
+
+The module also owns the SSE session re-check (``session_gate``): the
+mid-stream verifier bound every streaming generator shares, beside the
+``SESSION_RECHECK_TIMEOUT_SECS`` constant that bounds it.
 """
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 
+import structlog
 from fastapi import HTTPException
 
 from taskq.obs import (
@@ -29,7 +34,12 @@ from taskq.obs import (
     record_sse_rejection,
 )
 
-__all__ = ["SESSION_RECHECK_TIMEOUT_SECS", "acquire_sse_slot", "release_after"]
+__all__ = [
+    "SESSION_RECHECK_TIMEOUT_SECS",
+    "acquire_sse_slot",
+    "release_after",
+    "session_gate",
+]
 
 #: The progress stream's one endpoint-family key (the constant
 #: ``web/progress.py`` passes ``acquire_sse_slot``); also the default
@@ -43,7 +53,7 @@ _SEMAPHORES: dict[tuple[str, int], asyncio.Semaphore] = {}
 #: queueing for a slot, which is the resource exhaustion being prevented.
 _ACQUIRE_TIMEOUT: float = 0.001
 
-#: Bound on one SSE session re-check invocation (#316). The re-check is a
+#: Bound on one SSE session re-check invocation . The re-check is a
 #: host-supplied async callable; taskq's own verifiers are pure cookie/token
 #: comparisons that cannot suspend, but a host verifier that awaits a wedged
 #: IdP introspection endpoint would otherwise freeze the streaming generator
@@ -52,6 +62,63 @@ _ACQUIRE_TIMEOUT: float = 0.001
 #: A check that outlives this bound is treated as revocation (fail closed):
 #: unknown session state must not keep a privileged stream open.
 SESSION_RECHECK_TIMEOUT_SECS: float = 5.0
+
+
+def session_gate(
+    session_verifier: Callable[[], Awaitable[bool]] | None,
+    log: structlog.stdlib.BoundLogger,
+    *,
+    timeout_warning: str,
+    timeout_fields: Mapping[str, object],
+) -> Callable[[], Awaitable[bool]]:
+    """The mid-stream session re-check, built once per stream: runs
+    before the first frame and once per loop iteration — before every
+    yielded event and at every keepalive tick. A failure ends the
+    stream (fail closed); a verifier exception is revocation; a check
+    that outlives :data:`SESSION_RECHECK_TIMEOUT_SECS` is unknown
+    state, also revocation (a hung host verifier must not freeze the
+    stream inside its own keepalive path).
+
+    Every SSE generator that re-checks a session rides this one gate;
+    *log*, *timeout_warning* and *timeout_fields* carry the generator's
+    own surface — its logger and the timeout incident's event name and
+    static fields (the job id, the channel, the topic, the run id), so
+    each stream's timeout reads under its own vocabulary. The bound and
+    the stream phase ride every timeout event the helper logs.
+    """
+    recheck_count = {"n": 0}
+
+    async def _session_still_valid() -> bool:
+        if session_verifier is None:
+            return True
+        first_check = recheck_count["n"] == 0
+        try:
+            recheck_count["n"] += 1
+            return bool(
+                await asyncio.wait_for(
+                    session_verifier(),
+                    timeout=SESSION_RECHECK_TIMEOUT_SECS,
+                )
+            )
+        except TimeoutError:
+            # A verifier that outlives its bound is an unknown session
+            # state, not a pass: fail closed, and say why -- a hung
+            # verifier (wedged IdP introspection call) wedging the
+            # stream is a different incident from a revoked session.
+            log.warning(
+                timeout_warning,
+                **timeout_fields,
+                timeout_secs=SESSION_RECHECK_TIMEOUT_SECS,
+                stream_phase="initial" if first_check else "streaming",
+            )
+            return False
+        except Exception:
+            # Fail closed: an unknown session state must not keep a
+            # privileged stream open. The generator names the
+            # revocation on its own surface.
+            return False
+
+    return _session_still_valid
 
 
 def _semaphore(key: str, limit: int) -> asyncio.Semaphore:
@@ -117,8 +184,8 @@ async def release_after[GenT](
     the semaphore's release performs.
     """
     try:
-        # Deterministic close of the wrapped generator on EVERY exit: a
-        # disconnect closes THIS generator (CancelledError at the yield /
+        # Deterministic close of the wrapped generator on every exit: a
+        # disconnect closes this generator (CancelledError at the yield /
         # an explicit aclose), never the inner one, and without the
         # aclosing the ``async for`` abandons *gen* suspended mid-iteration.
         # The inner generator's cleanup then waits on the GC's asyncgen

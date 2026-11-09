@@ -65,7 +65,7 @@ class GZipStaticOnly(_GZipMiddleware):
 # (`clock_timestamp()`), so the age of a row belongs to the database's clock
 # domain. Answering "how stale is this?" by subtracting from this process's
 # `datetime.now()` makes every rendered age wrong by exactly the app-to-database
-# skew, NTP drift, a paused VM, a container clock, WSL2's documented stepping ,
+# skew, ntp drift, a paused vm, a container clock, WSL2's documented stepping ,
 # and that question is asked during an incident, when the wrong answer costs the
 # most. The rest of this branch removes mixed-domain arithmetic by pushing it
 # into SQL; a Jinja filter cannot issue a query, so it uses the next best thing:
@@ -126,7 +126,7 @@ async def refresh_db_clock_offset(pool: BoundedPool) -> None:
         return
     # Why the midpoint: the round trip happens between the two local reads, so
     # the server's instant is best compared against the middle of that window
-    # rather than either end, the same correction NTP applies. On a local
+    # rather than either end, the same correction ntp applies. On a local
     # database this is sub-millisecond, but it costs nothing and keeps the
     # measurement honest over a slow link.
     app_now = before + (after - before) / 2
@@ -320,7 +320,7 @@ def get_schema(request: Request) -> str:
 
 
 def get_workflow_app(request: Request) -> Any | None:
-    """Dependency: the host's WorkflowApp (T11's typed door), or None.
+    """Dependency: the host's WorkflowApp (the typed door), or None.
 
     ``getattr`` fallback: a host assembled before the workflow surface
     existed (or one that deliberately mounts without definitions) keeps
@@ -336,7 +336,7 @@ def get_redis_client(request: Request) -> Any | None:
 
 
 def get_session_verifier(request: Request) -> Callable[[Request], Awaitable[bool]] | None:
-    """Dependency: the SSE session re-check from ``app.state`` (#316).
+    """Dependency: the SSE session re-check from ``app.state`` .
 
     Long-lived SSE streams re-invoke it (before every yielded event, at every
     keepalive tick) so a session revoked mid-stream stops receiving frames.
@@ -386,16 +386,35 @@ def get_csrf_token(request: Request) -> str:
 
 
 async def validate_csrf(request: Request) -> None:
-    """Dependency: validates the synchronizer-token CSRF on POST requests."""
+    """Dependency: validates the synchronizer-token CSRF on POST requests.
+
+    A refusal names the
+    fix — the cookie and the form token drift when the page sat while
+    the session rotated (or the cookie was lost outright), and the
+    operator's only fix is a fresh page; the detail says so, so the 403
+    self-describes its remedy instead of reading as a bug (the
+    cookie-loss 403 loop: submit → 403 → submit → 403, forever)."""
     cookie_token = request.cookies.get(_CSRF_COOKIE_NAME)
     if cookie_token is None:
-        raise HTTPException(status_code=403, detail="CSRF token missing from cookies")
+        raise HTTPException(
+            status_code=403,
+            detail="CSRF token missing from cookies — the page's token is "
+            "stale or the cookie was lost — reload the page and submit again",
+        )
     form = await request.form()
     form_token = form.get("csrf_token")
     if not isinstance(form_token, str):
-        raise HTTPException(status_code=403, detail="CSRF token missing from form")
+        raise HTTPException(
+            status_code=403,
+            detail="CSRF token missing from form — the page's token is stale "
+            "— reload the page and submit again",
+        )
     if not hmac.compare_digest(cookie_token, form_token):
-        raise HTTPException(status_code=403, detail="CSRF token mismatch")
+        raise HTTPException(
+            status_code=403,
+            detail="CSRF token mismatch — the page's token is stale — reload "
+            "the page and submit again",
+        )
 
 
 # The refusal detail every disabled mutation route answers with: it names
@@ -412,7 +431,7 @@ async def require_actions_enabled(
 ) -> None:
     """Dependency: refuses mutations on a deployment that disabled them.
 
-    Declared BEFORE ``validate_csrf`` on every mutation route (FastAPI
+    Declared before ``validate_csrf`` on every mutation route (FastAPI
     resolves dependencies in declaration order): whether actions are
     enabled is a configuration state, safe to answer before any token
     validation -- an operator who POSTs to a disabled deployment gets the
@@ -602,13 +621,13 @@ class AdminBundle:
     # flags. None keeps the residual: a standalone admin process cannot
     # know, and the fire stamps nothing (disclosed in ops.py, not silent).
     actor_fire_policies: Mapping[str, ActorFirePolicyLike] | None = None
-    # The host's WorkflowApp (T09's authoring surface), when the host
-    # process HAS the workflow definitions (the demo app, the worker).
+    # The host's WorkflowApp (the authoring surface), when the host
+    # process has the workflow definitions (the demo app, the worker).
     # The typed deliver/resolve doors validate through its bound gates;
     # None is the honest residual: the doors answer 501 (no untyped
     # deliver surface ships), never a silent untyped write.
     workflow_app: Any = None
-    # The SSE session re-check (#316), derived from auth_dependency when the
+    # The SSE session re-check , derived from auth_dependency when the
     # factory was not given one explicitly; setup_admin_state copies it onto
     # app.state where the /sse/{topic} endpoint resolves it per request.
     session_verifier: Callable[[Request], Awaitable[bool]] | None = None
@@ -647,10 +666,10 @@ def setup_admin_state(app: _AppLike, bundle: AdminBundle) -> None:
 
 
 # The Postgres-unreachable family (U1): everything asyncpg raises when the
-# database cannot be SERVED (connection lost mid-flight, connect refused,
+# database cannot be served (connection lost mid-flight, connect refused,
 # the server not accepting connections, the connection cap), plus the
 # socket-level shapes a dead host surfaces through. SQL-level errors
-# (PostgresError proper) are NOT here: a bad query is a bug (500), not an
+# (PostgresError proper) are not here: a bad query is a bug (500), not an
 # outage (503).
 _PG_UNAVAILABLE_FAMILY: tuple[type[BaseException], ...] = (
     asyncpg.exceptions.PostgresConnectionError,
@@ -766,8 +785,8 @@ def _install_admin_error_handlers(app: _AppLike, bundle: AdminBundle) -> None:
         app.add_exception_handler(exc_type, _pg_unavailable)  # pyright: ignore[reportArgumentType]  # Why: the host app's handler registry accepts any exception type; the family is asyncpg/socket shapes.
     app.add_exception_handler(StarletteHTTPException, _http_exception)  # pyright: ignore[reportArgumentType]  # Why: same registry.
     app.add_exception_handler(RequestValidationError, _validation_error)  # pyright: ignore[reportArgumentType]  # Why: same registry.
-    # Starlette builds the middleware stack on the FIRST scope the app is
-    # handed -- and a real server (uvicorn) hands it the LIFESPAN scope
+    # Starlette builds the middleware stack on the first scope the app is
+    # handed -- and a real server (uvicorn) hands it the lifespan scope
     # before the host's lifespan body (where the setup_admin_state
     # contract puts this registration) has run a line. The stack's
     # ExceptionMiddleware snapshots app.exception_handlers at build time,
@@ -862,7 +881,7 @@ def create_router(
     the same mapping the worker bootstrap hands the cron tick. The run-now
     fire path consults it because the stored ``actor_config`` row cannot
     carry code-declared flags: without it a run-now fire for a singleton
-    actor lands WITHOUT ``metadata["singleton"]`` -- invisible to the
+    actor lands without ``metadata["singleton"]`` -- invisible to the
     ``jobs_singleton_uniq`` index and to every later singleton preflight,
     the "at most one active job" contract silently gone from the admin
     surface. Pass the worker's mapping when the admin app is mounted in a
@@ -871,7 +890,7 @@ def create_router(
     stamps nothing (disclosed here and in ops.py, not silent).
 
     ``session_verifier`` is the optional async re-check long-lived SSE streams
-    re-invoke (#316) -- ``Callable[[Request], Awaitable[bool]]`` returning
+    re-invoke  -- ``Callable[[Request], Awaitable[bool]]`` returning
     whether the session that opened the stream is still valid. When omitted,
     it is derived from the ``session_verifier`` attribute the taskq auth
     dependencies (``create_auth_dependency``, ``token_auth``) attach to the
@@ -887,12 +906,12 @@ def create_router(
 
     # Why this warning exists (the #424 pattern, admin side) and why it is
     # conditioned on the settings: TaskQ Redis configured but this router
-    # created without the client is a WIRING GAP - the pages render
+    # created without the client is a wiring gap - the pages render
     # polling mode and the progress stream answers 503
     # ``redis_not_configured``, so live SSE progress is simply absent
     # while the dashboard keeps working, a degradation the operator
     # otherwise discovers only by staring at the mode badge. A deployment
-    # with NO TaskQ Redis configured at all is the legitimate polling
+    # with no TaskQ Redis configured at all is the legitimate polling
     # mode: the badge says so accurately and no warning fires. Only the
     # gap (settings expect Redis, app state lacks the client) is loud.
     # Once per admin app: create_router runs once per router.
@@ -914,7 +933,7 @@ def create_router(
             ),
         )
 
-    # Session re-check derivation (#316): prefer the explicit parameter, fall
+    # Session re-check derivation : prefer the explicit parameter, fall
     # back to the attribute the taskq auth dependencies attach. An auth
     # dependency without a re-check cannot be safely re-invoked by us (it may
     # need FastAPI dependency injection), so the fallback is no re-check --
@@ -948,7 +967,7 @@ def create_router(
     env.globals["base_path"] = base_path  # pyright: ignore[reportArgumentType]  # Why: Jinja2 Environment.globals accepts arbitrary values for template globals; str is valid.
     env.globals["poll_interval_ms"] = int(settings.admin_ui_polling_interval_seconds * 1000)  # pyright: ignore[reportArgumentType]  # Why: same as above; int is a valid template global.
     # Why a callable rather than a plain value: the token is per request (the
-    # auth dependency arms it from the live SSO session cookie), so it cannot
+    # auth dependency arms it from the live sso session cookie), so it cannot
     # be baked into the environment at startup. The chrome calls it to decide
     # whether the Sign out control renders at all.
     env.globals["sso_logout_token"] = current_sso_logout_token  # pyright: ignore[reportArgumentType]  # Why: Jinja2 Environment.globals accepts arbitrary values for template globals; a zero-arg callable is valid.
@@ -973,7 +992,7 @@ def create_router(
     # different story about staleness than the next. It is cached for
     # _CLOCK_OFFSET_TTL, so this is one extra query per 30 s, not per request.
     #
-    # The principal capture sits FIRST (where the bare auth dependency used
+    # The principal capture sits first (where the bare auth dependency used
     # to be): it wraps that same dependency, keeps it running before every
     # page, and stores its return value on request.state.principal so the
     # mutation routes can attribute their audit rows.

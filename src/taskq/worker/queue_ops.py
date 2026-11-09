@@ -43,11 +43,11 @@ __all__ = [
     "set_queue_mode",
 ]
 
-#: The values the table's CHECK constraint admits.
+#: The values the table's check constraint admits.
 QUEUE_MODES: Final = ("strict_fifo", "round_robin")
 
 #: The mode a queue has when it has no row at all. Must match the column
-#: DEFAULT in 01.00.00_01_pre_initial.sql and the fallback in
+#: default in 01.00.00_01_pre_initial.sql and the fallback in
 #: taskq.backend._dispatch._resolve_queue_modes.
 DEFAULT_QUEUE_MODE: Final = "strict_fifo"
 
@@ -74,7 +74,7 @@ def _check_queue_name(name: str) -> None:
     arbitrary operator-supplied string into ``queues.name``; every other
     producer of a queue name goes through :data:`QueueName`. An
     unvalidated ":" name is inert rather than exploitable today -- the
-    cap bootstrap matches ``WHERE name = ANY($1)`` against the validated
+    cap bootstrap matches ``WHERE name = any($1)`` against the validated
     ``settings.queues`` -- but it stores a row that can never match
     anything, which is a trap for whoever finds it later.
     """
@@ -146,7 +146,7 @@ async def set_queue_max_concurrent(
     startup, so a change needs a worker restart to take effect.
 
     ``max_concurrent`` must be ``>= 1`` or ``None``, the table's CHECK
-    constraint (``max_concurrent IS NULL OR max_concurrent >= 1``)
+    constraint (``max_concurrent IS NULL or max_concurrent >= 1``)
     enforces the same, but rejecting here saves the operator from a raw
     asyncpg ``CheckViolationError`` traceback. ``None`` is the uncapped
     state; a 0 "emergency drain" belongs to
@@ -170,7 +170,7 @@ async def set_queue_max_concurrent(
     )
     assert row is not None
     # Clearing the mode caches here is not strictly required (this upsert
-    # never touches `mode`, and a fresh row's DEFAULT mode equals the
+    # never touches `mode`, and a fresh row's default mode equals the
     # resolver's miss fallback), but the queues-table writes are exactly
     # two upserts in this module, and clearing on both keeps the cache
     # correct without assuming those two facts stay coupled.

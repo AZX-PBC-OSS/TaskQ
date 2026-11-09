@@ -417,7 +417,7 @@ class TestExtendReservationLeases:
         count = await backend.extend_reservation_leases(worker_a, timedelta(seconds=120))
         assert count == 1
 
-        # Verify worker B's lease was NOT extended (still near old_lease_b)
+        # Verify worker B's lease was not extended (still near old_lease_b)
         async with deps.worker_pool.acquire() as conn:
             row_b = await conn.fetchrow(
                 f'SELECT lease_expires_at FROM "{schema}".reservation_slots '
@@ -468,7 +468,7 @@ class TestListJobsIdentityKey:
         deps = clean_state_jobs_app.deps
         schema = deps.settings.schema_name
 
-        # Enqueue a pending job with identity_key "ABC"
+        # Enqueue a pending job with identity_key "abc"
         await _enqueue_job(
             backend,
             actor="actor_a",

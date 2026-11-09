@@ -1,24 +1,33 @@
 """Unit tests for the cron tick - :mod:`taskq.worker.cron_loop`.
 
-Drives ``tick_cron`` end-to-end against a recording fake connection (no
-PG): lock probe, server clock, due-schedule select, batched actor_config
+Drives ``tick_cron`` end-to-end against a recording fake connection:
+lock probe, server clock, due-schedule select, batched actor_config
 lookup, planning (miss-handling, payload resolution, identity keys),
 batched enqueue through the in-memory backend, and the batched
 success/failure UPDATE statements - plus consecutive_failures tracking,
-auto-disable, and the PRODUCER-span link contract.
+auto-disable, and the producer-span link contract.
 
-Also covers regression: PRODUCER span is linked (not parented)
+The commit-gate pins drive real Postgres sessions: the arm runs inside
+a real transaction, the session's own NOTIFY rides back on commit, and
+the death retirement fires the real listener path. The pid-recycle
+wrapper lies about one attribute (the backend pid); everything else on
+those sessions is the server's own.
+
+Also covers regression: the producer span is linked (not parented)
 to the ambient trace context.
-Pure-Python, no PG required.
 """
 
 import asyncio
 import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from contextlib import suppress as contextlib_suppress
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
+import asyncpg
 import pytest
+import pytest_asyncio
 from asyncpg.exceptions import InterfaceError, UniqueViolationError
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
@@ -27,6 +36,7 @@ from taskq._ids import new_uuid
 from taskq.constants import cron_commit_gate_channel
 from taskq.cron import _factory_cache
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.otel import setup_tracer
@@ -86,7 +96,7 @@ class _FakeCronConn(FakeConn):
     ``test_cron_lock_contention_obs.py``), the server clock, and the
     disabled-schedule COUNT. ``fetch`` answers the due-schedule SELECT
     from *schedule_rows* (recording that it was read) and the batched
-    ``actor_config`` ``ANY($1)`` SELECT from *actor_config_rows*.
+    ``actor_config`` ``any($1)`` SELECT from *actor_config_rows*.
     ``execute`` records ``(sql, args)`` and returns an UPDATE tag whose
     rowcount satisfies every statement. ``transaction()`` is the
     passthrough the FakeConn base already provides, so tests can honor
@@ -114,6 +124,23 @@ class _FakeCronConn(FakeConn):
             return self._disabled_count
         raise AssertionError(f"unexpected fetchval: {sql}")
 
+    async def execute(self, sql: str, *args: object) -> str:
+        """The tick's two batched UPDATE shapes, named (the fail-closed
+        rule, tests/test_suite_hygiene.py): the success branch's
+        last_fired_at stamp and the failure branch's strike UPDATE. Any
+        other statement is an unnamed write this double does not model."""
+        self.execute_calls.append((sql, args))
+        if "last_fired_at = clock_timestamp()" in sql or (
+            "consecutive_failures = f.consecutive" in sql
+        ):
+            return "UPDATE 1"
+        if "SET next_fire_at = f.next_fire" in sql:
+            return "UPDATE 1"  # the defer arm: the schedule's next fire moved out
+        raise AssertionError(
+            f"unexpected execute: {sql!r} (args {args!r}) - add the statement "
+            "shape explicitly to this double"
+        )
+
     async def fetchrow(self, sql: str, *args: object) -> object:
         """Answer the tick's one single-row read: the per-actor failure
         totals aggregate (an empty totals object - this fake holds no
@@ -140,7 +167,7 @@ class _FakeCronConn(FakeConn):
             return [_FakeCronRecord({**row.data, "server_now": _NOW}) for row in self.schedule_rows]
         if '"taskq".jobs' in sql:
             # The policy preflights (singleton blockers, max_pending counts)
-            # and the DST overlap-twin probe read the jobs table; this fake
+            # and the dst overlap-twin probe read the jobs table; this fake
             # holds no jobs, so the preflights see none.
             return []
         raise AssertionError(f"unexpected fetch: {sql}")
@@ -191,7 +218,7 @@ def _make_actor_config_row(
     retry_backoff: str | None = None,
     retry_jitter: float | None = None,
 ) -> _FakeCronRecord:
-    """One row of the batched ``actor_config`` ``ANY($1)`` SELECT result.
+    """One row of the batched ``actor_config`` ``any($1)`` SELECT result.
 
     The curve scalars default to NULL: a row predating migration
     01.00.18, so the tick resolves them to the enqueue defaults.  A real
@@ -268,177 +295,19 @@ pytestmark = [pytest.mark.asyncio]
 # ── consecutive_failures increments on factory error ────────────────
 
 
-async def test_cron_fire_failure_increments_consecutive_failures() -> None:
-    """Factory raising → the batched failure UPDATE carries the schedule id,
-    the raw error text, consecutive=1, disable=False; no success UPDATE
-    runs, so last_fired_at is never stamped."""
-    schedule_id = new_uuid()
-    row = _make_schedule_row(
-        actor="failing_actor",
-        payload_factory="nonexistent.module.fn",
-        consecutive_failures=0,
-        next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
-        schedule_id=schedule_id,
-    )
-    conn = _FakeCronConn(
-        schedule_rows=[row],
-        actor_config_rows=[_make_actor_config_row(actor="failing_actor")],
-    )
-    settings = _cron_settings()
-    backend = InMemoryBackend(clock=FakeClock(_NOW))
-
-    fired = await _tick(conn, settings, backend)
-
-    assert fired == 0, "a tick whose only schedule failed to plan fires nothing"
-    failure_updates = _failure_updates(conn)
-    assert len(failure_updates) == 1
-    sql, args = failure_updates[0]
-    assert "consecutive_failures" in sql
-    assert args[0] == [schedule_id]
-    error_texts: object = args[1]
-    assert isinstance(error_texts, list)
-    assert "nonexistent" in str(error_texts[0]), "the raw error text reaches last_fire_error"
-    assert args[2] == [1]
-    assert args[3] == [False]
-
-    assert _success_updates(conn) == [], "a failed fire must not stamp last_fired_at"
-    for sql, _args in conn.execute_calls:
-        assert "last_fired_at = clock_timestamp()" not in sql
-
-
 # ── 3-strike auto-disable ──────────────────────────────────────────
-
-
-async def test_cron_fire_auto_disable_after_threshold(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """3 consecutive factory failures → the third tick's failure UPDATE
-    carries disable=True and consecutive=3; the OTel span event
-    cron.auto_disabled carries failure_count=3; the disabled-schedule
-    count is re-read after the disabling tick."""
-    _, exporter = setup_tracer(monkeypatch)
-
-    schedule_id = new_uuid()
-    conn = _FakeCronConn(
-        actor_config_rows=[_make_actor_config_row(actor="failing_actor")],
-        disabled_count=1,
-    )
-    settings = _cron_settings()
-    backend = InMemoryBackend(clock=FakeClock(_NOW))
-
-    for i in range(3):
-        conn.schedule_rows = [
-            _make_schedule_row(
-                actor="failing_actor",
-                payload_factory="nonexistent.module.fn",
-                consecutive_failures=i,
-                next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
-                schedule_id=schedule_id,
-            )
-        ]
-        await _tick(conn, settings, backend)
-
-    failure_updates = _failure_updates(conn)
-    assert len(failure_updates) == 3, "one failure UPDATE per tick"
-    disable_flags = [args[3] for _sql, args in failure_updates]
-    assert disable_flags == [[False], [False], [True]]
-    _, third_args = failure_updates[2]
-    assert third_args[0] == [schedule_id]
-    assert third_args[2] == [3]
-
-    assert any("COUNT" in sql for sql, _args in conn.fetchval_calls), (
-        "the disabling tick must refresh the disabled-schedules count"
-    )
-
-    auto_disabled_spans = [
-        s
-        for s in exporter.spans_named("cron fire")
-        if any(ev.name == "cron.auto_disabled" for ev in s.events)
-    ]
-    assert len(auto_disabled_spans) == 1
-    event_attrs = dict(auto_disabled_spans[0].events[0].attributes or {})
-    assert event_attrs.get("failure_count") == 3
-    assert event_attrs.get("schedule_name") == "failing_actor"
-    assert isinstance(event_attrs.get("last_error"), str)
-    assert event_attrs["last_error"]
-
-
-# ── consecutive_failures resets on success ─────────────────────────
-
-
-async def test_cron_fire_success_resets_consecutive_failures() -> None:
-    """2 failure ticks then a success tick → the success tick issues the
-    batched success UPDATE resetting consecutive_failures to 0, clearing
-    last_fire_error, stamping last_fired_at, and advancing next_fire_at
-    strictly into the future."""
-    schedule_id = new_uuid()
-    settings = _cron_settings()
-    backend = InMemoryBackend(clock=FakeClock(_NOW))
-
-    for i in range(2):
-        conn = _FakeCronConn(
-            schedule_rows=[
-                _make_schedule_row(
-                    actor="recovering_actor",
-                    payload_factory="nonexistent.module.fn",
-                    consecutive_failures=i,
-                    next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
-                    schedule_id=schedule_id,
-                )
-            ],
-            actor_config_rows=[_make_actor_config_row(actor="recovering_actor")],
-        )
-        await _tick(conn, settings, backend)
-
-    success_conn = _FakeCronConn(
-        schedule_rows=[
-            _make_schedule_row(
-                actor="recovering_actor",
-                consecutive_failures=2,
-                next_fire_at=_NOW,
-                schedule_id=schedule_id,
-            )
-        ],
-        actor_config_rows=[_make_actor_config_row(actor="recovering_actor")],
-    )
-    fired = await _tick(success_conn, settings, backend)
-
-    assert fired == 1
-    assert success_conn.read_due_schedules, "the tick must read the due-schedule set"
-    success_updates = _success_updates(success_conn)
-    assert len(success_updates) >= 1
-    sql, args = success_updates[0]
-    assert "consecutive_failures = 0" in sql
-    assert "last_fire_error = NULL" in sql
-    assert "last_fired_at = clock_timestamp()" in sql
-    next_fires: object = args[1]
-    assert isinstance(next_fires, list)
-    next_fire_arg: object = next_fires[0]
-    assert isinstance(next_fire_arg, datetime)
-    assert next_fire_arg > _NOW, "next_fire_at must advance strictly into the future"
-
-
-# ── last_fired_at NOT updated on factory failure ────────────────────
-
-
-async def test_cron_fire_failure_does_not_update_last_fired_at() -> None:
-    """last_fired_at unchanged after factory failure."""
-    row = _make_schedule_row(
-        actor="failing_actor",
-        payload_factory="nonexistent.module.fn",
-        consecutive_failures=0,
-        next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
-    )
-    conn = _FakeCronConn(
-        schedule_rows=[row],
-        actor_config_rows=[_make_actor_config_row(actor="failing_actor")],
-    )
-    backend = InMemoryBackend(clock=FakeClock(_NOW))
-
-    await _tick(conn, _cron_settings(), backend)
-
-    for sql, _args in conn.execute_calls:
-        assert "last_fired_at = clock_timestamp()" not in sql
+#
+# NOTE (the mock-subtraction cure): the fire-arm fake tests that re-derived
+# the failure/success UPDATE semantics (the batched UPDATE's argument lists,
+# the 3-strike ladder, the failure branch's last_fired_at abstention) are
+# deleted — tests/test_cron_integration.py owns the behavior against real PG
+# (test_ti2_auto_disable_after_3_failures: consecutive_failures == 3 with
+# last_fire_error set and the auto_disabled span; test_ti5_import_error:
+# last_fired_at still NULL after a fire-time failure; test_ti1: the success
+# stamps). The success-tick's ladder reset has no real sibling, so it
+# converted to the real fixture there
+# (test_success_tick_resets_the_failure_ladder) instead of surviving as a
+# fake arm asserting the UPDATE's set spelling.
 
 
 # ── Miss within catch-up window - not skipped ─────────────────────
@@ -495,7 +364,7 @@ async def test_cron_fire_miss_beyond_catch_up_window_skipped() -> None:
     assert next_fire_arg > _NOW, "the recompute seed is the server clock, not the stale slot"
 
 
-# ── PRODUCER span is linked, not parented ──────────────────────────
+# ── producer span is linked, not parented ──────────────────────────
 
 
 async def test_cron_fire_producer_span_linked_not_parented(
@@ -752,9 +621,9 @@ async def test_cron_enqueue_failure_counts_and_autodisables(
 #
 # The policy preflights are advisory: a client enqueue can commit in the
 # window between the preflight SELECT and the batched INSERT (the tick's
-# transaction is READ COMMITTED, so the INSERT's own statement snapshot
+# transaction is read committed, so the INSERT's own statement snapshot
 # sees the newly committed row).  The batched INSERT then violates
-# ``jobs_singleton_uniq`` - and Postgres aborts the WHOLE statement, not
+# ``jobs_singleton_uniq`` - and Postgres aborts the whole statement, not
 # just the offending row.  The strike must land only on the schedule whose
 # fire actually collided; unrelated schedules in the same tick must fire
 # (or at worst keep their counters untouched), because their only defect
@@ -764,7 +633,7 @@ async def test_cron_enqueue_failure_counts_and_autodisables(
 #
 # A transient infra failure of the batched INSERT (statement timeout,
 # connection drop, server shutdown) is not a schedule defect at all and
-# must not strike ANY schedule - the leader's transient handling retries
+# must not strike any schedule - the leader's transient handling retries
 # the whole tick.
 
 
@@ -874,7 +743,7 @@ async def test_singleton_race_between_preflight_and_insert_strikes_only_the_race
 async def test_transient_enqueue_failure_raises_without_striking_schedules() -> None:
     """A TimeoutError from the batched enqueue (statement timeout, conn
     blip) is PG weather, not a schedule defect: the tick re-raises for the
-    leader's transient handling (retry next tick) and NO schedule takes a
+    leader's transient handling (retry next tick) and no schedule takes a
     strike - the caller's rollback discards the tick and no
     consecutive_failures bookkeeping may commit."""
     conn = _FakeCronConn(
@@ -1021,18 +890,18 @@ async def test_pkey_violation_strikes_only_the_colliding_row() -> None:
     assert "jobs_pkey" in str(error_texts[0])
 
 
-# ── a transient error AFTER strikes rolls back the strikes - and must
+# ── a transient error after strikes rolls back the strikes - and must
 #    not have exported their telemetry ─────────────────────────────────
 #
-# A strike persists only if the tick's failures UPDATE executes AND the
-# caller's transaction commits.  A TRANSIENT error from any LATER
+# A strike persists only if the tick's failures UPDATE executes and the
+# caller's transaction commits.  A transient error from any later
 # statement of the tick (the successes UPDATE here) re-raises correctly -
-# zero strikes persist, the leader retries - but the strike spans used to
-# be opened (and exported) at strike time, inside _strike_plans: the
-# trace backend claimed schedule failures and auto-disables that the
-# rollback erased.  Trace says schedule X auto-disabled; the DB row says
+# zero strikes persist, the leader retries - and the strike spans are
+# opened (and exported) at COMMIT time, not at strike time inside
+# _strike_plans: a strike-time span claims schedule failures and
+# auto-disables that the rollback erases.  Trace says schedule X auto-disabled; the DB row says
 # enabled with count 0.  This pins the buffered emission: no failure
-# span, no auto-disable event, no metric delta, unless ALL of the tick's
+# span, no auto-disable event, no metric delta, unless all of the tick's
 # SQL ran.
 
 
@@ -1040,7 +909,7 @@ async def test_transient_after_strikes_emits_no_failure_telemetry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The batched enqueue strikes one plan (attributed singleton race),
-    the survivors land, and THEN the successes UPDATE raises TimeoutError:
+    the survivors land, and then the successes UPDATE raises TimeoutError:
     the tick re-raises with zero persisted strikes and zero EXPORTED
     failure telemetry - no error span, no cron.auto_disabled event, no
     record_cron_failure delta."""
@@ -1058,7 +927,7 @@ async def test_transient_after_strikes_emits_no_failure_telemetry(
     peer_id = new_uuid()
 
     class _SuccessUpdateTransientConn(_FakeCronConn):
-        """The successes UPDATE - the statement AFTER the strikes were
+        """The successes UPDATE - the statement after the strikes were
         computed - dies with a transient error (server timeout)."""
 
         async def execute(self, sql: str, *args: object) -> str:
@@ -1143,7 +1012,7 @@ async def test_operator_index_violation_is_not_attributed() -> None:
     own constraints.  The gate on ``constraint_name`` sends anything but
     ``jobs_pkey`` / ``jobs_singleton_uniq`` down the per-plan fallback;
     here the raced collision clears before the per-plan retry (READ
-    COMMITTED fresh snapshot), so both schedules fire and NO strike is
+    COMMITTED fresh snapshot), so both schedules fire and no strike is
     written."""
     from taskq.backend._protocol import EnqueueArgs, JobRow
 
@@ -1214,16 +1083,16 @@ async def test_operator_index_violation_is_not_attributed() -> None:
 
 # ── attribution failure modes: every unattributable shape falls back ──
 #
-# The unguarded bug class is the WRONG-SCHEDULE strike: an error the parser
+# The unguarded bug class is the wrong-schedule strike: an error the parser
 # cannot safely map to a plan is either attributed anyway (operator
 # index, above) or never exercised with the shapes that actually reach
 # the parser.  These close the remaining traps: an actor-named detail
-# whose only pending plan is NOT singleton-stamped, and the three
+# whose only pending plan is not singleton-stamped, and the three
 # detail-line degenerate shapes (None, garbage, truncated).
 
 
 async def test_actor_detail_without_singleton_stamp_falls_back() -> None:
-    """``cols == "actor"`` naming a plan that is NOT singleton-stamped:
+    """``cols == "actor"`` naming a plan that is not singleton-stamped:
     the stamp-verification guard (the partial index only covers stamped
     rows) must find no offender, so the violation is unattributable -
     per-plan fallback, no wrong strike.
@@ -1302,7 +1171,7 @@ async def test_degenerate_detail_lines_fall_back(detail: str | None) -> None:
     exists.`` is gone) is unparsable: per-plan fallback, no strike.
 
     The constraint name is faithful (``jobs_singleton_uniq``) so the
-    constraint gate passes and ONLY the detail parser stands between the
+    constraint gate passes and only the detail parser stands between the
     violation and a wrong strike - every existing "unattributable" test
     used a ValueError that never reached the parser at all."""
     from taskq.backend._protocol import EnqueueArgs, JobRow
@@ -1407,13 +1276,13 @@ async def test_operator_index_column_detail_falls_back() -> None:
     assert _failure_updates(conn) == []
 
 
-# ── the retry loop terminates when the RETRY also violates ────────────
+# ── the retry loop terminates when the retry also violates ────────────
 #
 # Attribution strikes at least one plan per pass, so the loop is bounded
 # by the batch size - but every existing fake succeeded on the retry.
 # This pins the second-violation pass: two singleton actors raced
 # externally, the first pass strikes actor A's plan, the survivors' retry
-# violates for actor B, and the THIRD pass lands the survivor.
+# violates for actor B, and the third pass lands the survivor.
 
 
 async def test_second_violation_on_retry_strikes_both_and_exits() -> None:
@@ -1499,7 +1368,7 @@ async def test_second_violation_on_retry_strikes_both_and_exits() -> None:
 # CancelledError is a BaseException: it passes through every ``except
 # Exception`` in the enqueue path (neither TRANSIENT_PG_ERRORS retry
 # semantics nor a per-schedule strike) - but it must still roll the
-# batched enqueue back to ITS savepoint on the way out, leaving the
+# batched enqueue back to its savepoint on the way out, leaving the
 # caller's transaction (the thing the leader rolls back) intact, and
 # with buffered emission it must export nothing.
 
@@ -1574,7 +1443,7 @@ async def test_cancelled_error_mid_savepoint_rolls_back_and_writes_no_strikes(
     )
 
     task = asyncio.create_task(_tick(conn, _cron_settings(), _WedgeInsideSavepointBackend()))
-    await entered.wait()  # the tick is wedged INSIDE the savepoint
+    await entered.wait()  # the tick is wedged inside the savepoint
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -1582,7 +1451,7 @@ async def test_cancelled_error_mid_savepoint_rolls_back_and_writes_no_strikes(
     assert conn.savepoint_log == [
         "savepoint-begin",  # the caller-owned transaction (from _tick)
         "savepoint-begin",  # the batched enqueue's savepoint
-        "savepoint-rollback",  # cancellation rolled back TO the savepoint
+        "savepoint-rollback",  # cancellation rolled back to the savepoint
         "savepoint-rollback",  # and the caller's transaction rolls back too
     ], (
         "cancellation must roll the savepoint back on its way out - the enqueue's partial write cannot survive in the caller's transaction"
@@ -1605,7 +1474,7 @@ async def test_cancelled_error_mid_savepoint_rolls_back_and_writes_no_strikes(
 # leader's whole-tick ``asyncio.timeout``: the outer deadline wins, the
 # tick's transaction rolls back every strike, and the identical batch is
 # re-selected next tick.  A tick whose budget is spent must therefore
-# fund NO further factory wait (None), and the planning loop turns that
+# fund no further factory wait (None), and the planning loop turns that
 # into an immediate, named per-schedule failure.
 
 
@@ -1694,15 +1563,15 @@ class TestFactoryDeadlineMath:
 
 # ── tick-budget exhaustion defers the schedule instead of striking it ──
 #
-# The funded factory budget is FIRST-COME: a schedule whose factory
+# The funded factory budget is first-come: a schedule whose factory
 # consumed the whole grant (it ran, it timed out, it struck) leaves
 # nothing for the factory-backed schedules after it in next_fire_at
-# order.  Those schedules' factories NEVER RAN.  Striking them was the defect:
+# order.  Those schedules' factories never ran.  Striking them was the defect:
 # the failure UPDATE never advances next_fire_at, so the identical batch
 # returned in the identical order every tick and healthy schedules rode
 # a hung neighbour's strikes to auto-disable.  The boundary is crisp:
-# a factory that RAN and raised strikes (its own evidence); a factory
-# the tick could not fund is DEFERRED: next_fire_at advances one leader
+# a factory that ran and raised strikes (its own evidence); a factory
+# the tick could not fund is deferred: next_fire_at advances one leader
 # cadence (not the next cron slot: the slot is still owed, only its
 # funding was missing), consecutive_failures and last_fire_error are
 # untouched, and the schedule retries on the very next tick.
@@ -1748,7 +1617,7 @@ async def test_budget_exhausted_factory_schedule_is_deferred_not_struck(
 
     fired_id = new_uuid()
     deferred_id = new_uuid()
-    # The deferred schedule's owed slot is 10:00:30 on an HOURLY expr, so
+    # The deferred schedule's owed slot is 10:00:30 on an hourly expr, so
     # a skip-to-next-slot regression would write 11:00.  The contract is
     # the one-cadence retry at _NOW + 1s.
     conn = _FakeCronConn(
@@ -2015,7 +1884,7 @@ async def test_the_march_arc_defers_the_peer_quietly_until_the_operator_knob_fre
     auto-disabled, one budget_deferrals count per tick: the quiet-
     starvation shape the counter exists to expose.  Then the operator
     tightens TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT below the monopolizer's
-    real duration: that same tick the monopolizer takes its FIRST strike
+    real duration: that same tick the monopolizer takes its first strike
     (the knob's intended consequence: its drain begins) while the peer
     is funded a 0.4s grant and fires."""
     monopolizer_id = new_uuid()
@@ -2145,7 +2014,7 @@ async def test_healthy_factory_peer_survives_the_hung_neighbours_drain_and_fires
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The full arc, tick by tick: through three hang-ticks the
-    monopolizer accumulates ITS OWN strikes (auto-disable flips on the
+    monopolizer accumulates ITS own strikes (auto-disable flips on the
     third) while the healthy factory-backed peer behind it is deferred
     every tick and never struck; the tick the monopolizer is gone the
     peer's factory is funded at the full clamp and it fires."""
@@ -2406,72 +2275,84 @@ async def test_failure_totals_round_trip_only_when_telemetry_enabled(
 # server recycles would inherit a dead session's "confirmed listening"
 # proof. The gate hooks the connection's termination signal to retire all
 # of it.
+#
+# These pins drive the REAL gate session: a real Postgres connection whose
+# LISTEN/NOTIFY/pg_notify are the server's own. The arm-commit-deliver
+# cycle is the production shape (arm inside the tick's transaction, the
+# session's own NOTIFY rides back on commit); a rollback answers nothing.
+# The two shapes no honest test can arrange deterministically - a backend
+# pid the server recycles onto a fresh session, and two servers handing
+# out the same pid - ride the pid-recycle wrapper below: a real connection
+# lying about ONE attribute (the pid), every other member delegated.
 
 
-class _GateSession:
-    """A connection that CAN carry the commit gate: records the channel
-    listener, captures the arming ``pg_notify``, and fires termination
-    listeners on death (asyncpg's ``Connection._cleanup`` behavior).
+class _RecycledPidConn:
+    """A real connection reporting a dead session's backend pid.
 
-    Implausible pids, like ``_GatelessCronConn``'s, so the process-global
-    gate maps never collide with a real session's entry.
-    """
+    fail-closed-exempt: the pid-recycle fault injection - the server-side
+    fact that a backend pid can be handed to a fresh session (a PG
+    restart, or two servers in one process handing out pids
+    independently) is not arrangeable against one live server
+    deterministically: live sessions never share a pid, and a recycle
+    needs a restart's timing. The wrapper lies about exactly that one
+    attribute (``get_server_pid``); every other member - LISTEN,
+    pg_notify, termination hooks - delegates to the real connection, and
+    it answers no SQL itself. The gate's bookkeeping decisions under a
+    recycled pid (the defensive re-LISTEN, one hook per connection
+    sharing a pid) are driven against the real session machinery."""
 
-    def __init__(self, pid: int) -> None:
-        self.pid = pid
-        self.channel_listeners: dict[str, Callable[..., None]] = {}
-        self.remove_listener_calls: list[str] = []
-        self.notify_calls: list[tuple[str, str]] = []
+    def __init__(self, conn: asyncpg.Connection, pid: int) -> None:
+        self._conn = conn
+        self._pid = pid
         self.termination_listeners: list[Callable[[object], None]] = []
-        self.dead = False
+        self.listener_calls: list[str] = []
 
     def get_server_pid(self) -> int:
-        return self.pid
-
-    async def remove_listener(self, channel: str, callback: object) -> None:
-        self.remove_listener_calls.append(channel)
-        self.channel_listeners.pop(channel, None)
-
-    async def add_listener(self, channel: str, callback: Callable[..., None]) -> None:
-        self.channel_listeners[channel] = callback
+        return self._pid
 
     def add_termination_listener(self, callback: Callable[[object], None]) -> None:
         self.termination_listeners.append(callback)
 
-    async def execute(self, sql: str, *args: object) -> str:
-        assert "pg_notify" in sql, f"unexpected execute on the gate seam: {sql}"
-        self.notify_calls.append((str(args[0]), str(args[1])))
-        return "SELECT 1"
+    async def add_listener(self, channel: str, callback: Callable[..., None]) -> None:
+        self.listener_calls.append(f"add:{channel}")
+        await self._conn.add_listener(channel, callback)
 
-    def deliver_commit_notify(self) -> None:
-        """The server's answer when the arming tick's transaction COMMITs:
-        the session's own NOTIFY rides back, addressed to its own pid."""
-        channel, nonce = self.notify_calls[-1]
-        self.channel_listeners[channel](self, self.pid, channel, nonce)
+    async def remove_listener(self, channel: str, callback: object) -> None:
+        self.listener_calls.append(f"remove:{channel}")
+        await self._conn.remove_listener(channel, callback)  # type: ignore[arg-type]  # Why: asyncpg accepts the sync callback at runtime; the gate passes the same callable shape here.
 
     def die(self) -> None:
-        """What asyncpg does from ``_cleanup`` on close/terminate/loss."""
-        self.dead = True
+        """What asyncpg does from ``_cleanup`` on close/terminate/loss for
+        the listeners the wrapper intercepted."""
         for callback in self.termination_listeners:
             callback(self)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+@pytest_asyncio.fixture
+async def _gate_conn(pg_dsn: str) -> AsyncIterator[asyncpg.Connection]:
+    """One real cron session: a real Postgres connection to dial."""
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        yield conn
+    finally:
+        with contextlib_suppress(asyncpg.InterfaceError):
+            await conn.close()
 
 
 @pytest.fixture
 def _commit_gate_maps() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: pytest fixture consumed implicitly by the test runner; pyright does not track fixture usage.
-    """Give each commit-gate test a clean slate, and hand one back.
+    """Give each commit-gate test a clean slate.
 
-    The maps are process-global (keyed by backend pid); these tests fill
-    them deliberately with their own fake pids. Under xdist, a module that
+    The maps are process-global (keyed by backend pid); the real-conn
+    tests here fill them with their own sessions' real pids, and a closed
+    session's hook retires its own entries. Under xdist, a module that
     ran earlier in the same worker can leave a real backend pid behind
-    (an entry whose connection closed without retiring it); snapshot-
-    and-restore would faithfully preserve that foreign entry and the
-    trio would assert on state it does not own (observed as
-    ``assert {6125} == set()`` under full-suite CI ordering). So the
-    fixture clears at setup and at teardown: the trio asserts only on
-    what its own connections do. The underlying question, whether a
-    closed connection can leave its confirmed-listening entry behind,
-    is tracked separately and is not masked here: these tests still pin
-    retirement for their own closes.
+    (an entry whose connection closed without retiring it); the fixture
+    clears at setup and at teardown so these tests assert only on state
+    their own sessions wrote.
     """
     cron_loop._armed_commit_emits.clear()
     cron_loop._confirmed_listening.clear()
@@ -2486,59 +2367,106 @@ def _commit_gate_maps() -> Iterator[None]:  # pyright: ignore[reportUnusedFuncti
 
 async def test_commit_gate_retires_session_state_on_close(
     _commit_gate_maps: None,
+    _gate_conn: asyncpg.Connection,
 ) -> None:
-    """Full gated cycle: arm, COMMIT delivers the NOTIFY (the emission
-    runs), then the connection dies - every per-pid entry is retired."""
-    conn = _GateSession(pid=2**30 + 1)
+    """Full gated cycle: arm inside the transaction, COMMIT delivers the
+    NOTIFY (the emission runs), then the connection dies - every per-pid
+    entry is retired."""
+    conn = _gate_conn
+    pid = conn.get_server_pid()
     emitted: list[bool] = []
 
-    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
-    conn.deliver_commit_notify()
-    assert emitted == [True], "a committed tick's emission must run"
-    assert 2**30 + 1 in cron_loop._confirmed_listening
+    async with conn.transaction():
+        await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
+        assert pid in cron_loop._armed_commit_emits, (
+            "the arm must record the pending emission for the committing transaction"
+        )
 
-    conn.die()
+    await wait_for_condition(
+        lambda: emitted == [True],
+        description="the commit must deliver the session's own NOTIFY and run the emission",
+    )
+    assert pid in cron_loop._confirmed_listening
 
-    assert cron_loop._armed_commit_emits == {}
-    assert cron_loop._confirmed_listening == set()
-    assert cron_loop._termination_hooked == set()
+    await conn.close()
+
+    # asyncpg fires termination listeners via call_soon: the retirement
+    # lands on the loop tick after close returns.
+    await wait_for_condition(
+        lambda: (
+            cron_loop._armed_commit_emits == {}
+            and cron_loop._confirmed_listening == set()
+            and cron_loop._termination_hooked == set()
+        ),
+        description="the session's death must retire its gate state",
+    )
 
 
 async def test_commit_gate_retires_unanswered_emission_on_close(
     _commit_gate_maps: None,
+    _gate_conn: asyncpg.Connection,
 ) -> None:
     """The churn leak: a tick armed an emission, then its transaction
     rolled back (no NOTIFY can ever answer) and the connection died. The
     armed entry must not outlive the session - and the emission must
     never run for a commit that did not happen."""
-    conn = _GateSession(pid=2**30 + 2)
+    conn = _gate_conn
+    pid = conn.get_server_pid()
     emitted: list[bool] = []
 
-    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
-    assert 2**30 + 2 in cron_loop._armed_commit_emits
+    with pytest.raises(RuntimeError, match="rollback the arm"):
+        async with conn.transaction():
+            await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
+            assert pid in cron_loop._armed_commit_emits
+            raise RuntimeError("rollback the arm")
 
-    conn.die()
-
+    # Give the server every chance to answer a rollback with nothing: the
+    # entry stays armed (unanswered), the emission never ran.
+    await asyncio.sleep(0)
     assert emitted == [], "no commit, no emission - the gate's core contract"
-    assert cron_loop._armed_commit_emits == {}
+    assert pid in cron_loop._armed_commit_emits
+
+    await conn.close()
+
+    # asyncpg fires termination listeners via call_soon: the retirement
+    # lands on the loop tick after close returns.
+    await wait_for_condition(
+        lambda: pid not in cron_loop._armed_commit_emits,
+        description="the armed entry must not outlive the session whose rollback it can never be answered by",
+    )
     assert cron_loop._confirmed_listening == set()
 
 
 async def test_commit_gate_state_stays_bounded_under_connection_churn(
     _commit_gate_maps: None,
+    pg_dsn: str,
 ) -> None:
     """Fifty rotate-and-tick cycles (a leader losing and rebuilding its
     cron connection) must leave the gate maps empty, not holding one entry
-    per dead session."""
-    for i in range(50):
-        conn = _GateSession(pid=2**30 + 100 + i)
+    per dead session. The cycles are real sessions."""
+    for _ in range(50):
+        conn = await asyncpg.connect(pg_dsn)
         emitted: list[bool] = []
-        await cron_loop._emit_on_commit(
-            conn, lambda emitted=emitted: emitted.append(True), schema="taskq"
+        async with conn.transaction():
+            await cron_loop._emit_on_commit(
+                conn, lambda emitted=emitted: emitted.append(True), schema="taskq"
+            )
+        await wait_for_condition(
+            lambda emitted=emitted: emitted == [True],
+            description="each cycle's commit must deliver its NOTIFY",
         )
-        conn.deliver_commit_notify()
-        assert emitted == [True]
-        conn.die()
+        await conn.close()
+
+    # asyncpg fires termination listeners via call_soon: the last cycle's
+    # retirement lands on the loop tick after its close returns.
+    await wait_for_condition(
+        lambda: (
+            cron_loop._armed_commit_emits == {}
+            and cron_loop._confirmed_listening == set()
+            and cron_loop._termination_hooked == set()
+        ),
+        description="fifty rotate-and-close cycles must retire every entry",
+    )
 
     assert cron_loop._armed_commit_emits == {}, (
         "armed emissions for dead sessions never got an answer and never retired"
@@ -2551,6 +2479,7 @@ async def test_commit_gate_state_stays_bounded_under_connection_churn(
 
 async def test_commit_gate_channel_is_scoped_to_the_schema(
     _commit_gate_maps: None,
+    _gate_conn: asyncpg.Connection,
 ) -> None:
     """NOTIFY channels share one database-wide namespace: two schemas'
     cron sessions in one database would otherwise deliver each other's
@@ -2558,72 +2487,115 @@ async def test_commit_gate_channel_is_scoped_to_the_schema(
     confirmed-listening, a foreign schema's notification would mark this
     session confirmed without its own LISTEN ever having survived a
     commit. The channel carries the schema's tag like every other
-    channel, so the two schemas never share it."""
-    from taskq.constants import cron_commit_gate_channel
+    channel, so the two schemas never share it: the armed session fires
+    on its own commit, and a foreign schema's NOTIFY on the same
+    connection does not."""
 
-    session = _GateSession(pid=2**30 + 400)
-    await cron_loop._emit_on_commit(session, lambda: None, schema="tenant_a")
-    channel, _nonce = session.notify_calls[-1]
-    assert channel == cron_commit_gate_channel("tenant_a")
-    assert channel in session.channel_listeners
-    assert channel != cron_commit_gate_channel("tenant_b")
+    conn = _gate_conn
+    emitted: list[bool] = []
+
+    async with conn.transaction():
+        await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="tenant_a")
+    await wait_for_condition(
+        lambda: emitted == [True],
+        description="the tenant_a commit must deliver the tenant_a channel's NOTIFY",
+    )
+    assert channel_scoped(conn, "tenant_a"), (
+        "the session's listener must be registered on the schema-tagged channel"
+    )
+    assert cron_commit_gate_channel("tenant_a") != cron_commit_gate_channel("tenant_b")
+
+    # A foreign schema's NOTIFY (same connection, another session's
+    # channel) must not fire this session's emission nor mark it confirmed
+    # on the foreign channel's account.
+    foreign = cron_commit_gate_channel("tenant_b")
+    armed_before = dict(cron_loop._armed_commit_emits)
+    await conn.execute("SELECT pg_notify($1, $2)", foreign, "foreign-nonce")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert emitted == [True], "only the arm's own emission is counted"
+    assert cron_loop._armed_commit_emits == armed_before, (
+        "a foreign schema's notification must not retire or answer this session's armed emission"
+    )
+
+
+def channel_scoped(conn: asyncpg.Connection, schema: str) -> bool:
+    """Whether the session's listener registry carries the schema's
+    commit-gate channel (asyncpg's private registry - the shape the
+    session-side LISTEN bookkeeping keeps)."""
+
+    listeners = getattr(conn, "_listeners", {})
+    return cron_commit_gate_channel(schema) in listeners
 
 
 async def test_commit_gate_relistens_for_a_recycled_pid(
     _commit_gate_maps: None,
+    pg_dsn: str,
 ) -> None:
     """A pid the server hands to a fresh session must not inherit the dead
     session's confirmed LISTEN: the arm must force the defensive
     re-LISTEN (remove then add) on the new session, exactly as for a
-    never-seen pid."""
-    first = _GateSession(pid=2**30 + 200)
-    await cron_loop._emit_on_commit(first, lambda: None, schema="taskq")
-    first.deliver_commit_notify()
-    assert 2**30 + 200 in cron_loop._confirmed_listening
-    first.die()
+    never-seen pid. The recycled pid is the wrapper's one injected fact -
+    a dead session's real pid recorded below - everything else is the
+    real session machinery."""
+    dead = await asyncpg.connect(pg_dsn)
+    dead_pid = dead.get_server_pid()
+    # The dead session armed and died OBSERVED: its hook retires its
+    # proof (the same retirement a real death's _cleanup runs).
+    dead_wrapper = _RecycledPidConn(dead, dead_pid)
+    await cron_loop._emit_on_commit(dead_wrapper, lambda: None, schema="taskq")
+    dead_wrapper.die()
+    await dead.close()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    # the dead session's proof died with it - nothing a fresh session on
+    # the recycled pid could inherit.
+    assert dead_pid not in cron_loop._confirmed_listening, (
+        "the dead session's confirmed-listening proof outlived its death hook"
+    )
+    assert dead_pid not in cron_loop._armed_commit_emits, (
+        "the dead session's armed emission outlived its death hook"
+    )
 
-    second = _GateSession(pid=2**30 + 200)
+    second_conn = await asyncpg.connect(pg_dsn)
+    # The recycle: the fresh session reports the DEAD session's pid (the
+    # one fact no live server hands out twice).
+    second = _RecycledPidConn(second_conn, dead_pid)
     await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
 
-    assert cron_commit_gate_channel("taskq") in second.remove_listener_calls, (
-        "a recycled pid inherited its dead predecessor's confirmed-listening "
-        "proof - the fresh session skipped the defensive re-LISTEN"
+    channel = cron_commit_gate_channel("taskq")
+    # exactly one arm on the fresh session: the defensive re-LISTEN is
+    # the remove-then-add pair, in that order - the recycled pid ran as
+    # never-seen, inheriting no proof.
+    assert second.listener_calls == [f"remove:{channel}", f"add:{channel}"], (
+        f"a recycled pid must force exactly one remove+add re-LISTEN, got {second.listener_calls!r}"
     )
+    await second_conn.close()
 
 
 async def test_commit_gate_hooks_termination_once_per_connection(
     _commit_gate_maps: None,
+    _gate_conn: asyncpg.Connection,
 ) -> None:
     """Re-arming every tick must not stack termination listeners on a
     long-lived connection - the bound is one hook per session."""
-    conn = _GateSession(pid=2**30 + 300)
+    conn = _gate_conn
 
-    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
-    conn.deliver_commit_notify()
-    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
-    conn.deliver_commit_notify()
-    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+    async with conn.transaction():
+        await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+    async with conn.transaction():
+        await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+    async with conn.transaction():
+        await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
 
-    assert len(conn.termination_listeners) == 1
-
-
-class _PoolAcquireProxy:
-    """A per-acquire proxy over one underlying connection, modeling
-    asyncpg's pool: ``PoolConnectionHolder.acquire`` builds a FRESH
-    ``PoolConnectionProxy`` on every acquire (asyncpg/pool.py, 0.31.0)
-    and detaches it on release, while ``add_termination_listener``
-    resolves through ``__getattr__`` onto the WRAPPED connection, the
-    object that owns the listener registry and dies with the session."""
-
-    def __init__(self, con: _GateSession) -> None:
-        self._con = con
-
-    def __getattr__(self, name: str):  # type: ignore[no-untyped-def]  # Why: asyncpg's proxy delegates by __getattr__ the same way; the fake mirrors the shape the suppression must survive.
-        return getattr(self._con, name)
+    assert len(cron_loop._termination_hooked) == 1, (
+        "re-arming stacked termination hooks on one long-lived session"
+    )
 
 
 async def test_commit_gate_suppression_survives_a_fresh_proxy_per_acquire(
     _commit_gate_maps: None,
+    pg_dsn: str,
 ) -> None:
     """One underlying connection acquired N times must carry exactly one
     termination hook and leave exactly one suppression entry.
@@ -2635,29 +2607,26 @@ async def test_commit_gate_suppression_survives_a_fresh_proxy_per_acquire(
     underlying connection and another entry in ``_termination_hooked``
     until the session dies, one per second in the shipped leader, and a
     recycled proxy id can suppress a hook a NEW connection never got.
-    """
-    underlying = _GateSession(pid=2**30 + 350)
+    The proxies here are a real pool's (one session, held for the test's
+    own lifetime)."""
     ticks = 25
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=1)
+    try:
+        for _ in range(ticks):
+            async with pool.acquire() as conn:  # a fresh proxy per acquire
+                await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
 
-    for _ in range(ticks):
-        conn = _PoolAcquireProxy(underlying)  # a fresh proxy per acquire
-        await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+        assert len(cron_loop._termination_hooked) == 1, (
+            f"{len(cron_loop._termination_hooked)} suppression entries after {ticks} "
+            "acquires of one pooled session: the suppression keyed the per-acquire "
+            "proxy object, not the connection the hook attaches to - unbounded "
+            "growth on a long-lived pool (one entry per tick, forever)"
+        )
+    finally:
+        await pool.close()
 
-    assert len(underlying.termination_listeners) == 1, (
-        f"{len(underlying.termination_listeners)} termination listeners "
-        f"stacked on one underlying connection over {ticks} acquires: the "
-        "suppression keyed the per-acquire proxy object, not the "
-        "connection the hook attaches to - unbounded growth on a "
-        "long-lived pool (one entry per tick, forever)"
-    )
-    assert len(cron_loop._termination_hooked) == 1, (
-        "the suppression set grew one entry per acquire on a stable "
-        "connection: it tracks connections, not acquires"
-    )
-
-    # The one hook still retires the session state at death, and the
-    # suppression entry goes with it.
-    underlying.die()
+    # The one hook retires the session state at the session's death, and
+    # the suppression entry goes with it.
     assert cron_loop._armed_commit_emits == {}
     assert cron_loop._confirmed_listening == set()
     assert cron_loop._termination_hooked == set()
@@ -2665,8 +2634,9 @@ async def test_commit_gate_suppression_survives_a_fresh_proxy_per_acquire(
 
 async def test_commit_gate_hooks_each_connection_sharing_a_pid(
     _commit_gate_maps: None,
+    pg_dsn: str,
 ) -> None:
-    """Two sessions reporting the SAME backend pid each get their own
+    """Two sessions reporting the same backend pid each get their own
     termination hook.
 
     The hook guards a connection's lifetime, and the pid does not
@@ -2676,41 +2646,75 @@ async def test_commit_gate_hooks_each_connection_sharing_a_pid(
     Keying the suppression by pid alone left the second connection
     unhooked, so its close retired nothing: its confirmed-listening
     entry outlived it and a later session on the recycled pid would
-    inherit the dead session's proof.
+    inherit the dead session's proof. The shared pid is the wrappers'
+    one injected fact - the first session's own pid, which the second
+    reports as its own (a recycled pid is exactly that lie); the
+    LISTEN/NOTIFY sessions are real connections. The first session's
+    committed arm confirms the pid; the second's arm rolls back (its
+    emission can never be answered, so no delivery can consume it);
+    the deaths retire their own state and the shared pid's confirmed
+    proof.
     """
-    pid = 2**30 + 500
-    first = _GateSession(pid=pid)
-    second = _GateSession(pid=pid)
+    first_conn = await asyncpg.connect(pg_dsn)
+    second_conn = await asyncpg.connect(pg_dsn)
+    pid = first_conn.get_server_pid()
+    first = _RecycledPidConn(first_conn, pid)
+    second = _RecycledPidConn(second_conn, pid)
 
-    await cron_loop._emit_on_commit(first, lambda: None, schema="taskq")
-    await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
+    # the first session's arm, inside a transaction that commits: the
+    # session's own NOTIFY rides back and its emission runs - the
+    # confirmed-listening proof for the shared pid.
+    emitted: list[str] = []
+    async with first_conn.transaction():
+        await cron_loop._emit_on_commit(first, lambda: emitted.append("first"), schema="taskq")
+    await wait_for_condition(
+        lambda: emitted == ["first"],
+        description="the first session's commit must deliver its own NOTIFY and run the emission",
+    )
+    assert pid in cron_loop._confirmed_listening, (
+        "the committed arm's LISTEN must be the confirmed-listening proof"
+    )
+
+    # the second session's arm: the pid is confirmed, so the cheap path
+    # (no defensive re-LISTEN); the transaction ROLLS BACK - the armed
+    # emission can never be answered, and no delivery can consume it.
+    with pytest.raises(RuntimeError, match="rollback the arm"):
+        async with second_conn.transaction():
+            await cron_loop._emit_on_commit(
+                second, lambda: emitted.append("second"), schema="taskq"
+            )
+            raise RuntimeError("rollback the arm")
+    assert second.listener_calls == [f"add:{cron_commit_gate_channel('taskq')}"], (
+        "a confirmed pid's arm must skip the defensive re-LISTEN"
+    )
     assert len(first.termination_listeners) == 1
     assert len(second.termination_listeners) == 1, (
         "the second connection sharing the pid got no termination hook - "
         "its close can never retire its own gate state (issue #292)"
     )
-
-    first.deliver_commit_notify()
-    second.deliver_commit_notify()
-    assert pid in cron_loop._confirmed_listening
+    assert emitted == ["first"], "no commit, no emission - the rolled-back arm never fires"
 
     first.die()
-    assert cron_loop._confirmed_listening == set(), (
-        "the first close must retire the shared pid's entries"
+    # The armed entry is the SECOND session's own (its arm replaced the
+    # shared pid's) - the design keeps a live session's armed emission:
+    # the hook-scoped removal retires only the entry its connection armed.
+    assert cron_loop._armed_commit_emits != {}
+    assert len(cron_loop._termination_hooked) == 1, (
+        "the first session's death must not retire the second connection's "
+        "own hook - the suppression is per connection, not per pid"
     )
-
-    # The second session keeps answering after its twin died: its own
-    # NOTIFY re-confirms the pid (its LISTEN is genuinely live).
-    second.deliver_commit_notify()
-    assert pid in cron_loop._confirmed_listening
+    # the first close retires the shared pid's confirmed-listening proof.
+    assert pid not in cron_loop._confirmed_listening, (
+        "the first session's death left the shared pid's confirmed-listening proof standing"
+    )
 
     second.die()
     assert cron_loop._armed_commit_emits == {}, (
         "the second connection's close leaked its armed emission"
     )
-    assert cron_loop._confirmed_listening == set(), (
-        "the second connection's close leaked its confirmed-listening "
-        "entry - the hook suppression was keyed by pid, so this "
-        "connection never carried the hook that would retire it"
+    assert cron_loop._termination_hooked == set(), (
+        "the second connection's close leaked its suppression entry"
     )
-    assert cron_loop._termination_hooked == set()
+
+    await first_conn.close()
+    await second_conn.close()

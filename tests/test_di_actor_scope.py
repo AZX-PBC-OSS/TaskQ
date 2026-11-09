@@ -84,7 +84,7 @@ def _make_job_ctx() -> JobContext[_Payload]:
     )
 
 
-# ── Happy path: actor with no DI params ─────────────────────────────
+# ── Happy path: actor with no di params ─────────────────────────────
 
 
 async def test_happy_path_no_di_params() -> None:
@@ -114,7 +114,7 @@ async def test_happy_path_no_di_params() -> None:
     await process_scope.shutdown()
 
 
-# ── Happy path: actor with one LOOP-scoped param ─────────────────────
+# ── Happy path: actor with one loop-scoped param ─────────────────────
 
 
 async def test_happy_path_one_loop_scoped_param() -> None:
@@ -154,7 +154,7 @@ async def test_happy_path_one_loop_scoped_param() -> None:
     await process_scope.shutdown()
 
 
-# ── TRANSIENT per-invocation isolation ──────────────────────────────
+# ── transient per-invocation isolation ──────────────────────────────
 
 
 async def test_transient_per_invocation_isolation() -> None:
@@ -210,7 +210,7 @@ async def test_transient_per_invocation_isolation() -> None:
     await process_scope.shutdown()
 
 
-# ── TRANSIENT teardown runs on exit ──────────────────────────────────
+# ── transient teardown runs on exit ──────────────────────────────────
 
 
 async def test_transient_teardown_runs_on_exit() -> None:
@@ -253,7 +253,7 @@ async def test_transient_teardown_runs_on_exit() -> None:
     await process_scope.shutdown()
 
 
-# ── TRANSIENT teardown runs even on actor exception ──────────────────
+# ── transient teardown runs even on actor exception ──────────────────
 
 
 async def test_transient_teardown_on_actor_exception() -> None:
@@ -297,7 +297,7 @@ async def test_transient_teardown_on_actor_exception() -> None:
     await process_scope.shutdown()
 
 
-# ── Two TRANSIENT params resolve to distinct instances ────────────────
+# ── Two transient params resolve to distinct instances ────────────────
 
 
 async def test_two_transient_params_distinct_instances() -> None:
@@ -361,7 +361,7 @@ async def test_ctx_must_be_job_context() -> None:
     await process_scope.shutdown()
 
 
-# ── Two consecutive invocations: LOOP cache persists ─────────────────
+# ── Two consecutive invocations: loop cache persists ─────────────────
 
 
 async def test_loop_cache_persists_across_invocations() -> None:
@@ -416,7 +416,7 @@ async def test_loop_cache_persists_across_invocations() -> None:
     await process_scope.shutdown()
 
 
-# ── TRANSIENT scope open/close logging ────────────────────────────────
+# ── transient scope open/close logging ────────────────────────────────
 
 
 async def test_transient_scope_logging() -> None:
@@ -457,7 +457,7 @@ async def test_transient_scope_logging() -> None:
     await process_scope.shutdown()
 
 
-# ── TRANSIENT teardown completes under cancellation (shield) ────────
+# ── transient teardown completes under cancellation (shield) ────────
 
 
 async def test_transient_teardown_under_cancellation() -> None:
@@ -604,7 +604,7 @@ async def test_plain_clock_receives_pre_registered_fake_clock() -> None:
     await process_scope.shutdown()
 
 
-# ── TRANSIENT consumer of PROCESS-scope Clock no ScopeViolation ──
+# ── transient consumer of process-scope Clock no ScopeViolation ──
 
 
 def test_transient_consumer_of_process_clock_no_violation() -> None:
@@ -620,7 +620,7 @@ def test_transient_consumer_of_process_clock_no_violation() -> None:
     registry.validate()
 
 
-# ── TRANSIENT close is skipped when there is nothing to close ─────────
+# ── transient close is skipped when there is nothing to close ─────────
 
 
 async def test_actor_scope_exit_skips_shielded_close_without_teardown_work(

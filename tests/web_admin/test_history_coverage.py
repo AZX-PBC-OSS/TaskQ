@@ -1,10 +1,9 @@
 """Coverage tests for taskq.web.admin.history (history list + stats routes).
 
-The module previously shipped as ``_history.py``, whose leading underscore
-kept it off the admin factory's auto-discovery path, so these tests had to
-attach it explicitly. The rename to ``history.py`` (the /history panel
-never being registered on any router) puts it on the auto-discovery path
-``create_router`` already walks, so the routes arrive with the router.
+The module lives at ``history.py`` (no leading underscore), so it sits on
+the admin factory's auto-discovery path ``create_router`` already walks
+(the /history panel is registered by its own ``register()``, the routes
+arrive with the router).
 
 A configurable stub pool/connection lets us drive the cursor-pagination and
 summary branches that the default empty ``StubPool`` cannot reach.
@@ -295,7 +294,7 @@ def test_history_null_sentinel_cursor_returns_200(
 def test_history_partial_cursor_missing_created_returns_400(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A cursor carrying cursor_at/cursor_id but NOT cursor_created is partial.
+    """A cursor carrying cursor_at/cursor_id but not cursor_created is partial.
 
     The seam predicate compares all three keys of the walk's sort tuple; a
     two-key cursor cannot describe a page boundary (the missing created_at

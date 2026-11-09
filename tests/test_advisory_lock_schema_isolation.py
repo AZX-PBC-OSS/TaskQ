@@ -50,7 +50,7 @@ _UNQUALIFIED_LITERALS: tuple[str, ...] = (
 async def module_pg_schema_b(
     module_pg_schema: ModulePgSchema,
 ) -> AsyncIterator[ModulePgSchema]:
-    """A SECOND migrated schema in the SAME database as ``module_pg_schema``.
+    """A SECOND migrated schema in the same database as ``module_pg_schema``.
 
     Derives its name from the primary fixture's name (hex suffix swapped for
     ``_b``), so it stays inside the same identifier budget and can never
@@ -109,7 +109,7 @@ async def test_maintenance_leader_locks_independent_across_schemas(
     module_pg_schema: ModulePgSchema,
     module_pg_schema_b: ModulePgSchema,
 ) -> None:
-    """THE cross-schema regression: two schemas in one database must BOTH
+    """The cross-schema regression: two schemas in one database must both
     win their own maintenance-leader election lock.
 
     Under the unqualified name both schemas contended one lock and the
@@ -134,7 +134,7 @@ async def test_maintenance_leader_locks_independent_across_schemas(
 async def test_maintenance_leader_lock_still_serializes_within_one_schema(
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Qualifying the lock must not weaken it: within ONE schema a second
+    """Qualifying the lock must not weaken it: within one schema a second
     connection still loses, and the winner's unlock re-arms it."""
     lock = schema_lock_name("maintenance_leader", module_pg_schema.schema_name)
 
@@ -193,15 +193,15 @@ def test_no_unqualified_lock_name_literals_remain() -> None:
 # The advisory key space mixes two conventions (migrate.py's
 # migration_lock_name docstring documents both):
 #
-# * PURPOSE locks, one per schema per purpose, schema LAST:
+# * purpose locks, one per schema per purpose, schema last:
 #   ``taskq:{purpose}:{schema}`` (maintenance_leader, prune,
 #   archive_expiry, cron, migrate);
-# * KEYED locks, one per resource within a schema, schema FIRST:
+# * keyed locks, one per resource within a schema, schema first:
 #   ``taskq:{schema}:sw:{name}`` (the PG sliding-window limiter's
 #   advisory lock, mirroring the bucket's Redis key), its ``sw_gcra`` and
 #   ``rl:tb`` siblings, and the enqueue unique-for key.
 #
-# Both feed ``hashtextextended`` in the SAME per-database lock namespace,
+# Both feed ``hashtextextended`` in the same per-database lock namespace,
 # so a string collision between the families would make one schema's
 # rate-limiter bucket serialize against another schema's maintenance
 # sweep. It cannot happen: a purpose lock has exactly three ``:``-split
@@ -292,7 +292,7 @@ def test_corpus_is_valid_distinct_schema_names() -> None:
 
 
 def test_purpose_locks_and_keyed_locks_never_collide_for_any_schema() -> None:
-    """THE invariant: for every valid schema name, no purpose lock (any
+    """The invariant: for every valid schema name, no purpose lock (any
     purpose, any schema) equals any keyed lock (any format, any bucket
     name, any schema) - the two families share one hashtextextended
     namespace and one collision would serialize a rate limiter against a

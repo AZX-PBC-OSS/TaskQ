@@ -178,7 +178,7 @@ class TestBulkCancelDoubleReport:
 
     Round 1's running arm cancel-requests the row; a consumer snooze mid-drain
     wipes the phase and parks the row 'pending' behind the keyset cursor;
-    round 2's pending arm cancels it directly. The same id appears in BOTH
+    round 2's pending arm cancels it directly. The same id appears in both
     result lists; the exactly-once totals are falsifiable. With the fence,
     the snooze cannot land on the phase-carrying row and the id appears in
     exactly one list.
@@ -274,14 +274,14 @@ class TestInterruptArmAttemptEpoch:
         row = await backend.get(job_id)
         assert row is not None
         assert row.status == "pending"
-        # The attempt did start executing: its increment must STAND.
+        # The attempt did start executing: its increment must stand.
         assert row.attempt == 1, (
             "the interrupt release arm must not refund the claim's attempt "
             "increment: the attempt started executing, and refunding it "
             "re-creates the exact epoch the interrupted (zombie) handler holds"
         )
 
-        # The same worker re-claims: a NEW attempt epoch.
+        # The same worker re-claims: a new attempt epoch.
         redispatched = await backend.dispatch_batch(
             wid, ["default"], limit=1, lock_lease=timedelta(seconds=60)
         )
@@ -561,7 +561,7 @@ class TestMarkRetryCarriesTheCancelFence:
     async def test_mark_retry_deadline_arm_refuses_in_flight_cancel(self) -> None:
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend)
-        # The deadline lapsed BEFORE the cancel: the retried arm's own
+        # The deadline lapsed before the cancel: the retried arm's own
         # deadline guard would route the row to the deadline arm, so the
         # phase-carrying row must be refused there too.
         row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: forcing a race-window state the public API cannot reach directly

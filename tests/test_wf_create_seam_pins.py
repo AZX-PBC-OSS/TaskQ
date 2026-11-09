@@ -1,30 +1,29 @@
-"""THE CREATE-SEAM PINS (the migrations/run-creation front's convictions,
-cured): the create's atomicity, the run-key claim's honesty, the
-root-marker dispatch fence, the nodeless-root reap belt, and the packaged
-one-call run.
+"""The create-seam pins: the create's atomicity, the run-key claim's
+honesty, the root-marker dispatch fence, the nodeless-root reap belt,
+and the packaged one-call run.
 
-THE CONVICTIONS THE PINS HOLD RED FOREVER:
 
-1. **THE CREATE ATOMICITY** — the pre-cure create was N+M+2 auto-committed
-   statements: the root insert COMMITTED ALONE and the static nodes +
-   ROOT_START rode a second acquire with no ``conn.transaction()``. The
-   kill window committed the ORPHAN ROOT (pending, ZERO nodes): a root
+1. **the CREATE ATOMICITY** — the create is one
+   transaction (root + nodes + edges + ROOT_START; an N+M+2
+   auto-committed spelling whose root insert commits ALONE is the
+   defect). The
+   kill window would commit the ORPHAN ROOT (pending, ZERO nodes): a root
    ``WORKFLOW_ROOT_MAINTAIN_SQL`` cannot derive (its rollup INNER-JOINS
    the node rows — a nodeless root never derives, never terminalizes,
-   never prunes), and one that SQUATS THE RUN KEY (the retry's arbiter
+   never prunes), and one that SQUATS the RUN KEY (the retry's arbiter
    conflict answers ``created=False`` and the nodes never landed —
-   ``drive()`` ran to ``max_ticks``). The cure is the fork-atomicity law
-   at creation granularity: root + nodes + edges + ROOT_START are ONE
+   ``drive()`` ran to ``max_ticks``). The fix is the fork-atomicity law
+   at creation granularity: root + nodes + edges + ROOT_START are one
    transaction (the orphan is UNREPRESENTABLE), and the census-grace
    reap arm is the belt (any orphan that could ever exist — a future
    statement-order regression's debris — is reaped ``failed`` past the
    grace).
-2. **THE CLAIM CHURN** — the fleet dispatch's candidate fence carries the
-   ROOT-MARKER leg (the root row is a CACHE, never work); the pin drills
+2. **the CLAIM CHURN** — the fleet dispatch's candidate fence carries the
+   ROOT-MARKER leg (the root row is a CACHE, never work); the pin exercises
    the leg out of the rendered statement and observes the churn (a
    capable worker claims the pending root). The shipped statement greens
    it.
-3. **THE RUN-KEY FAILURE LIE** — a FAILED run + the same run_key returned
+3. **the RUN-KEY FAILURE LIE** — a FAILED run + the same run_key returned
    the failed run's bare id with NOTHING re-fired and no way to tell
    "already running" from "already failed" without a second query. The
    claim surface is HONEST: :meth:`FlowRunner.create_flow` returns the
@@ -32,7 +31,7 @@ THE CONVICTIONS THE PINS HOLD RED FOREVER:
    existing-terminal`` — and the existing-terminal claim is the
    REFUSED-TO-REUSE verdict stated loudly (the re-run is the caller's
    documented choice: a new key, never a silent 202).
-4. **THE PACKAGED RUN** — ``taskq.workflows.run(flow, pool, schema,
+4. **the PACKAGED RUN** — ``taskq.workflows.run(flow, pool, schema,
    input=…, key=…)`` exists and works end to end (the one-call surface
    the consumer report demanded): create + drive + the honest claim + the
    decoded result. The docs teach THIS surface, not the phantom API.
@@ -126,17 +125,19 @@ async def test_pin_create_is_one_transaction_the_kill_commits_nothing(
     createseam_redlog: RedLog,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """PIN 1a — THE CREATE ATOMICITY: the root insert + the static nodes +
-    edges + ROOT_START are ONE transaction. THE DRILL: the node pass
+    """PIN 1a — the CREATE ATOMICITY: the root insert + the static nodes +
+    edges + ROOT_START are one transaction. the SCENARIO: the node pass
     RAISES mid-create (the kill after the root insert) — the shipped tx
-    rolls the root back and NOTHING commits; the convicted N+M+2 shape
+    rolls the root back and NOTHING commits; the rejected N+M+2 shape
     (each statement auto-committed) left the ORPHAN ROOT behind: pending,
     zero nodes, undevelopable by the maintenance derivation (the rollup
     INNER-JOINS the node rows), never pruned, and squatting the run key."""
     _app, compiled = _create_seam_app()
     runner = FlowRunner(compiled, wf_pool, wf_schema)
 
-    async def _killed_nodes(conn: object, flow_id: JobId, input: object) -> None:
+    async def _killed_nodes(
+        conn: object, flow_id: JobId, input: object, *, run_priority: int | None = None
+    ) -> None:
         raise RuntimeError("the kill: the process dies after the root insert")
 
     monkeypatch.setattr(runner, "_insert_static_nodes", _killed_nodes)
@@ -172,17 +173,17 @@ async def test_pin_kill_retry_completes_the_run(
     wf_pool: asyncpg.Pool,
     createseam_redlog: RedLog,
 ) -> None:
-    """PIN 1b — THE RETRY COMPLETES: the legacy debris (a root committed
-    without its nodes — the pre-cure head's exact product, crafted here
+    """PIN 1b — the RETRY COMPLETES: the legacy debris (a root committed
+    without its nodes — the orphan root, crafted here
     through the shipped root claim) + the retry create_flow(run_key=…)
     → the nodes LAND, the root runs, the flow reaches terminal. The
-    convicted retry was ``created=False → early return``: the census
+    rejected retry was ``created=False → early return``: the census
     stayed 0 forever and ``drive()`` ran to ``max_ticks`` (the wedged
     run)."""
     _app, compiled = _create_seam_app()
     runner = FlowRunner(compiled, wf_pool, wf_schema)
 
-    # The DEBRIS: the root row committed alone (the kill window's product).
+    # The debris: the root row committed alone (the kill window's product).
     debris = await insert_flow_run(
         wf_conn,
         render_workflow_sql(wf_schema),
@@ -221,10 +222,10 @@ async def test_pin_dispatch_never_claims_the_flow_root(
     wf_pool: asyncpg.Pool,
     createseam_redlog: RedLog,
 ) -> None:
-    """PIN 2 — THE ROOT-MARKER LEG: the fleet dispatch's candidate fence
+    """PIN 2 — the ROOT-MARKER LEG: the fleet dispatch's candidate fence
     excludes the flow-root rows (step_key '__flow__' is a CACHE, never
     work). A pending root + a workflow-CAPABLE worker on the root's queue
-    claims NOTHING. THE DRILL: the exclusion leg dropped from the rendered
+    claims NOTHING. the SCENARIO: the exclusion leg dropped from the rendered
     statement → the CHURN observed (the capable worker claims the root
     row — the claim-snooze-claim loop's fuel). The shipped statement
     greens it."""
@@ -261,7 +262,7 @@ async def test_pin_dispatch_never_claims_the_flow_root(
             config.queue,
         )
 
-    # THE SHIPPED STATEMENT: the pending root is never claimed.
+    # the pending root is never claimed.
     claimed = await dispatch_batch(
         wf_conn,
         sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
@@ -275,11 +276,11 @@ async def test_pin_dispatch_never_claims_the_flow_root(
         "flow ROOT row is a cache, never work: the ROOT-MARKER leg dropped"
     )
 
-    # THE DRILL: the exclusion leg dropped from the rendered statement —
-    # the churn manifests on the SAME population (the pending root row).
+    # the exclusion leg dropped from the rendered statement — the churn
+    # manifests on the same population (the pending root row).
     shipped_sql = DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema)
     mutated = shipped_sql.replace("step_key <> '__flow__'\n", "step_key IS NOT NULL\n")
-    assert mutated != shipped_sql, "the mutation drill did not arm"
+    assert mutated != shipped_sql, "the mutation test did not arm"
     churned = await dispatch_batch(
         wf_conn,
         sql=mutated,
@@ -298,7 +299,7 @@ async def test_pin_dispatch_never_claims_the_flow_root(
         },
     )
     assert any(r["step_key"] == "__flow__" for r in churned), (
-        "the mutation drill claimed no root row — the drill did not "
+        "the mutation test claimed no root row — the scenario did not "
         "manifest the churn; the pin has no teeth"
     )
 
@@ -310,9 +311,9 @@ async def test_pin_run_key_claim_is_honest_terminal_is_refused_loudly(
     wf_pool: asyncpg.Pool,
     createseam_redlog: RedLog,
 ) -> None:
-    """PIN 3 — THE CLAIM SURFACE HONEST: create_flow returns the TYPED
+    """PIN 3 — the CLAIM SURFACE HONEST: create_flow returns the TYPED
     RunClaim — ``created`` / ``existing-running`` / ``existing-terminal``
-    — never a bare id. THE CONVICTED LIE: a FAILED run + the same key
+    — never a bare id. the REJECTED LIE: a FAILED run + the same key
     returned the failed run's id (a silent 202 by another name): nothing
     re-fired, and 'already running' was indistinguishable from 'already
     failed' without a second query. The typed claim states the
@@ -344,9 +345,9 @@ async def test_pin_run_key_claim_is_honest_terminal_is_refused_loudly(
     )
     assert running.flow_id == fresh.flow_id and not running.created
 
-    # The run FAILS (the operator's terminal-fail stands in for any
-    # terminal verdict): the SAME key must answer existing-terminal +
-    # the prior run's id — LOUDLY, never a silent no-op.
+    # The run fails (the operator's terminal-fail stands in for any
+    # terminal verdict): the same key must answer existing-terminal +
+    # the prior run's id — loudly, never a silent no-op.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', finished_at = now() WHERE id = $1",
         fresh.flow_id,
@@ -371,7 +372,7 @@ async def test_pin_nodeless_root_reap_belt(
     wf_pool: asyncpg.Pool,
     createseam_redlog: RedLog,
 ) -> None:
-    """PIN 4 — THE CENSUS-GRACE REAP ARM (the belt): a NODELESS root
+    """PIN 4 — the CENSUS-GRACE REAP ARM (the belt): a NODELESS root
     (pending or running — the orphan shapes) past the grace is reaped
     ``failed`` with the LOUD error class; a healthy run (nodes present)
     is never touched; a nodeless root WITHIN the grace is never touched
@@ -382,8 +383,8 @@ async def test_pin_nodeless_root_reap_belt(
     wsql = render_workflow_sql(wf_schema)
     _app, compiled = _create_seam_app()
 
-    # THE ORPHAN: a nodeless RUNNING root, past the grace (created_at
-    # back-dated by twice the grace).
+    # a nodeless running root, past the grace (created_at back-dated by twice
+    # the grace).
     orphan = await insert_flow_run(
         wf_conn, wsql, entry=FlowStandIn(_FLOW_NAME), run_key="seam:orphan"
     )
@@ -393,7 +394,7 @@ async def test_pin_nodeless_root_reap_belt(
         orphan.flow_id,
         NODELESS_ROOT_REAP_GRACE_S * 2,
     )
-    # THE YOUNG ORPHAN: nodeless, within the grace.
+    # nodeless, within the grace.
     young = await insert_flow_run(
         wf_conn, wsql, entry=FlowStandIn(_FLOW_NAME), run_key="seam:young"
     )
@@ -401,7 +402,7 @@ async def test_pin_nodeless_root_reap_belt(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'running' WHERE id = $1",
         young.flow_id,
     )
-    # THE HEALTHY RUN: nodeless predicates never reap it — it has node rows.
+    # nodeless predicates never reap it — it has node rows.
     healthy = await insert_flow_run(
         wf_conn, wsql, entry=FlowStandIn(_FLOW_NAME), run_key="seam:healthy"
     )
@@ -448,13 +449,13 @@ async def test_pin_nodeless_root_reap_count_is_the_true_count(
     wf_schema: str,
     wf_pool: asyncpg.Pool,
 ) -> None:
-    """FINDING 14's PIN (RED-FIRST): the reaper's RETURN was
-    ``RETURNING f.id`` read through ``fetchval`` — the FIRST reaped row's
+    """the reaper's RETURN was
+    ``RETURNING f.id`` read through ``fetchval`` — the first reaped row's
     128-BIT UUID — and ``int(uuid)`` converted the identity into a garbage
     "count" (measured on this tree: ``265174781926550178777984214673248076994``)
     that rode ``taskq.sweep.rows``'s sample; a multi-row reap's magnitude
     was lost with it (one orphan reaped, two reported as one
-    128-bit-hash-fragment). THE CURE: the statement answers ``count(*)``
+    128-bit-hash-fragment). the CONTRACT: the statement answers ``count(*)``
     (a bigint), the caller's cast is the pin's contract (the metric never
     samples a non-int), and the pin asserts the EXACT count — one orphan
     seeded, exactly 1 returned, never more, never a hash fragment."""
@@ -462,7 +463,7 @@ async def test_pin_nodeless_root_reap_count_is_the_true_count(
 
     wsql = render_workflow_sql(wf_schema)
 
-    # ONE orphan: the true count is EXACTLY 1 — the garbage RETURN would
+    # one orphan: the true count is exactly 1 — the garbage return would
     # answer a 39-digit fragment here.
     orphan = await insert_flow_run(
         wf_conn, wsql, entry=FlowStandIn(_FLOW_NAME), run_key="seam:orphan-count"
@@ -493,13 +494,13 @@ async def test_pin_packaged_run_one_call_end_to_end(
     wf_pool: asyncpg.Pool,
     createseam_redlog: RedLog,
 ) -> None:
-    """PIN 5 — THE PACKAGED RUN (the consumer report's ergonomic door):
+    """PIN 5 — the PACKAGED RUN (the consumer report's ergonomic door):
     ``taskq.workflows.run(flow, pool, schema, input=…, key=…)`` exists and
     works END TO END — the typed claim + the drive + the decoded result.
     The re-run against the terminal run answers the HONEST claim (the
-    demo's 409/202 distinction rides it). The phantom API the pre-cure
-    docs taught (``workflows.run(flow, input, key=…)``) did not exist at
-    all — this pin holds the REAL surface."""
+    demo's 409/202 distinction rides it). The phantom API spelling
+    (``workflows.run(flow, input, key=…)``) does not exist —
+    this pin holds the REAL surface."""
     import taskq.workflows as wf
 
     if not hasattr(wf, "run"):
@@ -516,7 +517,7 @@ async def test_pin_packaged_run_one_call_end_to_end(
     assert result.outcome == "terminal"
     assert result.result == {"tail": "d1"}, f"the decoded result: {result.result!r}"
 
-    # A keyed run, driven to terminal, then the replay: the HONEST claim.
+    # A keyed run, driven to terminal, then the replay: the honest claim.
     keyed = await wf.run(
         compiled, wf_pool, wf_schema, input=Ingest(doc_id="d1"), key="seam:package"
     )

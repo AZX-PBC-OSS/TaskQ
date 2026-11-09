@@ -544,8 +544,8 @@ async def test_documented_topology_heartbeat_admin_and_listen_stay_direct(
     reds were the budget firing on a healthy run: asyncpg's protocol timer
     (``protocol.pyx`` ``_on_timeout``) throws the bare TimeoutError when a
     co-tenanted runner lets a ~1ms round trip outlive 0.1s — observed on the
-    coverage/test lanes (run 36768177771, the red in ``heartbeat_jobs``
-    itself), then AGAIN on this serial lane post-move (run 37583577754, same
+    coverage/test lanes (the red in ``heartbeat_jobs``
+    itself), then again on the serial lane post-move (the same
     statement, same function). One budget firing in 90 tests on a quiet lane
     is the signature of a timer with no headroom, not a hung pool — the
     dispatch (24 direct-pool claims) succeeded immediately before it. So the
@@ -568,7 +568,7 @@ async def test_documented_topology_heartbeat_admin_and_listen_stay_direct(
         pytest.skip("the heartbeat pool's 0.1s command budget measures the tracer, not the code")
     stack = pgbouncer_stack
     ledger = await _migrated_conn(stack.direct_dsn, probe_schema)
-    # The admin lane gets its OWN direct connection: the concurrency this
+    # The admin lane gets its own direct connection: the concurrency this
     # leg proves is the admin reads running simultaneously with the pooled/
     # direct job traffic, not two tasks sharing one conn — asyncpg forbids
     # concurrent operations on a single connection (the main lane issues

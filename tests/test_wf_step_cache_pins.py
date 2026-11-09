@@ -1,16 +1,15 @@
-"""THE CROSS-RUN STEP CACHE's pins (T25) — integration: real PG.
+"""The cross-run step CACHE's pins — integration: real PG.
 
-THE LAW THE PINS HOLD (the two-claims law — the design's spine):
 
-* the ARBITER dedups CONCURRENT (the run-key claim, T05's ledger);
+* the ARBITER dedups CONCURRENT (the run-key claim, the iteration ledger's ledger);
 * the CACHE dedups TEMPORAL (a LATER run over the same body + the same
   input reads the EARLIER run's result — the body never runs).
 
 The cache is OPT-IN per step (``step(..., cache=True)``), stores on
-TERMINAL-SUCCEEDED ONLY (a failed run's key never squats the address —
+TERMINAL-SUCCEEDED only (a failed run's key never squats the address —
 the failed-run-squats-the-key bug closed by construction), delivers a
 HIT through the ordinary fenced finalize (the consumer's downstream
-decodes the SAME typed shape — R3's face), carries THE RECEIPT on the
+decodes the same typed shape — R3's face), carries the RECEIPT on the
 node row's metadata (the address + the producing run's id), and expires
 in-DB (the TTL's freshness leg; the sweep's retention arm prunes the
 expired rows). The address is the Nix-style recursive hash: the body's
@@ -19,7 +18,7 @@ body's code change IS a new address (the stale-code face is dead by
 construction). The cache dedups TEMPORAL, never CONCURRENT: two
 concurrent misses both run their bodies and the CAS (ON CONFLICT — a
 fresh winner never loses its row; an expired corpse is re-filled) yields
-ONE winner — the loser's re-read picks the winner's payload.
+one winner — the loser's re-read picks the winner's payload.
 """
 
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
@@ -59,7 +58,7 @@ def _meta(row: asyncpg.Record) -> dict[str, Any]:
 
 # ── the pinned graph's bodies (module-level: the annotations must
 #    resolve — the compile's hint resolution reads the defining globals).
-#    The CALLS ledger is the pin's instrument: it counts BODY EXECUTIONS,
+#    The calls ledger is the pin's instrument: it counts body executions,
 #    the cache's entire point. ──
 
 CALLS: dict[str, int] = {}
@@ -79,7 +78,7 @@ async def _ocr(ctx: StepContext, d: Doc) -> Report:
 
 
 async def _ocr_v2(ctx: StepContext, d: Doc) -> Report:
-    # The CODE CHANGE face: same signature, same behavior, DIFFERENT
+    # The code change face: same signature, same behavior, different
     # source — the address must move (the stale-code face is dead).
     CALLS["ocr_v2"] = CALLS.get("ocr_v2", 0) + 1
     ref = d.doc_id
@@ -87,10 +86,10 @@ async def _ocr_v2(ctx: StepContext, d: Doc) -> Report:
 
 
 async def _consume(ctx: StepContext, r: Report) -> str:
-    # THE TYPED CONTRACT (R3's face): the body's declared param IS the
-    # decode's target — a cache hit's jsonb must arrive the model
-    # INSTANCE, never a raw dict. The AssertionError fails the run —
-    # the typed-decode pins read the run's own status.
+    # R3's face. the body's declared param is the decode's target — a cache
+    # hit's jsonb must arrive the model instance, never a raw dict. The
+    # AssertionError fails the run — the typed-decode pins read the run's own
+    # status.
     assert isinstance(r, Report), (
         f"the consumer received {type(r).__name__!r}, not the declared Report"
     )
@@ -174,17 +173,17 @@ async def _cache_rows(conn: asyncpg.Connection, schema: str) -> list[asyncpg.Rec
     return await conn.fetch(f'SELECT * FROM "{schema}".wf_step_cache')
 
 
-# ── THE HIT PIN ─────────────────────────────────────────────────────────
+# ── the hit pin ─────────────────────────────────────────────────────────
 
 
 @pytest.mark.integration
 async def test_hit_the_body_runs_once_across_runs(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE HIT PATH (the cache's entire point): the SAME input, the
-    second run — the body runs ONCE across BOTH runs. The second run's
-    step row carries THE RECEIPT (the address + the producing run's
-    id), and its consumer sees the SAME typed result — the body NEVER
+    """The hit path (the cache's entire point): the same input, the
+    second run — the body runs once across both runs. The second run's
+    step row carries the RECEIPT (the address + the producing run's
+    id), and its consumer sees the same typed result — the body never
     runs, the cached payload delivers through the ordinary finalize."""
     _app, compiled = _cache_app()
     run_a = await _run_flow(compiled, wf_pool, wf_schema, run_key="hit:a")
@@ -211,21 +210,21 @@ async def test_hit_the_body_runs_once_across_runs(
     assert isinstance(receipt.get("address"), str) and receipt["address"], (
         "the receipt's address is missing — the cache hit is unauditable"
     )
-    # The SAME result envelope: the consumer sees the same thing.
+    # The same result envelope: the consumer sees the same thing.
     assert row_b["result"] == row_a["result"]
 
-    # The consumer ran in BOTH runs (it is uncached) and decoded the hit.
+    # The consumer ran in both runs (it is uncached) and decoded the hit.
     assert CALLS["consume"] == 2
 
 
-# ── THE SUCCESS-ONLY PIN ────────────────────────────────────────────────
+# ── the success-only pin ────────────────────────────────────────────────
 
 
 @pytest.mark.integration
 async def test_success_only_a_failed_body_never_squats_the_key(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SUCCESS-ONLY LAW: a FAILING body's key never squats the
+    """The success-only law: a FAILING body's key never squats the
     address — the failure path writes NOTHING. The second run
     re-EXECUTES the body (never a cached failure): the address is free,
     the body's own attempt is the only truth."""
@@ -241,7 +240,7 @@ async def test_success_only_a_failed_body_never_squats_the_key(
         "failed-run-squats-the-key bug)"
     )
 
-    # The second run: the body RE-EXECUTES (calls == 2) — the failure
+    # The second run: the body re-executes (calls == 2) — the failure
     # never cached, and nothing else fills the address either.
     await _run_flow(fail_compiled, wf_pool, wf_schema, run_key="fail:b", expect="failed")
     assert CALLS["always_fails"] == 2, (
@@ -252,14 +251,14 @@ async def test_success_only_a_failed_body_never_squats_the_key(
     assert run_a is not None  # the first run's record stands (the rows own it)
 
 
-# ── THE TTL PIN ─────────────────────────────────────────────────────────
+# ── the TTL pin ─────────────────────────────────────────────────────────
 
 
 @pytest.mark.integration
 async def test_expired_ttl_is_a_miss(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE TTL'S FRESHNESS LEG: an expired row IS a miss — the second
+    """The TTL's freshness leg: an expired row IS a miss — the second
     run re-executes the body and RE-FILLS the cache (a fresh
     expires_at). The expiry comparison is the DB clock's; the re-fill
     beats the corpse (the CAS's DO UPDATE arm is gated on the EXPIRED
@@ -268,8 +267,7 @@ async def test_expired_ttl_is_a_miss(
     await _run_flow(compiled, wf_pool, wf_schema, run_key="ttl:a")
     assert CALLS["ocr"] == 1
 
-    # THE SCALED CLOCK: backdate the row's expiry (the DB clock's own
-    # comparison — no sleeping).
+    # backdate the row's expiry (the DB clock's own comparison — no sleeping).
     backdated = await wf_conn.execute(
         f'UPDATE "{wf_schema}".wf_step_cache '
         "SET expires_at = clock_timestamp() - interval '1 second'"
@@ -281,7 +279,7 @@ async def test_expired_ttl_is_a_miss(
         f"the expired row was served as a HIT (calls={CALLS['ocr']}) — the "
         "TTL's freshness leg is dead: stale truth served as fresh"
     )
-    # The re-run RE-FILLS: exactly one row, freshly expiring.
+    # The re-run re-fills: exactly one row, freshly expiring.
     rows = await _cache_rows(wf_conn, wf_schema)
     assert len(rows) == 1, f"the re-fill left {len(rows)} rows"
     fresh = await wf_conn.fetchval(
@@ -290,17 +288,17 @@ async def test_expired_ttl_is_a_miss(
     assert fresh is True, "the re-fill did not write a FRESH expiry"
 
 
-# ── THE CAS PIN (the concurrent miss) ───────────────────────────────────
+# ── the CAS pin (the concurrent miss) ───────────────────────────────────
 
 
 @pytest.mark.integration
 async def test_concurrent_miss_one_winner(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE CAS: two concurrent misses — the two-claims law's honest
+    """The CAS: two concurrent misses — the two-claims law's honest
     face, the cache dedups TEMPORAL, never CONCURRENT (both bodies run;
-    the ARBITER owns concurrent dedup) — yield ONE winning cache row,
-    and the loser's re-read (the NEXT lookup) picks the winner's
+    the ARBITER owns concurrent dedup) — yield one winning cache row,
+    and the loser's re-read (the next lookup) picks the winner's
     payload + the winner's receipt."""
     _app, compiled = _cache_app()
     runner_a = FlowRunner(compiled, wf_pool, wf_schema)
@@ -323,19 +321,19 @@ async def test_concurrent_miss_one_winner(
         f"the winning row's run_id {winner_run!r} is neither racing run — the receipt lies"
     )
 
-    # The loser's re-read: the NEXT run's lookup picks the WINNER's
+    # The loser's re-read: the next run's lookup picks the winner's
     # payload (the winner's receipt rides it).
     #
-    # THE BODY-COUNT DISCRIMINATION READS STATE, NOT THE CLOCK (the
-    # CI cure): the pin's `calls == 2` assumed BOTH concurrent bodies
+    # the body-count discrimination reads state, not the clock (the
+    # CI fix): the pin's `calls == 2` assumed both concurrent bodies
     # ran — the two-claims law's own premise — but the lookup-before-
-    # body is not atomic with the OTHER run's store: on a slow runner
-    # the winner's body+store can complete INSIDE the loser's
-    # claim-to-lookup window, and the loser HITS (the temporal dedup
-    # firing early — the cache's OTHER face, working). The INVARIANT
-    # is unconditional below (ONE row, the receipt naming a racing
+    # body is not atomic with the other run's store: on a slow runner
+    # the winner's body+store can complete inside the loser's
+    # claim-to-lookup window, and the loser hits (the temporal dedup
+    # firing early — the cache's other face, working). The invariant
+    # is unconditional below (one row, the receipt naming a racing
     # run, C's hit carrying the winner's payload + receipt); the body
-    # COUNT is state-conditional: 2 when the loser's own row shows a
+    # count is state-conditional: 2 when the loser's own row shows a
     # body run, 1 when it shows the hit receipt — either face, never a
     # third.
     loser_row = await _node_row(
@@ -363,14 +361,14 @@ async def test_concurrent_miss_one_winner(
     )
 
 
-# ── THE TYPED-HIT PIN (R3's face) ───────────────────────────────────────
+# ── the typed-hit pin (R3's face) ───────────────────────────────────────
 
 
 @pytest.mark.integration
 async def test_hit_delivers_the_declared_type(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE TYPED DECODE AT THE HIT (R3's face): the cached jsonb decodes
+    """The typed decode at the hit (R3's face): the cached jsonb decodes
     to the consumer's DECLARED param type — the consumer's body asserts
     the model instance (the module-level ``_consume``), and the hit run
     SUCCEEDS only if the decode held."""
@@ -378,19 +376,19 @@ async def test_hit_delivers_the_declared_type(
     await _run_flow(compiled, wf_pool, wf_schema, run_key="type:a")
     await _run_flow(compiled, wf_pool, wf_schema, run_key="type:b")
     assert CALLS["ocr"] == 1  # the hit
-    assert CALLS["consume"] == 2  # the consumer decoded the hit BOTH times
+    assert CALLS["consume"] == 2  # the consumer decoded the hit both times
 
 
-# ── THE ADDRESS PIN (the code change) ───────────────────────────────────
+# ── the address pin (the code change) ───────────────────────────────────
 
 
 @pytest.mark.integration
 async def test_code_change_is_a_new_address(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ADDRESS'S SENSITIVITY: the body's code change = a NEW address
+    """The address's sensitivity: the body's code change = a NEW address
     (§22.1's stamper's canon in the hash) — a different body over the
-    same input NEVER hits the first body's entry: the stale-code face is
+    same input never hits the first body's entry: the stale-code face is
     dead by construction."""
     from taskq.workflows._cache import cache_address
     from taskq.workflows._version import compute_code_version
@@ -411,7 +409,7 @@ async def test_code_change_is_a_new_address(
 
     _app, compiled = _cache_app()
     await _run_flow(compiled, wf_pool, wf_schema, run_key="code:a")
-    # The V2 body (different source, same input) is a MISS: it executes.
+    # The V2 body (different source, same input) is a miss: it executes.
     await _run_flow(_app.get(_V2_FLOW), wf_pool, wf_schema, run_key="code:b")
     assert CALLS["ocr_v2"] == 1, (
         "the changed body was never executed — its address collided with "
@@ -425,7 +423,7 @@ async def test_code_change_is_a_new_address(
     )
 
 
-# ── THE WIRING FACE (the opt-in's refusals) ─────────────────────────────
+# ── the wiring face (the opt-in's refusals) ─────────────────────────────
 
 
 def test_ttl_without_cache_refuses_at_the_wiring() -> None:
@@ -456,7 +454,7 @@ def test_non_positive_ttl_refuses() -> None:
 
 
 def test_cache_on_a_gather_refuses() -> None:
-    """THE V1 SURFACE IS THE PLAIN STEP: cache=True on the multi-parent
+    """The v1 surface is the plain step: cache=True on the multi-parent
     fan-in (the gather) is refused at the wiring site."""
     app = WorkflowApp()
 
@@ -470,14 +468,14 @@ def test_cache_on_a_gather_refuses() -> None:
         app.get("gather_cache")
 
 
-# ── THE RETENTION PIN (the sweep's arm) ─────────────────────────────────
+# ── the retention pin (the sweep's arm) ─────────────────────────────────
 
 
 @pytest.mark.integration
 async def test_the_sweep_prunes_expired_rows_only(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SWEEP'S RETENTION ARM: expired rows delete (bounded batch),
+    """The sweep's retention arm: expired rows delete (bounded batch),
     fresh rows survive — the dead weight never grows monotone-forever
     (the delivered-outbox arm's own shape)."""
     from taskq.workflows._sweep import prune_expired_step_cache

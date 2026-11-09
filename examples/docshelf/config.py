@@ -1,7 +1,7 @@
 """DocShelf's configuration — INCLUDING the injected adverse dynamics.
 
-THE ADVERSE DYNAMICS ARE THE APP'S OWN CONFIG, SEVERITY-TUNED AND
-RECORDED HERE. Every external system is mocked at the boundary (the
+the ADVERSE DYNAMICS ARE the APP'S own CONFIG, SEVERITY-TUNED and
+RECORDED here. Every external system is mocked at the boundary (the
 mock extraction API, the upload feed, the sub-analysis compute); the
 TaskQ machinery (Postgres, rows, workers, the retry ladders, the
 holds, the timers) is real. The severities below are the adopted
@@ -37,36 +37,36 @@ def _env_str(name: str, default: str) -> str:
 class AdverseDynamics:
     """The injected world, recorded. The drills' receipts cite these."""
 
-    #: FLAKINESS — the mock extraction API fails transiently on ~20% of
+    #: flakiness — the mock extraction API fails transiently on ~20% of
     #: calls; the retry ladder lands it. No document dies of flakiness.
     extract_flake_rate: float = 0.20
 
-    #: TIMEOUTS — ~7% of calls hang past the declared timeout; the
+    #: timeouts — ~7% of calls hang past the declared timeout; the
     #: timeout face fires and the ladder runs.
     extract_timeout_rate: float = 0.07
 
-    #: The DECLARED timeout the extraction body enforces on the mock call.
+    #: The declared timeout the extraction body enforces on the mock call.
     extract_timeout_s: float = 1.0
 
-    #: DELAYS — extraction takes 30-200 ms of jitter. The chunk fan-out's
+    #: delays — extraction takes 30-200 ms of jitter. The chunk fan-out's
     #: concurrency is real (the drills measure the overlap).
     extract_delay_min_s: float = 0.03
     extract_delay_max_s: float = 0.200
 
-    #: SLOW STEPS — the sub-analysis child flows run 1-3 s. The parent's
+    #: slow steps — the sub-analysis child flows run 1-3 s. The parent's
     #: slot is released while the child runs (the slot law, observed).
     sub_analysis_min_s: float = 1.0
     sub_analysis_max_s: float = 3.0
 
     #: The extraction ladder's depth (stamped on the map's child rows).
-    #: The ladder HONORS this stamp (friction F1 is CURED — the holdmap
-    #: lane's ladder-inheritance cure: the map item ladders to the
-    #: wired max_attempts, pinned green). The inner budget below stays
+    #: The ladder honors this stamp (the map item ladders to the
+    #: wired max_attempts, pinned in
+    #: tests/test_wf_holdmap_cures_pins.py). The inner budget below stays
     #: as the cheap in-attempt absorber — a flake costs a re-call, not
     #: a body re-run.
     extract_max_attempts: int = 8
 
-    #: The app's INNER retry budget (the flaky-call absorber): 10 inner
+    #: The app's inner retry budget (the flaky-call absorber): 10 inner
     #: calls at the recorded profile (flake 0.20 + timeout 0.07 per
     #: call) die with probability ~0.27^10 ≈ 2e-6 per chunk — no
     #: document dies of flakiness at this depth (a 12-chunk document
@@ -79,7 +79,7 @@ class AdverseDynamics:
 class DocShelfConfig:
     """The whole app's config: the product's knobs + the adverse world."""
 
-    #: Documents with at least this many chunks spawn a CHILD FLOW for
+    #: Documents with at least this many chunks spawn a child flow for
     #: the expensive sub-analysis; smaller documents analyze inline.
     many_chunks_threshold: int = 4
 
@@ -92,9 +92,9 @@ class DocShelfConfig:
     #: is seconds). Tests override to a seconds cadence.
     reindex_cron: str = "0 3 * * *"
 
-    #: The feed's PAGE SIZE (one flow run per page): the measured safe
-    #: scale for one flow's route fan (the digest's early-fire face past
-    #: ~150 elements — friction F4).
+    #: The feed's page size (one flow run per page): the measured safe
+    #: scale for one flow's route fan (the route join's arg resolution
+    #: races its terminal past ~150 elements).
     delivery_page_docs: int = 100
 
     #: The happy-path batch size (the 50-document shelf).

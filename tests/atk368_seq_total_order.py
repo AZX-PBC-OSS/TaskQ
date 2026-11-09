@@ -26,7 +26,7 @@ Surfaces:
 3. Worker-death duplicate window (integration): after a worker dies, the
    next attempt re-delivers seqs the stream already carried when the dead
    worker's writes never landed (the documented window), and delivers none
-   when they did land. Verifies the doc's scoping in BOTH directions, as
+   when they did land. Verifies the doc's scoping in both directions, as
    stream behavior.
 """
 
@@ -226,7 +226,7 @@ async def test_atk1_flush_consume_interleave_hammer() -> None:
         assert cursor_samples == sorted(cursor_samples), (
             f"round {round_no}: resume cursor rewound: {cursor_samples}"
         )
-        # The cursor never runs AHEAD of what the stream delivered: a
+        # The cursor never runs ahead of what the stream delivered: a
         # consumer resuming at the cursor cannot already have seen every
         # event and then find the snapshot past the newest delivery.
         head = buffer.base_seq + buffer.pending_seq_delta
@@ -236,7 +236,7 @@ async def test_atk1_flush_consume_interleave_hammer() -> None:
         )
 
         # Drain, then deliver the terminal event exactly as the consumer's
-        # terminal path does, and assert the WHOLE delivered stream.
+        # terminal path does, and assert the whole delivered stream.
         await _flush_buffer_immediate(pool, schema, _JOB, _WORKER, buffers)
         redis_client = _RecordingRedis()
         from taskq.progress._buffer import _terminal_seq_and_state
@@ -256,7 +256,7 @@ async def test_atk1_flush_consume_interleave_hammer() -> None:
         delivered = [
             {"seq": s, "kind": "progress", "terminal": False} for s in wire
         ] + redis_client.published
-        # The terminal mark write's absolute SET lands the consumed seq
+        # The terminal mark write's absolute set lands the consumed seq
         # durably (stand-in for the mark_* write the terminal path issues).
         cursor[0] = seq
         _assert_stream_well_ordered(delivered, f"round {round_no}")
@@ -537,8 +537,8 @@ async def test_atk2_pg_hammer_total_order_under_forced_flushes(
 
         for name, jid in job_ids.items():
             events = _wire(redis_client.published, jid)
-            # Retry arms publish terminal=True per ATTEMPT (the documented
-            # vocabulary); the job's terminal event is the LAST delivered
+            # Retry arms publish terminal=True per attempt (the documented
+            # vocabulary); the job's terminal event is the last delivered
             # event. _assert_stream_well_ordered checks duplicates, rewind
             # and terminal-last on the delivered stream.
             _assert_stream_well_ordered(events, name)
@@ -556,7 +556,7 @@ async def test_atk2_pg_hammer_total_order_under_forced_flushes(
             )
 
         # Zero-progress window, at documented strength: the silent job's
-        # stream delivers `running` at seq 1, but its catch-up cursor NEVER
+        # stream delivers `running` at seq 1, but its catch-up cursor never
         # reads 1 mid-run — a consumer that saw `running` and reconnects
         # before the terminal finds the snapshot it already had (0), then
         # jumps straight to the terminal position.
@@ -712,7 +712,7 @@ async def test_atk3a_worker_death_unflushed_delta_republishes_carried_seqs(
         assert job.attempt == 1
 
         # Worker A's in-memory stream: the running transition consumes 1,
-        # two progress events at 2 and 3; the buffer dies BEFORE any write
+        # two progress events at 2 and 3; the buffer dies before any write
         # lands (arrangement: the cursor must still read 0).
         buffers_a: dict[UUID, _ProgressBuffer] = {
             job_id: _ProgressBuffer(job_id=job_id, base_seq=job.progress_seq, attempt=job.attempt)
@@ -739,14 +739,13 @@ async def test_atk3a_worker_death_unflushed_delta_republishes_carried_seqs(
 
         events = _wire(redis_client.published, job_id)
         seqs = [int(e["seq"]) for e in events]
-        # THE DOCUMENTED WINDOW, observed: worker B's `running` re-delivers
-        # seq 1, which worker A's stream already carried with a different
-        # payload.
+        # the documented window, observed: worker B's `running` re-delivers seq
+        # 1, which worker A's stream already carried with a different payload.
         assert seqs[:4] == [1, 2, 3, 1], f"expected the scoped replay, got {seqs}"
         assert events[3]["kind"] == "state_change" and events[3]["status"] == "running"
         assert events[0]["kind"] == "progress"
-        # Within EACH attempt's segment the delivery is strictly ordered and
-        # duplicate-free (the worker-death window is the ONLY scoping crack).
+        # Within each attempt's segment the delivery is strictly ordered and
+        # duplicate-free (the worker-death window is the only scoping crack).
         a_events, b_events = events[:3], events[3:]
         a_seqs = [int(e["seq"]) for e in a_events]
         assert a_seqs == sorted(a_seqs) and len(a_seqs) == len(set(a_seqs)), (
@@ -798,7 +797,7 @@ async def test_atk3b_worker_death_flushed_delta_republishes_nothing_carried(
             buffers_a[job_id].dirty = True
             await _publish_progress_wire(redis_client, schema, job_id, _seq)
 
-        # This time the write LANDS before death: the cursor adopts 3.
+        # This time the write lands before death: the cursor adopts 3.
         await _flush_buffer(
             deps.dispatcher_pool,
             schema,

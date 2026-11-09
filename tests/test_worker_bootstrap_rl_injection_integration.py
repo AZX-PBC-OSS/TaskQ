@@ -108,7 +108,7 @@ async def test_actor_declared_instances_collected_and_acquirable(pg_dsn: str, sc
         )
     )
 
-    # Collection pass registered the instance into the OWNED registry...
+    # Collection pass registered the instance into the owned registry...
     assert own.rate_limits["coll_bucket"] is bucket
     # ...and the worker never touched the singleton.
     assert "coll_bucket" not in singleton.rate_limits
@@ -144,7 +144,7 @@ async def test_di_value_provider_wins_over_singleton_end_to_end(pg_dsn: str, sch
 
 
 async def test_singleton_default_backwards_compatible(pg_dsn: str, schema: str) -> None:
-    """Regression: import-time .register() on the singleton + _main WITHOUT
+    """Regression: import-time .register() on the singleton + _main without
     rate_limit_registry → singleton resolved, worker starts cleanly."""
     singleton.register(
         TokenBucket(name="bc_bucket", capacity=5, refill_per_second=1.0, backend="memory")

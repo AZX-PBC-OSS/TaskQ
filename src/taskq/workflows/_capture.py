@@ -1,4 +1,4 @@
-"""The workflow failure IO-capture writer (T04, G1 — §10.3's policy).
+"""The workflow failure IO-capture writer (the policy).
 
 The capture WRITE belongs at failure-finalize (tx1 — a row already being
 updated; the success path writes NOTHING extra). The failed node's input +
@@ -7,17 +7,17 @@ error are captured per the workflow's ``none | errors-only | all`` policy
 the explicit ``"__truncated__": N`` marker via tors ``truncate_to_bounds``
 (grapheme-safe; its verified ``tors.aio`` twin exists if the payload path
 ever goes async — a GIL-holding call here would be the ``kind=gil_held``
-stall the watchdog attributes), and passed through the redact chain BEFORE
+stall the watchdog attributes), and passed through the redact chain before
 persistence.
 
-THE COMPOSITION VERDICT (TORS-REV-0.16 §G1): the DEFAULT redactor is the
+The DEFAULT redactor is the
 vetted chain — the tors ``scrub_secrets`` pre-pass (behind the
 ``_SECRET_HEAD_TRIGGERS`` prefilter) → TaskQ's fail-closed regex masks —
 exactly :func:`taskq.obs.mask_credentials`, the public wrapper of the
 exception-rendering paths' chain (its composition with the tors pre-pass is
 already pinned by ``tests/test_tors_scrub_secrets_composition.py``). The
 workflow's user ``redact=fn`` hook POST-COMPOSES on the chain's output and
-NEVER REPLACES it — the pipeline is CHAIN → HOOK, unconditionally:
+never REPLACES it — the pipeline is CHAIN → HOOK, unconditionally:
 
 * the asymmetry doctrine — over-redaction is the safe failure;
 * a hook that no-ops still leaves the chain's masks on the row;
@@ -26,7 +26,7 @@ NEVER REPLACES it — the pipeline is CHAIN → HOOK, unconditionally:
   receives already-scrubbed text whose masks are irreversible. A
   replacement-seeking hook (one returning raw fixture text) still lands a
   MASKED row: the pin asserts the chain's masks are present on the persisted
-  row REGARDLESS of the hook's return (red-first pin 11's negative arm).
+  row REGARDLESS of the hook's return.
 
 The capture runs on the worker's event loop inside tx1, so every call in the
 pipeline must be GIL-free or short-input by construction (tors is GIL-free;
@@ -45,7 +45,7 @@ from tors import truncate_to_bounds, utf8_byte_len
 # Why: private import -- ``mask_credentials`` (the vetted redact chain, tors
 # pre-pass included) is the public wrapper of the exception-rendering paths'
 # chain but is not re-exported through ``taskq.obs``; the capture pipeline
-# composes the SAME chain, not a copy (a copy could drift from the masks the
+# composes the same chain, not a copy (a copy could drift from the masks the
 # composition pin holds). Same package, behavior pinned by
 # tests/test_tors_scrub_secrets_composition.py.
 from taskq.obs._redact_exc import mask_credentials  # pyright: ignore[reportPrivateUsage]
@@ -60,10 +60,10 @@ _CAPTURE_POLICIES: Final[frozenset[str]] = frozenset(
 )
 
 #: The truncation marker tors ``truncate_to_bounds`` cannot add: the capture
-#: records HOW MUCH was cut, explicitly, so a renderer can say so.
+#: records how much was cut, explicitly, so a renderer can say so.
 TRUNCATED_MARKER: Final[str] = "__truncated__"
 
-#: The default capture byte cap (the configurable cap, T09's settings row).
+#: The default capture byte cap (the configurable cap, the settings row).
 DEFAULT_CAPTURE_MAX_BYTES: Final[int] = 8 * 1024
 
 
@@ -98,8 +98,8 @@ def redact_capture(
 ) -> str:
     """The CHAIN → HOOK pipeline, unconditionally.
 
-    The chain (the vetted mask chain, tors pre-pass included) runs FIRST and
-    ALWAYS; the user hook receives the chain's already-scrubbed output. A
+    The chain (the vetted mask chain, tors pre-pass included) runs first and
+    always; the user hook receives the chain's already-scrubbed output. A
     hook that tries to widen visibility is not refused — intent is
     undetectable — it is structurally POWERLESS: the masks on its input are
     irreversible, so its replacement attempt still lands masked text.
@@ -122,7 +122,7 @@ def build_capture(
 
     *policy* ``none`` captures nothing (even on failure); ``errors-only``
     (the default) and ``all`` capture input + error on the failure path.
-    Every captured field is REDACTED FIRST (chain → hook), THEN truncated —
+    Every captured field is REDACTED first (chain → hook), then truncated —
     masks are irreversible, so truncating scrubbed text cannot reveal a
     suffix the mask hid, and the persisted row carries no canary.
     """
@@ -143,11 +143,11 @@ def build_capture(
 
     total = sum(utf8_byte_len(v) for v in capture.values())
     if total > max_bytes:
-        # Truncate the LARGEST field until the whole payload fits — the
+        # Truncate the largest field until the whole payload fits — the
         # error (the reason the capture exists) survives a bloated input.
-        # THE MARKER IS NOT PAYLOAD (the second-pass crash's cure): the
-        # truncation count is an INT — summing it into the byte total
-        # crashed utf8_byte_len on the SECOND pass (the loop re-entered
+        # the marker is not payload (the second-pass crash's fix): the
+        # truncation count is an int — summing it into the byte total
+        # crashed utf8_byte_len on the second pass (the loop re-entered
         # with the marker present); the marker is metadata, excluded
         # from both the sort and the total.
         for key in sorted(
@@ -166,18 +166,16 @@ def build_capture(
     return capture
 
 
-#: THE HOLD CONTEXT'S TOKEN-HEAD PASS (attack-3 H3's cure — the default
-#: redact the hold row gets): bearer/key-shaped VALUES the vetted chain's
-#: credential-family patterns deliberately do not model (the chain's own
-#: doctrine: broader NAME lists would redact non-credential parameters —
-#: but the hold context is the operator-facing surface where a canary
-#: key rode a field named ``account``). The pass keeps the same
-#: necessary-condition discipline: a token HEAD (``sk-``/``sk_``/
-#: ``pk-``/``pk_``/``rk-``/``rk_`` + the shape's length floor) is the
-#: anchor, so ordinary context values (``approve``, ``d1``, ``100``)
-#: cannot match. Over-redaction is the safe failure for THIS surface:
-#: the body's step ledger replays the true args; the operator reads the
-#: masked one.
+#: bearer/key-shaped VALUES the vetted chain's credential-family patterns
+#: deliberately do not model (the chain's own doctrine: broader name lists
+#: would redact non-credential parameters — but the hold context is the
+#: operator-facing surface where a canary key rode a field named ``account``).
+#: The pass keeps the same necessary-condition discipline: a token head
+#: (``sk-``/``sk_``/ ``PK-``/``pk_``/``rk-``/``rk_`` + the shape's length
+#: floor) is the anchor, so ordinary context values (``approve``, ``d1``,
+#: ``100``) cannot match. Over-redaction is the safe failure for this surface:
+#: the body's step ledger replays the true args; the operator reads the masked
+#: one.
 _HOLD_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![A-Za-z0-9])(?:sk|pk|rk)[-_.][A-Za-z0-9._-]{7,}"
 )
@@ -196,13 +194,13 @@ def redact_hold_context(
     *,
     redact: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
-    """THE HOLD CONTEXT through the redact pipeline (chain → the
-    token-head pass → the workflow's hook), BEFORE persistence
-    (REDACT-BEFORE-PERSIST extended to the hold row — attack-3 H3's
-    cure): reason/tool/args never reach the ``wf_signals`` payload raw,
+    """the HOLD CONTEXT through the redact pipeline (chain → the
+    token-head pass → the workflow's hook), before persistence
+    (REDACT-before-PERSIST extended to the hold row — the smuggle
+    fix): reason/tool/args never reach the ``wf_signals`` payload raw,
     so the default ``HitlClient`` surface cannot leak what the row never
     carried. The composition is the capture pipeline's own verdict
-    (TORS-REV-0.16 §G1): the vetted chain runs FIRST and ALWAYS; the
+    (TORS-REV-0.16 §G1): the vetted chain runs first and always; the
     token-head pass narrows it for the hold surface; the author's hook
     receives already-masked text and can only redact more."""
     masked: dict[str, Any] = {}

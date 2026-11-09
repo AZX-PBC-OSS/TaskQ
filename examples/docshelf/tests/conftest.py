@@ -30,6 +30,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -41,7 +42,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-#: The adoption sim's PG (NOT testcontainers — the drill's own instance).
+#: The adoption sim's PG (not testcontainers — the drill's own instance).
 DOCSHELF_DSN = os.environ.get("DOCSHELF_PG_DSN", "postgresql://postgres:taskq@localhost:5804/taskq")
 
 CAPTURE_DIR = Path(
@@ -131,7 +132,7 @@ class WorkerProc:
         self.tag = worker_tag
 
     def kill9(self) -> None:
-        """THE CRASH: SIGKILL — no drain, no shutdown, a corpse on the rows."""
+        """SIGKILL — no drain, no shutdown, a corpse on the rows."""
         self.proc.send_signal(signal.SIGKILL)
         self.proc.wait()
 
@@ -170,7 +171,7 @@ class WorkerFactory:
             # S108 Why: the drill's per-worker health socket (the
             # worker's own tag, unique per spawn).
             "TASKQ_HEALTH_SOCKET_PATH": f"/tmp/docshelf-{tag}.sock",  # noqa: S108
-            # S108 Why: an EMPTY dotenv dir hermetically sealing the
+            # S108 Why: an empty dotenv dir hermetically sealing the
             # worker boot from the developer's .env.
             "DOTENV_DIR": "/tmp/docshelf-empty-dotenv",  # noqa: S108
             "PYTHONPATH": str(REPO_ROOT),
@@ -242,9 +243,11 @@ def _worker_cli() -> list[str]:
 
 @pytest.fixture(scope="module")
 def workers(schema: str, request: pytest.FixtureRequest) -> WorkerFactory:
-    # S108 Why: the drill's own log sink (outside the repo; the
-    # adoption sim's scratch space).
-    factory = WorkerFactory(schema, log_dir=Path("/tmp/opencode/docshelf-worker-logs"))  # noqa: S108  # Why: the drill's own log sink (outside the repo; the adoption sim's scratch space).
+    # S108 Why: the drill's own log sink (a scratch dir outside the
+    # repo; the adoption sim's scratch space).
+    factory = WorkerFactory(
+        schema, log_dir=Path(tempfile.mkdtemp(prefix="docshelf-worker-logs-"))
+    )  # Why: the drill's own log sink (a scratch dir outside the repo; the adoption sim's scratch space).
     request.addfinalizer(factory.stop_all)
     return factory
 

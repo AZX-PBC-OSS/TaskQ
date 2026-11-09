@@ -46,7 +46,7 @@ from taskq.timescale import (
 )
 from taskq.worker.leader import archive_expiry_sweep, prune_terminal_jobs
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timescale]
 
 #: Chunk interval the short test retentions clamp to (retention/4 clamped
 #: to a 1-day floor): every test leg below asserts against it.
@@ -62,7 +62,7 @@ _AGED = datetime.now(UTC) - timedelta(days=31)
 
 
 class _RefusingConn:
-    """A connection stub that fails the test if ANY statement reaches it."""
+    """A connection stub that fails the test if any statement reaches it."""
 
     def __getattr__(self, name: str) -> Any:
         def _no_sql(*args: object, **kwargs: object) -> None:
@@ -190,7 +190,7 @@ async def ts_conn(
     timescale_dsn: str,
     ts_schema: str,
 ) -> AsyncIterator[asyncpg.Connection]:
-    """A connection to a freshly migrated AND converted schema.
+    """A connection to a freshly migrated and converted schema.
 
     Retentions are short so the retention-policy legs can run in test
     time: the archive family at 2 days, events at 1 day, chunk interval
@@ -217,7 +217,7 @@ async def ts_conn(
         yield conn
     finally:
         # Schema names are per-test unique and the module container is
-        # removed at teardown, so a DROP here would only shorten a
+        # removed at teardown, so a drop here would only shorten a
         # container lifetime that is already bounded.
         await conn.close()
 
@@ -278,7 +278,7 @@ async def test_conversion_shape_and_retention_policies(
     by_table: dict[str, set[bytes]] = {}
     for r in cons:
         by_table.setdefault(r["tbl"], set()).add(r["contype"])
-    # Uniqueness widened to include the partition column; no bare PK survives.
+    # Uniqueness widened to include the partition column; no bare pk survives.
     names = {(r["tbl"], r["conname"]) for r in cons}
     assert ("job_events", "job_events_id_occurred_at_uniq") in names
     assert ("jobs_archive", "jobs_archive_id_finished_at_uniq") in names
@@ -350,7 +350,7 @@ async def _schedule_policies(
     wait out a schedule interval, they move the job's next_start (the
     supported alter_job knob) and let the worker execute the registered
     policy itself, so the chunk drop under test is the real policy run.
-    Defaults to ALL policy jobs — retention AND the compression policy
+    Defaults to ALL policy jobs — retention and the compression policy
     the deploy step arms on the archive tables: a ~now-scheduled
     compression run would age chunks into the columnstore mid-test and
     put the sweep legs on compressed chunks (the measured
@@ -569,7 +569,7 @@ async def _prune_scenario(conn: asyncpg.Connection, schema: str) -> dict[str, An
 
     Plants the unguarded ghost state by hand (an archive row whose job is
     still live and aged) and runs the real prune: the outcome must be
-    the fold in BOTH modes. Returns the observable facts.
+    the fold in both modes. Returns the observable facts.
     """
     now = datetime.now(UTC)
     for _ in range(2):
@@ -651,8 +651,8 @@ async def test_prune_folds_ghosts_and_archives_identically_on_both_engines(
     retried job's live row removed, no duplicate archive rows), no live
     terminal rows left, attempts archived with their jobs. The hypertable
     mode's widened uniqueness (id, finished_at) plus the archive write's
-    NOT EXISTS guard must deliver the re-archive semantics the vanilla
-    primary key used to enforce, in both directions (no wedge, no
+    not EXISTS guard deliver the re-archive semantics the vanilla
+    primary key enforces, in both directions (no wedge, no
     duplicates).
     """
     outcomes: dict[str, dict[str, Any]] = {}
@@ -721,7 +721,7 @@ async def test_job_delete_still_cascades_to_attempts(
 async def test_windowed_metrics_query_prunes_chunks(
     ts_conn: asyncpg.Connection, ts_schema: str
 ) -> None:
-    """A windowed job_events query plans against ONLY the chunks its window
+    """A windowed job_events query plans against only the chunks its window
     can touch.
 
     With the event log chunked, every admin/metrics query that bounds
@@ -788,7 +788,7 @@ async def test_windowed_metrics_query_runs_on_vanilla(pg_dsn: str) -> None:
         await conn.close()
 
 
-# ── Red-team edges: re-run convergence, mid-population conversion, failure
+# ── Adversarial review edges: re-run convergence, mid-population conversion, failure
 #    atomicity, widened uniqueness, and the deliberately dropped FK ─────────
 
 
@@ -877,7 +877,7 @@ async def test_re_run_converges_chunks_and_honors_changed_retention(
         assert '"drop_after": "30 days"' in drop_after["jobs_archive"]
         assert '"drop_after": "30 days"' in drop_after["job_attempts_archive"]
         assert '"drop_after": "1 day"' in drop_after["job_events"]
-        # The chunk interval re-asserts from the changed setting for FUTURE
+        # The chunk interval re-asserts from the changed setting for future
         # chunks (30d/4 = 7.5d, inside the clamp); job_events' is unchanged.
         dims = await conn.fetch(
             "SELECT h.table_name, d.interval_length "
@@ -927,21 +927,18 @@ async def test_mid_population_conversion_preserves_every_row_and_index(
         # 50k rows spread over 2000 distinct minutes and over the 100
         # parents: real volume for migrate_data, still test-fast.
         #
-        # THE WINDOW IS CHUNK-ALIGNED ON PURPOSE, and its NEWEST ROW SITS
-        # INSIDE the last full chunk (the anchor is
-        # date_trunc('day', now()) - 1 minute, never now()): a
-        # now()-anchored window's newest chunk is the current day's
-        # SLIVER — minutes since UTC midnight worth of rows, from 25
-        # (just past midnight) to 36k (late in the day) by wall clock —
-        # and the planner is RIGHT to seq-scan a 25-row chunk (bitmap
-        # ~4.0 vs seq ~1.3), so this pin's own no-Seq-Scan demand failed
-        # on a CORRECT plan when a run landed in the sliver hours (the
-        # captured red planned a 25-row day-chunk with a Seq Scan beside
-        # two bitmap-scanned full chunks). Anchoring at the last chunk
-        # boundary (the extra minute keeps the boundary instant itself —
-        # residue 0 — out of the notional next chunk) makes every
-        # populated chunk a full day (~560 + ~1440 minutes), so the
-        # planner demand is deterministic at every wall clock and still
+        # the window is chunk-aligned on purpose, and its newest row sits
+        # inside the last full chunk: a now()-anchored window's newest chunk is
+        # the current day's sliver — minutes since UTC midnight worth of rows,
+        # from 25 (just past midnight) to 36k (late in the day) by wall clock —
+        # and the planner is right to seq-scan a 25-row chunk (bitmap ~4.0 vs
+        # seq ~1.3), so this pin's own no-Seq-Scan demand failed on a correct
+        # plan when a run landed in the sliver hours (the captured red planned
+        # a 25-row day-chunk with a Seq Scan beside two bitmap-scanned full
+        # chunks). Anchoring at the last chunk boundary (the extra minute keeps
+        # the boundary instant itself — residue 0 — out of the notional next
+        # chunk) makes every populated chunk a full day (~560 + ~1440 minutes),
+        # so the planner demand is deterministic at every wall clock and still
         # asserts what it is here for: the conversion's carried indexes
         # actually serve a selective lookup.
         await conn.execute(
@@ -1027,13 +1024,13 @@ async def test_mid_population_conversion_preserves_every_row_and_index(
             "the per-job event index must be carried onto chunks"
         )
         # The partial retention-sweep index carries its predicate onto
-        # chunks in its logically-equivalent negated form (NOT (kind = ...
-        # AND ...) becomes kind <> ... OR ... <> ...).
+        # chunks in its logically-equivalent negated form (not (kind = ...
+        # and ...) becomes kind <> ... or ... <> ...).
         assert "kind <> 'state_change'" in defs, (
             "the partial retention-sweep index must carry its predicate onto chunks"
         )
 
-        # And the planner must actually USE one: a selective job_id lookup
+        # And the planner must actually use one: a selective job_id lookup
         # (~1% of 50k rows) must not fall back to a Seq Scan.
         jid = parent_ids[0]
         await conn.execute(f"ANALYZE {ts_schema}.job_events")
@@ -1050,7 +1047,7 @@ async def test_mid_population_conversion_preserves_every_row_and_index(
 
 
 class _FailOnceConn:
-    """A forwarding proxy that injects ONE deterministic failure.
+    """A forwarding proxy that injects one deterministic failure.
 
     Every statement runs for real against the server; when the statement
     is the ``create_hypertable`` call for *victim_table* the proxy raises
@@ -1088,7 +1085,7 @@ async def test_failure_mid_conversion_leaves_schema_usable_and_rerun_completes(
     so a crash mid-flight can strand a PARTIALLY converted schema. Pinned
     here: the failure surfaces, the server keeps answering (ordinary DML
     works), exactly the already-converted tables are hypertables, the DO
-    blocks that ran stay applied, and a clean re-run converts ONLY the
+    blocks that ran stay applied, and a clean re-run converts only the
     stragglers and converges policies to 3.
     """
     conn = await asyncpg.connect(timescale_dsn)
@@ -1099,12 +1096,12 @@ async def test_failure_mid_conversion_leaves_schema_usable_and_rerun_completes(
         # the injected failure hits at jobs_archive's create_hypertable.
         with pytest.raises(RuntimeError, match="jobs_archive"):
             await enable_hypertables(
-                _FailOnceConn(conn, "jobs_archive"),  # pyright: ignore[reportArgumentType]  # Why: the proxy IS the contract under test.
+                _FailOnceConn(conn, "jobs_archive"),  # pyright: ignore[reportArgumentType]  # Why: the proxy is the contract under test.
                 schema=ts_schema,
                 settings=settings,
             )
 
-        # The server is left usable: ordinary DML and catalogs answer.
+        # The server is left usable: ordinary dml and catalogs answer.
         await _seed_parent_job(conn, ts_schema, new_uuid())
         ht = await conn.fetch(
             "SELECT table_name FROM _timescaledb_catalog.hypertable WHERE schema_name = $1",
@@ -1113,7 +1110,7 @@ async def test_failure_mid_conversion_leaves_schema_usable_and_rerun_completes(
         assert {r["table_name"] for r in ht} == {"job_events"}, (
             "the failure must strand exactly the pre-failure conversion state, no more"
         )
-        # The independently-runnable statements that DID run stay applied.
+        # The independently-runnable statements that did run stay applied.
         widened = await conn.fetchval(
             "SELECT count(*) FROM pg_constraint con "
             "JOIN pg_class c ON c.oid = con.conrelid "
@@ -1147,7 +1144,7 @@ async def test_failure_mid_conversion_leaves_schema_usable_and_rerun_completes(
 async def _seed_null_finished_archive_row(conn: asyncpg.Connection, schema: str) -> None:
     """The one row shape the hypertable mode cannot hold: a NULL finished_at.
 
-    Direct-SQL written on purpose — that is the ONLY way the shape enters
+    Direct-SQL written on purpose — that is the only way the shape enters
     the archive (every production terminal arm stamps finished_at, and
     the archive COPY's candidate and lock-time predicates both require it
     non-NULL), which is exactly the debris verdict the refusal encodes.
@@ -1165,7 +1162,7 @@ async def _seed_null_finished_archive_row(conn: asyncpg.Connection, schema: str)
 async def test_null_finished_at_archive_tail_refuses_before_any_ddl(
     timescale_dsn: str, ts_schema: str
 ) -> None:
-    """The archive's NULL finished_at tail: refused BEFORE any DDL, loudly.
+    """The archive's NULL finished_at tail: refused before any DDL, loudly.
 
     ``jobs_archive.finished_at`` is nullable (the archive mirrors every
     ``jobs`` column, and a job's ``finished_at`` is NULL until a terminal
@@ -1175,16 +1172,16 @@ async def test_null_finished_at_archive_tail_refuses_before_any_ddl(
     unstamped — the un-draining NULL tail of the prune's cursor walk, the
     shape its finished_at CASE comment names), and direct SQL carries it
     in today. TimescaleDB cannot convert the table while such rows exist
-    (the partition column must be NOT NULL), and the unguarded behavior is
+    (the partition column must be not NULL), and the unguarded behavior is
     the worst shape: the NotNullViolationError surfaces mid-migrate_data,
-    AFTER the primary-key drops, the unique adds, and the foreign-key
+    after the primary-key drops, the unique adds, and the foreign-key
     drop have already committed — a half-converted schema whose archive
     has no primary key and whose job_events is already a hypertable.
     Pinned here, three facts:
 
     * the refusal is LOUD: it names the row count and both remediations
       (complete via finished_at = archived_at, or discard);
-    * the refusal is ATOMIC: it fires before ANY statement of the
+    * the refusal is ATOMIC: it fires before any statement of the
       conversion, so the schema stays byte-identical to what the operator
       arrived with — every pkey and the attempts FK still in place, no
       hypertable, and the debris row untouched;
@@ -1198,7 +1195,7 @@ async def test_null_finished_at_archive_tail_refuses_before_any_ddl(
         await _seed_null_finished_archive_row(conn, ts_schema)
         await _seed_null_finished_archive_row(conn, ts_schema)
         # A healthy row beside the debris: the conversion must not be
-        # refused for a table that is merely POPULATED.
+        # refused for a table that is merely populated.
         await _seed_archive_row(
             conn, schema=ts_schema, finished_at=datetime.now(UTC) - timedelta(days=3)
         )
@@ -1214,7 +1211,7 @@ async def test_null_finished_at_archive_tail_refuses_before_any_ddl(
         assert "finished_at = archived_at" in message
         assert "DELETE FROM" in message
 
-        # ATOMIC: nothing applied. Every vanilla constraint the
+        # atomic: nothing applied. Every vanilla constraint the
         # unguarded half-conversion drops is still in place, no table
         # converted, and the debris row is exactly where it was.
         ht = await conn.fetch(
@@ -1269,7 +1266,7 @@ async def test_widened_unique_constraints_still_reject_exact_duplicates(
     constraint, so all three PKs widen. The narrowed claim - an EXACT
     duplicate row - must still be rejected on all three tables. The
     widening's cost (same id, different time value is now accepted) is the
-    documented trade, compensated by the archive write's NOT EXISTS guard
+    documented trade, compensated by the archive write's not EXISTS guard
     (see the differential prune test); pinned explicitly below.
     """
     # job_events: an exact duplicate (id, occurred_at) must be rejected.
@@ -1325,7 +1322,7 @@ async def test_widened_unique_constraints_still_reject_exact_duplicates(
     # The documented trade, pinned: jobs_archive's widened UNIQUE (id,
     # finished_at) accepts a second row with the same id at a different
     # finished_at - which the vanilla PRIMARY KEY (id) would have rejected.
-    # This is safe ONLY because the archive write re-checks NOT EXISTS
+    # this is safe only because the archive write re-checks NOT EXISTS
     # (taskq.worker._leader_shared), which the differential prune test pins.
     await ts_conn.execute(
         f"""INSERT INTO {ts_schema}.jobs_archive (id, actor, queue, payload, max_attempts,
@@ -1358,7 +1355,7 @@ async def test_orphan_archive_attempt_accepted_and_danger_pinned(
     orphan insert is REJECTED on vanilla Postgres (proving the drop, not a
     test artifact, is what changed) and ACCEPTED on the hypertable - the
     documented DANGER. The compensation is also pinned: both archive
-    policies derive their drop_after from the SAME
+    policies derive their drop_after from the same
     ``archive_retention_period`` setting, so an attempt row's chunk drops
     on the same clock its parent's chunk does.
     """
@@ -1412,7 +1409,7 @@ async def test_orphan_archive_attempt_accepted_and_danger_pinned(
         f"both archive policies must drop on the SAME clock, got {drop_after}"
     )
 
-    # And the danger stays DOCUMENTED: the module contract names the FK
+    # And the danger stays documented: the module contract names the FK
     # drop as the one deliberate structural loss.
     from taskq import timescale as timescale_module
 
@@ -1425,7 +1422,7 @@ async def test_orphan_archive_attempt_accepted_and_danger_pinned(
 
 
 def _vanilla_settings(dsn: str, schema: str) -> WorkerSettings:
-    """The disable gate's settings: the flag flipped OFF first (the
+    """The disable gate's settings: the flag flipped off first (the
     mirror of enable's flag-on gate — disable with the flag still true
     is a zero-statement no-op)."""
     return WorkerSettings.load_from_dict(
@@ -1535,7 +1532,7 @@ async def test_disable_restores_vanilla_shape_and_every_row(timescale_dsn: str) 
     """enable -> seed (the deploy E2E's shapes) -> disable: zero
     hypertables, the vanilla SHAPE byte-equal to a fresh migration's
     (constraints, indexes, FK, column order and defaults — the shape is
-    cloned from the migrations' own output, never re-typed), and EVERY
+    cloned from the migrations' own output, never re-typed), and every
     row present, counted."""
     schema = "tsdis_" + new_uuid().hex[:12]
     fresh = "tsfresh_" + new_uuid().hex[:12]
@@ -1561,7 +1558,7 @@ async def test_disable_restores_vanilla_shape_and_every_row(timescale_dsn: str) 
             "jobs_archive",
             "job_attempts_archive",
         }, "the disable must restore all three tables to plain"
-        # The mirror reading of the report: the policies REMOVED, at the
+        # The mirror reading of the report: the policies removed, at the
         # intervals the registered jobs themselves carried (the config's
         # own text — Postgres renders the singular).
         assert set(disable_report.retention_policies) == {
@@ -1770,8 +1767,8 @@ async def test_compression_adopted_on_archives_only(
     rowstore (measured: nothing to gain); the hot page still reads; and
     a re-run converges without duplicating the policy."""
     # The per-column settings, via the information view: segmentby
-    # (actor, queue) / orderby finished_at DESC on the archive;
-    # segmentby job_id / orderby started_at DESC on the attempts. Never
+    # (actor, queue) / orderby finished_at desc on the archive;
+    # segmentby job_id / orderby started_at desc on the attempts. Never
     # the per-row-unique id (the compression-ratio anti-pattern).
     settings_rows = await ts_conn.fetch(
         "SELECT hypertable_name, attname, segmentby_column_index, "
@@ -1899,7 +1896,7 @@ async def test_decompression_guc_warning_fires_at_default_and_quiets_when_raised
 
 
 class _CrashAtSwapStageConn:
-    """A forwarding proxy that dies at ONE disable-swap stage.
+    """A forwarding proxy that dies at one disable-swap stage.
 
     Every statement runs for real against the server until the stage's
     statement arrives; the proxy raises INSTEAD of forwarding it — the
@@ -1978,7 +1975,7 @@ async def _disable_crash_matrix_case(
 ) -> None:
     """One matrix cell: crash the disable mid-swap on *victim_table* at
     *stage*, then re-run clean and demand the full vanilla shape with
-    EVERY row — the structural convergence, never a stranded heap."""
+    every row — the structural convergence, never a stranded heap."""
     fresh = "tsfresh_" + new_uuid().hex[:12]
     conn = await asyncpg.connect(timescale_dsn)
     try:
@@ -1988,7 +1985,7 @@ async def _disable_crash_matrix_case(
         seeded = await _seed_history(conn, schema, n_events=50, n_archive=20, n_attempts=30)
         assert set(seeded.values()) == set(_CRASH_MATRIX_SEED)
 
-        proxy = _CrashAtSwapStageConn(conn, stage, victim_table)  # pyright: ignore[reportArgumentType]  # Why: the proxy IS the contract under test.
+        proxy = _CrashAtSwapStageConn(conn, stage, victim_table)  # pyright: ignore[reportArgumentType]  # Why: the proxy is the contract under test.
         with pytest.raises(RuntimeError, match="injected crash"):
             await disable_hypertables(
                 proxy, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
@@ -2064,15 +2061,15 @@ async def _disable_crash_matrix_case(
 async def test_disable_crash_at_every_swap_stage_converges(
     timescale_dsn: str, stage: str, victim_table: str
 ) -> None:
-    """The crash matrix: a disable killed at EVERY swap stage converges on
-    the re-run to the full vanilla shape with EVERY row.
+    """The crash matrix: a disable killed at every swap stage converges on
+    the re-run to the full vanilla shape with every row.
 
     The swap is rename-first (the copy is count-verified, the hypertable
     RENAMES to ``{table}__hypertable_trash``, the migration-built table
     moves into the freed name, the rows return from the trash twin-
     verified, and only then is the trash dropped), so after the rename the
     rows exist in TWO places and no order of death loses them. The re-run's
-    FIRST act — before any ``DROP SCHEMA CASCADE`` — finishes every crashed
+    first act — before any ``DROP SCHEMA CASCADE`` — finishes every crashed
     table's move under the same count/twin verification. Pinned here at
     every stage, on the last table of the swap order (job_events, so the
     earlier tables' completions ride along) and on the first (jobs_archive,
@@ -2086,11 +2083,11 @@ async def test_disable_crash_at_every_swap_stage_converges(
 async def test_disable_converges_legacy_drop_before_set_debris(timescale_dsn: str) -> None:
     """Hostile cell the matrix cannot reach by crashing the CURRENT swap:
     the pre-rename-first ordering's DROP-before-SET window (the fix commit's
-    B4 state). A schema crashed under the OLD ordering holds NO live table,
-    NO trash, the restore heap stranded with the rows, and the staging
+    B4 state). A schema crashed under the OLD ordering holds no live table,
+    no trash, the restore heap stranded with the rows, and the staging
     schema still holding the vanilla table. ``_converge_crashed_swaps``'s
     fourth state must move the staging table in, absorb the heap twin-
-    first, and leave the vanilla shape with EVERY row — before any ``DROP
+    first, and leave the vanilla shape with every row — before any ``DROP
     SCHEMA CASCADE`` can eat the staging table the recovery needs."""
     schema = "tslegacy_" + new_uuid().hex[:12]
     fresh = "tsfresh_" + new_uuid().hex[:12]
@@ -2103,7 +2100,7 @@ async def test_disable_converges_legacy_drop_before_set_debris(timescale_dsn: st
         seeded = await _seed_history(conn, schema, n_events=50, n_archive=20, n_attempts=30)
 
         # Hand-build the old ordering's debris: the heap copy exists, the
-        # hypertable is GONE (the legacy DROP ran before its SET SCHEMA),
+        # hypertable is gone (the legacy drop ran before its set SCHEMA),
         # and the staging schema still holds the vanilla table — exactly
         # the state the rename-first swap makes unreachable but the
         # convergence still documents and must still finish.
@@ -2157,7 +2154,7 @@ async def test_disable_converges_legacy_drop_before_set_debris(timescale_dsn: st
 
 
 async def test_disable_refuses_vanilla_key_collisions_loudly(timescale_dsn: str) -> None:
-    """The one unrecoverable mismatch refuses loudly BEFORE any name
+    """The one unrecoverable mismatch refuses loudly before any name
     moves: the hypertable's widened uniqueness admits rows (same id,
     different partition-column value) the restored vanilla table's primary
     key cannot hold. The swap refuses to choose which row survives; the
@@ -2167,7 +2164,7 @@ async def test_disable_refuses_vanilla_key_collisions_loudly(timescale_dsn: str)
     try:
         await _migrate(conn, schema)
         await enable_hypertables(conn, schema=schema, settings=_ts_settings(timescale_dsn, schema))
-        # The collision: the SAME id twice at different finished_at — the
+        # The collision: the same id twice at different finished_at — the
         # widened UNIQUE (id, finished_at) holds both, vanilla's bare
         # PRIMARY KEY (id) cannot hold either of them twice.
         jid = new_uuid()
@@ -2210,7 +2207,7 @@ class _WindowWriterConn:
     serialize against), racing it against the lock itself. Exactly two
     outcomes are possible, and both prove no row is destroyed silently:
 
-    * the writer commits BEFORE the lock is granted → its row is in the
+    * the writer commits before the lock is granted → its row is in the
       orphan when the window opens and the twin-guard absorbs it into the
       live table;
     * the lock is granted first → the writer QUEUES behind it (measured
@@ -2307,7 +2304,7 @@ async def test_absorb_lock_holds_the_drop_window_shut_against_a_live_writer(
         )
 
         proxy = _WindowWriterConn(
-            conn,  # pyright: ignore[reportArgumentType]  # Why: the proxy IS the contract under test.
+            conn,  # pyright: ignore[reportArgumentType]  # Why: the proxy is the contract under test.
             writer_conn,
             "jobs_archive__hypertable_trash",
             insert_sql,
@@ -2341,13 +2338,13 @@ async def test_absorb_lock_holds_the_drop_window_shut_against_a_live_writer(
             assert not left, f"{orphan} must be gone after the disable"
 
         # Every row accounted, exactly: the seed survived, and the
-        # writer's row is in the live table IFF its INSERT committed
+        # writer's row is in the live table iff its INSERT committed
         # (absorbed by the twin-guard) — never silently destroyed. The
-        # per-table census is DERIVED from the writer's OWN outcome, not
+        # per-table census is derived from the writer's own outcome, not
         # from the bare seed: committed → the row landed in the trash the
-        # absorb's LOCK TABLE window was opening on, so the twin-guard
+        # absorb's lock TABLE window was opening on, so the twin-guard
         # moves it into the swapped-in jobs_archive and the live census
-        # counts seed + 1 (the absorbed outcome is SURVIVAL, not an
+        # counts seed + 1 (the absorbed outcome is survival, not an
         # excess row); relation-gone → the drop committed first, the
         # writer woke to the error that proves it, and the row never
         # landed (seed).
@@ -2479,7 +2476,7 @@ async def test_census_race_window_reenters_the_mid_migrate_data_failure(
         proxy = _CensusRaceWriterConn(conn, writer, schema)
         with pytest.raises(asyncpg.NotNullViolationError, match="finished_at"):
             await enable_hypertables(
-                proxy,  # pyright: ignore[reportArgumentType]  # Why: the proxy IS the contract under test.
+                proxy,  # pyright: ignore[reportArgumentType]  # Why: the proxy is the contract under test.
                 schema=schema,
                 settings=_ts_settings(timescale_dsn, schema),
             )
@@ -2530,9 +2527,9 @@ async def test_converted_partition_columns_are_not_null_and_dml_rejects_null(
     """The already-hypertable skip's premise, probed in the catalogs.
 
     The census counts only while ``jobs_archive`` is still vanilla; on a
-    converted schema it skips. That skip hides a live failure ONLY IF a
+    converted schema it skips. That skip hides a live failure only IF a
     converted schema could carry a NULL partition key. It cannot, twice
-    over: ``create_hypertable`` leaves every partition column ``NOT NULL``
+    over: ``create_hypertable`` leaves every partition column ``not NULL``
     in ``pg_attribute`` (the archive's nullable ``finished_at`` included —
     the conversion itself tightens the column), and DML into the converted
     table rejects a NULL partition key with ``NotNullViolationError``. The
@@ -2561,7 +2558,7 @@ async def test_converted_partition_columns_are_not_null_and_dml_rejects_null(
 
     # The enforcement backstop: the NULL insert vanilla accepts (the
     # archive mirrors jobs, where finished_at is NULL until terminal) is
-    # rejected at DML time on the converted schema.
+    # rejected at dml time on the converted schema.
     with pytest.raises(asyncpg.NotNullViolationError):
         await ts_conn.execute(
             f"""INSERT INTO {ts_schema}.jobs_archive (
@@ -2580,7 +2577,7 @@ async def test_census_absent_table_skip_fails_loudly_downstream(
     silent success.
 
     In the product path the ordering question is settled by the deploy
-    wiring: ``taskq migrate up`` applies pending migrations BEFORE
+    wiring: ``taskq migrate up`` applies pending migrations before
     ``enable_hypertables``, inside the same advisory lock, so the archive
     table always exists when the census runs (the deploy E2E's fresh-schema
     path pins that). The skip only guards a pathological direct caller on
@@ -2614,9 +2611,9 @@ async def test_remediation_arms_survive_hostile_debris_and_the_delete_cascades(
     """Both documented remediations work on the DEBRIS shapes, verified.
 
     * The UPDATE arm's source can never be NULL: ``archived_at`` is
-      ``timestamptz NOT NULL DEFAULT now()`` since the initial migration,
+      ``timestamptz not NULL DEFAULT now()`` since the initial migration,
       so a hand-inserted debris row that omits it defaults it (an explicit
-      NULL is a NOT NULL violation) — there is no archive row on the
+      NULL is a not NULL violation) — there is no archive row on the
       bundled schema whose completion stamps NULL back.
     * The DELETE arm is the vanilla schema's own cascade: at census time
       the attempts FK is still in place, so discarding a debris job takes
@@ -2720,7 +2717,7 @@ async def test_disable_round_trip_after_refusal_path_enable(timescale_dsn: str) 
     conn = await asyncpg.connect(timescale_dsn)
     try:
         await _migrate(conn, schema)
-        # Two debris rows, refused loudly, then the documented cure.
+        # Two debris rows, refused loudly, then the documented fix.
         for _ in range(2):
             await conn.execute(
                 f"""INSERT INTO {schema}.jobs_archive (

@@ -464,7 +464,7 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
             try:
                 cancel_results.append(
                     await pod.backend.cancel_where(
-                        JobFilter(unfinished=True), reason="fleet interruption drill"
+                        JobFilter(unfinished=True), reason="fleet interruption scenario"
                     )
                 )
             except asyncpg.InternalClientError as exc:
@@ -481,7 +481,7 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
             except (asyncpg.PostgresConnectionError, OSError, asyncpg.InterfaceError):
                 # The mid-operation flavour: a typed database error for a
                 # batch whose commit is unknowable from the client. The
-                # drain's own design (EPQ predicates, resumable cursor)
+                # drain's own design (epq predicates, resumable cursor)
                 # makes re-issuing the call the recovery, so the retry
                 # loop re-runs it instead of failing the test on it.
                 return False
@@ -499,7 +499,7 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
         assert cancel_results, "the recovery loop returned without a cancel result"
 
         # The recovery is not merely quiet, it cancelled the work. Read over a
-        # FRESH untagged connection: the fleet harness's own fetch rides the
+        # fresh untagged connection: the fleet harness's own fetch rides the
         # pod's just-killed pool and can hit the very parked window under test
         # (the same discipline the enqueue racing pin uses for its verdict).
         verify = await asyncpg.connect(pg_dsn)
@@ -547,7 +547,7 @@ async def test_enqueue_racing_the_interruption_never_duplicates_committed_work(
     filter below lets it FAIL the test rather than be tolerated), every
     enqueue that returned a row is durable, and nothing lands that no
     enqueue issued. The same-id-twice row assertion is kept as a cheap
-    table invariant but is NOT this pin's duplication coverage: the
+    table invariant but is not this pin's duplication coverage: the
     primary key makes it unfailable from a wrapper regression alone. The
     deterministic refusal coverage lives in the unit pins
     (tests/test_enqueue_coverage.py, tests/test_connections.py). A
@@ -579,14 +579,14 @@ async def test_enqueue_racing_the_interruption_never_duplicates_committed_work(
                     acknowledged.append(job_id)
                 except asyncpg.UniqueViolationError as exc:
                     # The one exception class that a refused-path wrapper
-                    # regression produces on THIS path: the op's own
+                    # regression produces on this path: the op's own
                     # INSERT was acknowledged, then a later statement (or
                     # the release) failed with InternalClientError, and an
                     # unguarded re-run re-issued the same id against the
                     # jobs primary key. Nothing in this harness's per-
                     # enqueue input can otherwise violate a unique
                     # constraint (fresh ids, no keys, no caps), so this
-                    # MUST fail the test rather than be tolerated.
+                    # must fail the test rather than be tolerated.
                     raise AssertionError(
                         f"enqueue of {job_id} raised UniqueViolationError "
                         f"({exc}) across the interruption: the op re-issued "
@@ -618,7 +618,7 @@ async def test_enqueue_racing_the_interruption_never_duplicates_committed_work(
             "pod's connections; no sessions were terminated"
         )
 
-        # Verify over a FRESH untagged connection: the fleet harness's own
+        # Verify over a fresh untagged connection: the fleet harness's own
         # fetch rides the pod's (just-killed) pool and can hit the very
         # parked window under test.
         verify = await asyncpg.connect(pg_dsn)

@@ -54,7 +54,7 @@ _schemas = st.builds(
 )
 
 #: The widest ``str(uuid)`` form (36 chars) and a 40-char schema - well past
-#: the 13-char cliff the per-worker channel used to have.
+#: the 13-char cliff in the per-worker channel's length budget.
 _WIDEST_UUID = UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
 _LONG_SCHEMA = "tq_forty_character_schema_name_xxxxxxxxx"
 assert len(_LONG_SCHEMA) == 40
@@ -152,7 +152,7 @@ async def test_cancel_notify_reaches_the_worker_channel_under_a_long_schema(
     pg_dsn: str,
 ) -> None:
     """A cancel under a 40-char schema lands on the per-worker channel - the
-    fast path that used to error on the channel length and fall back to the
+    fast path must not error on the channel length and fall back to the
     heartbeat poll."""
     from taskq.worker.deps import open_worker_deps
 

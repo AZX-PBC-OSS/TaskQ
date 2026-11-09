@@ -16,13 +16,13 @@ import asyncio
 import sys
 from typing import Any
 
-# THE REGISTRATION IMPORT: the app's definitions + the deps binding
-# (the D1 registry the fleet-claimed execution door resolves bodies from).
+# the app's definitions + the deps binding (the D1 registry the fleet-claimed
+# execution door resolves bodies from).
 import asyncpg
 from pydantic import BaseModel
 
 from examples.ledgerwatch.app import (
-    app,  # noqa: F401  # pyright: ignore[reportUnusedImport]  # Why: the import IS the registration (D1 + the boot projection).
+    app,  # noqa: F401  # pyright: ignore[reportUnusedImport]  # Why: the import is the registration (D1 + the boot projection).
 )
 from examples.ledgerwatch.store import bootstrap_conn
 from taskq import ActorRef, actor

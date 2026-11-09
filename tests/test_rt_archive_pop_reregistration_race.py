@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixture identifier validated by the fixtures; every value is $-bound or a module constant.
-"""RED-TEAM pins: the archive pop's re-registration race (the S3 horizon).
+"""The adversarial-review pins: the archive pop's re-registration race (the S3 horizon).
 
 The archive/prune pops an idempotency identity by DELETEing the live row
 (the composite arbiter index lives on ``jobs`` only, the documented dedup
@@ -129,7 +129,7 @@ async def test_reregistration_wins_when_the_archive_delete_is_in_flight(
     holder_id = await _seed_terminal_holder(clean_pg_conn, schema)
     sql = render(schema)
 
-    # The archive tx: locks the holder, moves, deletes, UNCOMMITTED.
+    # The archive tx: locks the holder, moves, deletes, uncommitted.
     tx = clean_pg_conn.transaction()
     await tx.start()
     await clean_pg_conn.execute(

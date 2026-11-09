@@ -1,15 +1,15 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team attacks on the no-exit cell: ``running`` x ``lock_expires_at IS NULL`` x dead holder.
+"""Adversarial review attacks on the no-exit cell: ``running`` x ``lock_expires_at IS NULL`` x dead holder.
 
 Every maintenance path that can exit a ``running`` row is gated on something
 this cell cannot satisfy:
 
 * Sweep 1 (``_SWEEP_1_SQL``, src/taskq/backend/_sweeps.py:234-237) selects
-  ``status = 'running' AND lock_expires_at < statement_timestamp()`` - a NULL
+  ``status = 'running' and lock_expires_at < statement_timestamp()`` - a NULL
   lock makes the comparison NULL-false at every age, so the reclaim sweep is
   blind to the row forever. The in-memory twin shares the guard
   (src/taskq/testing/_sweeps.py:162-166, ``row.lock_expires_at is not None``).
-* Phase-2 escalation is owner-worker-scoped (``locked_by_worker = $2 AND
+* Phase-2 escalation is owner-worker-scoped (``locked_by_worker = $2 and
   cancel_phase = 1`` - only the live holder can write phase 2; a dead holder
   never does), and ``mark_abandoned`` is phase-2-scoped
   (src/taskq/backend/_sql_templates.py:460), so the cancel protocol can land
@@ -170,7 +170,7 @@ async def test_pg_null_lock_running_row_survives_every_sweep(pg_dsn: str) -> Non
 
         dead_holder = new_uuid()
         past = datetime.now(UTC) - timedelta(hours=1)
-        # Control: same dead holder, expired NON-NULL lock - sweep 1 reclaims it.
+        # Control: same dead holder, expired non-null lock - sweep 1 reclaims it.
         control_id: UUID = await create_running_job(
             conn,
             schema,

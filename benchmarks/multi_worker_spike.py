@@ -359,7 +359,7 @@ def wait_for_workers_idle_then_terminate(
         time.sleep(0.2)
     codes = [p.poll() for p in procs]
     for p, code in zip(procs, codes, strict=False):
-        if code is None:  # still running: graceful TERM, then KILL
+        if code is None:  # still running: graceful term, then kill
             p.send_signal(signal.SIGTERM)
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline and any(p.poll() is None for p in procs):

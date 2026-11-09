@@ -532,7 +532,7 @@ async def test_remaining_time_dispatch_not_blocked_by_start_to_close() -> None:
     start_to_close = 10min. dispatch_batch returns the job - the dispatch
     filter only checks schedule_to_close > now(), not start_to_close.
 
-    asyncio.wait_for uses full start_to_close, NOT clamped to remaining_time."""
+    asyncio.wait_for uses full start_to_close, not clamped to remaining_time."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
@@ -949,7 +949,7 @@ async def _enqueue_and_dispatch_running(
 async def test_pre_actor_denial_infra_failure_is_terminal_write_failure() -> None:
     """An infra failure from the denial's snooze write on the PRE-ACTOR
     path is logged as a terminal-write infra failure and the dispatch
-    reports the snooze-path outcome - the infra error is NOT re-run
+    reports the snooze-path outcome - the infra error is not re-run
     through the retry decision as if it were the actor's failure."""
     clock = FakeClock(start=_START)
     backend = _SnoozeWriteInfraFails(clock=clock)
@@ -1033,7 +1033,7 @@ async def test_pre_actor_denial_publishes_state_change_event() -> None:
 
 
 async def test_noop_terminal_write_publishes_no_state_change_event() -> None:
-    """A noop outcome means NO transition happened (the row moved
+    """A noop outcome means no transition happened (the row moved
     underneath this dispatch) - publishing a scheduled state-change for
     a row that did not move would be a false event.
 

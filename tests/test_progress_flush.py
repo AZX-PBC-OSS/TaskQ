@@ -193,7 +193,7 @@ async def test_progress_too_large_at_exactly_max_plus_one_byte() -> None:
     assert exc_info.value.actual == 16385
 
 
-# ── percent=150.0 is NOT rejected ─────────────────────────────────
+# ── percent=150.0 is not rejected ─────────────────────────────────
 
 
 async def test_ctx_progress_out_of_range_percent_not_rejected() -> None:
@@ -281,7 +281,7 @@ async def test_ctx_progress_unserializable_data_raises_type_error() -> None:
     with pytest.raises(TypeError):
         await ctx.progress(data={"bad": object()})
 
-    # Buffer must NOT have been mutated
+    # Buffer must not have been mutated
     assert buf.pending_seq_delta == 0
     assert buf.dirty is False
 
@@ -490,7 +490,7 @@ async def test_flush_loop_resolves_pool_via_getter_each_tick() -> None:
         await task
 
     assert conn_a.fetch.await_count >= 1
-    assert conn_b.fetch.await_count >= 1  # post-swap flush hit the NEW pool
+    assert conn_b.fetch.await_count >= 1  # post-swap flush hit the new pool
 
 
 async def test_flush_loop_raises_on_invalid_schema() -> None:
@@ -584,7 +584,7 @@ async def test_flush_loop_fenced_out_row_dropped_while_sibling_flushes() -> None
     conn = AsyncMock()
 
     async def _fetch(*args: object) -> list[dict[str, object]]:
-        # Only the live job's row clears the gate and RETURNS.
+        # Only the live job's row clears the gate and returns.
         job_ids = args[1] if len(args) > 1 else None
         if not isinstance(job_ids, list) or live_id not in job_ids:
             return []
@@ -633,7 +633,7 @@ async def test_flush_loop_fenced_out_row_dropped_while_sibling_flushes() -> None
 
 async def test_flush_tick_batches_all_dirty_buffers_into_one_statement() -> None:
     """One flush tick reaches the backend exactly once regardless of dirty
-    count: every dirty buffer's row rides ONE batched multi-row UPDATE -
+    count: every dirty buffer's row rides one batched multi-row UPDATE -
     columnar arrays (unnest-array form) carry both job ids with their
     per-row deltas and attempt epochs. The recorded statement's unnest
     arrays keep the fencing gate per-row over the unnest rows, and both
@@ -971,7 +971,7 @@ async def test_flush_failing_batch_leaves_only_its_own_buffers_dirty() -> None:
 
 async def test_flush_loop_failing_statement_leaves_both_buffers_dirty_and_survives() -> None:
     """The tick's single batched statement is one failure surface: when it
-    fails, BOTH dirty buffers stay dirty with their deltas intact for the
+    fails, both dirty buffers stay dirty with their deltas intact for the
     next tick, and the loop survives to re-issue the batch - which then
     flushes both rows.
     """
@@ -1227,7 +1227,7 @@ async def test_immediate_flush_skips_a_tick_flush_in_flight() -> None:
         "a second statement here applies the tick's unretired delta twice"
     )
     assert conn.fetch.await_count == 1
-    # The skipped flush leaves the buffer's delta intact for the terminal SET.
+    # The skipped flush leaves the buffer's delta intact for the terminal set.
     assert buf.dirty is True
     assert buf.base_seq == 10
     assert buf.pending_seq_delta == 5
@@ -1240,7 +1240,7 @@ async def test_immediate_flush_skips_a_tick_flush_in_flight() -> None:
     assert buf.pending_seq_delta == 0
     assert buf.flush_in_flight is False
 
-    # The terminal write reads base + pending from the buffer, CONSUMES one
+    # The terminal write reads base + pending from the buffer, consumes one
     # past that head (the terminal event's own seq), and SETs the consumed
     # value absolutely; the row's seq must never regress across the
     # interleaving, and the terminal event must strictly follow the last

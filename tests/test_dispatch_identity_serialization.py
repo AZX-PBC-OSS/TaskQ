@@ -4,7 +4,7 @@
 ``identity = lambda p: f"account:{{p.account_id}}"`` - each account
 serialises to at most one running job at a time, in addition to
 TaskQ's own ``max_concurrent`` cap. The dispatch CTE's
-``running_identities`` NOT EXISTS clause is the critical
+``running_identities`` not EXISTS clause is the critical
 constraint: even when ``max_concurrent`` allows more, only one job
 per ``(actor, identity_key)`` pair transitions to ``running``.
 
@@ -16,7 +16,7 @@ client + ``ctx.jobs.enqueue`` inside actor body. The stub
 async methods only) intended to exercise the DI registration and
 call pattern only - it is not a full client interface.
 
-See the dispatch CTE at ``dispatch.py:141-144`` (NOT EXISTS on
+See the dispatch CTE at ``dispatch.py:141-144`` (not EXISTS on
 ``running_identities``).
 """
 
@@ -95,14 +95,14 @@ async def _dispatch_job(
     )
 
 
-# ── Neo4jClientProtocol stub (secondary-datastore DI shape) ────────
+# ── Neo4jClientProtocol stub (secondary-datastore di shape) ────────
 
 
 class Neo4jClientProtocol(Protocol):
     """Stub Protocol for a graph-database client registered via DI.
 
     ``save`` and ``query`` are async methods matching the minimal shape
-    a real client would expose. This does NOT replicate a full
+    a real client would expose. This does not replicate a full
     Neo4j client interface - it exercises the DI registration and call
     pattern only.
     """
@@ -282,13 +282,13 @@ async def test_identity_key_serialization(clean_jobs_app: JobsApp) -> None:
     )
 
 
-# ── sub-enqueue DI shape tests ────────────────────────────────────────
+# ── sub-enqueue di shape tests ────────────────────────────────────────
 
 
 async def test_sub_enqueue_db_write_then_actor_raises(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """DB write succeeded but actor raised after - child NOT in PG, PG writes rolled back."""
+    """DB write succeeded but actor raised after - child not in PG, PG writes rolled back."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name
@@ -367,7 +367,7 @@ async def test_sub_enqueue_db_write_then_actor_raises(
 async def test_sub_enqueue_neo4j_failure(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Neo4j-style failure - child NOT in PG, rollback clean."""
+    """Neo4j-style failure - child not in PG, rollback clean."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name
@@ -446,7 +446,7 @@ async def test_sub_enqueue_neo4j_failure(
 async def test_sub_enqueue_success(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Success - Neo4j stub recorded save AND child row in PG."""
+    """Success - Neo4j stub recorded save and child row in PG."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name

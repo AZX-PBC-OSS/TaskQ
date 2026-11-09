@@ -84,10 +84,10 @@ class _FakeWorkerDeps:
         self.worker_pool: asyncpg.Pool | None = None
         self.slot_pool: asyncpg.Pool | None = None
         # Mirrors WorkerDeps.shutdown_phase's default: the consumer's
-        # cancel handler reads it on EVERY cancellation (the missed-stamp
+        # cancel handler reads it on every cancellation (the missed-stamp
         # guard that completes the orchestration's origin stamp during
         # shutdown), so a worker not shutting down must carry the faithful
-        # ShutdownPhase.NONE, not omit the attribute.
+        # ShutdownPhase.none, not omit the attribute.
         self.shutdown_phase: ShutdownPhase = ShutdownPhase.NONE
         # Mirrors WorkerDeps.slot_pool_connection_init: None = this pool's
         # connections are not known to carry the registration's hook (the
@@ -152,7 +152,7 @@ def _make_actor_ref(
     )
 
 
-# ── Happy path: actor with no DI params ─────────────────────────────
+# ── Happy path: actor with no di params ─────────────────────────────
 
 
 async def test_happy_path_no_di_params() -> None:
@@ -200,7 +200,7 @@ async def test_happy_path_no_di_params() -> None:
         assert len(fake_backend.mark_succeeded_calls) == 1
 
 
-# ── Happy path: actor with one LOOP-scoped DI param ───────────────────
+# ── Happy path: actor with one loop-scoped di param ───────────────────
 
 
 async def test_happy_path_one_loop_scoped_param() -> None:
@@ -250,7 +250,7 @@ async def test_happy_path_one_loop_scoped_param() -> None:
         assert isinstance(observed_dep, _LoopDep)
 
 
-# ── TRANSIENT teardown runs on success ────────────────────────────────
+# ── transient teardown runs on success ────────────────────────────────
 
 
 async def test_transient_teardown_on_success() -> None:
@@ -302,7 +302,7 @@ async def test_transient_teardown_on_success() -> None:
         assert teardown_ran
 
 
-# ── TRANSIENT teardown runs on actor exception ────────────────────────
+# ── transient teardown runs on actor exception ────────────────────────
 
 
 async def test_transient_teardown_on_actor_exception() -> None:
@@ -355,7 +355,7 @@ async def test_transient_teardown_on_actor_exception() -> None:
         assert len(fake_backend.mark_failed_or_retry_calls) == 1
 
 
-# ── TRANSIENT teardown runs on timeout ────────────────────────────────
+# ── transient teardown runs on timeout ────────────────────────────────
 
 
 async def test_transient_teardown_on_timeout() -> None:
@@ -411,7 +411,7 @@ async def test_transient_teardown_on_timeout() -> None:
         assert teardown_ran
 
 
-# ── Two consecutive dispatches: LOOP cache reused, TRANSIENT refreshed ─
+# ── Two consecutive dispatches: loop cache reused, transient refreshed ─
 
 
 async def test_loop_cache_reused_transient_refreshed() -> None:
@@ -491,7 +491,7 @@ async def test_loop_cache_reused_transient_refreshed() -> None:
         assert transient_call_count == 2
 
 
-# ── Payload validation failure raises before TRANSIENT scope opens ─────
+# ── Payload validation failure raises before transient scope opens ─────
 
 
 async def test_payload_validation_failure_before_scope() -> None:
@@ -757,7 +757,7 @@ async def test_interim_ctx_not_actor_ctx() -> None:
             passthrough: dict[str, object] | None = kwargs.get("passthrough_kwargs")
             if passthrough is not None and "ctx" in passthrough:
                 nonlocal interim_ctx_ref
-                interim_ctx_ref = passthrough["ctx"]  # type: ignore[assignment]  # Why: passthrough_kwargs is dict[str, object]; the value IS a JobContext at runtime but pyright cannot narrow from object
+                interim_ctx_ref = passthrough["ctx"]  # type: ignore[assignment]  # Why: passthrough_kwargs is dict[str, object]; the value is a JobContext at runtime but pyright cannot narrow from object
             return _real_build_actor_scope(**kwargs)
 
         with pytest.MonkeyPatch.context() as m:
@@ -784,7 +784,7 @@ async def test_interim_ctx_not_actor_ctx() -> None:
         assert actor_ctx is not None
         assert interim_ctx_ref is not None
         assert actor_ctx is not interim_ctx_ref
-        # The two contexts are one job: the DI factories' ctx and the
+        # The two contexts are one job: the di factories' ctx and the
         # actor's ctx log through the same bound logger, so a job's lines
         # carry one set of fields from one logger, bound once.
         assert actor_ctx.log is interim_ctx_ref.log
@@ -826,6 +826,14 @@ async def test_cancel_event_on_live_ctx_works() -> None:
                 backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
             ),
         )
+
+    # The witness must land: the actor observed ctx.cancellation_requested
+    # True through the live context the dispatch handed it - a wiring that
+    # hands the actor a detached ctx leaves this False and the pin red.
+    assert actor_saw_cancellation is True, (
+        "the actor's live ctx did not report the cancellation the job's "
+        "cancel_event carries - the ctx wiring detached"
+    )
 
 
 # ── Escape paths apply the batch policy hook ──────────────────────────
@@ -954,7 +962,7 @@ async def test_payload_validation_escape_applies_batch_hook() -> None:
         )
 
 
-# ── CONSUMER span and metrics ─────────────────
+# ── consumer span and metrics ─────────────────
 
 
 async def test_dispatch_one_job_creates_consumer_span(
@@ -1330,7 +1338,7 @@ async def test_dispatch_one_job_counts_a_retried_failure(
     """One retryable raise → one taskq.jobs.attempt_failures sample labelled
     by actor, exception class and retryable="true", and the consumed
     outcome is "scheduled" (the retry went back to the queue) - not
-    "abandoned", which is what TaskQAbandonedJobs used to page on."""
+    "abandoned", which is what TaskQAbandonedJobs pages on."""
 
     class _FlakyError(RuntimeError):
         pass
@@ -1385,7 +1393,7 @@ async def test_dispatch_one_job_counts_a_retried_failure(
         assert [dp.attributes.get("outcome") for dp in consumed if dp.attributes] == ["scheduled"]
 
 
-# ── CONSUMER span link integration ────────────────────────────────────
+# ── consumer span link integration ────────────────────────────────────
 
 
 async def test_dispatch_one_job_consumer_span_links_to_producer(
@@ -1646,7 +1654,7 @@ async def test_dispatch_one_job_nth_plus_one_denied_while_cap_slot_held() -> Non
             )
 
         # 1. Job 1 dispatches and blocks inside the actor - it must be
-        #    HOLDING the queue-cap slot through the real acquire path.
+        #    holding the queue-cap slot through the real acquire path.
         task1 = asyncio.create_task(_dispatch(blocking_actor))
         await asyncio.wait_for(job1_started.wait(), timeout=5.0)
         assert cap_res.table.peek_slots(queue_cap_name) == (0, 1)
@@ -1679,7 +1687,7 @@ async def test_dispatch_one_job_nth_plus_one_denied_while_cap_slot_held() -> Non
 async def test_dispatch_one_job_actor_declared_tokenbucket_instance_consumed() -> None:
     """End-to-end: an actor declaring a TokenBucket INSTANCE (the primary
     registration path) dispatches through the DI-provided registry - the
-    actor body runs AND the bucket's token is permanently consumed.
+    actor body runs and the bucket's token is permanently consumed.
 
     The instance is pre-registered on a fresh RateLimitRegistry (exactly
     what the worker bootstrap's collection pass does); dispatch resolves
@@ -1784,7 +1792,7 @@ class _AcquireFailsPool:
     ``error`` is injectable because asyncpg surfaces two distinct
     failure families there - the wait timing out (builtin TimeoutError)
     and a fresh connection being refused server-side (coded
-    PostgresError subclasses like InvalidPasswordError that are NOT
+    PostgresError subclasses like InvalidPasswordError that are not
     PostgresConnectionError children). Both are infrastructure, never a
     job outcome.
     """
@@ -1839,7 +1847,7 @@ async def test_slot_pool_acquire_failure_raises_outside_job_outcome_accounting(
     or a job failure would make a drain step report failures that never
     happened. The counter fires (from the exception branch) and the log
     event carries the per-occurrence cause; the consumed-message record
-    must NOT fire.
+    must not fire.
     """
     import taskq.worker.dispatch as dispatch_mod
 
@@ -2427,7 +2435,7 @@ async def test_slot_connection_carries_registered_connection_setup() -> None:
         fake_backend = FakeBackend()
         fake_deps = _FakeWorkerDeps()
         # Activate the per-slot path, the shape bootstrap opens whenever a
-        # LOOP-scope Connection is registered and max_concurrency > 1.
+        # loop-scope Connection is registered and max_concurrency > 1.
         fake_deps.slot_pool = _BareSetupPool()  # type: ignore[assignment]  # Why: duck-typed pool stand-in, same as the release tests above.
         actor_ref = _make_actor_ref(my_actor)
         job = make_job_row(payload={"value": 42})

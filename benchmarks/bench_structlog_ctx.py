@@ -135,7 +135,7 @@ def main() -> None:
         )
     )
 
-    # Full chain with a valid OTel span active (real SDK provider).
+    # Full chain with a valid otel span active (real SDK provider).
     from opentelemetry import trace
     from opentelemetry.sdk.trace import SpanProcessor as SdkSpanProcessor
     from opentelemetry.sdk.trace import TracerProvider

@@ -2,7 +2,7 @@
 
 Seeds 10k running jobs (the real migrated schema) with real dirty
 ``_ProgressBuffer`` accumulators - the "10k dirty buffers coalescing into
-ONE flush" shape - then runs the production
+one flush" shape - then runs the production
 :func:`taskq.progress._flush.progress_flush_loop` against the real pool
 and measures:
   - the tick's statement bounds (max dirty size per tick vs the caps)
@@ -74,7 +74,7 @@ async def main() -> None:
                 [str(j) for j in job_ids[i : i + 5000]],
             )
 
-    # The buffer dict exactly as dispatch seeds it: one per RUNNING job,
+    # The buffer dict exactly as dispatch seeds it: one per running job,
     # every one of them dirty (the storm's snapshot).
     buffers: dict[_UUID, _ProgressBuffer] = {}
     for jid in job_ids:
@@ -139,7 +139,7 @@ async def main() -> None:
         "max_batches_per_tick": _FLUSH_MAX_BATCHES_PER_TICK,
         "drain_ceiling_rows_per_sec": _FLUSH_BATCH_ROWS * _FLUSH_MAX_BATCHES_PER_TICK / 0.5,
         "max_dirty_set_per_tick": max_dirty_per_tick[0],
-        # Per-TICK retired-row count (the tick is 8 statements of <= 32
+        # Per-tick retired-row count (the tick is 8 statements of <= 32
         # rows each, so this tops out at the tick cap, never the
         # statement bound - the per-statement bound is pinned by
         # tests/test_attack_firehose_pins.py against the statement list).

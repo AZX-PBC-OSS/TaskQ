@@ -9,7 +9,7 @@ never discard it, spend its budget, or choose its outcome.
 The interrupted attempt is RELEASED, not terminalised: the row goes back to
 the fleet (``pending`` when the actor unwound on the cancel, ``scheduled``
 behind the remaining termination budget when it did not), the claim's attempt
-increment is NOT refunded (the attempt started executing, so it is spent
+increment is not refunded (the attempt started executing, so it is spent
 a refund would re-create the epoch the interrupted handler holds and let its
 zombie terminal write land on the re-dispatched attempt; see,
 and the row's ``interrupt_count`` plus one ``job_events`` transition are the
@@ -228,7 +228,7 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
         running when the graces expire. Its row is released ``scheduled`` behind
         the rest of this process's termination budget - the window in which the
         watchdog guarantees the process is gone - so no other pod can claim the
-        row while its first runner might still be alive. The attempt is NOT
+        row while its first runner might still be alive. The attempt is not
         refunded: the attempt started executing, so its increment stands
     .
     """
@@ -277,7 +277,7 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
         assert after.locked_by_worker is None and after.lock_expires_at is None
         assert after.interrupt_count == 1
 
-        # The hold is the remaining termination budget PLUS the watchdog's
+        # The hold is the remaining termination budget plus the watchdog's
         # exit tail: the dump-interval lag before the deadline trip is
         # observed and the bounded flush the trip performs before
         # os._exit, and never exceeds that sum (the remaining share is
@@ -393,7 +393,7 @@ async def test_operator_cancel_in_flight_wins_over_the_deploy(
     attempt_task = _run_attempt(deps, backend, worker_id, row, unresponsive_actor)
     await wait_for(started, timeout=5.0, description="the actor to be running")
 
-    # The operator's cancel lands BEFORE the deploy: the row goes to
+    # The operator's cancel lands before the deploy: the row goes to
     # cancel_phase = 1 while the pod is still serving.
     assert await backend.write_cancel_request(JobId(job_id), "operator stop") is True
 
@@ -566,7 +566,7 @@ async def _claim_as(
 async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """THE sync-actor gate: a thread the cancel cannot reach is never
+    """The sync-actor gate: a thread the cancel cannot reach is never
     concurrently claimable.
 
     A sync actor runs in an executor thread; the deploy's ``task.cancel()``
@@ -574,7 +574,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
     ``mark_interrupted(hold=0)`` the moment the await died, so the row went
     ``pending`` while the body was still mid-execution, and a second
     worker's claim round took it and ran the job a second time, side by
-    side with the dying pod's thread. This is exactly the TAStack shape
+    side with the dying pod's thread. This is exactly the field shape
     (plain ``def`` actors, transactional workers), and the claim below
     runs while the first attempt's thread is PROVABLY still alive.
 
@@ -629,7 +629,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait_for(attempt_task, timeout=30.0)
 
-        # The thread is PROVABLY still alive: the premise of the whole
+        # The thread is provably still alive: the premise of the whole
         # scenario: the dying process might still touch the row.
         assert not body_exited.is_set()
         assert executions, "the body must have started (and been counted) exactly once"
@@ -651,7 +651,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
         # The hold covers the whole exit window: the deadline plus the
         # watchdog's tail past it. The tail is pinned from the settings and
         # the two literals it is built from (the bounded 2s metrics flush
-        # and ~1s of stack-render/log slack): NOT from the shutdown
+        # and ~1s of stack-render/log slack): not from the shutdown
         # module's own helper, so weakening the pad in the source trips
         # this assertion instead of silently moving with it.
         expected_tail = deps.settings.watchdog_dump_interval + 2.0 + 1.0

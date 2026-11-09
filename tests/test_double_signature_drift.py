@@ -13,7 +13,7 @@ anything. Two failure modes, and the quiet one is the dangerous one:
   breaks on the day someone starts, and until then it silently under-models the
   thing it replaces.
 
-The related hazard this file does NOT cover: a hand-rolled double (``FakeConn``,
+The related hazard this file does not cover: a hand-rolled double (``FakeConn``,
 ``StubConnection``) declares no link to the type it imitates, so nothing static
 can resolve it. Those drift by ROW SHAPE and RETURN TYPE rather than by
 signature - a ``fetchval`` answering every statement with one canned value,
@@ -362,7 +362,7 @@ def _narrower(real: _Params, stub: _Params) -> bool:
     if real.positional > stub.positional and not stub.accepts_var_positional:
         return True
     # Keyword-only parameters the stub has no name for and no **kwargs to
-    # swallow. Positional names are compared by COUNT above, not by name, so
+    # swallow. Positional names are compared by count above, not by name, so
     # a rename at equal arity does not land here.
     keyword_only_names = set(real.names[real.positional :])
     return bool(keyword_only_names - set(stub.names)) and not stub.accepts_var_keyword

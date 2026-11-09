@@ -1,15 +1,15 @@
-"""THE WORKFLOWS-SCOPED COVERAGE GATE (the scoped branch floor as a gate leg) —
-RUNS AT THE HEAD.
+"""the WORKFLOWS-SCOPED COVERAGE GATE (the scoped branch floor as a gate leg) —
+RUNS AT the HEAD.
 
-THE LAW (the evidence-integrity cure 1b): a coverage number is evidence
-only OF THE TREE IT WAS MEASURED ON. The 90.03% capture of record
+A coverage number is evidence
+only OF the TREE IT WAS MEASURED ON. The 90.03% capture of record
 predated the final commit (which edited ``definitions.py``); the honest
 re-run on that head read 89.84% — RED twice — while the stale artifact
 stayed green. The gate therefore:
 
-1. **RECORDS THE HEAD** — every artifact carries ``head_sha`` (git
+1. **RECORDS the HEAD** — every artifact carries ``head_sha`` (git
    rev-parse HEAD) + ``tree_dirty`` (the porcelain count). The artifact
-   IS the receipt (the head-stamp law, ``scripts/verify_evidence_heads``).
+   IS the record (the head-stamp law, ``scripts/verify_evidence_heads``).
 2. **REFUSES A STALE TREE** — the coverage data file's mtime PREDATING
    the HEAD commit's time means the number was measured on an ANCESTOR:
    the gate exits 2 and reports the mismatch, it never reports the
@@ -60,13 +60,13 @@ def _git(*args: str) -> str:
 
 
 def _head() -> tuple[str, bool]:
-    """(head sha, tree_dirty) — the artifact's provenance pair. THE DIRTY
-    RULE: the evidence estate's OWN writes are not dirt — the battery
+    """(head sha, tree_dirty) — the artifact's provenance pair. the DIRTY
+    RULE: the evidence estate's own writes are not dirt — the battery
     writes the sinks and the run-scoped captures (tracked or not) as it
     runs, under ``.measurements/``. Dirt is the SOURCE tree (everything
     else) changing under the measurement."""
     sha = _git("rev-parse", "HEAD")
-    # The paths, unambiguous (porcelain's XY spacing varies with the
+    # The paths, unambiguous (porcelain's xy spacing varies with the
     # staging state): the tracked changes + the untracked files.
     changed = (
         _git("diff", "--name-only", "HEAD")
@@ -130,7 +130,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # ── THE STALENESS REFUSALS (the gate never reports from a stale tree) ──
+    # ── the staleness refusals (the gate never reports from a stale tree) ──
     head_sha, dirty = _head()
     if dirty and not args.allow_dirty:
         print(
@@ -171,9 +171,8 @@ def main() -> int:
     runs.mkdir(parents=True, exist_ok=True)
     out = runs / f"wf-scoped-coverage-{time.strftime('%Y%m%dT%H%M%S')}.json"
     out.write_text(json.dumps(record, indent=2))
-    # THE CLAIMS REGISTRY (the de-slop round's cure 3): the manifest is
-    # the estate's ONE index — the verifier reads CLAIMS.json, never the
-    # filename's run-scoped tail. The writer appends the claim at the
+    # the manifest is the estate's one index — the verifier reads claims.json,
+    # never the filename's run-scoped tail. The writer appends the claim at the
     # write (atomic under the registry lock).
     record_claim(
         stem="wf-scoped-coverage",

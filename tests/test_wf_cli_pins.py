@@ -1,7 +1,7 @@
-"""T12 — THE CLI PINS: ``taskq flows`` — one question, one surface.
+"""The CLI pins: ``taskq flows`` — one question, one surface.
 
-The red-first evidence: the three pins (taxonomy-drift, empty-snapshot,
-read-only) are collected with their CONVICTED VARIANTS — each drills the
+The evidence: the three pins (taxonomy-drift, empty-snapshot,
+read-only) are collected with their REJECTED VARIANTS — each scenarios the
 mutated shape and captures the observed red to
 ``.measurements/t12-pin-reds.json``. The surface-walk + output-contract
 pins ride the REAL engine (a live run on the migrated schema): every
@@ -91,8 +91,8 @@ async def _wait(ctx: Any, params: Ingest) -> str:
 
 
 async def _explode_once(ctx: Any, params: Ingest) -> str:
-    # THE OPERATOR-FIXED FAILURE: the first attempt fails, the retry (the
-    # manual resume) succeeds — the world changed between them.
+    # the first attempt fails, the retry (the manual resume) succeeds — the
+    # world changed between them.
     if ctx.attempt < 2:
         raise RuntimeError("the enricher is down")
     return "ok"
@@ -124,7 +124,16 @@ def test_surface_walk_one_question_one_command() -> None:
     from taskq.cli import flows_app
 
     verbs = {cmd.name for cmd in flows_app.registered_commands}
-    assert verbs == {"list", "status", "holds", "signal", "resolve", "cancel", "retry"}, verbs
+    assert verbs == {
+        "list",
+        "status",
+        "holds",
+        "signal",
+        "resolve",
+        "abandon",
+        "cancel",
+        "retry",
+    }, verbs
 
 
 async def test_status_of_an_unknown_run_is_the_honest_error(cli_settings: Any) -> None:
@@ -139,6 +148,22 @@ async def test_status_of_an_unknown_run_is_the_honest_error(cli_settings: Any) -
     assert "taskq flows list" in out
 
 
+async def test_list_renders_with_a_vanilla_root_row_in_the_listing(
+    cli_settings: Any, wf_schema: str, wf_conn: Any
+) -> None:
+    """A vanilla root row (a job whose step_key is the flow root key and
+    whose metadata carries no workflow stamp) renders like any other
+    run: the listing names it by its actor instead of crashing."""
+    await wf_conn.execute(
+        f"""INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, status, step_key, max_attempts, attempt, retry_kind)
+        VALUES (gen_random_uuid(), 'plain_actor', 'default', '{{}}'::jsonb, 'pending', '__flow__', 1, 0, 'transient')"""
+    )
+    result = await to_thread(runner.invoke, app, ["flows", "list"])
+    assert result.exit_code == 0, result.output
+    out = plain_cli_output(result.output)
+    assert "plain_actor" in out
+
+
 async def test_list_on_an_empty_schema_is_the_honest_zero(cli_settings: Any) -> None:
     result = await to_thread(runner.invoke, app, ["flows", "list"])
     assert result.exit_code == 0
@@ -150,7 +175,7 @@ async def test_list_on_an_empty_schema_is_the_honest_zero(cli_settings: Any) -> 
 async def test_holds_on_a_terminal_run_is_the_healthy_zero(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
-    """THE EMPTY-SNAPSHOT PIN: a run with NO pending holds renders the
+    """The empty-snapshot pin: a run with no pending holds renders the
     defined healthy-zero state — the line SAYS the zero is state (a blank
     section that reads as zero-holds reds)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
@@ -178,7 +203,7 @@ async def test_status_reports_the_blocked_run_and_the_remedy(
     assert "HELD" in out
     assert "signal 'Approval'" in out
     assert "remedy: taskq flows resolve" in out
-    # THE EVIDENCE-SOURCE RULE: every number names its source.
+    # every number names its source.
     assert "(source:" in out
 
 
@@ -205,7 +230,7 @@ async def test_resolve_replies_by_id_and_the_flow_completes(
     assert result.exit_code == 0, result.output
     assert "delivered" in result.output
 
-    # THE AUDIT (G4): "who approved this" is a ROW — principal + reason.
+    # "who approved this" is a row — principal + reason.
     audit = await wf_conn.fetchrow(
         f'SELECT principal_subject, action, reason FROM "{wf_schema}".admin_audit '
         "WHERE action = 'hitl.resolve'",
@@ -224,7 +249,7 @@ async def test_resolve_replies_by_id_and_the_flow_completes(
 async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
-    """THE TYPED DOOR: a wrong payload answers the named pydantic error,
+    """The typed door: a wrong payload answers the named pydantic error,
     exit 1, and the hold SURVIVES (nothing delivered)."""
     run_id = await _held_run(wf_pool, wf_schema)
     holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
@@ -236,15 +261,62 @@ async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
     )
     assert result.exit_code == 1
     assert "pydantic refused the payload" in plain_cli_output(result.output)
-    # THE HOLD SURVIVES: the refused delivery moved nothing.
+    # the refused delivery moved nothing.
     after = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
     assert "holds: 1 pending" in plain_cli_output(after.output)
+
+
+async def test_abandon_the_operator_door_exit_codes_and_rendering(
+    cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+) -> None:
+    """The abandon verb's contract (the operator door's shell face): a
+    held hold's abandon → exit 0 with the fail-close rendering; the
+    second abandon → exit 0 no-op; a DELIVERED hold's abandon → exit 1
+    refused. The delivered abandon is audited (the same row the resolve
+    verb writes — action ``hitl.abandon``)."""
+    run_id = await _held_run(wf_pool, wf_schema)
+    holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
+    hold_id = _hold_id_of(holds.output)
+    first = await to_thread(
+        runner.invoke,
+        app,
+        ["flows", "abandon", hold_id, "--reason", "the operator's stop"],
+    )
+    assert first.exit_code == 0, first.output
+    assert f"abandoned: hold {hold_id}" in plain_cli_output(first.output), first.output
+    assert "the wait fails closed on its next drive" in plain_cli_output(first.output)
+    assert "the body sees Expired" in plain_cli_output(first.output)
+    # the audit row (the CLI's own principal — the same-tx row).
+    audit = await wf_conn.fetchrow(
+        f'SELECT principal_subject, action, reason FROM "{wf_schema}".admin_audit '
+        "WHERE action = 'hitl.abandon'",
+    )
+    assert audit is not None, "an abandon without an audit row reds"
+    assert audit["principal_subject"].startswith("cli:")
+    assert audit["reason"] == "the operator's stop"
+    # the second abandon: the DEFINED no-op (exit 0).
+    second = await to_thread(runner.invoke, app, ["flows", "abandon", hold_id])
+    assert second.exit_code == 0, second.output
+    assert "no-op" in plain_cli_output(second.output), second.output
+    # a DELIVERED hold refuses the abandon (exit 1, the typed reason).
+    run2 = await _held_run(wf_pool, wf_schema)
+    holds2 = await to_thread(runner.invoke, app, ["flows", "holds", run2])
+    hold2 = _hold_id_of(holds2.output)
+    resolved = await to_thread(
+        runner.invoke,
+        app,
+        ["flows", "resolve", hold2, '{"verdict":"approve"}', "--app", f"{MODULE_NAME}:app"],
+    )
+    assert resolved.exit_code == 0, resolved.output
+    refused = await to_thread(runner.invoke, app, ["flows", "abandon", hold2])
+    assert refused.exit_code == 1, refused.output
+    assert "refused" in plain_cli_output(refused.output), refused.output
 
 
 async def test_retry_reopens_the_failed_closure_and_the_run_completes(
     cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
 ) -> None:
-    """THE MANUAL RESUME: the ladder-exhausted node re-pends, the run
+    """The manual resume: the ladder-exhausted node re-pends, the run
     completes after the operator's retry (§22.6's manual leg)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
@@ -263,7 +335,7 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
     assert retried.exit_code == 0, retried.output
     assert "re-opened" in retried.output
 
-    # THE AUDIT (G4): the manual resume is a row.
+    # the manual resume is a row.
     audit = await wf_conn.fetchrow(
         f'SELECT principal_subject, action, reason FROM "{wf_schema}".admin_audit '
         "WHERE action = 'workflow.retry_node'",
@@ -271,9 +343,53 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
     assert audit is not None
     assert audit["principal_subject"].startswith("cli:")
 
-    # The run RESUMES: the drive reaches terminal (the second attempt passes).
+    # The run resumes: the drive reaches terminal (the second attempt passes).
     outcome = await flow_runner.drive(flow_id)
     assert outcome == "terminal"
+
+
+async def test_retry_not_applied_copy_drops_the_impossible_cause_and_names_the_root_law(
+    cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+) -> None:
+    """H-C9's copy honesty, the CLI's face: the not-applied remedy names
+    only causes the CAS can actually hit — the attempt ceiling is not
+    one (the ordinal continues; no ceiling is consulted) — and the
+    ROOT-KEY law is on the record (the run's root is not a node; H-C1's
+    verb-level guard)."""
+    compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
+    flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
+    flow_id = (await flow_runner.create_flow()).flow_id
+    await flow_runner.drive(flow_id)  # the run is terminal-failed at 'doomed'
+
+    # An unknown node key: the CAS matches nothing → the not-applied arm.
+    unknown = await to_thread(runner.invoke, app, ["flows", "retry", str(flow_id), "no-such-node"])
+    assert unknown.exit_code == 1, unknown.output
+    copy = plain_cli_output(unknown.output)
+    assert "nothing re-opened" in copy
+    assert "attempt ceiling" not in copy, (
+        f"CONTRACT: the impossible cause is off the record, got: {copy}"
+    )
+    assert "live" in copy and "unknown" in copy, copy
+
+    # The run's own root key: refused by the verb-level guard's CAS leg —
+    # the copy names the root-key law and the fix.
+    root = await to_thread(runner.invoke, app, ["flows", "retry", str(flow_id), "__flow__"])
+    assert root.exit_code == 1, root.output
+    root_copy = plain_cli_output(root.output)
+    assert "root" in root_copy and "'__flow__'" in root_copy, root_copy
+    assert "attempt ceiling" not in root_copy
+
+    # Nothing moved: the failed node is still failed, no audit row.
+    node_row = await wf_conn.fetchrow(
+        f'SELECT status FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'doomed'",
+        flow_id,
+    )
+    assert node_row is not None and node_row["status"] == "failed"
+    audit = await wf_conn.fetchval(
+        f"SELECT count(*) FROM \"{wf_schema}\".admin_audit WHERE action = 'workflow.retry_node'",
+    )
+    assert audit == 0
 
 
 # ── the analysis unit tier (the pure module, no DB) ─────────────────────
@@ -325,12 +441,12 @@ def test_stuck_lines_name_the_remedy_and_the_source() -> None:
     )
     assert any("failed_parent" in line for line in blocked)
 
-    # A LIVE row is not a finding.
+    # A live row is not a finding.
     assert stuck_lines(FlowNodeRow(step_key="ok", status="running"), "r-1") == []
 
 
 def test_stuck_lines_name_the_undeadlined_hold() -> None:
-    """The W1 subject: a hold with NO deadline says so (a workflow that
+    """The W1 subject: a hold with no deadline says so (a workflow that
     waits forever on a human is a support ticket — the operator SEES it)."""
     row = FlowNodeRow(
         step_key="review",
@@ -384,11 +500,11 @@ def test_derive_flow_status_is_the_shared_derivation() -> None:
     assert derive_flow_status([FlowNodeRow(step_key="a", status="failed")]) == "failed"
 
 
-# ── the taxonomy pin (red-first 1) ───────────────────────────────────────
+# ── the taxonomy pin (1) ───────────────────────────────────────
 
 
 def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
-    """The CLI's reported vocabulary is THE derivation's — adding a
+    """The CLI's reported vocabulary is the derivation's — adding a
     status in the derivation without the G7 root mapping (or the
     statemachine's vocabulary drifting from the node statuses the CLI
     counts) reds: the pin enumerates the sets against each other."""
@@ -399,9 +515,8 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
     from tests._wf_fixtures import G7_DERIVED_TO_ROOT
 
     derived = set(typing.get_args(WorkflowStatus))
-    # THE DERIVED SET IS EXACTLY THE G7 MAPPING'S KEYS (a new derived
-    # status without a root-row mapping row = the drift). The convicted
-    # variant: drop one mapping row → this assert reds.
+    # a new derived status without a root-row mapping row = the drift. . The
+    # rejected variant: drop one mapping row → this assert reds.
     if derived != set(G7_DERIVED_TO_ROOT):
         engine_redlog.red(
             "taxonomy-drift",
@@ -410,7 +525,7 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
         )
         engine_redlog.flush()
         pytest.fail(f"taxonomy drift: {sorted(derived ^ set(G7_DERIVED_TO_ROOT))}")
-    # The NODE statuses the CLI counts are the statemachine's own
+    # The node statuses the CLI counts are the statemachine's own
     # vocabulary (the CLI never invents a status name; 'skipped' is the
     # workflow-side representation the derivation reads).
     node_vocab = {
@@ -431,11 +546,11 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
     engine_redlog.flush()
 
 
-# ── the read-only pin (red-first 3) ─────────────────────────────────────
+# ── the read-only pin (3) ─────────────────────────────────────
 
 
 def test_read_only_pin_the_read_verbs_have_no_write_path() -> None:
-    """`status`/`list`/`holds` must have NO write statement in their
+    """`status`/`list`/`holds` must have no write statement in their
     surface: the pin walks the read fetchers' source and reds on any
     mutation keyword (the doctor's read-side-only contract)."""
     import inspect
@@ -451,7 +566,7 @@ def test_read_only_pin_the_read_verbs_have_no_write_path() -> None:
 
 
 def test_the_public_reexport_hitlclient() -> None:
-    """THE PUBLIC RE-EXPORT PIN (the stranger's finding): the guide's
+    """The public re-export pin (the stranger's finding): the guide's
     HITL surface is reachable from the PUBLIC namespace — the
     `from taskq.workflows import HitlClient` door + the __all__
     membership (a private-module import in the docs' own lines reds
@@ -461,8 +576,8 @@ def test_the_public_reexport_hitlclient() -> None:
     assert wf_public.HitlClient is not None
     assert "HitlClient" in wf_public.__all__
     assert "DeliveryResult" in wf_public.__all__
-    # THE DOCS' IMPORT SWEEP: the shipped docs never teach the private
-    # module path (the re-export's own point).
+    # the shipped docs never teach the private module path (the re-export's own
+    # point).
     import subprocess
     from pathlib import Path
 
@@ -481,7 +596,7 @@ def test_the_public_reexport_hitlclient() -> None:
 
 
 def test_the_docs_anchor_link_check() -> None:
-    """THE GUIDES' ANCHOR SWEEP (the §-renumbering's pin): EVERY
+    """The guides' anchor sweep (the §-renumbering's pin): every
     cross-linked `.md#fragment` anchor in docs/ resolves against the
     target file's mkdocs-slugified headings — a renumbered section
     without its link reds this sweep."""

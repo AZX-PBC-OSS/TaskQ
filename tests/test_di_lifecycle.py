@@ -113,7 +113,7 @@ def test_sync_closeable_detection() -> None:
     assert detect_lifecycle(_SyncCloseableClass) == ProviderLifecycle.SyncCloseable
 
 
-# ── Priority - ACM beats AsyncCloseable ──────────────────────────────
+# ── Priority - acm beats AsyncCloseable ──────────────────────────────
 
 
 def test_acm_beats_async_closeable() -> None:
@@ -129,7 +129,7 @@ def test_async_closeable_beats_sync_closeable() -> None:
     assert detect_lifecycle(_BothCloseClass) == ProviderLifecycle.AsyncCloseable
 
 
-# ── Sync ACM returns Plain, no warning, no log ──────────────
+# ── Sync acm returns Plain, no warning, no log ──────────────
 
 
 def test_sync_acm_returns_plain_no_emission() -> None:

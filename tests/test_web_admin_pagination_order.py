@@ -82,7 +82,7 @@ def _cursor_at(value: datetime | None) -> str:
     """The query-string form of a sort value.
 
     A NULL sort value is an EMPTY parameter, never ``str(None)``: under
-    NULLS LAST the unfinished rows are a real range that has to be paged
+    NULLS last the unfinished rows are a real range that has to be paged
     through, and its seams carry no value - only the id.
     """
     return "" if value is None else value.isoformat()
@@ -128,7 +128,7 @@ async def _page(
 async def test_next_page_ascending_advances_forward(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
 ) -> None:
-    """order=asc + Next must return rows AFTER the cursor, not before it."""
+    """order=asc + Next must return rows after the cursor, not before it."""
     deps, backend = clean_jobs_app
     seeded = await _seed(deps, backend)
 
@@ -147,7 +147,7 @@ async def test_next_page_ascending_advances_forward(
 async def test_prev_page_ascending_walks_back(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
 ) -> None:
-    """order=asc + Prev must return rows BEFORE the cursor, still in asc order."""
+    """order=asc + Prev must return rows before the cursor, still in asc order."""
     deps, backend = clean_jobs_app
     seeded = await _seed(deps, backend)
 
@@ -245,13 +245,13 @@ async def test_unparseable_cursor_falls_back_to_the_first_page(
     assert rows == seeded
 
 
-# ── nullable sort columns: the NULLS LAST range ─────────────────────────
+# ── nullable sort columns: the nulls last range ─────────────────────────
 
 
 async def _seed_finished(deps: WorkerDeps, backend: PostgresBackend) -> list[UUID]:
     """Seed jobs with finished timestamps, a tie, and unfinished rows.
 
-    Returns the ids in ``finished_at DESC NULLS LAST, id DESC`` order --
+    Returns the ids in ``finished_at DESC NULLS last, id DESC`` order --
     the order the first page must produce.  Two rows share one
     ``finished_at`` so the id tiebreaker alone decides them, and the
     majority are ``finished_at IS NULL``: that range is where a tuple
@@ -301,7 +301,7 @@ async def _finished_page(
 async def test_every_seam_on_a_nullable_sort_column_pages_correctly(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
 ) -> None:
-    """From EVERY row, Next must return exactly the rows after it.
+    """From every row, Next must return exactly the rows after it.
 
     Asserting one seam proves one seam; walking all of them is what
     catches a predicate that works for the valued range and drops (or

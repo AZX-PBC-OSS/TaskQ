@@ -77,11 +77,11 @@ The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader o
     (default 100 rows) in its own committed transaction, with a server-side
     `statement_timeout` (default 1750 ms) as the enforcement: a batch that
     cannot finish is aborted by the server and retried on the next tick, and a
-    larger backlog drains across ticks. The unbounded-livelock failure this
-    section used to document: one transaction doing one `job_events` round
-    trip per promoted row, rolling back entirely past
-    `dispatcher_command_timeout` and retrying forever while the backlog grew,
-    is gone; see [maintenance-sweeps.md](maintenance-sweeps.md) for the design.
+    larger backlog drains across ticks. The batch shape avoids the
+    unbounded-livelock trap — one transaction doing one `job_events` round
+    trip per promoted row would roll back entirely past
+    `dispatcher_command_timeout` and retry forever while the backlog grew;
+    see [maintenance-sweeps.md](maintenance-sweeps.md) for the design.
 
     What can still stall promotion, in order of likelihood:
 

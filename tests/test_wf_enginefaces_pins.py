@@ -1,10 +1,10 @@
-"""THE ENGINE-FACES PINS — the observability front's reported ENGINE
-findings, fenced red-first (the engine lane's evidence).
+"""The engine-faces pins — the recorded reported ENGINE
+findings, fenced (the engine lane's evidence).
 
 The 3am pins (``tests/test_wf_3am_pins.py``) fenced the CLI/explorer
 faces; the ENGINE findings behind them ride here:
 
-1. THE RECLAIM-REQUIRES-A-LEADER SILENCE — a lapsed lease with a DEAD
+1. the RECLAIM-REQUIRES-A-LEADER SILENCE — a lapsed lease with a DEAD
    fleet waits forever, silently: the rows say "running" to the end of
    time (the reclaim sweep runs only under a leader — with the fleet
    down nothing will ever stamp the row, so a SWEEP-STAMP face is the
@@ -16,8 +16,8 @@ faces; the ENGINE findings behind them ride here:
 2. WORKFLOW_NODES_SQL'S MISSING COLUMNS — the rollup didn't select
    ``started_at`` / ``failed_parent``, so the CLI bought them with a
    SECOND read (the supplement read: two reads where one suffices). The
-   columns are selected AT THE SOURCE; the CLI's workaround is retired —
-   ONE read, and the supplement's faces keep working through the engine
+   columns are selected AT the SOURCE; the CLI's workaround is retired —
+   one read, and the supplement's faces keep working through the engine
    query.
 """
 
@@ -64,7 +64,7 @@ def test_lapsed_lease_running_row_names_reclaimable_awaiting_a_leader() -> None:
     dead, no sweep will EVER touch it — must surface 'reclaimable,
     awaiting a leader' on the status face: the 3am question ('is this
     work slow or is everyone dead') is answerable from the surface
-    alone. The convicted variant: the row read as the ordinary RUNNING
+    alone. The rejected variant: the row read as the ordinary RUNNING
     face (or a bare '1 running' count) — the lease's lapse, the one fact
     that names the fleet's death, was invisible on every surface."""
     lines = format_flow_status(
@@ -78,7 +78,7 @@ def test_lapsed_lease_running_row_names_reclaimable_awaiting_a_leader() -> None:
     assert "RECLAIMABLE" in joined
     assert "awaiting a leader" in joined
     assert _JOB_ID in joined
-    # The marker must NOT read as the ordinary running face: the lapsed
+    # The marker must not read as the ordinary running face: the lapsed
     # row's verdict is the fleet's death, not the work's age.
     assert "RUNNING for" not in joined
 
@@ -163,7 +163,7 @@ def test_running_row_with_a_live_lease_and_no_start_is_silent() -> None:
     assert not any("RECLAIMABLE" in line for line in lines)
 
 
-# ── 2. the columns at the source: ONE read, no supplement ──────────────
+# ── 2. the columns at the source: one read, no supplement ──────────────
 
 
 class _CountingConn:
@@ -178,7 +178,7 @@ class _CountingConn:
     async def fetchrow(self, sql: str, *args: object) -> Any:
         return {
             "status": "running",
-            "actor": "wf-drill",
+            "actor": "wf-scenario",
             "workflow": "drill_hang",
             "cancel_requested_at": None,
         }
@@ -196,7 +196,7 @@ class _CountingConn:
 def _node_row(**overrides: Any) -> dict[str, Any]:
     # The CLI's `flows status` derives `now` from the real clock (no
     # `now=` injection through the typer seam) — the fixture's instants
-    # ride the REAL now so the lease is live and the age exact.
+    # ride the real now so the lease is live and the age exact.
     real_now = datetime.now(UTC)
     started = real_now - timedelta(minutes=5, seconds=31)
     row: dict[str, Any] = {
@@ -217,9 +217,8 @@ def _node_row(**overrides: Any) -> dict[str, Any]:
         "failed_parent": None,
         "lock_expires_at": real_now + timedelta(minutes=5),
         "last_heartbeat_at": started,
-        # THE §22.1 STAMP (rv5-t5's cure — the drift face's data): the
-        # node row's code_version rides the row; the stamps' read names
-        # a run whose rows straddle a redeploy.
+        # the node row's code_version rides the row; the stamps' read names a
+        # run whose rows straddle a redeploy.
         "code_version": None,
     }
     row.update(overrides)
@@ -244,10 +243,10 @@ def _run_flows_status(
 def test_the_node_face_rides_one_read_through_the_engine_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE ONE-READ LAW: the CLI's status face is fed by the ENGINE's
+    """The one-read law: the CLI's status face is fed by the ENGINE's
     WORKFLOW_NODES_SQL — the query selects the 3am columns (started_at,
     failed_parent, the lease face's lock_expires_at) at the SOURCE, and
-    the CLI issues ONE jobs fetch for the node rows. The convicted
+    the CLI issues one jobs fetch for the node rows. The rejected
     variant: the engine query lacked the columns and the CLI bought them
     with its own supplement read — two reads where one suffices, the
     workaround the engine query's shape forced."""
@@ -256,7 +255,7 @@ def test_the_node_face_rides_one_read_through_the_engine_query(
     assert conn.jobs_fetches == 1, (
         f"the node face must ride ONE jobs read, got {conn.jobs_fetches}: {conn.jobs_fetch_sqls}"
     )
-    # The supplement's faces keep working THROUGH the engine query: the
+    # The supplement's faces keep working through the engine query: the
     # running age (started_at) and the row's id render from the one read.
     assert "RUNNING for 00:05:31" in out
     assert _JOB_ID in out
@@ -265,9 +264,9 @@ def test_the_node_face_rides_one_read_through_the_engine_query(
 def test_failed_parent_rides_the_engine_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The failed_parent stamp (the T06 cascade's write — the dead
+    """The failed_parent stamp (the failed-parent propagation cascade's write — the dead
     parent's id, NAMED on the record) rides the engine query too: the
-    why-stuck line prints it from the ONE read."""
+    why-stuck line prints it from the one read."""
     parent_id = "01a130ef-813b-7f50-86b2-14d8c01a61e5"
     conn = _CountingConn(
         [
@@ -288,11 +287,11 @@ def test_failed_parent_rides_the_engine_query(
 
 
 def test_the_engine_query_names_the_3am_columns() -> None:
-    """THE SOURCE LAW: WORKFLOW_NODES_SQL — the node rollup every status
+    """The source law: WORKFLOW_NODES_SQL — the node rollup every status
     surface reads — selects the columns the faces need (started_at, the
     failed_parent stamp, the lease face's lock_expires_at). The CLI's
     supplement read existed BECAUSE the engine query didn't; the columns
-    at the source are the cure's substance (the string law pins the
+    at the source are the fix's substance (the string law pins the
     query, the one-read pins above pin the wiring)."""
     sql = WorkflowSql.build("taskq").workflow_nodes
     assert "j.started_at" in sql

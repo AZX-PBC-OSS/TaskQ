@@ -4,7 +4,7 @@ Spawned as ``sys.executable -m tests.system_e2e._worker_entry`` with the
 worker's ``TASKQ_*`` environment set by the spawning test. Loads
 ``WorkerSettings`` from that environment exactly the way the production
 entry points do and runs the production ``_main`` bootstrap against
-the shared actor registry. Pure glue: deliberately NO logging setup
+the shared actor registry. Pure glue: deliberately no logging setup
 (the harness pipes stdout/stderr and reads them only at exit - a
 configured, chatty worker would fill the 64K pipe buffer and block
 mid-write, the not-settled-at-load shape), no business logic, no
@@ -27,7 +27,7 @@ from tests.system_e2e._kill_actors import ACTORS as KILL9_ACTORS
 from tests.system_e2e.actors import ACTORS
 
 #: The full worker-side registry: the graceful scenarios' actors plus the
-#: kill9 campaign's (the kill SEAMS live in ``_kill_entry``, not here -
+#: kill9 campaign's (the kill seams live in ``_kill_entry``, not here -
 #: this entry is always seam-free).
 REGISTRY: dict[str, object] = {**ACTORS, **KILL9_ACTORS}
 

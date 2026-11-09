@@ -21,7 +21,7 @@ _FIFO_ACTORS = ("aaa", "zzz", "test_actor")
 async def _fifo_priority_order(side: DiffSide) -> None:
     # Full-batch RETURNING order is plan-dependent on PG (UPDATE..FROM), so
     # priority selection is pinned through LIMIT-starved rounds: which jobs
-    # the round SELECTS is the contract, and the sets must agree.
+    # the round selects is the contract, and the sets must agree.
     await side.enqueue("p0", scheduled_in=-5.0, priority=0)
     await side.enqueue("p10", scheduled_in=-4.0, priority=10)
     await side.enqueue("p5", scheduled_in=-3.0, priority=5)
@@ -50,9 +50,9 @@ async def test_diff_dispatch_fifo_priority_order(pg_dsn: str) -> None:
 
 
 async def _scheduled_ties_same_timestamp(side: DiffSide) -> None:
-    # Identical priority AND identical scheduled_at: the only legal selector
+    # Identical priority and identical scheduled_at: the only legal selector
     # is id, and each side's ids differ - so the observable is each side's
-    # dispatch expressed as ranks in its OWN id order.
+    # dispatch expressed as ranks in its own id order.
     await side.enqueue("t1", scheduled_in=-1.0)
     await side.enqueue("t2", scheduled_in=-1.0)
     await side.enqueue("t3", scheduled_in=-1.0)
@@ -82,8 +82,8 @@ async def test_diff_dispatch_scheduled_at_ties(pg_dsn: str) -> None:
 
 async def _cross_actor_priority_interleave(side: DiffSide) -> None:
     # One job per actor at rank 1, limit 1: PG's eligible ORDER BY settles
-    # the cross-actor tie on priority DESC; the mirror's interleave settles
-    # it on the actor NAME alphabetically.
+    # the cross-actor tie on priority desc; the mirror's interleave settles
+    # it on the actor name alphabetically.
     await side.enqueue("low", actor="aaa", scheduled_in=-1.0, priority=0)
     await side.enqueue("high", actor="zzz", scheduled_in=-1.0, priority=10)
     dispatched = await side.dispatch("w1", ["default"], limit=1)
@@ -91,7 +91,7 @@ async def _cross_actor_priority_interleave(side: DiffSide) -> None:
 
 
 async def test_diff_dispatch_cross_actor_priority_tie(pg_dsn: str) -> None:
-    """At a shared rank with limit 1, the higher-priority job must win on BOTH
+    """At a shared rank with limit 1, the higher-priority job must win on both
     backends - the mirror may not substitute alphabetical actor order."""
     mem, pg = await run_differential(
         _cross_actor_priority_interleave,
@@ -132,7 +132,7 @@ async def test_diff_dispatch_empty_queues_list_matches_nothing(pg_dsn: str) -> N
 
 
 async def _round_robin_null_fairness(side: DiffSide) -> None:
-    # KNOWN-FIXED divergence, verified green: every unkeyed job shares ONE
+    # known-fixed divergence, verified green: every unkeyed job shares one
     # "__null__" fairness partition (ranks 1..N), so a bounded round must
     # interleave unkeyed and keyed cohorts instead of starving the keyed one.
     await side.set_round_robin("default")
@@ -144,7 +144,7 @@ async def _round_robin_null_fairness(side: DiffSide) -> None:
     await side.enqueue("k2", scheduled_in=-1.0, fairness_key="fk2")
     dispatched = await side.dispatch("w1", ["default"], limit=4)
     # UPDATE..FROM RETURNING order is plan-dependent on PG, so the contract
-    # is the SELECTED set: both unkeyed ranks 1-2 AND both keyed cohorts.
+    # is the selected set: both unkeyed ranks 1-2 and both keyed cohorts.
     side.record("dispatched_set", sorted(dispatched))
     side.record("dispatched_count", len(dispatched))
 
@@ -217,13 +217,13 @@ async def test_diff_dispatch_identity_dedup_best_candidate(pg_dsn: str) -> None:
 
 
 async def _oversample_window_blocked_by_running_identity(side: DiffSide) -> None:
-    # Four pending jobs share the identity of a RUNNING job and sort ahead
+    # Four pending jobs share the identity of a running job and sort ahead
     # of the fifth (different identity). The strict-FIFO lateral's base
     # window reads only residual * oversample = 2 * 2 = 4 candidates per
     # queue - exactly the four blocked-identity jobs - so identity dedup
     # drops every candidate in the first pass. With a claimable row still
     # pending behind the window, the round widens the window and the
-    # deeper row dispatches: an empty round is only legitimate when NO
+    # deeper row dispatches: an empty round is only legitimate when no
     # claimable rows remain. Both backends must walk the same expansion
     # schedule or the differential diverges on exactly this shape.
     await side.plant(
@@ -266,7 +266,7 @@ async def _zero_actor_config(side: DiffSide) -> None:
 
 
 async def test_diff_dispatch_zero_actor_config_rows(pg_dsn: str) -> None:
-    """With NO actor_config rows, PG dispatches nothing (per_actor_capacity is
+    """With no actor_config rows, PG dispatches nothing (per_actor_capacity is
     empty); the mirror must not silently treat 'no actors registered' as 'no
     filter'."""
     mem, pg = await run_differential(_zero_actor_config, pg_dsn=pg_dsn, actors=())

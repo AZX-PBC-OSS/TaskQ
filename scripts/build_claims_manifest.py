@@ -1,10 +1,10 @@
-"""THE CLAIMS REGISTRY'S MIGRATION PASS (the de-slop round, cure 3 — run
+"""The claims registry's migration pass (run
 once; kept for the record and for dry/other estates).
 
 Indexes every existing capture under ``.measurements/runs/`` into the
 registry, ``CLAIMS.json`` — the files STAY the captures, the manifest is
 the INDEX. The pass uses the old filename heuristics (the run-scoped
-tail's stem, the embedded timestamp's order) exactly ONCE, at the
+tail's stem, the embedded timestamp's order) exactly once, at the
 boundary: after this pass the machinery reads the manifest only, and a
 filename's shape is a human concern the verdict never again depends on.
 

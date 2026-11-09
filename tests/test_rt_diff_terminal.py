@@ -13,6 +13,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import ErrorInfo
+from taskq.backend.postgres import PostgresBackend
 from taskq.exceptions import WorkerOwnershipMismatch
 
 from .test_rt_diff_harness import DiffSide, assert_mirror, run_differential
@@ -45,6 +46,88 @@ async def test_diff_mark_succeeded_clears_lock_bookkeeping(pg_dsn: str) -> None:
     )
     assert pg["jobs"]["j1"]["locked_by_worker"] is None
     assert pg["jobs"]["j1"]["lock_expires_at"] is None
+
+
+async def _result_ttl_enqueued_holds(side: DiffSide) -> None:
+    await side.enqueue("j1", scheduled_in=-1.0, result_ttl_s=300.0)
+    # The loaded runner's inter-action wall: the PG side's scenario consumes
+    # wall time the frozen mirror never sees (the coverage tracer's tax, a
+    # co-tenant lane's load).
+    if isinstance(side.backend, PostgresBackend):
+        import asyncio
+
+        await asyncio.sleep(0.7)
+
+
+async def test_diff_enqueue_result_ttl_holds_its_duration(pg_dsn: str) -> None:
+    """A result TTL passed at enqueue stamps ``result_expires_at`` beside
+    ``created_at`` in the enqueue's own statement (server-side on PG,
+    ``clock_timestamp() + ttl``), and the row keeps that stamp. The bucket
+    reads the TTL's own duration on both backends however much wall the
+    runner puts between the enqueue and the snapshot."""
+    mem, pg = await run_differential(_result_ttl_enqueued_holds, pg_dsn=pg_dsn)
+    assert_mirror(
+        "a result TTL passed at enqueue reads its own duration above "
+        "created_at on both backends, however loaded the runner",
+        mem,
+        pg,
+    )
+    assert pg["jobs"]["j1"]["result_expires_at"] == 300
+
+
+async def _fallback_result_ttl_holds(side: DiffSide) -> None:
+    await side.enqueue("j1", scheduled_in=-1.0)
+    await side.dispatch("w1", ["default"], limit=1)
+    # The job "runs" for a known logical elapsed before completing: the
+    # mirror's clock jumps, PG's wall advances.
+    await side.advance_clock(2.0)
+    ok = await side.mark_succeeded("j1", "w1", result={"v": 1}, fallback_result_ttl_s=60.0)
+    side.record("succeeded", ok)
+
+
+async def test_diff_fallback_result_ttl_holds_its_duration(pg_dsn: str) -> None:
+    """A fallback result TTL (the ``mark_succeeded`` caller's own literal)
+    stamps ``result_expires_at`` beside ``finished_at`` in the terminal
+    write's statement - the row was enqueued without a TTL, so the anchor
+    is the completion stamp, and the bucket reads the TTL's own duration on
+    both backends however long the job ran. Anchoring this shape at
+    ``created_at`` instead reads the job's runtime into the bucket (60 plus
+    the elapsed: 62 against the mirror's 60)."""
+    mem, pg = await run_differential(_fallback_result_ttl_holds, pg_dsn=pg_dsn)
+    assert_mirror(
+        "a fallback result TTL applied at completion reads its own duration "
+        "above finished_at on both backends, however long the job ran",
+        mem,
+        pg,
+    )
+    assert pg["jobs"]["j1"]["result_expires_at"] == 60
+
+
+async def _combined_ttl_override_wins(side: DiffSide) -> None:
+    await side.enqueue("j1", scheduled_in=-1.0, result_ttl_s=300.0)
+    await side.dispatch("w1", ["default"], limit=1)
+    # The job "runs" for a known logical elapsed before completing: the
+    # mirror's clock jumps, PG's wall advances.
+    await side.advance_clock(2.0)
+    ok = await side.mark_succeeded("j1", "w1", result={"v": 1}, fallback_result_ttl_s=60.0)
+    side.record("succeeded", ok)
+
+
+async def test_diff_combined_ttl_anchor_moves_to_the_override(pg_dsn: str) -> None:
+    """A fallback TTL supplied at the success write WINS the terminal
+    write's COALESCE over an enqueue-stamped expiry, and restamps the pair
+    beside finished_at - the anchor moves to the write that supplied the
+    value. Reading the combined shape at the enqueue's anchor carries the
+    job's runtime into the bucket: 62 or 63 against the mirror's 60."""
+    mem, pg = await run_differential(_combined_ttl_override_wins, pg_dsn=pg_dsn)
+    assert_mirror(
+        "a fallback TTL supplied at the success write overrides an "
+        "enqueue-stamped expiry and reads its own duration above "
+        "finished_at on both backends, however long the job ran",
+        mem,
+        pg,
+    )
+    assert pg["jobs"]["j1"]["result_expires_at"] == 60
 
 
 async def _succeeded_fencing(side: DiffSide) -> None:
@@ -103,9 +186,9 @@ async def _failed_or_retry_arms(side: DiffSide) -> None:
 
     # Retry arm, zero delay -> floored to MIN_DEFERRAL_INTERVAL (1 s) ->
     # scheduled: the anti-monopolisation floor PG's mark_retry params CTE
-    # pins (GREATEST($3, MIN_DEFERRAL_INTERVAL)), the same bound the
+    # pins (greatest($3, MIN_DEFERRAL_INTERVAL)), the same bound the
     # deferral arms and the decision layer (retry.py) apply. This block
-    # runs LAST: the quick pin asserts a 1 s backoff against the
+    # runs last: the quick pin asserts a 1 s backoff against the
     # scenario-end reference, so its write must sit at that reference;
     # earlier placement let runner latency between it and the reference
     # eat the 0.5 s bucket fence and read the floor backoff as "now".
@@ -178,13 +261,13 @@ async def _failed_or_retry_mismatch(side: DiffSide) -> None:
             None,
         )
         side.record("missing_job", "no-raise")
-    except Exception as exc:  # Why: the exception TYPE is the observable being compared.
+    except Exception as exc:  # Why: the exception type is the observable being compared.
         side.record("missing_job", type(exc).__name__)
 
 
 async def test_diff_mark_failed_or_retry_ownership_and_missing(pg_dsn: str) -> None:
     """Ownership mismatches raise identically; a missing job id must produce
-    the SAME typed outcome on both backends."""
+    the same typed outcome on both backends."""
     mem, pg = await run_differential(_failed_or_retry_mismatch, pg_dsn=pg_dsn)
     assert_mirror(
         "mark_failed_or_retry raises WorkerOwnershipMismatch for a "
@@ -252,7 +335,7 @@ async def _snoozed_arms(side: DiffSide) -> None:
         "denied_in_budget",
         await side.mark_snoozed("denied", "w1", 10.0, outcome="reservation_denied"),
     )
-    # Admission denial AT budget (no deadline): still only a deferral -
+    # Admission denial at budget (no deadline): still only a deferral -
     # the attempt ceiling governs executions, and nothing executed.
     await side.enqueue("denied-dead", scheduled_in=-1.0, max_attempts=1)
     await side.dispatch("w1", ["default"], limit=1)
@@ -266,7 +349,7 @@ async def _snoozed_arms(side: DiffSide) -> None:
     side.record("snoozed_deadline", await side.mark_snoozed("snooze-late", "w1", 10.0))
     # Denial-keyed deadline exit: the same deadline arm on a job whose last
     # deferral was an admission denial. The terminal state_change event
-    # names WHICH starvation ended the job; a plain snooze's deadline event
+    # names which starvation ended the job; a plain snooze's deadline event
     # carries no denial_reason key at all.
     await side.enqueue("denied-late", scheduled_in=-1.0, stc_in=5.0)
     await side.dispatch("w1", ["default"], limit=1)
@@ -317,7 +400,7 @@ async def test_diff_mark_snoozed_arms(pg_dsn: str) -> None:
     assert pg["jobs"]["denied-dead"]["status"] == "scheduled"
     assert pg["jobs"]["denied-dead"]["error_class"] is None
     # The deadline arm counts the denial that ran the job out of road, and
-    # the terminal state_change event names WHICH starvation ended it; the
+    # the terminal state_change event names which starvation ended it; the
     # plain snooze's deadline event stays shape-unchanged, no denial_reason
     # key at all (the deadline arm's conditional build omits it).
     assert pg["jobs"]["denied-late"]["rate_limit_blocked_count"] == 1
@@ -402,8 +485,8 @@ async def _retry_job_gates(side: DiffSide) -> None:
     side.record("retry_failed", await side.retry_job("failed"))
     # A failed row carrying a still-pending cancel request: the re-run
     # opens a fresh epoch, so the whole cancel trail must go with the
-    # spent one - PG's SET clause clears cancel_requested_at alongside
-    # cancel_phase (the audit columns the TERMINAL writes deliberately
+    # spent one - PG's set clause clears cancel_requested_at alongside
+    # cancel_phase (the audit columns the terminal writes deliberately
     # keep become the inherited state a re-pend must not carry).
     await side.plant(
         "failed-cancel",
@@ -413,7 +496,7 @@ async def _retry_job_gates(side: DiffSide) -> None:
         lock_expired_ago_s=None,
     )
     side.record("retry_failed_cancel", await side.retry_job("failed-cancel"))
-    # An abandoned row IS retryable: a deploy interrupted the job, it did
+    # An abandoned row is retryable: a deploy interrupted the job, it did
     # not fail - the operator re-run contract admits every resting state
     # (succeeded and abandoned included); only an actively-running or
     # already-queued row is off-limits. Planted directly: the escalation

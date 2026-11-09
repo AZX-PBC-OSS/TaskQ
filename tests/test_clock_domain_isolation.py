@@ -1,4 +1,5 @@
-"""Clock-domain isolation tests - the C3/C4/C5/C6/C11 skew series.
+"""Clock-domain isolation tests - the skew series (each scenario numbered in
+this file's own ledger).
 
 TaskQ runs two independent clocks: the injectable Python ``Clock`` and
 the PG server clock (``clock_timestamp()``).  Every predicate below is
@@ -116,7 +117,7 @@ async def test_schedule_to_close_interval_anchored_to_server_clock(pg_dsn: str) 
     interval`` in Python and stores a server_now+720 s absolute (drift
     +120 s).  The single arm already computes server-side - it is the
     regression guard; the batch arm is the failing case.  The COPY arm is
-    pinned by the C5/C6 tests below."""
+    pinned by the tests below."""
     stack, backend, schema = await _mk_backend(pg_dsn, timedelta(seconds=120))
     try:
         stamp = datetime.now(UTC) + timedelta(seconds=120)  # client-domain "now"
@@ -183,13 +184,13 @@ async def test_copy_path_created_at_server_stamped_dedup_window_holds(pg_dsn: st
         second = replace(first, id=new_job_id())
         dup = await backend.enqueue(second)
 
-        # Deduplicated onto the first row; unguarded: a NEW row is inserted.
+        # Deduplicated onto the first row; unguarded: a new row is inserted.
         assert dup.id == first.id
     finally:
         await stack.aclose()
 
 
-# ── C5: COPY-path status/schedule decided by the fixup UPDATE's CASE ─────
+# ── C5: COPY-path status/schedule decided by the fixup UPDATE's case ─────
 
 
 @_integration
@@ -227,7 +228,7 @@ async def test_copy_path_status_decided_server_side_explicit_future(pg_dsn: str)
 async def test_immediate_enqueue_dispatchable_under_positive_skew(pg_dsn: str) -> None:
     """With the *producer host's* clock skewed +5 s ahead of the backend
     host (and the PG server), an immediate enqueue must still land
-    ``status='pending'`` and be dispatchable NOW - the server is the only
+    ``status='pending'`` and be dispatchable now - the server is the only
     arbiter.  A client that stamps ``scheduled_at`` from its own
     skewed Python clock (``client/_args.py``), the backend's Python
     pre-decision kept it (it reads as future to the unskewed backend
@@ -245,7 +246,7 @@ async def test_immediate_enqueue_dispatchable_under_positive_skew(pg_dsn: str) -
         assert job_row.status == "pending"
 
         # The same contract stated directly against the backend protocol:
-        # scheduled_at=None IS the immediate form (old backends fail loudly
+        # scheduled_at=None is the immediate form (old backends fail loudly
         # on it - TypeError, not silent misbehavior).
         direct = await backend.enqueue(
             EnqueueArgs(
@@ -368,7 +369,7 @@ async def test_in_memory_parity_immediate_and_future() -> None:
 
 @_integration
 async def test_retry_backoff_not_voided_by_negative_skew(pg_dsn: str) -> None:
-    """C1 pin: fail a running job with ``retry_delay=30s`` while the worker's
+    """the pin: fail a running job with ``retry_delay=30s`` while the worker's
     Python clock is 120s BEHIND the server.  A caller that computes
     ``next_scheduled_at = python_now + 30s`` and SQL that stores/compares that
     Python-domain stamp - it lands 90s in the server's past, the
@@ -413,7 +414,7 @@ async def test_retry_backoff_not_voided_by_negative_skew(pg_dsn: str) -> None:
 
 @_integration
 async def test_retry_deadline_arbitrated_server_side(pg_dsn: str) -> None:
-    """C1/C2 pin: ``schedule_to_close`` = server_now + 10s, ``retry_delay`` =
+    """C1 — the pin: ``schedule_to_close`` = server_now + 10s, ``retry_delay`` =
     30s, worker Python clock skewed -120s (a caller-side deadline pre-check
     computed from that clock would still say Retry).  The SQL deadline guard
     is the single arbiter: ``clock_timestamp() + 30s > schedule_to_close`` →
@@ -454,8 +455,8 @@ async def test_retry_deadline_arbitrated_server_side(pg_dsn: str) -> None:
 
 
 def test_classifier_has_no_deadline_opinion() -> None:
-    """C2 pin: attempts remain and the kind is retryable → Retry, regardless
-    of ``schedule_to_close`` - the classifier takes NO deadline and NO
+    """the pin: attempts remain and the kind is retryable → Retry, regardless
+    of ``schedule_to_close`` - the classifier takes no deadline and no
     clock input at all.  The SQL deadline guard in ``mark_failed_or_retry``
     (pinned above) is the only deadline arbiter; a Python-side pre-check
     computed from the worker's clock disagrees with it under skew and
@@ -487,13 +488,13 @@ def test_classifier_has_no_deadline_opinion() -> None:
 
 @_integration
 async def test_retry_survives_worker_clock_skew_deadline_disagreement(pg_dsn: str) -> None:
-    """C2 pin (end-to-end): a worker whose Python clock is +300 s ahead of
+    """the pin (end-to-end): a worker whose Python clock is +300 s ahead of
     the server, with a LIVE server deadline (server_now + 200 s) and a
-    10 s retry delay.  Pre-C2 the classifier's Python pre-check
+    10 s retry delay.  Pre-the classifier's Python pre-check
     (python_now + 10 s >= schedule_to_close, i.e. 310 s >= 200 s) flipped
     the decision to Fail(DeadlineExceeded) - the row died early even
     though the server would have retried it (server_now + 10 s <=
-    server_now + 200 s).  Post-C2 the classifier has no deadline opinion
+    server_now + 200 s).  Post-the classifier has no deadline opinion
     and the SQL guard is the only arbiter → the retry lands ``scheduled``.
     A genuinely-expired deadline still fails server-side."""
     from taskq.backend._protocol import ErrorInfo
@@ -578,7 +579,7 @@ async def test_retry_survives_worker_clock_skew_deadline_disagreement(pg_dsn: st
 
 
 async def test_in_memory_sweeps_use_injected_clock_no_caller_now() -> None:
-    """Seam-removal pin: the sweep methods take NO caller-supplied ``now``.
+    """Seam-removal pin: the sweep methods take no caller-supplied ``now``.
     Pre-change the parameter was live on InMemoryBackend (the caller's
     clock decided promotion) and silently ignored on PostgresBackend (the
     server clock decided) - the two backends were not exercising the same
@@ -683,18 +684,18 @@ async def test_batch_immediate_stamp_is_statement_time_not_txn_start(pg_dsn: str
     )
 
 
-# ── Batch/COPY stc anchoring: the budget runs from ENQUEUE time ──────────
+# ── Batch/COPY stc anchoring: the budget runs from enqueue time ──────────
 
 
 @_integration
 async def test_batch_stc_anchored_to_enqueue_time_future_item_fails_pre_dispatch(
     pg_dsn: str,
 ) -> None:
-    """D9 pin: on EVERY arm the ``schedule_to_close`` budget runs from
-    ENQUEUE time (``clock_timestamp() + interval``) - previously the
-    batch/COPY arms anchored it to ``scheduled_at + interval``.  A
+    """D9 pin: on every arm the ``schedule_to_close`` budget runs from
+    ENQUEUE time (``clock_timestamp() + interval``), never from
+    ``scheduled_at + interval``.  A
     future-scheduled batch item with a short interval therefore fails
-    DeadlineExceeded BEFORE it is ever dispatched (sweep 2) - the unified
+    DeadlineExceeded before it is ever dispatched (sweep 2) - the unified
     single-arm contract, behavior-changing for batch users who relied on
     the old scheduled_at anchoring."""
     stack, backend, schema = await _mk_backend(pg_dsn, timedelta(seconds=0))
@@ -724,7 +725,7 @@ async def test_batch_stc_anchored_to_enqueue_time_future_item_fails_pre_dispatch
             assert rec is not None
             # Future scheduled_at → deferred, not dispatchable yet...
             assert rec["status"] == "scheduled"
-            # ...but the deadline is anchored to ENQUEUE time, not to the
+            # ...but the deadline is anchored to enqueue time, not to the
             # future scheduled_at (the old batch arm stored srv+1h).
             stc_drift = (rec["schedule_to_close"] - rec["srv_now"]).total_seconds()
             assert abs(stc_drift) < 1.0, (
@@ -749,7 +750,7 @@ async def test_batch_stc_anchored_to_enqueue_time_future_item_fails_pre_dispatch
         await stack.aclose()
 
 
-# ── C11: enqueue-time result TTL stamped by the server clock ─────────────
+# ── Enqueue-time result TTL stamped by the server clock ─────────────
 
 
 @_integration
@@ -829,7 +830,7 @@ async def test_result_ttl_anchored_to_server_clock(pg_dsn: str) -> None:
         await stack.aclose()
 
 
-# ── D12: the sweeps judge cut-offs at STATEMENT time, not transaction start ──
+# ── D12: the sweeps judge cut-offs at statement time, not transaction start ──
 
 
 @_integration

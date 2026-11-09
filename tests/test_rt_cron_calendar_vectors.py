@@ -1,4 +1,4 @@
-"""Red-team calendar-correctness vectors for the cron parser.
+"""Adversarial review calendar-correctness vectors for the cron parser.
 
 Target: ``taskq.cron.compute_next_fire_after`` (croniter-backed, plus custom
 DST gap/overlap handling). ``tests/test_cron.py`` has no Feb-29 / leap-year,
@@ -85,7 +85,7 @@ def test_feb29_after_leap_day_skips_to_next_leap_cycle() -> None:
 
 
 def test_dom_vs_dow_uses_standard_cron_or_rule() -> None:
-    """``0 0 1 * 1`` must fire on the 1st-of-month OR Monday (standard cron).
+    """``0 0 1 * 1`` must fire on the 1st-of-month or Monday (standard cron).
 
     FINDING (ambiguity): neither ``src/taskq/cron.py`` nor
     ``docs/guides/cron.md`` documents the DOM-vs-DOW combining rule - the
@@ -94,11 +94,11 @@ def test_dom_vs_dow_uses_standard_cron_or_rule() -> None:
     so an operator reading TaskQ's docs cannot predict this schedule. This
     test pins the de-facto rule so any future change is a visible break.
 
-    Hand-computed oracle under the standard OR rule: 2024-06-15 is a
+    Hand-computed oracle under the standard or rule: 2024-06-15 is a
     Saturday, so the next fire is Monday 2024-06-17 (DOW matches, DOM does
-    not). Under an AND rule the answer would instead be 2024-07-01 (the
+    not). Under an and rule the answer would instead be 2024-07-01 (the
     next date that is both the 1st and a Monday - verified: 2024-07-01 is
-    a Monday). The pg_cron AND-rule class.
+    a Monday). The pg_cron and-rule class.
     """
     seed = datetime(2024, 6, 15, 12, 0, tzinfo=_TZ)
     out = compute_next_fire_after("0 0 1 * 1", _UTC, seed)
@@ -110,10 +110,10 @@ def test_dom_vs_dow_uses_standard_cron_or_rule() -> None:
 
 
 def test_dom_vs_dow_second_step_confirms_or_not_and() -> None:
-    """A second step distinguishes OR from AND even when both rules agree once.
+    """A second step distinguishes or from and even when both rules agree once.
 
-    Seed: exactly at the 2024-06-17 Monday fire. Under OR the next fire is
-    the next Monday, 2024-06-24 (DOW matches, DOM does not). Under AND the
+    Seed: exactly at the 2024-06-17 Monday fire. Under or the next fire is
+    the next Monday, 2024-06-24 (DOW matches, DOM does not). Under and the
     next fire would be 2024-07-01 (next 1st-that-is-a-Monday). This closes
     the loophole where 2024-07-01 satisfies both rules at once.
     """

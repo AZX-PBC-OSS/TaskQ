@@ -1,4 +1,4 @@
-"""The kill9 chaos campaign's actors: the module BOTH sides of a kill import.
+"""The kill9 chaos campaign's actors: the module both sides of a kill import.
 
 The test process imports it for the ActorRef handles; the SIGKILL harness
 (``tests.system_e2e._kill_entry``) imports the same registry, so the worker
@@ -45,7 +45,7 @@ _KILL9_RETRY = RetryPolicy(
 
 
 #: Single-attempt policy for the exhausted-retry kill shape: the killed
-#: attempt IS the budget, so the reclaim's crash arm (not a re-run) owns
+#: attempt is the budget, so the reclaim's crash arm (not a re-run) owns
 #: the row - the "running -> crashed when exhausted" disposition under a
 #: real SIGKILL.
 _KILL9_ONE_LIFE = RetryPolicy(

@@ -1,20 +1,20 @@
-"""The flow RUNNER (T09): lowers a :class:`CompiledWorkflow` into the
-engine's rows and drives them — ``create_flow(spec, input)`` (cut #7: the
+"""The flow RUNNER: lowers a :class:`CompiledWorkflow` into the
+engine's rows and drives them — ``create_flow(spec, input)`` (the
 run carries its input, cross-flow data never dies in a Python closure),
-the dispatch loop whose bodies resolve FROM THE REGISTERED DEFINITION
+the dispatch loop whose bodies resolve FROM the REGISTERED DEFINITION
 (D1 — the registry is the only body source; a per-call body map is the
-convicted double-dispatch shape), and the test/demo driver
-``drive(flow_id, until=…)`` (cut #10 — no consumer hand-rolls a
+rejected double-dispatch shape), and the test/demo driver
+``drive(flow_id, until=…)`` (no consumer hand-rolls a
 dispatch-poll loop).
 
-THE DISPATCH CONTRACT: a claimable node is ``pending`` + ``deps_pending
-= 0`` on a live flow; the claim is ONE fenced statement (the row goes
+A claimable node is ``pending`` + ``deps_pending
+= 0`` on a live flow; the claim is one fenced statement (the row goes
 ``running`` under this worker's id, the attempt increments — the only
 grant of work, P3 rule 2); the body runs with the DECODED parent results
-(jsonb decoded ONCE, cut #14); the finalize is the engine's own
+(jsonb decoded once); the finalize is the engine's own
 ``finalize_node`` (the two-tx shape unchanged). A body exception ladders:
-attempt failures emit NO terminal (P3 rule 7) — the node re-pends with
-backoff until ``max_attempts``, then terminal-fails and T06's propagation
+attempt failures emit no terminal (P3 rule 7) — the node re-pends with
+backoff until ``max_attempts``, then terminal-fails and the failed-parent propagation
 takes over (the cascade / the collect fan-in, per the edges' declared
 policy).
 
@@ -30,8 +30,8 @@ seams are the engine's own sweeps/fences/dispatch shape):
 * ``_runner_errors`` — :class:`WorkflowRunError` (the loud refusal);
 * ``_ctx`` / ``_ctx_wait`` — the body's runtime context + the HITL
   wait/deliver machinery;
-* ``_runner_loop`` — the T19 loop driver (the machinery + the reclaim);
-* ``_runner_chain`` — the T20 chain step's routed finalize;
+* ``_runner_loop`` — the loop driver (the machinery + the reclaim);
+* ``_runner_chain`` — the chain step's routed finalize;
 * ``_runner_ladder`` — the retry ladder + the failure-class classifier;
 * ``_runner_exit`` — §17.1's typed early-exit + §17.2's manual resume;
 * ``_runner`` (this module) — the driving loop: create, dispatch,
@@ -47,18 +47,39 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 import asyncpg
 import structlog
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
+from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
-from taskq.obs import get_logger
+from taskq.exceptions import RetryAfter, Snooze
+from taskq.obs import get_logger, safe_start_span
+from taskq.retry import RetryPolicy
 from taskq.workflows._cache import CachedStep
+from taskq.workflows._capability import (
+    direct_capability_refusal,
+    postgres_capability_error,
+    validate_required_worker_schema,
+)
+from taskq.workflows._obs import (
+    finish_step_span,
+    record_step_deferred,
+    record_step_forked,
+    record_step_held,
+    record_step_join_fired,
+    record_step_laddered,
+    step_span_attributes,
+    step_span_name,
+)
+from taskq.workflows._policy import RetrySpec, canonical_retry_kind, row_retry_curve
 from taskq.workflows._progress import (
     KIND_NODE_STARTED,
     KIND_NODE_TERMINAL,
@@ -66,7 +87,11 @@ from taskq.workflows._progress import (
     project_auto_event,
 )
 from taskq.workflows._sql import WorkflowSql
-from taskq.workflows._sql_finalize import FANIN_FAILURES_BYTE_CAP, NODE_INSERT_SQL
+from taskq.workflows._sql_finalize import (
+    COLLECT_TRUNCATION_RECEIPT_SQL,
+    FANIN_FAILURES_BYTE_CAP,
+    NODE_INSERT_SQL,
+)
 from taskq.workflows._types import (
     ChildSpec,
     FinalizeResult,
@@ -80,7 +105,14 @@ from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._ctx import StepContext, build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
-from taskq.workflows.api._graph import Exit, rate_limit_names, route_child_key
+from taskq.workflows.api._graph import (
+    Exit,
+    keyed_rate_limit_names,
+    keyed_reservation_names,
+    rate_limit_names,
+    reservation_names,
+    route_child_key,
+)
 from taskq.workflows.api._runner_chain import ChainOps
 from taskq.workflows.api._runner_codec import (
     FlowEntryShim,
@@ -88,17 +120,25 @@ from taskq.workflows.api._runner_codec import (
     encode_data_arg,
     encode_result,
     next_data,
+    result_truncation,
 )
-from taskq.workflows.api._runner_errors import VanishedNodeError, WorkflowRunError
+from taskq.workflows.api._runner_defer import DeferOps
+from taskq.workflows.api._runner_errors import (
+    VanishedNodeError,
+    WorkflowRunCancelledError,
+    WorkflowRunError,
+)
 from taskq.workflows.api._runner_exit import ExitOps
 from taskq.workflows.api._runner_ladder import LadderOps, is_infra_fault
 from taskq.workflows.api._runner_loop import LoopOps
 from taskq.workflows.api._sql_runner import (
     CLAIMABLE_NODES_SQL_TEMPLATE,
     EDGE_INSERT_SQL_TEMPLATE,
+    FLOW_CANCELLED_SQL_TEMPLATE,
     FLOW_FAILURE_SQL_TEMPLATE,
     FLOW_NODE_CENSUS_SQL_TEMPLATE,
     FLOW_PAYLOAD_SQL_TEMPLATE,
+    FLOW_REQUIRED_WORKER_SCHEMA_SQL_TEMPLATE,
     FLOW_STATUS_SQL_TEMPLATE,
     HELD_COUNT_SQL_TEMPLATE,
     INCREMENT_DEPS_SQL_TEMPLATE,
@@ -107,6 +147,7 @@ from taskq.workflows.api._sql_runner import (
     NODE_BY_STEP_KEY_SQL_TEMPLATE,
     NODE_CLAIM_SQL_TEMPLATE,
     PARENT_RESULTS_BY_KEY_SQL_TEMPLATE,
+    ROOT_PRIORITY_STAMP_SQL_TEMPLATE,
     ROOT_START_SQL_TEMPLATE,
     SKIPPED_RESULT,
     SUCCEEDED_RESULTS_SQL_TEMPLATE,
@@ -114,6 +155,7 @@ from taskq.workflows.api._sql_runner import (
     WF_ARGS_KEY,
     render_sql,
 )
+from taskq.workflows.chain import Chain
 from taskq.workflows.definitions import FanInBoundExceededError, validate_fork
 from taskq.workflows.engine import fan_in_skip, finalize_node
 from taskq.workflows.ledger import (
@@ -129,32 +171,32 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
 def _bounded_collect(values: list[object]) -> dict[str, object]:
-    """THE COLLECTED RESULT'S CAP (the F4 cure — ONE mechanism with the
+    """the COLLECTED RESULT'S CAP (the F4 fix — one mechanism with the
     failures'-collect's own discipline, ``_sql_finalize.py``'s
     ``COLLECT_FAN_IN_APPEND_SQL`` arms mirrored at the collect face): a
     join/gather's envelope — the identity packer's
     ``{"value": [every parent's result]}`` — compacts PAST the estate's
-    result cap (``FANIN_FAILURES_BYTE_CAP``, the SAME 64 Ki bound the
+    result cap (``FANIN_FAILURES_BYTE_CAP``, the same 64 Ki bound the
     failures' array honors):
 
-    * under the cap: byte-identical to the pre-cure shape (the common
+    * under the cap: byte-identical to the pre-fix shape (the common
       case pays nothing);
     * over the cap: the fitted PREFIX of items stays spelled under
       ``value`` (the collect's arm-2 face — keep what fits), and the
       truncation is HONEST — ``__truncated__`` counts the items no
       longer spelled on this row (the marker is the read's own warning,
       the failures'-collect's arm-3 pattern) and ``detail_home`` names
-      where the full collect lives: THE CHILD ROWS — each map child /
-      gather parent carries its OWN result row (the record never loses
+      where the full collect lives: the CHILD ROWS — each map child /
+      gather parent carries its own result row (the record never loses
       the detail; the join row is the bounded summary, exactly the
       failures' split: the ledger/children the detail, the row the
       summary).
 
-    The pre-cure face was the bypass: the wf finalize's TERMINAL_MARK
+    The pre-fix face was the bypass: the wf finalize's TERMINAL_MARK
     checked no ``result_max_bytes`` — a 700-child map landed a
     730,001-byte envelope (11.1x the cap every plain job's terminal
     enforces non-retryably); the ceiling at the fan-in bound was
-    ~305 MiB of jsonb in ONE row. The byte measure is the finalize's
+    ~305 MiB of jsonb in one row. The byte measure is the finalize's
     own (``_jsonb`` → utf-8 length — ``engine._jsonb_len``'s shape), so
     the recorded ``result_size_bytes`` IS the bounded number."""
     detail_home = (
@@ -182,11 +224,50 @@ def _bounded_collect(values: list[object]) -> dict[str, object]:
     }
 
 
-class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
+def _node_retry_spec(node: Any) -> RetrySpec | None:
+    """Lower an ordinary static node's compatibility retry row for consumers."""
+    resolved = getattr(node, "execution_policy", None)
+    if resolved is not None and resolved.retry is not None:
+        return resolved.retry
+    kind = canonical_retry_kind(node.retry_kind or "transient")
+    if node.max_attempts == 3 and kind == "transient":
+        return None
+    return RetrySpec(policy=RetryPolicy(max_attempts=node.max_attempts, kind=kind))
+
+
+def _resolve_priority(*levels: int | None) -> int:
+    """the PRECEDENCE LAW'S ARITHMETIC (the priority surface), stated
+    once: the first non-``None`` level wins; ``None`` everywhere = the
+    column default's own value (0). The levels, in the law's order: the
+    explicit per-call override, the step's declaration, the arm's
+    override, the actor handle's declaration."""
+    for value in levels:
+        if value is not None:
+            return value
+    return 0
+
+
+def _first_declared(*levels: timedelta | None) -> timedelta | None:
+    """the DEADLINE RESOLUTION'S ARITHMETIC (the wf start_to_close bound
+    — the priority helper's own shape, the coalesce the timedelta's
+    ``None``-or-value face needs): the first non-``None`` level wins;
+    ``None`` everywhere = nothing declared (the row's column NULL — the
+    worker's ``default_start_to_close`` applies at the enforcement, the
+    resolution chain's own tail). The levels, in the law's order: the
+    arm's own declaration, the arm body handle's declaration, the source
+    node's declaration."""
+    for value in levels:
+        if value is not None:
+            return value
+    return None
+
+
+class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     """The API's runner: create, drive, read. One engine, many surfaces —
     the runner OWNS no state; every fact is a row. The concern modules
-    (the loop driver, the ladder, the exit, the chain finalize) compose
-    in as mixins — each seam's machinery lives in its own module (§7b)."""
+    (the loop driver, the ladder, the exit, the chain finalize, the
+    deferral) compose in as mixins — each seam's machinery lives in its
+    own module (§7b)."""
 
     def __init__(
         self,
@@ -196,43 +277,66 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         *,
         worker_id: JobId | None = None,
         deps: object | None = None,
+        default_start_to_close: timedelta | None = None,
     ) -> None:
         from taskq.workflows.api._validate import validate_compiled
 
-        # THE DEPS SEAM'S DOOR (the DI capability): the runner binds ONE
-        # instance — the explicit *deps* overrides, the compiled's
-        # binding (the app's, bound once at WorkflowApp(deps=…)) is the
-        # default. The VALIDATION runs against the EFFECTIVE binding (a
-        # frozen-compile copy carries it — the E12 rule reads what the
-        # bodies will actually receive), so a binding the bodies'
-        # declarations do not satisfy is refused here too.
+        # the runner binds one instance — the explicit *deps* overrides, the
+        # compiled's binding (the app's, bound once at WorkflowApp(deps=…)) is
+        # the default. The validation runs against the effective binding (a
+        # frozen-compile copy carries it — the E12 rule reads what the bodies
+        # will actually receive), so a binding the bodies' declarations do not
+        # satisfy is refused here too.
         compiled_deps = compiled.deps if isinstance(compiled, CompiledWorkflow) else None
         if deps is not None and isinstance(compiled, CompiledWorkflow):
-            compiled = replace(compiled, deps=deps)
             compiled_deps = deps
         self._deps: object | None = deps if deps is not None else compiled_deps
         validate_compiled(compiled)  # a graph with errors does not run
         self.compiled = compiled
+        from taskq.workflows._effects import (
+            RegisteredTerminalEffect,
+            collect_terminal_effects,
+        )
+
+        self._terminal_effects: dict[str, RegisteredTerminalEffect] = collect_terminal_effects(
+            compiled
+        )
         self.pool = pool
         self.wsql: WorkflowSql = WorkflowSql.build(schema)
         self.schema = schema
-        # THE DRIVER'S IDENTITY: the in-process driver mints its own (no
-        # worker behind it); a WORKER-HOSTED runner passes the real
-        # worker's id — every fence (the finalize CAS, the emit's cursor
-        # checkpoint) then names the worker that actually holds the row
-        # (the fleet-claimed door, _worker_execution).
+        # the in-process driver mints its own (no worker behind it); a
+        # worker-hosted runner passes the real worker's id — every fence (the
+        # finalize CAS, the emit's cursor checkpoint) then names the worker
+        # that actually holds the row (the fleet-claimed door,
+        # _worker_execution).
         self._worker_id = worker_id if worker_id is not None else JobId(new_uuid())
-        # THE ROUTER'S RESOLUTION (T20): the workflow's declared chains —
-        # a chain STEP row (fork-spawned or emitted) has no compiled
-        # NodeDecl; its route resolves from HERE (the compiled chain),
-        # its body from the registry (D1).
-        self._chain_steps: dict[str, Any] = {
+        # the workflow's declared chains — a chain step row (fork-spawned or
+        # emitted) has no compiled NodeDecl; its route resolves from here (the
+        # compiled chain), its body from the registry (D1).
+        self._chain_steps: dict[str, Chain] = {
             step_key: chain for chain in getattr(compiled, "chains", ()) for step_key in chain.steps
         }
-        # THE DESCENDANT RUNNERS' CACHE (T28 — the child flows): the
-        # child flow's runner resolved ONCE per drive (the root's
-        # stamped workflow name → the compile registry).
+        # the child flow's runner resolved once per drive (the root's stamped
+        # workflow name → the compile registry).
         self._child_runners: dict[str, FlowRunner] = {}
+        # the create-time per-call override (``create_flow(priority=…)``),
+        # echoed here so the dev door's fork builds (``_run_node``'s
+        # executions) resolve the run's own law without re-reading the root.
+        # The row stays the truth — the root's ``metadata.wf_priority`` stamp
+        # is the durable leg, and the fleet door (``execute_flow_job``) reads
+        # it from the row; this echo only spares the dev loop a per-node read.
+        # ``None`` = no override declared.
+        self._run_priority: int | None = None
+        # the worker settings' value the fleet door threads
+        # (``_worker_execution.execute_flow_job`` ←
+        # ``run._dispatch_flow_job``'s deps.settings). The row's own stamp
+        # outranks it (the vanilla ``_effective_start_to_close`` chain:
+        # ``job.start_to_close if not None else default``); the dev door
+        # constructs without one — the pre-fix face (an undeclared row's
+        # deadline is unbounded there, the dev loop never had a worker
+        # default). ``None`` = no default — the undeclared row's body runs
+        # unbounded.
+        self._default_start_to_close = default_start_to_close
 
     # ── create ───────────────────────────────────────────────────────
 
@@ -240,89 +344,204 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         self,
         *,
         input: object = None,
+        key: str | None = None,
         run_key: str | None = None,
         root_metadata_extra: dict[str, object] | None = None,
+        priority: int | None = None,
+        _required_worker_schema: int | None = None,
     ) -> RunClaim:
-        """Create the run: the flow root (its payload CARRIES the input —
-        cut #7) + every non-map node upfront (the join-wait rows among
-        them, edges declared in the same call). The map joins are
-        runtime-spawned by their source's fork (the engine's FORK
-        ATOMICITY) — the wiring's downstream consumers ride the join's
-        declared consumers (the outbox).
+        """Create the run: the flow root (its payload CARRIES the input) + every
+        non-map node upfront (the join-wait rows among
+         them, edges declared in the same call). The map joins are
+         runtime-spawned by their source's fork (the engine's FORK
+         ATOMICITY) — the wiring's downstream consumers ride the join's
+         declared consumers (the outbox).
 
-        THE CREATE ATOMICITY (the fork-atomicity law at creation
-        granularity): the ROOT INSERT rides the SAME transaction as the
-        static nodes + edges + ROOT_START. The pre-cure shape committed
-        the root ALONE (its own acquire) and the wiring rode a second
-        transaction — the kill in between stranded the ORPHAN ROOT
-        (pending, ZERO nodes): a root the maintenance derivation can
-        never develop (its rollup INNER-JOINS the node rows — a nodeless
-        root never derives, never terminalizes, never prunes) and one
-        that SQUATS THE RUN KEY (the retry's arbiter conflict answered
-        ``created=False`` and the nodes never landed — ``drive()`` ran to
-        ``max_ticks``). One transaction makes the orphan UNREPRESENTABLE
-        (the create-time face of the fleet-crash cure's own law — the
-        dispatch's visibility is bounded to the WHOLE wiring, and now to
-        the root that owns it).
+         The create's atomicity (the fork-atomicity rule at creation
+         granularity): the ROOT INSERT rides the same transaction as the
+         static nodes + edges + ROOT_START. Committing the root ALONE
+         (its own acquire) with the wiring in a second
+         transaction — a kill in between strands the ORPHAN ROOT
+         (pending, ZERO nodes): a root the maintenance derivation can
+         never develop (its rollup INNER-JOINS the node rows — a nodeless
+         root never derives, never terminalizes, never prunes) and one
+         that SQUATS the RUN KEY (the retry's arbiter conflict answered
+         ``created=False`` and the nodes never landed — ``drive()`` ran to
+         ``max_ticks``). One transaction makes the orphan UNREPRESENTABLE
+         (the create-time face of the fleet-crash guard's own law — the
+         dispatch's visibility is bounded to the WHOLE wiring, and now to
+         the root that owns it).
 
-        THE CLAIM SURFACE HONEST (the run-key failure lie's cure): the
-        TYPED :class:`RunClaim` returns — ``created`` /
-        ``existing-running`` / ``existing-terminal`` (the
-        :attr:`RunClaim.kind` verdict) — never a bare id the caller
-        cannot read a status off.
+         The
+         TYPED :class:`RunClaim` returns — ``created`` /
+         ``existing-running`` / ``existing-terminal`` (the
+         :attr:`RunClaim.kind` verdict) — never a bare id the caller
+         cannot read a status off.
 
-        THE RETRY-COMPLETION CENSUS (the belt's belt): an arbiter
-        conflict over a PENDING run with ZERO node rows is the orphan's
-        one remaining signature (the pre-cure debris) — the nodes
-        re-insert and the root starts IN THE SAME TRANSACTION (the retry
-        completes; the killed create's key is finished, not squatted). A
-        conflict over anything else is the G2 contract: the EXISTING run,
-        never a second silent run, and a terminal run's key is never
-        re-fired. THE REAP BELT: the census-grace arm
-        (:func:`taskq.workflows._sweep.reap_nodeless_roots`) reaps any
-        orphan that could ever exist (a future statement-order
-        regression's debris) past the grace.
+         An arbiter
+         conflict over a PENDING run with ZERO node rows is the orphan's
+         one remaining signature (the pre-fix debris) — the nodes
+         re-insert and the root starts IN the same TRANSACTION (the retry
+         completes; the killed create's key is finished, not squatted). A
+         conflict over anything else is the run-key-arbiter contract: the EXISTING run,
+         never a second silent run, and a terminal run's key is never
+         re-fired. the REAP BELT: the census-grace arm
+         (:func:`taskq.workflows._sweep.reap_nodeless_roots`) reaps any
+         orphan that could ever exist (a future statement-order
+         regression's debris) past the grace.
 
-        THE PROVENANCE STAMPS (T28 — the child flows' identity):
-        *root_metadata_extra* rides the SAME create transaction (the
-        child root's parent pointers land ATOMICALLY with the root —
-        never a post-create UPDATE that would re-open the orphan window
-        this seam closed). ``None`` (the default) = the shipped shape
-        byte-identical.
+         *root_metadata_extra* rides the same create transaction (the
+         child root's parent pointers land ATOMICALLY with the root —
+         never a post-create UPDATE that would re-open the orphan window
+         this seam closed). ``None`` (the default) = the shipped shape
+         byte-identical.
+
+         the PER-CALL PRIORITY OVERRIDE (the priority surface — the
+         load-bearing face): *priority* is the run's explicit override —
+         every row this create materializes (the static nodes) lands at
+         the value in the ``jobs.priority`` column, and the ROOT's
+         metadata stamps it (``wf_priority``) so the FLEET door's fork
+         builds resolve the same override for rows materialized later
+         (the map/route children a worker forks mid-run). The law's
+         precedence: this override > the step's declaration > the actor
+         handle's > the column default. ``None`` (the default) = no
+         override — the declarations (or the column default) speak, the
+         pre-fix byte-identical shape. The domain is the smallint column's
+         (``check_priority_domain`` — the same refusal at every layer that
+         accepts a priority).
         """
-        async with self.pool.acquire() as conn, conn.transaction():
-            claim = await self._insert_root(conn, input, run_key, root_metadata_extra)
-            complete = claim.created
-            if not complete:
-                # THE RETRY-COMPLETION CENSUS: the orphan's signature is
-                # pending + zero nodes — a committed create whose node
-                # pass never rode the root's tx. Anything else is the
-                # existing run.
-                complete = (
-                    claim.status == "pending" and await self._node_census(conn, claim.flow_id) == 0
+        from taskq.constants import check_priority_domain
+        from taskq.workflows.api._graph import WorkflowBuildError
+
+        uses_terminal_effects = bool(self._terminal_effects)
+        if uses_terminal_effects and _required_worker_schema is None:
+            _required_worker_schema = 2
+        if (
+            uses_terminal_effects
+            and _required_worker_schema is not None
+            and _required_worker_schema < 2
+        ):
+            raise WorkflowRunError(
+                "a workflow declaring terminal effects requires worker schema >= 2; "
+                "apply the run-epoch/effect PRE migrations and use capable fleet workers"
+            )
+        if _required_worker_schema is not None:
+            # Private producer door used only by workflows._capability; this
+            # second validation deliberately rejects post-construction mutation.
+            validate_required_worker_schema(_required_worker_schema)
+        if priority is not None:
+            check_priority_domain(priority, what="the run's priority override")
+            # ``key=``; ``run_key=`` rides as the alias (either accepted, one name
+        # in the docs).
+        if run_key is None:
+            run_key = key
+        elif key is not None and key != run_key:
+            raise WorkflowBuildError(
+                f"create_flow: key={key!r} and run_key={run_key!r} are both given "
+                "and disagree — the run key is ONE value; pass key= only"
+            )
+        if priority is not None:
+            root_metadata_extra = {**(root_metadata_extra or {}), "wf_priority": priority}
+        try:
+            async with self.pool.acquire() as conn, conn.transaction():
+                claim = await self._insert_root(
+                    conn,
+                    input,
+                    run_key,
+                    root_metadata_extra,
+                    required_worker_schema=_required_worker_schema,
                 )
-            if complete:
-                # THE CREATE IS ONE TRANSACTION (the deploy matrix's
-                # fleet-crash cure): the rows, the edges, the root's
-                # start — one commit. The create ran statement-autocommit
-                # before, and the fleet's dispatch round swept the
-                # not-yet-wired rows UP INSIDE the create: a join-wait
-                # child claimed (and EXECUTED — its parents' results did
-                # not exist, the arg resolution crashed the worker), the
-                # flow's own wiring half-born. A transaction bounds the
-                # dispatch's visibility to the WHOLE wiring (the fork's
-                # atomicity law, create-time face).
-                await self._insert_static_nodes(conn, claim.flow_id, input)
-                # The run is LIVE: the root flips pending → running (the
-                # maintenance leg's derivation owns the TERMINAL verdict
-                # from the rows — the root is a cache, never the decider).
-                await conn.execute(render_sql(ROOT_START_SQL_TEMPLATE, self.schema), claim.flow_id)
-                # THE CLAIM CARRIES THE COMMITTED STATUS: the ROOT_START
-                # rode the same tx — the run returns LIVE ('running'),
-                # never the insert's pre-start 'pending' (the envelope
-                # never lies about the state it handed back).
-                claim = replace(claim, status="running")
+                if not claim.created and claim.required_worker_schema != _required_worker_schema:
+                    raise WorkflowRunError(
+                        f"run key {run_key!r} already names a run with "
+                        f"required_worker_schema={claim.required_worker_schema!r}; "
+                        f"the internal create requested {_required_worker_schema!r}. "
+                        "Use a fresh run key rather than changing an immutable capability."
+                    )
+                complete = claim.created
+                if not complete:
+                    # the orphan's signature is pending + zero nodes — a
+                    # committed create whose node pass never rode the root's
+                    # tx. Anything else is the existing run.
+                    complete = (
+                        claim.status == "pending"
+                        and await self._node_census(conn, claim.flow_id) == 0
+                    )
+                if complete:
+                    # the rows, the edges, the root's start — one commit. The
+                    # create ran statement-autocommit before, and the fleet's
+                    # dispatch round swept the not-yet-wired rows up inside the
+                    # create: a join-wait child claimed (and executed — its
+                    # parents' results did not exist, the arg resolution
+                    # crashed the worker), the flow's own wiring half-born. A
+                    # transaction bounds the dispatch's visibility to the whole
+                    # wiring (the fork's atomicity law, create-time face). the
+                    # create-time echo (the dev door's own leg): the override
+                    # the drive's fork builds resolve — set only when this
+                    # create materialized the rows (an arbiter conflict returns
+                    # an existing run whose root stamp is its own truth; the
+                    # row is the law, never the echo).
+                    self._run_priority = priority
+                    if claim.required_worker_schema is None:
+                        # Preserve the long-standing private hook call shape for
+                        # ordinary creates (including test crash-injection seams).
+                        await self._insert_static_nodes(
+                            conn, claim.flow_id, input, run_priority=priority
+                        )
+                    else:
+                        await self._insert_static_nodes(
+                            conn,
+                            claim.flow_id,
+                            input,
+                            run_priority=priority,
+                            required_worker_schema=claim.required_worker_schema,
+                        )
+                    # The run is live: the root flips pending → running (the
+                    # maintenance leg's derivation owns the terminal verdict
+                    # from the rows — the root is a cache, never the decider).
+                    await conn.execute(
+                        render_sql(ROOT_START_SQL_TEMPLATE, self.schema), claim.flow_id
+                    )
+                    # the ROOT_START rode the same tx — the run returns live
+                    # ('running'), never the insert's pre-start 'pending' (the
+                    # envelope never lies about the state it handed back).
+                    claim = replace(claim, status="running")
+                else:
+                    # the claim returned an existing run — the create-time echo
+                    # above never ran, so the per-call level resolves from the
+                    # root's stamp (one bounded pk read, the fleet door's own
+                    # SELECT shape): the row is the law at both doors. A
+                    # re-drive of a run created with ``priority=6`` forks its
+                    # rows at 6 even when the re-drive passes no kwarg — the
+                    # adopted run's stamp is its own truth, and the fork's
+                    # cohort never splits (the children riding the declarations
+                    # while the root says 6 would split the fork's cohort).
+                    self._run_priority = await self._adopted_run_priority(conn, claim.flow_id)
+        except asyncpg.exceptions.UndefinedTableError as exc:
+            # The first contact's translation: the runner door on an
+            # unmigrated schema raises the same typed
+            # SchemaNotMigratedError the packaged run() raises — the
+            # setup defect is actionable (the remedy's message), never a
+            # raw asyncpg traceback; the original chained via __cause__.
+            from taskq.exceptions import SchemaNotMigratedError
+
+            raise SchemaNotMigratedError(self.schema) from exc
         return claim
+
+    async def _adopted_run_priority(self, conn: ConnLike, flow_id: JobId) -> int | None:
+        """The
+        root's stamped ``wf_priority``, resolved through the shared
+        parse → domain-clamp → degrade cascade
+        (:func:`resolve_priority_stamp` — the fleet door's own arithmetic;
+        ``None`` = no override stamped, the declarations — or the column
+        default — speak)."""
+        from taskq.constants import resolve_priority_stamp
+
+        read = await conn.fetchrow(
+            render_sql(ROOT_PRIORITY_STAMP_SQL_TEMPLATE, self.schema), flow_id
+        )
+        raw_priority: object | None = read["wf_priority"] if read is not None else None
+        return resolve_priority_stamp(raw_priority)
 
     async def _node_census(self, conn: ConnLike, flow_id: JobId) -> int:
         """The run's node-row count — the orphan's census (a nodeless
@@ -336,6 +555,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         input: object,
         run_key: str | None,
         root_metadata_extra: dict[str, object] | None = None,
+        *,
+        required_worker_schema: int | None = None,
     ) -> RunClaim:
         key = run_key or f"flow:{new_uuid()}"
         entry_payload: dict[str, object] = {INPUT_KEY: encode_data_arg(input)}
@@ -345,22 +566,30 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             entry=FlowEntryShim(self.compiled.name, entry_payload),
             run_key=key,
             extra_metadata=root_metadata_extra,
+            required_worker_schema=required_worker_schema,
         )
 
-    async def _insert_static_nodes(self, conn: ConnLike, flow_id: JobId, input: object) -> None:
+    async def _insert_static_nodes(
+        self,
+        conn: ConnLike,
+        flow_id: JobId,
+        input: object,
+        *,
+        run_priority: int | None = None,
+        required_worker_schema: int | None = None,
+    ) -> None:
         for key in sorted(self.compiled.nodes):
             node = self.compiled.nodes[key]
             if node.kind == "map_join":
                 continue  # spawned by the source's fork
-            # THE MAP-JOIN'S DOWNSTREAM IS A STATIC ROW (the ecosystem
-            # mapper's consumption defect's structural half): every
+            # The map-join's downstream is a static row: every
             # non-join node is inserted upfront — a node whose parent is
-            # a fork-spawned map join carries the RESERVED dep (below),
-            # so it can never dispatch before the join's terminal. (The
-            # convicted shape: the descendant was NOT inserted and rode
-            # only the outbox's side-channel — no edge row, an arg
-            # resolution with no result to read, and a transitive
-            # downstream that the side-channel never creates at all.)
+            # a fork-spawned map join carries the reserved dep (below),
+            # so it can never dispatch before the join's terminal. (A
+            # descendant that rode only the outbox's side-channel — no
+            # edge row — would leave an arg
+            # resolution with no result to read and a transitive
+            # downstream the side-channel never creates at all.)
             data_args = [v for kind, v in node.args if kind == "d"]
             payload: dict[str, object] = (
                 {INPUT_KEY: encode_data_arg(input)} if not node.parents else {}
@@ -376,21 +605,53 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 parents=(),
                 deps_pending=0,
                 max_attempts=node.max_attempts,
+                retry_kind=node.retry_kind or "transient",
+                # the per-call override > the node's declared (the handle's
+                # folded in at the wiring) > the column default.
+                priority=_resolve_priority(run_priority, node.priority),
+                # the node's own resolution (the step's own or the handle's
+                # folded in at the wiring) — no run-level face exists (a
+                # deadline is a per-node declaration, never a per-call
+                # override), so the value rides the row as-is; the undeclared
+                # case is the column's NULL.
+                start_to_close=node.start_to_close,
+                required_worker_schema=(required_worker_schema),
+                retry=(node.execution_policy.retry if node.execution_policy is not None else None),
             )
-            # THE STATIC ROW'S OWN TERMS (CURE 2): a step declaring
-            # rate_limits carries the names on its metadata (the claim
-            # path's read); the no-bucket rows keep the base shape
-            # byte-identical.
-            row_meta = (
-                _row_metadata(
-                    flow_id,
-                    rate_limits=rate_limit_names(
-                        node.rate_limits, what=f"step {key!r}'s rate_limits"
-                    ),
-                )
-                if node.rate_limits
-                else {"flow_id": str(flow_id)}
+            # a step declaring rate_limits carries the bucket names on its
+            # metadata, and a step declaring reservations carries their names
+            # beside them (the claim path's read — the gate resolves the names
+            # through the resolved registry); the no-terms rows keep the base
+            # shape byte-identical. A keyed ref resolves its concrete name from
+            # the row's declared payload values — for a parentless node the
+            # run's own input first (the run's declared face: two runs, two
+            # inputs, two buckets — one bucket per run), then the node's data
+            # args (the values the body's signature binds); the wiring refuses
+            # the keyed shape on a node whose args resolve from parents, so a
+            # keyed decl here always has a face.
+            declared_args = tuple(v for kind, v in node.args if kind == "d")
+            key_payloads = (input, *declared_args) if not node.parents else declared_args
+            static_rl = rate_limit_names(
+                node.rate_limits, what=f"step {key!r}'s rate_limits"
+            ) + keyed_rate_limit_names(
+                node.rate_limits, key_payloads, what=f"step {key!r}'s rate_limits"
             )
+            static_res = reservation_names(
+                tuple(node.reservations), what=f"step {key!r}'s reservations"
+            ) + keyed_reservation_names(
+                tuple(node.reservations), key_payloads, what=f"step {key!r}'s reservations"
+            )
+            row_meta: dict[str, object] = _row_metadata(
+                flow_id,
+                rate_limits=static_rl,
+                reservations=static_res,
+                retry=spec.retry,
+            )
+            if node.kind == "chain_source":
+                # The public/logical source ordinal is born once before its
+                # first claim. Park/wake preserve it; only P0's genuine source
+                # failure disposition advances it.
+                row_meta["wf_source_logical_attempt"] = 1
             await conn.execute(
                 render_sql(NODE_INSERT_SQL, self.schema),
                 new_uuid(),
@@ -398,7 +659,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 spec.queue,
                 _jsonb(spec.payload),
                 spec.max_attempts,
-                "transient",
+                spec.retry_kind,
                 None,
                 None,
                 spec.step_key,
@@ -407,8 +668,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 _jsonb(row_meta),
                 step_idempotency_scope(flow_id),
                 step_idempotency_key(spec.step_key),
+                spec.priority,
+                # the resolved declaration (the step's own or the handle's
+                # folded default) — the NULL case binds the column's own
+                # default (the pre-fix row byte-identical).
+                spec.start_to_close,
+                # the run's flow_id — one cohort per run on the round-robin
+                # queues.
+                str(flow_id),
+                spec.required_worker_schema,
+                *row_retry_curve(spec.retry_policy),
             )
-        # The EDGES in a second pass (both endpoints exist).
+        # The edges in a second pass (both endpoints exist).
         for key in sorted(self.compiled.nodes):
             node = self.compiled.nodes[key]
             if node.kind == "map_join":
@@ -425,13 +696,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     continue  # the fork's outbox writes these edges at fire
                 if parent_row is None:
                     if parent_node is not None and parent_node.kind == "map_join":
-                        # THE MAP JOIN'S EDGE — the fork writes the edge
-                        # row at the source's finalize (the join's id is
-                        # minted there). The COUNTER IS RESERVED NOW: the
-                        # consumer can never dispatch before the join's
-                        # terminal (the consumption defect's dispatch-
-                        # ordering half — the arg resolution must never
-                        # run before the edge's terminal has a result).
+                        # the map JOIN'S edge — the fork writes the edge row at
+                        # the source's finalize . The counter is reserved now:
+                        # the consumer can never dispatch before the join's
+                        # terminal (the consumption defect's dispatch- ordering
+                        # half — the arg resolution must never run before the
+                        # edge's terminal has a result).
                         await conn.execute(
                             render_sql(INCREMENT_DEPS_SQL_TEMPLATE, self.schema), child_row
                         )
@@ -447,6 +717,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
 
     # ── drive ────────────────────────────────────────────────────────
 
+    async def _refuse_guarded_direct_run(self, flow_id: JobId) -> None:
+        """Root-level early refusal; roots never execute through the DB trigger.
+
+        The row read is the current root's immutable field, not an inferred
+        feature flag. A later child-only guarded row is also refused directly
+        at ``_run_node`` before body resolution or the claim CAS.
+        """
+        async with self.pool.acquire() as conn:
+            required: object = await conn.fetchval(
+                render_sql(FLOW_REQUIRED_WORKER_SCHEMA_SQL_TEMPLATE, self.schema), flow_id
+            )
+        if required is not None:
+            raise direct_capability_refusal(required, flow_id=flow_id)
+
     async def drive(
         self,
         flow_id: JobId,
@@ -456,78 +740,81 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         max_ticks: int = 5000,
         execute: bool = True,
     ) -> str:
-        """The driver (cut #10): dispatch + sweeps until ``until`` —
+        """The driver: dispatch + sweeps until ``until`` —
         ``"terminal"`` (the flow row is terminal) or ``"held"`` (a node
         waits on a human / a deadline). BOUNDED: ``max_ticks`` caps the
         loop (a hang is a defect with no stack trace); the bound is
         tested by the timeout pins.
 
-        ``execute=False`` is the ORCHESTRATION-ONLY drive (the execution
+        ``execute=False`` is the ORCHESTRATION-only drive (the execution
         verdict's probe-B shape): this process claims and executes
         NOTHING — the tick runs only the sweep arms (the crash-window
         heal + the outbox drain) and the flow's WORK is executed by the
         fleet's workers through the queue-routed dispatch (the
         worker-hosted door). The in-process body execution — the
         dev-loop driver — is the ``execute=True`` default, unchanged."""
+        await self._refuse_guarded_direct_run(flow_id)
         for _ in range(max_ticks):
             if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
                 return "terminal"
             if until == "held" and await self._any_held(flow_id):
                 return "held"
-            ran = await self.tick(flow_id, execute=execute)
+            ran = await self.tick(flow_id, execute=execute, _capability_checked=True)
             if not ran:
                 await asyncio.sleep(tick)
         return "max_ticks"
 
-    async def tick(self, flow_id: JobId, *, execute: bool = True) -> bool:
+    async def tick(
+        self, flow_id: JobId, *, execute: bool = True, _capability_checked: bool = False
+    ) -> bool:
         """One dispatch pass: claim + run + finalize every claimable node
         (``execute=True`` — the dev-loop driver); then the sweep arms
         (the crash-window heal + the outbox drain + the DURABLE TIMER's
-        fire — T28: the dev loop's timer arm mirrors the leader's, so a
+        fire — the dev loop's timer arm mirrors the leader's, so a
         timer flow completes in-process exactly as it completes on the
         fleet). With ``execute=False`` the sweep arms only — the
-        orchestration-only pass. Returns whether ANY node ran."""
+        orchestration-only pass. Returns whether any node ran."""
         ran = False
+        if execute and not _capability_checked:
+            await self._refuse_guarded_direct_run(flow_id)
         if execute:
             for row in await self._claimable(flow_id):
                 ran = True
                 await self._run_node(flow_id, row)
-            # THE DESCENDANT FLOWS (T28 — the child flows): the child is
-            # a REAL flow — the dev-loop driver walks the receipts and
-            # claims its rows too (the fleet door needs nothing: the
+                # the child is a real flow — the dev-loop driver walks the receipts
+            # and claims its rows too (the fleet door needs nothing: the
             # child's rows are queue-dispatched like any flow's).
             ran |= await self._drive_descendants(flow_id, execute=execute)
         from taskq.workflows._sweep import drain_outbox, sweep_join_rederive
 
         await sweep_join_rederive(self.pool, self.wsql)
-        # THE CHILD-JOIN WAKE (T28): the child's terminal is the join
-        # hold's resolver — the arm runs AFTER the root-maintain leg (a
-        # child terminalized THIS tick wakes its waiter THIS tick).
+        # the child's terminal is the join hold's resolver — the arm runs after
+        # the root-maintain leg (a child terminalized this tick wakes its
+        # waiter this tick).
         from taskq.workflows.api._hitl import sweep_child_joins
 
         await sweep_child_joins(self.pool, self.wsql)
-        # THE EXPIRY ARM (rv5-C5a — the dev-drives parity): the tick
-        # runs the signal sweep's expiry leg, so a ``timeout_s`` wait in
-        # a DEV DRIVE fires the ``Expired`` member exactly as it does
-        # under the leader's belt — the pre-cure dev face parked on the
-        # hold until ``max_ticks`` (the deadline inert, the dev loop a
-        # different engine from the fleet's).
+        # the tick runs the signal sweep's expiry leg, so a ``timeout_s`` wait
+        # in a dev drive fires the ``Expired`` member exactly as it does under
+        # the leader's belt — the pre-fix dev face parked on the hold until
+        # ``max_ticks`` (the deadline inert, the dev loop a different engine
+        # from the fleet's).
         from taskq.workflows.api._hitl import sweep_expired_signals
 
         await sweep_expired_signals(self.pool, schema=self.schema)
         await drain_outbox(self.pool, self.wsql)
         from taskq.workflows.api._hitl import sweep_due_timers
 
-        # THE DRAIN (the timer-cures lane's cure 4): the dev loop's
-        # timer arm mirrors the leader's — the due set empties per tick.
+        # the dev loop's timer arm mirrors the leader's — the due set empties
+        # per tick.
         await sweep_due_timers(self.pool, schema=self.schema, drain=True)
         return ran
 
     async def _drive_descendants(self, flow_id: JobId, *, execute: bool) -> bool:
         """The descendant flows' one claim pass (the dev-loop driver's
-        face — T28): the receipts' recursive walk (the UNION's dedup
+        face): the receipts' recursive walk (the UNION's dedup
         terminates it), each descendant's claimable nodes run through
-        ITS OWN runner (the child's compiled graph resolves its bodies
+        ITS own runner (the child's compiled graph resolves its bodies
         and args — never the parent's)."""
         from taskq.workflows._childflow import DESCENDANT_FLOWS_SQL_TEMPLATE
 
@@ -539,6 +826,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             child = await self._runner_for_flow(fid)
             if child is None or not execute:
                 continue
+            await child._refuse_guarded_direct_run(fid)
             for row in await child._claimable(fid):
                 ran = True
                 await child._run_node(fid, row)
@@ -566,12 +854,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             compiled = get_compiled_workflow(name)
         except KeyError:
             logger.warning(
-                "childflow.definition_unregistered",
+                "childflow.definition-unregistered",
                 run_id=str(flow_id),
                 workflow=name,
             )
             return None
-        child = FlowRunner(compiled, self.pool, self.schema)
+        # the worker's default deadline threads (the wf start_to_close
+        # fix — the descendant's runner inherits its parent runner's
+        # value: the same worker's settings govern the descendant's
+        # undeclared steps).
+        child = FlowRunner(
+            compiled, self.pool, self.schema, default_start_to_close=self._default_start_to_close
+        )
         self._child_runners[str(flow_id)] = child
         return child
 
@@ -581,35 +875,122 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         return [dict(r) for r in rows]
 
     async def _run_node(self, flow_id: JobId, row: dict[str, Any]) -> None:
+        required_worker_schema: object = row.get("required_worker_schema")
+        if required_worker_schema is not None:
+            raise direct_capability_refusal(
+                required_worker_schema, flow_id=flow_id, job_id=JobId(row["id"])
+            )
         node_key = row["step_key"]
         node = self.compiled.nodes.get(node_key)
         try:
             body = self._resolve_body(node_key, node)
         except WorkflowRunError as exc:
-            # THE VANISHED-NODE WEDGE's LOUD TERMINAL (rv5-t6's cure):
-            # the body resolves NOWHERE (the structural redeploy — the
-            # registry-is-truth law, D1). Before this cure the error
-            # escaped drive() RAW — the row stayed ``pending``, the root
-            # ``running``, NOTHING surfaced on the run (the eternal
-            # zombie). Now the node is CLAIMED (the attempt's ledger row
-            # exists — the record's truth) and routed through the
-            # ladder, whose DETERMINISTIC route terminal-fails it on the
-            # first attempt with the typed class on the record; T06's
-            # propagation fails the root. The driver never raises; the
-            # rows tell the operator the truth.
+            # the vanished-node wedge's loud terminal: the body resolves
+            # nowhere (the structural redeploy — the registry-is-truth law,
+            # D1). Before this fix the error escaped drive() raw — the row
+            # stayed ``pending``, the root ``running``, NOTHING surfaced on the
+            # run (the eternal zombie). Now the node is claimed (the attempt's
+            # ledger row exists — the record's truth) and routed through the
+            # ladder, whose deterministic route terminal-fails it on the first
+            # attempt with the typed class on the record; the propagation fails
+            # the root. The driver never raises; the rows tell the operator the
+            # truth.
             await self._fail_vanished_node(flow_id, row, exc)
             return
-        # THE CLAIM (two fenced writes, one grant of work): the JOB row
-        # goes running under this worker (the attempt increments — the
-        # fence's token), and the LEDGER claim inserts the attempt's
-        # running row (T05's contract — the terminal write keys the
-        # claim's own row; a skipped ledger claim strands the terminal).
+            # two fenced writes, one grant of work. the job row goes running under
+        # this worker (the attempt increments — the fence's token), and the
+        # ledger claim inserts the attempt's running row (the contract — the
+        # terminal write keys the claim's own row; a skipped ledger claim
+        # strands the terminal).
         ledger_id: JobId | None = None
+        ledger_claimed_at: Any = None
+        claimed_row: asyncpg.Record | None = None
         async with self.pool.acquire() as conn:
-            claimed = await conn.fetchval(
-                render_sql(NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
-            )
-            if claimed is not None:
+            try:
+                claimed_row = await conn.fetchrow(
+                    render_sql(NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
+                )
+            except asyncpg.PostgresError as claim_exc:
+                mapped = postgres_capability_error(
+                    claim_exc, flow_id=flow_id, job_id=JobId(row["id"])
+                )
+                if mapped is not None:
+                    raise mapped from claim_exc
+                raise
+            if claimed_row is not None:
+                from taskq.workflows.ledger import claim_step_ledger
+
+                # THE CLAIM'S OWN IDENTITY: the CAS returned the attempt AND
+                # the epoch it granted — the ledger claim and every
+                # context/finalize fence carry the pair (never a hardcoded
+                # zero).
+                claim = await claim_step_ledger(
+                    conn,
+                    self.wsql,
+                    flow_id=flow_id,
+                    job_id=JobId(row["id"]),
+                    step_key=row["step_key"],
+                    map_index=row["map_index"],
+                    attempt=int(claimed_row["attempt"]),
+                )
+                ledger_id = claim.ledger_id
+                ledger_claimed_at = claim.claimed_at
+        if claimed_row is None:
+            return  # someone else claimed it (or the flow died) — no error
+        attempt = int(claimed_row["attempt"])
+        claim_epoch_direct = int(claimed_row["claim_epoch"])
+
+        # the tail is shared with the worker-hosted execution
+        # ````(``_worker_execution``'s fleet-claimed door): from the ledger
+        # claim on, the machinery is one machinery — the auto projection, the
+        # emitter, the router, the ladder, the finalize — and the two drivers
+        # differ only in who claimed (this driver's own CAS granted a fresh
+        # epoch; the fleet's dispatch claim carries the row's epoch).
+        await self._execute_claimed(
+            flow_id,
+            row,
+            attempt,
+            ledger_id,
+            node,
+            body,
+            claim_epoch=claim_epoch_direct,
+            run_priority=self._run_priority,
+            ledger_claimed_at=ledger_claimed_at,
+        )
+
+    async def _fail_vanished_node(
+        self, flow_id: JobId, row: dict[str, Any], exc: WorkflowRunError
+    ) -> None:
+        """the VANISHED-NODE WEDGE's loud terminal (the
+        structural redeploy's pending row must terminal-fail, never
+        zombie). The node is claimed here (the CAS — pending → running,
+        the attempt incremented, the ledger claim's running row inserted:
+        the record's truth), then the error routes through
+        :meth:`LadderOps._ladder_or_fail` — :class:`VanishedNodeError` is
+        a DETERMINISTIC authoring failure (a re-run can never resolve a
+        key the registry does not carry), so the ladder's deterministic
+        route terminal-fails the node ON the first ATTEMPT with the typed
+        class + the cancel-then-restart remedy on the record, the ladder
+        unburned; the failed-parent propagation fails the root.
+
+        A lost CAS (a peer claimed the row first — or the flow died)
+        touches nothing: the winner's own drive owns the verdict."""
+        ledger_id: JobId | None = None
+        ledger_claimed_at: Any = None
+        claimed_row: asyncpg.Record | None = None
+        async with self.pool.acquire() as conn:
+            try:
+                claimed_row = await conn.fetchrow(
+                    render_sql(NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
+                )
+            except asyncpg.PostgresError as claim_exc:
+                mapped = postgres_capability_error(
+                    claim_exc, flow_id=flow_id, job_id=JobId(row["id"])
+                )
+                if mapped is not None:
+                    raise mapped from claim_exc
+                raise
+            if claimed_row is not None:
                 from taskq.workflows.ledger import claim_step_ledger
 
                 claim = await claim_step_ledger(
@@ -619,56 +1000,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     job_id=JobId(row["id"]),
                     step_key=row["step_key"],
                     map_index=row["map_index"],
-                    attempt=int(claimed),
+                    attempt=int(claimed_row["attempt"]),
                 )
                 ledger_id = claim.ledger_id
-        if claimed is None:
-            return  # someone else claimed it (or the flow died) — no error
-        attempt = int(claimed)
-
-        # THE TAIL IS SHARED with the worker-hosted execution
-        # (``_worker_execution``'s fleet-claimed door): from the ledger
-        # claim on, the machinery is ONE machinery — the auto projection,
-        # the emitter, the router, the ladder, the finalize — and the two
-        # drivers differ only in WHO CLAIMED (this driver's own CAS
-        # stamps claim_epoch 0; the fleet's dispatch claim carries the
-        # row's epoch).
-        await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
-
-    async def _fail_vanished_node(
-        self, flow_id: JobId, row: dict[str, Any], exc: WorkflowRunError
-    ) -> None:
-        """THE VANISHED-NODE WEDGE's loud terminal (rv5-t6's cure — the
-        structural redeploy's pending row must terminal-fail, never
-        zombie). The node is claimed HERE (the CAS — pending → running,
-        the attempt incremented, the ledger claim's running row inserted:
-        the record's truth), then the error routes through
-        :meth:`LadderOps._ladder_or_fail` — :class:`VanishedNodeError` is
-        a DETERMINISTIC authoring failure (a re-run can never resolve a
-        key the registry does not carry), so the ladder's deterministic
-        route terminal-fails the node ON THE FIRST ATTEMPT with the typed
-        class + the cancel-then-restart remedy on the record, the ladder
-        unburned; T06's propagation fails the root.
-
-        A lost CAS (a peer claimed the row first — or the flow died)
-        touches nothing: the winner's own drive owns the verdict."""
-        async with self.pool.acquire() as conn:
-            claimed = await conn.fetchval(
-                render_sql(NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
-            )
-            if claimed is not None:
-                from taskq.workflows.ledger import claim_step_ledger
-
-                await claim_step_ledger(
-                    conn,
-                    self.wsql,
-                    flow_id=flow_id,
-                    job_id=JobId(row["id"]),
-                    step_key=row["step_key"],
-                    map_index=row["map_index"],
-                    attempt=int(claimed),
-                )
-        if claimed is None:
+                ledger_claimed_at = claim.claimed_at
+        if claimed_row is None:
             return  # someone else claimed it (or the flow died) — their drive owns the verdict
         logger.warning(
             "node.vanished-from-registry",
@@ -677,13 +1013,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             error_class=type(exc).__name__,
             error=str(exc)[:200],
         )
-        await self._ladder_or_fail(flow_id, row, int(claimed), None, exc)
+        await self._ladder_or_fail(
+            flow_id,
+            row,
+            int(claimed_row["attempt"]),
+            None,
+            exc,
+            claim_epoch=int(claimed_row["claim_epoch"]),
+            ledger_id=ledger_id,
+            ledger_claimed_at=ledger_claimed_at,
+        )
 
     def _deps_tail(self, body: Callable[..., object], wired_count: int) -> tuple[object, ...]:
-        """THE DEPS SEAM'S INJECTION (the DI capability's runtime face):
-        the bound instance rides as the LAST positional argument when the
+        """
+        the bound instance rides as the last positional argument when the
         body declares the deps shape (one positional param beyond ctx +
-        the wired sources — the SAME shape E12 convicts at build; the
+        the wired sources — the same shape E12 rejects at build; the
         runtime read is the signature's positional truth, so an
         unresolvable-annotations body still gets the injection it
         declared). The instance is the app's, bound once — never a copy,
@@ -694,6 +1039,36 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             return ()
         return (self._deps,)
 
+    def _body_deadline_seconds(self, row: dict[str, Any]) -> float | None:
+        """The deadline resolution at the enforcement (the vanilla
+        consumer's own
+        ``_effective_start_to_close`` arithmetic):
+        the ROW's own stamp (the declared bound the INSERTs wrote — the
+        step's/arm's resolution) > the worker's default (the runner's
+        field — the fleet door threads the worker settings' value);
+        ``None`` everywhere = UNBOUNDED (the body invoked inline)."""
+        row_bound = row.get("start_to_close")
+        effective = (
+            row_bound  # pyright: ignore[reportUnknownVariableType] — the row dict's jsonb read is Any-typed; the interval's decode is the timedelta the column carries.
+            if row_bound is not None
+            else self._default_start_to_close
+        )
+        if effective is None:
+            return None
+        return (
+            effective.total_seconds() if isinstance(effective, timedelta) else float(effective)  # pyright: ignore[reportArgumentType]  # Why: a hand-built row dict may carry the seconds number — the same degrade the fleet door's reads keep.
+        )
+
+    def _body_queue(self, node: Any, row: dict[str, Any]) -> str | None:
+        if node is not None:
+            return cast("str | None", node.queue)
+        registered = self._terminal_effects.get(row["step_key"])
+        if registered is None:
+            return None
+        queue = registered.effect.policy.queue
+        assert isinstance(queue, str)  # TerminalEffect declaration validated
+        return queue
+
     async def run_fleet_claimed_step(
         self,
         flow_id: JobId,
@@ -701,24 +1076,34 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         *,
         attempt: int,
         claim_epoch: int,
+        run_priority: int | None = None,
     ) -> str:
-        """THE WORKER-HOSTED EXECUTION DOOR (the execution verdict's gap-1
-        cure): *row* is a node the FLEET's queue-routed dispatch already
+        """the WORKER-HOSTED EXECUTION DOOR (the execution verdict's gap-1
+        fix): *row* is a node the FLEET's queue-routed dispatch already
         claimed (``dispatch_batch`` — the row is ``running``, the attempt
         incremented, the claim epoch bumped, the lock held by the worker
-        that dispatched it). This door borrows the runner's OWN machinery
+        that dispatched it). This door borrows the runner's own machinery
         — the ledger claim, the emitter, the router, the ladder, the
         two-transaction finalize — and differs from :meth:`_run_node`
-        ONLY in WHO CLAIMED: no claim CAS runs here (the row is past
+        only in WHO CLAIMED: no claim CAS runs here (the row is past
         ``pending``), the ledger claim keys the fleet claim's attempt,
         and every fence carries the fleet claim's epoch.
 
         *row* is the claimed node's read model: ``id`` / ``step_key`` /
-        ``map_index`` / ``payload`` / ``trace_id`` — the fields the tail
-        consumes (the worker's intercept reads them off the claimed row
-        plus one bounded read of the step key and map index).
+        ``map_index`` / ``payload`` / ``trace_id`` / ``start_to_close`` —
+        the fields the tail consumes (the worker's intercept reads them
+        off the claimed row plus one bounded read of the step key and
+        map index; the deadline's resolution reads the row's own
+        declared bound off the same decode).
 
-        THE LEASE: the worker's heartbeat renews the fleet claim's lease
+        ``run_priority`` is the RUN's per-call override (the wf-priority
+        fix), resolved by the CALLER from the root's metadata stamp
+        (``execute_flow_job``'s bounded read — the same round trip the
+        workflow-name stamp rides): the fork builds this door performs
+        resolve it as the law's first level. ``None`` = no override (the
+        declarations — or the column default — speak).
+
+        The worker's heartbeat renews the fleet claim's lease
         for as long as the body runs (the row is ``running`` and locked
         by this worker); a lapsed lease re-claimed by a peer fences THIS
         attempt's terminal out (the CAS) — the same at-least-once
@@ -728,18 +1113,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
 
         node_key = row["step_key"]
         node = self.compiled.nodes.get(node_key)
-        # THE FLEET DOOR KEEPS THE PARKING SHAPE (the deploy matrix's own
-        # law — the door's pins enforce it): a body unresolvable in THIS
-        # process raises; the door translates it to the
-        # WorkflowBodyUnresolvableError parking (the loud, budget-free
-        # snooze) and the fleet's OTHER workers — the new deploy's
-        # rolling wave — re-claim and finish the run. This is the skew
-        # face, deliberately NOT T6's terminal: the dev drive
-        # (:meth:`_run_node`) is the workflow-OWNING process (no other
-        # resolver exists — the vanished key is the run's own wedge, and
-        # THAT door terminal-fails loudly); the fleet worker is one
-        # claimant among many (the parking is the handoff, never a
-        # zombie).
+        # a body unresolvable in this process raises; the door translates it to
+        # the WorkflowBodyUnresolvableError parking (the loud, budget-free
+        # snooze) and the fleet's other workers — the new deploy's rolling wave
+        # — re-claim and finish the run. This is the skew face, deliberately
+        # not the terminal-fail door: the dev drive (:meth:`_run_node`) is the
+        # workflow-owning process (no other resolver exists — the vanished key
+        # is the run's own wedge, and that door terminal-fails loudly); the
+        # fleet worker is one claimant among many (the parking is the handoff,
+        # never a zombie).
         body = self._resolve_body(node_key, node)
         async with self.pool.acquire() as conn:
             claim = await claim_step_ledger(
@@ -752,7 +1134,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 attempt=attempt,
             )
         return await self._execute_claimed(
-            flow_id, row, attempt, claim.ledger_id, node, body, claim_epoch=claim_epoch
+            flow_id,
+            row,
+            attempt,
+            claim.ledger_id,
+            node,
+            body,
+            claim_epoch=claim_epoch,
+            run_priority=run_priority,
+            ledger_claimed_at=claim.claimed_at,
         )
 
     async def _execute_claimed(
@@ -765,29 +1155,107 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         body: Any,
         *,
         claim_epoch: int = 0,
+        run_priority: int | None = None,
+        ledger_claimed_at: Any = None,
     ) -> str:
         """The shared execution tail, from the ledger claim to the
         terminal: the in-process driver (:meth:`_run_node`) and the
         worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
-        both land here — ONE execution semantics, the machinery never
+        both land here — one execution semantics, the machinery never
         forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
         is the fence epoch the finalize/emit fences carry: the runner's
         own claim stamps 0; a fleet-claimed row carries its dispatch
         claim's epoch. Returns the attempt's outcome label (the caller's
-        log line — the ROW is the truth, this is the record's echo)."""
-        # THE PER-ATTEMPT CODE-VERSION RECORD (T03/§22.1 — the deploy
-        # matrix's audit cure): the record is "written at claim by the
-        # workflow claim path" — every claim's execution stamps the
-        # row's ``code_version`` with the body's canonical content hash,
-        # so a re-claimed node's SECOND attempt rewrites the record (the
-        # §22.1 record rides BOTH claims). A RECORD, never a gate: a
-        # hash failure is a logged loss, never a node failure.
+        log line — the ROW is the truth, this is the record's echo).
+
+        ``ledger_claimed_at`` is the ledger claim's own RETURNING instant
+        (the re-mint guard's discriminator) — threaded to the
+        deferral's zombie fence so a re-minted row is never fenced by the
+        stale claimant.
+
+        ``run_priority`` is the RUN's per-call override (the wf-priority
+        fix): the fork builds (the map's children, the route's arms)
+        resolve it as the law's first level — the dev door passes the
+        create-time echo, the fleet door the root's metadata stamp's
+        resolution. ``None`` = no override declared (the declarations —
+        or the column default — speak).
+
+        the STEP SPAN (the wf's face of the vanilla obs law — the
+        contract lives in ``workflows/_obs.py``): THIS call is one
+        attempt's lifecycle, so the span wraps it whole — the name
+        ``step {step_key}``, the ``taskq.*`` attribute document (the
+        flow link, the workflow, the step key, the attempt ordinal, the
+        node's queue when the decl carries one, the map index when the
+        row has one), the outcome attribute echoing THIS method's return
+        label, and the status mapped by the vanilla consumer span's own
+        law. Telemetry off → the attributes are never built (the
+        vanilla's gated-allocation law) and the span is the
+        non-recording no-op."""
+        with safe_start_span(
+            step_span_name(row["step_key"]),
+            kind=SpanKind.INTERNAL,
+            attributes=step_span_attributes(
+                flow_id=str(flow_id),
+                workflow=self.compiled.name,
+                step_key=row["step_key"],
+                attempt=attempt,
+                queue=self._body_queue(node, row),
+                map_index=row["map_index"],
+            ),
+        ) as span:
+            try:
+                outcome = await self._execute_claimed_tail(
+                    flow_id,
+                    row,
+                    attempt,
+                    ledger_id,
+                    node,
+                    body,
+                    claim_epoch=claim_epoch,
+                    run_priority=run_priority,
+                    ledger_claimed_at=ledger_claimed_at,
+                )
+            except Exception:
+                # safe_start_span's fallback recorded the scrubbed error on its
+                # way out; the outcome attribute names the ledger's own
+                # 'crashed' vocabulary.
+                span.set_attribute("taskq.outcome", "crashed")
+                raise
+            finish_step_span(span, outcome)
+            return outcome
+
+    async def _execute_claimed_tail(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+        run_priority: int | None = None,
+        ledger_claimed_at: Any = None,
+    ) -> str:
+        """The claim tail's body — :meth:`_execute_claimed` wraps THIS
+        call in the step span; the semantics, the fences and the
+        returns are untouched by it (the spans wrap the lifecycle
+        points, they never steer them)."""
+        # the worker-module imports are lazy (the deadline enforcement and its
+        # marker live in the worker's own modules — ``import taskq`` never
+        # imports them through the authoring surface).
+        from taskq.worker._handlers import _StartToCloseExceededError
+
+        # the record is "written at claim by the workflow claim path" — every
+        # claim's execution stamps the row's ``code_version`` with the body's
+        # canonical content hash, so a re-claimed node's second attempt
+        # rewrites the record (the record rides both claims). A record, never a
+        # gate: a hash failure is a logged loss, never a node failure.
         await self._stamp_code_version(JobId(row["id"]), row["step_key"], node, body)
 
-        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
-        # additive write, class='auto', the ONE stream. Best-effort: a
-        # lost projection is a logged freshness loss, never a node
-        # failure (the asymmetry — the projection never runs inside the
+        # the claim seam's additive write, class='auto', the one stream.
+        # Best-effort: a lost projection is a logged freshness loss, never a
+        # node failure (the asymmetry — the projection never runs inside the
         # claim's statements).
         await self._project_auto(
             flow_id,
@@ -796,20 +1264,25 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
         )
 
-        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
-        # flow's state — never at create time.
+        # decided now, against the flow's state — never at create time.
         if (
             node is not None
             and node.skip is not None
             and node.skip(await self._flow_state(flow_id))
         ):
-            await self._finalize_skipped(flow_id, row, node, claim_epoch=claim_epoch)
+            await self._finalize_skipped(
+                flow_id,
+                row,
+                node,
+                claim_epoch=claim_epoch,
+                ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
+            )
             return "skipped"
 
-        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
-        # declared progress schema rides the node's decl (a MAP CHILD
-        # inherits its source's: the fork-spawned keys have no decl of
-        # their own).
+            # the emission op's buffer: the attempt's own emitter — the declared
+        # progress schema rides the node's decl (a map child inherits its
+        # source's: the fork-spawned keys have no decl of their own).
         emitter = ProgressEmitter(
             self.pool,
             self.wsql,
@@ -818,34 +1291,52 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             schema_decl=self._progress_schema(row["step_key"], node),
         )
 
-        # THE LOOP NODE (T19): the driver owns the node's lifecycle
-        # (the iterations, the walls) — the caller's body path never
-        # runs for it. The emitter rides in; the driver's ctx gets it,
-        # and the close is THIS call's finally (bounded, best-effort —
-        # the driver's internal finalizes never wait on the buffer).
+        # the driver owns the node's lifecycle (the iterations, the walls) —
+        # the caller's body path never runs for it. The emitter rides in; the
+        # driver's ctx gets it, and the close is this call's finally (bounded,
+        # best-effort — the driver's internal finalizes never wait on the
+        # buffer).
         if node is not None and node.loop_spec is not None:
             try:
                 await self._run_loop_node(
-                    flow_id, row, attempt, node, ledger_id, emitter, claim_epoch=claim_epoch
+                    flow_id,
+                    row,
+                    attempt,
+                    node,
+                    ledger_id,
+                    emitter,
+                    claim_epoch=claim_epoch,
+                    ledger_claimed_at=ledger_claimed_at,
                 )
             finally:
                 await emitter.aclose()
             return "loop"
 
         route_fork: ForkSpec | None = (
-            None  # the typed route's prebuilt fork (T27 — the body path builds it from the LIVE elements)
+            None  # the typed route's prebuilt fork (the body path builds it from the live elements)
         )
+        # Chain routing/finalization is intentionally outside the body-failure
+        # catch. A successful body followed by a failing route write is
+        # machinery recovery, never another author-classified body attempt.
+        chain_success: tuple[Any, object, dict[str, object]] | None = None
 
-        # THE RESULT'S BINDING (the tail's read): the miss path's
-        # envelope, None on the hit path (the hit's finalize IS the
-        # tail's — below — and returns before the miss finalize reads
+        # the miss path's envelope, None on the hit path (the hit's finalize is
+        # the tail's — below — and returns before the miss finalize reads
         # this).
         result: dict[str, object] | None = None
+        logical_attempt = attempt
+        if node is not None and node.kind == "chain_source":
+            from taskq.workflows.api._attempt import resolve_source_logical_attempt
+
+            # The durable carrier is the only public source attempt authority;
+            # the actual claim's physical attempt stays private to fencing.
+            logical_attempt = resolve_source_logical_attempt(row["metadata"], attempt)
         ctx = build_step_context(
             flow_id=flow_id,
             job_id=JobId(row["id"]),
             node_key=row["step_key"],
-            attempt=attempt,
+            attempt=logical_attempt,
+            physical_attempt=attempt,
             pool=self.pool,
             wsql=self.wsql,
             input=await self._flow_input(flow_id),
@@ -856,44 +1347,42 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             redact=self._redact_hook(),
             progress=emitter,
             claim_epoch=claim_epoch,
-            # THE MAX-IN-FLIGHT BOUND (T20 / DH9): the RUN's declared
-            # admission control, handed to every ctx.emit_batch — the
-            # workflow-level declare's runtime wiring.
+            # the run's declared admission control, handed to every
+            # ctx.emit_batch — the workflow-level declare's runtime wiring.
             max_in_flight=getattr(self.compiled, "max_in_flight", None),
-            # THE RUNTIME INFO (the context contract — the observability
+            # the runtime info (the context contract — the observability
             # primitive the body asserts on).
             flow_name=self.compiled.name,
-            queue=node.queue if node is not None else None,
+            queue=self._body_queue(node, row),
             claimed_at=datetime.now(UTC),
+            run_priority=run_priority,
         )
         try:
-            # THE LADDER'S BOUNDARY OPENS AT THE ARGS RESOLUTION (the
-            # deploy matrix's fleet-crash cure): the parents' results'
-            # read and the arg resolution ran BEFORE the try — a
-            # resolution failure (a parent with no result yet, a payload
-            # decode) escaped the ladder's classification and killed the
-            # WORKER (the exception surfaced on the dispatch loop, the
-            # whole process died with every live run of its estate).
-            # The boundary is the EXECUTION'S boundary: from the ledger
-            # claim on, anything the attempt raises routes through the
-            # ladder — never through the worker's skull.
+            # the parents' results' read and the arg resolution ran before the
+            # try — a resolution failure (a parent with no result yet, a
+            # payload decode) escaped the ladder's classification and killed
+            # the worker (the exception surfaced on the dispatch loop, the
+            # whole process died with every live run of its estate). The
+            # boundary is the execution's boundary: from the ledger claim on,
+            # anything the attempt raises routes through the ladder — never
+            # through the worker's skull.
             parents_ordered, parents_by_key = await self._parent_results(row["id"])
             payload_raw = row["payload"]
             payload = _json_loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
             assert isinstance(payload, dict)  # the Any-contract walk (the seed wrote the shape)
             payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
-            args = self._resolve_args(node, body, parents_by_key, payload_doc)
+            args = self._resolve_args(
+                node, body, parents_by_key, payload_doc, node_key=row["step_key"]
+            )
 
-            # THE CROSS-RUN CACHE'S CLAIM-PATH SEAM (T25 — the TEMPORAL
-            # dedup; the arbiter owns the CONCURRENT one). Opt-in per
-            # step (``cache=``), the PLAIN step face only: the address
-            # is the Nix-style recursive hash — the body's §22.1
-            # code-version canon + the resolved input's canonical jsonb
-            # — computed HERE, on the rows. A HIT (the row's freshness
-            # leg, the DB clock) delivers the cached envelope through
-            # the ordinary fenced finalize — the body NEVER runs, the
-            # node row carries the receipt. A MISS runs the body; the
-            # store happens ON TERMINAL-SUCCEEDED ONLY (the
+            # the cross-run cache's claim-path seam . Opt-in per step
+            # ````(``cache=``), the plain step face only: the address is the
+            # Nix-style recursive hash — the body's §22.1 code-version canon +
+            # the resolved input's canonical jsonb — computed here, on the
+            # rows. A hit (the row's freshness leg, the DB clock) delivers the
+            # cached envelope through the ordinary fenced finalize — the body
+            # never runs, the node row carries the receipt. A miss runs the
+            # body; the store happens on terminal-succeeded only (the
             # failed-run-squats-the-key bug closed by construction).
             cache_address: str | None = None
             cache_hit: CachedStep | None = None
@@ -915,29 +1404,25 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
 
                     hit = await lookup_step_cache(self.pool, self.wsql, address=cache_address)
                     if hit is not None:
-                        # THE HIT: the cached envelope IS the result —
-                        # the finalize runs OUTSIDE the body boundary
-                        # (the claim tail, below — the unify cure): the
-                        # body NEVER runs, the same typed decode
-                        # downstream.
+                        # the cached envelope is the result — the finalize runs
+                        # outside the body boundary (the claim tail, below —
+                        # the unify arm): the body never runs, the same typed
+                        # decode downstream.
                         cache_hit = hit
 
             if cache_hit is not None:
-                # THE HIT: the body NEVER runs — the cached envelope's
-                # finalize is the CLAIM TAIL'S (below, outside the body
-                # boundary: the unify cure — a finalize fault there is
-                # machinery, never a body failure).
+                # the body never runs — the cached envelope's finalize is the
+                # claim tail's (below, outside the body boundary: the unify arm
+                # — a finalize fault there is machinery, never a body failure).
                 pass
             elif body is None:
-                # THE DEFAULT IDENTITY PACKER (the join/gather kinds): the
-                # join's result IS the decoded parents' list — the FLAT
-                # shape the downstream body's list param declares (the
-                # gather's contract): a GATHER whose every parent returned
-                # a list flattens one level (the barrier over per-stage
-                # lists); the MAP join packs the items as-is (a map over
-                # list items is a collect of lists — never flattened).
-                # Edge order (map children distinct, the gather's wiring
-                # order).
+                # the join's result is the decoded parents' list — the flat
+                # shape the downstream body's list param declares (the gather's
+                # contract): a gather whose every parent returned a list
+                # flattens one level (the barrier over per-stage lists); the
+                # map join packs the items as-is (a map over list items is a
+                # collect of lists — never flattened). Edge order (map children
+                # distinct, the gather's wiring order).
                 parents_values = [r for _key, r in parents_ordered]
                 if (
                     node is not None
@@ -948,59 +1433,73 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     parents_values = [
                         item for v in parents_values for item in cast(list[object], v)
                     ]
-                # THE COLLECTED RESULT'S CAP (the F4 cure): the envelope
+                # The collected result's cap: the envelope
                 # compacts past the estate's result cap — the same
-                # discipline the failures'-collect ships (the cap, the
-                # honest __truncated__ marker, the detail on the child
-                # rows). Under the cap: byte-identical to the pre-cure
-                # shape.
+                # discipline the failures' collect ships (the cap, the
+                # __truncated__ marker, the detail on the child
+                # rows). Under the cap: byte-identical.
                 result = _bounded_collect(parents_values)
             else:
                 deps_tail = self._deps_tail(body, len(args))
-                outcome_value = await body(ctx, *args, *deps_tail)
+                deadline_s = self._body_deadline_seconds(row)
+                if deadline_s is None:
+                    # The control (the byte-identical law): no declaration
+                    # anywhere (the row's column NULL, no worker default)
+                    # — the body invoked inline, no task, no machinery, no
+                    # deadline.
+                    outcome_value = await body(ctx, *args, *deps_tail)
+                else:
+                    # The deadline (the start_to_close bound — the
+                    # vanilla enforcement, imported: the
+                    # TimeoutError-conflation fix, the unwind budget,
+                    # the hostile-finally handling inherited). The body
+                    # runs in its own task; the deadline's expiry raises
+                    # the marker (a bare TimeoutError the body raised
+                    # stays its own ordinary failure — the same split the
+                    # vanilla rows record); a body-raised Snooze within
+                    # the window propagates (the deferral wins the race —
+                    # the vanilla's own semantics).
+                    from taskq.worker._consumer import (
+                        _enforce_start_to_close,  # pyright: ignore[reportPrivateUsage]  # Why: the deadline enforcement is the consumer module's shared machinery by design (the wf face imports the same function — the three holes, the unwind budget, the hostile-finally handling inherited); the private name is the honest boundary of that import.
+                    )
+
+                    async def _run_wf_body(
+                        _job: object, run_ctx: object
+                    ) -> object:  # the enforcement's shared face: the row is opaque here
+                        return await body(cast("StepContext", run_ctx), *args, *deps_tail)
+
+                    outcome_value = await _enforce_start_to_close(
+                        _run_wf_body, None, ctx, deadline_s
+                    )
                 chain = self._chain_steps.get(row["step_key"])
                 if chain is not None:
-                    # THE CHAIN STEP (T20): the body's typed outcome IS
-                    # the router's decision — the finalize routes it (at
-                    # most one forked child, no join). The engine's
-                    # fork-at-finalize machinery owns the child row; the
-                    # ROUTE is this runner's decision.
-                    await self._finalize_chain_step(
-                        flow_id,
-                        row,
-                        attempt,
-                        row["step_key"],
-                        chain,
-                        outcome_value,
-                        payload_doc,
-                        claim_epoch=claim_epoch,
-                    )
-                    return "succeeded"
-                if isinstance(outcome_value, Exit):
-                    # THE TYPED EARLY-EXIT (§17.1): the sentinel ends the
-                    # node NOW — terminal-succeed with the typed payload,
-                    # the downstream graph marked skipped-with-the-record.
-                    exit_value = cast("Exit[object]", outcome_value)  # pyright: ignore[reportUnknownArgumentType]  # Why: the body's object-typed return — the isinstance guard IS the runtime shape check; the sentinel's payload is the walk's boundary.
+                    # Only capture the completed body/value here. Routing and all
+                    # persistence execute after the body exception boundary.
+                    chain_success = (chain, outcome_value, payload_doc)
+                elif isinstance(outcome_value, Exit):
+                    # the sentinel ends the node now — terminal-succeed with
+                    # the typed payload, the downstream graph marked
+                    # skipped-with-the-record.
+                    exit_value = cast("Exit[object]", outcome_value)  # pyright: ignore[reportUnknownArgumentType]  # Why: the body's object-typed return — the isinstance guard is the runtime shape check; the sentinel's payload is the walk's boundary.
                     await self._finalize_exit(
                         flow_id, row, attempt, node, exit_value, claim_epoch=claim_epoch
                     )
                     return "succeeded"
                 if node is not None and node.map_arms is not None:
-                    # THE TYPED ROUTE'S ARM DISPATCH (T27) — on the LIVE
-                    # elements (the runtime TYPE is the dispatch key; the
-                    # encoded envelope's dicts arrive too late). The
-                    # no-arm element is the LOUD death (the chain face's
-                    # shape): terminal-FAILED with
-                    # ``error_class='RouterNotTotal'``, NOTHING routes —
-                    # the skip-silent shape is dead (T27's R1).
+                    # the typed route's arm dispatch — on the live elements .
+                    # The no-arm element is the loud death: terminal-failed
+                    # with ``error_class='RouterNotTotal'``, NOTHING routes —
+                    # the skip-silent shape is dead.
                     from taskq.workflows.chain import RouterNotTotal
 
                     try:
-                        route_fork = self._route_fork(row, node, outcome_value)
+                        route_fork = self._route_fork(
+                            row, node, outcome_value, run_priority=run_priority
+                        )
                     except RouterNotTotal as exc:
                         await emitter.aclose()
                         logger.warning(
-                            "node.router_not_total",
+                            "node.router-not-total",
                             run_id=str(flow_id),
                             node=row["step_key"],
                             outcome=repr(outcome_value)[:200],
@@ -1018,16 +1517,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                             error_class="RouterNotTotal",
                             error_message=str(exc)[:500],
                             map_index=row["map_index"],
+                            ledger_id=ledger_id,
+                            ledger_claimed_at=ledger_claimed_at,
                         )
                         return "succeeded"
                 result = encode_result(outcome_value)
         except NodeHeldError as held:
-            # THE HOLD (T10): the node rests in the held representation
-            # (pending + the deadline + the signal row as truth) — NO
-            # terminal, NO ledger failure; the resume re-executes the
-            # body from the top. The runner's tick reports it ran. The
-            # buffer's final flush runs FIRST (bounded, best-effort —
-            # the hold is not a terminal; the progress survives).
+            # the node rests in the held representation (pending + the deadline
+            # + the signal row as truth) — no terminal, no ledger failure; the
+            # resume re-executes the body from the top. The runner's tick
+            # reports it ran. The buffer's final flush runs first (bounded,
+            # best-effort — the hold is not a terminal; the progress survives).
             await emitter.aclose()
             logger.info(
                 "node.held",
@@ -1036,47 +1536,124 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 hold_id=held.hold_id,
                 signals=list(held.signal_names),
             )
+            record_step_held(trace.get_current_span(), held.hold_id, held.signal_names)
             return "held"
-        except Exception as exc:  # Why: the ladder's boundary — ANY body failure routes through the retry classification.
-            # THE BUFFER CLOSES BEFORE THE LADDER (the asymmetry's ordering
-            # law): the final flush is bounded and best-effort — it can
-            # cost freshness, never the ladder's correctness.
+        except (Snooze, RetryAfter) as exc:
+            # the body's typed control-flow signals re-schedule the node at the
+            # delay — the attempt refunded (never burned: a deferral did not
+            # execute), the budget-gated consuming face terminalised through
+            # the wf terminal door, the run alive, no terminal, no decrement
+            # (the join's accounting unchanged). The catch's placement is the
+            # vanilla catch's own: around the body invocation, before the
+            # ladder's body-failure catch — the signals are the body's control
+            # flow, never a failure the ladder may classify. The buffer closes
+            # first (the asymmetry's ordering law — the progress published
+            # before the deferral survives it). the seat: this is the runner's
+            # step-body seam (the step, the chain, the map's item children, the
+            # route's arms — every body this tail invokes); the loop driver's
+            # iteration bodies have their own boundary (the loop's body-failure
+            # face, unchanged).
             await emitter.aclose()
-            await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
+            record_step_deferred(trace.get_current_span(), exc)
+            verdict = await self._defer_step(
+                flow_id,
+                row,
+                attempt,
+                ledger_id,
+                exc,
+                claim_epoch=claim_epoch,
+                ledger_claimed_at=ledger_claimed_at,
+            )
+            if verdict == "laddered":
+                # the body's real signal is in scope, the route is the terminal
+                # (retried False).
+                record_step_laddered(trace.get_current_span(), exc, retried=False)
+            return verdict
+        except _StartToCloseExceededError:
+            # the marker is the machinery's own expiry (the enforcement raised
+            # it — a body-raised TimeoutError propagates unchanged and takes
+            # the generic catch below, the #791 split). The attempt burns — a
+            # real execution, the retry per the contract, never a deferral (the
+            # deadline-deferral's sibling; the vanilla's own race law mirrored:
+            # a body converting the deadline's cancellation to a Snooze loses —
+            # the clock's win is final). The cancel mark is fenced in-statement
+            # (the vanilla mark_retry's own law: a phase-carrying row matches
+            # no arm — the cancel wins).
+            await emitter.aclose()
+            return await self._deadline_disposition(
+                flow_id,
+                row,
+                attempt,
+                node,
+                claim_epoch=claim_epoch,
+                ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
+            )
+        except Exception as exc:  # Why: the ladder's boundary — any body failure routes through the retry classification.
+            # the final flush is bounded and best-effort — it can cost
+            # freshness, never the ladder's correctness.
+            await emitter.aclose()
+            route = await self._ladder_or_fail(
+                flow_id,
+                row,
+                attempt,
+                node,
+                exc,
+                claim_epoch=claim_epoch,
+                ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
+            )
+            # the scrubbed render + the ladder's route (retried / the
+            # terminal). The current span is this attempt's step span (the
+            # wrapper above).
+            if route == "deferred":
+                return "deferred"
+            record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
+            if route in ("cancelled", "fenced"):
+                return route
             return "laddered"
         try:
-            # THE CLAIM TAIL'S MACHINERY BOUNDARY (the K7 cure — ONE
-            # fault, ONE semantics): everything from here to the return
-            # is the MACHINERY's own statements (the emitter close, the
-            # finalize on EITHER face, the receipt write, the cache
-            # store) — the body boundary above already routed the body's
-            # exceptions, so ANY exception reaching THIS boundary
-            # escaped the machinery. The classifier's law applies
-            # symmetrically to both finalize faces: an INFRA fault (the
-            # storm's ConnectionError class — :func:`is_infra_fault`)
-            # is the RECLAIM class — the ledger records 'crashed' (never
-            # 'failed': the ladder unburned, no failure record), the row
-            # re-pends (reclaim-eligible — the cleared-fault re-drive
-            # completes the step, via the HIT when cached: the body
-            # still never runs), and the ESCAPE IS PRESERVED (the
-            # re-raise — the driver's loop counts it, the F2-2 arm).
+            # everything from here to the return is the machinery's own
+            # statements (the emitter close, the finalize on either face, the
+            # receipt write, the cache store) — the body boundary above already
+            # routed the body's exceptions, so any exception reaching this
+            # boundary escaped the machinery. The classifier's law applies
+            # symmetrically to both finalize faces: an infra fault (the storm's
+            # ConnectionError class — :func:`is_infra_fault`) is the reclaim
+            # class — the ledger records 'crashed' (never 'failed': the ladder
+            # unburned, no failure record), the row re-pends (reclaim-eligible
+            # — the cleared-fault re-drive completes the step, via the hit when
+            # cached: the body still never runs), and the escape is preserved
+            # (the re-raise — the driver's loop counts it, the F2-2 arm).
             # Anything else re-raises unchanged (the loud escape).
             await emitter.aclose()
+            if chain_success is not None:
+                chain, chain_outcome, chain_payload = chain_success
+                await self._finalize_chain_step(
+                    flow_id,
+                    row,
+                    attempt,
+                    row["step_key"],
+                    chain,
+                    chain_outcome,
+                    chain_payload,
+                    claim_epoch=claim_epoch,
+                    run_priority=run_priority,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
+                )
+                return "succeeded"
             if cache_hit is not None:
-                # THE HIT'S FINALIZE — THE CLAIM TAIL, OUTSIDE THE BODY
-                # BOUNDARY (the unify cure, CURE 6a): a fault escaping THIS
-                # finalize is the MACHINERY's seat, never the body's — the
-                # body never ran, and the identical fault on the MISS path
-                # (below) escapes through this exact tail (the
-                # escape-point contract: the machinery boundary's
-                # classifier reads WHERE the error escaped). The pre-cure
-                # seat routed the hit's finalize fault through the body
-                # ladder: a transient blip terminal-failed a
-                # max_attempts=1 step whose body never ran (the live
-                # repro: .measurements/cache-cures/hit_finalize_fault_repro.py —
-                # node failed, InterfaceError on the record, the run killed
-                # UnabsorbedNodeFailure). One fault, one seat: the infra
-                # class — the reclaim, the ladder unburned.
+                # a fault escaping this finalize is the machinery's seat, never
+                # the body's — the body never ran, and the identical fault on
+                # the miss path (below) escapes through this exact tail (the
+                # escape-point contract: the machinery boundary's classifier
+                # reads WHERE the error escaped). The pre-fix seat routed the
+                # hit's finalize fault through the body ladder: a transient
+                # blip terminal-failed a max_attempts=1 step whose body never
+                # ran (the live node failed, InterfaceError on the record, the
+                # run killed UnabsorbedNodeFailure). One fault, one seat: the
+                # infra class — the reclaim, the ladder unburned.
                 final = await self._finalize_success(
                     flow_id,
                     row,
@@ -1084,22 +1661,24 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     node,
                     cache_hit.envelope,
                     claim_epoch=claim_epoch,
+                    run_priority=run_priority,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
                 )
                 if final.applied:
                     await self._write_cache_receipt(
                         JobId(row["id"]), row["step_key"], flow_id, cache_hit
                     )
                 return "succeeded"
-            # THE FORK-VALIDATION RAISE IS IN THE LADDER'S TRY (rv4 F8's
-            # cure): the map fork's build (and the fork's own validation,
-            # insert_fork's door) runs INSIDE _finalize_success — before this
-            # wrapper, the fan-in bound's exceed escaped the ladder's
-            # boundary, the finalize tx rolled back, and the reclaim
-            # re-crashed the node FOREVER (the wedge the conviction named).
-            # The typed FanInBoundExceededError is a DETERMINISTIC authoring
-            # failure: the ladder's deterministic route terminal-fails it on
-            # the first attempt, the error class on the record — the reclaim
-            # path heals or fails named, never wedges.
+                # the map fork's build (and the fork's own validation,
+            # insert_fork's door) runs inside _finalize_success — before this
+            # wrapper, the fan-in bound's exceed escaped the ladder's boundary,
+            # the finalize tx rolled back, and the reclaim re-crashed the node
+            # forever (the wedge the finding named). The typed
+            # FanInBoundExceededError is a deterministic authoring failure: the
+            # ladder's deterministic route terminal-fails it on the first
+            # attempt, the error class on the record — the reclaim path heals
+            # or fails named, never wedges.
             try:
                 final = await self._finalize_success(
                     flow_id,
@@ -1109,38 +1688,61 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     result,
                     claim_epoch=claim_epoch,
                     prebuilt_route_fork=route_fork,
+                    run_priority=run_priority,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
                 )
             except FanInBoundExceededError as exc:
                 await emitter.aclose()
-                await self._ladder_or_fail(
-                    flow_id, row, attempt, node, exc, claim_epoch=claim_epoch
+                route = await self._ladder_or_fail(
+                    flow_id,
+                    row,
+                    attempt,
+                    node,
+                    exc,
+                    claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
                 )
+                if route == "deferred":
+                    return "deferred"
+                record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
+                if route in ("cancelled", "fenced"):
+                    return route
                 return "laddered"
-            # THE SUCCESS-ONLY STORE (T25): the miss ran the body — the
-            # cache fill happens ONLY on the terminal that actually landed
-            # (a fenced write is a zombie's, never a terminal-succeeded).
-            # The CAS inside the store keeps ONE winner per address.
+                # the miss ran the body — the cache fill happens only on the
+            # terminal that actually landed (a fenced write is a zombie's,
+            # never a terminal-succeeded). The CAS inside the store keeps one
+            # winner per address.
             if final.applied and cache_address is not None and result is not None:
                 await self._store_step_result(cache_address, result, flow_id, row["step_key"])
             return "succeeded"
-        except Exception as exc:  # Why: the MACHINERY boundary — the classifier reads WHERE the error escaped (the body's exceptions never reach this tail). BLE001 is the boundary's shape: ANY machinery exception is classified, then reclaimed or re-raised.
+        except Exception as exc:  # Why: the machinery boundary — the classifier reads WHERE the error escaped (the body's exceptions never reach this tail). BLE001 is the boundary's shape: any machinery exception is classified, then reclaimed or re-raised.
             if is_infra_fault(exc):
-                await self._reclaim_step(flow_id, row, attempt, exc)
+                await self._reclaim_step(
+                    flow_id,
+                    row,
+                    attempt,
+                    exc,
+                    claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
+                )
             raise
 
     async def _stamp_code_version(self, job_id: JobId, node_key: str, node: Any, body: Any) -> None:
-        """The per-attempt ``code_version`` record's write (T03/§22.1):
+        """The per-attempt ``code_version`` record's write (§22.1):
         the claim's own stamp — the body's canonical content hash onto
         the row. Best-effort (a record, never a gate): a body the hash
         cannot read (a builtin, a partial) records as NULL, the loss
         logged; the row's claim never fails on its own audit.
 
-        THE WRAPPER'S UNWRAP (the teardown round's cure): the
+        The wrapper's unwrap: the
         ``@app.actor`` canonical path wires the ``WorkflowActor`` HANDLE
-        into the node — the stamp read the WRAPPER's identity and
-        ``getsource`` refused the instance outright (every canonical
-        node recorded ``node.code-version-unstamped``, §22.1's
-        deploy-drift feature dead where the docs teach the path). The
+        into the node — a stamp that read the WRAPPER's identity would
+        have ``getsource`` refuse the instance outright (every canonical
+        node would record ``node.code-version-unstamped``, the
+        deploy-drift record dead where the docs teach the path). The
         stamp reads the INNER function through
         :func:`taskq.workflows.api._hints.inner_fn` — the one-unwrap
         seam the validator's own walk shares."""
@@ -1157,9 +1759,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             )
 
     def _body_code_version(self, node_key: str, node: Any, body: Any) -> str | None:
-        """The body's §22.1 canonical hash — the pure computation the
+        """The body's canonical hash — the pure computation the
         per-attempt RECORD's write (above) and the cross-run cache's
-        ADDRESS (T25) both consume; ``None`` when the hash cannot read
+        ADDRESS both consume; ``None`` when the hash cannot read
         the body (a builtin, a partial, an unreadable source): the
         record's loss is logged, and an UNADDRESSABLE body caches
         NOTHING (the cache seam decides — a key that cannot be
@@ -1175,10 +1777,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         if target is None:
             return None  # the join/gather kinds: the identity packer is the engine's own code
         target = inner_fn(target)
-        # THE SOURCE READS' ONE HOME (own_source — the unwrap + the
-        # slice-identity guard): the fence's exec'd bodies re-slice to
-        # PROSE — a prose stamp is a hash nobody can reproduce, the
-        # same unreadable-source skip the validator's walk keeps.
+        # own_source — the unwrap + the slice-identity guard. the fence's
+        # exec'd bodies re-slice to prose — a prose stamp is a hash nobody can
+        # reproduce, the same unreadable-source skip the validator's walk
+        # keeps.
         source = own_source(target)
         if source is None:
             logger.warning(
@@ -1204,8 +1806,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             return None
 
     def _redact_hook(self) -> Callable[[str], str] | None:
-        """The workflow's OWN redact hook from the REGISTERED DEFINITION
-        (attack-3 H3's cure — nothing wired the workflow's hook into the
+        """The workflow's own redact hook from the REGISTERED DEFINITION
+        (the crash-window fix — nothing wired the workflow's hook into the
         hold surface): the hold context's chain-then-hook composition
         reads it from here (the registry is the source, D1)."""
         from taskq.workflows.definitions import get_registry
@@ -1216,10 +1818,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             return None
 
     def _progress_schema(self, node_key: str, node: Any) -> type[BaseModel] | None:
-        """The node's DECLARED progress payload schema (T21 decision a):
+        """The node's DECLARED progress payload schema:
         the node's own decl; a MAP CHILD (the fork-spawned ``<src>.item``
         keys — no decl of their own) inherits its SOURCE's declaration;
-        a ROUTE child (the fork-spawned ``<src>.item:<type-tag>``, T27)
+        a ROUTE child (the fork-spawned ``<src>.item:<type-tag>``)
         inherits the same way (the ``.item:`` segment is the derived
         namespace's marker)."""
         if node is not None and getattr(node, "progress_schema", None) is not None:
@@ -1236,15 +1838,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
 
     def _resolve_body(self, node_key: str, node: Any) -> Any:
         """D1: the body resolves from the REGISTERED DEFINITION — never
-        from a per-call map (the double-dispatch dragon's cure). A node
-        that declares NO body (the join/gather kinds) returns ``None`` —
+        from a per-call map (the double-dispatch guard). A node
+        that declares no body (the join/gather kinds) returns ``None`` —
         the runner's default IDENTITY packer (the join's result IS the
-        decoded parents' list). The registry answers FIRST: the
+        decoded parents' list). The registry answers first: the
         fork-spawned keys (``<src>.item``, the outbox consumers) have no
         compiled NodeDecl — their bodies live in the definition only.
 
-        THE VANISHED-NODE WEDGE (the structural redeploy — rv5-t6's
-        cure): a key in NEITHER the compiled graph nor the registered
+        A key in
+        NEITHER the compiled graph nor the registered
         definition raises the TYPED :class:`VanishedNodeError` — the
         redeploy renamed/removed the node while this run was in flight,
         and no re-run can ever resolve it. The claimants of the wedge
@@ -1275,7 +1877,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     async def _parent_results(
         self, node_id: Any
     ) -> tuple[list[tuple[str, object]], dict[str, object]]:
-        """The parents' decoded results (decoded ONCE, cut #14): the
+        """The parents' decoded results (decoded once): the
         ORDERED list — edge order (uuid7 = wiring creation order), the
         default packer's input, map children DISTINCT (they share one
         step key) — and the step-key dict for the NAMED-arg lookup (a
@@ -1285,12 +1887,46 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             rows = await conn.fetch(
                 render_sql(PARENT_RESULTS_BY_KEY_SQL_TEMPLATE, self.schema), node_id
             )
-        ordered: list[tuple[str, object]] = []
-        for r in rows:
-            result: object = decode_result(r["result"])  # pyright: ignore[reportUnknownVariableType]  # Why: the asyncpg Record's members are Unknown; the statement's SELECT names the columns.
-            key: str = r["step_key"]  # pyright: ignore[reportUnknownVariableType]  # Why: same walk.
-            ordered.append((key, result))
+            ordered: list[tuple[str, object]] = []
+            for r in rows:
+                key: str = r["step_key"]  # pyright: ignore[reportUnknownVariableType]  # Why: the asyncpg Record's members are Unknown; the statement's SELECT names the columns.
+                ordered.append(
+                    (key, await self._decode_with_detail(conn, key, r["id"], r["result"]))  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                )
         return ordered, dict(ordered)
+
+    async def _decode_with_detail(
+        self, conn: ConnLike, step_key: str, node_id: Any, raw: object
+    ) -> object:
+        """the BOUNDED COLLECT'S DETAIL RE-READ (the read-side
+        reconciliation): a parent whose result row is the TRUNCATED
+        envelope (the bounded summary — the cap kept the row honest)
+        re-reads the FULL collect from the detail_home face the marker
+        names — the children's own result rows, through the same
+        ordered parent read the join packed (edge order, map children
+        distinct). The consumer's typed decode sees the declared
+        ``list[...]`` with every item — the summary row bounded, the
+        detail never lost. Non-truncated rows decode directly (the
+        common case pays one marker check)."""
+        decoded = decode_result(raw)
+        if result_truncation(raw) is None:
+            return decoded
+        rows = await conn.fetch(
+            render_sql(PARENT_RESULTS_BY_KEY_SQL_TEMPLATE, self.schema), node_id
+        )
+        values: list[object] = [decode_result(r["result"]) for r in rows]  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]  # Why: the Record walk's boundary.
+        node = self.compiled.nodes.get(step_key)
+        if (
+            node is not None
+            and node.kind == "gather"
+            and values
+            and all(isinstance(v, list) for v in values)
+        ):
+            # the gather's flatten, mirrored (the identity packer's own
+            # rule — the join row's pre-truncation value was the flat
+            # list; the re-read must hand the body the same shape).
+            values = [item for v in values for item in cast("list[object]", v)]
+        return values
 
     def _resolve_args(
         self,
@@ -1298,21 +1934,29 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         body: Any,
         parent_results: dict[str, object],
         payload: dict[str, object],
+        *,
+        node_key: str | None = None,
     ) -> tuple[object, ...]:
-        """THE WIRING RULE: argument order is signature order. A promise
+        """Argument order is signature order. A promise
         position resolves to its parent's decoded result; a data position
-        to the value RE-VALIDATED into its declared model (cut #8's typed
+        to the value RE-VALIDATED into its declared model (the typed
         boundary: the body sees the TYPE it declared, never a raw dict —
         the payload codec hook). The map child's item key is the fork's
         single-arg form."""
         if ITEM_KEY in payload:
-            item_raw: object = payload[ITEM_KEY]  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk — the fork wrote the shape.
+            item_raw: object = payload[ITEM_KEY]  # pyright: ignore[reportUnknownVariableType] — the Any-contract walk; the fork wrote the shape.
             return (self._coerce(item_raw, node, body, 0),)
+        if node_key in self._terminal_effects:
+            from taskq.workflows._policy import ExhaustionEvent
+
+            # The outbox JSON is validated into the declared effect input at the
+            # actual body boundary, not passed as an untyped callback dict.
+            return (ExhaustionEvent.model_validate(payload),)
         if node is None:
-            # THE OUTBOX CONSUMER with no compiled NodeDecl (the
-            # escalation step — attack-3 H1's cure): its declared
+            # The outbox consumer with no compiled NodeDecl (the
+            # escalation step): its declared
             # payload rides the row as data args (the bindings'
-            # ``wf_args``), the body's OWN contract with the enqueue's
+            # ``wf_args``), the body's own contract with the enqueue's
             # context. No parents exist for such a consumer — the
             # parent-results walk has nothing to say.
             wf_args_raw: object = payload.get(WF_ARGS_KEY, [])
@@ -1362,19 +2006,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         reason: str | None = None,
         principal: Any = None,
     ) -> int:
-        """P3 rule 4's cancel (T10): ONE transaction per run — the flow
+        """P3 rule 4's cancel: one transaction per run — the flow
         flip is the linearization point; every non-terminal node + held
         signal resolves in the same snapshot; running children take the
         existing two-phase cooperative cancel; terminal rows untouched;
         IDEMPOTENT (cancel twice = one cancel — a terminal root updates
-        nothing). THE AUDIT (G4): "who cancelled this" is a ROW, not a
+        nothing). the AUDIT (G4): "who cancelled this" is a ROW, not a
         log line.
 
-        THE CASCADE IS THE ROWS' OWN (rv5-C2b/C4's cure — the SAME walk
+        the CASCADE IS the ROWS' own (the same walk
         the id-addressed verb carries): the worklist walk, never Python
         recursion (a 1200-deep cascade cancels clean), and the children
         are read from the ROWS' crash-safe ``parent_flow_id`` direction
-        FIRST (the receipts the accelerator, the rows the law — the
+        first (the receipts the accelerator, the rows the law — the
         crash between create and receipt-write no longer orphans a
         child from the cascade)."""
         from taskq.workflows.api._runner_exit import cancel_cascade
@@ -1394,19 +2038,24 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         *,
         claim_epoch: int = 0,
         prebuilt_route_fork: ForkSpec | None = None,
+        run_priority: int | None = None,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
     ) -> FinalizeResult:
         """The success finalize (the fenced terminal + the ledger row +
-        the fork): the FinalizeResult is RETURNED now (T25) — the
-        cross-run cache's SUCCESS-ONLY store and the hit path's receipt
+        the fork): the FinalizeResult is RETURNED now — the
+        cross-run cache's SUCCESS-only store and the hit path's receipt
         merge both key on ``applied`` (a fenced write is a zombie's,
-        never a terminal-succeeded)."""
+        never a terminal-succeeded). ``run_priority`` threads the RUN's
+        per-call override into the fork build (the priority surface —
+        the map's children resolve it as the law's first level)."""
         fork: ForkSpec | None = None
         if node is not None and node.map_item is not None:
-            fork = self._map_fork(row, node, result)
+            fork = self._map_fork(row, node, result, run_priority=run_priority)
         elif node is not None and node.map_arms is not None and prebuilt_route_fork is not None:
-            # THE TYPED ROUTE'S FORK (T27) — built at the body path from
-            # the LIVE elements (the arm dispatch reads the element's
-            # runtime TYPE; the encoded envelope's dicts cannot).
+            # the typed route's fork — built at the body path from
+            # the live elements (the arm dispatch reads the element's
+            # runtime type; the encoded envelope's dicts cannot).
             fork = prebuilt_route_fork
         final = await finalize_node(
             self.pool,
@@ -1421,14 +2070,37 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             result=result,
             fork=fork,
             map_index=row["map_index"],
+            ledger_id=ledger_id,
+            ledger_claimed_at=ledger_claimed_at,
         )
-        # THE AUTO PROJECTION — TERMINAL (T21 decision b): the finalize
-        # seam's additive write, AFTER the two-tx finalize returned (the
-        # projection is never inside the finalize's transactions — the
-        # zero-finalize-changes probe pins the terminal-mark statement's
-        # blindness to the progress substrate). The LEDGER owns the
-        # state; the projection only publishes it to the stream.
+        # the finalize seam's additive write, after the two-tx finalize
+        # returned (the projection is never inside the finalize's transactions
+        # — the zero-finalize-changes probe pins the terminal-mark statement's
+        # blindness to the progress substrate). The ledger owns the state; the
+        # projection only publishes it to the stream.
         if final.applied:
+            # the fork's children and the fired joins are rows the finalize
+            # materialized atomically with this terminal mark — the current
+            # span is the finalizing step's own.
+            if fork is not None:
+                record_step_forked(trace.get_current_span(), len(fork.children))
+            if final.fired:
+                record_step_join_fired(
+                    trace.get_current_span(), [fired.step_key for fired in final.fired]
+                )
+                # a bounded collect's envelope unwraps at the consumer's typed
+            # boundary (decode_result's key-set door), so the ``__truncated__``
+            # count surfaces here — the join row's metadata — for the reads
+            # that decide, never swallowed by the unwrap. The hit path's cached
+            # envelope (byte-equal to the producing run's) carries the same
+            # face.
+            if result is not None and "__truncated__" in result:
+                await self._write_collect_receipt(
+                    JobId(row["id"]),
+                    row["step_key"],
+                    flow_id,
+                    int(result["__truncated__"]),  # pyright: ignore[reportAny,reportArgumentType]  # Why: the envelope's own marker (the bounded collect's write) — the int is the marker's contract.
+                )
             await self._project_auto(
                 flow_id,
                 JobId(row["id"]),
@@ -1440,12 +2112,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     async def _store_step_result(
         self, address: str, result: dict[str, object], flow_id: JobId, node_key: str
     ) -> None:
-        """THE SUCCESS-ONLY STORE (T25): the terminal-succeeded body's
-        result fills the cache — the CAS inside keeps ONE winner per
+        """The terminal-succeeded body's
+        result fills the cache — the CAS inside keeps one winner per
         address (a fresh winner never loses its row; an expired corpse
         is re-filled). Best-effort (the projection's asymmetry): a lost
         store is a logged freshness loss (the next run re-executes —
-        the cache's miss face is ALWAYS safe), never a node failure."""
+        the cache's miss face is always safe), never a node failure."""
         from taskq.workflows._cache import STEP_CACHE_TTL_DEFAULT_S, store_step_cache
 
         node = self.compiled.nodes.get(node_key)
@@ -1482,7 +2154,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     async def _write_cache_receipt(
         self, job_id: JobId, node_key: str, flow_id: JobId, hit: CachedStep
     ) -> None:
-        """THE RECEIPT'S WRITE (T25): the hit run's node row carries the
+        """The hit run's node row carries the
         provenance (the address + the producing run's id + the store
         instant) in its metadata. Best-effort (the projection's
         asymmetry — a lost receipt is a logged freshness loss, never a
@@ -1510,10 +2182,43 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 error=str(exc)[:200],
             )
 
+    async def _write_collect_receipt(
+        self, job_id: JobId, node_key: str, flow_id: JobId, truncated: int
+    ) -> None:
+        """the TRUNCATION'S RECEIPT (the read-side
+        reconciliation): the bounded collect's ``__truncated__`` count
+        rides the join row's METADATA (``wf_collect_truncated`` — the
+        wf_cache_hit receipt's own shape), because the decode's
+        key-set door hands the consumer the declared ``list[...]`` and
+        can never hand it the markers too. The raw row keeps the
+        markers (the detail_home pointer included); the receipt is the
+        READ face's own copy. Best-effort (the projection's asymmetry —
+        a lost receipt is a logged freshness loss, never a node
+        failure; the LEDGER owns the state)."""
+        try:
+            async with self.pool.acquire() as conn:
+                # S608: the schema identifier is the settings boundary
+                # the runner validated at build; the values are $-bound.
+                await conn.execute(
+                    render_sql(COLLECT_TRUNCATION_RECEIPT_SQL, self.schema),
+                    job_id,
+                    dumps_jsonb_str({"wf_collect_truncated": {"count": truncated}}),
+                )
+        except (
+            Exception
+        ) as exc:  # Why: the asymmetry — a lost receipt degrades the audit, never correctness.
+            logger.warning(
+                "collect-truncation-receipt-lost",
+                run_id=str(flow_id),
+                node=node_key,
+                truncated=truncated,
+                error=str(exc)[:200],
+            )
+
     async def _project_auto(
         self, flow_id: JobId, node_id: JobId, kind: str, payload: dict[str, Any]
     ) -> None:
-        """One auto-class projection, best-effort (T21 decision e): a lost
+        """One auto-class projection, best-effort: a lost
         projection is a FRESHNESS loss — counted and warned, never raised
         into the node's path."""
         try:
@@ -1524,23 +2229,54 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             Exception
         ) as exc:  # Why: the asymmetry — the projection degrades first, never correctness.
             logger.warning(
-                "progress_projection_lost",
-                kind="progress_projection_lost",
+                "progress-projection-lost",
+                kind="progress-projection-lost",
                 run_id=str(flow_id),
                 node=str(node_id),
                 projection=kind,
                 error=str(exc)[:200],
             )
 
+    @staticmethod
+    def _source_row_reservations(row: dict[str, Any], *, what: str) -> tuple[str, ...]:
+        """The claimed source row's ALREADY-RESOLVED reservation names
+        (its own metadata's stamp — the static insert resolved them from
+        the run's input and the declared args, keyed refs included): the
+        fork's children ride them verbatim (the run's own cohort, never
+        a per-item re-derivation). A row that carries no stamp (the
+        undeclared face) contributes nothing."""
+        raw: object = row.get("metadata")
+        meta: object = _json_loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(meta, dict):
+            return ()
+        names: object = meta.get("reservations")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType,reportAny]  # Why: the Any-contract walk — the jsonb round-trip's dict is Unknown by construction; the isinstance guards below assert the shape.
+        if not isinstance(names, list):
+            return ()
+        return tuple(str(n) for n in names if isinstance(n, str))  # pyright: ignore[reportUnknownVariableType]  # Why: the same walk — the list's members are Unknown; the isinstance is the boundary.
+
     def _map_fork(
-        self, row: dict[str, Any], node: Any, result: dict[str, object] | None
+        self,
+        row: dict[str, Any],
+        node: Any,
+        result: dict[str, object] | None,
+        *,
+        run_priority: int | None = None,
     ) -> ForkSpec | None:
         """The map source's finalize fork: N children (the item body,
         one per list element — fresh jobs, per-item ledger identity) +
         the join whose consumers are the wiring's downstream nodes (the
-        outbox carries the consumer bindings — the cascade, cut #1's
-        cure). ``None`` when the body returned no list (the map over
-        nothing — the join fires empty, the collect states it)."""
+        outbox carries the consumer bindings — the cascade
+        fix). ``None`` when the body returned no list (the map over
+        nothing — the join fires empty, the collect states it).
+
+        ``run_priority`` is the RUN's per-call override (the wf-priority
+        fix): the children and the join land at the RESOLVED priority —
+        the override > the source node's declaration > the column
+        default (the children share the source's cohort, so the source's
+        resolution is theirs). A map body wired as an ``@app.actor``
+        HANDLE adds ITS declared priority as the CHILDREN'S actor level
+        (never folded into the source node); the
+        join stays the source's resolution."""
         from taskq.workflows._emit import MapIndexExhaustedError
         from taskq.workflows._types import MAP_INDEX_CEILING, ConsumerBinding
 
@@ -1548,13 +2284,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         items: list[object] = (
             list(raw_items) if isinstance(raw_items, list) else []  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk — the envelope's value is the body's own return, jsonb-round-tripped.
         )
-        # THE SMALLINT CEILING AT THE FORK'S DOOR (the typed death's
-        # other seat — the emit batch's own guard is in _emit.py): the
-        # map children's ledger identity rides map_index (a smallint) —
-        # a map over more than CEILING+1 items dies as the raw DataError
-        # MID-FINALIZE-TX (the whole fork rolled back, the raw error
-        # laddered). The named refusal, BEFORE the tx: the record's
-        # identity cannot grow past the column's domain.
+        # the map children's ledger identity rides map_index (a smallint) — a
+        # map over more than ceiling+1 items dies as the raw DataError
+        # mid-finalize-tx (the whole fork rolled back, the raw error laddered).
+        # The named refusal, before the tx: the record's identity cannot grow
+        # past the column's domain.
         if len(items) > MAP_INDEX_CEILING + 1:
             raise MapIndexExhaustedError(
                 f"the map source {row['step_key']!r} returned "
@@ -1565,17 +2299,60 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 "MAP_INDEX_CEILING — split the source's page)"
             )
         join_key = f"{row['step_key']}.join"
+        # the map's children share the source's cohort — the source's
+        # resolution is theirs (per-call override > the source node's
+        # declaration > the column default). the map body handle's own LEVEL
+        # (the never-a-silent-drop law, the capacity terms' own passthrough
+        # shape): a map body wired as an ``@app.actor(priority=…)`` handle
+        # carries its declaration as the children's actor level — read here, at
+        # the fork, never folded into the source node (the source's row and the
+        # join are the source's own cohort; the handle's value would
+        # cross-contaminate them).
+        from taskq.workflows.api._app import (
+            WorkflowActor,  # the cycle-break (inner_fn's own pattern)
+        )
+
+        map_body_priority = (
+            node.map_item.priority if isinstance(node.map_item, WorkflowActor) else None
+        )
+        child_priority = _resolve_priority(run_priority, map_body_priority, node.priority)
+        # the JOIN'S LEVEL = the source's resolution (the map body
+        # handle's declaration governs the children only — the join stays
+        # the source's own).
+        source_priority = _resolve_priority(run_priority, node.priority)
+        # the children share the source's cohort — the map body handle's
+        # deadline is the children's actor level (read here, at the fork, never
+        # folded into the source node), then the source node's declaration; the
+        # JOIN stays the source's own resolution.
+        map_body_start_to_close = (
+            node.map_item.start_to_close if isinstance(node.map_item, WorkflowActor) else None
+        )
+        child_start_to_close = _first_declared(map_body_start_to_close, node.start_to_close)
+        source_start_to_close = node.start_to_close
         bindings = tuple(
             ConsumerBinding(
                 step_key=downstream,
                 actor=self.compiled.nodes[downstream].actor,
                 queue=self.compiled.nodes[downstream].queue,
                 payload={},
-                # THE CONSUMER'S OWN EDGE POLICY (the map-join consumption
-                # cure): the fork writes the join→consumer edge with it —
-                # T06's propagation reads the policy off the ledger when
-                # the JOIN terminal-fails.
+                # the fork writes the join→consumer edge with it — the
+                # failed-parent propagation reads the policy off the ledger
+                # when the JOIN terminal-fails.
                 failure_policy=self.compiled.nodes[downstream].on_failure,
+                # the downstream node's own resolution rides the binding (the
+                # join row's metadata → the fire's outbox bindings → the
+                # drain's consumer row's column).
+                start_to_close=self.compiled.nodes[downstream].start_to_close,
+                rate_limits=rate_limit_names(
+                    self.compiled.nodes[downstream].rate_limits,
+                    what=f"consumer {downstream!r}'s rate_limits",
+                ),
+                reservations=reservation_names(
+                    self.compiled.nodes[downstream].reservations,
+                    what=f"consumer {downstream!r}'s reservations",
+                ),
+                priority=self.compiled.nodes[downstream].priority,
+                retry=_node_retry_spec(self.compiled.nodes[downstream]),
             )
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
@@ -1588,12 +2365,33 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     queue=node.map_queue,
                     payload={ITEM_KEY: encode_data_arg(item)},
                     map_index=i,
-                    # THE ADMISSION TERMS STAMPED (CURE 2): the map's
-                    # declared buckets' NAMES on every child row — the
-                    # claim path's read.
-                    rate_limits=rate_limit_names(
-                        node.map_rate_limits, what="map_source's rate_limits"
+                    # the map's declared buckets' names on every child row —
+                    # the claim path's read. A keyed ref resolves its concrete
+                    # name per child from the child's own item payload (the
+                    # fan-out is the keyed shape's home — each tenant's items
+                    # stamp their own bucket name).
+                    rate_limits=(
+                        rate_limit_names(node.map_rate_limits, what="map_source's rate_limits")
+                        + keyed_rate_limit_names(
+                            node.map_rate_limits,
+                            (item,),
+                            what=f"map {row['step_key']!r}'s child {i}",
+                        )
                     ),
+                    # the map's children share the source node's cohort — the
+                    # source row's already-resolved reservation names (its own
+                    # metadata's stamp: the static insert resolved them from
+                    # the run's input and the declared args, keyed refs
+                    # included) ride the children's rows verbatim. never a
+                    # per-item re-derivation: the reservation is the run's own
+                    # cohort, not each item's bucket.
+                    reservations=self._source_row_reservations(
+                        row, what=f"map {row['step_key']!r}"
+                    ),
+                    # the source's resolution (above) rides every child row.
+                    priority=child_priority,
+                    # the source's resolution (above) rides every child row.
+                    start_to_close=child_start_to_close,
                 )
                 for i, item in enumerate(items)
             ),
@@ -1602,19 +2400,35 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 actor=node.actor,
                 queue=node.map_queue,
                 consumers=bindings,
+                # the join row's metadata carries them — a nested fan-out over
+                # this join reads the stamp and the depth-2 children inherit
+                # the run's cap (depth-N, not depth-1).
+                reservations=self._source_row_reservations(row, what=f"map {row['step_key']!r}"),
                 failure_policy=node.map_on_failure,  # type: ignore[arg-type]  # Why: the policy vocabulary is the compile's own — validated by the engine's validators.
-                # THE FAN-IN BOUND'S ESCAPE, EXPOSED AT THE WIRING (the
-                # docshelf team's F6): the map_source's child_driven= —
-                # past the bound the fire counts its terminal children
-                # FROM THE EDGE LEDGER (the choice recorded on the joined
-                # node), never the counter cache.
+                # the map_source's child_driven= — past the bound the fire
+                # counts its terminal children FROM the edge ledger (the choice
+                # recorded on the joined node), never the counter cache.
                 child_driven=node.map_child_driven,
             ),
             max_attempts=node.map_max_attempts,
+            # the join is the source's own cohort — the map body handle's
+            # declaration governs the children only.
+            priority=source_priority,
+            # the JOIN'S deadline = the source's resolution (the wf
+            # start_to_close fix — the map body handle's declaration
+            # governs the children only).
+            start_to_close=source_start_to_close,
         )
 
-    def _route_fork(self, row: dict[str, Any], node: Any, outcome_value: object) -> ForkSpec | None:
-        """THE TYPED ROUTE'S FORK (T27 — the map fork's arm-dispatch
+    def _route_fork(
+        self,
+        row: dict[str, Any],
+        node: Any,
+        outcome_value: object,
+        *,
+        run_priority: int | None = None,
+    ) -> ForkSpec | None:
+        """the TYPED ROUTE'S FORK (the map fork's arm-dispatch
         sibling): the source's body returned the elements' LIST; each
         element's RUNTIME type tag picks its arm and the fork stamps the
         child's own derived step key (``<source>.item:<type-tag>`` — the
@@ -1622,23 +2436,32 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         actor/queue), and the element's jsonb under the item key (the
         arm body's declared param type is the decode's target — R3).
 
-        THE LOUD DOOR (R1 — the skip-silent shape is DEAD): an element
-        whose type has NO arm raises :class:`RouterNotTotal` BEFORE any
+        LOUD DOOR (R1 — the skip-silent shape is DEAD): an element
+        whose type has no arm raises :class:`RouterNotTotal` before any
         row is written — the caller converts it to the source's
         terminal-FAILED finalize with ``error_class='RouterNotTotal'``
         (the chain face's exact shape; nothing routes, the run fails).
 
         ``None`` when the body returned no list (the route over nothing —
-        no fork is carried at all). An EMPTY LIST is NOT that case (the
-        rv4 F1 cure — the empty-join precedent): the empty list IS the
+        no fork is carried at all). An EMPTY LIST is not that case (the
+        empty-join precedent): the empty list IS the
         typed sum's honest value, so the fork fires its join with zero
         children — the join is born ``deps_pending=0``, fires
         immediately, and ``result() == []`` (the run terminal, SUCCESS
         truthful — a night with no documents chunked zero documents, and
-        that is correct). The pre-cure ``None``-on-empty wedged the run
+        that is correct). The pre-fix ``None``-on-empty wedged the run
         (the join row never existed, the consumers' reserved deps never
         released — stuck ``running`` with zero error rows) or
-        terminalized succeeded with the lying ``result() is None``."""
+        terminalized succeeded with the lying ``result() is None``.
+
+        ``run_priority`` is the RUN's per-call override (the wf-priority
+        fix): each ARM's children resolve the law's levels — the
+        override > the ARM's own ``priority=`` (the down-override) > the
+        arm body HANDLE's declaration (the actor level, read per arm
+        and never folded into the source node) > the
+        source node's declaration > the column default; the JOIN (the
+        source's own cohort — the arm overrides never retouch it) lands
+        at the SOURCE's resolution."""
         from taskq.workflows._types import ConsumerBinding
         from taskq.workflows.chain import RouterNotTotal, type_tag
 
@@ -1646,7 +2469,33 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             return None
         items: list[object] = cast(
             "list[object]", outcome_value
-        )  # Why: the isinstance narrowed the object-typed body return to list[Unknown] — the cast IS the declared laundering (the element walk below re-narrows per element; the codec's own seam shape).
+        )  # Why: the isinstance narrowed the object-typed body return to list[Unknown] — the cast is the declared laundering (the element walk below re-narrows per element; the codec's own seam shape).
+        # the JOIN's level — the arm overrides apply to the arm children, never
+        # the join (the join is the source's own cohort, the placement fields'
+        # law).
+        source_priority = _resolve_priority(run_priority, node.priority)
+        # an arm body wired as an ``@app.actor(priority=…)`` handle carries its
+        # declaration as that arm's actor level — read per arm here, at the
+        # fork, never folded into the source node (the other arms and the join
+        # would cross-contaminate).
+        from taskq.workflows.api._app import (
+            WorkflowActor,  # the cycle-break (inner_fn's own pattern)
+        )
+
+        arms_typed = cast(
+            "dict[str, Any]", node.map_arms or {}
+        )  # Why: the compiled NodeDecl is Any-typed here — the cast names the arms' dict shape the walk reads.
+        arm_handle_priorities: dict[str, int | None] = {
+            arm_tag: arm.body.priority if isinstance(arm.body, WorkflowActor) else None
+            for arm_tag, arm in arms_typed.items()
+        }
+        # an arm body wired as an ``@app.actor(start_to_close=…)`` handle
+        # carries its declaration as that arm's actor level, read per arm here,
+        # never folded into the source node.
+        arm_handle_deadlines: dict[str, timedelta | None] = {
+            arm_tag: arm.body.start_to_close if isinstance(arm.body, WorkflowActor) else None
+            for arm_tag, arm in arms_typed.items()
+        }
         join_key = f"{row['step_key']}.join"
         bindings = tuple(
             ConsumerBinding(
@@ -1654,11 +2503,24 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 actor=self.compiled.nodes[downstream].actor,
                 queue=self.compiled.nodes[downstream].queue,
                 payload={},
-                # THE CONSUMER'S OWN EDGE POLICY (the map-join consumption
-                # cure): the fork writes the join→consumer EDGE with it —
-                # T06's propagation reads the policy off the ledger when
-                # the JOIN terminal-fails.
+                # the fork writes the join→consumer edge with it — the
+                # failed-parent propagation reads the policy off the ledger
+                # when the JOIN terminal-fails.
                 failure_policy=self.compiled.nodes[downstream].on_failure,
+                # the downstream node's own resolution rides the binding (the
+                # join row's metadata → the fire's outbox bindings → the
+                # drain's consumer row's column).
+                start_to_close=self.compiled.nodes[downstream].start_to_close,
+                rate_limits=rate_limit_names(
+                    self.compiled.nodes[downstream].rate_limits,
+                    what=f"consumer {downstream!r}'s rate_limits",
+                ),
+                reservations=reservation_names(
+                    self.compiled.nodes[downstream].reservations,
+                    what=f"consumer {downstream!r}'s reservations",
+                ),
+                priority=self.compiled.nodes[downstream].priority,
+                retry=_node_retry_spec(self.compiled.nodes[downstream]),
             )
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
@@ -1675,7 +2537,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     "members): this is a defect, not a dead end — the body "
                     "lied about its union, or the union drifted from the "
                     "route. NOTHING routes: the run fails loudly (the "
-                    "skip-silent shape is dead — T27's R1)."
+                    "skip-silent shape is dead)."
                 )
             children.append(
                 ChildSpec(
@@ -1684,9 +2546,75 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     queue=arm.queue or node.map_queue,
                     payload={ITEM_KEY: encode_data_arg(element)},
                     map_index=i,
-                    # THE ARM'S ADMISSION TERMS STAMPED (CURE 2): the arm's
-                    # own buckets' NAMES on ITS children's rows.
-                    rate_limits=rate_limit_names(arm.rate_limits, what="route arm's rate_limits"),
+                    # the arm's own buckets' names on its children's rows — and
+                    # the bare arm (no own rate_limits, no actor override)
+                    # inherits the source's rate_limits (the symmetrization:
+                    # the reservations' own ride-the-cohort law, the same stamp
+                    # the source's rows carry). An arm declaring its own keeps
+                    # its own — never a silent merge. A keyed ref resolves its
+                    # concrete name per child from the child's own element
+                    # payload.
+                    rate_limits=(
+                        (
+                            rate_limit_names(arm.rate_limits, what="route arm's rate_limits")
+                            + keyed_rate_limit_names(
+                                arm.rate_limits, (element,), what=f"route arm {tag!r}'s child {i}"
+                            )
+                        )
+                        or (
+                            ()
+                            if (arm.actor is not None and arm.actor != node.actor)
+                            else rate_limit_names(
+                                tuple(node.rate_limits), what="the source node's rate_limits"
+                            )
+                            + keyed_rate_limit_names(
+                                tuple(node.rate_limits),
+                                (element,),
+                                what=f"route arm {tag!r}'s child {i}",
+                            )
+                        )
+                    ),
+                    # the arm's own static declaration rides its rows; an arm
+                    # declaring none keeps the source row's stamp (the arm
+                    # rides the source's cohort — the already-resolved names
+                    # the source row's metadata carries) and an arm overriding
+                    # the actor stamps none (a different cohort — inheriting
+                    # the source's cap onto it would be the silent lie; the
+                    # wiring refused a capped body whose terms that override
+                    # would drop). The keyed face never re-derives here: the
+                    # run's cohort resolved once onto the source row (the arms'
+                    # keyed declarations are refused at the wiring).
+                    reservations=(
+                        reservation_names(tuple(arm.reservations), what="route arm's reservations")
+                        or (
+                            ()
+                            if (arm.actor is not None and arm.actor != node.actor)
+                            else self._source_row_reservations(
+                                row, what=f"route {row['step_key']!r}"
+                            )
+                        )
+                    ),
+                    # the arm's down-override — the override > the arm's own
+                    # declaration > the arm body handle's declaration (the
+                    # actor level) > the source node's declaration > the column
+                    # default. ``None`` on a level means it declares nothing
+                    # (the arm overrides down from the source, never up).
+                    priority=_resolve_priority(
+                        run_priority,
+                        arm.priority,
+                        arm_handle_priorities.get(tag),
+                        node.priority,
+                    ),
+                    # the arm's own declaration > the arm body handle's
+                    # declaration (the actor level — read per arm at the fork)
+                    # > the source node's declaration. ``None`` on a level
+                    # means it declares nothing (the arm overrides down from
+                    # the source, never up).
+                    start_to_close=_first_declared(
+                        arm.start_to_close,
+                        arm_handle_deadlines.get(tag),
+                        node.start_to_close,
+                    ),
                 )
             )
         spec = ForkSpec(
@@ -1696,29 +2624,46 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 actor=node.actor,
                 queue=node.map_queue,
                 consumers=bindings,
+                # the join row's metadata carries them — a nested fan-out over
+                # this join inherits the run's cap (depth-N, not depth-1).
+                reservations=self._source_row_reservations(row, what=f"route {row['step_key']!r}"),
                 failure_policy=node.map_on_failure,  # type: ignore[arg-type]  # Why: the policy vocabulary is the compile's own — validated by the engine's validators (the map fork's own declaration, the same seam).
-                # THE FAN-IN BOUND'S ESCAPE (F6 — the same face the map
-                # fork carries): the route's child_driven= rides ITS join.
+                # F6 — the same face the map fork carries. the route's
+                # child_driven= rides its join.
                 child_driven=node.map_child_driven,
             ),
             max_attempts=node.map_max_attempts,
+            # the JOIN'S priority = the source's resolution (the
+            # wf-priority fix — the arm overrides never retouch it).
+            priority=source_priority,
+            # the JOIN'S deadline = the source's resolution (the wf
+            # start_to_close fix — the arm overrides never retouch it).
+            start_to_close=node.start_to_close,
         )
-        # THE VALIDATED FORK (rv4 F8's cure — the raise INTO the ladder's
-        # try): the fork validates HERE, at the body path — this call
-        # site sits inside the execution ladder's try, so the fan-in
-        # bound's exceed is the DETERMINISTIC named refusal
-        # (FanInBoundExceededError → the immediate named terminal), never
-        # the mid-finalize raise the reclaim re-crashed forever.
+        # the fork validates here, at the body path — this call site sits
+        # inside the execution ladder's try, so the fan-in bound's exceed is
+        # the deterministic named refusal (FanInBoundExceededError → the
+        # immediate named terminal), never the mid-finalize raise the reclaim
+        # re-crashed forever.
         validate_fork(spec)
         return spec
 
     async def _finalize_skipped(
-        self, flow_id: JobId, row: dict[str, Any], node: Any, *, claim_epoch: int = 0
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        node: Any,
+        *,
+        claim_epoch: int = 0,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
     ) -> None:
         """The v1 SKIP semantics: the node succeeds WITH the skip record
         (the envelope never lies about what ran); its ABSORBING joins
         (collect | maybe) receive the typed skip item — a skip is not an
-        attempt (zero ledger rows)."""
+        attempt (zero ledger rows for the skipped DOWNSTREAM nodes). The
+        terminal keys the EXACT claim identity (the claim's own row id +
+        instant) — never a four-expression fallback."""
         async with self.pool.acquire() as conn:
             await fan_in_skip(
                 conn,
@@ -1740,6 +2685,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             outcome="succeeded",
             result=dict(SKIPPED_RESULT),
             map_index=row["map_index"],
+            ledger_id=ledger_id,
+            ledger_claimed_at=ledger_claimed_at,
         )
         await self._project_auto(
             flow_id,
@@ -1751,30 +2698,94 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     # ── reads ────────────────────────────────────────────────────────
 
     async def result(self, flow_id: JobId) -> object:
-        """The flow's answer (cut #19): the terminal node's result,
+        """The flow's answer: the terminal node's result,
         DECODED — never a raw jsonb string. ``None`` before the terminal
         node finalizes.
 
-        THE FAILURE FACE (the teardown round's cure): a FAILED run's
-        read raises the typed :class:`WorkflowRunError` carrying the
-        failing node row's error class + message — the failed run's
-        first question (WHAT failed, and why) answered AT the read face,
-        never the empty read that made failed and running
-        indistinguishable."""
-        status = await self._flow_status(flow_id)
-        if status == "failed":
-            raise await self._failure_verdict(flow_id)
+        the VERDICT'S SOURCE IS the RUN'S STATUS, not the terminal
+        node's row: the terminal row supplies the payload only. A run
+        whose terminal step succeeded while a sibling branch failed or
+        was cancelled is a FAILED/CANCELLED run — the read raises the
+        typed verdict, never a plausible result. the FAILURE and CANCEL
+        FACES: a FAILED run's read raises the typed
+        :class:`WorkflowRunError` carrying the failing node row's error
+        class + message; a CANCELLED run's read raises the typed
+        :class:`WorkflowRunCancelledError` (the same family) carrying
+        the terminal status and the cancel reason — the run's first
+        question (WHAT ended it, and why) answered AT the read face."""
         terminal = self.compiled.terminal
         if terminal is None:
             raise WorkflowRunError(
                 f"workflow {self.compiled.name!r} names no terminal — "
                 "wire one (wf.build(p)) to read a result"
             )
+
+        async def _verdict_of(run_status: str) -> WorkflowRunError | None:
+            if run_status == "cancelled":
+                return await self._cancellation_verdict(flow_id)
+            if run_status == "failed":
+                return await self._failure_verdict(flow_id)
+            return None
+
+        async def _read_state() -> asyncpg.Record | None:
+            async with self.pool.acquire() as conn:
+                return await conn.fetchrow(
+                    render_sql(TERMINAL_RESULT_SQL_TEMPLATE, self.schema), terminal, flow_id
+                )
+
+        state = await _read_state()
+        run_status = state["run_status"] if state is not None else "missing"
+
+        async def _decode(state_row: asyncpg.Record) -> object:
+            # a truncating JOIN as the terminal node reads the full collect off
+            # the children's rows — the decoded answer is the declared shape,
+            # never the bounded summary's envelope.
+            async with self.pool.acquire() as conn:
+                return await self._decode_with_detail(
+                    conn,
+                    str(state_row["node_key"]),  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the Record walk's boundary.
+                    state_row["node_id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                    state_row["node_result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                )
+
+        if run_status == "succeeded" and state is not None and state["node_status"] == "succeeded":
+            return await _decode(state)
+            # the verdict comes from the run's own status (failed/cancelled raise
+        # their verdicts); a run the snapshot still calls live gets the bounded
+        # re-read — the flip that committed during the read shows there and
+        # raises its verdict; a run genuinely still working (held, queued)
+        # keeps the honest None.
+        verdict = await _verdict_of(run_status)
+        if verdict is not None:
+            raise verdict
+        status = await self._flow_status(flow_id)
+        if status == "cancelled":
+            raise await self._cancellation_verdict(flow_id)
+        if status == "failed":
+            raise await self._failure_verdict(flow_id)
+        state2 = await _read_state()
+        run_status2 = state2["run_status"] if state2 is not None else "missing"
+        verdict2 = await _verdict_of(run_status2)
+        if verdict2 is not None:
+            raise verdict2
+        if (
+            run_status2 == "succeeded"
+            and state2 is not None
+            and state2["node_status"] == "succeeded"
+        ):
+            return await _decode(state2)
+        return None
+
+    async def _cancellation_verdict(self, flow_id: JobId) -> WorkflowRunCancelledError:
+        """The cancelled run's typed verdict: the root row's stamped
+        cancel reason (the cancel verb's own record — the audit row is
+        the operator's trail; THIS is the row truth the read face
+        answers from)."""
         async with self.pool.acquire() as conn:
-            raw = await conn.fetchval(
-                render_sql(TERMINAL_RESULT_SQL_TEMPLATE, self.schema), terminal, flow_id
-            )
-        return decode_result(raw)
+            row = await conn.fetchrow(render_sql(FLOW_CANCELLED_SQL_TEMPLATE, self.schema), flow_id)
+        if row is None:
+            return WorkflowRunCancelledError(flow_id, None)
+        return WorkflowRunCancelledError(flow_id, row["error_message"])
 
     async def _failure_verdict(self, flow_id: JobId) -> WorkflowRunError:
         """The failed run's typed verdict (the error the read raises):
@@ -1813,7 +2824,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         return None
 
     async def _flow_state(self, flow_id: JobId) -> dict[str, object]:
-        """The dispatch-time predicate's view (cut #4): the input + the
+        """The dispatch-time predicate's view: the input + the
         completed results so far — the state a sibling-reading guard
         needs."""
         async with self.pool.acquire() as conn:

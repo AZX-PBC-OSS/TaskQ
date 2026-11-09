@@ -31,7 +31,7 @@ from taskq.timescale import _format_interval  # pyright: ignore[reportPrivateUsa
 
 _VENDOR = Path(__file__).parent / "_audit_vendor" / "_old_formatters.py"
 
-# The OLD hand-copied sets (origin/main's web/admin/_constants.py), the
+# The old hand-copied sets (origin/main's web/admin/_constants.py), the
 # boundary the derivation must reproduce exactly.
 _OLD_HAND_TERMINAL = frozenset({"succeeded", "failed", "cancelled", "crashed", "abandoned"})
 _OLD_HAND_ACTIVE = frozenset({"pending", "scheduled", "running"})

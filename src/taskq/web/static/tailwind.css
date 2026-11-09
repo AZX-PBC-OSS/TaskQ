@@ -2,10 +2,10 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* ── the workflow-run page's state fills (T11) ─────────────────────────
+/* ── the workflow-run page's state fills ─────────────────────────
    The graph node's fill keys off the node's status class
-   (workflows.js paints data-node-key groups). THE BARE-<path> RULE
-   (P2's pin): the collapsed map node renders its shape as a BARE
+   (workflows.js paints data-node-key groups). the bare-<path> rule
+   (P2's pin): the collapsed map node renders its shape as a bare
    <path> — every fill targets path as well as rect/polygon, or the
    hexagon stays theme-grey while rects turn green. */
 #wf-graph svg .node rect,
@@ -45,10 +45,7 @@
 #wf-graph svg .node.wf-st-skipped path {
   fill: #f1f5f9; stroke: #94a3b8;
 }
-/* THE HELD NODE IS AMBER (the state-matrix pin: the held node reads at
-   a glance — a human is waiting). */
-/* THE HELD NODE IS AMBER (the state-matrix pin: a human is waiting —
-   it reads at a glance). The held state is NOT a job status: it is the
+/* the held node is amber . The held state is not a job status: it is the
    pending row + the signal row, so the JS paints a dedicated class. */
 #wf-graph svg .node.wf-st-held rect,
 #wf-graph svg .node.wf-st-held polygon,
@@ -71,3 +68,9 @@
 .wf-st-running-fill { background: #dbeafe; border: 1px solid #2563eb; }
 .wf-st-failed-fill { background: #fee2e2; border: 1px solid #dc2626; }
 .wf-st-pending-fill { background: #f1f5f9; border: 1px solid #94a3b8; }
+.wf-st-scheduled-fill { background: #f1f5f9; border: 1px solid #94a3b8; }
+.wf-st-cancelled-fill { background: #e2e8f0; border: 1px solid #64748b; }
+.wf-st-crashed-fill { background: #f1f5f9; border: 1px solid #94a3b8; }
+.wf-st-abandoned-fill { background: #f1f5f9; border: 1px solid #94a3b8; }
+.wf-st-held-fill { background: #fef3c7; border: 1px solid #d97706; }
+.wf-st-skipped-fill { background: #f1f5f9; border: 1px solid #94a3b8; }

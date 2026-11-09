@@ -109,13 +109,13 @@ async def test_redis_recovery_after_restart(
     acquire returns backend=="redis" with no WARNING.
 
     redis-py's connection pool transparently re-connects on the next command
-    after the server reappears - do NOT manually reset the pool or call
+    after the server reappears - do not manually reset the pool or call
     aclose() between stop() and start(). The cached AsyncScript's SHA is
     stale after Redis restart; redis-py detects NOSCRIPT, re-runs SCRIPT
     LOAD, and retries EVALSHA automatically.
 
     Container restart can take 1-5s. A polling loop tolerates intermediate
-    ConnectionErrors during container boot AND tolerates fallback decisions
+    ConnectionErrors during container boot and tolerates fallback decisions
     that still return backend=="postgres" while Redis is briefly unreachable.
 
     Deviation: Docker reassigns the host-side port on container
@@ -221,7 +221,7 @@ async def test_both_backends_unavailable(
 ) -> None:
     """Redis raises ConnectionError; PG raises PostgresConnectionError
     via ChaosConnection. The PG error propagates from acquire() - the request
-    is NOT silently allowed.
+    is not silently allowed.
     """
     import redis as _redis_mod
 
@@ -313,12 +313,12 @@ async def test_pg_contention_50_concurrent(
     assert allowed_count == int(expected_consumed)
 
 
-# ── Clock skew: the STORE's clock, in the store's own domain ──────────
+# ── Clock skew: the store's clock, in the store's own domain ──────────
 #
 # The refill math for the redis and postgres backends runs entirely inside
-# the store (``redis.call('TIME')`` / ``clock_timestamp()``); no Python clock
+# the store (``redis.call('time')`` / ``clock_timestamp()``); no Python clock
 # participates.  Simulating a backward step of that clock therefore means
-# moving the store's own persisted ``ts`` FORWARD relative to the store's
+# moving the store's own persisted ``ts`` forward relative to the store's
 # now - which is exactly the state a backward step leaves behind: the last
 # write is stamped in the future.  Injecting a FakeClock here would be inert.
 
@@ -393,7 +393,7 @@ async def test_a_backward_step_of_the_store_clock_neither_refills_nor_indebts(
         assert isinstance(redis_container, _RedisContainerShim)
         host = redis_container.get_container_host_ip()
         port = redis_container.get_exposed_port(6379)
-        # A UNIQUE logical DB, never the reserved DB 0: this test WRITES keys
+        # A UNIQUE logical DB, never the reserved DB 0: this test writes keys
         # (the acquire script's bucket + the skewed ts stamp), and the shared
         # broker's DB 0 is ad-hoc space, not a tenant. next_redis_logical_db
         # draws from the invocation's counter under the pair's lock, so no

@@ -7,7 +7,7 @@ layer down. The backend binds every item as 26 parallel array parameters to a
 single `unnest` INSERT in one transaction, so the cap is what keeps that
 statement a bounded size.
 
-The rejection must happen BEFORE any connection is resolved: the cap tests pass
+The rejection must happen before any connection is resolved: the cap tests pass
 `worker_pool=None` and no loop-scope connection, so anything that reached the
 insert path would raise `RuntimeError("ctx.jobs is only available inside an actor
 body")` instead of the `ValueError` asserted here. That distinction is the point,

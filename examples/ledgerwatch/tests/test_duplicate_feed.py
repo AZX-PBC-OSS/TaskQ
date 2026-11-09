@@ -1,4 +1,4 @@
-"""THE DUPLICATE-FEED DRILL: the feed re-delivers batches (the
+"""The feed re-delivers batches (the
 at-least-once world). The pipeline is IDEMPOTENT — the re-delivery
 changes NOTHING: same claim, zero new effects, one report."""
 
@@ -47,7 +47,7 @@ async def _effects(
 async def test_duplicate_feed_post_terminal_changes_nothing(
     fleet: Fleet, pool: asyncpg.Pool, schema: str
 ) -> None:
-    """The re-delivery AFTER the run's terminal: the arbiter's
+    """The re-delivery after the run's terminal: the arbiter's
     REFUSED-TO-REUSE verdict, zero new effects."""
     batch = build_batch(BatchSpec(batch_id="B-dup-1", count=5, high_every=2))
     claim1 = await submit_batch(pool, schema, batch)
@@ -57,7 +57,7 @@ async def test_duplicate_feed_post_terminal_changes_nothing(
     assert report.failed == []
     before = await _effects(pool, schema, "B-dup-1-", str(claim1.flow_id))
 
-    # THE FEED RE-DELIVERS (the same batch, byte for byte).
+    # the feed re-delivers (the same batch, byte for byte).
     claim2 = await submit_batch(pool, schema, batch)
     assert claim2.kind == "existing-terminal", f"the re-delivery was re-fired: {claim2!r}"
     assert str(claim2.flow_id) == str(claim1.flow_id)
@@ -97,7 +97,7 @@ async def test_duplicate_feed_mid_flight_changes_nothing(
     assert report.cleared == sorted(t.txn_id for t in batch.transactions)
     after = await _effects(pool, schema, "B-dup-2-", str(claim1.flow_id))
 
-    # ZERO double-effects: the re-delivery added NOTHING beyond the
+    # zero double-effects: the re-delivery added NOTHING beyond the
     # first run's own completion.
     assert after["enrich_children"] == {"succeeded": 120}
     assert after["route_children"] == {"succeeded": 120}

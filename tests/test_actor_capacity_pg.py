@@ -143,7 +143,7 @@ async def test_cleared_override_reverts_to_literal_pg(
     jobs_app: JobsApp,
 ) -> None:
     """`set --clear-max-pending` (stored NULL) reverts enforcement to the
-    @actor literal - it does NOT make the actor unlimited."""
+    @actor literal - it does not make the actor unlimited."""
     await _sync(
         jobs_app,
         _configs(

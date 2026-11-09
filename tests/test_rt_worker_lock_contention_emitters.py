@@ -177,7 +177,7 @@ async def test_prune_loop_lock_loss_emits_contention_with_lock_name(
 ) -> None:
     """Another session holds the prune lock on the schema-qualified name:
     the prune loop's losing acquisition must record lock_contention with
-    that exact name, run NO prune work, and stay alive to retry."""
+    that exact name, run no prune work, and stay alive to retry."""
     schema = module_pg_schema.schema_name
     lock_name = schema_lock_name("prune", schema)
 

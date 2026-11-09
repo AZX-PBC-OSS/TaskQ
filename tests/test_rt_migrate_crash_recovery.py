@@ -1,8 +1,8 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team: cross-process crash recovery of the migration runner.
+"""Adversarial review: cross-process crash recovery of the migration runner.
 
 A migrator that dies mid-apply (container killed, DDL failure) must not
-strand the schema: the advisory-lock protocol must let the NEXT migrator
+strand the schema: the advisory-lock protocol must let the next migrator
 re-acquire the lock and complete the job. For a non-transactional migration
 the failed run's earlier statements are already committed and unrecorded, so
 recovery depends on the documented idempotency contract - the second

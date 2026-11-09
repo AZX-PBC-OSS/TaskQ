@@ -87,10 +87,10 @@ async def _drain(
     running -- each with its own cursor, and since the pair runs as
     bounded fixpoint ROUNDS: every round re-issues each arm's statement
     from a fresh cursor, so grouping by statement text alone would pool
-    the later rounds' single probing batches into the round-1 drain and
+    the later rounds' single probing batches into the hold round drain and
     misread a two-probe arm as a drain. The round-aware counter below
     splits the groups at every fresh-cursor batch, so each arm's
-    round-1 DRAIN stays measurable against its own bound.
+    drain stays measurable against its own bound.
 
     Only groups that actually drained (more than one batch within the
     round) are returned: an arm with nothing to do issues a single
@@ -244,7 +244,7 @@ async def test_cancel_drain_does_not_reread_rows_it_already_cancelled(
     )
     assert len(drains) == 1, (
         "only the terminal arm should have drained (one multi-batch group: "
-        "its round-1 pass; every other arm-round pair is a single probe)"
+        "its first pass; every other arm-round pair is a single probe)"
     )
     _assert_total_work_is_linear(
         drains[0], _BACKLOG, what="terminal cancel of pending/scheduled jobs"
@@ -355,7 +355,7 @@ async def test_drain_cost_does_not_track_other_tenants_backlog(
     The filter is the whole point of a filtered write. If the drain's cost
     tracks the table's total live population rather than the match set,
     every tenant's offboard slows as the fleet grows -- and the only
-    symptom is a command that used to finish and now times out, with
+    symptom is a command that times out where it once finished, with
     nothing in that tenant's own metrics to explain it.
     """
     schema = module_pg_schema.schema_name
@@ -397,19 +397,19 @@ async def test_drain_cost_does_not_track_other_tenants_backlog(
 
     # The match set is unchanged and only unrelated rows were added, so a
     # drain scoped to its filter costs the same either way. The bound is
-    # stated against the QUADRATIC cost of re-reading the match set on
+    # stated against the quadratic cost of re-reading the match set on
     # every pass, because that is the defect this file exists to catch.
     #
-    # It is deliberately NOT a tight "same cost in both runs" assertion.
-    # A tag filter cannot be fully scoped by an index here: a GIN index
+    # It is deliberately not a tight "same cost in both runs" assertion.
+    # A tag filter cannot be fully scoped by an index here: a gin index
     # over `tags` answers `tags && ARRAY[...]` but produces a bitmap,
     # which carries no key order, so it cannot also satisfy the window's
     # `ORDER BY id`. The planner must therefore walk an id-ordered btree
     # and test the tag predicate per row, and some dependence on the
     # table's live population is intrinsic rather than a defect in this
-    # drain. (Verified against the engine: adding a partial GIN index on
+    # drain. (Verified against the engine: adding a partial gin index on
     # tags changes neither the plan nor the cost at any size measured.)
-    # What must NOT happen -- and is what this pins -- is the cost
+    # What must not happen -- and is what this pins -- is the cost
     # compounding per batch.
     quadratic = _BACKLOG * _BACKLOG // (2 * _BATCH)
     assert large_total < quadratic, (

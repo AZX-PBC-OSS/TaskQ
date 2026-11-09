@@ -12,7 +12,7 @@ Three pieces the review suites need and no other test provides:
   transient-Postgres failure, and dump the exposition served by both real
   scrape paths (the ``/jobs/health/metrics`` bridge router and the
   ``TASKQ_METRICS_PORT`` pull listener).
-- :func:`run_promtool_rule_tests`: the honest alert-rule evaluator. Writes
+- :func:`run_promtool_rule_tests`: the alert-rule evaluator. Writes
   a ``promtool test rules`` unit-test file whose input series carry the
   metric names and label sets captured from the real probe's exposition,
   then evaluates the shipped rules.yaml inside the ``prom/prometheus``
@@ -60,14 +60,13 @@ def _free_tcp_port() -> int:
     allocates its own port.
 
     The bind-and-close reservation is itself a race under heavy xdist
-    fan-out (-n 8: eight workers' probes allocating near-simultaneously
-    — two workers' bind-close windows handed out the SAME port, one
-    probe's exporter bound it first, the other's boot died EADDRINUSE
-    and its port fetches refused). The cure is the deterministic
-    partition: each xdist worker's probes draw from ITS OWN range
-    (``gw<N>`` -> base + N * stride), so no two workers' probes can
-    collide regardless of timing; the bind-close still dodges the
-    host's unrelated listeners within the range."""
+    fan-out (two workers' bind-close windows can hand out the same
+    port; one probe's exporter binds it first, the other's boot dies
+    EADDRINUSE and its port fetches refuse). The deterministic
+    partition removes the race: each xdist worker's probes draw from
+    ITS own range (``gw<N>`` -> base + N * stride), so no two workers'
+    probes can collide regardless of timing; the bind-close still
+    dodges the host's unrelated listeners within the range."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = int(sock.getsockname()[1])
@@ -388,15 +387,11 @@ async def _scrape_port() -> str:
 
 
 async def _poll_fetch_port(port: int, *, deadline_s: float = 45.0) -> str:
-    """POLL, don't knock once: the worker's boot (interpreter start, PG
-    connect, the first election attempt) has outrun any fixed wait under
-    co-tenancy — the follower arm's own conviction (3.14 leg, run
-    36629891786: the lone connect got Errno 111 and the missing file
-    failed three otherwise-green tests as PROBE_TASK_FAILED). The
-    LIVE arm raced the SAME boot the same way (the -n 8 consolidated
-    proof: the worker's PG connects queued behind eight workers' storm,
-    the port unbound at the LIVE knock, the one-shot refused). The port
-    answers under the poll or the boot genuinely died."""
+    """Poll, don't knock once: the worker's boot (interpreter start, PG
+    connect, the first election attempt) can outrun any fixed wait under
+    co-tenancy — the lone connect gets Errno 111 and the missing file
+    fails otherwise-green tests as PROBE_TASK_FAILED. The port answers
+    under the poll or the boot genuinely died."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + deadline_s
     while True:
@@ -424,7 +419,7 @@ async def _dump(tag: str) -> None:
     with open(f"{os.environ['PROBE_SCRAPE_PATH']}.{tag}.bridge", "w") as fh:
         fh.write(bridge)
     # The LIVE arm polls too: the worker's boot races the scrape under
-    # co-tenancy (the same storm the follower's poll cures). FINAL keeps
+    # co-tenancy (the same storm the follower's poll fixes). FINAL keeps
     # the one-shot: the worker is already exiting, the poll would stall
     # on a port that is legitimately going away.
     port = await _poll_fetch_port(METRICS_PORT) if tag == "LIVE" else await _scrape_port()
@@ -814,7 +809,7 @@ def once_per_invocation(
     state_dir: Path,
     producer: Callable[[], dict[str, str]],
 ) -> dict[str, str]:
-    """Run ONE probe per pytest INVOCATION, not one per xdist worker.
+    """Run one probe per pytest INVOCATION, not one per xdist worker.
 
     The probe harness is a real worker + a follower + migrations — ~130s
     of machine. The review module's fixtures are module-scoped, and a
@@ -824,9 +819,9 @@ def once_per_invocation(
     PROBE_TASK_FAILED wall). The container pair already solved this
     shape (``shared_service_pair``'s per-invocation state dir + the
     holder lock); this is the same discipline for the probes: the
-    FIRST worker takes the flock, runs the producer, and writes the
+    first worker takes the flock, runs the producer, and writes the
     result + the done marker into the invocation's own state dir; every
-    other worker of the SAME invocation waits on the marker and reads
+    other worker of the same invocation waits on the marker and reads
     the same result. A different invocation (a fresh basetemp) gets a
     fresh dir — no cross-invocation sharing, ever.
     """
@@ -896,7 +891,7 @@ def run_worker_probe(
         TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT="2",
         TASKQ_REDIS_URL="redis://127.0.0.1:15999/0",
         TASKQ_METRICS_PORT=str(metrics_port),
-        # The OTEL pull reader binds settings.metrics_port; pin the SDK's
+        # The otel pull reader binds settings.metrics_port; pin the SDK's
         # own variable to the same allocated port so no code path can
         # fall back to the well-known default 9464 and race another
         # process for it.
@@ -958,10 +953,10 @@ def run_hostile_probe(
         TASKQ_QUEUES="probe_queue",
         TASKQ_HEARTBEAT_INTERVAL="1",
         # Default max_heartbeat_failures (3): the storm fails every tick,
-        # so the worker takes its DESIGNED isolate exit a few ticks in -
+        # so the worker takes its designed isolate exit a few ticks in -
         # the docstring's own "if misses continue, the worker will
         # self-isolate" contract. The assertion is that the miss counter
-        # (the alert's operand) moved and OUTLIVED the isolate.
+        # (the alert's operand) moved and outlived the isolate.
         TASKQ_METRICS_PORT=str(hostile_port),
         OTEL_EXPORTER_PROMETHEUS_PORT=str(hostile_port),
         TASKQ_LOG_LEVEL="WARNING",
@@ -1033,7 +1028,7 @@ otel_mod.set_otel_enabled(True)
 record_sweep_timeout("scheduled_to_pending")
 record_sweep_unexpected_error("scheduled_to_pending")
 record_cron_skipped_slots("probe_fail_actor", 1)
-# THE WF-PROGRESS GAUGE (T08): the leader's sampler's own write - the
+# the leader's sampler's own write to the wf-progress gauge (the typed node view) - the
 # (workflow, state)-keyed cache the observable gauge reads out. The fed
 # values are the promtool cases' fed label values' source of truth.
 update_wf_progress_cache(

@@ -1,22 +1,22 @@
-"""NEGATIVE TYPE PROBES — the T09 flow API's wiring (pyright 1.1.414 +
+"""NEGATIVE TYPE PROBES — the flow API's wiring (pyright 1.1.414 +
 ty 0.0.85).
 
 Run:  uv run --no-sync python tests/typeprobe/_gate.py
       (the CI `type-probes` job's single step; the corpus is checked under
-      THIS directory's own pyrightconfig.json — NOT the root pyproject)
+      THIS directory's own pyrightconfig.json — not the root pyproject)
 
 Each ``MUST_ERROR(rules)`` marker names a wrong-shape call the typed-doors
 law (BUILD-PROTOCOL §7b: "the negative probes (wrong-shape inputs RED on
 both checkers) ship WITH the API") requires to be a checker error, PLUS
 the EXACT rule-ids the pinned checkers must emit (the gate asserts the
 ids — a stray unrelated error must not satisfy a probe). A probe the
-checkers do NOT flag is a finding: the Any leak the probe demonstrates.
+checkers do not flag is a finding: the Any leak the probe demonstrates.
 
-T09's doors probed here: the Promise is WIRING, not a future (awaiting
+the typed API's doors probed here: the Promise is WIRING, not a future (awaiting
 it — the wrong-nesting mistake — reds); a promise does not satisfy a
 plain-data parameter (the direct unit-call form wants the DATA —
 passing the wiring handle reds). The TypedGate's wrong-model delivery
-door ships with T10's runtime (its probe lands with that surface).
+door ships with the hold machinery's runtime (its probe lands with that surface).
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ async def probe_promise_where_data_is_wanted() -> None:
 
 
 def probe_exit_bare_return() -> None:
-    """THE EXIT SENTINEL'S RETURN POSITION (the §17.1 sentinel's type
+    """The exit sentinel's return position (the §17.1 sentinel's type
     surface): a body whose annotation promises ``Exit[Report]`` that
     returns a BARE value is the checker error (the sentinel is the
     annotation's only valid return; a plain ``T`` return is the DATA
@@ -114,12 +114,12 @@ def probe_exit_bare_return_none() -> None:
 
 
 def _map_tail_exit_body() -> Callable[[Any, list[Report]], Awaitable[Exit[Report]]]:
-    """THE MAP-JOIN'S PROMISE-VS-DATA DOOR (the consumption contract's
+    """The map-join's promise-vs-data door (the consumption contract's
     type surface): the join's promise is WIRING — the direct unit-call
     form wants the COLLECTED DATA (the list), never the promise object.
     (The factory's return is ANNOTATED: ty infers an unannotated
     factory's inner closure as Unknown and goes silent — the annotation
-    is what keeps the door checker-visible on BOTH checkers.)"""
+    is what keeps the door checker-visible on both checkers.)"""
 
     async def map_tail_exit(ctx: Any, items: list[Report]) -> Exit[Report]:
         return Exit(Report(ref=f"{len(items)}"))

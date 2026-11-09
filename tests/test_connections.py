@@ -322,7 +322,7 @@ def test_lock_budget_command_timeout_ignores_narrowed_and_unbounded_budgets() ->
 # ── Inheritable per-connection init hooks (with_connection_init) ──────
 #
 # The wrapper is the declaring channel for a hand-rolled connection
-# factory: the hook runs on every produced connection AND is exposed for
+# factory: the hook runs on every produced connection and is exposed for
 # the worker's per-slot transaction pool to inherit (the
 # ``test_slot_pool.py`` integration pair pins the end-to-end contract).
 # These unit pins hold the wrapper's own mechanics.
@@ -391,12 +391,12 @@ async def test_with_connection_init_closes_the_connection_when_the_hook_fails() 
 #
 # The shared guard behind every "acquire from the pool, use immediately"
 # call site (the enqueue paths and the bulk-cancel drain). The full-stack
-# race it exists for - a server FATAL parking asyncpg's protocol before
+# race it exists for - a server fatal parking asyncpg's protocol before
 # ``connection_lost`` lands - is pinned against a real interrupted
 # Postgres in tests/test_fleet_pg_transient_failure.py, which is
 # intermittent by nature; these unit pins hold the wrapper's own contract
 # so the coverage does not rest on that race reproducing: when the retry
-# runs, when it is REFUSED (a write already acknowledged, the
+# runs, when it is refused (a write already acknowledged, the
 # duplication half), and what the guard's bounded checkout does with a
 # release that fails or hangs after the op's work is done (the
 # release/hang half).
@@ -454,7 +454,7 @@ class _FakePool:
         self.release_timeouts.append(timeout)
         try:
             if self.release_park_secs is not None:
-                # The reset is awaited UNDER the budget, as asyncpg awaits
+                # The reset is awaited under the budget, as asyncpg awaits
                 # it (compat.timeout inside holder.release).
                 await asyncio.wait_for(asyncio.sleep(self.release_park_secs), timeout=timeout)
             if self.release_exc is not None:
@@ -551,10 +551,10 @@ async def test_fresh_connection_retry_logs_the_retry_with_the_operation_name() -
 
 
 async def test_fresh_connection_retry_refuses_the_retry_once_a_write_is_acknowledged() -> None:
-    """The refusal half: an ``InternalClientError`` raised AFTER the
+    """The refusal half: an ``InternalClientError`` raised after the
     op marked its write durable (the connection died between the INSERT's
     acknowledgement and a LATER statement of the same attempt: a
-    post-INSERT read, a savepoint RELEASE) must NOT re-run the op. The
+    post-INSERT read, a savepoint RELEASE) must not re-run the op. The
     unguarded wrapper reads every ``InternalClientError`` as
     dead-on-acquire and re-issued the write with the same identity;
     against the enqueue table's ``uuid PRIMARY KEY`` that cannot land a
@@ -586,7 +586,7 @@ async def test_fresh_connection_retry_refuses_the_retry_once_a_write_is_acknowle
 
 
 async def test_fresh_connection_retry_retry_starts_a_clean_guard() -> None:
-    """The retry attempt's flag starts clear: the FIRST attempt's
+    """The retry attempt's flag starts clear: the first attempt's
     pre-write failure (the dead-on-acquire case this wrapper exists for)
     must not poison the retry's durability accounting: the retried op
     can mark and complete normally."""
@@ -628,7 +628,7 @@ async def test_retry_guard_checkout_bounds_a_parked_release_and_frees_the_pool(
     experiment's shape (a release whose reset is sent into a server that
     never answers), driven through the guard's own checkout against a
     miniature that models what asyncpg's holder.release does at source
-    level: the reset is awaited UNDER the budget; on expiry the connection
+    level: the reset is awaited under the budget; on expiry the connection
     is TERMINATED, the holder freed, and the timeout re-raised (which the
     checkout swallows into one WARNING). The op's committed result is
     returned, and a follow-up checkout on the same pool completes
@@ -650,7 +650,7 @@ async def test_retry_guard_checkout_bounds_a_parked_release_and_frees_the_pool(
             pass  # the op's statements all acknowledged; its work is committed
         return "committed"
 
-    # The TEST budget is the red result for a regression to the unbounded
+    # The test budget is the red result for a regression to the unbounded
     # handoff: a checkout that stops passing the bound parks for the full
     # 10 s and the test budget fires at 2 s instead of the shrunk bound.
     budget = asyncio.timeout(2.0)

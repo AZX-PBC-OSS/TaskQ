@@ -1,4 +1,4 @@
-# THE TYPED-WORKFLOW LAYER — the spec, the built truth (T14)
+# THE TYPED-WORKFLOW LAYER — the spec, the built truth
 
 *This is the workflow layer's SPEC as SHIPPED: every mechanism described
 here is LANDED and pinned; every number cites a file in this repository.
@@ -18,7 +18,7 @@ What was proposed, attacked with evidence, and REFUSED:
 1. **The `split`/`Router` parallel-API proposal — DEAD.** The three
    checkers agree it cannot be typed: pyright false-reds it, ty
    false-greens it (`Promise[Unknown]`), mypy collapses `Promise[Never]`
-   (the probe corpus, T01's gate; the errata's #3). The ONE API is the
+   (the probe corpus's gate). The ONE API is the
    wiring verbs (`step`/`gather`/`map_source`/`loop`/`build`) — a second
    router vocabulary would have shipped a type hole with a nice name.
 2. **The full DAG engine (a general graph executor) — DECLINED.** The
@@ -27,9 +27,9 @@ What was proposed, attacked with evidence, and REFUSED:
    a general engine would need its own scheduler, its own state machine,
    its own observability plane — the second system the architecture
    refuses to be.
-3. **Content-addressed rerun (§12's K3) — LATER, re-raised for the
+3. **Content-addressed rerun — LATER, re-raised for the
    maintainer's re-ruling.** The original deferral's premise ("no
-   canonical-hash call site") is VOID: T03's `code_version` column
+   canonical-hash call site") is VOID: the `code_version` column
    (the per-attempt record, `taskq/workflows/_version.py`) CREATED the
    call site via tors' canonical `content_hash` — the adoption map's row
    is now ADOPT. What remains is ARCHITECTURAL SEQUENCING (the rerun
@@ -38,7 +38,7 @@ What was proposed, attacked with evidence, and REFUSED:
    `code_version` is a RECORD, never a cache.
 4. **The refusal list** — the shapes the layer will not express, by
    design: event-time/windowed aggregation (one clock domain is the
-   architecture's own law — see §5), arbitrary code between steps at
+   architecture's own law — see §5, the type story), arbitrary code between steps at
    recovery (the replay is re-derivation, §6), parallel holds inside one
    iteration (a hold is a NODE state; the LATER row, §8), a
    workflow-specific bulk DLQ replay (the vanilla redispatch owns
@@ -65,7 +65,7 @@ What was proposed, attacked with evidence, and REFUSED:
 
 Workflow identity lives as COLUMNS on `jobs` (01.00.24_01): `parent_id`,
 `deps_pending`, `map_index`, `step_key`, `code_version` (+ the loop
-budget trio, 01.00.27/31). The measured tax (the SKEPTIC §IV probe): **+3.0
+budget trio, 01.00.27/31). The measured tax (the skeptic probe): **+3.0
 B tuple / 0.0 B heap on vanilla rows; 194× the partial-index exemption;
 +104.9 B paid by workflow rows only.** The `wf_nodes` split-table variant
 is the documented ESCAPE HATCH (the hot path's ticket if the tax ever
@@ -77,7 +77,7 @@ counter ON the row the dispatch claim already touches.
 1. **The two-transaction finalize** (P1 FINAL; erratum 6): tx1 = the
    result write + the TERMINAL-MARK FENCE (`status='running' AND
    locked_by_worker=… AND attempt=… AND claim_epoch=…` — the attempt is
-   the fencing token, H8) + the ledger's terminal + the fork's
+   the fencing token) + the ledger's terminal + the fork's
    children/edges/join; tx2 (rowcount-gated) = the guarded decrement +
    the `join_fire` insert + the outbox. Exactly-once = the fence + the
    `join_fire` PK + the status-predicate transition.
@@ -91,17 +91,17 @@ counter ON the row the dispatch claim already touches.
    that derives them (the advance-and-cap write, the decrement, the
    terminal — each has exactly one writer; the docs' claim that
    something else writes a derived value is a lie the pin inventory
-   convicts).
+   rejects).
 4. **FORK ATOMICITY** (pin 19): the terminal UPDATE + the fork's INSERTs
    in ONE transaction; a kill at any statement boundary rolls the whole
    tx; the fork-debt reconcile is a REPAIR, never the design.
-5. **THE OUTBOX DRAIN IS OWNED** (pin 20): idempotent consumer inserts
+5. **The outbox drain is owned** (pin 20): idempotent consumer inserts
    (`ON CONFLICT` on the step key); the flag flips in the insert's tx.
 6. **RESUME-NOT-RETRY**: a hold's resume consumes NO ladder attempt
-   (erratum 15's cure); the ladder burns for BODY failures only — an
+   (erratum 15); the ladder burns for BODY failures only — an
    infra fault routes to the reclaim (the escape-point contract).
-7. **THE ABSORBED-FAILURE CLAUSE precedes the `failed` row** (the §17.5
-   derivation): a failed node absorbed by its edge's declared policy
+7. **The absorbed-failure clause precedes the `failed` row** (the
+   derivation table): a failed node absorbed by its edge's declared policy
    derives through its PARENT'S outcome — the workflow succeeds WITH the
    failure report (the report is the point, not a consolation).
 
@@ -111,14 +111,14 @@ Two composite arbiters on one live index shape: the STEP key
 (`workflow:{flow_id}` × the step key — the ledger row IS the claim, the
 PK blocks double-recording) and the RUN key (`workflow-run:<flow name>`
 × the caller's key — a conflict RETURNS the existing run, never a second
-silent run; the founding incident's cure). THE CRON COMPOSITION (G3):
+silent run; the founding incident's fix). THE CRON COMPOSITION (G3):
 the cron entry fires the slot key AS the run key — same slot twice →
 ONE run (the deploy matrix's cell-7 pin proves it at fleet scale; the
 deep-research march kicks the run from a REAL schedule's fire).
 
 ## 5. The type story's division of labor
 
-* LOCAL truth: pyright 1.1.414 + ty 0.0.85 (the probe CI gate, T01 —
+* LOCAL truth: pyright 1.1.414 + ty 0.0.85 (the probe CI gate —
   both must be RED on each seeded type defect; mypy's evidence is
   recorded, not gated).
 * GLOBAL truth: `compiled.validate()` — the E1–E7/W1 rule matrix
@@ -137,10 +137,10 @@ deep-research march kicks the run from a REAL schedule's fire).
 
 The body's annotation decides (the `Done`/`Refine` union, the `Exit`
 sentinel, the typed partial); the finalize CAS is the shape guard. THE
-STATUS IS DERIVED (§17.5): the run's verdict reconstructs from the ROWS
+STATUS IS DERIVED (the derivation table): the run's verdict reconstructs from the ROWS
 — never one column's cache.
 
-**THE DIVERGENCE TRADES, AS FEATURES** (the adoption pitch, not
+**The divergences trade as features** (the adoption pitch, not
 apologies):
 
 1. **Replay = ROWS-ONLY RE-DERIVATION.** There is no orchestrator
@@ -153,14 +153,14 @@ apologies):
    contract, no SDK sandbox, no history versioning — the rows version
    themselves per attempt), and run state is one SQL query away for any
    BI tool.
-2. **THE DB-CLOCK TIMERS.** Every timer (hold deadlines, loop budgets,
+2. **The db-clock timers.** Every timer (hold deadlines, loop budgets,
    lease expiry) evaluates against PG's clock INSIDE the statement
    owning the transition (the SkewedClock pin: a +1h-skewed app clock
    cannot fire or unfire a budget). *Costs:* event-time semantics
    (inexpressible — §0's refusal 4). *Buys:* ONE totally-ordered
    crash-safe clock domain; the fleet's lived "a row `running` forever"
    pain is structurally impossible while the derivation re-derives.
-3. **THE HOLD ROW — the headline.** Five ecosystem mechanisms behind
+3. **The hold row — the headline.** Five ecosystem mechanisms behind
    ONE CAS'd, idempotent, slot-releasing row: signal-and-wait,
    suspend-resume, deferrable-open-slot, poll-until-true,
    checkpoint-interrupt (probes 2+3: the slot RELEASES
@@ -174,11 +174,11 @@ apologies):
    re-create the "looked healthy, was wrong" state; REDACT-BEFORE-
    PERSIST).
 
-## 7. The deploy matrix (§22's commitment, LANDED)
+## 7. The deploy matrix (the original commitment, LANDED)
 
 The rolling-deploy contract is PROVEN at the system tier
 (`tests/system_e2e/test_wf_deploy_matrix.py`, PG 15.19/16.15/17.11/18.6 ×
-the cells, 6/6 green per version — `.measurements/p5/matrix-pg*-final.txt`):
+the cells, 6/6 green per version — the captures recorded with the system-tier runs):
 
 | Cell | The contract | The pin |
 |---|---|---|
@@ -197,9 +197,9 @@ co-invariant lock lease — the settings validator's cascade floor).
 
 * **Snapshot-per-run versioning** (the run's code pinned AT CREATE —
   the create stamps the definition snapshot, the run reads its own
-  snapshot forever): the shipped contract is the OPPOSITE face (§the
+  snapshot forever): the shipped contract is the OPPOSITE face (the
   guide's versioning section): the registry-is-truth — the in-flight
-  runs adopt the NEW code at their next node claim, the §22.1 stamps
+  runs adopt the NEW code at their next node claim, the per-attempt code stamps
   record which code ran each row, and the cancel-then-restart path is
   the remediation. The snapshot design re-derives the compile-time
   registry discipline (a snapshot per run, a pruning story for the
@@ -207,11 +207,12 @@ co-invariant lock lease — the settings validator's cascade floor).
   recorded here, not built.
 * **Holds as child rows** (parallel holds inside one iteration): NOT a
   feature add — a REPLACEMENT of the proven hold representation; the
-  fence matrix, the epoch identity and the T10/T19 pins re-derive.
+  fence matrix, the epoch identity and the hold/loop pins re-derive.
   Sequenced after the core hold machinery's production experience.
 * **Query-shaped bulk DLQ replay** (`retry_where` + preview): the
-  workflow tables RIDE the vanilla redispatch ownership (the §22.6
-  exclusivity); a workflow-specific bulk replay FORKS the model. When
+  workflow tables RIDE the vanilla redispatch ownership (the
+  redispatch exclusivity law); a workflow-specific bulk replay FORKS the
+  model. When
   the vanilla surface grows one, the workflows inherit it.
 * **First-class cronflow machinery**: the composition ALREADY EXISTS
   through the run-key law (§4) — a duplicate would violate the
@@ -226,16 +227,20 @@ co-invariant lock lease — the settings validator's cascade floor).
 
 ## 9. The evidence appendix (the numbers' home)
 
-| Claim | The file |
+The measurement artifacts cited in this document are recorded with the
+engine's evidence runs (the in-repo tables below name the owning claim
+and the in-tree pin that re-runs it).
+
+| Claim | Where it lives |
 |---|---|
-| The deploy matrix's cells (PG 15/16/17/18 × 6, the runs ×3 where pinned) | `.measurements/p5/matrix-pg*-final.txt`, `.measurements/p5/matrix-run5.txt` |
-| The marches (the cron kickoff → the map → the multi-HITL loop → the timeout face → the kill storm → the explorer; the streaming emit; the doc-ingest fan-in; the operator's walk incl. the UPGRADE PATH: the prior-release schema → the full chain on populated data → the workflows live) | `.measurements/p5/march-run{1,2,3}.txt`, `.measurements/p5/operator-full-run{1,2}.txt`, `.measurements/p5/march-timeline.json` |
-| The fan-in curve (200 → 3.0 ms, 1000 → 3.3 ms, 5000 → 11.1 ms; the refit ~1.7 µs/edge + ~2.7 ms base; the 5 ms-class comparison struck) | `.measurements/edge-scale-curve.json`, the workflows guide §T07 |
-| The 1000-child fan-out tx band, the join-fire latency | `.measurements/fanout-1000-tx-band.json`, `.measurements/join-fire-latency.json` |
-| The hold/resume band (the resume consumes no attempt) | `.measurements/t10-hold-resume-band.json` |
-| The streaming bands (the emit cursor) | `.measurements/t20-streaming-bands.json` |
-| The migration-chain proof (every bundled migration, stepwise, onto populated data) | `.measurements/p5/cure-all-final.txt`, `tests/test_migrations_populated.py` |
-| The stranger test (a fresh agent, docs-only: the demo + the API explanation + the 18 stumbles, dispositioned) | `.measurements/p5/stranger-report.md`, `.measurements/p5/STRANGER-DISPOSITION.md` |
+| The deploy matrix's cells (PG 15/16/17/18 × 6, the runs ×3 where pinned) | the system-e2e deploy-matrix battery (`tests/system_e2e/test_wf_deploy_matrix.py`) |
+| The marches (the cron kickoff → the map → the multi-HITL loop → the timeout face → the kill storm → the explorer; the streaming emit; the doc-ingest fan-in; the operator's walk incl. the UPGRADE PATH: the prior-release schema → the full chain on populated data → the workflows live) | the in-repo march scenarios (`tests/test_wf_demo_legs.py` and the system-e2e tier) |
+| The fan-in curve (200 → 3.0 ms, 1000 → 3.3 ms, 5000 → 11.1 ms; the refit ~1.7 µs/edge + ~2.7 ms base; the 5 ms-class comparison struck) | the scale pin (`tests/test_wf_perf_bands.py`), measured |
+| The 1000-child fan-out tx band, the join-fire latency | the perf bands pin (`tests/test_wf_perf_bands.py`) |
+| The hold/resume band (the resume consumes no attempt) | the HITL pins (`tests/test_wf_hitl_pins.py`) |
+| The streaming bands (the emit cursor) | the backpressure pins (`tests/test_wf_emit_backpressure_pins.py`) |
+| The migration-chain proof (every bundled migration, stepwise, onto populated data) | `tests/test_migrations_populated.py` |
+| The stranger test (a fresh reader, docs-only: the demo + the API explanation + the 18 stumbles, each dispositioned) | the adoption walkthrough in this doc's history |
 | The engine's pin inventory (the tests that can fail) | the workflows guide's foot; `tests/test_wf_*.py` |
 
 ## 10. The abstraction contract (the wire-shim boundary)

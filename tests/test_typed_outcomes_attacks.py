@@ -1,4 +1,4 @@
-# ruff: noqa: S608, S603  # Why: schema names are fixed test identifiers, every value is $-bound; the subprocess runs THIS repo's own test suite against a scratch copy of THIS repo.
+# ruff: noqa: S608, S603  # Why: schema names are fixed test identifiers, every value is $-bound; the subprocess runs this repo's own test suite against a scratch copy of this repo.
 """ATK-351: attacks on the typed outcome branches, the denial_reason
 contract, and the shared fence fragments.
 
@@ -21,17 +21,17 @@ Surfaces:
 
 2. Fuzz: an arm label mutated inside a rendered statement must raise
    ValueError at the backend boundary (the disclosed loud-failure design)
-   AND leave the row exactly as the honest arm left it - the mutation
+   and leave the row exactly as the honest arm left it - the mutation
    touched only the returned label, so the row is never half-written.
 
-3. denial_reason contract: a live (non-terminal) denial writes NO event
+3. denial_reason contract: a live (non-terminal) denial writes no event
    row at all; a denial whose schedule_to_close lapses dies through the
    terminal deadline arm with the event detail naming the caller's reason;
    a plain snooze's deadline event carries no denial_reason key; an
    illegal outcome or reason raises ValueError on the boundary before any
    write (never half-written).
 
-4. Fence-fragment misfold drill: a fence conjunct misfolded in a scratch
+4. Fence-fragment misfold scenario: a fence conjunct misfolded in a scratch
    copy of the tree must be caught by the standing nets (differential
    fencing scenarios / bind-arity / terminal-write pins). A guard that
    cannot fire is a red finding.
@@ -180,7 +180,7 @@ async def _dispatched_job(
     )
     assert rows and rows[0].id == job_id
     # The claim view the handler must present on every later write: the
-    # fence binds BOTH the attempt epoch and the claim epoch (JobRow
+    # fence binds both the attempt epoch and the claim epoch (JobRow
     # .claim_epoch, bumped +1 by every dispatch claim), and a caller that
     # cannot present them no-ops by design (the cannot-prove-it doctrine).
     return rows[0].id, rows[0].attempt, rows[0].claim_epoch
@@ -244,7 +244,7 @@ async def test_atk_mutated_arm_label_raises_and_never_rewrites_the_row(
     target: _FuzzTarget, pg_dsn: str, module_pg_schema: ModulePgSchema
 ) -> None:
     """Drive the honest arm once (records what the caller hears and what
-    the row became), then drive the SAME arm on a fresh job with its
+    the row became), then drive the same arm on a fresh job with its
     returned label mutated: the caller hears ValueError - never a silent
     mislabel - and the row reads back EXACTLY the fate the honest run
     recorded. The mutation changed the label, never the row."""
@@ -372,7 +372,7 @@ async def test_atk_denial_reason_contract(pg_dsn: str, module_pg_schema: ModuleP
     deadline_event = next(e for e in await backend.get_events(job_id) if e.kind == "state_change")
     assert deadline_event.detail.get("denial_reason") == "capacity"
 
-    # Cell 3: a PLAIN snooze through the same terminal arm - no
+    # Cell 3: a plain snooze through the same terminal arm - no
     # denial_reason key, the detail shape is unchanged.
     job_id, attempt, claim_epoch = await _dispatched_job(backend, schema, worker_id, stc_s=5.0)
     verdict = await backend.mark_snoozed(
@@ -425,7 +425,7 @@ async def test_atk_illegal_outcome_and_reason_raise_before_any_write(
 async def _redispatch_same_worker(
     backend: PostgresBackend, schema: str, job_id: Any, worker_id: UUID, expect_attempt: int
 ) -> tuple[int, int]:
-    """Reclaim the row (its lease expires) and re-claim it on the SAME
+    """Reclaim the row (its lease expires) and re-claim it on the same
     worker; returns the row's new (attempt, claim_epoch) claim view."""
     from taskq.backend._sweeps import sweep_expired_locks
 
@@ -458,7 +458,7 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
 ) -> None:
     """The fence's attempt-epoch conjunct is BEHAVIOR, on both spellings: a
     stale attempt's write presented to a row re-dispatched at a later epoch
-    on the SAME worker must no-op - never terminalise, never defer, never
+    on the same worker must no-op - never terminalise, never defer, never
     strand - and the LIVE attempt's own write must still apply (the fence
     refused the epoch, not the write)."""
     schema = module_pg_schema.schema_name
@@ -473,8 +473,8 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
     )
     assert live_epoch != stale_epoch, "the re-claim must stamp a fresh claim epoch"
 
-    # The stale attempt-1 handler's writes arrive late, presenting the FULL
-    # stale claim view (its own attempt AND its own claim epoch): none may
+    # The stale attempt-1 handler's writes arrive late, presenting the full
+    # stale claim view (its own attempt and its own claim epoch): none may
     # apply.
     assert (
         await backend.mark_succeeded(
@@ -500,9 +500,9 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
         f"status={row.status if row else None}"
     )
 
-    # The fence is a CONJUNCTION: a write that gets ANY conjunct wrong must
-    # not land. The hybrid view here (the row's CURRENT claim epoch paired
-    # with the STALE attempt) is what isolates the attempt-epoch conjunct -
+    # The fence is a conjunction: a write that gets any conjunct wrong must
+    # not land. The hybrid view here (the row's current claim epoch paired
+    # with the stale attempt) is what isolates the attempt-epoch conjunct -
     # the full-stale-view writes above are already refused by the newer
     # claim epoch, so a misfolded attempt conjunct would sail through them.
     assert (
@@ -514,7 +514,7 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
     row = await backend.get(job_id)
     assert row is not None and row.status == "running" and row.attempt == 2
 
-    # The LIVE attempt's own write, presenting ITS OWN claim view, still
+    # The live attempt's own write, presenting its own claim view, still
     # applies: the fence refused the stale epochs, not the write.
     assert (
         await backend.mark_succeeded(
@@ -526,7 +526,7 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
     assert row is not None and row.status == "succeeded"
     # The honest outcome's full event trail: the lock-expiry reclaim hands
     # the row back (running → pending), the re-dispatch writes no event
-    # row, and the LIVE write terminalises ONCE (running → succeeded) -
+    # row, and the live write terminalises once (running → succeeded) -
     # the stale writes contributed nothing to the feed.
     assert_transition_sequence(
         await backend.get_events(job_id),
@@ -546,7 +546,7 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
     )
     assert verdict == "noop", f"a stale attempt-1 deferral moved the live row: {verdict!r}"
     # The same hybrid isolation on the aliased spelling: the stale attempt
-    # paired with the CURRENT claim epoch must still be refused, by the
+    # paired with the current claim epoch must still be refused, by the
     # attempt-epoch conjunct alone.
     verdict = await backend.mark_snoozed(
         job_id, worker_id, timedelta(seconds=30), attempt=1, claim_epoch=live_epoch
@@ -566,7 +566,7 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
     assert row is not None and row.status == "succeeded"
 
 
-# ── fence-fragment misfold drill ───────────────────────────────────────────
+# ── fence-fragment misfold scenario ───────────────────────────────────────────
 
 
 _MISFOLDS: dict[str, tuple[str, str]] = {
@@ -577,7 +577,7 @@ _MISFOLDS: dict[str, tuple[str, str]] = {
         "AND j.attempt >= 0",  # a tautology: the conjunct is gone
     ),
     # The bound spelling loses its attempt-epoch conjunct. The pair edits
-    # the SOURCE TEXT (the fragment value is spelled across two adjacent
+    # the source text (the fragment value is spelled across two adjacent
     # string literals in the module), so the old string is the literal
     # substring the module actually contains.
     "bound_attempt": (
@@ -590,7 +590,7 @@ _MISFOLDS: dict[str, tuple[str, str]] = {
         "locked_by_worker = $2",
         "locked_by_worker = $9",
     ),
-    # The SHARP one: an ARITY-PRESERVING semantic misfold on the bound
+    # The sharp one: an arity-preserving semantic misfold on the bound
     # spelling - the epoch conjunct becomes a tautology over every later
     # attempt. Only the stale-epoch behavior pin can catch this.
     "bound_attempt_semantic": (
@@ -612,21 +612,21 @@ def _run_nets_in_scratch(
 ) -> subprocess.CompletedProcess[str]:
     """Run the standing nets in a scratch-copy subprocess pytest.
 
-    THE SCRATCH-TOKEN LAW (the mutual-DROP class, named and cured
+    the SCRATCH-TOKEN LAW (the mutual-DROP class, named and fixed
     2026-10-08): the scratch run inherits ``os.environ`` — including
-    ``TASKQ_TEST_PG_DSN`` (it needs the cluster) AND the parent session's
+    ``TASKQ_TEST_PG_DSN`` (it needs the cluster) and the parent session's
     run-isolation token (the publisher's ``TASKQ_TEST_RUN_TOKEN`` rides
     ``os.environ`` through monkeypatch into every child). The scratch
-    session's own ``pg_dsn`` fixtures then hash the SAME (token, module)
+    session's own ``pg_dsn`` fixtures then hash the same (token, module)
     pairs as the parent's live modules and answer with
     ``DROP DATABASE ... WITH (FORCE)`` — killing the parent's live
     connections mid-test; the parent's next test dies on
     ``InvalidCatalogNameError: database "tq_db_..." does not exist`` and
-    the failure rotates with which worker ran the drill
-    (round-1/recon evidence: the misfold drill on gw7 dropped the parent
-    module's db at 22:17). The cure: every scratch run mints its OWN
+    the failure rotates with which worker ran the scenario
+    (the recon evidence: the misfold scenario dropped the parent
+    module's db at 22:17). The fix: every scratch run mints its own
     token (drill-unique, derived from the parent's worker id so parallel
-    drills on different workers can never collide with each other
+    scenarios on different workers can never collide with each other
     either), so the scratch names live beside — never on top of — the
     parent's.
     """
@@ -634,9 +634,9 @@ def _run_nets_in_scratch(
         **os.environ,
         "PYTHONPATH": str(scratch / "src"),
         "TASKQ_TEST_RUN_TOKEN": (
-            # The sanctioned seam (run_isolation_token's own input, NOT the
-            # raw worker id the suite-hygiene pin bans): under xdist this IS
-            # the worker id, so parallel drills on different workers mint
+            # The sanctioned seam (run_isolation_token's own input, not the
+            # raw worker id the suite-hygiene pin bans): under xdist this is
+            # the worker id, so parallel scenarios on different workers mint
             # distinct tokens.
             f"scratch_{os.environ.get('TASKQ_TEST_RUN_TOKEN', 'main')}_{token_suffix}"
         ),
@@ -666,10 +666,10 @@ def _copy_scratch(repo: Path, tmp_path: Path) -> Path:
 
 @pytest.mark.parametrize("misfold", list(_MISFOLDS))
 def test_atk_fence_misfold_is_caught_by_the_standing_nets(misfold: str, tmp_path: Path) -> None:
-    """Copy the tree to a scratch dir, misfold ONE fence fragment, run the
-    standing nets there. The drill's control (the sibling test) proves the
+    """Copy the tree to a scratch dir, misfold one fence fragment, run the
+    standing nets there. The scenario's control (the sibling test) proves the
     same harness runs green unmutated, so any failure below is the misfold
-    firing a net. A misfold NO net catches is a red finding."""
+    firing a net. A misfold no net catches is a red finding."""
     repo = Path(__file__).resolve().parent.parent
     scratch = _copy_scratch(repo, tmp_path)
     old, new = _MISFOLDS[misfold]
@@ -688,7 +688,7 @@ def test_atk_fence_misfold_is_caught_by_the_standing_nets(misfold: str, tmp_path
 
 
 def test_atk_fence_drill_control_unmutated_copy_passes(tmp_path: Path) -> None:
-    """The control for the drill: the same scratch-copy harness with NO
+    """The control for the scenario: the same scratch-copy harness with no
     misfold runs the standing nets green, so the failures above are
     attributable to the misfold alone."""
     repo = Path(__file__).resolve().parent.parent

@@ -13,7 +13,7 @@ window by construction, not by wall-clock luck:
 * mid-body (external, on observed readiness): the body recorded its
   ``start`` effect and is holding - a real execution is in flight;
 * mid-commit, uncommitted side (``before_terminal``): the body's effects
-  are durable and the terminal write has NOT been attempted;
+  are durable and the terminal write has not been attempted;
 * mid-commit, committed side (``after_terminal``): the fused terminal
   statement has landed status + result + attempt row + event, and
   nothing after it (publish, fanout, next heartbeat) has run - the kill
@@ -28,20 +28,20 @@ asserted: a graceful exit would not prove the kill landed) and the
 assertions are the same system invariants every scenario in the tier
 runs, over the tagged population:
 
-* NO STUCK LEASE: within the reclaim budget (leader-lease lapse + wake
+* no STUCK LEASE: within the reclaim budget (leader-lease lapse + wake
   jitter + sweep tick + the re-pend's own backoff, each term derived
   from the settings the workers run with) the row must leave ``running``
   - reclaimed into the re-pend with its ``crashed`` attempt row;
-* EXACTLY ONCE-OR-VISIBLE: every attempt runs at most once (the effects
+* EXACTLY once-or-VISIBLE: every attempt runs at most once (the effects
   ledger's per-(job, attempt) uniqueness), the job reaches exactly one
   terminal outcome across jobs + jobs_archive, and the attempt ledger
   reconciles (a crash attempt gets its ``crashed`` row from the reclaim
   sweep, a terminal attempt its row from the terminal write);
-* NO ORPHANED SIDE EFFECTS: every effects row has the claim-row evidence
+* no ORPHANED SIDE EFFECTS: every effects row has the claim-row evidence
   of the attempt that executed it (no body ran where nothing was
   dispatched);
 * the terminal fence: on the committed side the replacement worker must
-  NOT re-run the job (no second attempt, no second effects row);
+  not re-run the job (no second attempt, no second effects row);
 * the replacement drains: a trailing enqueue runs to success on it.
 """
 
@@ -61,7 +61,7 @@ import pytest
 
 from taskq.testing.health import unique_health_sock_path
 from tests.system_e2e._harness import (
-    _BASE_ENV,  # pyright: ignore[reportPrivateUsage]  # Why: the fleet env is the tier's shared constant; the kill harness spawns with the SAME knobs the graceful scenarios prove.
+    _BASE_ENV,  # pyright: ignore[reportPrivateUsage]  # Why: the fleet env is the tier's shared constant; the kill harness spawns with the same knobs the graceful scenarios prove.
     WorkerProc,
     reap,
     wait_worker_ready,
@@ -101,7 +101,7 @@ _HEARTBEAT_INTERVAL_S = 0.5
 _POLL_INTERVAL_S = 0.05
 
 # The campaign shortens the leader lease from the 40s default: after a
-# kill, the reclaim runs on the LEADER sweep, and the dead worker's lease
+# kill, the reclaim runs on the leader sweep, and the dead worker's lease
 # must lapse before a replacement can win leadership. 6.0 >= 4 beats (the
 # resolved floor max(lease, 4 * heartbeat_interval) = max(6, 2) = 6).
 _LEADER_LEASE_S = 6.0
@@ -115,7 +115,7 @@ _RECLAIM_BACKOFF_S = 1.0
 # handover (lease lapse + wake jitter) + the reclaim sweep's tick + the
 # re-pend backoff + the dispatch poll + the attempt-2 body (the 0.2s
 # attempt-aware tail) + the terminal write, plus a margin for co-tenant
-# load. Every bound here is a CAP a poll asserts against, never a sleep.
+# load. Every bound here is a cap a poll asserts against, never a sleep.
 _RECLAIM_OBSERVE_CAP_S = (
     _LEADER_LEASE_S + _LEADER_WAKE_JITTER_S + 2 * _SWEEP_INTERVAL_S + _RECLAIM_BACKOFF_S + 15.0
 )
@@ -200,7 +200,7 @@ async def _wait_effect(
 
 
 async def _status_counts_across(conn: asyncpg.Connection, schema: str, tag: str) -> dict[str, int]:
-    """Terminal outcome counts across BOTH tables (settle's live-only
+    """Terminal outcome counts across both tables (settle's live-only
     counts cannot see the archive's share)."""
     rows = await conn.fetch(
         f"""
@@ -238,7 +238,7 @@ async def _assert_no_stuck_lease(conn: asyncpg.Connection, schema: str, job_id: 
 async def _assert_attempts(
     conn: asyncpg.Connection, schema: str, job_id: object, expected: list[tuple[int, str]]
 ) -> None:
-    """The attempt ledger, read across BOTH ledgers: a terminal row the
+    """The attempt ledger, read across both ledgers: a terminal row the
     archiver has already pruned carries its attempts in
     ``job_attempts_archive``, and the assertion must see the archived
     shape too (conservation reads it the same way)."""
@@ -307,7 +307,7 @@ async def _run_phase(
             # observed effect row, not a sleep.
             kind, attempt = kill_after_effect
             await _wait_effect(conn, schema, job_id, kind, attempt)
-            killer.proc.kill()  # Why: the kill IS the experiment.
+            killer.proc.kill()  # Why: the kill is the experiment.
 
         await _wait_killed(killer, _KILL_LANDS_CAP_S, phase=seam or "mid-body")
         death_wall = datetime.now(UTC)
@@ -320,7 +320,7 @@ async def _run_phase(
         # (leadership handover), the re-pend, and the drain.
         replacement = _spawn_kill_worker(pg_dsn, schema, seam=None, tag="kill9-b")
         wait_worker_ready(replacement)
-        # The replacement drains NEW work too, not just the reclaim.
+        # The replacement drains new work too, not just the reclaim.
         await client.enqueue(kill9_slow, Kill9Payload(sleep=0.2), tags=[_TAG])
 
         await _assert_no_stuck_lease(conn, schema, job_id)
@@ -334,18 +334,16 @@ async def _run_phase(
         await assert_effects_balance(conn, schema, _TAG)
         counts = await _status_counts_across(conn, schema, _TAG)
         if fence_watch:
-            # THE FENCE MUST SURVIVE THE HANDOVER: the replacement is the
-            # only leader candidate left alive, its elect parks one
-            # heartbeat tick, and the takeover waits out the dead
-            # holder's leader lease - so the reclaim sweep's FIRST look
-            # at this committed row happens here, after the settle
-            # above already returned. One full handover budget (lease
-            # lapse + wake jitter + the sweep's tick, plus margin),
-            # re-asserting the settled invariants on every observation:
-            # any status drift, a second attempt row, or a second
-            # effects row is a reclaim that re-ran a job whose terminal
-            # write committed - the fence broken, not a benign late
-            # write.
+            # the replacement is the only leader candidate left alive, its
+            # elect parks one heartbeat tick, and the takeover waits out the
+            # dead holder's leader lease - so the reclaim sweep's first look at
+            # this committed row happens here, after the settle above already
+            # returned. One full handover budget (lease lapse + wake jitter +
+            # the sweep's tick, plus margin), re-asserting the settled
+            # invariants on every observation: any status drift, a second
+            # attempt row, or a second effects row is a reclaim that re-ran a
+            # job whose terminal write committed - the fence broken, not a
+            # benign late write.
             handover_cap = _LEADER_LEASE_S + _LEADER_WAKE_JITTER_S + 2 * _SWEEP_INTERVAL_S + 5.0
             watch_deadline = time.monotonic() + handover_cap
             attempts_rows = await conn.fetch(
@@ -392,7 +390,7 @@ async def _run_phase(
         reap(killer)
         if replacement is not None:
             reap(replacement)
-        # The TAG's cleanup belongs to the CALLER's finally: the phase's
+        # The tag's cleanup belongs to the caller's finally: the phase's
         # return value feeds the caller's ledger assertions, which must
         # run against a population that still exists.
 
@@ -431,7 +429,7 @@ async def test_sigkill_mid_claim_leaves_a_reclaimable_claim_not_a_stuck_lease(
             f"the claim's lease was not live at the kill (death {result.death_wall}): {row}"
         )
         job_id = result.job_id
-        # The killed claim ran NO body: no effects row exists for attempt 1.
+        # The killed claim ran no body: no effects row exists for attempt 1.
         n = await sys_ledger.fetchval(
             f'SELECT count(*)::int FROM "{schema}".sys_effects WHERE job_id = $1 AND attempt = 1',
             job_id,
@@ -458,7 +456,7 @@ async def test_sigkill_mid_body_interrupts_the_run_and_the_reclaim_reruns_once(
 ) -> None:
     """Kill mid-body (on the observed ``start`` effect): the execution is
     real, so the reclaim must record the attempt as ``crashed`` and re-run
-    the body ONCE - never zero times (dropped) and never twice against one
+    the body once - never zero times (dropped) and never twice against one
     attempt (the exactly-once-or-visible contract)."""
     schema = module_pg_schema.schema_name
     try:
@@ -520,7 +518,7 @@ async def test_sigkill_before_the_terminal_write_leaves_effects_durable_and_row_
         )
         assert row["finished_at"] is None, f"a finished_at exists with no terminal write: {row}"
         job_id = result.job_id
-        # The body's effects ARE durable (they committed before the kill).
+        # The body's effects are durable (they committed before the kill).
         n = await sys_ledger.fetchval(
             f'SELECT count(*)::int FROM "{schema}".sys_effects '
             "WHERE job_id = $1 AND attempt = 1 AND kind = 'done'",
@@ -545,8 +543,8 @@ async def test_sigkill_after_the_terminal_write_commits_never_reruns_the_job(
 ) -> None:
     """The committed side of the terminal-write window: the fused terminal
     statement has landed (status + result + attempt row + event) and the
-    process dies before anything after it. The row must be terminal AND
-    whole at the kill, and the replacement worker must NOT re-run it: no
+    process dies before anything after it. The row must be terminal and
+    whole at the kill, and the replacement worker must not re-run it: no
     crash row, no second attempt, no second effects row (the terminal
     fence under a kill between the ledger write and the next heartbeat)."""
     schema = module_pg_schema.schema_name
@@ -599,8 +597,8 @@ async def test_sigkill_while_holding_a_keyed_slot_frees_it_within_the_lease(
     replacement: WorkerProc | None = None
     try:
         wait_worker_ready(killer)
-        # One slot per tenant. The holder is enqueued FIRST and observed
-        # RUNNING (slot held) before the second job exists, so the roles
+        # One slot per tenant. The holder is enqueued first and observed
+        # running (slot held) before the second job exists, so the roles
         # are not a claim race: the blocked job can only be denied behind
         # a live holder (its denial snooze prices the earliest lease's
         # expiry - the crash bound this test kills into).
@@ -628,7 +626,7 @@ async def test_sigkill_while_holding_a_keyed_slot_frees_it_within_the_lease(
             "cancelled",
         ), f"the blocked job ran despite the held slot - the cap did not hold: {blocked_row}"
 
-        killer.proc.kill()  # Why: the kill IS the experiment.
+        killer.proc.kill()  # Why: the kill is the experiment.
         await _wait_killed(killer, _KILL_LANDS_CAP_S, phase="mid-slot-hold")
 
         replacement = _spawn_kill_worker(pg_dsn, schema, seam=None, tag="kill9-b")
@@ -683,7 +681,7 @@ async def test_sigkill_mid_heartbeat_with_a_fresh_lease_still_reclaims_within_th
         row = result.row_after_death
         assert row["status"] == "running", f"the job was not in flight at the heartbeat kill: {row}"
         assert row["lock_expires_at"] is not None, "no lease at the heartbeat kill"
-        # The beat had JUST committed: the lease must be near its full span
+        # The beat had just committed: the lease must be near its full span
         # (within one heartbeat interval of the kill's observation).
         remaining = (row["lock_expires_at"] - result.death_wall).total_seconds()
         assert remaining >= _LEASE_S - _HEARTBEAT_INTERVAL_S - 2.0, (
@@ -740,7 +738,7 @@ async def test_sigkill_mid_body_on_the_last_attempt_terminalises_crashed_not_stu
         assert counts.get("succeeded", 0) >= 1, (
             f"the replacement's trailing job never completed: {counts}"
         )
-        # The terminal row is WHOLE, live or archived by the time the
+        # The terminal row is whole, live or archived by the time the
         # settle returned: finished_at and the crash arm's error class.
         live = await _job_row(sys_ledger, schema, job_id)
         archived = await sys_ledger.fetchrow(

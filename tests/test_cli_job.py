@@ -109,7 +109,7 @@ def test_show_falls_back_to_jobs_archive(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_show_prints_the_rows_tags(monkeypatch: pytest.MonkeyPatch) -> None:
-    """THE TAGS LINE (the recurring-run's display identity): tags are the
+    """The tags line (the recurring-run's display identity): tags are the
     operator's grouping/filtering surface everywhere else (the
     cancel-where/GIN-index face), so the pointed read names them too —
     the run/cycle tags render on one line; an absent set prints

@@ -1,4 +1,4 @@
-"""Red-team attacks on the bounded tick WITH policies in play (real PG).
+"""Adversarial review attacks on the bounded tick WITH policies in play (real PG).
 
 Two surfaces the bounded-tick contract has never been pinned against:
 
@@ -6,7 +6,7 @@ Two surfaces the bounded-tick contract has never been pinned against:
   tests pass no ``actor_policies``, so nobody has pinned that a tick over
   a large mixed due set (singleton-flagged actors, capped actors, healthy
   actors) still spends a bounded handful of statements.  The preflights
-  are one statement per DISTINCT flagged actor set (``ANY($1::text[])``
+  are one statement per DISTINCT flagged actor set (``any($1::text[])``
   + ``GROUP BY actor``), not per schedule, and the intra-batch gates are
   in memory - a regression to per-schedule preflighting would trip the
   leader's deadline under exactly the catch-up burst the bound exists
@@ -16,7 +16,7 @@ Two surfaces the bounded-tick contract has never been pinned against:
   pin exercises a failing factory with the policy mapping present but no
   stamped enqueue ever built (the factory raises before stamping).  The
   sharper shape: a failing schedule and a stamp-carrying fire for the
-  SAME singleton actor in ONE tick - the classification must strike the
+  same singleton actor in one tick - the classification must strike the
   real failure while the stamping path is provably active.
 """
 

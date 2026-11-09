@@ -33,7 +33,6 @@ shared between ``consume_one_job`` and ``_consume_transactional``.
 
 import asyncio
 import time
-import traceback
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Final, Literal
@@ -76,6 +75,8 @@ from taskq.obs import (
     record_reservation_denial,
     render_exception,
     safe_str,
+    safe_traceback_text,
+    safe_type_name,
 )
 from taskq.retry import (
     ActorConfigLike,
@@ -125,7 +126,7 @@ __all__ = [
 # Infra failures during the terminal-write itself (DB connection drop,
 # timeout acquiring a pool connection, socket errors, pool/conn
 # lifecycle refusals), as opposed to the actor's own exception, which
-# is what decide_after_failure/error_info describe. These must NOT be
+# is what decide_after_failure/error_info describe. These must not be
 # treated as "the actor failed with this exception": doing so would
 # overwrite the real error_info and re-run the retry decision against
 # the wrong exception type. See `_log_terminal_write_failed`.
@@ -227,7 +228,7 @@ async def _terminal_write_with_retry[T](
                     attempt=attempt,
                     elapsed_ms=int(elapsed * 1000),
                     budget_ms=int(budget_s * 1000),
-                    infra_error_class=type(infra_exc).__name__,
+                    infra_error_class=safe_type_name(infra_exc),
                     infra_error_message=str(infra_exc),
                 )
                 raise
@@ -240,7 +241,7 @@ async def _terminal_write_with_retry[T](
                 attempt=attempt,
                 max_attempts=_TERMINAL_WRITE_ATTEMPTS,
                 retry_in_ms=int(wait.total_seconds() * 1000),
-                infra_error_class=type(infra_exc).__name__,
+                infra_error_class=safe_type_name(infra_exc),
                 infra_error_message=str(infra_exc),
             )
             await asyncio.sleep(wait.total_seconds())
@@ -351,6 +352,39 @@ class _StartToCloseExceededError(TimeoutError):
     """
 
 
+async def _failed_or_retry_write(
+    backend: Backend,
+    job: JobRow,
+    worker_id: UUID,
+    error_info: ErrorInfo,
+    retry_delay: timedelta | None,
+    *,
+    progress_seq: int,
+    progress_state: dict[str, object] | None,
+    log: structlog.stdlib.BoundLogger,
+) -> JobRow | None:
+    """The mark_failed_or_retry terminal write under the retry budget
+    (see :func:`_terminal_write_with_retry`); returns the persisted row,
+    or None when the write fenced out."""
+    return await _terminal_write_with_retry(
+        lambda: safe_mark_failed_or_retry(
+            backend,
+            job.id,
+            worker_id,
+            error_info,
+            retry_delay,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
+            log=log,
+            attempt=job.attempt,
+            claim_epoch=job.claim_epoch,
+        ),
+        log=log,
+        job=job,
+        write_name="mark_failed_or_retry",
+    )
+
+
 def _unwrap_actor_system_exit(exc: BaseException) -> BaseException:
     """Return the actor's own exception for a ``_ActorSystemExitAttemptError``
     carrier, *exc* unchanged otherwise.
@@ -377,7 +411,7 @@ def _log_terminal_write_failed(
     The job row is left in ``running``, none of the write's attempts
     landed (see :func:`_terminal_write_with_retry`), so lock-lease
     expiry and the crash sweep reclaim it for retry. This is intentionally
-    NOT re-dispatched into
+    not re-dispatched into
     ``_handle_generic_exception`` (that would classify the *infra*
     exception as the actor's failure, discarding the real one and
     re-running the retry decision against the wrong exception type).
@@ -392,14 +426,14 @@ def _log_terminal_write_failed(
         job_id=str(job.id),
         actor=job.actor,
         actor_succeeded=job_exc is None,
-        job_error_class=type(job_exc).__name__ if job_exc is not None else None,
+        job_error_class=safe_type_name(job_exc) if job_exc is not None else None,
         # Why safe_str: job_exc is the actor's own exception, its __str__
         # can raise, and this log runs inside the terminal-write failure
         # handler - a raising str() here would escape the handler with a
         # fresh TypeError instead of logging the infra failure.
         job_error_message=(safe_str(job_exc) if job_exc is not None else None),
         job_error_traceback=_format_exc(job_exc) if job_exc is not None else None,
-        infra_error_class=type(infra_exc).__name__,
+        infra_error_class=safe_type_name(infra_exc),
         infra_error_message=str(infra_exc),
         infra_error_traceback=_format_exc(infra_exc),
     )
@@ -429,7 +463,7 @@ def _format_exc(exc: BaseException) -> str:
     parameter matches :func:`_log_terminal_write_failed` and is immune to
     call-site structure.
     """
-    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    return safe_traceback_text(exc)
 
 
 def _log_job_failed(
@@ -490,7 +524,7 @@ async def _post_write_row(backend: Backend, job: JobRow) -> JobRow:
             "terminal-hook-row-reread-failed",
             kind="terminal_hook_row_reread_failed",
             job_id=str(job.id),
-            error_class=type(exc).__name__,
+            error_class=safe_type_name(exc),
         )
         return job
     if updated is None:
@@ -608,17 +642,18 @@ async def _handle_timeout(
     # rejecting them (the ErrorInfo guard's job for caller-supplied text)
     # would strand the very job the text describes, the terminal write
     # must land with the defect visible as an escape sequence. Why
-    # safe_str, not str(): a TimeoutError SUBCLASS raised by actor code
+    # safe_str, not str(): a TimeoutError subclass raised by actor code
     # can carry a __str__ that raises, and an unguarded str() here would
-    # convert INSIDE this handler, escaping the classification and
+    # convert inside this handler, escaping the classification and
     # stranding the row running until lease expiry.
     raw_message = safe_str(exc)
-    # The sentinel is the MACHINERY's expiry; the row reports the deadline
+    # The sentinel is the machinery's expiry; the row reports the deadline
     # class, not the private marker's own name. A body-raised TimeoutError
     # never reaches this handler (the dispatcher routes it to the generic
-    # path), so the stamp below stays ``type(exc).__name__`` there.
+    # path), so the stamp below stays the exception's own (guarded) name
+    # there.
     error_class = (
-        "TimeoutError" if isinstance(exc, _StartToCloseExceededError) else type(exc).__name__
+        "TimeoutError" if isinstance(exc, _StartToCloseExceededError) else safe_type_name(exc)
     )
     error_info = ErrorInfo(
         error_class=error_class,
@@ -627,8 +662,8 @@ async def _handle_timeout(
     )
     # The log channel leaves the trust boundary and carries the scrubbed text;
     # the fallback name is a constant, not exception text, so it needs neither.
-    log_message = text.message.nul_escaped() if raw_message else "start_to_close"
-    log_traceback = text.stacktrace.nul_escaped()
+    log_message = text.message.log_escaped() if raw_message else "start_to_close"
+    log_traceback = text.stacktrace.log_escaped()
     log.warning(
         "job_timeout",
         job_id=str(job.id),
@@ -744,22 +779,15 @@ async def _handle_timeout(
         )
         return "scheduled"
     else:
-        updated_row = await _terminal_write_with_retry(
-            lambda: safe_mark_failed_or_retry(
-                backend,
-                job.id,
-                worker_id,
-                error_info,
-                None,
-                progress_seq=progress_seq,
-                progress_state=progress_state,
-                log=log,
-                attempt=job.attempt,
-                claim_epoch=job.claim_epoch,
-            ),
+        updated_row = await _failed_or_retry_write(
+            backend,
+            job,
+            worker_id,
+            error_info,
+            None,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
             log=log,
-            job=job,
-            write_name="mark_failed_or_retry",
         )
         if updated_row is None:
             # Fenced out, see the retry branch above.
@@ -1129,19 +1157,20 @@ async def _handle_generic_exception(
     # must land with the defect visible as an escape sequence. Why
     # safe_str, not str(): the actor's exception class is attacker-adjacent
     # code and its __str__ can raise; an unguarded str() here would convert
-    # INSIDE this handler and defeat the per-attempt capture contract (the
+    # inside this handler and defeat the per-attempt capture contract (the
     # row would stay running until lease expiry instead of recording the
     # actor's failure). Raw text, not safe_exception_message: the
     # render-once invariant owns scrubbing (text above), the row keeps the
     # raw message exactly as before the guard.
+    error_class = safe_type_name(e)
     error_info = ErrorInfo(
-        error_class=type(e).__name__,
+        error_class=error_class,
         error_message=sanitize_nul_str(safe_str(e)),
         error_traceback=sanitize_nul_str(text.raw_stacktrace),
     )
     # The log channel leaves the trust boundary and carries the scrubbed text.
-    log_message = text.message.nul_escaped()
-    log_traceback = text.stacktrace.nul_escaped()
+    log_message = text.message.log_escaped()
+    log_traceback = text.stacktrace.log_escaped()
     log.warning(
         "job_exception",
         job_id=str(job.id),
@@ -1186,7 +1215,7 @@ async def _handle_generic_exception(
                 "consume-exception-noop",
                 from_state="running",
                 to_state="noop",
-                cause=type(e).__name__,
+                cause=error_class,
             )
             return "noop"
         if updated_row.status == "failed":
@@ -1213,33 +1242,26 @@ async def _handle_generic_exception(
             attributes={
                 "from_state": "running",
                 "to_state": "scheduled",
-                "error_class": type(e).__name__,
+                "error_class": error_class,
             },
         )
         log_state_change(
             log,
             from_state="running",
             to_state="scheduled",
-            cause=type(e).__name__,
+            cause=error_class,
         )
         return "scheduled"
     else:
-        updated_row = await _terminal_write_with_retry(
-            lambda: safe_mark_failed_or_retry(
-                backend,
-                job.id,
-                worker_id,
-                error_info,
-                None,
-                progress_seq=progress_seq,
-                progress_state=progress_state,
-                log=log,
-                attempt=job.attempt,
-                claim_epoch=job.claim_epoch,
-            ),
+        updated_row = await _failed_or_retry_write(
+            backend,
+            job,
+            worker_id,
+            error_info,
+            None,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
             log=log,
-            job=job,
-            write_name="mark_failed_or_retry",
         )
         if updated_row is None:
             # Fenced out, see the retry branch above.
@@ -1247,7 +1269,7 @@ async def _handle_generic_exception(
                 "consume-exception-noop",
                 from_state="running",
                 to_state="noop",
-                cause=type(e).__name__,
+                cause=error_class,
             )
             return "noop"
         await _report_terminal_failure(
@@ -1321,7 +1343,7 @@ async def _dispatch_exception(
         pre_handler()
 
     if isinstance(exc, _StartToCloseExceededError):
-        # ONLY the machinery's own start_to_close marker routes here. A
+        # only the machinery's own start_to_close marker routes here. A
         # bare TimeoutError (the actor body raised its own: a nested
         # wait_for, a socket read, a futures timeout) falls through to the
         # generic failure path, its own error_class and its own retry

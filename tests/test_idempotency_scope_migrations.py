@@ -4,7 +4,7 @@
 
 Covers:
 - Migration correctness: after applying both phases against a fresh DB,
-  idempotency_scope column exists NOT NULL DEFAULT '', the old single-column
+  idempotency_scope column exists not NULL DEFAULT '', the old single-column
   unique index is gone, the new composite unique index exists, and two rows
   with the default scope ('') and the same idempotency_key raise
   UniqueViolationError - proving the sentinel-not-NULL composite index
@@ -13,7 +13,7 @@ Covers:
   job row with idempotency_key (no idempotency_scope column yet), then
   apply the rest and assert the existing row has idempotency_scope = ''
   and a second insert with the same key still conflicts.
-- Rolling-deploy overlap window: after applying ONLY the `pre` phase (the
+- Rolling-deploy overlap window: after applying only the `pre` phase (the
   state every worker's schema is in the moment the migration lands, before
   every worker is confirmed running the new code), pre-this-release code's
   exact `ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL`
@@ -292,7 +292,7 @@ class TestMigrationUpgradePath:
 
 # ── Rolling-deploy overlap window: pre phase only ──────────────
 #
-# The moment `taskq migrate up --phase pre` runs, EVERY worker's schema is
+# The moment `taskq migrate up --phase pre` runs, every worker's schema is
 # in the "pre applied, post not yet applied" state - including workers
 # still running the code that shipped before this feature. This class
 # proves that state is safe for that old code, which is the entire
@@ -429,7 +429,7 @@ class TestPrePhaseOverlapWindow:
 # TestPrePhaseOverlapWindow above proves the raw-SQL shape stays safe.
 # This class drives the real PostgresBackend.enqueue()/enqueue_batch()
 # (this release's actual application code, not raw SQL) against a
-# pre-phase-only schema -- the gap a HIGH-severity finding identified:
+# pre-phase-only schema -- the gap a high-severity finding identified:
 # unscoped and same-scope usage must be
 # unaffected, but cross-scope usage of a repeated key hits the
 # still-present old global index and must raise a clear, typed error
@@ -764,10 +764,10 @@ class TestConcurrentOverlapWindow:
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
     ) -> None:
         """The core no-outage invariant under concurrency: old-code
-        INSERTs and new-code enqueues with the SAME unscoped key,
+        INSERTs and new-code enqueues with the same unscoped key,
         interleaved arbitrarily, must produce exactly one row.
 
-        New-code callers must NEVER see an error for this same-pair race:
+        New-code callers must never see an error for this same-pair race:
         if the legacy non-arbiter index reports the in-flight conflict to
         the new-code INSERT, the backend retries once on a fresh
         transaction and dedupes via the composite arbiter (see
@@ -788,7 +788,7 @@ class TestConcurrentOverlapWindow:
             async def old_write() -> str | asyncpg.UniqueViolationError:
                 # The same actor as the new-code writer: old and new code
                 # enqueuing one job share its actor, and a same-key hit on
-                # ANOTHER actor's row is a refused cross-actor collision,
+                # another actor's row is a refused cross-actor collision,
                 # not the dedup this race is about.
                 try:
                     async with old_pool.acquire() as conn:
@@ -888,7 +888,7 @@ class TestConcurrentOverlapWindow:
             assert len({str(r.id) for r in rows}) == 1 if rows else True
             assert rows, "at least the winning scope's first enqueue must succeed"
             # Every failure is the typed migration-pending error -- and all
-            # of them name the LOSING scope (the one whose insert lost the race).
+            # of them name the losing scope (the one whose insert lost the race).
             assert errors, "cross-scope race during pre-only window must raise"
             for exc in errors:
                 assert isinstance(exc, ScopedIdempotencyMigrationPendingError)
@@ -904,7 +904,7 @@ class TestConcurrentOverlapWindow:
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
     ) -> None:
         """End-to-end window exit: after the race above, applying the post
-        phase lets the previously-losing scope enqueue the same key --
+        phase lets the losing scope enqueue the same key --
         the window's error was transitional, not a lost job."""
         await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
 
@@ -937,7 +937,7 @@ class TestConcurrentOverlapWindow:
 # The post migration's header documents this as the reason the post phase
 # must wait for a fully-upgraded fleet. These tests lock the claim in
 # executable form: after the post phase, the old INSERT shape fails with
-# SQLSTATE 42P10 -- for keyed AND unkeyed inserts alike, because Postgres
+# SQLSTATE 42P10 -- for keyed and unkeyed inserts alike, because Postgres
 # resolves the ON CONFLICT arbiter statically at plan time.
 
 
@@ -1060,7 +1060,7 @@ class TestMigrationReRunIdempotency:
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
     ) -> None:
         """Every statement in both phase files must tolerate re-execution
-        (IF NOT EXISTS / IF EXISTS guards) -- this is what makes a failed
+        (IF not EXISTS / IF EXISTS guards) -- this is what makes a failed
         apply safe to retry and a manually-repaired schema_migrations
         table non-fatal."""
         schema = settings.schema_name
@@ -1095,7 +1095,7 @@ class TestMigrateOnStartDuringTheOverlapWindow:
     fleet-wide question locally. The blast radius is the whole enqueue
     path, not just the keyed part: dropping the old single-column index
     makes pre-that-release code's `ON CONFLICT (idempotency_key)` fail to
-    resolve an arbiter index at plan time, so EVERY enqueue that code
+    resolve an arbiter index at plan time, so every enqueue that code
     issues fails with SQLSTATE 42P10 regardless of row values.
     """
 

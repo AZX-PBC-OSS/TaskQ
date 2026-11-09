@@ -1,5 +1,5 @@
 # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team: worker boot ordering vs migration currency (rolling-deploy window).
+"""Adversarial review: worker boot ordering vs migration currency (rolling-deploy window).
 
 The worker never applies migrations by design, and the only schema-currency
 guard on the whole boot path is the queue-cap query's UndefinedColumnError →
@@ -9,7 +9,7 @@ missing 01.00.08's ``snooze_count`` / ``rate_limit_blocked_count`` - passes
 every boot step: the enqueue INSERT's column list omits the counters, and the
 dispatch claim's ``RETURNING j.*`` record then dies in
 ``_job_row_from_record``'s strict ``rec["snooze_count"]`` (a bare KeyError)
-AFTER the claim has already committed the job to running+locked - every
+after the claim has already committed the job to running+locked - every
 dispatched job loops through lock-expiry crash-reclaim and never executes.
 
 Desired observable, per the boot path's own doctrine ("a deployment mistake
@@ -50,7 +50,7 @@ async def _boot_until_idle_or_raise(
     """Boot the real ``_main`` in drain mode; return (exit code, exception).
 
     Drain mode bounds the run: an empty queue settles within the idle window
-    and the worker exits on its own, so a boot that does NOT refuse completes
+    and the worker exits on its own, so a boot that does not refuse completes
     quickly instead of hanging the test.
     """
     task = asyncio.create_task(
@@ -84,7 +84,7 @@ async def test_worker_boot_refuses_while_denial_counter_migration_is_pending(
     """RED contract: boot must refuse while migrations are pending.
 
     The queue-cap guard refuses a schema missing 01.00.04; the same doctrine
-    must cover ANY pending migration - a schema missing the newest one boots
+    must cover any pending migration - a schema missing the newest one boots
     today and half-works (claims commit, then every job dies on the strict
     ``rec["snooze_count"]`` row conversion).
     """

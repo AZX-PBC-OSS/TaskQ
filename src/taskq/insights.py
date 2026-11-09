@@ -2,7 +2,7 @@
 the job ledger, answering the operator questions the dispatch and sweep
 paths never need to ask — how long work WAITED, whether the fleet is
 IMBALANCED, whether it is OVERPROVISIONED, how long a queue needs to
-DRAIN, and whether a cron schedule is FANNING OUT faster than it clears.
+DRAIN, and whether a cron schedule is FANNING out faster than it clears.
 
 Import sensitivity first, the same contract
 :mod:`taskq.backend._retention_floor` documents: this module is
@@ -17,7 +17,7 @@ notebooks can import this module outside a PG context and never drag
 Redis adds nothing here, by design.  The live-only signals Redis
 carries (wake pubs, rate-limit buckets, leader chatter) are ephemeral
 state: nothing durable to aggregate, no history to window.  Every
-metric in this module is answered by Postgres alone, on BOTH a vanilla
+metric in this module is answered by Postgres alone, on both a vanilla
 Postgres and a TimescaleDB hypertable deployment — the statements name
 no Timescale function, probe no extension catalog, and run the same
 SQL on both (the planner's chunk pruning does the hypertable-side work
@@ -33,8 +33,8 @@ for the precedent each rule follows):
   btree index condition.  A STABLE bound is index-ELIGIBLE on every
   anchor index (``jobs_finished_at_idx`` and its archive twin,
   ``job_attempts``' ``started_at`` index, ``workers_last_seen_idx``).
-* **Terminal history lives in ``jobs`` THEN ``jobs_archive``,
-  therefore EVERY wait / throughput / ledger aggregate is a two-sided
+* **Terminal history lives in ``jobs`` then ``jobs_archive``,
+  therefore every wait / throughput / ledger aggregate is a two-sided
   UNION.**  A terminal row stays in ``jobs`` for its whole prune
   retention (default 30d) before the prune sweep moves it to the
   archive (default 1y), so any single-table read has a blind spot
@@ -69,7 +69,7 @@ the docs guide restate its own):
   for those rows ``started_at - scheduled_at`` measures only the FINAL
   leg, so the wait distribution segments them out (``deferred``) from
   the clean first-delivery subset (``clean``) — the two have different
-  SLOs.  ``started_at - created_at`` is NOT wait for them (it would
+  SLOs.  ``started_at - created_at`` is not wait for them (it would
   fold the operator's own snooze choice into the queue's latency).
 * **Retries leave no per-attempt due stamp**: the retry arm re-stamps
   ``scheduled_at`` and the pre-retry wait is unrecoverable from the
@@ -81,7 +81,7 @@ the docs guide restate its own):
   forward-stamped enqueue), which land as ``status = 'scheduled'``
   with a future ``scheduled_at`` and ARE wait-measurable once claimed.
   The DST ``allof`` double-enqueue is by-design fan-out, not a defect;
-  the budget-deferred fire enqueues NO row at all (its deferral is
+  the budget-deferred fire enqueues no row at all (its deferral is
   invisible to this layer — the ``taskq.cron.budget_deferrals``
   counter and the ``cron-fire-budget-deferred`` log event are its
   record).
@@ -95,7 +95,7 @@ from uuid import UUID
 
 from taskq.backend.statemachine import (
     TERMINAL_STATUSES,
-)  # Why: the state machine's own closed terminal set — the same encoding the prune sweep archives under — is the authoritative source for every terminal-side UNION arm; the admin constants' twin would be a second hand-maintained copy and drags FastAPI in.
+)  # Why: the state machine's own closed terminal set — the same encoding the prune sweep archives under — is the authoritative source for every terminal-side union arm; the admin constants' twin would be a second hand-maintained copy and drags FastAPI in.
 from taskq.constants import (
     require_schema,
 )
@@ -122,19 +122,19 @@ __all__ = [
 #: Postgres types (``tests/test_insights_contract.py`` asserts all three
 #: against the live statements).  A dynamic worker-scaling operator may
 #: build its queries directly on this surface, so a signature or row-shape
-#: change is a BREAKING change and must bump this version — a bump that
+#: change is a breaking change and must bump this version — a bump that
 #: the contract test refuses to accept silently (it asserts the constant
 #: equals the version the test itself documents).  Additive changes (a new
-#: function, a new column appended at the END of a row) do not bump the
-#: major version on their own, but a column REMOVED, RENAMED, RETYPED or
-#: REORDERED before an operator's read does.
+#: function, a new column appended at the end of a row) do not bump the
+#: major version on their own, but a column removed, renamed, retyped or
+#: reordered before an operator's read does.
 INSIGHTS_CONTRACT_VERSION: int = 1
 
 
 #: The window selector's closed set — the named ranges every windowed
 #: statement in this module accepts, as the interval each resolves to.
 #: The caller binds the timedelta as ``$n::interval``.  "All-time" is
-#: deliberately absent: on hypertables all-time IS the archive
+#: deliberately absent: on hypertables all-time is the archive
 #: retention, and an operator asking for it should see that floor in
 #: the docs, not a silently-shrinking aggregate.
 INSIGHTS_WINDOWS: dict[str, timedelta] = {
@@ -156,7 +156,7 @@ def _require_ident(schema: str) -> str:
     return schema
 
 
-# The terminal-status IN list for the live side of every UNION, rendered
+# The terminal-status in list for the live side of every union, rendered
 # from the state machine's closed set so a status added there follows
 # without a second hand-maintained literal.  (The JobStatus values'
 # str form is the SQL enum's label; sorted() gives the rendered list a
@@ -164,23 +164,23 @@ def _require_ident(schema: str) -> str:
 _TERMINAL_IN = ", ".join(f"'{s}'" for s in sorted(TERMINAL_STATUSES))
 
 # The window bound shared by every finished_at-anchored side of every
-# UNION; each side composes it with its own keyword (the archive side's
+# union; each side composes it with its own keyword (the archive side's
 # only predicate is WHERE, the live side already filters terminal
-# statuses so it composes with AND).  statement_timestamp() (STABLE)
+# statuses so it composes with and).  statement_timestamp() (stable)
 # keeps the bound an Index Cond on both sides' finished_at indexes, and
 # on hypertables prunes the archive side to the window's chunks.
 _FINISHED_BOUND = "j.finished_at >= statement_timestamp() - $1::interval"
 
 # The due-now predicate for the dispatch population, composed with the
 # dispatch partial index's own WHERE (status = 'pending'): the bound is
-# STABLE, so the scheduled_at comparison is index-eligible inside
-# jobs_dispatch_idx (queue, priority DESC, scheduled_at).
+# stable, so the scheduled_at comparison is index-eligible inside
+# jobs_dispatch_idx (queue, priority desc, scheduled_at).
 _DUE_NOW = "j.scheduled_at <= statement_timestamp()"
 
 # The per-queue CTE arms the three queue-shaped statements compose. The
-# module's statements are DESIGNED as recombinations of the same inputs
-# (the docstrings say so: "the imbalance statement's live arm", "the SAME
-# live + archive UNION the wait distribution and the overprovisioning
+# module's statements are designed as recombinations of the same inputs
+# (the docstrings say so: "the imbalance statement's live arm", "the same
+# live + archive union the wait distribution and the overprovisioning
 # read"), so the arms travel as named fragments — a predicate tightened in
 # one statement but not its siblings is exactly the drift the fragments
 # make impossible. Each fragment is substituted by name into the statement
@@ -191,7 +191,7 @@ _DUE_NOW = "j.scheduled_at <= statement_timestamp()"
 # $1 is the window).
 
 # The live-workers arm: workers whose queues array subscribes the queue,
-# off workers_last_seen_idx with a STABLE statement_timestamp() liveness
+# off workers_last_seen_idx with a stable statement_timestamp() liveness
 # bound.
 _LIVE_CTE = """\
 live AS (
@@ -226,7 +226,7 @@ due AS (
     GROUP BY j.queue
 )"""
 
-# The terminalisations arm: the two-sided terminal UNION bounded by the
+# The terminalisations arm: the two-sided terminal union bounded by the
 # finished_at anchor, grouped by queue.
 _DONE_CTE = """\
 done AS (
@@ -255,11 +255,11 @@ queues AS (
 # ── 1. Wait distributions ───────────────────────────────────────────────
 
 
-# The inner UNION both outer shapes read: TERMINAL rows only (the same
+# The inner union both outer shapes read: terminal rows only (the same
 # closed status set the prune sweep archives — running/pending work has
 # no wait observation yet), started rows only (a never-claimed row is
 # not a wait observation), bounded by finished_at on both anchor
-# indexes.  Both sides select the same four columns so the UNION's
+# indexes.  Both sides select the same four columns so the union's
 # shape is one definition.  wait_s is seconds (double precision)
 # extracted from the interval so percentile_cont orders numerically.
 _WAIT_INNER = """\
@@ -275,8 +275,8 @@ WHERE j.status IN ({_TERMINAL_IN})
   AND j.started_at IS NOT NULL
   AND {bound}"""
 
-# The outer wait shape over the rendered inner UNION; the two groupings
-# (per queue, per (actor, queue)) differ ONLY in the select/group/order
+# The outer wait shape over the rendered inner union; the two groupings
+# (per queue, per (actor, queue)) differ only in the select/group/order
 # columns, so the template carries them as placeholders.
 _WAIT_SQL_TEMPLATE = """\
 SELECT {select_cols}
@@ -343,7 +343,7 @@ async def fetch_wait_distribution(
     for a first-delivery attempt that difference IS the queue wait.
     Each grouping key returns one row PER populated segment:
 
-    * ``clean`` — ``snooze_count = 0 AND rate_limit_blocked_count = 0``:
+    * ``clean`` — ``snooze_count = 0 and rate_limit_blocked_count = 0``:
       first-delivery attempts.  This is the subset a queue-latency SLO
       is written against.  (A job retried after a transient failure
       stays here when its counters are zero; its wait measures only
@@ -354,7 +354,7 @@ async def fetch_wait_distribution(
       moved forward by the snooze / rate-limit arms, so the measured
       wait excludes the deferred time BY CONSTRUCTION.  Read these
       under their own SLO (or exclude them from the clean percentile);
-      ``started_at - created_at`` is NOT their wait.
+      ``started_at - created_at`` is not their wait.
 
     The *window* bounds ``finished_at`` on both sides (terminal rows
     only — the index-eligible anchor) and must be positive.  On
@@ -378,8 +378,8 @@ async def fetch_wait_distribution(
 # inputs, each shaped to its own index so no arm touches the hot
 # table's heap or a terminal population:
 #
-# * ``due``    — pending-and-due depth plus the OLDEST due stamp, off
-#   jobs_dispatch_idx (queue, priority DESC, scheduled_at) WHERE status
+# * ``due``    — pending-and-due depth plus the oldest due stamp, off
+#   jobs_dispatch_idx (queue, priority desc, scheduled_at) WHERE status
 #   = 'pending': index-only scan; the due-now predicate filters inside
 #   the index.
 # * ``armed``  — future-armed depth plus the incoming wave's min/max
@@ -387,7 +387,7 @@ async def fetch_wait_distribution(
 #   status = 'scheduled': index-only scan of exactly the armed
 #   population.
 # * ``live``   — workers serving each queue, from workers.queues
-#   (text[]) unnested, bounded by workers_last_seen_idx with a STABLE
+#   (text[]) unnested, bounded by workers_last_seen_idx with a stable
 #   statement_timestamp() liveness bound (the admin's own liveness
 #   window semantics; the seconds arrive as $1).
 # * ``cap``    — per-actor max_concurrent sums routed to the queue from
@@ -447,7 +447,7 @@ def _build_queue_imbalance_sql(schema: str) -> str:
     """Return the per-queue imbalance SQL (schema baked in).
 
     Composes the statement's shared CTE arms (armed, live, queues) from
-    the module's named fragments; the due arm is this statement's OWN
+    the module's named fragments; the due arm is this statement's own
     long form (it carries the oldest-due stamp the short form lacks) and
     the cap arm is unique to it, so both stay inline. The live arm binds
     the liveness seconds as ``$1``.
@@ -475,7 +475,7 @@ async def fetch_queue_imbalance(
     """Per-queue fleet imbalance: depth, armed wave, live workers,
     effective capacity, utilization, oldest-due age.
 
-    * ``depth`` — pending rows DUE NOW (``scheduled_at <= now``, the
+    * ``depth`` — pending rows DUE now (``scheduled_at <= now``, the
       dispatch index's own population): the work a worker could claim
       this instant.
     * ``scheduled_depth`` — future-armed rows (status ``'scheduled'``)
@@ -511,10 +511,10 @@ async def fetch_queue_imbalance(
 
 # Per (actor, queue) backlog vs running vs capacity, each arm index-only
 # over its own partial index: jobs_actor_pending_idx (actor) WHERE
-# status IN ('pending','scheduled') for the backlog,
+# status in ('pending','scheduled') for the backlog,
 # jobs_actor_running_idx (actor) WHERE status = 'running' for the
 # in-flight count, actor_config for the per-actor ceiling and its
-# routed queue.  ``queue`` is the actor's ROUTED queue
+# routed queue.  ``queue`` is the actor's routed queue
 # (actor_config.queue): a re-pended row can carry a stale queue label,
 # and the routing discriminator — the same one the stranded-jobs
 # detector reads — is what capacity is enforced against.
@@ -586,10 +586,10 @@ async def fetch_actor_backlog(
 # * live workers (the imbalance statement's live arm, $2 = liveness
 #   seconds),
 # * due-now depth (the dispatch partial index's own population),
-# * terminalisations over the window — live + archive UNION bounded by
+# * terminalisations over the window — live + archive union bounded by
 #   finished_at ($1) on both anchor indexes, grouped by queue.
 #
-# overprovisioned is TRUE when the queue has live workers, ZERO due
+# overprovisioned is true when the queue has live workers, zero due
 # depth, and fewer terminalisations across the whole window than it
 # has workers (fewer than one completion per worker in the entire
 # window): the shape where the fleet's payroll outruns its work.  A
@@ -732,7 +732,7 @@ async def fetch_worker_busy_ratio(
       window the worker actually existed for (tenure capped at the
       window).  Near zero across a sustained window on a worker still
       heartbeating is the idle-worker shape; near one is saturation.
-    * ``worker_id`` drills ONE worker down (the idle-worker question is
+    * ``worker_id`` filters one worker down (the idle-worker question is
       always asked about one worker); the default fleet read groups
       the whole window in one pass.  Both arms are bounded by
       ``started_at`` — the live side's btree Index Cond, the archive
@@ -759,15 +759,15 @@ async def fetch_worker_busy_ratio(
 
 
 # Per-queue drain estimate: due depth against the queue's own realised
-# throughput over the trailing window.  Terminalisations are the SAME
-# live + archive UNION the wait distribution and the overprovisioning
+# throughput over the trailing window.  Terminalisations are the same
+# live + archive union the wait distribution and the overprovisioning
 # read ($1 = window); completions_per_second normalizes them;
 # eta_seconds divides due depth by that rate.  When the window carried
-# NO traffic the rate is zero and the estimate is honestly NULL —
+# no traffic the rate is zero and the estimate is honestly NULL —
 # has_traffic = false says so explicitly rather than letting a
 # division-by-zero masquerade as "already drained".  The armed wave's
 # min/max scheduled_at rides along: the incoming future work the
-# estimate does NOT include (the estimate counts the due population
+# estimate does not include (the estimate counts the due population
 # only; the wave lands after it).
 _QUEUE_DRAIN_SQL = """\
 WITH {_DUE_CTE},
@@ -829,7 +829,7 @@ async def fetch_drain_estimates(
       extrapolation, not a promise: it assumes the next window looks
       like the last one, that the queue's workers stay up, and that
       nothing enqueues behind the current depth.
-    * ``has_traffic`` — false when the window carried NO
+    * ``has_traffic`` — false when the window carried no
       terminalisations: ``eta_seconds`` is NULL and the honest
       confidence caveat is "no traffic in the window, estimate
       undefined" — never zero, which would read as "already drained".
@@ -837,7 +837,7 @@ async def fetch_drain_estimates(
       trusting anything else.
     * ``scheduled_depth`` with ``wave_min_scheduled_at`` /
       ``wave_max_scheduled_at`` — the future-armed population the
-      estimate does NOT include: the incoming wave's span.  A queue
+      estimate does not include: the incoming wave's span.  A queue
       can drain its due depth into an immediately re-arming wave; the
       two numbers together are the real picture.
 
@@ -861,63 +861,63 @@ async def fetch_drain_estimates(
 
 # Per-schedule fan-out ledger.  Provenance is the jobs-row metadata
 # stamp the cron tick writes (metadata->>'cron_schedule_id'); the
-# per-schedule seeks go through the GIN index jobs_metadata_gin_idx
+# per-schedule seeks go through the gin index jobs_metadata_gin_idx
 # (jsonb_path_ops) with a bound containment
 # metadata @> jsonb_build_object('cron_schedule_id', s.id::text) —
-# jsonb_path_ops indexes ONLY containment, so the existence operator
+# jsonb_path_ops indexes only containment, so the existence operator
 # (?) would be a full-scan filter while the bound @> is an Index Cond
 # per schedule row of the (operator-sized) config table's nested-loop
 # inner side.
 #
-# One LATERAL per side (live, archive), each counting FOUR windows of
+# One lateral per side (live, archive), each counting four windows of
 # the schedule's own fire history in one seek:
 #
-# * fires_window   — enqueued in the CURRENT window (created_at in
-#   [now - $1, now)), live + archive UNION.
+# * fires_window   — enqueued in the current window (created_at in
+#   [now - $1, now)), live + archive union.
 # * cleared_window — of those, terminalised (the same closed status
 #   set the prune sweep archives).  Clearance lags fires by
 #   construction at the window's right edge; the ratio is a trend,
 #   not an instant.
-# * fires_prior / cleared_prior — the PRIOR equal window
+# * fires_prior / cleared_prior — the prior equal window
 #   (created_at in [now - $2, now - $1), $2 = 2 x window, bound in
 #   Python).  Archive rows are terminal by definition, so the archive
 #   side's cleared counts are its fires.
 # * outstanding    — the schedule's non-terminal population right
-#   now, WINDOWLESS: the backlog the fleet still owes, including the
-#   future-armed fires (DST allof's second occurrence and any
+#   now, windowless: the backlog the fleet still owes, including the
+#   future-armed fires (dst allof's second occurrence and any
 #   forward-stamped enqueue — both by design).
 #
-# Index discipline per arm.  The LIVE arm seeks the GIN index
+# Index discipline per arm.  The live arm seeks the gin index
 # (jobs_metadata_gin_idx) per schedule — jsonb_path_ops indexes only
 # containment, so the bound @> is an Index Cond per schedule row of
 # the (operator-sized) config table's nested-loop inner side.  The
-# ARCHIVE arm cannot seek a GIN (the archive carries a tags GIN, not a
-# metadata GIN), so it takes the archive's finished_at anchor instead:
-# a fire created inside the last TWO windows cannot have finished
+# archive arm cannot seek a gin (the archive carries a tags gin, not a
+# metadata gin), so it takes the archive's finished_at anchor instead:
+# a fire created inside the last two windows cannot have finished
 # before the prior window's start (finishing is strictly after
 # creating), so ``finished_at >= statement_timestamp() - $2`` is
-# logically IMPLIED by the created_at arms and drops NOTHING — while
+# logically implied by the created_at arms and drops NOTHING — while
 # making the bound an Index Cond on jobs_archive_finished_at_idx on
 # vanilla Postgres and the chunk-pruning key on hypertables, instead
 # of a full-archive scan per schedule.
 #
-# The archive arm's cleared FILTERS carry the same created_at windows as
+# The archive arm's cleared filters carry the same created_at windows as
 # the live arm's.  cleared_window may keep only its lower bound because
 # ``created_at`` is the enqueue statement's transaction-start now() and
-# so is ALWAYS strictly before this read's statement_timestamp() — the
+# so is always strictly before this read's statement_timestamp() — the
 # upper bound would be vacuously true.  cleared_prior's upper bound is
-# NOT vacuous: without it a current-window fire that finished AND pruned
+# not vacuous: without it a current-window fire that finished and pruned
 # fast (a short prune retention against a long window — a supported
-# configuration) counts as a PRIOR-window clearance, inflating
+# configuration) counts as a prior-window clearance, inflating
 # cleared_prior and silently suppressing runaway_trending (pinned by
 # tests/test_insights.py's attack wave).
 #
-# runaway_trending is TRUE when fires > cleared in BOTH the current
+# runaway_trending is true when fires > cleared in both the current
 # and the prior window: two consecutive windows of fan-out outrunning
 # clearance is the runaway shape (one window is a burst; two is a
-# trend).  DST allof legitimately doubles a fire in the overlap hour —
+# trend).  dst allof legitimately doubles a fire in the overlap hour —
 # read the ledger against the schedule's dst_strategy before calling
-# that a runaway.  A budget-deferred fire enqueues NO row: its window
+# that a runaway.  A budget-deferred fire enqueues no row: its window
 # reads zero here, and the deferral's record is the
 # taskq.cron.budget_deferrals counter, not this ledger.
 _CRON_LEDGER_SQL = """\
@@ -1002,13 +1002,13 @@ async def fetch_cron_ledger(
     * ``outstanding`` — the schedule's non-terminal population right
       now, windowless: the backlog the fleet still owes, future-armed
       fires included (by design).
-    * ``runaway_trending`` — TRUE when fires > cleared in BOTH the
+    * ``runaway_trending`` — TRUE when fires > cleared in both the
       current and the prior window.  One window is a burst; two
       consecutive is the runaway shape.
 
     Confounds the verdict's reader must hold: DST ``allof``
     legitimately doubles a fire in the overlap hour (read against
-    ``dst_strategy``); a budget-deferred fire enqueues NO row, so a
+    ``dst_strategy``); a budget-deferred fire enqueues no row, so a
     deferral reads as zero fires here, not as a growing backlog (its
     record is the ``taskq.cron.budget_deferrals`` counter).
     """

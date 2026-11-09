@@ -75,7 +75,7 @@ async def test_retry_between_candidate_and_write_keeps_the_job_live(
         candidates = await conn_a.fetch(candidate_sql, "succeeded", _RETENTION, 100)
         assert [row["id"] for row in candidates] == [jid]
 
-        # Connection B: the admin retry commits INSIDE the window - the
+        # Connection B: the admin retry commits inside the window - the
         # row re-pends before the batch's write statement runs.
         retried = await conn_b.fetchval(sql.retry_job, jid)
         assert retried is not None
@@ -88,7 +88,7 @@ async def test_retry_between_candidate_and_write_keeps_the_job_live(
         await conn_a.close()
         await conn_b.close()
 
-    # Conservation: the job exists exactly once, LIVE, re-pended.
+    # Conservation: the job exists exactly once, live, re-pended.
     live = await _migrated.fetchval(f'SELECT count(*) FROM "{schema}".jobs WHERE id = $1', jid)
     assert live == 1
     status = await _migrated.fetchval(
@@ -99,7 +99,7 @@ async def test_retry_between_candidate_and_write_keeps_the_job_live(
         f'SELECT count(*) FROM "{schema}".jobs_archive WHERE id = $1', jid
     )
     assert archived == 0
-    # No half-moved row: the attempt stayed in the LIVE attempts table.
+    # No half-moved row: the attempt stayed in the live attempts table.
     live_attempts = await _migrated.fetchval(
         f'SELECT count(*) FROM "{schema}".job_attempts WHERE job_id = $1', jid
     )
@@ -134,7 +134,7 @@ async def test_retry_after_archive_answers_nothing_and_never_resurrects(
     assert retried is None, "a retried-archived id must answer nothing to retry"
 
     # Exactly-once across the two tables, and the archive row carries the
-    # TERMINAL status it was archived under, not a re-pended one.
+    # terminal status it was archived under, not a re-pended one.
     live = await _migrated.fetchval(f'SELECT count(*) FROM "{schema}".jobs WHERE id = $1', jid)
     assert live == 0
     archived_rows = await _migrated.fetch(

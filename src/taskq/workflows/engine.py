@@ -1,66 +1,66 @@
-"""The workflow engine's finalize mechanics (T04): the two-tx finalize,
+"""The workflow engine's finalize mechanics: the two-tx finalize,
 the dispatch exclusion, the deadlock retry.
 
-THE JOIN-WAIT REPRESENTATION — defined EXACTLY ONCE, here (T03/T08/T15
+the JOIN-WAIT REPRESENTATION — defined EXACTLY once, here
 reference this name and no other): a joined node waits as
 ``status='pending'`` + ``deps_pending > 0`` (+ ``metadata.blocking_reason
-='join'``). NO new ENUM value: ``pending`` is legal in the vanilla machine
+='join'``). no new ENUM value: ``pending`` is legal in the vanilla machine
 (``VALID_TRANSITIONS`` unchanged), and the dispatch claim's
-``AND deps_pending = 0`` exclusion (T03, benched) keeps join-wait rows
+``and deps_pending = 0`` exclusion (benched) keeps join-wait rows
 unclaimable. When the counter hits 0 the row becomes claimable by the
 claim predicate — no status write.
 
 FINALIZE = TWO TRANSACTIONS (P1 FINAL, verbatim):
 * **tx1** — the result write, carrying the TERMINAL-MARK FENCE
-  (``status='running' AND locked_by_worker=… AND attempt=… AND
-  claim_epoch=…`` — the attempt is the fencing token, hardening H8). A row
+  (``status='running' and locked_by_worker=… and attempt=… and
+  claim_epoch=…`` — the attempt is the fencing token, the attempt-fencing law). A row
   the reclaim flipped, or a cancelled flow, updates nothing. The fork's
   child INSERTs + edge rows + join node share tx1 (FORK ATOMICITY —
   :mod:`taskq.workflows._fork`: a kill at any statement boundary rolls the
   whole tx back; the reclaim re-forks — exactly N children + 1 join, never
   partial, never double). The step ledger's terminal write rides tx1 (the
-  ledger-terminal-atomic rule, hardening H9), and the failure IO-capture
+  ledger-terminal-atomic rule, the terminal-atomicity rule), and the failure IO-capture
   rides tx1 (a row already being updated; the success path writes NOTHING
   extra).
-  **tx2 runs ONLY when tx1's fenced UPDATE returned a row** — the ROWCOUNT
+  **tx2 runs only when tx1's fenced UPDATE returned a row** — the ROWCOUNT
   GATE; a fenced tx1 updates nothing, so tx2 never executes (this is what
   makes 50 duplicate finalizes → 1 decrement).
-* **tx2** — the guarded decrement: ONE atomic
+* **tx2** — the guarded decrement: one atomic
   ``UPDATE jobs SET deps_pending = deps_pending - 1 WHERE deps_pending > 0
   … RETURNING`` over the edge ledger, with the flow-status EXISTS leg
   inside the statement; rows hitting 0 → the guarded fire
-  (``INSERT INTO wf_join_fire … ON CONFLICT DO NOTHING RETURNING``) → only
-  the guard winner (a row actually returned) runs the reducer body (INSIDE
+  (``INSERT into wf_join_fire … ON CONFLICT DO NOTHING RETURNING``) → only
+  the guard winner (a row actually returned) runs the reducer body (inside
   tx2 — the exactly-once boundary is the body's boundary; a raising
   reducer rolls tx2 back and the body RE-RUNS on re-fire: at-least-once
   body execution) and writes the outbox rows (one per declared consumer).
   The ``wf_join_fire`` UNIQUE prevents double FIRES; the rowcount gate
   prevents PREMATURE ones.
 
-THE EIGHTH RULE: derived values are written only by the statement that
+Derived values are written only by the statement that
 derives them. No carried snapshots; status transitions CAS-only; the
 decrement owned exclusively by the decrement statement of tx2, guarded
 ``deps_pending > 0``.
 
-COUNTER-AS-CACHE / LEDGER-AS-TRUTH: the join counter's truth is THE EDGE
-LEDGER — ``remaining = join_target - committed decrements`` — NEVER
+COUNTER-AS-CACHE / LEDGER-AS-TRUTH: the join counter's truth is the EDGE
+LEDGER — ``remaining = join_target - committed decrements`` — never
 child-row presence. Nested joins are exactly where the children don't
 exist yet (child-row counting reads 0 and fires early — the EMPTY-JOIN
-dragon); the edge-ledger formula is load-bearing FOR THE NESTED SHAPE.
+dragon); the edge-ledger formula is load-bearing FOR the NESTED SHAPE.
 
 A PROMOTED NESTED MAP decrements its grandparent's join in the same
-transaction: the nested map's reduce node finalizes through the SAME tx2
+transaction: the nested map's reduce node finalizes through the same tx2
 decrement — its edges point at the grandparent's join. Nested maps, hence
 sequencing, hence a depth-N DAG, stay expressible.
 
 P3's rules this engine ships: rule 1's held-row inertness invariant (a
 held row — ``scheduled_at`` in the future, the signal deadline — is
-invisible to every arm; the budget arm itself is T19's); rule 2's ledger
+invisible to every arm; the budget arm itself is the loop's); rule 2's ledger
 discipline (the attempt increments at claim, the only grant of work);
 rule 4's THREE cancel legs (the fire guard's flow-status leg + the
 dispatch fence in the claim + the finalize fence); rule 5 (decrement +
 fire = one transaction, tx2); rule 6 (the finalize CAS IS the shape guard
-— no read-based second guard); rule 7 (ladder retries emit NO terminal —
+— no read-based second guard); rule 7 (ladder retries emit no terminal —
 the decrement happens only at exhaustion).
 
 All ids this engine mints go through ``taskq._ids`` (uuid7, time-ordered)
@@ -73,17 +73,26 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import Awaitable, Callable
-from typing import Any, Final, Literal
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Final, Literal, cast
 
 import asyncpg
+import structlog
 
 from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, ErrorInfo, JobId
 from taskq.backend.statemachine import assert_valid_transition
 from taskq.constants import CANCEL_ORIGIN_PEER_FAILURE
+from taskq.obs import get_logger
 from taskq.workflows._capture import build_capture
 from taskq.workflows._fork import insert_fork
+from taskq.workflows._policy import (
+    TerminalEffect,
+    TerminalEffectReason,
+    row_retry_curve,
+)
 from taskq.workflows._reducers import register_flow_reducers
 from taskq.workflows._sql import (
     BLOCKING_REASON_FAILED_PARENT,
@@ -113,21 +122,23 @@ __all__ = [
     "render_workflow_sql",
 ]
 
+logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
 #: The dispatch exclusion clause — the claim statement's WHERE gains this
-#: (T03 owns the clause and its bench). Named once, here; the dispatch SQL
+#: (the clause and its bench live with the join representation). Named once, here; the dispatch SQL
 #: in ``backend/_dispatch_sql.py`` spells it, and this constant documents
 #: the engine-side contract.
 DISPATCH_EXCLUSION_CLAUSE: Final[str] = "deps_pending = 0"
 
-#: Deadlock-retry budget (hardening H7): BOTH operators (this finalize side
-#: and T10's cancel side) retry — the aborted TX had no effect, so the
+#: Deadlock-retry budget: both operators (this finalize side
+#: and the cancel side) retry — the aborted tx had no effect, so the
 #: retry preserves linearization. Jittered backoff between attempts.
 _DEADLOCK_RETRIES: Final[int] = 4
 _DEADLOCK_BACKOFF_BASE_S: Final[float] = 0.05
 
 
 class DeadlockRetriesExhaustedError(RuntimeError):
-    """The deadlock-retry budget exhausted (hardening H7's loud failure)."""
+    """The deadlock-retry budget exhausted (the loud failure)."""
 
 
 def render_workflow_sql(schema: str) -> WorkflowSql:
@@ -174,11 +185,23 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
         else _jsonb(_metadata(spec.flow_id, blocking_reason=None)),
         spec.idempotency_scope,
         spec.idempotency_key,
+        # the spec's own value — the column default 0 when the caller resolved
+        # none (the pre-fix byte-identical row).
+        spec.priority,
+        # the spec's own value — the column NULL when the caller resolved none
+        # (the pre-fix byte-identical row).
+        spec.start_to_close,
+        # the run's flow_id — one cohort per run on the round-robin queues.
+        str(spec.flow_id),
+        # NodeSpec validated the exact integer and complete SQL integer range;
+        # NULL is the unchanged ordinary path.
+        spec.required_worker_schema,
+        *row_retry_curve(spec.retry_policy),
     )
-    # The declared edges ride the SAME call (the exported edge writer): a
-    # joined node's incoming edges are the join counter's ONLY truth — the
+    # The declared edges ride the same call (the exported edge writer): a
+    # joined node's incoming edges are the join counter's only truth — the
     # join that never got them was a stranded invisible join (the rederive
-    # arm's INNER join on wf_edge enumerated it into nothing).
+    # arm's inner join on wf_edge enumerated it into nothing).
     if spec.parents:
         await conn.executemany(
             wsql.node_edge,
@@ -187,11 +210,11 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
     return node_id
 
 
-# ── The deadlock retry (hardening H7) ───────────────────────────────────
+# ── The deadlock retry  ───────────────────────────────────
 
 
 async def _deadlock_retry[T](coro_factory: Callable[[], Awaitable[T]]) -> T:
-    """Run *coro_factory* retrying on a real Postgres deadlock (H7).
+    """Run *coro_factory* retrying on a real Postgres deadlock.
 
     Each attempt builds a fresh coroutine (the aborted TX had no effect;
     the retry is linearization-preserving). Backoff: jittered exponential —
@@ -219,6 +242,56 @@ def _jsonb_len(value: dict[str, object] | None) -> int | None:
     return len(_jsonb(value).encode("utf-8"))
 
 
+@dataclass(frozen=True, slots=True)
+class _Tx1Outcome:
+    applied: bool
+
+
+async def _classify_own_ledger_no_match(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    ledger_id: JobId,
+    flow_id: JobId,
+    step_key: str,
+) -> None:
+    """The admitted terminal write matched nothing: classify the no-match
+    on the row's OWN current state (one keyed read, only on this rare
+    path). Already-terminal → the claim's own idempotent second arm (the
+    deadline's exhausted route): logged, harmless. Missing → the
+    retention-missing shape: logged, harmless (the recovery's read
+    converges on the durable rows). Still-nonterminal → the running
+    ledger phantom beside the terminal job row — the exact state the
+    fence exists to prevent: raise, the tx rolls back, the machinery
+    boundary owns the recovery."""
+    row = await conn.fetchrow(
+        f"SELECT status::text AS status, updated_at FROM {wsql.schema}.wf_step_ledger "
+        "WHERE id = $1",
+        ledger_id,
+    )
+    if row is not None and row["status"] not in ("running", "awaited", "crashed"):
+        logger.info(
+            "wf.ledger-terminal-idempotent-nomatch",
+            run_id=str(flow_id),
+            node=step_key,
+            ledger_status=row["status"],
+        )
+        return
+    if row is None:
+        logger.warning(
+            "wf.ledger-terminal-retention-missing",
+            kind="ledger_terminal_retention_missing",
+            run_id=str(flow_id),
+            node=step_key,
+        )
+        return
+    raise RuntimeError(
+        f"the workflow ledger's terminal write matched no current claim row "
+        f"(flow {flow_id}, step {step_key!r}, the row is still {row['status']!r}) — "
+        "the claim's exact id+instant identity refused it; the transaction "
+        "rolled back and the machinery recovery owns the row"
+    )
+
+
 async def _run_tx1(
     conn: ConnLike,
     wsql: WorkflowSql,
@@ -238,20 +311,48 @@ async def _run_tx1(
     step_key: str,
     map_index: int | None = None,
     ledger_id: JobId | None = None,
-) -> bool:
-    """tx1 in ONE transaction: the fenced terminal mark; the ledger's
+    ledger_claimed_at: datetime | None = None,
+    terminal_effect: TerminalEffect | None = None,
+    terminal_reason: TerminalEffectReason = "retry_exhausted",
+) -> _Tx1Outcome:
+    """tx1 in one transaction: the fenced terminal mark; the ledger's
     terminal write; the fork's children + edges + join node. Returns
     whether the fence admitted the write (the rowcount gate tx2 keys on).
-    A fenced write records the attempt 'fenced' on the ledger (H1) — never
+    A fenced write records the attempt 'fenced' on the ledger — never
     a running row left forever on a terminal flow.
 
-    THE LEDGER TERMINAL'S KEY: the claim's OWN RETURNING id when the caller
+    The claim's own RETURNING id when the caller
     holds it (*ledger_id* — ``LEDGER_TERMINAL_BY_ID_SQL``, the write pins
     exactly the claimed row), otherwise the full arbiter tuple with the
     COALESCE(map_index, -1) expression (``LEDGER_TERMINAL_SQL``) — a map
     child's terminal can never overwrite its sibling's row (the ledger-PK
     attack's overwrite arm)."""
     async with conn.transaction():
+        # Cancel takes the canonical root lock before its node cascade. Taking
+        # the same root lock here arbitrates its commit against every fork and
+        # terminal-effect decision without holding the lock across body code.
+        root = await conn.fetchrow(
+            f"SELECT status, run_epoch, metadata->>'workflow' AS workflow_name "
+            f"FROM {wsql.schema}.jobs WHERE id = $1 FOR UPDATE",
+            flow_id,
+        )
+        durable_effect = await conn.fetchval(
+            f"SELECT metadata ? 'wf_after_terminal_effect' FROM {wsql.schema}.jobs WHERE id = $1",
+            job_id,
+        )
+        if (
+            root is not None
+            and root["status"] == "cancelled"
+            and outcome == "failed"
+            and durable_effect is not True
+        ):
+            # Cancel before the winning terminal CAS has no exhaustion effect
+            # and cannot leave the body failure as a second causal verdict.
+            outcome = "cancelled"
+            error_class = "WorkflowCancelled"
+            error_message = "workflow run was cancelled before terminal exhaustion"
+            error_traceback = None
+            capture = None
         rec = await conn.fetchrow(
             wsql.terminal_mark,
             job_id,
@@ -267,10 +368,24 @@ async def _run_tx1(
         )
         if rec is None:
             # Fenced out (a reclaimed row, a cancelled flow, a wrong
-            # worker): the ledger says 'fenced', tx2 never runs.
+            # worker): the ledger says 'fenced', tx2 never runs. The fence
+            # targets the exact claim identity — the claim's own row id AND,
+            # when the caller holds it, its own RETURNING instant (the
+            # re-mint guard: a re-claimed row re-stamps updated_at, and the
+            # stale instant refuses the write). A stale fence whose instant
+            # no longer matches is the DESIGNED stale refusal (a re-minted
+            # row is the live winner's — its own terminal writes it).
             if ledger_id is not None:
-                await conn.execute(wsql.ledger_fence_by_id, ledger_id, error_class)
+                await conn.execute(
+                    wsql.ledger_fence_by_id, ledger_id, error_class, ledger_claimed_at
+                )
             else:
+                # The no-ledger-id caller (the Exit path's finalize,
+                # ``api/_runner.py``'s `_finalize_exit` call site) still
+                # fences its ledger row — by the node's own arbiter tuple
+                # (flow, step, attempt, map_index), the status-only fence:
+                # a fenced-out finalize's 'fenced' record is never left to
+                # the phantom reap.
                 await conn.execute(
                     wsql.ledger_fence_attempt,
                     flow_id,
@@ -279,10 +394,10 @@ async def _run_tx1(
                     error_class,
                     map_index,
                 )
-            return False
+            return _Tx1Outcome(applied=False)
 
         if ledger_id is not None:
-            await conn.execute(
+            written = await conn.execute(
                 wsql.ledger_terminal_by_id,
                 ledger_id,
                 outcome,
@@ -290,7 +405,17 @@ async def _run_tx1(
                 error_class,
                 error_message,
                 _jsonb(capture) if capture is not None else None,
+                ledger_claimed_at,
             )
+            # The one-row law (the admitted path): this claim WON the job
+            # terminal CAS, so its own ledger row must take the terminal — a
+            # write that matched nothing is either the already-terminal
+            # idempotent no-op (this claim's own earlier arm wrote it — the
+            # deadline's exhausted route's shape), a stale/retention loss
+            # (the logged no-op behavior), or the running-ledger PHANTOM the
+            # fence exists to prevent (raise; the tx rolls back).
+            if written != "UPDATE 1":
+                await _classify_own_ledger_no_match(conn, wsql, ledger_id, flow_id, step_key)
         else:
             await conn.execute(
                 wsql.ledger_terminal,
@@ -314,7 +439,51 @@ async def _run_tx1(
                 parent_step_key=step_key,
                 fork=fork,
             )
-    return True
+        if (
+            terminal_effect is not None
+            and outcome == "failed"
+            and root is not None
+            and root["status"] != "cancelled"
+        ):
+            from taskq.workflows._effects import insert_terminal_effect
+
+            run_epoch = root["run_epoch"]
+            if type(run_epoch) is not int or run_epoch < 1:
+                raise RuntimeError(
+                    "a guarded terminal effect requires the root's durable positive run_epoch; "
+                    "legacy NULL is not an effect identity"
+                )
+            flow_name = root["workflow_name"]
+            if not isinstance(flow_name, str) or not flow_name:
+                raise RuntimeError("terminal effect requires the durable registered workflow name")
+            raw_record: object = rec["payload"]
+            if isinstance(raw_record, str):
+                raw_record = _json_loads(raw_record)
+            record = cast(
+                "object",
+                raw_record.get("wf_item")
+                if isinstance(raw_record, dict) and "wf_item" in raw_record
+                else raw_record,
+            )
+            await insert_terminal_effect(
+                conn,
+                wsql,
+                flow_id=flow_id,
+                flow_name=flow_name,
+                node_id=job_id,
+                source_key=step_key,
+                map_index=map_index,
+                attempt=attempt,
+                run_epoch=run_epoch,
+                trace_id=rec["trace_id"],
+                error_class=error_class,
+                error_message=error_message,
+                error_traceback=error_traceback,
+                record=record,
+                reason=terminal_reason,
+                effect=terminal_effect,
+            )
+        return _Tx1Outcome(applied=True)
 
 
 async def _fire_and_deliver(
@@ -329,7 +498,7 @@ async def _fire_and_deliver(
 ) -> FiredJoin | None:
     """One guarded fire + its delivery: the fire statement (the rowcount
     gate, the join-wait status, the flow-status EXISTS leg, the UNIQUE's
-    exactly-once) → the winner → the reducer body INSIDE the caller's tx2
+    exactly-once) → the winner → the reducer body inside the caller's tx2
     → one outbox row per declared consumer. ``None`` = the guard refused
     (another writer fired first, or the flow died): no outbox row, no body
     — the PK/legs did their job."""
@@ -344,16 +513,15 @@ async def _fire_and_deliver(
     if reducers is not None:
         body = reducers.get(winner["step_key"])
         if body is not None:
-            # The exactly-once boundary is the FIRE's boundary, never the
+            # The exactly-once boundary is the fire's boundary, never the
             # body's: a raising reducer rolls tx2 back (the decrement, the
             # fire row and the outbox rows all roll back), the re-derivation
-            # re-fires, and the body RE-RUNS — at-least-once body execution,
+            # re-fires, and the body re-runs — at-least-once body execution,
             # stated.
             await body()
     if fired.consumers:
-        # THE TRACE RIDES THE OUTBOX (§18.2's stamp-at-enqueue): the
-        # consumer rows' trace_id is the join's own trace when it has one,
-        # else the FIRE's id — every consumer of one fire shares one trace
+        # the consumer rows' trace_id is the join's own trace when it has one,
+        # else the fire's id — every consumer of one fire shares one trace
         # chain, never a NULL trace on the drain's dispatch.
         trace_id = winner["trace_id"] or str(fire_id)
         await conn.executemany(
@@ -371,6 +539,17 @@ async def _fire_and_deliver(
                             "queue": c.queue,
                             "payload": c.payload,
                             "trace_id": trace_id,
+                            # The consumer's declared deadline: the binding's own
+                            # resolution rides the fire's bindings (as
+                            # seconds — the jsonb wire form the drain
+                            # parses back); the undeclared consumer
+                            # omits the key (the pre-fix bindings'
+                            # shape byte-identical).
+                            **(
+                                {"start_to_close_s": c.start_to_close.total_seconds()}
+                                if c.start_to_close is not None
+                                else {}
+                            ),
                         }
                     ),
                 )
@@ -394,27 +573,27 @@ async def _run_tx2(
     error_message: str | None = None,
     error_traceback: str | None = None,
 ) -> tuple[tuple[DecrementHit, ...], tuple[FiredJoin, ...]]:
-    """tx2 in ONE transaction: the guarded decrement (the edge ledger, the
+    """tx2 in one transaction: the guarded decrement (the edge ledger, the
     flow-status leg, ``deps_pending > 0``); rows hitting 0 → the guarded
-    fire; the winner's reducer body runs INSIDE tx2; the outbox rows ride
+    fire; the winner's reducer body runs inside tx2; the outbox rows ride
     the same tx.
 
-    T06'S FAILED-PARENT PROPAGATION, keyed on the OUTCOME (the
-    composition invariant: ladder retries emit NO terminal, so tx2 sees a
+    the FAILED-PARENT PROPAGATION, keyed on the OUTCOME (the
+    composition invariant: ladder retries emit no terminal, so tx2 sees a
     failed child exactly once — at exhaustion):
 
     * ``succeeded`` (any non-failed terminal) — the decrement resolves
-      EVERY join counting this child (the shipped shape, unchanged).
+      every join counting this child (the shipped shape, unchanged).
     * ``failed`` — the edges' DECLARED POLICY splits the resolution:
-      - fail_closed edges → the cascade (ONE statement: the joined node
+      - fail_closed edges → the cascade (one statement: the joined node
         blocks with ``blocking_reason='failed_parent'`` naming this
         parent, the still-non-terminal peers are peer-cancelled with the
         ``by='peer_failure', cascade_from=<node>`` record, the flow root
-        fails) — the join's side is resolved WITHOUT a decrement (it must
+        fails) — the join's side is resolved without a decrement (it must
         never become firable over a failed parent);
       - collect edges → the failure fans in (the typed FailureInfo item
         appended to the join row's ``failures``) + the decrement — the
-        join fires when the LAST child terminalizes, strictly after every
+        join fires when the last child terminalizes, strictly after every
         ladder attempt.
     """
     async with conn.transaction():
@@ -450,7 +629,7 @@ async def _run_tx2(
             )
             if result is not None:
                 fired.append(result)
-    return hits, tuple(fired)
+        return hits, tuple(fired)
 
 
 async def _resolve_failed_parent(
@@ -465,7 +644,7 @@ async def _resolve_failed_parent(
     error_message: str | None,
     error_traceback: str | None,
 ) -> None:
-    """T06's failed-parent resolution — BOTH arms, one tx, set-based:
+    """The failed-parent resolution — both arms, one tx, set-based:
 
     * the fail_closed cascade (the flow-scoped transition set; the
       statement is a no-op when no fail_closed edge counts this parent);
@@ -477,10 +656,10 @@ async def _resolve_failed_parent(
     ErrorInfo envelope (the engine constructs it through the typed door —
     the bound constants apply here too, never re-spelled SQL-side).
     """
-    # THE FAIL-CLOSED CASCADE — the record names the failed parent: the
-    # block stamp (metadata.failed_parent), the peer-cancel record (the
-    # cancel-origin marker + metadata.peer_cancel.cascade_from), and the
-    # flow's own failure ride THIS statement.
+    # the fail-closed CASCADE — the record names the failed parent: the block
+    # stamp (metadata.failed_parent), the peer-cancel record (the cancel-origin
+    # marker + metadata.peer_cancel.cascade_from), and the flow's own failure
+    # ride this statement.
     cascade_stamp = {
         "blocking_reason": BLOCKING_REASON_FAILED_PARENT,
         "failed_parent": str(parent_id),
@@ -496,12 +675,12 @@ async def _resolve_failed_parent(
         flow_id,
     )
 
-    # THE ABSORBED FAN-IN (collect | maybe) — the typed partial result's
-    # failure items. The ledger's attempt rows for THIS child are the
+    # the absorbed fan-in (collect | maybe) — the typed partial result's
+    # failure items. The ledger's attempt rows for this child are the
     # history; the item is appended inside the same tx (a rolled-back tx
-    # rolls the item back — the re-fire re-derives it). Each item NAMES
+    # rolls the item back — the re-fire re-derives it). Each item names
     # the policy that absorbed it (the edge's own declared policy — the
-    # envelope must not lie about which policy ran, T07's C).
+    # envelope must not lie about which policy ran).
     fanin_rows = await conn.fetch(
         wsql.collect_fan_in,
         parent_id,
@@ -558,12 +737,12 @@ async def fan_in_skip(
     step_key: str,
     map_index: int | None,
 ) -> int:
-    """T06's SKIP fan-in: a skipped child fans into its collect joins as a
+    """The SKIP fan-in: a skipped child fans into its collect joins as a
     FailureInfo item with an EMPTY attempt history — **a skip is not an
-    attempt** (P3 spike3's measured invariant): ZERO ledger rows are
+    attempt** (the measured invariant): ZERO ledger rows are
     written, zero terminal rows, zero attempts — the child's only trace is
     the item on the join row (the ledger stays the attempted-terminals'
-    record; T08's two-source rule reads never-granted terminals elsewhere).
+    record; the two-source rule reads never-granted terminals elsewhere).
 
     Returns the number of absorbing joins the skip fanned into."""
     fanin_rows = await conn.fetch(
@@ -622,14 +801,17 @@ async def finalize_node(
     node_input: str | None = None,
     map_index: int | None = None,
     ledger_id: JobId | None = None,
+    ledger_claimed_at: datetime | None = None,
+    terminal_effect: TerminalEffect | None = None,
+    terminal_reason: TerminalEffectReason = "retry_exhausted",
 ) -> FinalizeResult:
     """Finalize one workflow node: tx1 then (rowcount-gated) tx2.
 
     The attempt-fence: *attempt* is the fencing token — the terminal-mark
     CAS requires ``attempt = $n`` (and the worker + claim-epoch fences), so
     a zombie's write from an abandoned attempt loses to the reclaim +
-    re-claim's fresh attempt (hardening H8). A fenced finalize records the
-    attempt 'fenced' on the ledger (H1) and reports ``applied=False``.
+    re-claim's fresh attempt (the attempt-fencing law). A fenced finalize records the
+    attempt 'fenced' on the ledger and reports ``applied=False``.
 
     The LEDGER TERMINAL's key: *ledger_id* (the claim's own RETURNING id —
     ``LedgerClaim.ledger_id``) when held, else the arbiter tuple keyed with
@@ -638,22 +820,21 @@ async def finalize_node(
     """
     assert_valid_transition("running", outcome, job_id)
 
-    # THE REDUCER CACHE WARM (the tx1→tx2 window's cure, cache half): the
-    # finalize's reducers are resolvable OUTSIDE this call's stack — the
-    # sweep's healing pass runs the fired join's body from the REGISTERED
-    # DEFINITION (the flow root's stamped workflow name resolves it in any
-    # process — the durable leg), falling through to THIS process's cache
-    # (the memo below) only for a flow the registry cannot resolve (see
-    # workflows/_reducers.py). Registered before tx1: a fenced-out
-    # finalize registers nothing harmful (the cache keys by join step
-    # key; a body that never fires is never run).
+    # the finalize's reducers are resolvable outside this call's stack — the
+    # sweep's healing pass runs the fired join's body from the registered
+    # definition (the flow root's stamped workflow name resolves it in any
+    # process — the durable leg), falling through to this process's cache (the
+    # memo below) only for a flow the registry cannot resolve (see
+    # workflows/_reducers.py). Registered before tx1: a fenced-out finalize
+    # registers nothing harmful (the cache keys by join step key; a body that
+    # never fires is never run).
     if reducers:
         register_flow_reducers(flow_id, reducers)
 
     # The failure IO-capture rides tx1 (a row already being updated); the
     # success path writes NOTHING extra (the G1 ruling — every capture
     # policy's success path is inert; "all" is reserved by the same rule).
-    # Captured fields pass the redact CHAIN first, then the user hook, THEN
+    # Captured fields pass the redact chain first, then the user hook, then
     # truncate (chain → hook → truncate; masks are irreversible, so the
     # persisted row never carries a canary — pin 11).
     capture: dict[str, object] | None = None
@@ -666,7 +847,7 @@ async def finalize_node(
             redact=redact,
         )
 
-    async def _tx1() -> bool:
+    async def _tx1() -> _Tx1Outcome:
         async with pool.acquire() as conn:
             return await _run_tx1(
                 conn,
@@ -686,9 +867,13 @@ async def finalize_node(
                 step_key=step_key,
                 map_index=map_index,
                 ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
+                terminal_effect=terminal_effect,
+                terminal_reason=terminal_reason,
             )
 
-    applied = await _deadlock_retry(_tx1)
+    tx1 = await _deadlock_retry(_tx1)
+    applied = tx1.applied
     if not applied:
         return FinalizeResult(applied=False, attempt=None)
 
@@ -709,4 +894,9 @@ async def finalize_node(
             )
 
     hits, fired = await _deadlock_retry(_tx2)
-    return FinalizeResult(applied=True, attempt=attempt, decremented=hits, fired=fired)
+    return FinalizeResult(
+        applied=True,
+        attempt=attempt,
+        decremented=hits,
+        fired=fired,
+    )

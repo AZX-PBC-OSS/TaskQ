@@ -3,22 +3,22 @@
 
 The sibling module (``test_timescaledb_hypertables.py``) pins the conversion
 and each mechanism in isolation. This module pins the INTERPLAY: who deletes
-historical rows when BOTH the hypertable retention policies (whole-chunk
+historical rows when both the hypertable retention policies (whole-chunk
 drops) and TaskQ's own DELETE-based sweeps are armed on the same tables, and
 what each mechanism does to the other's bookkeeping. One real
-``policy_retention`` run per drop (the ``alter_job`` next_start knob, the
-same sanctioned pattern the sibling module pins), so every chunk drop under
-test is the registered policy's own work, never a test shortcut.
+``policy_retention`` run per drop (the harness calls the registered
+policy job itself, ``CALL run_job``, so every chunk drop under test is
+the registered policy's own work, never a test shortcut).
 
 Five hypotheses, one test each (plus one divergence pin):
 
-1. DOUBLE RETENTION — with the policy AND the expiry/TTL sweeps armed on
+1. DOUBLE RETENTION — with the policy and the expiry/TTL sweeps armed on
    the same table, a sweep that runs after the policy dropped the rows it
    targets is a silent no-op: zero deleted, no error, terminating drain.
    The two mechanisms do not conflict; they compose by (non-)overlap, and
    the post-drop sweep cost is an index probe, not a correction.
-2. THE CARVE-OUT — the event-TTL sweep keeps
-   ``kind='state_change' AND detail->>'reason'='lock_expired'`` rows to
+2. the CARVE-out — the event-TTL sweep keeps
+   ``kind='state_change' and detail->>'reason'='lock_expired'`` rows to
    ``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` (100x) the retention, but the
    hypertable policy drops their chunks at PLAIN retention (the policy's
    ``drop_after`` IS ``event_retention_period``). Proven here: on the
@@ -34,12 +34,12 @@ Five hypotheses, one test each (plus one divergence pin):
    sweep (which honors ``expire_at`` exactly) keeps the row, the policy
    drop removes it ~300 days early. Chunk granularity, not ``expire_at``,
    governs the aged end once the policy is armed.
-4. THE SWEEPS' BOOKKEEPING — after a policy drop removes a swath of rows,
+4. the SWEEPS' BOOKKEEPING — after a policy drop removes a swath of rows,
    the next sweep's batch math behaves: the drained-until-zero loop
    terminates on the empty window, the ``batch_total < size`` boundary
    stays exact, and — the sharp edge — the event-prune watermark
    (``job_events_prune_state.pruned_through_id``, the fail-visible
-   ``EventRetentionGapError`` bound) does NOT advance on a chunk drop, so
+   ``EventRetentionGapError`` bound) does not advance on a chunk drop, so
    the "watermark can never lag what is already gone" contract migration
    01.00.20_02 states for the two sweep deleters does not extend to the
    third deleter (the policy). Pinned as the behavior it is: a consumer
@@ -50,7 +50,7 @@ Five hypotheses, one test each (plus one divergence pin):
    counts, same survivors, same watermark. The sweeps' contracts hold on
    both storage engines.
 
-Plus one pinned divergence (H6): the archive write's NOT EXISTS fold guard
+Plus one pinned divergence: the archive write's not EXISTS fold guard
 ("a job id is archived at most once") is keyed on the archive row's
 EXISTENCE, and a chunk drop removes that witness — after the ghost's chunk
 drops, the hypertable mode re-archives a retried job where vanilla would
@@ -59,7 +59,7 @@ live.
 
 And the floor pins (H7-H10): TaskQ's sweeps do not pay to re-delete the
 aged end the policy owns. When a ``policy_retention`` job is registered
-against the table, the sweeps probe its own ``drop_after`` horizon ONCE
+against the table, the sweeps probe its own ``drop_after`` horizon once
 per run (``taskq.timescale.retention_policy_floor``) and bound their
 DELETEs below-nothing at it: above the floor the POLICY owns deletion
 (silent, chunk-granular, watermark-blind); below it the sweep owns
@@ -67,9 +67,12 @@ deletion (row-exact, watermark-visible). On vanilla Postgres the probe
 fails open to None and the sweeps run full-range, byte-identical to the
 pre-floor behavior.
 
-Chunk-drop waits poll TimescaleDB's background worker (an external daemon
-no test clock can advance); the poll is bounded and asserts on the
-policy's own committed effect, mirroring the sibling module's pattern.
+Chunk drops run deterministically: the harness calls each retention
+policy job itself (``CALL run_job``) against the fixture's
+daemon-deferred ``next_start``, and the drop commits synchronously
+inside the call - the background worker stays ineligible and cannot
+race the test's clock; the bounded poll then asserts on the policy's
+own committed effect.
 """
 
 from __future__ import annotations
@@ -87,7 +90,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
-from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the interplay tests run the REAL event-TTL sweep statement; the house pattern imports it where used.
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the interplay tests run the real event-TTL sweep statement; the house pattern imports it where used.
     sweep_expired_events,
 )
 from taskq.constants import RECLAIM_OUTBOX_RETENTION_MULTIPLIER
@@ -97,7 +100,7 @@ from taskq.testing._shared_containers import creator_labels, skip_test_without_d
 from taskq.timescale import enable_hypertables
 from taskq.worker.leader import archive_expiry_sweep, prune_terminal_jobs
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.timescale]
 
 #: Chunk interval the short test retentions clamp to (retention/4 clamped to
 #: the 1-day floor): every aged seed below lands a full chunk interval clear
@@ -107,7 +110,7 @@ _TEST_ARCHIVE_RETENTION = timedelta(days=2)
 _TEST_EVENT_RETENTION = timedelta(days=1)
 
 #: Ages with >= half a chunk of margin inside their policy's drop boundary:
-#: a chunk's END time must sit strictly below ``now - drop_after`` for the
+#: a chunk's end time must sit strictly below ``now - drop_after`` for the
 #: policy to drop it, so the seeds age half a chunk beyond the boundary
 #: instead of sitting exactly on it.
 _AGED_ARCHIVE_FINISHED_AT = timedelta(days=3.5)  # boundary: 2 days
@@ -172,7 +175,7 @@ async def ts_conn(
     timescale_dsn: str,
     ts_schema: str,
 ) -> AsyncIterator[asyncpg.Connection]:
-    """A connection to a freshly migrated AND converted schema.
+    """A connection to a freshly migrated and converted schema.
 
     Policies are DEFERRED to the far future at setup: a ~now-scheduled
     first policy run could land between a test's seeds and its
@@ -199,10 +202,13 @@ async def _schedule_policies(
     conn: asyncpg.Connection, schema: str, *, next_start: datetime, proc_name: str = "policy%"
 ) -> None:
     """Move every policy job's next run to *next_start* (the supported
-    ``alter_job`` knob); the background worker executes the registered
-    policy itself, so a drop under test is always a real policy run.
+    ``alter_job`` knob). Tests that need a drop run the retention job
+    themselves (``CALL run_job``, via ``_force_policies_now``); this
+    helper's remaining work is the fixture's deferral of the whole
+    policy family to the far future, so the background worker stays
+    ineligible and cannot race the test's clock.
 
-    Defaults to ALL policy jobs — retention AND the compression policy
+    Defaults to ALL policy jobs — retention and the compression policy
     the deploy step arms on the archive tables: a ~now-scheduled
     compression run would age chunks into the columnstore mid-test and
     put these sweeps on compressed chunks, so the fixture defers the
@@ -223,27 +229,45 @@ async def _schedule_policies(
 
 
 async def _force_policies_now(conn: asyncpg.Connection, schema: str) -> None:
-    """Pull every RETENTION policy's next run to now (a real policy run).
+    """Run every RETENTION policy job now, deterministically.
 
-    The compression policy stays deferred: these legs pin sweep
-    behavior, not compression, and a mid-test compress would change the
-    DML surface they assert on.
+    The jobs stay daemon-deferred (the fixture's far-future next_start):
+    the background worker never races the test's clock. ``run_job``
+    executes each policy job synchronously in this session — the drop is
+    the policy's own work, committed by the time the call returns.
     """
-    await _schedule_policies(
-        conn, schema, next_start=datetime.now(UTC), proc_name="policy_retention"
+    rows = await conn.fetch(
+        "SELECT job_id FROM timescaledb_information.jobs "
+        "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
+        schema,
     )
+    for r in rows:
+        # The Timescale launcher can hold the job row while it schedules;
+        # a manual run landing in that window deadlocks and PG kills one
+        # side. The job is safe to re-run (the policy's own work is
+        # idempotent), so retry the transient.
+        for attempt in range(3):
+            try:
+                await conn.execute("CALL run_job($1)", r["job_id"])
+                break
+            except asyncpg.exceptions.DeadlockDetectedError:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.05)
 
 
 async def _wait_for(
-    condition: Callable[[], Awaitable[bool]], *, what: str, timeout_secs: float = 60.0
+    condition: Callable[[], Awaitable[bool]], *, what: str, timeout_secs: float = 30.0
 ) -> None:
-    """Bounded poll for an effect of TimescaleDB's background worker.
+    """Bounded poll for the policy's own committed effect.
 
-    The worker is an external daemon no test clock can advance; the
-    sibling module's policy legs use this exact pattern (``alter_job``
-    next_start, then poll for the policy's own committed effect). The
-    poll never substitutes for a synchronization the test controls —
-    every awaited statement outside it is fully ordered.
+    ``_force_policies_now`` runs the policy job synchronously (``CALL
+    run_job``), so the drop is committed before the wait starts: the
+    ceiling bounds only the policy's own work (a chunk drop on the
+    seeded tables, ~0.02s solo, seconds under a loaded lane) - not a
+    background daemon's wake, which no test clock can advance. The
+    per-site budget (30s) keeps a two-wait test inside the global 300s
+    per-test cap with room for the rest of the test.
     """
     deadline = time.monotonic() + timeout_secs
     while time.monotonic() < deadline:
@@ -342,13 +366,13 @@ async def _event_watermark(conn: asyncpg.Connection, schema: str) -> int:
 async def test_sweeps_after_chunk_drop_are_silent_noops(
     ts_conn: asyncpg.Connection, ts_schema: str
 ) -> None:
-    """H1: policy drops + TaskQ's sweeps armed on the SAME tables do not
+    """H1: policy drops + TaskQ's sweeps armed on the same tables do not
     conflict — each sweep that runs after the drop is a silent, terminating
     no-op over the dropped range.
 
     Both mechanisms target the same rows here (the aged archive rows are
-    past ``expire_at`` AND inside a chunk past ``drop_after``; the aged
-    event is past the event retention AND in a dropped chunk). The policy
+    past ``expire_at`` and inside a chunk past ``drop_after``; the aged
+    event is past the event retention and in a dropped chunk). The policy
     run deletes them first; the sweeps then run their real SQL against the
     empty range and must return zero deleted — no error, no partial state,
     fresh rows untouched. The deletion story on a hypertable schema is
@@ -423,7 +447,7 @@ async def test_reclaim_carveout_falls_to_chunk_policy_and_the_sweep_stays_out(
     ts_conn: asyncpg.Connection, ts_schema: str
 ) -> None:
     """H2: the crash-reclaim outbox carve-out is DEFEATED by the hypertable
-    policy, and — since the retention-policy floor — the sweep STAYS OUT of
+    policy, and — since the retention-policy floor — the sweep STAYS out of
     the below-floor range entirely, outbox arm included.
 
     With the policy armed (deferred, so the drop is the test's to trigger),
@@ -432,7 +456,7 @@ async def test_reclaim_carveout_falls_to_chunk_policy_and_the_sweep_stays_out(
     the floor, the outbox event because the policy's ownership defeats the
     carve-out below the floor anyway (an aged lock_expired event's chunk
     drops at plain retention whether or not the sweep would have kept it to
-    100x). Then ONE real policy run drops the aged chunk outright. The
+    100x). Then one real policy run drops the aged chunk outright. The
     carve-out's positive leg — the sweep HONORS it on a range it owns — is
     pinned full-range by H10a (vanilla) and H10b (policy-less hypertable),
     and inside the window by H8's inside-row proof.
@@ -502,7 +526,7 @@ async def test_reclaim_carveout_falls_to_chunk_policy_and_the_sweep_stays_out(
 async def test_chunk_policy_drops_archive_rows_before_expire_at(
     ts_conn: asyncpg.Connection, ts_schema: str
 ) -> None:
-    """H3: a chunk drop removes archived rows BEFORE the archive-expiry
+    """H3: a chunk drop removes archived rows before the archive-expiry
     sweep expected them.
 
     The expiry sweep deletes exactly on ``expire_at``; the policy drops on
@@ -512,7 +536,7 @@ async def test_chunk_policy_drops_archive_rows_before_expire_at(
     archive interval before its daily prune, or when the operator shortened
     ``archive_retention_period`` after rows already carry long stamps.
 
-    Order of proof: the expiry sweep runs FIRST and honors ``expire_at``
+    Order of proof: the expiry sweep runs first and honors ``expire_at``
     exactly (keeps the row); the policy run then drops the row's chunk
     outright; the expiry sweep runs again, finds nothing, and terminates.
     On a hypertable schema with policies armed, ``expire_at`` is honored
@@ -604,7 +628,7 @@ async def test_batch_math_stays_exact_after_partial_chunk_drop(
 async def test_chunk_drop_does_not_advance_the_event_watermark(
     ts_conn: asyncpg.Connection, ts_schema: str
 ) -> None:
-    """H4b: a chunk drop deletes events WITHOUT advancing the event-prune
+    """H4b: a chunk drop deletes events without advancing the event-prune
     watermark — the third deleter bypasses the fail-visible contract.
 
     Migration 01.00.20_02's contract: each event deleter advances
@@ -791,7 +815,7 @@ async def test_sweep_script_agrees_across_both_engines(timescale_dsn: str, pg_ds
                     conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650)
                 )
             # The full-range wiring on both engines: pin the SQL's
-            # mode-agnosticism, not the floor's composition (H9 owns that).
+            # mode-agnosticism, not the floor's composition (owns that).
             with _no_floor_patch():
                 outcomes[label] = await _parity_scenario(conn, schema)
         finally:
@@ -833,9 +857,9 @@ async def test_chunk_dropped_archive_row_loses_the_fold_guard(
     """H6: "a job id is archived at most once" holds only while archive
     chunks live.
 
-    The archive write's NOT EXISTS guard is keyed on the archive row's
+    The archive write's not EXISTS guard is keyed on the archive row's
     EXISTENCE. Plant the unguarded ghost (an archive row whose job is live
-    and aged again) with the ghost row INSIDE a policy-droppable chunk:
+    and aged again) with the ghost row inside a policy-droppable chunk:
 
     * vanilla: the guard folds the re-archive — the standing ghost row is
       the only archive copy, and the live row is removed either way.
@@ -932,7 +956,7 @@ async def test_chunk_dropped_archive_row_loses_the_fold_guard(
     assert vanilla["prune_deleted"] == 1
 
     # Hypertable after the drop: the guard's witness is gone, the prune
-    # re-archives — the once-only invariant does NOT hold. Pinned as the
+    # re-archives — the once-only invariant does not hold. Pinned as the
     # divergence: same id, fresh archive lifetime, original payload restored.
     assert timescale["archive_rows"] == 1
     assert timescale["ghost_payload_wins"] is False, (
@@ -960,7 +984,7 @@ async def _no_floor(
 
 @contextmanager
 def _no_floor_patch() -> Generator[None, None, None]:
-    """Patch BOTH sweep modules' floor probe to the always-None
+    """Patch both sweep modules' floor probe to the always-None
     counterfactual for the enclosed block, restoring both bindings after.
 
     The two sweeps import the probe by name into their own modules
@@ -995,7 +1019,7 @@ async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
       RED deletes them (4 total); GREEN deletes none of them.
     * inside the window (``finished_at`` 1d, above the floor): the
       sweep's row-exact work below the policy's horizon — deleted in
-      BOTH runs. The floor never touches the young range.
+      both runs. The floor never touches the young range.
     * fresh (``expire_at`` future): never eligible, survives both.
 
     Then one real policy run drops the aged chunk: the rows GREEN left
@@ -1008,7 +1032,7 @@ async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
     from taskq.worker import _leader_shared
 
     now = datetime.now(UTC)
-    # The floor IS the policy's own horizon (its registered drop_after =
+    # The floor is the policy's own horizon (its registered drop_after =
     # _TEST_ARCHIVE_RETENTION), not a re-derivation.
     floor = await retention_policy_floor(ts_conn, ts_schema, "jobs_archive", "finished_at", now=now)
     assert floor == now - _TEST_ARCHIVE_RETENTION
@@ -1018,7 +1042,7 @@ async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
 
     aged_at = now - _AGED_ARCHIVE_FINISHED_AT
     expired_at = now - timedelta(hours=1)
-    # ── RED: the floor off — the unguarded sweep deletes the aged rows too.
+    # ── red: the floor off — the unguarded sweep deletes the aged rows too.
     aged_red = [await _seed(finished_at=aged_at, expire_at=expired_at) for _ in range(3)]
     inside_red = await _seed(finished_at=now - timedelta(days=1), expire_at=expired_at)
     monkeypatch.setattr(_leader_shared, "retention_policy_floor", _no_floor)
@@ -1031,7 +1055,7 @@ async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
         "aged (policy-owned) rows row by row"
     )
 
-    # ── GREEN: the real floor — the sweep deletes exactly the inside-window
+    # ── green: the real floor — the sweep deletes exactly the inside-window
     # row and stays out of the policy's range.
     aged_green = [await _seed(finished_at=aged_at, expire_at=expired_at) for _ in range(3)]
     inside_green = await _seed(finished_at=now - timedelta(days=1), expire_at=expired_at)
@@ -1094,19 +1118,17 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
         f'"{ts_schema}"."job_events"',
         widened,
     )
-    # THE BGW RE-DEFERMENT (the deadlock cure, 2026-10-08): add_retention_
-    # policy RE-ARMS the policy's background job at ~now — undoing the
-    # ts_conn fixture's far-future deferral. The bgw then races the test:
-    # its drop_chunks takes AccessExclusiveLock on the below-floor chunk
-    # while this connection holds row locks from the seeds and the RED
-    # sweep — PG answers the mutual wait with DeadlockDetectedError on
-    # the GREEN-phase seed (deterministic 3/3, the policy's first run
-    # lands within the test's own window every time). The test reads the
-    # policy's REGISTERED CONFIG (the floor assertion above — a config
-    # read, not a run) and never needs the policy to fire mid-test, so
-    # the job goes back to the fixture's contract: next_start in the far
-    # future, the drop belongs to nobody's clock but an explicit
-    # _force_policies_now call.
+    # add_retention_ policy re-arms the policy's background job at ~now —
+    # undoing the ts_conn fixture's far-future deferral. The bgw then races the
+    # test: its drop_chunks takes AccessExclusiveLock on the below-floor chunk
+    # while this connection holds row locks from the seeds and the red sweep —
+    # PG answers the mutual wait with DeadlockDetectedError on the green-phase
+    # seed (deterministic 3/3, the policy's first run lands within the test's
+    # own window every time). The test reads the policy's registered config
+    # (the floor assertion above — a config read, not a run) and never needs
+    # the policy to fire mid-test, so the job goes back to the fixture's
+    # contract: next_start in the far future, the drop belongs to nobody's
+    # clock but an explicit _force_policies_now call.
     await _schedule_policies(
         ts_conn, ts_schema, next_start=datetime.now(UTC) + timedelta(days=3650)
     )
@@ -1117,15 +1139,15 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
         "registered config), never a re-derivation from the sweep's retention"
     )
 
-    below_at = now - timedelta(days=4.5)  # past retention AND below the 3d floor
-    # (the 4.5d-old event's chunk ENDS 4d ago — a full day strictly below
+    below_at = now - timedelta(days=4.5)  # past retention and below the 3d floor
+    # (the 4.5d-old event's chunk ends 4d ago — a full day strictly below
     # the drop boundary, the half-chunk margin rule the module header pins;
-    # 3.5d would put the chunk's end exactly ON the boundary)
+    # 3.5d would put the chunk's end exactly on the boundary)
     inside_at = now - timedelta(days=2)  # past retention, inside the window
     below_red = await _seed_event(ts_conn, ts_schema, occurred_at=below_at, detail={})
     inside_red = await _seed_event(ts_conn, ts_schema, occurred_at=inside_at, detail={})
 
-    # ── RED: the floor off — the unguarded sweep deletes the below-floor
+    # ── red: the floor off — the unguarded sweep deletes the below-floor
     # event too.
     monkeypatch.setattr(pg_sweeps, "retention_policy_floor", _no_floor)
     try:
@@ -1136,7 +1158,7 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
         monkeypatch.undo()
     assert pre_fix == 2, "the counterfactual: the unguarded sweep re-deletes the policy's range"
 
-    # ── GREEN: the real floor — exactly the inside-window event deletes,
+    # ── green: the real floor — exactly the inside-window event deletes,
     # row-exact, watermark-advancing.
     below_green = await _seed_event(ts_conn, ts_schema, occurred_at=below_at, detail={})
     inside_green = await _seed_event(ts_conn, ts_schema, occurred_at=inside_at, detail={})
@@ -1171,7 +1193,7 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
 
 
 async def test_policy_run_plus_floor_composes_to_todays_end_state(timescale_dsn: str) -> None:
-    """H9, parity: policy-run + sweeps compose to the SAME end state with
+    """H9, parity: policy-run + sweeps compose to the same end state with
     the floor as without it — only the work distribution changes.
 
     One seed script (aged+expired archive rows, aged ordinary events, an
@@ -1241,7 +1263,7 @@ async def test_policy_run_plus_floor_composes_to_todays_end_state(timescale_dsn:
                 with _no_floor_patch():
                     await _run_both_sweeps()
 
-            # The policy run closes the aged end in BOTH scenarios: in the
+            # The policy run closes the aged end in both scenarios: in the
             # floor scenario it does the deleting (chunk drops), in the
             # no-floor scenario the sweeps already did it row-exactly and
             # the run finds aged chunks holding only the outbox row —
@@ -1305,8 +1327,9 @@ async def test_vanilla_postgres_probe_fails_open_and_sweeps_run_full_range(
     pg_dsn: str,
 ) -> None:
     """H10a, the regression pin: on vanilla Postgres the floor probe fails
-    open to None (the ``timescaledb_information`` views do not exist — the
-    probe's very first execution raises UndefinedTable and the probe
+    open to None (the availability gate asks ``pg_extension`` first — the
+    extension is not installed, the negative is cached per connection, and
+    the ``timescaledb_information`` statement is never built — the floor
     answers None, logging at debug, never raising) and both sweeps run
     FULL-RANGE, byte-identical to the pre-floor behavior: aged rows
     delete, fresh rows survive, counts exact.
@@ -1369,7 +1392,7 @@ async def test_vanilla_postgres_probe_fails_open_and_sweeps_run_full_range(
 async def test_hypertable_without_a_policy_has_no_floor_and_the_sweep_stays_full_range(
     ts_conn: asyncpg.Connection, ts_schema: str
 ) -> None:
-    """H10b, the probe's edge: a hypertable WITHOUT a registered policy
+    """H10b, the probe's edge: a hypertable without a registered policy
     answers None — nothing owns the aged end, so the sweep must run
     full-range (the H1 no-op only holds because a policy IS armed there).
 
@@ -1385,7 +1408,7 @@ async def test_hypertable_without_a_policy_has_no_floor_and_the_sweep_stays_full
     )
 
     now = datetime.now(UTC)
-    # Armed: the floor is present and is EXACTLY the policy's horizon.
+    # Armed: the floor is present and is exactly the policy's horizon.
     floor = await retention_policy_floor(ts_conn, ts_schema, "job_events", "occurred_at", now=now)
     assert floor == now - _TEST_EVENT_RETENTION
     # Not a hypertable: no floor.
@@ -1434,7 +1457,7 @@ async def test_probe_row_without_the_drop_after_key_fails_open_and_the_sweep_run
     None
 ):
     """The parse-layer fail-open pin, the exact CI shape: a connection
-    whose ``fetch`` answers a row WITHOUT the probe's keys (the leader
+    whose ``fetch`` answers a row without the probe's keys (the leader
     tests' stub-conn shape — dict-like rows that know nothing of
     ``drop_after``/``db_now``) must yield floor None, never the naked
     ``KeyError: 'drop_after'`` the unguarded parse raises from OUTSIDE the
@@ -1485,7 +1508,7 @@ async def test_paused_policy_job_owns_nothing_and_both_sweeps_run_full_range(
     """H11, the PAUSED-policy edge: a ``policy_retention`` job whose
     ``scheduled`` is FALSE (``alter_job(id, scheduled => FALSE)`` — the
     same supported knob the lifecycle module's teeth leg uses as its
-    mutation) does NOT own the aged end. The floor's contract names the
+    mutation) does not own the aged end. The floor's contract names the
     policy's ownership claim as "a registered policy will drop these
     rows"; a paused policy never runs, so deferring to it strands the
     aged rows with NOBODY deleting them — the exact compound the
@@ -1496,10 +1519,10 @@ async def test_paused_policy_job_owns_nothing_and_both_sweeps_run_full_range(
     full-range — row-exact, watermark-visible, the sweep must not skip
     a single row when nothing owns the aged end.
 
-    Pinned on the REAL engine for BOTH sweeps: the archive-expiry sweep
+    Pinned on the REAL engine for both sweeps: the archive-expiry sweep
     (the paused jobs_archive policy's would-be floor sits 2 days back;
     the aged seed is 3.5 days back, ``expire_at`` passed — below the
-    would-be floor AND expired, the precise double shape only a floor
+    would-be floor and expired, the precise double shape only a floor
     would skip) and the event-TTL sweep (the paused job_events policy's
     floor 1 day back; the aged seed 2.5 days back). Both must delete.
     """

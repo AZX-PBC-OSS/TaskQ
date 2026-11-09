@@ -117,7 +117,7 @@ def _fresh_trigger_app() -> ModuleType:
     resolve the mapped-port DSN the fixtures provisioned.
 
     The fastapi-app smoke below needs none of this:
-    ``examples/fastapi_app/main.py`` loads its settings INSIDE the
+    ``examples/fastapi_app/main.py`` loads its settings inside the
     lifespan, at startup, from the live environment.
     """
     import sys
@@ -159,7 +159,7 @@ def test_trigger_app_enqueue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """TestClient(app) from examples.app: GET / returns 200 with
-    actor names; POST /enqueue/counter answers the ONE success envelope
+    actor names; POST /enqueue/counter answers the one success envelope
     (201 {"job_id","url"}, F3) whose url keys at the admin job page."""
     monkeypatch.setenv("TASKQ_PG_DSN", pg_dsn)
     monkeypatch.setenv("TASKQ_REDIS_URL", redis_url)
@@ -174,12 +174,12 @@ def test_trigger_app_enqueue(
     trigger_app = _fresh_trigger_app()
     app = trigger_app.app
 
-    # The drift pin: the app's import-time settings resolved THIS test's
+    # The drift pin: the app's import-time settings resolved this test's
     # DSN - the container's mapped port - never the hardcoded
     # ``localhost:5432`` field default (see ``_fresh_trigger_app`` for the
     # incident). Both sides derive from the same fixture value, so exact
     # equality is the invariant; a future regression that lets a stale
-    # module (default DSN) reach the lifespan fails HERE, naming the
+    # module (default DSN) reach the lifespan fails here, naming the
     # resolved DSN, instead of as a connection refused on 5432.
     assert str(trigger_app.settings.pg_dsn) == pg_dsn, (
         f"examples.app resolved settings for {trigger_app.settings.pg_dsn}, "
@@ -326,7 +326,7 @@ async def test_fastapi_app_enqueue_and_stream(
     one ``data:`` line containing valid ``JobEvent`` JSON.
 
     PRIVATE broker (``private_redis_url``): the pin bounds the SSE stream's
-    FIRST-DATA latency (``got_first_data.wait()`` window) - pub/sub fanout
+    first-DATA latency (``got_first_data.wait()`` window) - pub/sub fanout
     timing, the surface a shared-broker co-tenancy stall band reds without
     any code defect. See ``taskq.testing.fixtures.redis_url``'s tenancy
     contract. The sibling enqueue smoke (``test_trigger_app_enqueue``)

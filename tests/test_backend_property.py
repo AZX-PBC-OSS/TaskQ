@@ -7,7 +7,7 @@ because ``PostgresBackend`` SQL bodies are not yet implemented.
 
 Each Hypothesis example constructs a fresh InMemoryBackend so state
 does not accumulate across generated inputs. The ``backend_pair``
-fixture is NOT used here because Hypothesis cannot reset
+fixture is not used here because Hypothesis cannot reset
 function-scoped fixtures between examples; the memory backend is
 constructed inline. When the PG bodies land, add a second property
 test that runs the same operation sequence against ``PostgresBackend``
@@ -155,7 +155,7 @@ async def test_property_operation_sequence_memory(ops: list[tuple[str, object]])
         assert row.status == "succeeded"
 
     # Invariant: terminal-state idempotency (cardinality contract).
-    # A second mark_succeeded on a terminal job MUST return False and MUST NOT
+    # A second mark_succeeded on a terminal job must return False and must not
     # change the row or add an attempt entry.
     terminal_statuses = {"succeeded", "failed", "cancelled", "crashed", "abandoned"}
     for jid in succeeded_ids:

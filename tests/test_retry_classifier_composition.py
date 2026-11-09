@@ -448,7 +448,7 @@ def test_property_unrelated_exception_shapes_compose_to_none(payload: object) ->
 
 
 def test_transient_policy_with_429_override_retries_past_max_attempts() -> None:
-    """THE trap this helper fixes: a declared transient policy burns its
+    """The trap this helper fixes: a declared transient policy burns its
     attempt budget on 429s (attempt >= max_attempts lands Fail). With the
     built-in classifier composed in, the same occurrence at the same
     attempt is an indefinite override, so the failure path still retries
@@ -527,7 +527,7 @@ def test_haunt_transient_without_deadline_retries_past_any_attempt() -> None:
     """HAZARD PIN: a transient policy with no schedule_to_close (the
     default: time_budget is only honored for indefinite-declared policies,
     so the enqueue path stamps no deadline) composed with the built-in
-    retries a sustained 429 past ANY attempt number — no attempt ceiling
+    retries a sustained 429 past any attempt number — no attempt ceiling
     and no wall-clock bound. Documented in retries.md as the hazard of
     composing this built-in into a transient actor; this test pins that
     the hazard is real so the docs cannot drift from the behaviour."""
@@ -571,7 +571,7 @@ def test_name_match_false_positive_is_an_indefinite_override() -> None:
     this one requires only the class name."""
     # A consumer's unrelated payments-domain class; the local definition
     # shadows the test module's SDK-shape RateLimitError on purpose: the
-    # classifier matches on the class NAME alone.
+    # classifier matches on the class name alone.
 
     class RateLimitError(Exception):
         """A payments-domain error that happens to carry the name."""

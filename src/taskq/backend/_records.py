@@ -257,7 +257,7 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         queue=rec["queue"],
         identity_key=IdentityKey(raw_identity) if raw_identity is not None else None,
         fairness_key=rec["fairness_key"],
-        # payload/result are USER-CONTENT columns: the actor's data, no
+        # payload/result are user-content columns: the actor's data, no
         # row-contract shape to assert. jsonb_to_value keeps only the
         # malformed-text guard; a valid list/scalar round-trips (a scalar
         # payload is pydantic's problem at the actor-schema layer, not
@@ -304,11 +304,11 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         interrupt_count=rec["interrupt_count"],
         retry_base=timedelta(seconds=rec["retry_base_seconds"]),
         retry_cap=timedelta(seconds=rec["retry_cap_seconds"]),
-        retry_backoff=rec["retry_backoff"],  # type: ignore[arg-type]  # Why: DB text column; domain is CHECK-constrained to the Literal's values
+        retry_backoff=rec["retry_backoff"],  # type: ignore[arg-type]  # Why: DB text column; domain is check-constrained to the Literal's values
         retry_jitter=rec["retry_jitter"],
         assignment_routed=rec["assignment_routed"],
         claim_epoch=rec["claim_epoch"],
-        # The fan-out ledger (LIB-2), read back on every row read, hot and
+        # The fan-out ledger, read back on every row read, hot and
         # archive tiers alike (the archive mirror carries the column) —
         # the F2 review fix: the column was write-only on PG, written by
         # enqueue and dropped by every read.

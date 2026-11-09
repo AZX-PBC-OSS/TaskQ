@@ -10,10 +10,10 @@ Pacing mechanics verified against the library, not guessed:
 - ``deliver_webhook`` declares ``rate_limits=["e2e_webhook_delivery"]``
   (tests/e2e/actors.py); the bucket is ``TokenBucket(capacity=5,
   refill_per_second=5.0, backend="redis")`` registered at actors import time.
-- The consumer acquires a token BEFORE the actor body
+- The consumer acquires a token before the actor body
   (``worker/_consumer.py`` → ``RateLimitRegistry.acquire_for_actor``). On
   denial it routes to ``_handle_reservation_class_denied`` →
-  ``backend.mark_snoozed``, which deliberately does NOT consume retry budget
+  ``backend.mark_snoozed``, which deliberately does not consume retry budget
   (``backend/_sql_templates.py`` ``mark_snoozed`` leaves ``j.attempt``
   unchanged), so paced jobs survive unlimited denials.
 - Denied jobs return to ``scheduled`` at ``clock_timestamp() + retry_after`` with
@@ -23,7 +23,7 @@ Pacing mechanics verified against the library, not guessed:
   ``_scheduled_wake_loop``, which promotes ``scheduled`` → ``pending`` on a
   hardcoded 1.0s tick (``worker/leader.py``) and then NOTIFYs the wake
   channel. Observed spreads are therefore the 0.2s/token bucket arithmetic
-  rounded UP to 1s tick boundaries (typically ~1.5-2.5s for the 12-job
+  rounded up to 1s tick boundaries (typically ~1.5-2.5s for the 12-job
   burst) - always LARGER than the naive 1.4s theory, so the thresholds
   below are conservative under both models.
 - The e2e worker env does not override ``TASKQ_MAX_CONCURRENCY``, so the
@@ -182,9 +182,9 @@ async def test_rate_limit_state_survives_in_dragonfly(
     )
     assert len(drain_rows) == _DRAIN_SIZE
 
-    # Persistence proof (F2), asserted on the MEASURED batch: at least 4
+    # Persistence proof (F2), asserted on the measured batch: at least 4
     # of the 6 measured jobs must carry the rate-limit denial marker. The
-    # reservation-denial handler (_handlers.py) is the ONLY writer of
+    # reservation-denial handler (_handlers.py) is the only writer of
     # metadata.awaiting = "<class>:<bucket_name>" - sticky through
     # later success (mark_succeeded never touches metadata) - so it proves
     # denial-by-bucket specifically, not actor Snooze, not actor-not-found
@@ -193,7 +193,7 @@ async def test_rate_limit_state_survives_in_dragonfly(
     # tokens/s: the drain leaves it at ~0 tokens, and any drain-to-dispatch
     # handoff under ~12 s refills fewer than 3 tokens, so at least 4 of the
     # 6 measured jobs are denied on first dispatch - a property of the
-    # bucket's PERSISTED state, not of the handoff's duration. A LOST
+    # bucket's persisted state, not of the handoff's duration. A lost
     # bucket (fresh capacity-5) admits 5 of 6 immediately, denying <= 1;
     # the >= 4 threshold clears that ceiling fourfold.
     measured_job_rows = await fetch_job_rows(

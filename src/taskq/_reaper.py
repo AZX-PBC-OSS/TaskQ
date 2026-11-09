@@ -1,12 +1,12 @@
-"""THE REAPER (the silent-swallow class's one legal home).
+"""the REAPER (the silent-swallow class's one legal home).
 
-``reap_cancelled_child`` awaits a JUST-CANCELLED child task: the
+``reap_cancelled_child`` awaits a just-CANCELLED child task: the
 ``task.cancel()`` + ``await task`` reaper shape needs the await's
 CancelledError contained — but a BARE
 ``contextlib.suppress(asyncio.CancelledError)`` also contains the
-REAPER'S OWN concurrent cancellation (the shutdown's cancel dies inside
-the suppress and the reaper runs on — the F-DEMO-2 conviction). The
-helper suppresses only THE CHILD'S cancel: the uncancel accounting
+REAPER'S own concurrent cancellation (the shutdown's cancel dies inside
+the suppress and the reaper runs on — the F-DEMO-2 finding). The
+helper suppresses only the CHILD'S cancel: the uncancel accounting
 distinguishes the two (the child's cancel never touched this task's
 count; the reaper's own did) and re-raises what belongs to the reaper.
 """
@@ -26,8 +26,8 @@ type TaskLike = Awaitable[object] | Coroutine[object, object, object]
 
 
 async def reap_cancelled_child(task: TaskLike) -> None:
-    """Await a JUST-CANCELLED child task, suppressing only THE CHILD'S
-    OWN cancellation. A concurrent cancellation of THIS task (the
+    """Await a just-CANCELLED child task, suppressing only the CHILD'S
+    own cancellation. A concurrent cancellation of THIS task (the
     shutdown's own cut) propagates — never swallowed."""
     try:
         await task

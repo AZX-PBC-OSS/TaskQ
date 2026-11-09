@@ -291,7 +291,7 @@ async def test_bootstrap_happy_path() -> None:
     await process_scope.shutdown()
 
 
-# ── WorkerSettings registered at PROCESS scope ────────────────────
+# ── WorkerSettings registered at process scope ────────────────────
 
 
 async def test_worker_settings_registered_at_process() -> None:
@@ -345,7 +345,9 @@ async def test_missing_provider_raises_before_taskgroup() -> None:
 
 def test_validate_error_reporter_scope_accepts_hook_lifetimes() -> None:
     """PROCESS, THREAD and LOOP registrations outlive the actor invocation,
-    so bootstrap accepts them and the per-dispatch resolution serves them."""
+    so bootstrap accepts them. (That the per-dispatch resolution then
+    serves the hook is the DI scope containers' own contract - the
+    resolver's scope walk - not this validator's.)"""
     from taskq.worker._bootstrap import _validate_error_reporter_scope
 
     for scope in (Scope.PROCESS, Scope.THREAD, Scope.LOOP):
@@ -415,7 +417,7 @@ async def test_scope_violation_raises_before_taskgroup() -> None:
         registry.validate()
 
 
-# ── Scope teardown LIFO on shutdown ──────────────────────────────
+# ── Scope teardown lifo on shutdown ──────────────────────────────
 
 
 async def test_scope_teardown_lifo() -> None:
@@ -612,6 +614,47 @@ async def test_bootstrap_fails_fast_on_redis_rate_limit_without_redis_url() -> N
         )
 
 
+async def test_a_workflow_only_worker_boots_and_stamps_the_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker whose process mounts a WorkflowApp and whose actor
+    registry is empty boots and runs its loops: the workflow cohorts'
+    dispatch is this worker's job (the capability stamp lands on the
+    workers row), and the loader's gate admits the empty registry for
+    exactly this shape."""
+    from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
+    from taskq.workflows._worker_execution import (
+        project_workflow_actor_configs,
+        reset_app_registry_for_tests,
+    )
+
+    reset_app_registry_for_tests()
+    app = WorkflowApp()
+
+    async def probe_body(ctx: StepContext) -> dict[str, object]:
+        return {}
+
+    @app.workflow("boot-probe-flow")
+    def boot_probe_flow() -> Promise[object]:
+        return build(step(probe_body, key="noop"))
+
+    try:
+        loops_started: list[str] = []
+        rc = await _run_main_with_mocked_deps(
+            _settings(), actor_registry={}, loops_started=loops_started
+        )
+        cohorts = project_workflow_actor_configs()
+    finally:
+        reset_app_registry_for_tests()
+    assert rc == 0
+    assert "producer" in loops_started
+    assert "consumer" in loops_started
+    # the boot projection yields the mounted app's workflow cohorts from this
+    # process — the rows the fleet claim's capability fence admits to this
+    # worker.
+    assert any(c.actor == "wf" and c.queue == "default" for c in cohorts)
+
+
 async def test_worker_boots_without_redis_extra_installed_and_no_redis_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -765,7 +808,7 @@ async def test_bootstrap_clear_error_when_redis_extra_missing(
     """TASKQ_REDIS_URL set + served redis limits + [redis] extra missing
     raises an actionable bootstrap error naming the extra and the limits.
 
-    Regression: this configuration previously surfaced as a bare
+    Regression: an unguarded configuration surfaces as a bare
     ``MissingProvider`` at DI validate, with no hint that the fix is
     installing the extra.
 
@@ -825,7 +868,7 @@ async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots(
 # ── the extra probe itself, against genuinely absent/present packages ──
 #
 # ``_redis_extra_installed`` answers one question - is the [redis] extra
-# importable HERE - and both answers are pinned against the real function:
+# importable here - and both answers are pinned against the real function:
 # a probe that always answered one way would leave half the bootstrap
 # guards above untestable.
 
@@ -908,7 +951,7 @@ async def test_served_redis_rate_limits_uses_injected_registry() -> None:
     result = _served_redis_rate_limits({served_by_custom.name: served_by_custom}, custom)
     assert result == ["di_custom_redis_bucket_26"]
 
-    # The singleton does NOT have this limit → not detected when scanning
+    # The singleton does not have this limit → not detected when scanning
     # the singleton (this was the bug: the old code always used the singleton)
     assert "di_custom_redis_bucket_26" not in singleton_registry.rate_limits
     result_singleton = _served_redis_rate_limits(
@@ -930,7 +973,7 @@ async def test_served_redis_rate_limits_uses_injected_registry() -> None:
     async def served_by_singleton(payload: EmptyPayload) -> None:
         pass
 
-    # Scanning the custom registry must NOT see the singleton's limit
+    # Scanning the custom registry must not see the singleton's limit
     result_custom = _served_redis_rate_limits(
         {served_by_singleton.name: served_by_singleton}, custom
     )
@@ -942,7 +985,7 @@ async def test_bootstrap_rejects_actor_registry_key_name_mismatch() -> None:
     fails fast at bootstrap, naming the mismatch.
 
     Regression: a mismapped entry (e.g. ``{"quick_result": <ref named
-    "enrich_order">}``) previously surfaced deep in ``sync_actor_config``
+    "enrich_order">}``) otherwise surfaces deep in ``sync_actor_config``
     as a raw ``ON CONFLICT DO UPDATE command cannot affect row a second
     time`` CardinalityViolation - the batch UPSERT hits the same actor row
     twice when two refs share a ``.name``. The key-equals-name check also

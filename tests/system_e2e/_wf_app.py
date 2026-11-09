@@ -1,6 +1,6 @@
-"""The workflow marches' shared app module (T15 — the system tier).
+"""The workflow marches' shared app module (the system tier).
 
-ONE module, imported by BOTH the test process and the tier's worker
+one module, imported by both the test process and the tier's worker
 subprocesses (``_wf_entry`` imports it so the worker's boot stamps
 ``workflow_execution: true`` and projects the (actor, queue) cohorts).
 Every domain here is ABSTRACT (doc/source/review — the spec doc's
@@ -8,19 +8,19 @@ abstraction contract; zero case-study content).
 
 The flows:
 
-* ``deep_research`` — THE DEEP-RESEARCH MARCH's flow: the map with an
-  armed transient AND an armed permanent failure under a ``collect``
+* ``deep_research`` — the DEEP-RESEARCH MARCH's flow: the map with an
+  armed transient and an armed permanent failure under a ``collect``
   edge (the partial report), the budget-capped loop whose iteration
   body HOLDS on a typed gate (the multi-epoch multi-HITL), and the
-  publish step whose typed wait can TIME OUT (the timeout face — the
+  publish step whose typed wait can TIME out (the timeout face — the
   body pivots to the degraded report, never wedges).
-* ``triage_chain`` — the T20 router lived on the tier: a ``chain_source``
+* ``triage_chain`` — the streaming router router lived on the tier: a ``chain_source``
   paged body (the streaming emit) whose per-record chains route on the
-  body's OWN typed outcomes (the conditional chains).
-* ``doc_ingest`` — THE DOC-INGEST MARCH's flow: the map + the fan-in
+  body's own typed outcomes (the conditional chains).
+* ``doc_ingest`` — the DOC-INGEST MARCH's flow: the map + the fan-in
   barrier join (fail_closed) + the ``maybe`` edge (the collect policy)
   + the declared read-side aggregate (the progress aggregation).
-* ``reclaim_target`` — the worker-deploy cell's flow: ONE long node a
+* ``reclaim_target`` — the worker-deploy cell's flow: one long node a
   killed worker must lose to the lease/reclaim machinery, its join
   counter never moved.
 * ``drain_map`` / ``drain_loop`` / ``drain_hold`` — the SIGTERM
@@ -34,20 +34,28 @@ reaches outside the database (the tier's hermeticity).
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import json
-from typing import Any
+from datetime import timedelta
+from typing import Any, Final
 
+import asyncpg
 from pydantic import BaseModel
 
-from taskq import JobContext, actor
+from taskq import JobContext, RetryPolicy, actor
+from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.settings import WorkerSettings
 from taskq.workflows import (
     Done,
+    ExecutionPolicy,
     Expired,
     Promise,
     Refine,
+    RetrySpec,
     StepContext,
     WorkflowApp,
+    WorkflowRetryOverride,
     build,
     chain_source,
     chain_start,
@@ -60,8 +68,11 @@ from taskq.workflows._types import EmitChild
 from taskq.workflows.api import GateDecl
 from taskq.workflows.api._sql_runner import render_sql
 from taskq.workflows.chain import DONE, Chain, Route, Step
+from tests.system_e2e import (
+    _p5_cancel_app as _p5_cancel_app_module,  # registers the effect fleet's definitions
+)
 
-#: The march pods' queues: BOTH the vanilla actors' system_e2e and the
+#: The march pods' queues: both the vanilla actors' system_e2e and the
 #: flows' framework-default queue (the join nodes the API creates are
 #: hardcoded to "default" — one queue for the wf actor is the
 #: projection's own law; the split placement is DISTINCT actor names per
@@ -100,9 +111,9 @@ class ResearchReport(BaseModel):
 
 # ── the deep-research march's flows ──────────────────────────────────────
 
-#: The armed failures: the map's body fails TRANSIENTLY on this source
+#: The armed failures: the map's body fails transiently on this source
 #: once (the ladder heals it — the retried child succeeds alone), and
-#: PERMANENTLY on this one (the collect edge fans the failure in — the
+#: permanently on this one (the collect edge fans the failure in — the
 #: partial report names it).
 _TRANSIENT_SOURCE = "src-transient"
 _PERMANENT_SOURCE = "src-permanent"
@@ -127,7 +138,7 @@ def _source_names(items: list[Any]) -> tuple[list[str], list[str]]:
     """The collect join's decode: the succeeded sources and the surfaced
     failures (the FailureInfo envelope names the latter — its
     ``node_key`` IS the failed child's key; the item's source id rides
-    the error message). THE ROUND-TRIP HONESTY: the join's items arrive
+    the error message). the ROUND-TRIP HONESTY: the join's items arrive
     as PLAIN DICTS (the jsonb decode — the ledger is the truth), never
     the body's own models; the decode reads the SHAPES."""
     from taskq.workflows._types import FailureInfo
@@ -149,11 +160,10 @@ def _source_names(items: list[Any]) -> tuple[list[str], list[str]]:
 
 async def triage_body(ctx: Any, fetched: list[Any]) -> dict[str, object]:
     ok, failed = _source_names(fetched)
-    # THE COLLECT'S ABSORPTION RECORD (the fan-in's own home): the failed
-    # children ride the MAP JOIN ROW's metadata.failures (the typed
-    # envelope), never the packed results — the body reads its PARENT
-    # (the join) through the edge ledger (the edge ledger is the wiring's
-    # own record; the triage node's parent IS the map join).
+    # the failed children ride the map JOIN row's metadata.failures (the typed
+    # envelope), never the packed results — the body reads its parent (the
+    # join) through the edge ledger (the edge ledger is the wiring's own
+    # record; the triage node's parent is the map join).
     async with ctx._pool.acquire() as conn:  # pyright: ignore[reportAttributeAccessIssue]
         failures_raw = await conn.fetchval(
             render_sql(
@@ -168,10 +178,10 @@ async def triage_body(ctx: Any, fetched: list[Any]) -> dict[str, object]:
         for item in failures_raw if isinstance(failures_raw, list) else json.loads(failures_raw):
             if not isinstance(item, dict) or "node_key" not in item:
                 continue
-            # THE MAP CHILD'S IDENTITY: the children share ONE step key
-            # ('<parent>.item'); the item's own identity is the MAP
-            # INDEX — the march's source order decodes it back to the
-            # source id (the report names the SOURCE, never the row).
+            # the children share one step key ('<parent>.item'); the item's own
+            # identity is the map INDEX — the march's source order decodes it
+            # back to the source id (the report names the source, never the
+            # row).
             idx = item.get("map_index")
             failed.append(
                 str(_SOURCES[idx])
@@ -183,10 +193,9 @@ async def triage_body(ctx: Any, fetched: list[Any]) -> dict[str, object]:
 
 
 async def review_iteration(ctx: StepContext, carry: int) -> Done[str] | Refine[int]:
-    # THE TYPED HOLD INSIDE THE LOOP: every iteration mints a NEW hold
-    # epoch (the multi-HITL: N iterations = N distinct holds, each
-    # addressed by id). An approve ENDS the loop; a refine advances the
-    # carry (the carry advances exactly once per iteration).
+    # every iteration mints a new hold epoch (the multi-hitl: N iterations = N
+    # distinct holds, each addressed by id). An approve ends the loop; a refine
+    # advances the carry (the carry advances exactly once per iteration).
     decision = await ctx.wait_signal(
         (ReviewDecision,),
         timeout_s=120.0,
@@ -205,21 +214,28 @@ async def escalation_body(ctx: Any, carry: int) -> str:
     return f"escalated-at-iteration-{carry}"
 
 
+#: The march's publish-approval wait. 900s (the load-sensitive lane's
+#: per-test ceiling) / 3 = 300s — a hosted 2-core runner's worst beats
+#: (the sweep's abandonment tick under fleet starvation) must land inside
+#: it with headroom, while the march's whole spine stays under the
+#: ceiling. A constant, never a wall-clock scale.
+PUBLISH_APPROVAL_TIMEOUT_S: Final[float] = 300.0
+
+
 async def publish_body(
     ctx: StepContext, triage: dict[str, object], review_note: str
 ) -> ResearchReport:
-    # THE TIMEOUT FACE, AS A VALUE (T26's amendment): the typed wait is
-    # BOUNDED; the expiry sweep's abandonment RETURNS the Expired
-    # member here — the body MATCHES it and pivots (the degraded
-    # report), never wedges, never re-holds in a loop (the re-wait
-    # dragon's fence).
+    # the typed wait is bounded; the expiry sweep's abandonment returns the
+    # Expired member here — the body matches it and pivots (the degraded
+    # report), never wedges, never re-holds in a loop (the re-wait dragon's
+    # fence).
     approved = True
     note = review_note
     degraded = False
     outcome = await ctx.wait_signal(
         (PublishApproval,),
-        timeout_s=5.0,
-        reason="the march's publish approval (a SHORT wall)",
+        timeout_s=PUBLISH_APPROVAL_TIMEOUT_S,
+        reason="the march's publish approval",
     )
     match outcome:
         case PublishApproval() as approval:
@@ -231,7 +247,7 @@ async def publish_body(
                 if note
                 else ("degraded: the publish approval timed out")
             )
-    # An explicit DISAPPROVAL is also the degraded pivot (the operator
+    # An explicit disapproval is also the degraded pivot (the operator
     # said no — the report says so, named).
     degraded = degraded or not approved
     fetched = triage.get("fetched", [])
@@ -278,7 +294,7 @@ def deep_research() -> Promise[object]:
             GateDecl(
                 name="PublishApproval",
                 payload_models=(PublishApproval,),
-                timeout_s=5.0,
+                timeout_s=PUBLISH_APPROVAL_TIMEOUT_S,
             ),
         ),
     )
@@ -287,13 +303,13 @@ def deep_research() -> Promise[object]:
 
 @research_app.workflow("deep_research_cron")
 def deep_research_cron() -> Promise[object]:
-    """The CRON-FIRED variant: the SAME graph; the run key IS the cron
+    """The CRON-FIRED variant: the same graph; the run key IS the cron
     slot (the G3 composition — the fire arm passes the slot as the run
-    key, a double-fired slot is ONE run)."""
+    key, a double-fired slot is one run)."""
     return deep_research()
 
 
-# ── the T20 router lived on the tier (the streaming emit source) ─────────
+# ── the streaming router router lived on the tier (the streaming emit source) ─────────
 
 
 class TriageOutcome(enum.Enum):
@@ -334,7 +350,7 @@ TRIAGE_CHAIN = Chain(
 
 async def triage_source(ctx: Any) -> None:
     """The paged source: TWO pages, emitted while the source stays
-    running — each yield is ONE emit tx (the children + edges + the
+    running — each yield is one emit tx (the children + edges + the
     cursor checkpoint)."""
     pages: list[list[dict[str, object]]] = [
         [{"source_id": "s1", "risk": 0.1}, {"source_id": "s2", "risk": 0.95}],
@@ -379,7 +395,7 @@ class Verdict(BaseModel):
 
 
 def _sum_aggregate(rows: list[Any]) -> dict[str, object]:
-    """The map's DECLARED READ-SIDE aggregate (T21 decision c): a pure fn
+    """The map's DECLARED READ-SIDE aggregate (the progress reporting decision c): a pure fn
     over the children's decoded result rows, evaluated at read time."""
     return {"count": len(rows)}
 
@@ -402,17 +418,16 @@ async def extract_entities_body(ctx: Any, enriched: list[Enriched]) -> list[str]
 
 
 async def classify_body(ctx: Any, enriched: list[Enriched]) -> list[str]:
-    # The map join packs the children AS-IS (a map over list items is a
+    # The map join packs the children as-is (a map over list items is a
     # collect of lists — the join's contract): the downstream reads the
-    # ENRICHED records, never bare ids.
+    # enriched records, never bare ids.
     return [e.doc_id for e in enriched]
 
 
 async def ingest_publish_body(ctx: Any, docs: list[str], labels: list[str]) -> Verdict:
-    # THE WIRE SHAPES (the barrier's contract): the barrier gather's
-    # parents EACH returned a list — the gather flattens one level, so
-    # `docs` is summaries+entities flattened (strs); the maybe gather's
-    # single parent passes through the same shape (labels: strs).
+    # the barrier gather's parents each returned a list — the gather flattens
+    # one level, so `docs` is summaries+entities flattened (strs); the maybe
+    # gather's single parent passes through the same shape (labels: strs).
     return Verdict(published=sorted(set(docs) & set(labels)))
 
 
@@ -472,7 +487,7 @@ def drain_map() -> Promise[object]:
 
 async def drain_loop_iteration(ctx: Any, carry: int) -> Done[str] | Refine[int]:
     """The drain cell's mid-loop shape: the carry must advance EXACTLY
-    ONCE across a requeue — the iteration body appends nothing to the
+    once across a requeue — the iteration body appends nothing to the
     DB itself (the ledger IS the timeline), so the once-only advance is
     read from the iteration rows. The body is SLOW (20s an iteration:
     the 3-iteration run outlives the 15s termination grace) so the
@@ -533,9 +548,555 @@ def drift_target() -> Promise[object]:
     return build(gone)
 
 
-#: The march flows' COMPILED definitions, by name (the test side's
+# ── execution-policy fleet controls (generic records only) ──────────────
+
+
+class PolicyOutcome(enum.Enum):
+    DONE = "done"
+
+
+async def policy_reserved_body(ctx: Any, item: dict[str, object]) -> PolicyOutcome:
+    async def body_window() -> dict[str, object]:
+        await asyncio.sleep(0.2)
+        return {"record_id": item["record_id"]}
+
+    await ctx.substep("policy-reserved-window", body_window)
+    return PolicyOutcome.DONE
+
+
+policy_app = WorkflowApp()
+
+
+@policy_app.actor(name="wf-policy-capped-handle", max_concurrent=1)
+async def policy_capped_body(ctx: Any, item: dict[str, object]) -> PolicyOutcome:
+    return await policy_reserved_body(ctx, item)
+
+
+POLICY_RESERVED_CHAIN = Chain(
+    name="execution-policy-reserved-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_capped_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-reserved",
+                reservations=(
+                    ConcurrencyReservation(
+                        "wf-policy-reservation",
+                        slots=1,
+                        lease=timedelta(seconds=30),
+                    ),
+                ),
+                priority=4,
+                start_to_close=timedelta(seconds=5),
+                retry=RetrySpec(policy=RetryPolicy(max_attempts=1)),
+            ),
+        )
+    },
+)
+
+
+async def policy_reserved_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_RESERVED_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"policy-reserved-{index}",
+            )
+            for index in range(8)
+        ],
+        cursor={"page": 0},
+    )
+
+
+async def policy_priority_body(ctx: Any, item: dict[str, object]) -> PolicyOutcome:
+    """The priority chain's own workload: one claim HELD ON THE TEST'S
+    RELEASE GATE — the late-priority phase's participation gate. The first
+    worker's attempt stays genuinely occupied (the worker's slot with it)
+    until the test, having observed the exact-row claim and joined the
+    second worker, opens the gate — so no boot-speed window can ever let
+    this worker drain the shared backlog alone."""
+    await _await_test_release("priority-release")
+    return PolicyOutcome.DONE
+
+
+POLICY_PRIORITY_CHAIN = Chain(
+    name="execution-policy-priority-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_priority_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(actor="wf-policy-priority", priority=9),
+        )
+    },
+)
+
+
+async def policy_priority_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_PRIORITY_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"policy-priority-{index}",
+            )
+            for index in range(1)
+        ],
+        cursor={"page": 0},
+    )
+
+
+@policy_app.workflow("policy_reserved_fleet")
+def policy_reserved_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_RESERVED_CHAIN, policy_reserved_source, key="source"))
+
+
+# ── the compact two-cohort control: one saturated cohort, one free cohort ──
+
+
+def e2e_release_gate_ddl(schema: str) -> str:
+    """The test-set release gate's DDL — one authority for both the system
+    tests that create it (their own module schema) and the fixture bodies
+    that wait on it."""
+    return (
+        f'CREATE TABLE IF NOT EXISTS "{schema}".e2e_release_gate '
+        "(gate text PRIMARY KEY, open_at timestamptz)"
+    )
+
+
+async def seed_e2e_release_gate(conn: asyncpg.Connection, schema: str, gate: str) -> None:
+    """Seed (or reset) one gate row to CLOSED — the arrange half of the
+    handshake; the reset keeps a prior run's opened gate from leaking in."""
+    await conn.execute(
+        f'INSERT INTO "{schema}".e2e_release_gate (gate, open_at) VALUES ($1, NULL) '
+        "ON CONFLICT (gate) DO UPDATE SET open_at = NULL",
+        gate,
+    )
+
+
+async def open_e2e_release_gate(conn: asyncpg.Connection, schema: str, gate: str) -> None:
+    """The TEST's release event: stamped only once the test's own observation
+    is complete (the claim witnessed, the second worker joined, the fence's
+    refusal seen). This write — not any timer — is what ends the hold."""
+    await conn.execute(
+        f'UPDATE "{schema}".e2e_release_gate SET open_at = clock_timestamp() WHERE gate = $1',
+        gate,
+    )
+
+
+async def clear_e2e_release_gate(conn: asyncpg.Connection, schema: str, gate: str) -> None:
+    """The handshake's cleanup half: the gate row must not outlive its test
+    (the shared module schema's other tests seed their own)."""
+    await conn.execute(f'DELETE FROM "{schema}".e2e_release_gate WHERE gate = $1', gate)
+
+
+async def _await_test_release(gate: str) -> None:
+    """Hold the calling body's attempt until the TEST opens this gate.
+
+    The worker half of the cross-process handshake. The body polls the gate
+    row through its own connection (the same DB-local idiom the cron bridge
+    below uses — ``WorkerSettings`` for DSN and schema) and returns only
+    when the test has stamped ``open_at``. This is occupancy, deliberately
+    NOT a HITL park: the hold's slot law releases a held OUTCOME (the wait
+    is not occupancy), while a body mid-await keeps the worker's slot, the
+    row's lock and the cohort's reservation genuinely held (the heartbeat
+    renews those leases) — and that occupancy is exactly what the
+    saturation controls prove. The poll is the handshake's transport, never
+    a timer: if the gate never opens this raises and the attempt fails
+    loudly (the ladder retries it, still loud), so a lost test release can
+    never silently drain the workload."""
+    settings = WorkerSettings.load()
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        async with asyncio.timeout(240):
+            while True:
+                opened = await conn.fetchval(
+                    f'SELECT open_at FROM "{settings.schema_name}".e2e_release_gate '
+                    "WHERE gate = $1",
+                    gate,
+                )
+                if opened is not None:
+                    return
+                await asyncio.sleep(0.05)
+    except TimeoutError as error:
+        raise RuntimeError(
+            f"the test's release gate {gate!r} never opened — the observation "
+            "handshake lost its release; failing loudly instead of draining"
+        ) from error
+    finally:
+        await conn.close()
+
+
+async def policy_cohort_a_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """The saturated cohort's workload: one strict slot HELD ON THE TEST'S
+    RELEASE GATE. The attempt — and with it the cohort's single reserved
+    slot — stays genuinely occupied until the test, having watched cohort B
+    claim and finish inside the window and the reservation-headroom fence
+    refuse A's second row, opens the gate. The refusal and the containment
+    then land as durable attempt-window facts, never a race against a
+    body's duration."""
+    await _await_test_release("cohort-a-release")
+    return PolicyOutcome.DONE
+
+
+async def policy_cohort_b_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """The free cohort's workload: fast bodies whose durable attempts land
+    while the other cohort's slot is held."""
+    await asyncio.sleep(0.1)
+    return PolicyOutcome.DONE
+
+
+POLICY_COHORT_A_CHAIN = Chain(
+    name="policy-cohort-a-chain",
+    start="awork",
+    steps={
+        "awork": Step(
+            body=policy_cohort_a_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-cap-a",
+                queue="default",
+                priority=5,
+                max_concurrent=1,
+                # The operator owns this cohort's stored capacity: the boot's
+                # diagnostic fires on the declared/stored mismatch and the
+                # stored value is never overwritten.
+                capacity_owner="operator",
+                reservations=(
+                    ConcurrencyReservation(
+                        "policy-cohort-a-slot",
+                        slots=1,
+                        lease=timedelta(seconds=30),
+                    ),
+                ),
+            ),
+        )
+    },
+)
+
+POLICY_COHORT_B_CHAIN = Chain(
+    name="policy-cohort-b-chain",
+    start="bwork",
+    steps={
+        "bwork": Step(
+            body=policy_cohort_b_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-cap-b",
+                queue="default",
+                priority=3,
+                max_concurrent=1,
+                # The code owns this cohort's stored capacity: a matching
+                # stored row fires no diagnostic; a drifted one deploys by
+                # boot.
+                capacity_owner="code",
+            ),
+        )
+    },
+)
+
+
+async def policy_cohort_a_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_COHORT_A_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"cap-a-{index}",
+            )
+            for index in range(2)
+        ],
+        cursor={"page": 0},
+    )
+
+
+async def policy_cohort_b_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_COHORT_B_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"cap-b-{index}",
+            )
+            for index in range(2)
+        ],
+        cursor={"page": 0},
+    )
+
+
+@policy_app.workflow("policy_two_cohort_fleet")
+def policy_two_cohort_fleet() -> Promise[object]:
+    return build(
+        chain_source(POLICY_COHORT_A_CHAIN, policy_cohort_a_source, key="source-a"),
+        chain_source(POLICY_COHORT_B_CHAIN, policy_cohort_b_source, key="source-b"),
+    )
+
+
+@policy_app.workflow("policy_priority_fleet")
+def policy_priority_fleet() -> Promise[object]:
+    # The source rides a dedicated control actor/queue cohort (one queue per
+    # actor — the estate's own law): the deterministic priority phase boots
+    # ONLY this source's worker first, observes the emitted priority-9 row's
+    # commit on the test's own connection, and starts the default-queue
+    # workers only after that visibility is established.
+    return build(
+        chain_source(
+            POLICY_PRIORITY_CHAIN,
+            policy_priority_source,
+            key="source",
+            actor="wf-policy-control",
+            queue="policy-control",
+        )
+    )
+
+
+class PolicyBacklogPayload(BaseModel):
+    record_id: str = "backlog"
+
+
+@actor(name="wf_policy_backlog", queue="default")
+async def wf_policy_backlog(
+    payload: PolicyBacklogPayload, ctx: JobContext[PolicyBacklogPayload]
+) -> dict[str, object]:
+    # Each backlog record holds its claim briefly: the phase's two worker
+    # processes overlap on the backlog, and a wrong-first-claim ordering
+    # stays observable for the whole wrong sequence.
+    await asyncio.sleep(1.0)
+    return {"accepted": True}
+
+
+# ── rolling retry curves, advertised non-consuming delay, the engine's
+# deadline, and the code/operator capacity-owner cohorts (generic records) ──
+
+
+class PolicyRollTransientError(RuntimeError):
+    """The mapped transient the non-consuming record's classifier matches."""
+
+
+async def policy_rolling_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """Three real failed attempts, then the record's success (curve-visible)."""
+    if ctx.attempt < 4:
+        raise PolicyRollTransientError("rolling curve failure")
+    return PolicyOutcome.DONE
+
+
+async def policy_non_consuming_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """Always raises; the declared map classifies it into advertised free waits."""
+    raise PolicyRollTransientError("advertised wait")
+
+
+async def policy_deadline_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    """Never raises and never finishes inside its declared start_to_close."""
+    await asyncio.sleep(2.5)
+    return PolicyOutcome.DONE  # pragma: no cover - the deadline fires first
+
+
+async def policy_cap_body(ctx: StepContext, item: dict[str, object]) -> PolicyOutcome:
+    return PolicyOutcome.DONE
+
+
+def _roll_chain(name: str, step_key: str, backoff: str) -> Chain:
+    """One record-leaf chain with the declared curve (base 0.05s, cap 1s, no jitter)."""
+    retry_policy = RetryPolicy(
+        max_attempts=4,
+        base=timedelta(seconds=0.05),
+        cap=timedelta(seconds=1.0),
+        jitter=0,
+        backoff=backoff,  # type: ignore[arg-type]  # the declared literal is one of the three validated curve names
+    )
+    return Chain(
+        name=name,
+        start=step_key,
+        steps={
+            step_key: Step(
+                body=policy_rolling_body,
+                outcomes=PolicyOutcome,
+                policy=ExecutionPolicy(
+                    actor="wf-policy-roll",
+                    retry=RetrySpec(policy=retry_policy),
+                ),
+            )
+        },
+    )
+
+
+POLICY_EXP_CHAIN = _roll_chain("policy-exp-chain", "exp", "exponential")
+POLICY_LIN_CHAIN = _roll_chain("policy-lin-chain", "lin", "linear")
+POLICY_FIX_CHAIN = _roll_chain("policy-fix-chain", "fix", "fixed")
+
+POLICY_NON_CONSUMING_CHAIN = Chain(
+    name="policy-non-consuming-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_non_consuming_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-roll",
+                retry=RetrySpec(
+                    policy=RetryPolicy(max_attempts=1, jitter=0),
+                    exceptions={
+                        PolicyRollTransientError: WorkflowRetryOverride(
+                            delay=timedelta(seconds=0.05),
+                            consume_budget=False,
+                        )
+                    },
+                    non_consuming_limit=2,
+                ),
+            ),
+        )
+    },
+)
+
+POLICY_DEADLINE_CHAIN = Chain(
+    name="policy-deadline-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_deadline_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-roll",
+                start_to_close=timedelta(seconds=0.4),
+                retry=RetrySpec(policy=RetryPolicy(max_attempts=1, jitter=0)),
+            ),
+        )
+    },
+)
+
+# The two capacity-owner cohorts: the code's literal owns one actor's
+# max_concurrent (the boot's code-owned upsert deploys it); the operator's
+# stored row owns the other's.
+POLICY_CODE_CAP_CHAIN = Chain(
+    name="policy-code-cap-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_cap_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-code-cap",
+                queue="default",
+                max_concurrent=1,
+                capacity_owner="code",
+            ),
+        )
+    },
+)
+
+POLICY_OPERATOR_CAP_CHAIN = Chain(
+    name="policy-operator-cap-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_cap_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-operator-cap",
+                queue="default",
+                max_concurrent=1,
+                capacity_owner="operator",
+            ),
+        )
+    },
+)
+
+
+def _single_record_source(chain: Chain, trace: str) -> Any:
+    async def source(ctx: StepContext) -> None:
+        await ctx.emit_batch(
+            [chain_start(chain, {"record_id": 0}, map_index=0, trace_id=trace)],
+            cursor={"page": 0},
+        )
+
+    return source
+
+
+async def policy_exp_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_EXP_CHAIN, "roll-exp")(ctx)  # type: ignore[operator]
+
+
+async def policy_lin_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_LIN_CHAIN, "roll-lin")(ctx)  # type: ignore[operator]
+
+
+async def policy_fix_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_FIX_CHAIN, "roll-fix")(ctx)  # type: ignore[operator]
+
+
+async def policy_non_consuming_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_NON_CONSUMING_CHAIN, "roll-nc")(ctx)  # type: ignore[operator]
+
+
+async def policy_deadline_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_DEADLINE_CHAIN, "roll-deadline")(ctx)  # type: ignore[operator]
+
+
+async def policy_code_cap_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_CODE_CAP_CHAIN, "roll-code-cap")(ctx)  # type: ignore[operator]
+
+
+async def policy_operator_cap_source(ctx: StepContext) -> None:
+    await _single_record_source(POLICY_OPERATOR_CAP_CHAIN, "roll-operator-cap")(ctx)  # type: ignore[operator]
+
+
+@policy_app.workflow("policy_exp_fleet")
+def policy_exp_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_EXP_CHAIN, policy_exp_source, key="source"))
+
+
+@policy_app.workflow("policy_lin_fleet")
+def policy_lin_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_LIN_CHAIN, policy_lin_source, key="source"))
+
+
+@policy_app.workflow("policy_fix_fleet")
+def policy_fix_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_FIX_CHAIN, policy_fix_source, key="source"))
+
+
+@policy_app.workflow("policy_non_consuming_fleet")
+def policy_non_consuming_fleet() -> Promise[object]:
+    return build(
+        chain_source(POLICY_NON_CONSUMING_CHAIN, policy_non_consuming_source, key="source")
+    )
+
+
+@policy_app.workflow("policy_deadline_fleet")
+def policy_deadline_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_DEADLINE_CHAIN, policy_deadline_source, key="source"))
+
+
+@policy_app.workflow("policy_code_cap_fleet")
+def policy_code_cap_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_CODE_CAP_CHAIN, policy_code_cap_source, key="source"))
+
+
+@policy_app.workflow("policy_operator_cap_fleet")
+def policy_operator_cap_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_OPERATOR_CAP_CHAIN, policy_operator_cap_source, key="source"))
+
+
+#: The march flows' compiled definitions, by name (the test side's
 #: create-run surface resolves here — one registry, one compile).
 MARCH_FLOWS: dict[str, Any] = {
+    "policy_reserved_fleet": policy_app.get("policy_reserved_fleet"),
+    "policy_priority_fleet": policy_app.get("policy_priority_fleet"),
+    "policy_exp_fleet": policy_app.get("policy_exp_fleet"),
+    "policy_lin_fleet": policy_app.get("policy_lin_fleet"),
+    "policy_fix_fleet": policy_app.get("policy_fix_fleet"),
+    "policy_non_consuming_fleet": policy_app.get("policy_non_consuming_fleet"),
+    "policy_deadline_fleet": policy_app.get("policy_deadline_fleet"),
+    "policy_two_cohort_fleet": policy_app.get("policy_two_cohort_fleet"),
+    "policy_code_cap_fleet": policy_app.get("policy_code_cap_fleet"),
+    "policy_operator_cap_fleet": policy_app.get("policy_operator_cap_fleet"),
     "deep_research": research_app.get("deep_research"),
     "deep_research_cron": research_app.get("deep_research_cron"),
     "triage_chain": march_app.get("triage_chain"),
@@ -560,9 +1121,9 @@ async def wf_research_cron(payload: CronKick, ctx: JobContext[CronKick]) -> dict
     """The cron schedule's TARGET: the fire arm enqueues THIS actor (the
     schedule's every-minute slot), the body kicks the workflow with the
     SLOT as the run key (G3: the two dedup regimes compose — a
-    double-fired slot is ONE run). The body resolves the flow's compiled
+    double-fired slot is one run). The body resolves the flow's compiled
     graph from the D1 registry (the process imported the march app —
-    the capability stamp) and creates the run on its OWN pool (the body
+    the capability stamp) and creates the run on its own pool (the body
     is DB-local, the tier's hermeticity)."""
     import asyncpg
 
@@ -581,6 +1142,13 @@ async def wf_research_cron(payload: CronKick, ctx: JobContext[CronKick]) -> dict
         await pool.close()
 
 
-#: The bridge actor's REGISTRY face (the _wf_entry's import merges it):
-#: the cron fire resolves the actor by NAME from the boot's registry.
-MARCH_ACTORS: dict[str, object] = {"wf_research_cron": wf_research_cron}
+#: The bridge actor's registry face (the _wf_entry's import merges it):
+#: the cron fire resolves the actor by name from the boot's registry.
+MARCH_ACTORS: dict[str, object] = {
+    "wf_research_cron": wf_research_cron,
+    "wf_policy_backlog": wf_policy_backlog,
+}
+
+#: The imported effect-app module object (the registration's witness — the
+#: import above must never be dropped as unused).
+P5_CANCEL_APP_MODULE = _p5_cancel_app_module

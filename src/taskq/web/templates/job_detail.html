@@ -6,7 +6,7 @@
 
 {% block content %}
 <div class="space-y-6">
-    {# The disabled-actions banner: a deployment that cannot act must SAY
+    {# The disabled-actions banner: a deployment that cannot act must say
        so where the forms would have been, not silently render nothing.
        One banner, one text, shared with the mutation routes' 403 detail
        (the actionable-refusal contract). #}
@@ -44,7 +44,7 @@
             <form method="post" action="{{ base_path }}/jobs/{{ job.id }}/cancel" class="inline-flex items-center gap-2">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 {# The reason lands in the audit trail and the job's event log, so the
-                   operator is asked for it here rather than in the URL (#337). #}
+                   operator is asked for it here rather than in the URL. #}
                 <input type="text" name="reason" maxlength="512"
                        placeholder="Reason (recorded in the audit trail)"
                        class="px-2 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-red-500">
@@ -71,8 +71,8 @@
 
     {# The confirms are the rate-limits page's delegated-listener idiom, not
        inline onclick strings: the HTML parser decodes attribute entities
-       BEFORE the JS runs, so an interpolated value carrying '); breaks the
-       string and executes. The label rides as escaped DATA; a document-level
+       before the JS runs, so an interpolated value carrying '); breaks the
+       string and executes. The label rides as escaped data; a document-level
        submit listener reads it. #}
     <script>
     document.addEventListener('submit', function(e) {
@@ -323,7 +323,7 @@
         </div>
     </section>
 
-    {# The progress driver loads in ALL modes: realtime.js opens the SSE
+    {# The progress driver loads in all modes: realtime.js opens the SSE
        stream in real-time mode and falls back to polling the state endpoint
        everywhere else, so gating this block on realtime_mode left pure-polling
        deployments (no Redis) with a progress section nothing ever updated.

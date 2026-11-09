@@ -21,7 +21,7 @@ has elapsed, so if that preserved deadline passes while the re-pended row
 is still waiting, the row can never climb to a fresh attempt number - it
 sits ``pending`` at its *spent* attempt. ``sweep_deadline_exceeded``
 (``_sweeps.py``) then claims that row (``status IN ('pending','scheduled')
-AND schedule_to_close < now``) and inserts its batched ``job_attempts``
+and schedule_to_close < now``) and inserts its batched ``job_attempts``
 row keyed at the job's current attempt - the same key the original failed
 run already wrote. The whole sweep batch's ``job_attempts`` INSERT is one
 statement over every swept row in that call, so without the

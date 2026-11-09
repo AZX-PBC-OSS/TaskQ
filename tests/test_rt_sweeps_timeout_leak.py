@@ -1,4 +1,4 @@
-"""Red-team attacks on SET LOCAL statement_timeout scoping in the sweeps.
+"""Adversarial review attacks on SET LOCAL statement_timeout scoping in the sweeps.
 
 Every bounded sweep opens its own ``conn.transaction()`` and issues
 ``SET LOCAL statement_timeout = <ms>`` inside it.  When the caller
@@ -137,7 +137,7 @@ async def test_nested_sweep_does_not_leak_its_timeout_past_the_savepoint(
     """A nested sweep must leave the caller's transaction timeout alone.
 
     The sweep promises "one short transaction with a server-side
-    statement_timeout included" - the timeout bounds the sweep's OWN
+    statement_timeout included" - the timeout bounds the sweep's own
     batch, not the caller's remaining statements.  Today the savepoint
     RELEASE keeps the SET LOCAL, so after the sweep returns, the outer
     transaction runs under the sweep's 300 ms bound and the caller's

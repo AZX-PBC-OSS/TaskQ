@@ -1,28 +1,28 @@
-"""The ledger statement constants (T04/T05): the step-ledger claim (one round trip), the memoized-result read, the terminal + fence writes, the run-key arbiter's insert/read.
+"""The ledger statement constants : the step-ledger claim (one round trip), the memoized-result read, the terminal + fence writes, the run-key arbiter's insert/read.
 
-The schema identifier is the ONLY interpolated value (validated at
+The schema identifier is the only interpolated value (validated at
 WorkflowSql.build); every caller-controlled value uses ``$N`` parameter
 binding. See _sql.py for the bundle and the JSONB-landmine rule.
 """
 
 from __future__ import annotations
 
-# The step-ledger claim: ONE round trip, P1 FINAL's idempotent-claim shape —
+# The step-ledger claim: one round trip, P1 final's idempotent-claim shape —
 # INSERT ... ON CONFLICT DO UPDATE ... RETURNING, never check-then-insert
 # (verified 30 reps x 10 concurrent). A fresh claim inserts status='running'
 # (the attempt increments at claim, the only grant of work); a conflicting
-# claim returns the EXISTING row — the claim arbiter
+# claim returns the existing row — the claim arbiter
 # (wf_step_ledger_claim_uniq, 01.00.24_03: (flow_id, step_key,
 # COALESCE(map_index, -1), attempt)) physically blocks double-recording (P3
 # rule 2), and the ledger terminal write rides the finalize's own
 # transaction.
 #
-# THE ARBITER KEYS ON COALESCE(map_index, -1): map children of one step key
-# are DIFFERENT claims (T05's key contract) — a conflict target omitting
-# map_index collapses them onto one row (child 1's claim returns child 0's
-# row, the terminal write overwrites, the memoized replay returns the wrong
-# child's result). The expression spells the index verbatim — an ON CONFLICT
-# target infers only an arbiter carrying the identical expression.
+# map_index, -1. map children of one step key are different claims (the run-key
+# contract) — a conflict target omitting map_index collapses them onto one row
+# (child 1's claim returns child 0's row, the terminal write overwrites, the
+# memoized replay returns the wrong child's result). The expression spells the
+# index verbatim — an ON CONFLICT target infers only an arbiter carrying the
+# identical expression.
 LEDGER_CLAIM_SQL = """\
 INSERT INTO {schema}.wf_step_ledger
     (id, flow_id, job_id, step_key, map_index, attempt, status)
@@ -30,14 +30,14 @@ VALUES ($1, $2, $3, $4, $5, $6, 'running')
 ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt) DO UPDATE
     SET updated_at = clock_timestamp()
 RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
-          result, error_class, error_message
+          result, error_class, error_message, updated_at
 """
 
 
 # The memoized-result read (map-child retries, ctx.step replay): the latest
 # TERMINAL ledger row for (flow, step[, map_index]) — the ON CONFLICT path
-# returns the recorded result rather than re-executing. attempt is NOT in
-# this key: a retried map child claims a NEW attempt row, but the replay
+# returns the recorded result rather than re-executing. attempt is not in
+# this key: a retried map child claims a new attempt row, but the replay
 # consults any prior terminal outcome first (the retry's side effect is the
 # recorded result's, never a fresh execution).
 LEDGER_MEMOIZED_SQL = """\
@@ -52,11 +52,11 @@ LIMIT 1
 """
 
 
-# The ledger's terminal-outcome write — rides the finalize's OWN transaction
-# (the ledger-terminal-atomic rule, hardening H9): a split write leaves
+# The ledger's terminal-outcome write — rides the finalize's own transaction
+# (the ledger-terminal-atomic rule, the terminal-atomicity rule): a split write leaves
 # node=succeeded with ledger=running, the phantom the fence prevents.
 #
-# TWO keyings, one invariant — the write touches EXACTLY the claimed row:
+# two keyings, one invariant — the write touches exactly the claimed row:
 #   * LEDGER_TERMINAL_SQL (the map-aware fallback) keys the full arbiter
 #     tuple, COALESCE(map_index, -1) included — the same expression the
 #     claim arbiter carries, so a map child's terminal can never overwrite
@@ -90,12 +90,22 @@ SET status = $2,
     capture = $6::jsonb,
     updated_at = clock_timestamp()
 WHERE id = $1
+  -- The re-mint guard: a caller presenting its OWN claim's
+  -- RETURNING instant (``claim_step_ledger``'s updated_at — the claim's
+  -- instance identity) writes ONLY the row that claim actually wrote.
+  -- The arbiter's re-use (the refund re-claims the SAME ordinal → the
+  -- SAME arbiter row) re-stamps updated_at, and the stale instant
+  -- REFUSES the write: a re-minted LIVE winner's ledger row can never
+  -- inherit a stale claimant's stamp (the deadline's 'failed' burn
+  -- included). A caller with no claim instant keeps the by-id-only
+  -- write (the pre-fix shape).
+  AND ($7::timestamptz IS NULL OR updated_at = $7::timestamptz)
 RETURNING id
 """
 
 
 # A fenced-out attempt is recorded outcome='fenced' — never a running ledger
-# row left forever on a terminal flow (hardening H1: "neither landed nor
+# row left forever on a terminal flow ("neither landed nor
 # refused" is the state the linearization doctrine forbids). The same two
 # keyings as the terminal write (the arbiter tuple / the claim's own id);
 # both guard status = 'running' so a terminal row is never re-fenced.
@@ -120,29 +130,40 @@ SET status = 'fenced',
     updated_at = clock_timestamp()
 WHERE id = $1
   AND status = 'running'
+  -- The re-mint guard: a caller presenting its OWN claim's
+  -- RETURNING instant (``claim_step_ledger``'s updated_at — the claim's
+  -- instance identity) fences ONLY the row that claim actually wrote.
+  -- The refund re-mints the ordinal — the arbiter re-use hands a LIVE
+  -- winner the SAME ledger row (the DO UPDATE re-stamps updated_at) —
+  -- and the stale instant REFUSES the fence: the winner's own terminal
+  -- writes the row, the record never marks a live attempt 'fenced'. A
+  -- caller with no claim instant (the pre-fix shape — the engine's
+  -- fenced-out arm) keeps the status-only fence.
+  AND ($3::timestamptz IS NULL OR updated_at = $3::timestamptz)
 RETURNING id
 """
 
 
-# The RUN-KEY claim (G2): the flow's root row inserted under the
+# The run-key claim: the flow's root row inserted under the
 # 'workflow-run' scope with the caller's key — the composite
 # (idempotency_scope, idempotency_key) arbiter is the rememberer. The root
-# row IS the run: its status is the run's status (the linearization point
+# row is the run: its status is the run's status (the linearization point
 # every flow-status leg checks), step_key names the entry step.
 FLOW_RUN_INSERT_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,
-     step_key, trace_id, metadata, idempotency_scope, idempotency_key)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, '__flow__', $7, $8::jsonb, $9, $10)
+     step_key, trace_id, metadata, idempotency_scope, idempotency_key,
+     required_worker_schema, run_epoch)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, '__flow__', $7, $8::jsonb, $9, $10, $11, 1)
 ON CONFLICT (idempotency_scope, idempotency_key)
     WHERE idempotency_key IS NOT NULL
 DO NOTHING
-RETURNING id, status::text
+RETURNING id, status::text, required_worker_schema
 """
 
 
 FLOW_RUN_READ_SQL = """\
-SELECT id, status::text
+SELECT id, status::text, required_worker_schema
 FROM {schema}.jobs
 WHERE idempotency_scope = $1 AND idempotency_key = $2
 """

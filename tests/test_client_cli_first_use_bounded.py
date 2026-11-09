@@ -1,6 +1,6 @@
 """Contract: client/CLI first-use awaits are bounded (the defect-class sweep).
 
-Client, web-admin and CLI processes arm NO watchdogs - the worker's
+Client, web-admin and CLI processes arm no watchdogs - the worker's
 watchdog net does not exist in them - so every unbounded await on a
 caller-supplied factory, or on the first network round trip at
 open()/startup, is a process wedge with no signal. This file pins the
@@ -8,7 +8,7 @@ bounded discipline for every member of that class the sweep mapped:
 
 * ``TaskQ.open()``'s ``pool_factory()`` call (the AAD first token fetch
   lives inside it) and ``TaskQ.reload_credentials()``'s rotation call -
-  bounded with the SAME bound the worker applies to every factory call
+  bounded with the same bound the worker applies to every factory call
   (``WorkerSettings.reload_factory_timeout``'s default, mirrored as
   ``taskq.client._taskq._RELOAD_FACTORY_TIMEOUT_SECS``).
 * ``JobsClient._open_redis``'s eager ``initialize()`` - the first broker
@@ -61,7 +61,7 @@ runner = CliRunner()
 
 # Production's documented bounds, shrunk so a production-side bound fires
 # well inside the test budget below: a first-use await that applies them
-# raises within ~0.5s, while one that does not parks forever and the TEST
+# raises within ~0.5s, while one that does not parks forever and the test
 # budget is what fires.
 _PROD_BOUND_SECS = 0.5
 _PROD_PING_BOUND_SECS = 0.05
@@ -241,7 +241,7 @@ async def _call_ready_endpoint(app: Any) -> Any:
 
 
 async def test_taskq_open_pool_factory_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The FIRST ``pool_factory()`` call during ``TaskQ.open()`` completes
+    """The first ``pool_factory()`` call during ``TaskQ.open()`` completes
     or raises within the configured bound. A credential provider that
     accepts the call and never returns must fail the open loudly - the
     worker already bounds its identical bootstrap factory calls with
@@ -382,7 +382,7 @@ async def test_taskq_open_redis_initialize_is_bounded(
             )
         assert "initialize" in str(exc), f"the timeout must name the seam, got: {exc!r}"
         # The failed eager setup must still be releasable without wedging:
-        # the bounded-close callback was pushed BEFORE initialize() (the
+        # the bounded-close callback was pushed before initialize() (the
         # doctrine pinned by tests/test_jobs_client.py) - close() runs it.
         async with asyncio.timeout(_TEST_BUDGET_SECS):
             await tq.close()
@@ -599,11 +599,11 @@ def test_taskq_pg_provider_pool_factory_derives_the_bound_from_a_widened_budget(
 #
 # The worker resolves TASKQ_* through dotenvmodel's cascade (process
 # environment, then the .env files, per DOTENV_OVERRIDE); the client's
-# overlay and its schema default must resolve through the SAME layers with
-# the SAME precedence: a .env-only widening previously reached the
+# overlay and its schema default must resolve through the same layers with
+# the same precedence: a .env-only widening must never reach the
 # worker's server-side budgets but not the client pool's derived
 # command_timeout, and the constructor's full TaskQSettings.load() made
-# any malformed UNRELATED TASKQ_* var raise in an embedder's constructor.
+# any malformed unrelated TASKQ_* var raise in an embedder's constructor.
 #
 # Every .env here lives in a per-test DOTENV_DIR (the session's
 # _no_developer_dotfiles fixture points DOTENV_DIR at an empty dir; a
@@ -624,7 +624,7 @@ def _dotenv_dir(tmp_path: Any, monkeypatch: pytest.MonkeyPatch, *files: str) -> 
 async def test_taskq_open_delivers_a_dotenv_only_widened_budget_end_to_end(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A budget widened ONLY in .env (no process env) reaches the client
+    """A budget widened only in .env (no process env) reaches the client
     pool's derived bound and the backend's budgets: the .env cascade the
     worker always read, delivered on the client path too."""
     import asyncpg as asyncpg_mod
@@ -805,7 +805,7 @@ def test_taskq_constructor_ignores_a_malformed_unrelated_setting(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A malformed setting the client never reads must not break its
-    constructor: in the process env OR in .env (the constructor's
+    constructor: in the process env or in .env (the constructor's
     full validating TaskQSettings.load() raised on TASKQ_ADMIN_PORT)."""
     _dotenv_dir(
         tmp_path,
@@ -842,8 +842,7 @@ def test_taskq_constructor_schema_env_beats_dotenv_and_explicit_wins_all(
 ) -> None:
     """Precedence for the schema default matches load()'s (process env
     beats .env), and an explicit ``schema=`` argument beats every layer:
-    the cennan/TAStack shape (they pass their loaded schema explicitly)
-    is untouched."""
+    callers that pass their loaded schema explicitly are untouched."""
     _dotenv_dir(
         tmp_path,
         monkeypatch,
@@ -995,7 +994,7 @@ async def test_ui_serve_lifespan_redis_initialize_is_bounded(
 
 
 class _HangOnAcquirePool:
-    """Fake asyncpg.Pool honouring the acquire contract: with NO timeout
+    """Fake asyncpg.Pool honouring the acquire contract: with no timeout
     kwarg the acquire parks forever (the unguarded unbounded shape); with
     one, it waits the bound then raises TimeoutError (asyncpg's own
     acquire-timeout shape). close() completes instantly so lifespan
@@ -1206,7 +1205,7 @@ def test_ui_serve_command_passes_command_timeout_to_pool_factory(
     ``make_pg_pool_factory`` - that call carries the same per-query
     ``command_timeout``, or the provider path would be the one unbounded
     admin pool left standing. (The migrate ``conn_factory`` is
-    deliberately NOT bounded here: DDL may legitimately exceed a
+    deliberately not bounded here: DDL may legitimately exceed a
     per-query budget.)"""
     import taskq.cli as cli_mod
 
@@ -1257,7 +1256,7 @@ _KNOB_DEFAULT_FIELDS: tuple[tuple[str, Any], ...] = (
     ("idempotency_lock_timeout_ms", 5000.0),
     ("max_retry_backoff", DEFAULT_MAX_RETRY_BACKOFF),
     # The claim cursor's knob, mirrored at the opt-in default (0 =
-    # disabled): the predictor is default-on, the cure waits for evidence.
+    # disabled): the predictor is default-on, the fix waits for evidence.
     ("claim_cursor_reset_seconds", 0.0),
 )
 """The BackendSettings members whose defaults the doubles must carry -

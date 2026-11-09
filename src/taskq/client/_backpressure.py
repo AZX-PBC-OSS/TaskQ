@@ -1,8 +1,8 @@
-"""The backpressure read's orchestration (LIB-2, issue #670).
+"""The backpressure read's orchestration.
 
 A read-only typed read on the submit path, mirroring the reader-method
 precedent (``get_row`` / ``list``): one call, one typed
-:class:`~taskq.types.BackpressureSnapshot`. NOT an enqueue kwarg —
+:class:`~taskq.types.BackpressureSnapshot`. not an enqueue kwarg —
 ``enqueue`` is generic ``JobHandle[R]`` and no flag may flip the reply
 type.
 
@@ -10,38 +10,38 @@ The design, stated once here:
 
 * DEPTH — one indexed aggregate per call
   (``count_pending_jobs_by_queue``, grouped by queue over pending +
-  scheduled) — the queue-local OPS view, a REPORTED field. It is NOT
+  scheduled) — the queue-local OPS view, a REPORTED field. It is not
   the verdict's basis: the admission cap is PER-ACTOR and governs the
   actor's count across ALL queues (``enqueue_max_pending_count``, WHERE
   actor = $1 — _sql_templates.py), so a queue-local count against an
   actor cap would false-OK exactly when an actor's traffic splits
   across queues (the F1 review finding: 9 pending here + 9 there reads
   ok while the next enqueue is refused at 18 >= 10).
-* VERDICT — the routing actors' OWN counts (``count_pending_jobs``, the
-  actor-grouped read the cap actually governs): ``over`` when ANY
+* VERDICT — the routing actors' own counts (``count_pending_jobs``, the
+  actor-grouped read the cap actually governs): ``over`` when any
   routing actor with a resolvable stored cap is at/over its own
-  boundary; ``ok`` only when EVERY routing actor resolves and none is
+  boundary; ``ok`` only when every routing actor resolves and none is
   over (an unresolvable actor may be over — claiming ok would be the
   false-ok again). The binding actor (smallest headroom), its load, and
   its cap are carried on the entry.
 * CAP — the actor's effective ``max_pending`` from the
   ``ActorCapacityCache`` TTL snapshot (zero I/O beyond the one warm-up
-  refresh): the data model has NO per-queue depth threshold, so "over"
+  refresh): the data model has no per-queue depth threshold, so "over"
   is defined against the queue's ACTOR caps. A routing actor whose cap
   lives only in the ``@actor`` literal reads ``unknown``: the literal
   is code-side, invisible to this process — set a stored override
   (``taskq actor-config set --max-pending``) to make the read exact.
-* FAN-OUT — the parent's pending children, EXACT: the ``parent_id``
+* FAN-out — the parent's pending children, EXACT: the ``parent_id``
   ledger stamp (01.00.23_01), no tag approximation. REPORTED, not
-  verdict-bearing: every pending child already counts toward its OWN
+  verdict-bearing: every pending child already counts toward its own
   actor's cap (wherever it sits), which is the number the admission
   check enforces — the fan-out pressure reaches the verdict through the
   routing actors' admission loads, and the ledger here is the
   parent-attributed view of the same rows.
 * FAIL-OPEN — every unavailable half reads as the explicit ``unknown``
   state with a reason (sick database, capability-less backend, no
-  capacity snapshot). NEVER a fabricated verdict, the
-  ``maybe_warn_unserved_queue`` posture. The ONE exception: a missing
+  capacity snapshot). never a fabricated verdict, the
+  ``maybe_warn_unserved_queue`` posture. The one exception: a missing
   schema (asyncpg ``UndefinedTableError``) propagates, so the client's
   ``SchemaNotMigratedError`` translation names the remedy — a setup
   defect is not degraded data.
@@ -103,7 +103,7 @@ async def _run_grouped(
         )
     except Exception as exc:
         if _is_missing_schema(exc):
-            # Missing schema: a SETUP defect, not degraded data — propagates
+            # Missing schema: a setup defect, not degraded data — propagates
             # so the client's SchemaNotMigratedError translation names the
             # remedy.
             raise
@@ -197,14 +197,14 @@ async def read_backpressure(
     for queue in queues:
         depth = depth_map.get(queue, 0) if depth_map is not None else None
         # The fan-out ledger attribution, exact and double-count-free:
-        # this queue's own children are IN its depth, so the reported
-        # children_depth is the parent's pending children OUTSIDE it.
+        # this queue's own children are in its depth, so the reported
+        # children_depth is the parent's pending children outside it.
         children_depth: int | None = None
         if children_total is not None:
             children_depth = children_total - (children_map or {}).get(queue, 0)
 
         routing = cache.peek_queue_caps(queue)
-        # None (no snapshot) and {} (unserved) are DIFFERENT unknown
+        # None (no snapshot) and {} (unserved) are different unknown
         # reasons; the map keeps the distinction, the verdict below
         # renders it.
         queue_routing[queue] = routing
@@ -218,9 +218,9 @@ async def read_backpressure(
             state="unknown",  # resolved below, after the actor counts land
         )
 
-    # The VERDICT's basis: the routing actors' OWN pending+scheduled
-    # counts, ALL queues (enqueue_max_pending_count's grouping — the cap
-    # governs the ACTOR, not the queue; a queue-local count against an
+    # The verdict's basis: the routing actors' own pending+scheduled
+    # counts, all queues (enqueue_max_pending_count's grouping — the cap
+    # governs the actor, not the queue; a queue-local count against an
     # actor cap would false-OK exactly when an actor's traffic splits
     # across queues, the F1 review finding). One round trip for the
     # union of every queried queue's resolvable routing actors.
@@ -239,7 +239,7 @@ async def read_backpressure(
         routing = queue_routing[queue]
 
         # The verdict: the routing actors' own admission states, the
-        # 3-valent OR. Every compared half must be present; any absent
+        # 3-valent or. Every compared half must be present; any absent
         # half is unknown with the reasons named — never a fabricated
         # verdict.
         reasons: list[str] = []

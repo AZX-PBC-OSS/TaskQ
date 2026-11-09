@@ -18,11 +18,11 @@ The arms, in the order the function consults them:
   statement of which feature set is in force);
 * installed + ``'tsl'`` (the value older builds spell) → ``timescale-tsl``;
 * installed + ``'apache'`` → ``timescale-apache`` - the arm that makes
-  both Apache-edition builds AND TSL-capable builds configured down to
+  both Apache-edition builds and TSL-capable builds configured down to
   Apache features (``ALTER SYSTEM SET timescaledb.license = 'apache'``)
   detect identically, because their capability consequences ARE identical
   (measured on 2.30.1: under the apache license the server refuses the
-  retention policies AND the columnstore alike);
+  retention policies and the columnstore alike);
 * installed + no license GUC at all (a build old enough to predate it) →
   the fallback: the compression machinery's presence decides, because at
   those ages it is the only capability the classification exists to
@@ -104,7 +104,7 @@ async def test_extension_absent_is_vanilla_even_when_offered() -> None:
     (a vanilla server defines none) reads as ``None``, never an error."""
     conn = _ProbeConn(available=True, installed=False, license=None)
     assert await detect_storage_mode(conn) == "vanilla"
-    # The verdict is vanilla on the license's VALUE, not its absence: a
+    # The verdict is vanilla on the license's value, not its absence: a
     # server reporting any license with no extension installed is still
     # vanilla (the arm ordering, pinned by the probe's verdict below).
     offered_only = _ProbeConn(available=True, installed=False, license="apache")

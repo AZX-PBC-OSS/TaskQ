@@ -1,4 +1,4 @@
-"""Composition types for AND-composition of rate limits and reservations.
+"""Composition types for and-composition of rate limits and reservations.
 
 These are pure type definitions with no business logic.  They define the
 contracts that the registry, consumer, and decorator

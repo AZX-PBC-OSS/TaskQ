@@ -1,4 +1,4 @@
-"""Red-team attacks on the cron tick's operator-stored ``max_pending`` parity (real PG).
+"""Adversarial review attacks on the cron tick's operator-stored ``max_pending`` parity (real PG).
 
 The stored ``actor_config.max_pending`` value is operator-owned: once a row
 exists, a non-NULL stored value is authoritative and the ``@actor`` literal
@@ -71,7 +71,7 @@ async def _seed_three_due_schedules(
     The tick reads due rows ``ORDER BY next_fire_at``, so the staggered
     slots make the admission order deterministic: early, mid, late. The
     grid comes from the caller so the seed values and the assertions that
-    compare against them share ONE server-clock floor: recomputing a
+    compare against them share one server-clock floor: recomputing a
     floor at assert time re-races the 10-minute boundary (the harness's
     own ``server_ten_min_floor`` docstring, the CI red of 2026-09-21).
     """
@@ -197,7 +197,7 @@ class TestStoredZeroCapEmergencyDrain:
             row = await schedule_row(clean_pg_conn, schema, schedule_id)
             assert row["last_fired_at"] is None
             assert row["consecutive_failures"] == 0, "drain backpressure strikes nothing"
-            # The bound is the slot's OWN seed value on the tick's server
+            # The bound is the slot's own seed value on the tick's server
             # clock (the early slot sits exactly at grid - 30m), captured
             # once before the seed: the suppression advance moves the slot
             # one cadence up from there, so a hot re-fire loop - which

@@ -1,7 +1,7 @@
 """The flow API's wiring graph — :class:`Promise`, the fan-in/fan-out
-combinators, and the compile-time recorder (T09).
+combinators, and the compile-time recorder.
 
-THE TYPE CONTRACT (§5.4-4): plain types for data, ``Promise[T]`` for
+Plain types for data, ``Promise[T]`` for
 wiring. A wiring function decorated with ``@app.workflow`` runs once under
 the :class:`_Graph` recorder; its calls to :func:`step` / :func:`map` /
 :func:`gather` / :func:`sink` / :func:`build` spell the DAG as DATAFLOW —
@@ -10,9 +10,9 @@ arguments is the fan-in join. Nothing is stored about the tree: the graph
 is SPELLED by the wiring, compiled fresh from the same module every time
 (same module → same compile, byte-stable — the Mermaid golden's law).
 
-THE FLAT SHAPE: ``map`` returns a plain ``Promise[list[R]]`` over the
+``map`` returns a plain ``Promise[list[R]]`` over the
 map's JOIN — never ``Promise[list[Promise[R]]]`` (the checker rejected the
-nested shape at T01's v2:124).
+nested shape — the checker's own recorded rejection).
 
 The recorder is a ``ContextVar``, never a global: two apps compile
 concurrently without seeing each other's wiring.
@@ -20,27 +20,43 @@ concurrently without seeing each other's wiring.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast, get_args, get_origin, overload
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any, Concatenate, Final, cast, get_args, get_origin, overload
 
 from pydantic import BaseModel
 
-from taskq.ratelimit.refs import KeyedRateLimitRef
+from taskq.actor_config import validate_capacity_owner
+from taskq.backend._protocol import RetryKind
+from taskq.constants import check_priority_domain
+from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
+from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
-from taskq.workflows._types import EdgeFailurePolicy
+from taskq.workflows._policy import (
+    ExecutionPolicy,
+    ResolvedExecutionPolicy,
+    canonical_retry_kind,
+    resolve_source_execution_policy,
+)
+from taskq.workflows._types import EdgeFailurePolicy, duration_seconds
 from taskq.workflows.api._hints import body_hints, ctx_input_reads, inner_fn, own_source
 from taskq.workflows.chain import Chain
 
 if TYPE_CHECKING:
     from typing import Never
 
-    # THE LOOP ATTACHMENT'S TYPE (the validator's door — no object-typed
-    # poke crosses modules): _loop imports _graph's wiring verbs at
-    # runtime, so the import rides TYPE_CHECKING here; the annotation is
-    # lazy (``from __future__ import annotations``) and pyright binds it.
+    # the handle's type for the capacity-wiring helpers' annotations (the
+    # runtime import stays function-local — the app module imports this
+    # module).
+    from taskq.workflows.api._app import WorkflowActor
+
+    # _loop imports _graph's wiring verbs at runtime, so the import rides
+    # TYPE_CHECKING here; the annotation is lazy (``from __future__ import
+    # annotations``) and pyright binds it.
+    from taskq.workflows.api._ctx import StepContext
     from taskq.workflows.api._loop import LoopSpec
 
 __all__ = [
@@ -53,10 +69,12 @@ __all__ = [
     "WorkflowBuildError",
     "active_graph",
     "build",
+    "check_start_to_close_decl",
     "declared_exit_return",
     "gather",
     "map_source",
     "rate_limit_names",
+    "reservation_names",
     "route",
     "route_child_key",
     "sink",
@@ -65,75 +83,407 @@ __all__ = [
 
 #: A step body: the coroutine the runner executes for one node —
 #: ``await body(ctx, *decoded_parent_results)`` (the fan-in's decoded
-#: args — cut #14's decode-once; the bodies never see raw rows).
+#: args — decode-once; the bodies never see raw rows).
 #:
-#: THE MECHANISM (the type-mechanism probes, pyright 1.1.414 + ty 0.0.85):
-#: the WIRING verbs are generic over the body's RESULT —
-#: :func:`step` is ``step[R](body: Callable[..., Awaitable[R]]) -> Promise[R]``
-#: (R is INFERRED from the body's declared return — the promise carries the
-#: body's type); :func:`gather` is
-#: ``gather[R](promises: list[Promise[R]]) -> Promise[list[R]]`` (the join
-#: PRESERVES the element type); :func:`build` is
+#: the wiring verbs are generic over the body's result — :func:`step` is
+#: ``step[R](body: Callable[..., Awaitable[R]]) -> Promise[R]`` (R is inferred
+#: from the body's declared return — the promise carries the body's type);
+#: :func:`gather` is ``gather[R](promises: list[Promise[R]]) ->
+#: Promise[list[R]]`` (the join preserves the element type); :func:`build` is
 #: ``build[R](result: Promise[R], *residuals: Promise[Never]) -> Promise[R]``
-#: (a residual must be a produces-nothing handle — a body annotated
-#: ``-> NoReturn``; any REAL promise in the residual slot is the checker's
-#: error, because :class:`Promise` is COVARIANT and ``Never`` is the bottom
-#: type). The verbs' bodies still take the DECODED payload shapes — the
-#: wiring-site compat between a producer's model and a consumer's param is
-#: the VALIDATOR's face (:func:`taskq.workflows.api._validate`'s
-#: ``E5-incompatible-consumer``); the checker's face is the HANDLE flow.
+#: (a residual must be a produces-nothing handle — a body annotated ``->
+#: NoReturn``; any real promise in the residual slot is the checker's error,
+#: because :class:`Promise` is covariant and ``Never`` is the bottom type). The
+#: verbs' bodies still take the decoded payload shapes — the wiring-site compat
+#: between a producer's model and a consumer's param is the validator's face
+#: (:func:`taskq.workflows.api._validate`'s ``E5-incompatible-consumer``); the
+#: checker's face is the handle flow.
 BodyFn = Callable[..., Awaitable[object]]
 
-#: A skip guard: ``bool`` or ``Callable[[state], bool]`` — evaluated AT
-#: DISPATCH against the flow's state (A-CRITICAL-4, cut #4), never at
+#: A skip guard: ``bool`` or ``Callable[[state], bool]`` — evaluated at
+#: dispatch against the flow's state, never at
 #: create time.
 #:
-#: DEPRECATED FOR DISPATCH (T27 — the conviction, named honestly): this
-#: face is STRINGLY — the state it reads is decoded JSON dicts, and a
+#: deprecated for dispatch (the stringly face's defect, named honestly): this
+#: face is stringly — the state it reads is decoded JSON dicts, and a
 #: tag-keyed predicate ("skip unless mime == video") can drop an element
-#: from EVERY downstream arm and still let the run terminalize SUCCEEDED
-#: having routed NOTHING (the routing-proof round's live conviction —
-#: the exact silent drop the totality fence exists to refuse). For
-#: dispatch-by-type the taught face is the TYPED ROUTE
+#: from every downstream arm and still let the run terminalize succeeded
+#: having routed NOTHING — the exact silent drop the totality fence
+#: exists to refuse). For
+#: dispatch-by-type the taught face is the typed route
 #: (:func:`route` — the union's members key the arms, a non-total route
-#: is a build refusal (E15), and the no-match element dies LOUDLY in
+#: is a build refusal (E15), and the no-match element dies loudly in
 #: ``RouterNotTotal``). The predicate stays for the sibling-conditional
 #: shapes it is honest for (an "only if X succeeded" dispatch) — never
 #: for routing an element by what it is.
 SkipPredicate = Callable[[dict[str, object]], bool]
 
-#: THE AUTHORING UNION for the per-step admission terms (CURE 2 — the
-#: vanilla ``@actor``'s own ``rate_limits=`` shapes): a primitive
+#: the authoring union for the per-step admission terms ````````: a primitive
 #: instance, a plain name (resolved against the worker's registry — W2's
-#: warning register when nothing registers it), or a keyed ref. The KEYED
-#: REF is refused on the WORKFLOW surface (the wiring verbs' loud door):
-#: its concrete bucket materializes per payload, and the fork stamps
-#: NAMES onto the child rows — a declaration that cannot name what it
-#: stamps is the admitted-never-limited lie wearing the signature.
+#: warning register when nothing registers it), or a keyed ref. The keyed ref's
+#: concrete bucket is resolved per child — ``key_fn`` runs against each child's
+#: declared payload at the fork/static-insert and the concrete name
+#: (``f"{base_name}:{key}"``) is what stamps the row.
 RateLimitDecl = str | KeyedRateLimitRef | TokenBucket | SlidingWindow
 
 
 def rate_limit_names(
     decls: tuple[RateLimitDecl, ...], *, what: str = "rate_limits"
 ) -> tuple[str, ...]:
-    """The DECLARATION's concrete bucket NAMES — the fork's stamp source:
-    an instance contributes its ``.name`` (the registry's own
-    normalization, ``acquire_for_actor``'s), a plain name passes through.
-    A keyed ref is the REFUSED shape (the union's own docstring) — the
-    wiring verbs call this helper, so the refusal lands at the wiring
-    site, before any row exists."""
+    """The DECLARATION's concrete bucket NAMES — one stamp source: an
+    instance contributes its ``.name`` (the registry's own
+    normalization, ``acquire_for_actor``'s), a plain name passes
+    through, and a keyed ref contributes no static name — its concrete
+    bucket resolves per child from the child's own payload at the
+    fork/static-insert (:func:`keyed_rate_limit_names`), so a declaration
+    that cannot name a static bucket is admitted with its resolution
+    deferred to the only site that holds the payload."""
     names: list[str] = []
     for entry in decls:
         if isinstance(entry, KeyedRateLimitRef):
-            raise WorkflowBuildError(
-                f"{what}: a KeyedRateLimitRef names no concrete bucket — "
-                "its bucket materializes PER PAYLOAD, and a workflow row's "
-                "admission terms are stamped as NAMES at the fork. Declare "
-                "the static buckets (rate_limits=[TokenBucket(...)]) or "
-                "route the keyed shape through a vanilla @actor."
-            )
+            continue
         names.append(entry.name if isinstance(entry, TokenBucket | SlidingWindow) else entry)
     return tuple(names)
+
+
+def _keyed_key_fn_arg(
+    ref: KeyedRateLimitRef | KeyedReservationRef, payloads: Sequence[object], *, what: str
+) -> BaseModel:
+    """The keyed ref's ``key_fn`` argument: the child's DECLARED payload
+    values (in the order the body's signature binds them) validated
+    through the ref's ``payload_type`` — the registry's own conversion
+    law (a same-type model instance passes through by identity, a
+    different model re-validates through its dump, a raw dict validates
+    directly); the first value the type validates provides the key. No
+    value validates → :class:`WorkflowBuildError` naming *what* (the
+    step/child) — the fork's loud death, the row never lands
+    half-stamped."""
+    from pydantic import ValidationError
+
+    for payload in payloads:
+        if isinstance(payload, ref.payload_type):
+            return payload
+    last: ValidationError | None = None
+    for payload in payloads:
+        try:
+            if isinstance(payload, BaseModel):
+                return ref.payload_type.model_validate(payload.model_dump(by_alias=True))
+            return ref.payload_type.model_validate(payload)  # type: ignore[invalid-argument-type]  # Why: the raw-dict/raw-JSON arm — model_validate rejects non-dict shapes itself, the same boundary the registry's conversion runs.
+        except ValidationError as exc:
+            last = exc
+    received = ", ".join(type(p).__name__ for p in payloads) or "no values"
+    raise WorkflowBuildError(
+        f"{what}: {type(ref).__name__}(base_name={ref.base_name!r})'s "
+        f"payload_type={ref.payload_type.__name__} cannot validate this "
+        f"child's payload ({received}) — a child whose key cannot resolve "
+        "fails the fork loudly, never a half-stamped row"
+    ) from last
+
+
+def _keyed_concrete_name(
+    entry: KeyedRateLimitRef | KeyedReservationRef, model: BaseModel, *, what: str
+) -> str:
+    """one keyed decl's concrete name for one child: ``key_fn`` runs
+    against the validated model and the key re-runs the acquisition-path
+    validation — a non-string/empty key, an over-length key, or a key
+    outside the charset law is the child's LOUD refusal (the registry's
+    own key law, mirrored here because the fork resolves without a
+    registry)."""
+    # The private constants' home owns the keyed charset/length law; the
+    # workflows surface resolves the keys at the fork, before any
+    # registry exists in the process.
+    from taskq.constants import (  # pyright: ignore[reportPrivateUsage]  # Why: the constants' home's law — the fork resolves the keys before any registry exists in the process.
+        _KEYED_KEY_RE,  # pyright: ignore[reportPrivateUsage]  # Why: the import's own line carries the private-usage boundary.
+        _MAX_KEYED_KEY_LEN,  # pyright: ignore[reportPrivateUsage]  # Why: the same.
+    )
+
+    raw = entry.key_fn(model)  # type: ignore[arg-type]  # Why: key_fn is declared Callable[[BaseModel], str]; the arg is a validated instance of entry.payload_type (a BaseModel subclass) — the registry's own unsound-by-declaration contract.
+    if not isinstance(raw, str) or not raw:  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: key_fn is caller code — its declared ``str`` return is verified at runtime, never trusted (the registry's own key law).
+        raise WorkflowBuildError(
+            f"{what}: {type(entry).__name__}(base_name={entry.base_name!r})'s "
+            f"key_fn returned a non-string or empty key for this child's "
+            "payload — the child's concrete name cannot resolve, the fork "
+            "refuses loudly (never a half-stamped row)"
+        )
+    if len(raw) > _MAX_KEYED_KEY_LEN:
+        raise WorkflowBuildError(
+            f"{what}: {type(entry).__name__}(base_name={entry.base_name!r})'s "
+            f"key_fn returned a key of length {len(raw)} for this child's "
+            f"payload, past the maximum of {_MAX_KEYED_KEY_LEN} — the "
+            "child's concrete name cannot resolve, the fork refuses loudly "
+            "(never a half-stamped row)"
+        )
+    if not _KEYED_KEY_RE.match(raw):
+        raise WorkflowBuildError(
+            f"{what}: {type(entry).__name__}(base_name={entry.base_name!r})'s "
+            f"key_fn returned key {raw!r} for this child's payload, outside "
+            "the allowed set [A-Za-z0-9_\\-:.] — the child's concrete name "
+            "cannot resolve, the fork refuses loudly (never a half-stamped row)"
+        )
+    return f"{entry.base_name}:{raw}"
+
+
+def keyed_rate_limit_names(
+    decls: tuple[RateLimitDecl, ...], payloads: Sequence[object], *, what: str = "rate_limits"
+) -> tuple[str, ...]:
+    """The KEYED decls' concrete bucket names, resolved from one child's
+    declared payload values — the per-child stamp source: each
+    :class:`KeyedRateLimitRef`'s ``payload_type`` validates the values
+    (in the order the body's signature binds them; see
+    :func:`_keyed_key_fn_arg`), ``key_fn`` derives the key, and the key
+    re-runs the acquisition-path validation. A payload that fails
+    validation raises :class:`WorkflowBuildError` naming *what* (the
+    child) — the fork dies loudly, the row never lands half-stamped."""
+    names: list[str] = []
+    for entry in decls:
+        if not isinstance(entry, KeyedRateLimitRef):
+            continue
+        model = _keyed_key_fn_arg(entry, payloads, what=what)
+        try:
+            names.append(_keyed_concrete_name(entry, model, what=what))
+        except WorkflowBuildError:
+            raise
+        except Exception as exc:
+            raise WorkflowBuildError(
+                f"{what}: {type(entry).__name__}(base_name={entry.base_name!r})'s "
+                f"key_fn could not resolve this child's key from its payload "
+                f"({type(exc).__name__}: {exc}) — a child whose key cannot "
+                "resolve fails the fork loudly, never a half-stamped row"
+            ) from exc
+    return tuple(names)
+
+
+def check_start_to_close_decl(value: object, *, what: str = "") -> None:
+    """the DEADLINE DECLARATION'S DOOR (the vanilla ``@actor``'s own law,
+    actor.py's type+domain check — stated once, called at the
+    resolution chain's every declaration site: ``@app.actor``'s, the
+    wiring verb's, the arm's): the bound is a POSITIVE
+    :class:`datetime.timedelta` — a bare number is the refused
+    declaration (never a seconds-silent-coercion), a zero or negative
+    bound the refused domain. ``None`` rides (nothing declared — the
+    row's column NULL, the worker's default at the enforcement).
+
+    The refusal is the VANILLA's own ValueError (the same class
+    ``taskq.actor`` raises for the same kwarg — one law, one class at
+    every layer that accepts the declaration, the priority domain's own
+    convention)."""
+    if value is None:
+        return
+    if not isinstance(value, timedelta):
+        raise ValueError(
+            f"{what} start_to_close must be a timedelta, got "
+            f"{type(value).__name__} {value!r} — the declared bound is a "
+            "duration, never a bare number"
+        )
+    if value <= timedelta(0):
+        raise ValueError(
+            f"{what} start_to_close must be > 0, got {value!r} — a deadline "
+            "that expires on arrival is the refused domain (the vanilla "
+            "@actor's own law)"
+        )
+
+
+def reservation_names(decls: tuple[object, ...], *, what: str = "reservations") -> tuple[str, ...]:
+    """The CAPACITY DECLARATION's concrete reservation NAMES ('s
+    loud door — ``rate_limit_names``' own pattern): a
+    :class:`ConcurrencyReservation` instance contributes its ``.name``, a
+    plain name (``str`` — the vanilla face's registry-name shape) passes
+    through, and a :class:`KeyedReservationRef` contributes no static
+    name — its concrete reservation resolves per child from the child's
+    own payload at the fork/static-insert
+    (:func:`keyed_reservation_names`), so a declaration that cannot name
+    a static bucket is admitted with its resolution deferred to the only
+    site that holds the payload."""
+    names: list[str] = []
+    for entry in decls:
+        if isinstance(entry, ConcurrencyReservation):
+            names.append(entry.name)
+        elif isinstance(entry, str):
+            names.append(entry)
+    return tuple(names)
+
+
+def keyed_reservation_names(
+    decls: tuple[object, ...], payloads: Sequence[object], *, what: str = "reservations"
+) -> tuple[str, ...]:
+    """The KEYED capacity decls' concrete reservation names, resolved
+    from one child's declared payload values —
+    ``keyed_rate_limit_names``' own law on the strict-cap face:
+    ``payload_type`` validates, ``key_fn`` derives, the key re-runs the
+    acquisition-path validation, and a payload that cannot resolve
+    raises :class:`WorkflowBuildError` naming *what* (the child) — the
+    fork dies loudly, never a half-stamped row."""
+    names: list[str] = []
+    for entry in decls:
+        if not isinstance(entry, KeyedReservationRef):
+            continue
+        model = _keyed_key_fn_arg(entry, payloads, what=what)
+        try:
+            names.append(_keyed_concrete_name(entry, model, what=what))
+        except WorkflowBuildError:
+            raise
+        except Exception as exc:
+            raise WorkflowBuildError(
+                f"{what}: {type(entry).__name__}(base_name={entry.base_name!r})'s "
+                f"key_fn could not resolve this child's key from its payload "
+                f"({type(exc).__name__}: {exc}) — a child whose key cannot "
+                "resolve fails the fork loudly, never a half-stamped row"
+            ) from exc
+    return tuple(names)
+
+
+def _refuse_unbound_keyed_reservations(source_node: object, *, what: str) -> None:
+    """The fan-out source's reservation-cohort door: the source's
+    declared reservations stamp the source's own row (resolved once at
+    create — the run's input and the source step's declared args) and
+    the fork's children RIDE the source row's already-resolved names —
+    one concrete bucket for the run. A keyed reservation whose
+    ``payload_type`` binds NONE of the source step's declared data args
+    cannot resolve on that face: the per-item shape it implies (each
+    child its own bucket) is not what the cohort law stamps, so the
+    declaration refuses here, at the wiring, with the rule stated."""
+    declared = [arg for kind, arg in getattr(source_node, "args", ()) if kind == "d"]
+    for entry in getattr(source_node, "reservations", ()):
+        if not isinstance(entry, KeyedReservationRef):
+            continue
+        if not any(isinstance(arg, entry.payload_type) for arg in declared):
+            raise WorkflowBuildError(
+                f"{what}: a KeyedReservationRef(base_name={entry.base_name!r}, "
+                f"payload_type={entry.payload_type.__name__}) does not bind any "
+                "declared payload of the source step. THE RULE: a fan-out "
+                "source's children RIDE the source row's already-resolved "
+                "reservation names — one concrete bucket per RUN, resolved "
+                "from the run's input and the source step's declared args "
+                "(the run-scoped inheritance). Bind the ref to the source "
+                "step's declared payload (payload_type= the declared arg's "
+                "model), or declare the per-item cap as a keyed rate limit "
+                "on the map (rate_limits=), which resolves per child."
+            )
+
+
+#: the handle's term fields (the capacity surface the ``@app.actor``
+#: handle carries — the surface's axes; the ``capacity_owner="code"`` opt-in is
+#: the fourth).
+_HANDLE_TERM_FIELDS: Final = ("max_concurrent", "reservations", "result_ttl", "capacity_owner")
+
+
+def _capped_handle_of(body: object) -> WorkflowActor | None:
+    """The wired body's ``WorkflowActor`` handle WHEN it carries capacity
+    terms (the subject — "a capped body"); ``None`` when the body is
+    bare or the handle declares no terms.
+
+    An owner declaration IS a
+    capacity declaration — a handle carrying ``capacity_owner="code"``
+    with no caps is RETURNED (wired owner-only at the honoring sites,
+    refused NAMED at the dropping sites), never the zero-signal no-op
+    the pre-fix predicate was."""
+    from taskq.workflows.api._app import (  # the cycle-break (inner_fn's own pattern)
+        WorkflowActor,
+    )
+
+    if not isinstance(body, WorkflowActor):
+        return None
+    if (
+        body.max_concurrent is not None
+        or body.reservations
+        or body.result_ttl is not None
+        or body.capacity_owner != "operator"
+    ):
+        return body
+    return None
+
+
+def _same_reservation_names(a: tuple[object, ...], b: tuple[object, ...]) -> bool:
+    """Whether two reservation DECLARATIONS name the same buckets (the
+    collect's name-keyed identity — never instance identity, the name-keyed
+    law: equal configs on different instances are one bucket)."""
+    names_a = reservation_names(tuple(a), what="reservations")
+    names_b = reservation_names(tuple(b), what="reservations")
+    return names_a == names_b
+
+
+def _wire_handle_terms_into_node(node: NodeDecl, handle: WorkflowActor, *, what: str) -> None:
+    """the HANDLE'S TERMS FLOW at the map/route attachment (the same law
+    ``step()`` keeps): a capped handle wired where the placement KEEPS
+    the node's actor fills the node's UNSET term slots — the children
+    share the node's cohort and ``actor_config`` is keyed by actor (one
+    capacity per actor, the estate's own law). A term the node ALREADY
+    declares at a DIFFERENT value is the capacity conflict, named at the
+    wiring — never a silent drop, never a silent overwrite.
+
+    The handle's ``capacity_owner``
+    is a carried VALUE (every handle has one — the default "operator" is
+    the value, not an absence), so it flows UNCONDITIONALLY: the node's
+    unset face ("operator") adopts the handle's; a node already carrying
+    a DIFFERENT owner (a code-owned step handle met by a default-owner
+    map/route body on one cohort) is the named conflict — one cohort,
+    one owner. An OVERRIDING route arm never reaches here (its
+    placement drops the terms — ``_uncovered_handle_terms`` demands the
+    arm's own re-declaration, the per-arm thread)."""
+    conflicts: list[str] = []
+    if node.capacity_owner != handle.capacity_owner:
+        # The adopt: the unset node ("operator") takes the handle's face.
+        # The conflict: the node already carries a different owner.
+        if node.capacity_owner == "operator":
+            node.capacity_owner = handle.capacity_owner
+        else:
+            conflicts.append(
+                f"capacity_owner: {node.capacity_owner!r} vs the handle's {handle.capacity_owner!r}"
+            )
+    if handle.max_concurrent is not None:
+        if node.max_concurrent is None:
+            node.max_concurrent = handle.max_concurrent
+        elif node.max_concurrent != handle.max_concurrent:
+            conflicts.append(
+                f"max_concurrent: {node.max_concurrent!r} vs the handle's {handle.max_concurrent!r}"
+            )
+    if handle.reservations:
+        if not node.reservations:
+            node.reservations = tuple(handle.reservations or ())
+        elif not _same_reservation_names(node.reservations, tuple(handle.reservations or ())):
+            # the reservation instances have no __repr__ — rendering them raw
+            # gives the operator two pointers and no bucket. The conflict's
+            # terms are the names (the same identity the comparison itself keys
+            # on).
+            conflicts.append(
+                f"reservations: {reservation_names(node.reservations, what='reservations')!r} "
+                "vs the handle's "
+                f"{reservation_names(tuple(handle.reservations or ()), what='reservations')!r}"
+            )
+    if handle.result_ttl is not None:
+        if node.result_ttl is None:
+            node.result_ttl = handle.result_ttl
+        elif node.result_ttl != handle.result_ttl:
+            conflicts.append(
+                f"result_ttl: {node.result_ttl!r} vs the handle's {handle.result_ttl!r}"
+            )
+    if conflicts:
+        raise WorkflowBuildError(
+            f"{what}: the wired handle's capacity terms conflict with the "
+            f"node's own declaration ({'; '.join(conflicts)}) — actor_config "
+            "is keyed by actor (one capacity per actor, the estate's own "
+            "law): give the differing placement its own actor name."
+        )
+
+
+def _uncovered_handle_terms(arm: RouteArm[object], handle: WorkflowActor) -> list[str]:
+    """The capped handle's terms the arm's own declaration does not
+    re-declare (the refusal list — the terms the placement override
+    would drop)."""
+    uncovered: list[str] = []
+    if handle.max_concurrent is not None and arm.max_concurrent is None:
+        uncovered.append(f"max_concurrent={handle.max_concurrent!r}")
+    if handle.reservations and not arm.reservations:
+        uncovered.append("reservations")
+    if handle.result_ttl is not None and arm.result_ttl is None:
+        uncovered.append(f"result_ttl={handle.result_ttl!r}")
+        # the override drops the handle's owner exactly like the caps — the arm's
+    # own declaration carries it (the per-arm thread; the projection reads the
+    # arm's field), and a missing/differing one is the named refusal, never the
+    # silent drop.
+    if handle.capacity_owner != "operator" and arm.capacity_owner != handle.capacity_owner:
+        uncovered.append(f"capacity_owner={handle.capacity_owner!r}")
+    return uncovered
 
 
 class WorkflowBuildError(TypeError):
@@ -142,23 +492,23 @@ class WorkflowBuildError(TypeError):
 
 
 class Exit[T]:
-    """THE TYPED EARLY-EXIT SENTINEL (T09's §17.1 — the None-end's
+    """the TYPED EARLY-EXIT SENTINEL (§17.1 — the None-end's
     sanctioned escape): a body returns ``Exit(payload)`` to
-    TERMINAL-SUCCEED the node with a typed result NOW — the workflow's
+    TERMINAL-SUCCEED the node with a typed result now — the workflow's
     answer is decided, the remaining downstream graph does not run.
 
-    * THE RUNNER UNWRAPS IT: the exited node terminal-succeeds with the
+    * the RUNNER UNWRAPS IT: the exited node terminal-succeeds with the
       Exit's payload as its typed result (a plain ``T`` return is the
       DATA result — sentinels appear only where the body's control flow
       says so), and every non-terminal DOWNSTREAM node is marked
-      SKIPPED-WITH-THE-RECORD (succeeds with ``{"skipped": true,
+      SKIPPED-WITH-the-RECORD (succeeds with ``{"skipped": true,
       "exit_from": <node>}`` — the record never lies about the nodes
       that didn't get to run; absorbing joins fan in the typed skip
       item, a skip is not an attempt, zero ledger rows). All rows
       terminal → the derivation reports the workflow COMPLETE.
-    * THE LEDGER RECORDS IT: the exited node's own ledger terminal
+    * the LEDGER RECORDS IT: the exited node's own ledger terminal
       carries the exit marker on the recorded result.
-    * THE TYPE SURFACE: a body whose return annotation promises
+    * the TYPE SURFACE: a body whose return annotation promises
       ``Exit[DoneT]`` that returns a bare value (or a bare ``return``)
       is the checker's MUST_ERROR — the sentinel is the annotation's
       only valid return; a bare ``T`` return is the data result under a
@@ -176,10 +526,10 @@ class Exit[T]:
 
 @dataclass(frozen=True, slots=True)
 class RouteArm[R]:
-    """ONE typed route arm (T27): the arm's body + the PER-ARM placement
+    """one typed route arm: the arm's body + the PER-ARM placement
     override (R4 — ``processA`` on the gpu queue, ``processB`` on the io
-    queue) + the PER-ARM admission terms (the consumer-face lane's CURE
-    2 — ``rate_limits=[TokenBucket(...)]``; "5 concurrent" is not
+    queue) + the PER-ARM admission terms
+    (``rate_limits=[TokenBucket(...)]``; "5 concurrent" is not
     "50/min" under varying latency). The generic ``R`` is the arm body's
     declared return — the route's join promise solves its
     ``Promise[list[R]]`` to the UNION of the arms' returns (the typed
@@ -189,29 +539,72 @@ class RouteArm[R]:
 
     body: Callable[..., Awaitable[R]]
     #: ``None`` = the source node's actor (the route carries no actor of
-    #: its own — the arms override DOWN from the source, never up).
+    #: its own — the arms override down from the source, never up).
     actor: str | None = None
     #: ``None`` = the route's declared queue (the verb's ``queue=``).
     queue: str | None = None
-    #: The arm's children's ADMISSION TERMS (CURE 2): the fork stamps
-    #: the buckets' NAMES onto the child rows' metadata; the claim path
-    #: acquires them through the SAME registry + the SAME denial path
+    #: The arm's children's admission terms (the admission terms): the fork stamps
+    #: the buckets' names onto the child rows' metadata; the claim path
+    #: acquires them through the same registry + the same denial path
     #: the queue-concurrency fence rides (one mechanism, the authoring
     #: face added). ``()`` = the arm declares no bucket.
     rate_limits: tuple[RateLimitDecl, ...] = ()
+    #: a capped handle wired under an actor override must have its terms
+    #: re-declared here — the arm's cohort projects the arm's own terms, never
+    #: the handle's. The fields are the node surface's own (``max_concurrent``
+    #: / ``reservations`` / ``result_ttl``; ``max_pending`` is off the wf
+    #: surface).
+    max_concurrent: int | None = None
+    reservations: tuple[object, ...] | list[object] | None = ()
+    result_ttl: timedelta | float | None = None
+    #: the arm's children's rows land at this value in the ``jobs.priority``
+    #: column — the claim SQL's ``priority desc`` then serves them ahead of the
+    #: default-0 backlog. ``None`` = the arm does not override: the source
+    #: node's resolution applies (the arm overrides down from the source, never
+    #: up — the placement law's own arithmetic). not an actor_config axis (the
+    #: column is the row's own, never the cohort's), so the arm's priority
+    #: needs no one-cap-per-actor conflict law.
+    priority: int | None = None
+    #: the arm's children's rows land at this value in the row's existing
+    #: ``jobs.start_to_close`` column, and the runner's body enforcement reads
+    #: the row — the deadline fires on the arm's children at this bound.
+    #: ``None`` = the arm does not override: the source node's resolution
+    #: applies (the arm overrides down from the source, never up — the
+    #: placement law's own arithmetic, the priority field's own shape).
+    start_to_close: timedelta | None = None
+    #: an overriding arm's body handle carrying ``capacity_owner="code"`` must
+    #: be re-declared here (the handle's owner would be dropped by the
+    #: placement override — the refusal names it); the projection reads this
+    #: field onto the arm's effective cohort. per-arm, never folded into the
+    #: source node: the other arms and the join must not inherit it (the join
+    #: stays at the source's terms). Declare it only on an overriding arm — a
+    #: no-override arm's cohort inherits the handle's flow, and a redundant
+    #: declaration here enters the projection's one-cap comparison.
+    capacity_owner: str = "operator"
+
+    def __post_init__(self) -> None:
+        # the accepted spellings become the stored forms before any reader sees
+        # them — ``None`` reservations are the nothing-reserved arm (the
+        # tuple), and a ``timedelta`` result_ttl is the seconds number the
+        # projection's column and every reader of it expect.
+        if self.reservations is None:
+            object.__setattr__(self, "reservations", ())
+        else:
+            object.__setattr__(self, "reservations", tuple(self.reservations))
+        object.__setattr__(self, "result_ttl", duration_seconds(self.result_ttl))
 
 
 @dataclass(frozen=True, slots=True)
 class GateDecl:
-    """A node's declared HOLD gate (T09 compiles it; T10's machinery runs
+    """A node's declared HOLD gate (the compile carries it; the hold machinery runs
     it): the signal type(s) the body waits on, the deadline policy. The
     declaration is what the Mermaid render's ``[(hold)]`` nodes and the
     validate warning ("a workflow that waits forever on a human") read —
     the gate is COMPILE-VISIBLE, not discovered at runtime.
 
-    THE TIMER-POLICY DISPOSITION (recorded — the alignment audit's
+    the TIMER-POLICY DISPOSITION (recorded — the alignment audit's
     finding, the don't-pay law): ``on_timeout="fail"`` is the v1 arm
-    and its face is the CLOSED UNION's ``Expired`` MEMBER (T26's
+    and its face is the CLOSED UNION's ``Expired`` MEMBER (the
     amendment — the expiry is a VALUE, not an exception): the wait site
     RETURNS ``Expired`` and the body MATCHES the fail-close arm (the
     checker forces it); a body that WANTS the failure raises
@@ -224,21 +617,21 @@ class GateDecl:
     Mermaid face, the docs), it does not introduce a second runtime
     vocabulary.
 
-    THE DOUBLE-TIMEOUT PRECEDENCE (C8's law, the timeout is DECLARED in
+    the DOUBLE-TIMEOUT PRECEDENCE (the law, the timeout is DECLARED in
     TWO places, each with its own face — the split the teardown round
     documented and W4 enforces where statically readable):
 
-    * ``GateDecl.timeout_s`` feeds the COMPILE SURFACES ONLY: the
+    * ``GateDecl.timeout_s`` feeds the COMPILE SURFACES only: the
       Mermaid render's hold-node deadline, W1's eternal-wait warning.
-      It NEVER arms the runtime.
+      It never arms the runtime.
     * the WAIT SITE's ``ctx.wait_signal(..., timeout_s=…)`` arms the
       RUNTIME expiry (the hold row's ``expires_at``). When the two
-      disagree, THE WAIT'S VALUE WINS on the rows (pinned); keep them
+      disagree, the WAIT'S VALUE WINS on the rows (pinned); keep them
       equal on purpose."""
 
     name: str
     payload_models: tuple[type[BaseModel], ...]
-    timeout_s: float | None = None
+    timeout_s: timedelta | float | None = None
     on_timeout: str = "fail"
 
 
@@ -252,84 +645,123 @@ class NodeDecl:
     queue: str
     body: BodyFn | None
     parents: tuple[str, ...] = ()
-    #: The wiring's argument sources, IN SIGNATURE ORDER — ``("p", key)``
+    #: The wiring's argument sources, in signature ORDER — ``("p", key)``
     #: for a promise (resolved to that parent's decoded result at run
     #: time), ``("d", value)`` for plain data (rides the row's payload).
-    #: This is the v1 wiring rule: ARGUMENT ORDER IS SIGNATURE ORDER.
+    #: This is the v1 wiring rule: argument ORDER is signature ORDER.
     args: tuple[tuple[str, object], ...] = ()
-    #: The declared failure policy on THIS node's incoming edges (the
-    #: JOIN-FAILURE-POLICY duality — T06/T07): required (fail_closed)
+    #: The declared failure policy on this node's incoming edges (the
+    #: JOIN-FAILURE-POLICY duality): required (fail_closed)
     #: default; the timeout arm resolves per the same policy.
     on_failure: str = "fail_closed"
     max_attempts: int = 3
-    retry_kind: str | None = None
+    retry_kind: RetryKind | None = None
     skip: SkipPredicate | None = None
     gates: tuple[GateDecl, ...] = ()
-    #: THE NODE'S OWN ADMISSION TERMS (CURE 2): the claim path acquires
-    #: these buckets before the body runs — the vanilla ``@actor``'s
-    #: ``rate_limits=`` face on the workflow surface, the SAME registry,
-    #: the SAME denial-snooze path. The fork's children carry the MAP's
-    #: (``map_rate_limits``) / the ARM's (``RouteArm.rate_limits``).
+    #: the claim path acquires these buckets before the body runs — the vanilla
+    #: ``@actor``'s ``rate_limits=`` face on the workflow surface, the same
+    #: registry, the same denial-snooze path. The fork's children carry the
+    #: map's (``map_rate_limits``) / the arm's (``RouteArm.rate_limits``).
     rate_limits: tuple[RateLimitDecl, ...] = ()
+    #: the node's capacity terms ````````````````. The projection carries them
+    #: into the cohort's ``ActorConfig`` (seed-only, operator-owned
+    #: thereafter); the fork's children inherit the source's terms unless the
+    #: arm overrides. NB: ``max_pending`` is deliberately not on this surface
+    #: (the engine's inserts bypass the enqueue admission and the claim SQL
+    #: cannot bound a backlog without wedging it, so the knob was dead; removal
+    #: is the honest scope).
+    max_concurrent: int | None = None
+    reservations: tuple[object, ...] = ()
+    result_ttl: float | None = None
+    #: the node's rows land at this value in the ``jobs.priority`` column; the
+    #: dispatch claim's ``priority DESC`` (the same ORDER BY the vanilla rows
+    #: obey) then serves them ahead of the default-0 backlog. The RESOLUTION
+    #: LAW per row, first non-None wins: the explicit per-call
+    #: (``create_flow``/``run`` ``priority=``) > this declaration > the actor
+    #: handle's (folded in at the wiring when this is None) > the column
+    #: default. The map's children + the route's arms resolve through the SAME
+    #: law (the arms override DOWN from the source). ``None`` = nothing
+    #: declared — the column default applies, the pre-fix byte-identical shape.
+    #: NOT an actor_config axis (the column is the row's own, never the
+    #: cohort's — the vanilla ``ActorRef.priority`` rides the ref and the
+    #: enqueue, never the config row either), so two steps of one actor may
+    #: declare different priorities with no conflict law.
+    priority: int | None = None
+    #: the node's rows land at this value in the row's existing
+    #: ``jobs.start_to_close`` column (nullable, no default —
+    #: migrations/01.00.00_01:85), and the runner's body enforcement reads the
+    #: row (the same ``_enforce_start_to_close`` the vanilla consumer runs —
+    #: the #791 conflation fix, the unwind budget, the hostile-finally handling
+    #: inherited). the resolution law per row, first non-``None`` wins: this
+    #: declaration > the actor handle's (folded in at the wiring when this is
+    #: None) > the row's NULL > the worker's ``default_start_to_close`` (the
+    #: enforcement-time fallback — the ``_effective_start_to_close`` chain's
+    #: own tail). The map's children + the route's arms resolve through the
+    #: same law (the arms override down from the source; the join stays the
+    #: source's own cohort). ``None`` = nothing declared — the column NULL, the
+    #: pre-fix byte-identical row. not an actor_config axis (the deadline is
+    #: the row's own, never the cohort's — two steps of one actor may declare
+    #: different bounds with no conflict law).
+    start_to_close: timedelta | None = None
+    #: "operator" (the default) keeps the estate's seed-only law; "code" makes
+    #: the config sync rewrite the cohort's max_concurrent/result_ttl from the
+    #: projected literal on every boot. The projection carries it into the
+    #: cohort's ``ActorConfig``.
+    capacity_owner: str = "operator"
     kind: str = "step"  # "step" | "map_source" | "gather" | "map_join"
-    # THE PROGRESS SCHEMA DECLARATION (T21 decision a — the TypedGate-door
-    # pattern): a pydantic model the node's ``ctx.progress`` data
-    # emissions must satisfy. On a MAP SOURCE the declaration reaches the
-    # children (the ``<src>.item`` keys resolve it through their source).
+    # a pydantic model the node's ``ctx.progress`` data emissions must satisfy.
+    # On a map source the declaration reaches the children (the ``<src>.item``
+    # keys resolve it through their source).
     progress_schema: type[BaseModel] | None = None
-    # THE MAP ATTACHMENT (the source node owns its fork): the per-item
-    # body + the children's placement/policy. ``map_item is not None`` IS
-    # the map-source marker (the runner's fork decision reads it).
+    # the per-item body + the children's placement/policy. ``map_item is not
+    # None`` is the map-source marker (the runner's fork decision reads it).
     map_item: BodyFn | None = None
     map_queue: str = "default"
     map_max_attempts: int = 3
     map_on_failure: str = "fail_closed"
-    #: THE FAN-IN BOUND'S ESCAPE, EXPOSED AT THE WIRING (the docshelf
-    #: adoption team's F6): the map/route join's ``child_driven`` shape —
-    #: past :data:`MAX_FAN_IN_PER_JOIN` the fork's join counts its
-    #: terminal children FROM THE EDGE LEDGER at fire time (the
-    #: counter-as-cache never trusted; ``metadata.join_shape`` records
-    #: the choice). ``False`` (the default) keeps the bounded declared-
-    #: edge shape the bound exists to protect.
+    #: the map/route join's ``child_driven`` shape — past
+    #: :data:`MAX_FAN_IN_PER_JOIN` the fork's join counts its terminal children
+    #: FROM the edge ledger at fire time (the counter-as-cache never trusted;
+    #: ``metadata.join_shape`` records the choice). ``False`` (the default)
+    #: keeps the bounded declared- edge shape the bound exists to protect.
     map_child_driven: bool = False
-    #: The map's CHILDREN's admission terms (CURE 2 — the plain map's
+    #: The map's children's admission terms (the admission terms — the plain map's
     #: face; the typed route's arms carry their own on the RouteArm).
     map_rate_limits: tuple[RateLimitDecl, ...] = ()
-    # THE TYPED ROUTE ATTACHMENT (T27 — the type-tagged Route's machinery
-    # extended to the graph level): the arms dict keyed by the source's
-    # union members' TYPE TAGS (``module.qualname`` — the chain's
-    # ``type_tag``), each arm the body + its per-arm placement override.
-    # ``map_arms is not None`` IS the route-source marker (the runner's
-    # fork decision reads it; it and ``map_item`` are mutually exclusive —
-    # a node finalizes once, one fork). The route IS a map attachment: the
-    # same join/carrier fields below carry the fork spec. The arm's R is
-    # ERASED to ``object`` at the attachment (the arms' returns are the
-    # join's union — the SUM rides the promise's static type, never the
+    # the arms dict keyed by the source's union members' type tags
+    # (``module.qualname`` — the chain's ``type_tag``), each arm the body + its
+    # per-arm placement override. ``map_arms is not None`` is the route-source
+    # marker (the runner's fork decision reads it; it and ``map_item`` are
+    # mutually exclusive — a node finalizes once, one fork). The route is a map
+    # attachment: the same join/carrier fields below carry the fork spec. The
+    # arm's R is erased to ``object`` at the attachment (the arms' returns are
+    # the join's union — the sum rides the promise's static type, never the
     # decl's field).
     map_arms: dict[str, RouteArm[object]] | None = None
-    # THE MAP'S READ-SIDE AGGREGATE (T21 decision c): the declared pure
-    # fn over the children's result rows — evaluated AT READ TIME, never
-    # a blocking fan-in (DH8's fence).
+    # the map's read-side aggregate (the declared pure
+    # fn over the children's result rows — evaluated at read time, never
+    # a blocking fan-in (the dataflow-only fence).
     map_aggregate: Callable[[list[Any]], object] | None = None
-    # THE LOOP ATTACHMENT (T19): the loop node's spec + the iteration
-    # body + the awaited until-predicate. ``loop_spec is not None`` IS
-    # the loop-node marker. TYPED (the lazy-Any correction): the spec is
-    # the loop module's own declared dataclass — the validator and the
-    # runner consume the FIELD's type, never an object-shaped cast.
+    # the loop node's spec + the iteration body + the awaited until-predicate.
+    # ``loop_spec is not None`` is the loop-node marker. typed (the lazy-Any
+    # correction): the spec is the loop module's own declared dataclass — the
+    # validator and the runner consume the field's type, never an object-shaped
+    # cast.
     loop_spec: LoopSpec | None = None
     loop_body: BodyFn | None = None
     loop_until: Callable[[], Awaitable[bool]] | None = None
-    # THE CHAIN ATTACHMENT (T20): a chain SOURCE node owns its declared
-    # Chain — the chain's step rows exist only from the emit onward
-    # (no NodeDecl); the runner resolves their routes from the compiled
-    # workflow's chains. ``chain is not None`` IS the source marker.
+    # a chain source node owns its declared Chain — the chain's step rows exist
+    # only from the emit onward (no NodeDecl); the runner resolves their routes
+    # from the compiled workflow's chains. ``chain is not None`` is the source
+    # marker.
     chain: object | None = None
-    # THE CROSS-RUN CACHE OPT-IN (T25): the node's result may serve a
-    # LATER run over the same body + the same input (the TEMPORAL dedup
-    # — the arbiter owns the CONCURRENT one). Default OFF: the cache is
-    # a decision, never a surprise. ``cache_ttl`` is the in-DB expiry's
-    # seconds (``None`` = the cache module's 24h default); the wiring
-    # face refuses a TTL without the opt-in and a non-positive TTL.
+    #: The fully resolved source policy. Chain steps use Chain.resolved_policy.
+    execution_policy: ResolvedExecutionPolicy | None = None
+    # the node's result may serve a later run over the same body + the same
+    # input (the temporal dedup — the arbiter owns the concurrent one). Default
+    # off: the cache is a decision, never a surprise. ``cache_ttl`` is the
+    # in-DB expiry's seconds (``None`` = the cache module's 24h default); the
+    # wiring face refuses a TTL without the opt-in and a non-positive TTL.
     cache: bool = False
     cache_ttl: float | None = None
 
@@ -337,12 +769,12 @@ class NodeDecl:
 class Promise[T_co]:
     """The wiring handle to one node's future result.
 
-    A promise is created ONLY by the recorder (``step`` / ``map`` /
+    A promise is created only by the recorder (``step`` / ``map`` /
     ``gather``) — never constructed directly; the data type travels ON the
     promise (the compile's compatibility rule reads it), never through a
     runtime cast.
 
-    THE COVARIANCE (the type-mechanism probes' load-bearing half — proven
+    the COVARIANCE (the type-mechanism probes' load-bearing half — proven
     on pyright 1.1.414 + ty 0.0.85): the type parameter appears in no
     method signature — a promise is only ever READ through (its result
     flows downstream), never written — so the checkers infer COVARIANCE:
@@ -389,17 +821,26 @@ class BuildGraph:
         self.nodes: dict[str, NodeDecl] = {}
         self.sunk: tuple[str, ...] = ()
         self.terminal: str | None = None
-        self.chains: list[object] = []
+        self.chains: list[Chain] = []
         self._auto_counter: dict[str, int] = {}
-        #: The CROSS-GRAPH SMUGGLES recorded by the wiring verbs
-        #: (attack-3 M3's cure): ``(consumer_key, parent_key)`` pairs
-        #: wired from a promise whose home graph is NOT this recorder.
-        #: The verbs RECORD (never raise mid-build — the report is
-        #: one-pass); validate CONVICTS (``E7-cross-graph-promise``,
-        #: error — the graph cannot run). The convicted shape: a foreign
-        #: promise wired under a colliding key builds a silently WRONG
+        #: The cross-graph smuggles recorded by the wiring verbs
+        #: (the smuggle class): ``(consumer_key, parent_key)`` pairs
+        #: wired from a promise whose home graph is not this recorder.
+        #: The verbs record (never raise mid-build — the report is
+        #: one-pass); validate rejects (``E7-cross-graph-promise``,
+        #: error — the graph cannot run). The refused shape: a foreign
+        #: promise wired under a colliding key builds a silently wrong
         #: edge to this app's own same-named node.
         self.smuggles: tuple[tuple[str, str], ...] = ()
+        #: The WorkflowDef's own placement: the ``@app.workflow``
+        #: decorator's declared (actor, queue) — set at compile before
+        #: the build fn runs, so the loop's fallback placement (the
+        #: wiring verbs read it mid-build) resolves the same cohort the
+        #: definition's own rows (the escalation consumer rows) stamp.
+        #: ``None`` = no placement declared — every fallback keeps its
+        #: current default.
+        self.declared_actor: str | None = None
+        self.declared_queue: str | None = None
 
     def record_smuggle(self, consumer_key: str, parent_key: str) -> None:
         """One foreign-promise wiring recorded (the validate report's
@@ -467,7 +908,7 @@ def declared_exit_return(body: object) -> bool:
     ``Report | Exit[Report]`` body is as exit-terminal as a bare
     ``Exit[Report]``); an UNRESOLVABLE annotation resolves to no hint —
     the skip (the zero-false-positive doctrine: a guess is never
-    convicted)."""
+    rejected)."""
     from types import UnionType
     from typing import Union
 
@@ -486,26 +927,31 @@ def declared_exit_return(body: object) -> bool:
 
 
 def step[R](
-    body: Callable[..., Awaitable[R]],
+    body: Callable[Concatenate[StepContext, ...], Awaitable[R]],
     *args: object,
     key: str | None = None,
     actor: str = "wf",
     queue: str = "default",
     on_failure: EdgeFailurePolicy = "fail_closed",
-    max_attempts: int = 3,
+    max_attempts: int | None = None,
     retry_kind: str | None = None,
     skip: SkipPredicate | None = None,
     gates: tuple[GateDecl, ...] = (),
     progress_schema: type[BaseModel] | None = None,
     rate_limits: tuple[RateLimitDecl, ...] | list[RateLimitDecl] = (),
+    max_concurrent: int | None = None,
+    reservations: tuple[object, ...] | list[object] | None = (),
+    result_ttl: timedelta | float | None = None,
+    priority: int | None = None,
+    start_to_close: timedelta | None = None,
     cache: bool = False,
-    cache_ttl: float | None = None,
+    cache_ttl: timedelta | float | None = None,
 ) -> Promise[R]:
-    """Wire ONE node: ``p = step(fetch_body, params)`` — the promise is
+    """Wire one node: ``p = step(fetch_body, params)`` — the promise is
     ``Promise[R]`` where ``R`` is the BODY's declared return (inferred —
     the mechanism, not a cast: a PLAIN-FUNCTION body annotated
-    ``-> Report`` wires a ``Promise[Report]``). THE BOUNDARY (the honest
-    edge of the promise): an ``@app.actor``-wrapped body does NOT carry
+    ``-> Report`` wires a ``Promise[Report]``). the BOUNDARY (the honest
+    edge of the promise): an ``@app.actor``-wrapped body does not carry
     the inference — the actor handle's ``__call__`` returns ``object``
     (the checker cannot see through the wrapper), so wiring one degrades
     the promise to ``Promise[object]`` and the downstream decoding rides
@@ -516,20 +962,20 @@ def step[R](
     there are several — the join's user body IS this node's body, run
     inside the join's finalize tx with the DECODED parent results); plain
     arguments ride the node payload. ``skip=`` is the dispatch-time
-    predicate (cut #4). ``progress_schema=`` is the node's DECLARED
-    progress payload schema (T21 — the TypedGate-door pattern): the
+    predicate. ``progress_schema=`` is the node's DECLARED
+    progress payload schema (the TypedGate-door pattern): the
     body's ``ctx.progress`` data emissions are validated against it, a
     wrong shape refused (the declaration is what makes a separate UI
     render the emission — the context-contract law).
 
-    ``rate_limits=`` is the node's ADMISSION TERMS (the consumer-face
-    lane's CURE 2 — the vanilla ``@actor``'s own face): the claim path
-    acquires the buckets through the SAME registry the vanilla pre-flight
+    ``rate_limits=`` is the node's ADMISSION TERMS (the vanilla
+    ``@actor``'s own face): the claim path
+    acquires the buckets through the same registry the vanilla pre-flight
     reads (a denial snoozes the row budget-free — the queue-concurrency
     fence's own path); the fork stamps the names onto the child rows so
     the row carries its own terms.
 
-    THE CROSS-RUN CACHE OPT-IN (T25): ``cache=True`` lets this step's
+    ``cache=True`` lets this step's
     result serve a LATER run over the same body + the same input — the
     TEMPORAL dedup (the run-key arbiter owns the CONCURRENT one; two
     concurrent misses both run their bodies). The cache stores on
@@ -538,15 +984,15 @@ def step[R](
     decodes the same typed shape), and stamps the node row's metadata
     with the receipt (the address + the producing run's id).
     ``cache_ttl=`` is the in-DB expiry's seconds (default 24h).
-    THE DETERMINISM HAZARD, stated plainly: the cache assumes the body
+    DETERMINISM HAZARD, stated plainly: the cache assumes the body
     is DETERMINISTIC for the same input — a non-deterministic body with
     ``cache=True`` is the stale truth BY CHOICE (the address promises
     "same body, same input"; it cannot promise the world stood still).
-    THE ADDRESS'S SCOPE (the which-input-counts law): the address
-    covers the body's OWN source + the WIRED args — a changed HELPER is
+    The address
+    covers the body's own source + the WIRED args — a changed HELPER is
     invisible to the address (bump the body's own source when the
     closure's truth changes — the documented contract), and the FLOW
-    input (``ctx.input``) NEVER enters it. That scope is why the
+    input (``ctx.input``) never enters it. That scope is why the
     refusals below exist: a body reading ``ctx.input`` is refused (the
     flow input differs per run — the cross-tenant leak; a SOURCE node's
     run input is its only input, so wire the spec IN as data or lift it
@@ -557,14 +1003,14 @@ def step[R](
     source is refused (the cache cannot hash what it cannot read —
     without the refusal the step is silently uncached).
 
-    THE TWO FACES (be honest about the boundary): the checker reads the
+    TWO FACES (be honest about the boundary): the checker reads the
     HANDLE flow (R's inference, the promise threading, build's
     ``Promise[Never]`` residuals — and the ELEMENT law on the handle:
     ``Promise[list[Word]]`` is not ``Promise[list[str]]``, the covariant
     promise + the invariant list). The DECODED-payload compat between a
     producer's declared data type and this body's param types is the
     validator's face (``validate()``'s ``E5-incompatible-consumer`` —
-    since the engine-faces cure, at the ELEMENT level too: a
+    since the engine-faces fix, at the ELEMENT level too: a
     ``list[Word]`` producer wired into a ``list[str]`` consumer refuses
     at build) — the bodies take decoded data, not handles, so the wiring
     call itself is erased to ``object`` and the checker cannot see the
@@ -575,10 +1021,74 @@ def step[R](
     graph = active_graph()
     keys, _data = _promise_args(args)
     node_key = key or graph.auto_key(getattr(body, "__name__", "step"))
-    # THE NAMING RULE (cut #6's API-compile face): a DOTTED wiring key is
-    # refused — the fork's derived namespace (``<key>.item``,
-    # ``<key>.join``, ``<key>.iter<i>``) owns the dot; a wiring key
-    # carrying one collides with the engine's own derived keys (the
+    # an ``@app.actor(max_concurrent=…, reservations=…)``-wrapped body wired
+    # here carries its terms as the node's admission defaults — the explicit
+    # step params override, never the reverse. Placement
+    # (``actor=``/``queue=``) stays the step's own decision (the handle's name
+    # is not the node's actor: the wiring's placement law is unchanged).
+    from taskq.workflows.api._app import (  # the cycle-break (inner_fn's own pattern)
+        ACTOR_MAX_ATTEMPTS_DEFAULT,
+        ACTOR_RETRY_KIND_DEFAULT,
+        WorkflowActor,
+    )
+
+    # "operator" unless the wired body is a code-owned handle (below) — the
+    # per-actor declaration, defaulted.
+    capacity_owner = "operator"
+    handle = body if isinstance(body, WorkflowActor) else None
+    if handle is not None:
+        if max_concurrent is None:
+            max_concurrent = getattr(handle, "max_concurrent", None)
+        if not reservations:
+            handle_res = getattr(handle, "reservations", ())
+            reservations = tuple(handle_res) if handle_res else ()
+        if result_ttl is None:
+            result_ttl = getattr(handle, "result_ttl", None)
+        if priority is None:
+            priority = getattr(handle, "priority", None)
+            # the handle's declared bound is the node's default — the explicit step
+        # param overrides, never the reverse.
+        if start_to_close is None:
+            start_to_close = getattr(handle, "start_to_close", None)
+            # the handle's declared retry terms are the step's defaults — a
+        # declared value (different from the decorator's own defaults) fills
+        # the step's unset slot, and the step's explicit param still overrides.
+        # A bare handle declares nothing: its decorator defaults are not a
+        # declaration, so an undeclared wiring leaves the node byte-identical
+        # to the unwired form (max_attempts 3, retry_kind None).
+        if retry_kind is None and getattr(handle, "retry_kind", None) != ACTOR_RETRY_KIND_DEFAULT:
+            retry_kind = handle.retry_kind
+            # the handle's declaration is the node's — the projection carries it
+        # into the cohort's ActorConfig, where the config sync's code-owned
+        # upsert reads it. The wiring surface has no override kwarg of its own:
+        # the declaration is per-actor (the handle's), never per-node.
+        capacity_owner = handle.capacity_owner
+        # the step's sentinel (``None``) means "the handle's declared attempts,
+    # else the three-attempt default" — the declared handle value (seven)
+    # reaches the node, the handle's decorator default does not (it is not a
+    # declaration), and the step's own explicit count (three included — the
+    # sentinel makes declared-three distinguishable from unset) always wins.
+    if max_attempts is None:
+        declared_attempts: int | None = (
+            getattr(handle, "max_attempts", None) if handle is not None else None
+        )
+        if declared_attempts is not None and declared_attempts != ACTOR_MAX_ATTEMPTS_DEFAULT:
+            max_attempts = declared_attempts
+        else:
+            max_attempts = 3
+        # the resolved declaration (the step's own or the handle's folded default)
+    # is checked once here — a value the smallint column cannot store is
+    # refused at the wiring, before any row exists. ``None`` rides (it means
+    # "nothing declared — the column default").
+    if priority is not None:
+        check_priority_domain(priority, what=f"step {node_key!r}'s priority")
+        # the resolved declaration is checked once here — a non-timedelta or a
+    # non-positive bound is refused at the wiring, before any row exists.
+    # ``None`` rides (nothing declared — the row's column NULL).
+    check_start_to_close_decl(start_to_close, what=f"step {node_key!r}'s")
+    # a dotted wiring key is refused — the fork's derived namespace
+    # (``<key>.item``, ``<key>.join``, ``<key>.iter<i>``) owns the dot; a
+    # wiring key carrying one collides with the engine's own derived keys (the
     # parent-by-string-split dragon's remaining seam).
     if "." in node_key:
         raise WorkflowBuildError(
@@ -586,20 +1096,47 @@ def step[R](
             "derived namespace (the map's <key>.item / <key>.join, the "
             "loop's <key>.iter<i>); a wiring key may not collide with it"
         )
-    # THE CACHE OPT-IN'S OWN REFUSALS (T25): the mechanically-impossible
-    # at the wiring site (the dotted-key precedent). A TTL on a
-    # NON-cache is a silent no-op parameter (the surprise family); a
-    # non-positive TTL is an always-expired cache (the lie); a cache on
-    # the MULTI-PARENT fan-in is outside the v1 surface (the plain step
-    # is the cached shape — the gather's join face is the engine's own
-    # machinery).
+        # the key is a URL path segment (the admin's affordances address nodes by
+    # key — /nodes/<key>) and a Mermaid label; these characters 404 the
+    # affordances or kill the graph render, so they never compile: /, ?, #, %
+    # (the URL's own syntax), both quotes (the Mermaid label's delimiter), and
+    # control characters (incl. newlines — the label's injected-structure
+    # door). Edge whitespace refuses too (a key the operator cannot address
+    # exactly).
+    _forbidden = next(
+        (ch for ch in node_key if ch in "/?#%\"'" or ord(ch) < 0x20 or ch == "\x7f"),
+        None,
+    )
+    if _forbidden is not None:
+        raise WorkflowBuildError(
+            f"node key {node_key!r} carries {_forbidden!r} "
+            f"(U+{ord(_forbidden):04X}) — the key is a URL path segment (the "
+            "admin affordances address nodes by key) and a Mermaid label: "
+            "/, ?, #, %, quotes and control characters 404 the affordances "
+            "or break the graph render; rename the node (letters, digits, "
+            "'-', '_', and — within the derived namespace's law — no dot)"
+        )
+    if node_key != node_key.strip():
+        raise WorkflowBuildError(
+            f"node key {node_key!r} carries leading/trailing whitespace — the "
+            "key is a URL path segment (the admin affordances address nodes "
+            "by key): an unaddressable key 404s its own panel; rename the "
+            "node without the edge whitespace"
+        )
+        # the mechanically-impossible at the wiring site (the dotted-key
+    # precedent). A TTL on a non-cache is a silent no-op parameter (the
+    # surprise family); a non-positive TTL is an always-expired cache (the
+    # lie); a cache on the multi-parent fan-in is outside the v1 surface (the
+    # plain step is the cached shape — the gather's join face is the engine's
+    # own machinery).
     if cache_ttl is not None and not cache:
         raise WorkflowBuildError(
             f"node {node_key!r} declares cache_ttl without cache=True — "
             "a TTL on a cache that does not exist is a silent no-op "
             "(the cache is a decision, never a surprise): pass cache=True"
         )
-    if cache and cache_ttl is not None and cache_ttl <= 0:
+    cache_ttl_s = duration_seconds(cache_ttl)
+    if cache and cache_ttl_s is not None and cache_ttl_s <= 0:
         raise WorkflowBuildError(
             f"node {node_key!r} declares cache_ttl={cache_ttl} — a "
             "non-positive TTL is an always-expired cache (the lie): a "
@@ -612,23 +1149,18 @@ def step[R](
             "step: the gather's join face is the engine's own machinery, "
             "not a cacheable body's"
         )
-    # THE ADDRESS-SCOPE REFUSALS (the cache-cures round): two more
-    # mechanically-impossible shapes, both LIES the address cannot see —
-    #
-    # * the body reads ``ctx.input`` (CURE 3 — THE CROSS-TENANT LEAK):
-    #   the address covers the WIRED args only; the FLOW input never
-    #   enters it. A cached answer produced under one flow input serves
-    #   a LATER run whose flow input differs — tenant A's answer
-    #   delivered to tenant B, terminal-success, audits clean (the live
-    #   repro: .measurements/cache-cures/ctx_input_leak_repro.py). The
-    #   typed refusal names the fix: lift the flow input into the
-    #   dataflow with an UNcached upstream step and wire its result as a
-    #   PARAM — the param enters the address, the value differs per
-    #   input, the cache caches per value.
-    # * the body returns the Exit sentinel (CURE 6b): an Exit
-    #   terminalizes through the exit finalize, which the success-only
-    #   store never sees — cache=True would silently no-op (every run
-    #   re-executes the body while the operator believes it caches).
+        # two more mechanically-impossible shapes, both lies the address cannot see
+    # — * the body reads ``ctx.input`` — the cross-tenant leak: the address
+    # covers the wired args only; the flow input never enters it. A cached
+    # answer produced under one flow input serves a later run whose flow input
+    # differs — tenant A's answer delivered to tenant B, terminal-success,
+    # audits clean. The typed refusal names the fix: lift the flow input into
+    # the dataflow with an UNcached upstream step and wire its result as a
+    # param — the param enters the address, the value differs per input, the
+    # cache caches per value. * the body returns the Exit sentinel: an Exit
+    # terminalizes through the exit finalize, which the success-only store
+    # never sees — cache=True would silently no-op (every run re-executes the
+    # body while the operator believes it caches).
     if cache and bool(ctx_input_reads(body)):
         raise WorkflowBuildError(
             f"node {node_key!r} declares cache=True but its body reads "
@@ -651,44 +1183,40 @@ def step[R](
             "believes it caches). Return the DATA result (the declared "
             "R) and let the cache hold it, or drop cache=True"
         )
-    # THE UNVERIFIABLE-SOURCE PRECONDITION (the cache-cures round's
-    # AMENDMENT B — the import-probe's #3): the address requires the
-    # §22.1 code-version canon (module + qualname + the body's OWN
-    # source, through the same own_source read the stamper and the
-    # validator share) — an UNVERIFIABLE source (a builtin, a partial,
-    # an exec'd fragment whose slice cannot be proven its own) made the
-    # step SILENTLY uncached: the wiring accepted cache=True, every run
-    # re-executed the body, and the ONLY trace was the
-    # ``step-cache-unaddressable`` log line (the live repro:
-    # .measurements/cache-cures/unverifiable_source_silent_repro.py).
-    # The operator must never learn the face from a missing hit — the
-    # precondition refuses here, by name. The read is DETERMINISTIC (the
-    # runner's own hash reads the same source through the same seam), so
-    # the refusal carries no false-positive risk: a source the wiring
-    # cannot read is a source the claim path will never hash.
+        # the address requires the code-version canon (module + qualname + the
+    # body's own source, through the same own_source read the stamper and the
+    # validator share) — an unverifiable source (a builtin, a partial, an
+    # exec'd fragment whose slice cannot be proven its own) made the step
+    # silently uncached: the wiring accepted cache=True, every run re-executed
+    # the body, and the only trace was the ``step-cache-unaddressable`` log
+    # line (the live repro: recorded live). The operator must never learn the
+    # face from a missing hit — the precondition refuses here, by name. The
+    # read is deterministic (the runner's own hash reads the same source
+    # through the same seam), so the refusal carries no false-positive risk: a
+    # source the wiring cannot read is a source the claim path will never hash.
     if cache and own_source(body) is None:
         raise WorkflowBuildError(
             f"node {node_key!r} declares cache=True but its body's "
             "source is not verifiable (a builtin, a partial, or an "
             "exec'd fragment — the cache cannot hash what it cannot "
-            "read): the address requires the §22.1 code-version canon "
+            "read): the address requires the code-version canon "
             "(module + qualname + the body's own source), and an "
             "unverifiable source made this step SILENTLY uncached — "
             "every run re-executes the body while the cache machinery "
             "looks armed. Define the body as a module-level def its "
             "source can be read from, or drop cache=True"
         )
-    # THE SMUGGLE CHECK (attack-3 M3's cure): a promise arg whose home
-    # recorder is NOT this graph is RECORDED — validate convicts it
+    # The smuggle check (the smuggle class): a promise arg whose home
+    # recorder is not this graph is recorded — validate rejects it
     # (E7-cross-graph-promise, error) before any row is written. The
-    # convicted shape: a foreign promise wired under a colliding key
-    # resolves its edge against THIS app's own same-named node — a
-    # silently WRONG edge, clean at build, invisible to every rule that
+    # refused shape: a foreign promise wired under a colliding key
+    # resolves its edge against this app's own same-named node — a
+    # silently wrong edge, clean at build, invisible to every rule that
     # reads only keys.
     for arg in args:
         if isinstance(arg, Promise) and arg.graph is not graph:
             graph.record_smuggle(node_key, arg.key)
-    # The argument sources IN ORDER (the wiring rule: argument order is
+    # The argument sources in ORDER (the wiring rule: argument order is
     # signature order — a promise position resolves to the parent's
     # decoded result, a data position to the value itself).
     sources: list[tuple[str, object]] = []
@@ -697,10 +1225,32 @@ def step[R](
             sources.append(("p", arg.key))
         else:
             sources.append(("d", arg))
-    # THE LOUD DOOR at the wiring site (the keyed-ref refusal — before
-    # any row exists); the DECLS ride the node (the boot's collect pass
-    # registers the instances, the fork stamps the names).
+        # the static faces' names resolve here (a malformed shape is refused before
+    # any row exists); the decls ride the node (the boot's collect pass
+    # registers the instances, the fork stamps the per-child names).
     rate_limit_names(tuple(rate_limits), what=f"step {node_key!r}'s rate_limits")
+    reservation_names(tuple(reservations or ()), what=f"step {node_key!r}'s reservations")
+    # a keyed ref resolves from the row's declared payload. A node with parents
+    # resolves its body args from the parent results at dispatch — no payload
+    # exists at create, so a keyed declaration there could never stamp an
+    # honest name: refused at the wiring (the keyed shapes declare on the entry
+    # step — the run input — or on a map/route fan-out, where each child's own
+    # payload resolves the key).
+    if keys and any(
+        isinstance(entry, KeyedRateLimitRef | KeyedReservationRef)
+        for entry in (*rate_limits, *(reservations or ()))
+    ):
+        raise WorkflowBuildError(
+            f"step {node_key!r}: a keyed admission term (KeyedRateLimitRef/"
+            "KeyedReservationRef) is declared on a node whose payload "
+            "resolves from its parent results at dispatch — the child's key "
+            "cannot resolve at create, so the row could never carry an "
+            "honest concrete name. Declare the keyed shape on the entry "
+            "step (the run input) or on a map/route fan-out (each child's "
+            "own payload resolves the key)."
+        )
+    if retry_kind is not None:
+        retry_kind = canonical_retry_kind(retry_kind, what=f"step {node_key!r}'s retry_kind")
     graph.add(
         NodeDecl(
             key=node_key,
@@ -716,15 +1266,21 @@ def step[R](
             gates=gates,
             progress_schema=progress_schema,
             rate_limits=tuple(rate_limits),
+            max_concurrent=max_concurrent,
+            reservations=tuple(reservations or ()),
+            result_ttl=duration_seconds(result_ttl),
+            priority=priority,
+            start_to_close=start_to_close,
+            capacity_owner=capacity_owner,
             cache=cache,
-            cache_ttl=cache_ttl,
+            cache_ttl=duration_seconds(cache_ttl),
             kind="gather" if len(keys) > 1 else "step",
         )
     )
     return cast(
         "Promise[R]",
         Promise(node_key, getattr(body, "__annotations__", {}).get("return", object), graph),
-    )  # Why: the promise's STATIC type is the generic R (the body's declared return — the checker's face); the runtime data_type stays the annotation's DECLARATION (string under future-annotations), read back by validate()'s compat rule. The constructor does not bind R — the cast is the seam.
+    )  # Why: the promise's static type is the generic R (the body's declared return — the checker's face); the runtime data_type stays the annotation's declaration (string under future-annotations), read back by validate()'s compat rule. The constructor does not bind R — the cast is the seam.
 
 
 @overload
@@ -773,22 +1329,22 @@ def map_source[S, R](
     generic threads through every child body, the mechanism's map face).
     The map attaches to the SOURCE node (its finalize forks the
     children — the engine's FORK ATOMICITY); a second map on the same
-    source is refused (a node finalizes ONCE — one fork).
+    source is refused (a node finalizes once — one fork).
 
-    THE DICT FORM IS THE TYPED ROUTE (T27 — the reviewer's (b), the
+    the DICT FORM IS the TYPED ROUTE (the
     per-element case): ``map_source(src, {A: fn_a, B: fn_b})`` keys the
     arms by the source's union members' TYPES — each element runs ITS
     type's arm as a fresh job (the fork stamps the child's placement
     from the arm's ``RouteArm``), the child rows feed the same derived
     join (the join-back BY CONSTRUCTION), and the join packs the arms'
-    returns — the typed sum. This lowers through the SAME attachment the
+    returns — the typed sum. This lowers through the same attachment the
     :func:`route` verb spells; the two spellings are one machinery.
-    Totality is the fence at BOTH compile doors (the verb's refusal and
+    Totality is the fence at both compile doors (the verb's refusal and
     the validator's ``E15-route-totality``) plus the runtime loud door
     (``RouterNotTotal``): the route's keys must cover the union's
     members EXACTLY.
 
-    THE JOIN KEY IS DERIVED (the map has NO ``key=`` param — the
+    the JOIN KEY IS DERIVED (the map has no ``key=`` param — the
     teardown round's removal, documented in the changelog): the engine's
     fork + the runner address the map join by the SOURCE's own key +
     ``'.join'`` (the addressing is load-bearing across the fork's
@@ -800,14 +1356,14 @@ def map_source[S, R](
     is GONE. To name the node, name the SOURCE (``step(source_body,
     key=…)``) — the join's key follows.
 
-    ``aggregate=`` is the map's DECLARED READ-SIDE aggregate (T21
-    decision c): a PURE fn over the children's decoded result rows,
+    ``aggregate=`` is the map's DECLARED READ-SIDE aggregate (the
+    TypedGate-door pattern's own shape): a PURE fn over the children's decoded result rows,
     evaluated AT READ TIME by the aggregation surfaces
-    (:func:`taskq.workflows._progress_read.read_map_aggregate`) — NEVER a
-    blocking fan-in (DH8's fence: the join node is for DATAFLOW; a
+    (:func:`taskq.workflows._progress_read.read_map_aggregate`) — never a
+    blocking fan-in (the dataflow-only fence: the join node is for DATAFLOW; a
     progress question is answered at read, unblocked, mid-flight).
 
-    ``rate_limits=`` is the CHILDREN's admission terms (CURE 2 — the
+    ``rate_limits=`` is the CHILDREN's admission terms (the admission terms — the
     plain map's face): the fork stamps the names onto every child row;
     the typed route's dict form carries the per-arm buckets on the
     ``RouteArm``s instead (a route-level ``rate_limits=`` would lie about
@@ -824,8 +1380,8 @@ def map_source[S, R](
                 aggregate=aggregate,
                 child_driven=child_driven,
             ),
-        )  # Why: the promise's STATIC type is the overload's Promise[list[R]] (R solved at the call site); the attachment erases to list[object] — the cast is the seam.
-    # THE LOUD DOOR at the wiring site (the keyed-ref refusal — the same
+        )  # Why: the promise's static type is the overload's Promise[list[R]] (R solved at the call site); the attachment erases to list[object] — the cast is the seam.
+    # the loud door at the wiring site (the keyed-ref refusal — the same
     # door step() keeps).
     rate_limit_names(tuple(rate_limits), what=f"map_source {source.key!r}'s rate_limits")
     graph = source.graph
@@ -836,20 +1392,20 @@ def map_source[S, R](
             "graph — maps attach to a wired source"
         )
     if source_node.map_item is not None or source_node.map_arms is not None:
-        # THE DOUBLE-ATTACH REFUSAL, BOTH SPELLINGS (the rv4 cure — the
-        # message-level lie fixed): the pre-cure check read map_item
-        # only — a map over a ROUTED source attached ON TOP silently
-        # (the map_item clobbered the route's placement fields, the
+        # The double-attach refusal, both spellings: a map over a routed
+        # source attached on top would
+        # clobber the route's placement fields (the
         # route's arms dead, the runner's map branch winning the elif),
-        # and the error's own text ("already carries a map") lied about
-        # the attachment it refused. Both attachments refused, the text
-        # names WHICH.
+        # and an error that said only "already carries a map" would
+        # misname the attachment it refused. Both attachments refused, the text
+        # names which.
         carried = "a map" if source_node.map_item is not None else "a typed route"
         raise WorkflowBuildError(
             f"node {source.key!r} already carries {carried} — a node "
             "finalizes once (one fork); wire the second map or route "
             "from a distinct source"
         )
+    _refuse_unbound_keyed_reservations(source_node, what=f"map_source {source.key!r}")
     source_node.map_item = body
     source_node.map_queue = queue
     source_node.map_max_attempts = max_attempts
@@ -857,13 +1413,25 @@ def map_source[S, R](
     source_node.map_aggregate = aggregate
     source_node.map_child_driven = child_driven
     source_node.map_rate_limits = tuple(rate_limits)
+    # the map's body carries capacity terms and the placement keeps the node's
+    # actor (the map has no actor override — ``map_queue`` only): the terms
+    # flow into the node's unset slots (the children share the node's cohort),
+    # never silently dropped. The gate is is-handle, not is-capped: the owner
+    # is a carried value on every handle (the default "operator" is a value,
+    # not an absence), so a default handle meeting a node that already carries
+    # a different owner is the named conflict (one cohort, one owner) — while a
+    # default handle alone writes nothing.
+    from taskq.workflows.api._app import WorkflowActor  # the cycle-break (inner_fn's own pattern)
+
+    if isinstance(body, WorkflowActor):
+        _wire_handle_terms_into_node(source_node, body, what=f"map {source.key!r}")
     join_key = f"{source.key}.join"
     graph.add(
         NodeDecl(
             key=join_key,
             actor=source_node.actor,
             queue=queue,
-            body=None,  # the default identity packer (the join's result IS the items' list)
+            body=None,  # the default identity packer (the join's result is the items' list)
             parents=(source.key,),
             on_failure=on_failure,
             kind="map_join",
@@ -873,11 +1441,11 @@ def map_source[S, R](
     return cast(
         "Promise[list[R]]",
         Promise(join_key, list[item_type] if isinstance(item_type, type) else object, graph),
-    )  # Why: the join promise's STATIC type is the flat Promise[list[R]] (R from the per-item body); the runtime data_type stays the wiring's DECLARATION read back by validate(). The constructor does not bind R — the cast is the seam.
+    )  # the join promise's static type is the flat Promise[list[R]] (R from the per-item body); the runtime data_type stays the wiring's declaration read back by validate(), and the constructor does not bind R — the cast is the seam.
 
 
 def route_child_key(source_key: str, type_tag: str) -> str:
-    """The route child's DERIVED step key (T27 — one home; the register,
+    """The route child's DERIVED step key (one home; the register,
     the runner and the validator derive the same address): the map's own
     ``<source>.item`` namespace extended by the arm's TYPE TAG —
     ``<source>.item:<module.qualname>``. The row's step_key NAMES its arm
@@ -898,7 +1466,7 @@ def _attach_route[S](
     aggregate: Callable[[list[Any]], object] | None,
     child_driven: bool = False,
 ) -> Promise[list[object]]:
-    """THE TYPED ROUTE'S LOWERING (T27 — the type-tagged Route's machinery
+    """the TYPED ROUTE'S LOWERING (the type-tagged Route's machinery
     extended to the graph level): the arms are keyed by the source's
     union MEMBERS' types; the source node carries the attachment
     (``map_arms``, keyed by the members' type tags) and the derived
@@ -906,7 +1474,7 @@ def _attach_route[S](
     is BY CONSTRUCTION (every routed child is a fork child with an edge
     to the join).
 
-    THE VERB'S DOOR (the map_source precedent — the mechanically-
+    the VERB'S DOOR (the map_source precedent — the mechanically-
     impossible refuses at the wiring site): an EMPTY arms dict, a
     non-TYPE key, a source that already carries an attachment (a node
     finalizes once — one fork), a source whose declared return does not
@@ -928,20 +1496,20 @@ def _attach_route[S](
     normalized: dict[str, RouteArm[object]] = {}
     tag_owners: dict[str, type] = {}  # the tag injectivity's ledger (the twin refusal reads it)
     for key, value in arms.items():
-        if not isinstance(key, type):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the keys are statically `type` — but the STRING KEY is the lie this door convicts (the corpus's probe rides it; E13's own pattern: the runtime check IS the subject).
+        if not isinstance(key, type):  # pyright: ignore[reportUnnecessaryIsInstance] — the keys are statically `type`, but the string key is the lie this door rejects (E13's pattern: the runtime check is the subject).
             raise WorkflowBuildError(
                 f"route() arm key {key!r} is not a TYPE — the route's keys "
                 "are the source's union MEMBERS (the type IS the tag; a "
                 "string key is the enum face's habit, refused here)"
             )
-        # THE TAG-INJECTIVITY REFUSAL (the rv4 cure — the same-qualname
-        # twin): the tag (module.qualname) is the arms' IDENTITY — two
+        # The tag-injectivity refusal: the tag (module.qualname) is the
+        # arms' identity — two
         # distinct classes sharing one tag (the same-qualname twin:
         # same module, same qualname — a class defined twice, a helper
-        # factory's products) collapsed SILENTLY, the second arm
-        # overwriting the first in the normalized map (the route routed
-        # the twin's elements to the WRONG body, clean at build). The
-        # refusal names both owners and the fix.
+        # factory's products) would collapse silently, the second arm
+        # overwriting the first in the normalized map (the route would
+        # route the twin's elements to the wrong body, clean at build).
+        # The refusal names both owners and the remedy.
         tag = type_tag(key)
         owner = tag_owners.get(tag)
         if owner is not None and owner is not key:
@@ -954,12 +1522,47 @@ def _attach_route[S](
                 "its tag"
             )
         tag_owners[tag] = key
-        # The R-erase at the attachment (the SUM rides the promise's
+        # The R-erase at the attachment (the sum rides the promise's
         # static type, never the decl's field — the cast is the seam).
         arm = cast(
             "RouteArm[object]",
             value if isinstance(value, RouteArm) else RouteArm(body=value),
         )
+        # The priority domain (step()'s own law — the wiring site
+        # refuses before any row exists): the arm's override checked at
+        # the same door the arms normalize through (both map_source's
+        # dict form and route() lower here).
+        if arm.priority is not None:
+            check_priority_domain(arm.priority, what=f"route arm {tag!r}'s priority")
+        # The deadline's domain (the same door): the arm's own bound
+        # checked at the wiring — the same
+        # refusal the step's and the actor's declarations raise.
+        check_start_to_close_decl(arm.start_to_close, what=f"route arm {tag!r}'s")
+        # The arm's own owner-shape door (the owner axis — the
+        # priority surface's door shape): the arm's declared owner is
+        # exactly one of the two names, validated at the wiring both
+        # this lower and the map_source dict form share.
+        validate_capacity_owner(arm.capacity_owner, what=f"route arm {tag!r}'s")
+        # The arm's reservation-cohort door: an arm declares no payload
+        # of its own — a keyed reservation in an arm's ``reservations=``
+        # could only re-derive per element (the per-item bucket the
+        # cohort law never stamps). Refused at the wiring, the rule
+        # stated: the source step's own face resolves the run's cohort,
+        # the arms ride it.
+        for entry in arm.reservations or ():
+            if isinstance(entry, KeyedReservationRef):
+                raise WorkflowBuildError(
+                    f"route arm {tag!r}: a KeyedReservationRef(base_name="
+                    f"{entry.base_name!r}) in an arm's reservations= is the "
+                    "refused declaration — an arm declares no payload of its "
+                    "own, so the ref could only re-derive per element (a "
+                    "per-item bucket the run's cohort law never stamps). "
+                    "The rule: a fan-out source's children RIDE the source "
+                    "row's already-resolved reservation names — one concrete "
+                    "bucket per RUN. Declare the keyed reservation on the "
+                    "source step (its declared payload face resolves it), "
+                    "and the arms ride the source's cohort."
+                )
         normalized[tag] = arm
     graph = source.graph
     source_node = graph.nodes.get(source.key)
@@ -973,21 +1576,57 @@ def _attach_route[S](
             f"node {source.key!r} already carries a map or a route — a node "
             "finalizes once (one fork); wire the second from a distinct source"
         )
+    _refuse_unbound_keyed_reservations(source_node, what=f"route {source.key!r}")
+    # an arm overriding the actor stamps none of the source's reservation names
+    # (a different cohort — inheriting the source's cap onto it would be the
+    # silent lie) — so the override would silently drop the run's own keyed
+    # cap: the arm's children running outside the run's per-run bucket. The
+    # same law the capped handle keeps (an override may not drop a cap
+    # silently): the wiring refuses.
+    for tag, arm in normalized.items():
+        if (
+            arm.actor is not None
+            and arm.actor != source_node.actor
+            and any(isinstance(entry, KeyedReservationRef) for entry in source_node.reservations)
+        ):
+            raise WorkflowBuildError(
+                f"route arm {tag!r} overrides the actor to {arm.actor!r} while "
+                f"the source step {source.key!r} declares a keyed reservation — "
+                "the override drops the run's own cap: the arm's children "
+                "would run OUTSIDE the run's per-run bucket (a different "
+                "cohort stamps none of the source's names). THE RULE: the "
+                "run's cap holds or the wiring refuses — keep the arms on "
+                "the source's actor (they ride the source's cohort), or "
+                "split the arm onto its own step with its own declared cap."
+            )
+            # a same-actor arm declaring its own reservation names stamps its names
+        # on the arm's rows — the source's keyed run cap never rides them (the
+        # arm's rows leave the run's cohort). The override law's other face:
+        # the run's cap holds or the wiring refuses.
+        if arm.reservations and any(
+            isinstance(entry, KeyedReservationRef) for entry in source_node.reservations
+        ):
+            raise WorkflowBuildError(
+                f"route arm {tag!r} declares its own reservations while the "
+                f"source step {source.key!r} declares a keyed reservation — "
+                "the arm's own names replace the run's keyed cap on the "
+                "arm's rows (the silent drop of the run's per-run bucket). "
+                "THE RULE: the run's cap holds or the wiring refuses — "
+                "either keep the source's (drop the arm's own "
+                "reservations= so the arm rides the source's cohort), or "
+                "put the arm on its own step with its own declared cap."
+            )
     if source_node.cache:
-        # THE ROUTE-SOURCE WEDGE'S REFUSAL (the cache-cures round's
-        # CURE 1 — MERGE-BLOCKER P8f): cache=True on a typed-route
-        # source wedges the run FOREVER at the first cache hit — the
-        # hit path never rebuilds the route fork (the arm dispatch
-        # reads the element's RUNTIME type; the cached envelope carries
-        # only encoded dicts — the fork CANNOT be rebuilt from it), the
-        # route children never spawn, the join never fires, and the run
-        # stands wedged with the source row reading `succeeded` wearing
-        # a wf_cache_hit receipt (the live repro:
-        # .measurements/cache-cures/route_wedge_repro.py). The typed
-        # refusal names the alternative: the fork is the engine's own
-        # machinery — cache the deterministic ARM BODIES' work (each
-        # arm's expensive step its own cache=True), never the
-        # fork-spawning source.
+        # cache=True on a typed-route source wedges the run forever at the
+        # first cache hit — the hit path never rebuilds the route fork (the arm
+        # dispatch reads the element's runtime type; the cached envelope
+        # carries only encoded dicts — the fork cannot be rebuilt from it), the
+        # route children never spawn, the join never fires, and the run stands
+        # wedged with the source row reading `succeeded` wearing a wf_cache_hit
+        # receipt (the live repro: recorded live). The typed refusal names the
+        # alternative: the fork is the engine's own machinery — cache the
+        # deterministic arm bodies' work (each arm's expensive step its own
+        # cache=True), never the fork-spawning source.
         raise WorkflowBuildError(
             f"node {source.key!r} declares cache=True and now carries a "
             "typed route — the combination is refused: at the first "
@@ -1001,7 +1640,7 @@ def _attach_route[S](
             "downstream cacheable step (its deterministic, "
             "addressable subwork) carry the cache=True"
         )
-    # THE UNION MEMBERS, RESOLVED (the same resolution E5 and the codec
+    # The union members, resolved (the same resolution E5 and the codec
     # read — the resolved-hints seam; the actor handle unwrapped first).
     source_body = source_node.body
     if source_body is not None:
@@ -1010,19 +1649,17 @@ def _attach_route[S](
         returned = hints.get("return")
         members: set[type[BaseModel]] = set()
         if returned is None:
-            # THE MESSAGE'S TRUTH (the rv4 cure — the "does not declare"
-            # lie fixed): an UNRESOLVABLE return annotation (a
+            # The message's truth: an unresolvable return annotation (a
             # function-scope model, a string the compile cannot chase —
             # body_hints resolved {}) is not a body that "does not
-            # declare" — it declared and the compile CANNOT RESOLVE it.
-            # The refusal names the resolution failure (the fix: name
+            # declare" — it declared and the compile cannot resolve it.
+            # The refusal names the resolution failure (the remedy: name
             # the model at module scope so the annotation resolves).
             #
-            # THE TWO FACES, DISTINGUISHED (the de-slop round's finding —
-            # the pre-fix cure collapsed them: a body with NO return
-            # annotation also resolves to hints {} and got the
-            # CANNOT-RESOLVE refusal — a lie in the OTHER direction). The
-            # discriminator is the RAW annotation dict's own "return" key
+            # The two faces, distinguished — a body with no return
+            # annotation also resolves to hints {} and would get the
+            # cannot-resolve refusal, a lie in the other direction. The
+            # discriminator is the raw annotation dict's own "return" key
             # (presence survives every resolution failure; the strings'
             # VALUES never resolve here):
             declared_raw = getattr(inner_fn(source_body), "__annotations__", {})
@@ -1085,13 +1722,48 @@ def _attach_route[S](
     source_node.map_on_failure = on_failure
     source_node.map_aggregate = aggregate
     source_node.map_child_driven = child_driven
+    # never a silent fail-open. an arm body carrying capacity terms is either
+    # carried (the arm's own declaration — the passthrough above) or the wiring
+    # refuses.
+    for arm_tag, arm in normalized.items():
+        handle = _capped_handle_of(arm.body)
+        if handle is None:
+            # a default-owner arm body handle is not "capped" (nothing to
+            # refuse), but its owner face still flows when the placement keeps
+            # the actor — the same-cohort conflict law reads it.
+            if arm.actor is None or arm.actor == source_node.actor:
+                from taskq.workflows.api._app import (
+                    WorkflowActor,  # the cycle-break (inner_fn's own pattern)
+                )
+
+                if isinstance(arm.body, WorkflowActor):
+                    _wire_handle_terms_into_node(
+                        source_node, arm.body, what=f"route arm {arm_tag!r}"
+                    )
+            continue
+        overrides = arm.actor is not None and arm.actor != source_node.actor
+        if overrides:
+            uncovered = _uncovered_handle_terms(arm, handle)
+            if uncovered:
+                raise WorkflowBuildError(
+                    f"route arm {arm_tag!r}'s body carries capacity terms "
+                    f"({', '.join(uncovered)}) — the handle's capacity "
+                    "terms would be dropped by the placement override "
+                    f"(actor={arm.actor!r}): the arm's cohort projects no "
+                    "capacity and the guard fails open by rename. Declare "
+                    "the terms on the override (RouteArm(max_concurrent=…,"
+                    "reservations=…, result_ttl=…)) or keep the handle's "
+                    "actor."
+                )
+        else:
+            _wire_handle_terms_into_node(source_node, handle, what=f"route arm {arm_tag!r}")
     join_key = f"{source.key}.join"
     graph.add(
         NodeDecl(
             key=join_key,
             actor=source_node.actor,
             queue=queue,
-            body=None,  # the default identity packer (the join's result IS the arms' returns — the typed sum)
+            body=None,  # the default identity packer (the join's result is the arms' returns — the typed sum)
             parents=(source.key,),
             on_failure=on_failure,
             kind="map_join",
@@ -1099,7 +1771,7 @@ def _attach_route[S](
     )
     return cast(
         "Promise[list[object]]", Promise(join_key, list[object], graph)
-    )  # Why: the join promise's RUNTIME data_type stays the packing declaration (list[object]) read back by validate(); the STATIC face is the verb's overload (Promise[list[R]], R solved at the call site). The cast is the seam.
+    )  # Why: the join promise's runtime data_type stays the packing declaration (list[object]) read back by validate(); the static face is the verb's overload (Promise[list[R]], R solved at the call site). The cast is the seam.
 
 
 def route[S, R](
@@ -1112,7 +1784,7 @@ def route[S, R](
     aggregate: Callable[[list[Any]], object] | None = None,
     child_driven: bool = False,
 ) -> Promise[list[R]]:
-    """Wire a TYPED ROUTE over *source*'s items (T27 — the graph-DSL's
+    """Wire a TYPED ROUTE over *source*'s items (the graph-DSL's
     face of the type-tagged Route): the source's body returns the
     elements' list (``list[ImageItem | AudioItem]``), and *arms* keys the
     union MEMBERS' types to the arm bodies — each element runs ITS type's
@@ -1121,7 +1793,7 @@ def route[S, R](
     feed the derived ``<source>.join`` (the join-back BY CONSTRUCTION —
     R2's), and the join packs the arms' returns VERBATIM — the TYPED SUM
     (``Promise[list[R]]``, R solved to the union of the arms' returns).
-    VERBATIM means ONE join element per child, the arm's return as-is:
+    VERBATIM means one join element per child, the arm's return as-is:
     an arm returning ``Report`` packs ``list[Report]``; an arm returning
     ``list[RowOutcome]`` packs that LIST as one element (the shape
     NESTS — the join is ``list[list[RowOutcome]]`` there, and the
@@ -1129,27 +1801,27 @@ def route[S, R](
     loudly). Flatten in the arm itself (return the items' unpacked sum)
     when a flat list is wanted.
 
-    THE PER-ARM PLACEMENT (R4): an arm spelled
+    An arm spelled
     ``RouteArm(body=process_image, queue="gpu")`` stamps ITS children's
     actor/queue — ``processA`` on the gpu queue, ``processB`` on the io
     queue, the ROWS the receipt. A bare ``Callable`` arm defaults to the
     route's own ``queue=`` and the source's actor. The PER-ARM ADMISSION
-    TERMS (CURE 2) ride the same shape: ``RouteArm(rate_limits=[...])``
+    TERMS (the admission terms) ride the same shape: ``RouteArm(rate_limits=[...])``
     stamps the arm's own token buckets onto its children's rows.
 
-    THE DECODED TYPED MODELS (R3): the arm body's declared param type IS
+    The arm body's declared param type IS
     the decode's target — the jsonb element re-validates into the arm's
     model (the typed boundary), a mis-declared arm dies LOUDLY in the
     coercion, and a duck-typed arm (``dict``/unannotated/``Any``) is
     refused at build (``E15-route-totality`` — the duck-shaped hole is
     the exact face the route closes).
 
-    TOTALITY IS THE FENCE (R1), at THREE doors: the wiring verb refuses a
+    TOTALITY IS the FENCE (R1), at THREE doors: the wiring verb refuses a
     non-total route (missing/unknown members, NAMED) before any row
     exists; the validator's ``E15-route-totality`` re-proves the fence
     from the compiled graph (checker-independently — the compiled graph
     is public, mutable data); and the RUNTIME door — an element whose
-    type has NO arm (the body that lied about its union) raises
+    type has no arm (the body that lied about its union) raises
     :class:`taskq.workflows.RouterNotTotal`: the source terminal-FAILS
     with ``error_class='RouterNotTotal'``, nothing routes, the run
     FAILS. The skip-silent shape is DEAD: the stringly ``skip=``
@@ -1158,16 +1830,16 @@ def route[S, R](
     deprecated for dispatch — teach the typed route.
 
     ``map_source(src, {A: fn_a, B: fn_b})`` is this verb's dict form —
-    the SAME lowering (the per-element case at the map face).
+    the same lowering (the per-element case at the map face).
 
-    THE FAN-IN BOUND'S ESCAPE (``child_driven=True`` — the docshelf
+    the FAN-IN BOUND'S ESCAPE (``child_driven=True`` — the docshelf
     adoption team's F6): a route/map over a corpus past
     :data:`MAX_FAN_IN_PER_JOIN` is REFUSED
     (:class:`taskq.workflows.FanInBoundExceededError`) — the escape is
-    the CHILD-DRIVEN join shape, declared HERE at the wiring (the
+    the CHILD-DRIVEN join shape, declared here at the wiring (the
     escape was reachable only through the raw ``JoinSpec`` before; the
     verb is the authoring face): the fire counts its terminal children
-    FROM THE EDGE LEDGER, never the per-joined-row counter cache, and
+    FROM the EDGE LEDGER, never the per-joined-row counter cache, and
     the choice is recorded on the joined node's
     ``metadata.join_shape='child_driven'``. Prefer PARTITIONING the map
     over the escape (the guide's fan-in section prices both)."""
@@ -1182,7 +1854,7 @@ def route[S, R](
             aggregate=aggregate,
             child_driven=child_driven,
         ),
-    )  # Why: the promise's STATIC type is the overload's Promise[list[R]] (R solved from the arms' bodies' returns — the union of the arms); the attachment erases to list[object] — the cast is the seam.
+    )  # Why: the promise's static type is the overload's Promise[list[R]] (R solved from the arms' bodies' returns — the union of the arms); the attachment erases to list[object] — the cast is the seam.
 
 
 def gather[R](
@@ -1195,7 +1867,7 @@ def gather[R](
     elements and the join degrades to ``Promise[list[object]]``
     honestly). The join's default body packs the decoded parents; a
     consumer of the gather's promise is the join's downstream (a NORMAL
-    step — the cascade, cut #1's cure)."""
+    step)."""
     if not promises:
         raise WorkflowBuildError(
             "gather([]) is the stranded invisible join — a join over zero "
@@ -1203,8 +1875,8 @@ def gather[R](
         )
     graph = promises[0].graph
     node_key = graph.auto_key("gather")
-    # THE SMUGGLE CHECK (the same conviction step() runs — attack-3 M3):
-    # every joined promise must belong to the ACTIVE recorder, not merely
+    # The smuggle check (the same check step() runs):
+    # every joined promise must belong to the active recorder, not merely
     # to the first promise's graph (a build running under one graph while
     # joining promises from two others is exactly the smuggle).
     from taskq.workflows.api._graph import active_graph as _active_graph
@@ -1226,7 +1898,7 @@ def gather[R](
     )
     return cast(
         "Promise[list[R]]", Promise(node_key, list[object], graph)
-    )  # Why: the join promise's STATIC type is Promise[list[R]] (the element type preserved); the runtime data_type stays the packing declaration (list[object]) read back by validate(). The cast is the seam.
+    )  # Why: the join promise's static type is Promise[list[R]] (the element type preserved); the runtime data_type stays the packing declaration (list[object]) read back by validate(). The cast is the seam.
 
 
 def chain_source(
@@ -1237,23 +1909,18 @@ def chain_source(
     actor: str = "wf",
     queue: str = "default",
     max_attempts: int = 3,
-) -> Promise[Any]:
-    """Wire a CHAIN SOURCE node (T20): *source_body* is the paged
-    generator (each ``ctx.emit_batch`` yield = ONE page's emit tx — the
-    children + edges + the cursor checkpoint while the source stays
-    running); *chain* is the declared :class:`taskq.workflows.chain.Chain`
-    the source instantiates per record; *max_attempts* is the source's
-    own ladder budget (a backpressured source's stalls ride the ladder —
-    budget it for the pages a resume must re-drive). The chain's step
-    rows exist only
-    from the emit onward — they are NOT graph nodes; the runner resolves
-    their bodies (registry, D1) and routes (the compiled chain). A chain
-    step key that collides with a wired node or another chain's step is
-    refused at declaration (a coding error)."""
+    policy: ExecutionPolicy | None = None,
+) -> Promise[None]:
+    """Wire a chain source with its own execution policy.
+
+    Source terms resolve only from this call, the source handle, and the
+    compatibility kwargs; ``Chain.default_policy`` belongs to record leaves
+    and is deliberately not inherited by the source.
+    """
     graph = active_graph()
     step_keys = set(chain.steps)
     clashes = (step_keys & set(graph.nodes)) | (
-        step_keys & {k for c in graph.chains for k in c.steps}  # type: ignore[attr-defined]
+        step_keys & {k for c in graph.chains for k in c.steps}
     )
     if clashes:
         raise WorkflowBuildError(
@@ -1266,25 +1933,62 @@ def chain_source(
     sources: list[tuple[str, object]] = []
     for arg in args:
         sources.append(("p", arg.key) if isinstance(arg, Promise) else ("d", arg))
+    if any(kind == "p" for kind, _value in sources):
+        declarations = (
+            *(
+                policy.rate_limits
+                if policy is not None and isinstance(policy.rate_limits, Sequence)
+                else ()
+            ),
+            *(
+                policy.reservations
+                if policy is not None and isinstance(policy.reservations, Sequence)
+                else ()
+            ),
+        )
+        if any(
+            isinstance(value, KeyedRateLimitRef | KeyedReservationRef) for value in declarations
+        ):
+            raise WorkflowBuildError(
+                "chain_source with parent-derived payloads cannot resolve keyed admission; "
+                "declare admission on the emitted record steps instead"
+            )
+    resolved = resolve_source_execution_policy(
+        source_body=source_body,
+        policy=policy,
+        actor=actor,
+        queue=queue,
+        max_attempts=max_attempts,
+        payload_values=tuple(value for kind, value in sources if kind == "d"),
+    )
     graph.add(
         NodeDecl(
             key=node_key,
-            actor=actor,
-            queue=queue,
+            actor=resolved.actor,
+            queue=resolved.queue,
             body=source_body,
-            parents=tuple(k for k, _ in sources if k == "p"),
+            parents=tuple(str(value) for kind, value in sources if kind == "p"),
             args=tuple(sources),
-            max_attempts=max_attempts,
+            max_attempts=resolved.max_attempts,
+            retry_kind=resolved.retry_kind,
+            rate_limits=resolved.rate_limit_decls,
+            max_concurrent=resolved.max_concurrent,
+            reservations=resolved.reservation_decls,
+            result_ttl=resolved.result_ttl,
+            priority=resolved.priority,
+            start_to_close=resolved.start_to_close,
+            capacity_owner=resolved.capacity_owner,
             kind="chain_source",
             chain=chain,
+            execution_policy=resolved,
         )
     )
-    return Promise(node_key, object, graph)
+    return Promise(node_key, None, graph)
 
 
 def sink(*dropped: Promise[object]) -> None:
     """Explicit fire-and-forget: the dropped promises are RECORDED in the
-    compiled metadata — never silent (produced-never-consumed convicts the
+    compiled metadata — never silent (produced-never-consumed rejects the
     ones nobody declared)."""
     graph = active_graph()
     graph.sunk = (*graph.sunk, *(p.key for p in dropped))
@@ -1292,21 +1996,20 @@ def sink(*dropped: Promise[object]) -> None:
 
 def build[R](result: Promise[R], *residuals: Promise[Never]) -> Promise[R]:
     """The terminal completeness point: names the workflow's RESULT and
-    accounts for every residual promise. THE STATIC LAW (the
+    accounts for every residual promise. the STATIC LAW (the
     type-mechanism probes' terminal half): the residual slot is
     ``Promise[Never]`` — a handle whose body produces NOTHING (annotated
     ``-> NoReturn``). :class:`Promise` is covariant, so every REAL
     promise (``Promise[Report]``, ... ) is REJECTED in the slot — an
     unconsumed data handle passed to ``build`` is the CHECKER's error,
-    the same shape validate's ``E2-produced-never-consumed`` convicts at
+    the same shape validate's ``E2-produced-never-consumed`` rejects at
     build (the two faces, one law). At runtime the residuals are
     recorded so the produced-never-consumed rule never flags them."""
     graph = active_graph()
     graph.sunk = (*graph.sunk, *(p.key for p in residuals))
     graph.terminal = result.key
-    # THE SMUGGLE CHECK (the terminal + the residuals — attack-3 M3's
-    # same conviction): a foreign promise named terminal or residual is
-    # recorded for validate's E7 report.
+    # a foreign promise named terminal or residual is recorded for validate's
+    # E7 report.
     for p in (result, *residuals):
         if p.graph is not graph:
             graph.record_smuggle(graph.terminal or "<terminal>", p.key)

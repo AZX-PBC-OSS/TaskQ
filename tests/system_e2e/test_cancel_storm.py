@@ -5,7 +5,7 @@ running or pending, a retrier re-pends whatever has come to rest, and the
 archiver prunes terminal rows to the archive the whole time. Every pair
 of those races on the same rows.
 
-System invariants: the conservation counter balances across BOTH tables
+System invariants: the conservation counter balances across both tables
 (every enqueued job is exactly one terminal row somewhere, never dropped
 by a prune that raced a retry, never resurrected by a retry that raced a
 prune); the attempt ledger reconciles; every cancelled row still carries
@@ -51,8 +51,8 @@ _FLAKY_COHORT = 6
 _SLOW_COHORT = 4
 _FAST_COHORT = 6
 
-# The storm's budgets are DERIVED, never bare: the storm soaks until the
-# vacuousness premises are OBSERVED in the ledger (a retry fired, a
+# The storm's budgets are derived, never bare: the storm soaks until the
+# vacuousness premises are observed in the ledger (a retry fired, a
 # cancel honoured, the archiver moved a row), and the deadline for that
 # observation derives from the scenario's own retry math under the
 # co-tenancy band this file's history measured on loaded -n 2 runners
@@ -66,7 +66,7 @@ _FAST_COHORT = 6
 # * times the 20x co-tenancy stretch (the stall band these runners
 #   produce between a seed and its observation), plus the original 8s
 #   soak as the floor  =>  60.0s.
-# It bounds FAILURE only - a premise that never lands is exactly what
+# It bounds failure only - a premise that never lands is exactly what
 # the assertions after the storm red - and the conservation invariants
 # hold for any duration the storm runs.
 _LADDER_FLOOR_SECS = 1.0  # the flaky ladder's MIN_DEFERRAL_INTERVAL floor
@@ -81,7 +81,7 @@ _STORM_DEADLINE_SECS = (
 )  # 1.3 * 2 * 20 + 8 == 60.0
 
 # The storm worker's slot count, derived the same way: the harness
-# default (4) lets the SLOW cohort monopolise every slot for its whole
+# default (4) lets the slow cohort monopolise every slot for its whole
 # (stretched) sleep, queueing the flaky cohort's re-claims behind it.
 # On a co-tenancy-stalled runner the deferral windows then expire
 # unclaimed and the canceller strips them - the measured CI red: 60s of
@@ -225,7 +225,7 @@ async def test_cancel_storm_racing_retries_racing_archive_prune_conserves(
                         batch_size=2,
                         schema=schema,
                     )
-                    # The tick is a SCENARIO KNOB, not a product constant, and
+                    # The tick is a scenario knob, not a product constant, and
                     # it must be slower than the retrier's 0.5s: the retrier
                     # has to beat the archiver to a terminal row often enough
                     # for a retry to fire (the scenario's premise, here by
@@ -240,7 +240,7 @@ async def test_cancel_storm_racing_retries_racing_archive_prune_conserves(
 
         storm = [asyncio.create_task(canceller()), asyncio.create_task(retrier())]
         prune_task = asyncio.create_task(archiver())
-        # The premise poll owns ITS OWN connection: the ledger connection
+        # The premise poll owns its own connection: the ledger connection
         # is the canceller task's while the storm runs (concurrent tasks
         # must never share an asyncpg connection - the retrier's and the
         # archiver's comments up top are this module's own rule).
@@ -284,7 +284,7 @@ async def test_cancel_storm_racing_retries_racing_archive_prune_conserves(
                 # The premises never landed in the deadline: the
                 # assertions below red with the vacuous-race message -
                 # but the storm's tasks still get their stop, exactly the
-                # normal teardown path. The TimeoutError must NOT
+                # normal teardown path. The TimeoutError must not
                 # propagate up past stop.set(): it would skip the
                 # cancel/gather and leak every operator task.
                 pass
@@ -310,12 +310,12 @@ async def test_cancel_storm_racing_retries_racing_archive_prune_conserves(
             await prune_task
 
         # Cancel audit truthfulness, per the path that produced each
-        # cancelled row: the COOPERATIVE path (running jobs) stamps the
+        # cancelled row: the cooperative path (running jobs) stamps the
         # operator's request columns and keeps them on the terminal row;
-        # the DIRECT path (pending/scheduled) stamps the origin marker in
+        # the direct path (pending/scheduled) stamps the origin marker in
         # error_class ('CancelledBeforeStart') instead - the columns name
         # a request that was made, the marker names the outcome, and a
-        # cancelled row with NEITHER is a mutation nobody wrote down.
+        # cancelled row with neither is a mutation nobody wrote down.
         # (The state_change event's existence is audit_violations' half.)
         cancel_rows = await conn.fetch(
             "SELECT status::text AS status, error_class AS error_class, "
@@ -344,7 +344,7 @@ async def test_cancel_storm_racing_retries_racing_archive_prune_conserves(
             f"operator's request columns nor an origin marker: {unmarked}"
         )
 
-        # Conservation across BOTH tables: enqueued == live + archived,
+        # Conservation across both tables: enqueued == live + archived,
         # every row terminal (assert_balanced runs the counter and the
         # audit predicate over the whole tagged population).
         counts = await assert_balanced(conn, schema, _TAG)

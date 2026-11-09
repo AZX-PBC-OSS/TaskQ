@@ -1,4 +1,4 @@
-"""THE CRASH DRILLS: SIGKILL the worker mid-enrich-fan-out AND
+"""SIGKILL the worker mid-enrich-fan-out and
 mid-approval-wait. The restart resumes; NOTHING lost, NOTHING
 duplicated; the approval hold survives the death."""
 
@@ -33,7 +33,7 @@ async def test_sigkill_mid_enrich_fan_out_resumes_with_nothing_lost(
     claim = await submit_batch(pool, schema, batch)
     assert claim.kind == "created"
 
-    # Wait until the fan-out is LIVE: calls started, some in flight.
+    # Wait until the fan-out is live: calls started, some in flight.
     async def _fan_out_live() -> int | None:
         rows = await journal_rows(pool, schema, txn_prefix="B-crash-1-")
         j = journal_receipt(rows)
@@ -46,7 +46,7 @@ async def test_sigkill_mid_enrich_fan_out_resumes_with_nothing_lost(
         _fan_out_live, timeout_s=120, interval=0.1, message="the fan-out never went live"
     )
 
-    # THE CRASH: SIGKILL every worker in the fleet.
+    # SIGKILL every worker in the fleet.
     await fleet.kill_all()
 
     # The estate's rows survive the process: the journal's calls are durable.
@@ -55,12 +55,12 @@ async def test_sigkill_mid_enrich_fan_out_resumes_with_nothing_lost(
         "the crash ate the external API's journal — the world cannot lose calls"
     )
 
-    # THE RESTART: a fresh worker claims the re-pended work.
+    # a fresh worker claims the re-pended work.
     await fleet.start(1)
     raw = await await_terminal(pool, schema, str(claim.flow_id), timeout_s=600)
     report = CompletionReport.model_validate(raw)
 
-    # ── THE INVARIANTS (unconditional) ──────────────────────────────────
+    # ── the invariants (unconditional) ──────────────────────────────────
     assert report.failed == [], f"transactions died in the crash: {report.failed[:10]}"
     assert report.cleared == sorted(t.txn_id for t in batch.transactions)
     assert len(report.cleared) == len(set(report.cleared)), "a transaction cleared twice"
@@ -69,9 +69,9 @@ async def test_sigkill_mid_enrich_fan_out_resumes_with_nothing_lost(
         f"the fan-out's rows lie after the crash: {enrich_jobs}"
     )
 
-    # THE RESUME PROOF: the crash interrupted real work — the engine's
-    # ladder carried at least one child PAST attempt 1 (the reclaim
-    # re-pended it; the restart re-ran it alone).
+    # the crash interrupted real work — the engine's ladder carried at least
+    # one child past attempt 1 (the reclaim re-pended it; the restart re-ran it
+    # alone).
     attempts = await ledger_attempts(pool, schema, "ingest.item", flow_id=str(claim.flow_id))
     resumed = sum(1 for n in attempts.values() if n > 1)
     assert resumed >= 1, (
@@ -79,13 +79,12 @@ async def test_sigkill_mid_enrich_fan_out_resumes_with_nothing_lost(
         "(the drill killed a quiescent worker, proving nothing)"
     )
 
-    # THE JOURNAL'S HONESTY: every transaction landed EXACTLY ONE
-    # applied verdict — a successful call — and a SECOND successful
-    # call (the at-least-once boundary: a body killed mid-call re-runs
-    # it; the docs state the boundary, the framework guarantees
-    # exactly-once only for DB-local effects) appears only for children
-    # the crash actually resumed. The verdicts are identical either way
-    # (the deterministic mock) — the OUTCOME never doubles.
+    # every transaction landed exactly one applied verdict — a successful call
+    # — and a second successful call (the at-least-once boundary: a body killed
+    # mid-call re-runs it; the docs state the boundary, the framework
+    # guarantees exactly-once only for DB-local effects) appears only for
+    # children the crash actually resumed. The verdicts are identical either
+    # way (the deterministic mock) — the outcome never doubles.
     j = journal_receipt(await journal_rows(pool, schema, txn_prefix="B-crash-1-"))
     oks = j["oks_per_txn"]
     assert len(oks) == 300, "a transaction never got a successful call"
@@ -133,12 +132,12 @@ async def test_sigkill_mid_approval_wait_hold_survives(
     holds_before = await wait_for(_two_holds, timeout_s=60, message="the review runs never held")
     ids = await review_run_ids(pool, schema, batch_id=batch.batch_id)
 
-    # THE CRASH, mid-hold.
+    # the crash, mid-hold.
     await fleet.kill_all()
 
-    # THE HOLD SURVIVES THE DEATH: the hold rows are Postgres rows; the
-    # new worker's sweep never touches a pending hold. (Scoped to THESE
-    # two review runs — the estate may carry other runs' holds.)
+    # the hold rows are Postgres rows; the new worker's sweep never touches a
+    # pending hold. (Scoped to these two review runs — the estate may carry
+    # other runs' holds.)
     held = await pool.fetchval(
         f'SELECT count(*) FROM "{schema}".wf_signals'  # noqa: S608  # Why: the schema identifier only.
         " WHERE status = 'held' AND workflow_id = ANY($1::uuid[])",
@@ -148,7 +147,7 @@ async def test_sigkill_mid_approval_wait_hold_survives(
 
     await fleet.start(1)
 
-    # The operator resolves BOTH holds; the runs continue to typed verdicts.
+    # The operator resolves both holds; the runs continue to typed verdicts.
     client = HitlClient(pool, schema=schema)
     for rid in ids:
         (hold,) = await client.list(rid)

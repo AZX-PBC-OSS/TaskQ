@@ -96,6 +96,123 @@ def test_an_empty_registry_refuses_to_boot(
     assert "refusing to boot" in err
 
 
+# ── the workflow-only module boots ──────────────────────────────────────
+
+
+def test_a_workflow_only_module_boots_with_an_empty_registry(
+    module_dir: Path,
+) -> None:
+    """A module whose only content is a mounted WorkflowApp (its import
+    registers the app; ``ACTORS`` stays empty) is a bootable worker: the
+    workflow cohorts' dispatch rides the boot projection's capability
+    stamp, so the loader returns the empty registry instead of refusing.
+    """
+    module = _write_module(
+        module_dir,
+        "cli_ref_wf_only_module",
+        """from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
+
+app = WorkflowApp()
+
+
+async def probe_body(ctx: StepContext) -> dict[str, str]:
+    return {}
+
+
+@app.workflow("workerless-probe")
+def workerless_probe() -> Promise[object]:
+    return build(step(probe_body, key="noop"))
+
+
+ACTORS = {}
+""",
+    )
+    # A previous import of the same app object can linger in the
+    # projection's weak set from another test's module; the module's own
+    # import is what matters and it is fresh here.
+    registry = _load_actor_registry(_ref(module, "ACTORS"))
+    assert registry == {}
+
+
+def test_the_empty_refusal_names_both_dispatch_ingredients(
+    module_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A module with an empty registry and no mounted app genuinely has
+    nothing to dispatch: the refusal names both ingredients (the actor
+    registry and the workflow app), so an operator reading the error
+    knows which one to add."""
+    module = _write_module(module_dir, "cli_ref_bare_empty_module", "ACTORS = {}\n")
+
+    with pytest.raises(typer.Exit):
+        _load_actor_registry(_ref(module, "ACTORS"))
+
+    err = capsys.readouterr().err
+    assert "refusing to boot" in err
+    assert "actor" in err
+    assert "workflow" in err
+
+
+def test_an_empty_mounted_app_refuses_the_boot(
+    module_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An imported-but-empty app mounts nothing dispatchable: the boot
+    gate counts RUNNABLE workflow cohorts (the projection's actual
+    output), so a module whose only content is an empty WorkflowApp is
+    the both-ingredients-empty refusal, naming both ingredients."""
+    module = _write_module(
+        module_dir,
+        "cli_ref_empty_app_module",
+        """from taskq.workflows import WorkflowApp
+
+app = WorkflowApp()
+
+ACTORS = {}
+""",
+    )
+    with pytest.raises(typer.Exit):
+        _load_actor_registry(_ref(module, "ACTORS"))
+
+    err = capsys.readouterr().err
+    assert "refusing to boot" in err
+    assert "actor" in err
+    assert "workflow" in err
+
+
+def test_an_app_whose_workflows_all_fail_compile_refuses_with_the_failure_named(
+    module_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A mounted app whose only workflow fails its compile projects no
+    runnable cohort: the boot refuses at the earliest stage and the
+    refusal NAMES the compile failure (the operator reads what to fix,
+    not just that the worker sat down)."""
+    module = _write_module(
+        module_dir,
+        "cli_ref_broken_compile_module",
+        """from taskq.workflows import Promise, WorkflowApp, build, step
+
+app = WorkflowApp()
+
+
+async def body(ctx):
+    return None
+
+
+@app.workflow("broken-probe")
+def broken_probe() -> Promise[object]:
+    return build(step(body, key="probe"))
+
+
+ACTORS = {}
+""",
+    )
+    with pytest.raises(typer.Exit):
+        _load_actor_registry(_ref(module, "ACTORS"))
+
+    err = capsys.readouterr().err
+    assert "refusing to boot" in err
+    assert "broken-probe" in err
+
+
 # ── the provider shapes ─────────────────────────────────────────────────
 
 

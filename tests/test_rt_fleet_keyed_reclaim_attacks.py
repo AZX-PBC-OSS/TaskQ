@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 
-"""Red-team attacks on the fleet keyed-row reclamation wave (e5d2154).
+"""Adversarial review attacks on the fleet keyed-row reclamation wave (e5d2154).
 
 The feature under attack: keyed ``reservation_slots`` /
 ``rate_limit_buckets`` rows carry their own staleness (the ``keyed``
@@ -43,7 +43,7 @@ those pins cannot reach - each test names the hypothesis it drives:
   fallback's preseed/upsert must keep the row unmarked, and the sweep
   must never reset mid-outage fallback state.
 
-An attack that lands red stays red - it is the finding, reported with
+An attack that lands red stays failing - it is the finding, reported with
 the design's own words it contradicts. A green attack is a refutation
 the suite keeps as a pin.
 """
@@ -192,7 +192,7 @@ async def _bucket_rows(pool: asyncpg.Pool, bucket: str) -> int:
 
 
 async def _slots_keyed(pool: asyncpg.Pool, bucket: str) -> bool | None:
-    """Whether EVERY slot row of *bucket* carries the fleet-reclaimable
+    """Whether every slot row of *bucket* carries the fleet-reclaimable
     mark (None when the bucket has no rows)."""
     async with pool.acquire() as conn:
         return await conn.fetchval(
@@ -390,7 +390,7 @@ async def test_release_landing_between_window_and_delete_loses_the_freshly_relea
     ``_RELEASE_SQL_TEMPLATE``'s comment: "the row the release frees is
     the row whose staleness must reset (a just-released bucket is
     mid-workflow, not idle)". The buckets arm's DELETE re-checks
-    ``keyed AND last_used_at < horizon`` under its row lock; the slots
+    ``keyed and last_used_at < horizon`` under its row lock; the slots
     arm's DELETE guard re-checks only ``job_id``/lease. The drive: a
     slot held by an EXPIRED lease (free-or-expired passes the window),
     released by a held-open real release statement while the sweep
@@ -474,7 +474,7 @@ async def test_rematerialisation_over_surviving_rows_leaves_the_bucket_fully_rec
     bucket's full slot row set with this reservation's fleet-reclaimable
     mark and a fresh ``last_used_at``". The INSERT arm delivers that;
     the conflict arm (``ON CONFLICT ... DO UPDATE SET keyed =
-    EXCLUDED.keyed``) refreshes ONLY the mark. Re-materialisation over
+    EXCLUDED.keyed``) refreshes only the mark. Re-materialisation over
     surviving rows is reachable: an idle-evicted entry whose rows
     outlived the pending-reclaim drain (held by another worker's live
     leases) is re-resolved by the next job for that key, and the
@@ -542,12 +542,12 @@ async def test_keyed_materialisation_over_a_static_name_flips_its_rows_fleet_rec
     """No path may flip a STATIC bucket's rows fleet-reclaimable.
 
     Migration 01.00.10_02's invariant: "a statically declared bucket's
-    rows are born false and must NEVER be flipped true (a static
+    rows are born false and must never be flipped true (a static
     reservation has no acquire-path heal, so deleted rows would deny
     forever)". The registry's concrete-name collision guard sees only
-    ITS OWN process's entries - two workers with different actor sets
+    ITS own process's entries - two workers with different actor sets
     (different registries) can legally hold a static declaration and a
-    keyed ref that resolve to the SAME concrete name, and the keyed
+    keyed ref that resolve to the same concrete name, and the keyed
     materialisation's ensure_slots conflict arm re-marks the static
     rows fleet-reclaimable.
     """
@@ -569,10 +569,10 @@ async def test_keyed_materialisation_over_a_static_name_flips_its_rows_fleet_rec
             "without the fleet-reclaimable mark"
         )
 
-        # Worker A: a DIFFERENT process's registry (its actor set does
+        # Worker A: a different process's registry (its actor set does
         # not declare the static name - the in-process collision guard
         # cannot see worker B's entry) resolves the keyed ref whose
-        # concrete name IS the static name.
+        # concrete name is the static name.
         reg_a = RateLimitRegistry()
         handles = await reg_a.acquire_for_actor(
             rate_limits=[],
@@ -598,7 +598,7 @@ async def test_keyed_materialisation_over_a_static_name_flips_its_rows_fleet_rec
         )
 
         # The consequence: once the keyed user goes quiet, the fleet
-        # sweep reclaims the STATIC reservation's rows, and worker B's
+        # sweep reclaims the static reservation's rows, and worker B's
         # limiter denies forever.
         await reg_a.release_for_actor(handles)
         await _age_slots(pool, name, _HORIZON * 2)
@@ -670,7 +670,7 @@ async def test_refund_refreshes_the_keyed_bucket_row_stamp(pg_dsn: str) -> None:
 
 @pytest.mark.integration
 async def test_buckets_arm_delete_rechecks_the_stamp_under_a_late_acquire(pg_dsn: str) -> None:
-    """The buckets arm's DELETE re-checks ``keyed AND last_used_at <
+    """The buckets arm's DELETE re-checks ``keyed and last_used_at <
     horizon`` under its row lock - an acquire (the real upsert from
     ``token_bucket._acquire_pg``) committing between the sweep's window
     and the DELETE spares the row. The mirror of the slots arm's race:
@@ -815,7 +815,7 @@ async def test_redis_backend_keyed_row_stays_unmarked_through_the_outage_fallbac
     pg_dsn: str,
 ) -> None:
     """A redis-backend keyed bucket's PG row must stay ``keyed=false``
-    through the ONE path that writes it - the Redis-outage fallback.
+    through the one path that writes it - the Redis-outage fallback.
 
     The row is outage-fallback state plus admin metadata; its stamp
     cannot speak for Redis-side use, so the fleet sweep must never
@@ -909,7 +909,7 @@ async def test_old_generation_acquire_with_a_live_lease_vetoes_the_sweep(pg_dsn:
         await _age_slots(pool, bucket, _HORIZON * 2)
 
         # The previous release's acquire arm - the current
-        # _ACQUIRE_SQL_TEMPLATE verbatim MINUS the last_used_at stamp
+        # _ACQUIRE_SQL_TEMPLATE verbatim minus the last_used_at stamp
         # (the one line e5d2154 added to it).
         old_acquire_sql = f"""\
 WITH free_slot AS (

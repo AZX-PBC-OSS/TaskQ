@@ -1,10 +1,10 @@
 # ruff: noqa: S608  # Why: schema is a per-test fixed identifier, not user input; every value is $-bound.
 
-"""Red-team pin: an evicted keyed rate limit's published
+"""Adversarial review pin: an evicted keyed rate limit's published
 ``rate_limit_buckets`` row must be reclaimed.
 
 The pre-I-03 ``reservation_slots`` leak, one class over: each distinct
-``base_name:key`` rate limit materialises an in-memory bucket AND
+``base_name:key`` rate limit materialises an in-memory bucket and
 publishes a ``rate_limit_buckets`` row to PG (best-effort, so a
 standalone admin process can see the limiter - pinned by
 ``tests/test_ratelimit_keyed_rate_limits_pg.py``). When the key goes

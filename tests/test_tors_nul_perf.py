@@ -86,7 +86,7 @@ def _time_both(payload: bytes) -> tuple[float, float]:
 def test_tors_wins_on_the_escaped_literal_worst_shape(n_units: int) -> None:
     """The worst-shape corpus at the scaling pin's size and at the 64 KiB bound."""
     payload = _escape_literals(n_units)
-    # Parity belt: a fast answer that is not THE answer is a regression.
+    # Parity belt: a fast answer that is not the answer is a regression.
     assert _encoded_has_nul(payload) is _pure_encoded_has_nul(payload) is False
     tors, pure = _time_both(payload)
     factor = pure / tors

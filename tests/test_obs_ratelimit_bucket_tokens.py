@@ -5,7 +5,7 @@ The blind spot audited: a bucket's live token state reached only the
 admin rate-limits PAGE (its own peek); the scrape showed denial and
 refund-failure RATES and never the LEVEL. The cardinality doctrine is
 the point of the pins: statically-registered buckets get named series;
-a keyed-materialised bucket (``base_name:key``) creates NO per-key
+a keyed-materialised bucket (``base_name:key``) creates no per-key
 series — its tokens are summed per kind onto ``_other_``.
 """
 
@@ -112,7 +112,7 @@ def test_static_buckets_get_named_series() -> None:
 
 
 def test_keyed_buckets_aggregate_per_kind_and_never_become_labels() -> None:
-    """The cardinality pin: N keyed materialisations contribute ONE
+    """The cardinality pin: N keyed materialisations contribute one
     ``_other_`` series per kind, carrying their SUM. No per-key series
     exists, no matter how many keys the store materialised."""
     rl = RateLimitRegistry()

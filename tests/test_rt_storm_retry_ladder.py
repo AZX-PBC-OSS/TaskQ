@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team storm: the mass-reclaim cycle's redispatch damper and the
+"""Adversarial review storm: the mass-reclaim cycle's redispatch damper and the
 failure-retry ladder's floor.
 
 System-level question (the amplification question): when a systemic
@@ -47,7 +47,7 @@ Model (from ``backend/_sweeps.py`` ``_SWEEP_1_SQL``, ``heartbeat.py``
   worker slot at claim/run/fail/retry round-trip rate; the pins below
   hold the tiers to it.
 
-The denial-snooze ladder was audited and is NOT red:
+The denial-snooze ladder was audited and is not red:
 ``_handle_reservation_class_denied`` jitters the raw hint and
 ``mark_snoozed`` floors it at ``MIN_DEFERRAL_INTERVAL`` (1 s) on both
 tiers; each cycle additionally costs claim + acquire + snooze and is
@@ -195,7 +195,7 @@ def _reclaim_due_instant(row: JobRow, reclaim_time: datetime) -> datetime:
     )
 
 
-# ── GREEN pin: the reclaim cycle is period-floored on both tiers ───────
+# ── green pin: the reclaim cycle is period-floored on both tiers ───────
 
 
 async def test_mass_reclaim_requeue_is_damped_by_the_policy_curve_and_gates_redispatch() -> None:
@@ -318,7 +318,7 @@ async def test_reclaim_cycle_count_is_bounded_by_attempt_exhaustion() -> None:
     assert row.finished_at is not None, "the terminal arm must stamp finished_at"
 
 
-# ── CONTRACT pin: the failure-retry ladder never carries a sub-floor delay ──
+# ── contract pin: the failure-retry ladder never carries a sub-floor delay ──
 
 
 async def test_zero_base_indefinite_failure_retry_cycles_at_zero_period_unfloored() -> None:
@@ -401,7 +401,7 @@ async def test_zero_base_indefinite_failure_retry_cycles_at_zero_period_unfloore
             cycles_at_t0 += 1
         else:
             # Floored decision - the contract's landing: the row is
-            # scheduled floor-out and NOT claimable at this tick, so the
+            # scheduled floor-out and not claimable at this tick, so the
             # loop must re-park it running/owned to drive the next round
             # (the zero-delay branch's instant reclaim plays this role
             # inside the defect shape). Pure mechanics - the floored
@@ -413,7 +413,7 @@ async def test_zero_base_indefinite_failure_retry_cycles_at_zero_period_unfloore
             "five full failure cycles completed at one unmoved clock tick - the zero-period evidence"
         )
 
-    # ── THE CONTRACT ────────────────────────────────────────────────────
+    # ── the contract ────────────────────────────────────────────────────
     assert last_delay is not None and last_delay >= MIN_DEFERRAL_INTERVAL, (
         f"failure-retry delay must be floored at MIN_DEFERRAL_INTERVAL "
         f"({MIN_DEFERRAL_INTERVAL}); got {last_delay} for a base=0 indefinite "
@@ -469,7 +469,7 @@ async def test_deferral_arms_floor_zero_delay_but_failure_retry_does_not() -> No
 
 def test_failure_retry_floor_must_match_the_deferral_family() -> None:
     """The PG ``mark_retry`` template must be honest to the floor the
-    other tiers already apply: the SAME ``GREATEST($3::interval,
+    other tiers already apply: the same ``GREATEST($3::interval,
     MIN_DEFERRAL_INTERVAL)`` expression ``mark_snoozed`` and the
     non-consuming ``mark_retry_after`` arm pin, keyed on a single
     effective delay.
@@ -511,7 +511,7 @@ def test_failure_retry_floor_must_match_the_deferral_family() -> None:
     assert greatest_floor in sql.mark_retry_after_consume_false, (
         "the non-consuming RetryAfter arm must keep the deferral floor"
     )
-    # The failure-retry arm must carry the SAME floor:
+    # The failure-retry arm must carry the same floor:
     assert greatest_floor in sql.mark_retry, (
         "mark_retry must floor its requeue delay at MIN_DEFERRAL_INTERVAL via "
         "GREATEST, exactly like the deferral arms - the PG twin of the "
@@ -527,15 +527,15 @@ def test_failure_retry_floor_must_match_the_deferral_family() -> None:
         "mark_retry's status branch must key on the floored effective delay, "
         "not the raw $3 bind - the single effective delay contract"
     )
-    # Both arms' deadline comparison AND the retried arm's scheduled_at
+    # Both arms' deadline comparison and the retried arm's scheduled_at
     # read the same effective delay:
     assert sql.mark_retry.count("clock_timestamp() + (SELECT effective_delay FROM params)") == 3, (
         "the retried arm's scheduled_at and both arms' deadline comparisons "
         "must read the floored effective_delay - one effective delay per write"
     )
-    # The consuming RetryAfter arm keeps the RAW delay by design. The
+    # The consuming RetryAfter arm keeps the raw delay by design. The
     # ban is on the deferral family's floor expression - not on the
-    # token GREATEST: the arm also GREATEST-merges progress_seq (the
+    # token greatest: the arm also greatest-merges progress_seq (the
     # stream's total order, a different column and contract), and the
     # delay must flow raw.
     assert greatest_floor not in sql.mark_retry_after_consume_true, (
@@ -549,7 +549,7 @@ def test_failure_retry_floor_must_match_the_deferral_family() -> None:
     )
 
 
-# ── GREEN pin, PG tier: the same damper + gate + exhaustion on real PG ──
+# ── green pin, PG tier: the same damper + gate + exhaustion on real PG ──
 
 
 class _PoolsDeps:

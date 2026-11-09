@@ -56,6 +56,7 @@ from opentelemetry.metrics import CallbackOptions, Counter, Histogram, Meter, Ob
 from opentelemetry.trace import Span, StatusCode, Tracer
 from opentelemetry.util.types import Attributes
 
+from taskq._json import sanitize_surrogates
 from taskq.obs._redact_exc import add_exception_event, render_exception
 
 INSTRUMENTATION_NAME: str = "taskq"
@@ -235,7 +236,7 @@ def _record_scrubbed_error(span: Span, exc: BaseException) -> None:
     """Give *span* a scrubbed error signal for whichever half the call site left unset.
 
     Why: :func:`safe_start_span` turns the SDK's automatic exception handling
-    OFF (see there), so a call site that does not handle the exception itself
+    off (see there), so a call site that does not handle the exception itself
     -- the ``attempt.N`` span in ``worker/_consumer.py``, which wraps user job
     code -- would otherwise export with no error signal at all. Suppressing a
     leak must not cost the signal.
@@ -261,7 +262,10 @@ def _record_scrubbed_error(span: Span, exc: BaseException) -> None:
             return
         text = render_exception(exc)
         if needs_status:
-            span.set_status(StatusCode.ERROR, text.message)
+            # The status description is surrogate-escaped like the event's
+            # attributes (the otlp face); NUL handling stays the log
+            # channel's recipe.
+            span.set_status(StatusCode.ERROR, sanitize_surrogates(text.message))
         if needs_event:
             add_exception_event(span, text)
     except Exception:
@@ -291,7 +295,7 @@ def safe_start_span(
     ambient trace. This satisfies the "linked, not parented"
     requirement for PRODUCER spans in the cron loop.
 
-    The SDK's own exception handling is switched OFF and replaced by
+    The SDK's own exception handling is switched off and replaced by
     :func:`_record_scrubbed_error`, see the comment at the call below.
     """
     if not _otel_enabled:
@@ -308,10 +312,10 @@ def safe_start_span(
             attributes=attributes,
             links=links,
             # Why: both default to True, and the SDK derives its event and its
-            # status description from the RAW ``str(exc)`` with no hook to
+            # status description from the raw ``str(exc)`` with no hook to
             # override it. At every call site that scrubs and re-raises, that
-            # emitted a SECOND, unscrubbed ``exception`` event and overwrote
-            # the scrubbed status description -- shipping the Postgres DETAIL
+            # emitted a second, unscrubbed ``exception`` event and overwrote
+            # the scrubbed status description -- shipping the Postgres detail
             # row values (idempotency_key / identity_key / fairness_key, all
             # caller-supplied) straight to the telemetry backend, undoing
             # ``_redact_exc`` entirely. No source-level guard can see this:
@@ -369,7 +373,7 @@ _cancels_actored = get_meter().create_counter(
 def record_cancel_actored(actor: str) -> None:
     """Count one operator cancel the worker began acting on, labeled by actor.
 
-    Called from the cancel controller's two FIRST-observation arms only
+    Called from the cancel controller's two first-observation arms only
     (``worker/cancel.py``): the phase-1 cooperative observation, and the
     PG-observation fast-advance when the local phase was still NONE. A
     re-issue arm or a later tick walking an already-observed row records
@@ -556,7 +560,7 @@ def record_reclaimed_jobs(actor: str, disposition: str, count: int = 1) -> None:
 #: (``backend/_protocol.py``) -- nothing bounds it.  5,000 distinct queue
 #: names minted 100k+ time series and 763ms scrapes in the cardinality
 #: bench, and the failure mode is the Azure Monitor one described in the
-#: ``worker_id`` note below: throttled ingestion across EVERY custom metric
+#: ``worker_id`` note below: throttled ingestion across every custom metric
 #: in the subscription, not repairable after the fact.  So the four
 #: job-side emitters admit the first ``_MAX_QUEUE_LABEL_VALUES`` distinct
 #: names a process sees (the ~100-values-per-dimension ceiling Azure's
@@ -1039,13 +1043,13 @@ def record_job_timeout(actor: str, *, kind: TimeoutKind, count: int = 1) -> None
 
 #: Why identity values are not metric dimensions
 #: ------------------------------------------------
-#: ``worker_id`` is a fresh UUID per worker PROCESS. Azure Monitor counts every
+#: ``worker_id`` is a fresh UUID per worker process. Azure Monitor counts every
 #: unique (metric, dimension key, dimension value) combination seen in 12 hours
 #: as an active time series, caps a subscription at 50,000 of them per region,
 #: and advises staying under ~100 values per dimension. On Kubernetes every
 #: deploy, restart and autoscale event mints a new ``worker_id``, so the
 #: dimension grows without bound -- and the failure mode is throttled ingestion
-#: across EVERY custom metric in the subscription, with no backfill of what was
+#: across every custom metric in the subscription, with no backfill of what was
 #: dropped. Not repairable after the fact, so it is not carried at all.
 #:
 #: The signal is not lost: per-worker and per-schedule attribution lives on
@@ -1073,7 +1077,7 @@ def record_job_timeout(actor: str, *, kind: TimeoutKind, count: int = 1) -> None
 #: accumulating this process's deltas -- an enable, disable or delete
 #: performed anywhere in the fleet self-corrects on the next tick with
 #: due work, and the value returns to zero when no schedule is failing.
-#: What the summed value loses -- WHICH schedule -- no shipped consumer
+#: What the summed value loses -- which schedule -- no shipped consumer
 #: ever read: ``cron_schedules.last_fire_error`` names it, and
 #: per-schedule debugging lives on the log lines and span attributes
 #: named above.
@@ -1322,7 +1326,7 @@ def _observe_capped_per_queue(cache: Mapping[str, float]) -> Iterable[Observatio
     the total. The partition is therefore computed before yielding: the
     `_MAX_QUEUE_LABEL_VALUES` largest queues keep their own series (ties
     broken by queue name, for determinism), and everything smaller
-    collapses onto ONE `_other_` observation carrying the summed overflow,
+    collapses onto one `_other_` observation carrying the summed overflow,
     so the reported total always equals the true total. Value ranking --
     not name order and not first-seen admission -- keeps the largest
     queues, the ones an operator pages on, individually visible past the
@@ -1383,7 +1387,7 @@ def _observe_capped_per_queue_status(
 
     Same rank-by-value partition, one cap over the (queue, status) PAIRS:
     the largest _MAX_QUEUE_LABEL_VALUES pairs keep their own series and
-    everything smaller collapses onto ONE observation carrying their
+    everything smaller collapses onto one observation carrying their
     summed depth, labeled queue='_other_', status='_other_' — the pair
     cap's overflow mixes statuses by construction, so its status label
     says bookkeeping, not a status.
@@ -1474,7 +1478,7 @@ def update_queue_utilization_cache(data: dict[str, float]) -> None:
     scaling operator reads it straight off the scrape instead of
     recomputing it client-side (the computation needs ``actor_config``,
     a table the scraper does not have). A queue whose effective capacity
-    is zero reports NO utilization series — the insights row's NULL, the
+    is zero reports no utilization series — the insights row's NULL, the
     starvation shape the depth + live_workers pair (and
     ``taskq.jobs.stranded``) already expose; a frozen zero there would
     read as "idle", the opposite of the truth.
@@ -1781,7 +1785,7 @@ def record_ratelimit_denial(backend: str) -> None:
 
     Called from the rate-limit decision logger whenever a decision denies
     admission. ``backend`` is the rate-limit backend enum (bounded). The
-    bucket name is deliberately NOT a dimension: keyed bucket names are
+    bucket name is deliberately not a dimension: keyed bucket names are
     caller-derived and unbounded, so a bucket label would reintroduce the
     cardinality class the queue-label cap exists to prevent.
     Respects ``_otel_enabled``, no-op when False.
@@ -1907,7 +1911,7 @@ def record_reservation_denial(bucket_name: str, source: str) -> None:
     Called at the reservation-class denial handler for every
     ``ReservationUnavailable`` a worker fields. ``source`` is
     ``'reservation'`` or ``'rate_limit'`` (bounded). ``bucket_name`` is
-    accepted so the call site reads naturally but is deliberately NOT a
+    accepted so the call site reads naturally but is deliberately not a
     dimension: keyed bucket names are caller-derived and unbounded, so
     the label would reintroduce the cardinality class the queue-label cap
     exists to prevent.
@@ -2044,20 +2048,20 @@ _keyed_reclaim_pending_gauge = get_meter().create_observable_gauge(
 
 # ── Rate-limit bucket tokens: the scrape's live admission state ────────
 #
-# Before this gauge the admin's rate-limits page was the ONLY surface a
+# Before this gauge the admin's rate-limits page was the only surface a
 # bucket's live token state reached (it peeks via
 # ``RateLimitRegistry.peek_all``); a scrape showed only the denial and
-# refund-failure RATES, never the bucket LEVEL. A bucket parked at 0
+# refund-failure rates, never the bucket LEVEL. A bucket parked at 0
 # tokens with a healthy-looking denial rate's cause invisible, a
 # misconfigured capacity nobody could see, all page-render-only.
 #
-# Cardinality doctrine, applied exactly: STATICALLY-REGISTERED buckets
+# Cardinality doctrine, applied exactly: statically-registered buckets
 # (the operator's own ``registry.register`` calls, bounded by the code
-# the user ships) get one series per (bucket, kind). KEYED buckets
+# the user ships) get one series per (bucket, kind). keyed buckets
 # (``base_name:key`` materialised per tenant/session id — caller-
-# controlled, unbounded) contribute NO per-key series: their tokens are
+# controlled, unbounded) contribute no per-key series: their tokens are
 # summed into one aggregate per kind under the fixed ``_other_`` bucket
-# label, the reclaim_pending precedent (keyed values NEVER labels, the
+# label, the reclaim_pending precedent (keyed values never labels, the
 # aggregate scalar). The kind label is the ops.py page's own bounded
 # derivation (token_bucket / sliding_window_log / sliding_window_gcra).
 
@@ -2140,14 +2144,14 @@ def record_election_attempt(worker_id: str, *, won: bool) -> None:
 #: refs), and the cron loop's success/suppression paths
 #: (:func:`record_published_message`, :func:`record_backpressure_error`)
 #: only emit after the tick resolved the actor against ``actor_config``.
-#: :func:`record_cron_failure`'s FAILURE path cannot lean on that: it
+#: :func:`record_cron_failure`'s failure path cannot lean on that: it
 #: emits the raw ``cron_schedules.actor`` string, and ``create_schedule``
 #: accepts any string at creation time (validation is deferred to fire
 #: time by design -- a schedule may legitimately reference an actor that
 #: registers later).  A dangling, misspelled or tenant-generated actor
 #: name then fails every tick's planning loop, each failure adding +1
 #: under its own arbitrary string -- one metric series per distinct
-#: string, unbounded, the exact OTLP cardinality failure the module
+#: string, unbounded, the exact otlp cardinality failure the module
 #: header warns about.  The label is therefore admitted through the same
 #: first-N-then-overflow mechanism as ``queue`` (see the note above
 #: ``_bounded_queue``): the first ``_MAX_ACTOR_LABEL_VALUES`` distinct
@@ -2176,7 +2180,7 @@ def _bounded_cron_actor(actor: str) -> str:
 #: remaining open-ended label the contract above did not yet name: a keyed
 #: bucket's handle name is ``f"{base_name}:{key}"`` and the key part is
 #: caller-controlled payload data (a tenant id, a session id) with no
-#: cardinality bound. The registry's own entry cap bounds the LIVE
+#: cardinality bound. The registry's own entry cap bounds the live
 #: registry, but the refund-failure counter is emitted from the rollback /
 #: release failure catch sites with ``handle.name`` verbatim, so the OTel
 #: SDK's cumulative storage would mint one never-released series per
@@ -2300,7 +2304,7 @@ def record_cron_budget_deferral(actor: str) -> None:
 #: Why the skipped-slots counter resolves lazily
 #: ---------------------------------------------
 #: The instrument follows the :func:`_lazy_counter` discipline (resolved on
-#: the CURRENT meter at call time, memoized per meter identity) rather than
+#: the current meter at call time, memoized per meter identity) rather than
 #: the import-time singletons its cron siblings use: the meter-isolating
 #: test harnesses and an application that configures its SDK after import
 #: both need the call-time resolution, and this counter is new enough to
@@ -2511,8 +2515,8 @@ _disabled_schedules_gauge = get_meter().create_observable_gauge(
 
 # ── cron slots-behind: the runaway fan-out's depth signal ───────────────
 #
-# ``taskq.cron.skipped_slots`` counts THAT a fire attempt dropped slots;
-# this gauge carries HOW FAR behind the schedule was when it did, per
+# ``taskq.cron.skipped_slots`` counts that a fire attempt dropped slots;
+# this gauge carries how far behind the schedule was when it did, per
 # actor, in the same fire units. The value is the leader's own
 # observation, not a database aggregate: the cron tick is the only place
 # the drop is computed (the catch-up skip branch), so the gauge is
@@ -2581,13 +2585,13 @@ _cron_slots_behind_gauge = get_meter().create_observable_gauge(
 # at all, not zero, nothing. The emitters below are called from `finally`
 # blocks and failure branches so a timing-out sweep is recorded as such.
 #
-# Publication discipline: the three cache dicts below are read on TWO
+# Publication discipline: the three cache dicts below are read on two
 # threads. The event-loop thread publishes stamps via the record_* / update_*
 # functions, and the OTel SDK reader thread iterates them from the
 # observable-gauge callbacks (``_observe_sweep_success`` et al.), the
 # identical cross-thread shape the ``_active_leaders_lock`` in leader.py
 # guards against ("Unsynchronized iteration raises RuntimeError"). So every
-# writer REBINDS a fresh dict (copy-on-write, like ``_queue_depth_cache``
+# writer rebinds a fresh dict (copy-on-write, like ``_queue_depth_cache``
 # and ``_jobs_by_status_cache`` below) rather than mutating in place: an
 # in-place insert that lands while a reader's iterator is open raises
 # ``RuntimeError: dictionary changed size during iteration``, and the first
@@ -2659,16 +2663,16 @@ _sweep_unexpected_errors = get_meter().create_counter(
 
 _sweep_success_cache: dict[str, float] = {}
 
-#: The MONOTONIC twin of ``_sweep_success_cache``, stamped at the same
+#: The monotonic twin of ``_sweep_success_cache``, stamped at the same
 #: instant and read by ``maintenance_health``'s stalled-sweep view. Two
 #: ledgers, deliberately: the exported gauge's contract is an absolute
 #: Unix timestamp (``time() - value`` is staleness, an operator's
-#: PromQL subtraction), while the in-process staleness comparison is an
-#: ELAPSED-time question and elapsed time belongs to the monotonic
+#: Promql subtraction), while the in-process staleness comparison is an
+#: elapsed-time question and elapsed time belongs to the monotonic
 #: domain. Anchoring the health view on the wall stamp is a bound a
-#: backward clock step defeats: an NTP correction, a VM live-migration,
+#: backward clock step defeats: an ntp correction, a vm live-migration,
 #: a hypervisor pause-replay moves ``time.time()`` back an hour, and
-#: ``time() - last_success`` goes NEGATIVE for exactly as long as the
+#: ``time() - last_success`` goes negative for exactly as long as the
 #: real stall continues, a sweep that stopped completing an hour ago
 #: reads fresh on /ready for the whole catch-up. The wall ledger keeps
 #: feeding the gauge (its consumers re-derive staleness themselves and
@@ -2678,7 +2682,7 @@ _sweep_success_monotonic_cache: dict[str, float] = {}
 
 
 def record_sweep_success(sweep_name: str) -> None:
-    """Stamp a sweep call's success in BOTH clock domains.
+    """Stamp a sweep call's success in both clock domains.
 
     Feeds the staleness gauge below (the wall ledger, an absolute Unix
     timestamp) and ``maintenance_health``'s stalled view (the monotonic
@@ -2689,7 +2693,7 @@ def record_sweep_success(sweep_name: str) -> None:
     sweep that finds zero eligible rows every tick (healthy) is
     distinguishable from one that never completes (stalled). The
     row-count counter and the duration histogram share this call site
-    but NOT this sample population: a timed-out sweep records duration
+    but not this sample population: a timed-out sweep records duration
     and a timeout but no row sample, so rows and duration must be read
     as different populations, which the sweep_timeouts counter
     reconciles.
@@ -2728,9 +2732,9 @@ def record_sweep_batch_size(sweep_name: str, batch_size: int) -> None:
 
     The maintenance sweeps degrade to a reduced batch after repeated
     cancellations; a worker reporting the reduced tier is reporting an
-    unhealthy database and must not be silent about it. Feeds BOTH the
-    batch-size gauge below AND ``maintenance_health``'s reduced-tier view
-    (health.py reads the cache directly), so it is deliberately NOT gated
+    unhealthy database and must not be silent about it. Feeds both the
+    batch-size gauge below and ``maintenance_health``'s reduced-tier view
+    (health.py reads the cache directly), so it is deliberately not gated
     on ``_otel_enabled``: the health body must keep reporting a latched
     reduced tier when an operator has exported telemetry off, because that
     body is the Prometheus-free surface the degraded signal exists for.
@@ -2927,7 +2931,7 @@ _lock_contention = get_meter().create_counter(
 #
 # These gauges are the backlog-stall detectors: a scheduled backlog that
 # stops moving is invisible in a merged pending+scheduled count and in
-# absolute depth thresholds. They are sampled UNCONDITIONALLY (every
+# absolute depth thresholds. They are sampled unconditionally (every
 # worker, not leader-gated) on purpose: a detector hosted behind the
 # leadership gate emits nothing under exactly the failure (a second
 # schema's lock) that mutes every leader-gated sampler.
@@ -2972,7 +2976,7 @@ get_meter().create_observable_gauge(
 # monitoring is the only place that condition can surface, and only at
 # actor granularity. A queue-summed depth cannot separate "one actor on
 # this queue is never consumed" from "this queue is busy", and the
-# fleet-wide oldest-DUE-age gauge measures promotion (scheduled →
+# fleet-wide oldest-due-age gauge measures promotion (scheduled →
 # pending), reading 0.0 for pending work nobody takes.
 #
 # Dimensions are exactly (actor, queue): both are bounded by the
@@ -3139,7 +3143,7 @@ def update_scheduled_count_cache(count: int) -> None:
     `status` label for every status) specifically so it joins on identical
     label sets with `taskq.jobs.oldest_due_age_seconds`, also label-less ,
     in `TaskQScheduledBacklogGrowing`. That alert needs both "the oldest
-    due job has waited a long time" AND "the scheduled count is actually
+    due job has waited a long time" and "the scheduled count is actually
     rising", not the age of a single straggling job (which climbs
     monotonically toward its own promotion regardless of how healthily
     everything behind it drains). A vector `and`/comparison between two
@@ -3317,7 +3321,7 @@ _running_lease_expired_gauge = get_meter().create_observable_gauge(
 # ── The retry ladder (the haunt's live visibility) ────────────────────
 #
 # ``taskq.jobs.attempt_failures{retryable="true"}`` counts that a retry
-# HAPPENED; nothing showed WHERE a job sat on its retry ladder. A job on
+# happened; nothing showed WHERE a job sat on its retry ladder. A job on
 # attempt 6 of 1000 is invisible today: by_status counts it as a healthy
 # pending row, the failure counter last moved five attempts ago, and a
 # job creeping up a tall ladder toward its ceiling is the slow shape no
@@ -3327,18 +3331,18 @@ _running_lease_expired_gauge = get_meter().create_observable_gauge(
 #
 # * ``taskq.jobs.retrying`` — the population: non-terminal rows with
 #   attempt > 0, per actor.
-# * ``taskq.jobs.retry_headroom`` — the MIN of max_attempts - attempt
+# * ``taskq.jobs.retry_headroom`` — the min of max_attempts - attempt
 #   over that same population, per actor: how close the actor's worst
 #   live row is to its ceiling. The haunt-detection alert reads this
-#   one: headroom 0 means a job is ON its last attempt, and a value
+#   one: headroom 0 means a job is on its last attempt, and a value
 #   pinned near 0 across ticks is a retry loop running out of ladder.
 #
-# Why the MIN-headroom live read and not the bounded-rung alternative
+# Why the min-headroom live read and not the bounded-rung alternative
 # (bucketing headroom into fixed bands and counting rows per band): the
 # bands would mint one extra series per band per actor (cardinality for
 # a precision the alert never reads), while the min needs the same
 # single grouped aggregate over the same population the retrying count
-# walks — ONE statement, ONE scan of the live (non-terminal) population,
+# walks — one statement, one scan of the live (non-terminal) population,
 # the exactness contract by_status's alert operands already pin. The
 # live population is bounded by the fleet's outstanding work, never by
 # history (terminal rows are excluded, the growth dimension the
@@ -3526,15 +3530,15 @@ def record_error_reporter_failure(reporter_type: str) -> None:
 # The SSE endpoints cap concurrency with per-topic semaphores and answer
 # 429 past the cap, but none of that reached a scrape: 55 open streams
 # and 5 rejections were invisible in metrics (the cap's only trace was a
-# client-side error). Two instruments, both recorded in the ADMIN
+# client-side error). Two instruments, both recorded in the admin
 # process (the one that serves the streams), so they are exported on the
 # admin's own /jobs/health/metrics — a worker scrape never carries them.
 #
 # Cardinality: ``surface`` is the closed two-value enum {admin, progress}
 # (the admin topic stream, the per-job progress stream). ``topic`` is the
-# CLOSED enum from source: the admin endpoint validates its topic against
+# closed enum from source: the admin endpoint validates its topic against
 # the fixed four-value vocabulary (queues/jobs/workers/history) and 400s
-# anything else BEFORE the semaphore lookup, and the progress stream's
+# anything else before the semaphore lookup, and the progress stream's
 # topic is its one constant family key (progress-stream). No
 # caller-supplied string reaches a label, so the series set is bounded
 # at (2 surfaces x 5 topics) by construction.
@@ -3607,7 +3611,7 @@ _sse_connections_cache: dict[tuple[str, str], int] = {}
 def record_sse_connection_opened(surface: SseSurface, topic: str) -> None:
     """Record one SSE connection taking a slot (the level gauge's +1).
 
-    Called at the acquire site AFTER the slot is held, so the gauge and
+    Called at the acquire site after the slot is held, so the gauge and
     the semaphore budget move together; the close is recorded at the
     same site the slot is released (``record_sse_connection_closed``).
     ``topic`` is the closed vocabulary the endpoints validate before the
@@ -3678,31 +3682,29 @@ def record_sse_rejection(surface: SseSurface, topic: str) -> None:
     ).add(1, {"topic": _bounded_sse_topic(topic), "surface": surface})
 
 
-# ── The workflow progress rollup (T08) ────────────────────────────────
+# ── The workflow progress rollup ────────────────────────────────
 #
 # taskq.wf_progress_nodes_total{workflow, state}: per-workflow node-state
 # counts, dimensioned by the USER-DECLARED WORKFLOW REGISTRATION (the
 # named-bucket precedent, docs/guides/observability.md's dimension
 # doctrine) — runs of a workflow whose name is NOT registered collapse
-# onto the `_other_` bucket carrying SUMMED counts. NEVER per-node
+# onto the `_other_` bucket carrying summed counts. never per-node
 # labels: the cardinality doctrine (observability.md) — a per-node series
 # is the series that cannot be stored, and the per-node truth is the row
 # and the admin's per-run page (the rollup read by run id), never the
 # fleet gauge.
 #
-# THE SAMPLER (GAPS-ESTATE F5, named): the MAINTENANCE LEADER (the
-# PG-rollup reader — the same process class that samples queue depth) on
-# the ADMIN's health/metrics surface, at the leader's existing metrics
-# tick (the vanilla pattern — never a worker scrape, never the opt-in
-# TASKQ_METRICS_PORT worker port). One grouped read (the same read the
+# the maintenance leader (the PG-rollup reader — the same process class that
+# samples queue depth) on the admin's health/metrics surface, at the leader's
+# existing metrics tick (the vanilla pattern — never a worker scrape, never the
+# opt-in TASKQ_METRICS_PORT worker port). One grouped read (the same read the
 # admin's status panel uses — the query-count pin), index-driven
 # (jobs_wf_flow_nodes_idx, 01.00.26_02 — the uuid-cast expression, the
-# workflow-rows-only partial `metadata ? 'flow_id'`).
-#
-# THE ALERT SUGGESTION SHIPS WITH THE GAUGE (GAPS-ESTATE F4 — a metric
-# nobody alerts on is a decoration): TaskQWorkflowBlockedStuck (a run
-# pinned `blocked` past the bound) in BOTH rule files, evaluated through
-# the promtool harness; the runbook row in docs/guides/runbooks.md.
+# workflow-rows-only partial `metadata ? 'flow_id'`). the alert suggestion
+# ships with the gauge (a metric nobody alerts on is a decoration):
+# TaskQWorkflowBlockedStuck (a run pinned `blocked` past the bound) in both
+# rule files, evaluated through the promtool harness; the runbook row in
+# docs/guides/runbooks.md.
 
 _wf_progress_cache: dict[tuple[str, str], int] = {}
 

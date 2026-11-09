@@ -357,7 +357,7 @@ async def test_shield_on_snooze_write(
     cancel_window = asyncio.Event()
 
     # Why patched at the backend seam, not inside _terminal.py: the
-    # mark_* terminal writes are now ONE fused statement (UPDATE + attempt
+    # mark_* terminal writes are now one fused statement (UPDATE + attempt
     # + event in a single data-modifying-CTE statement - see
     # _terminal.py's module docstring), so there is no longer a Python
     # seam BETWEEN the job UPDATE and the attempt INSERT to inject a

@@ -117,7 +117,7 @@ class TestStaticTypeCompatibility:
         assert isinstance(backend, Backend)
 
 
-# ── Snooze / retry status CASE determinism ──────────────────────────────
+# ── Snooze / retry status case determinism ──────────────────────────────
 
 
 class TestSnoozeRetryStatusCase:

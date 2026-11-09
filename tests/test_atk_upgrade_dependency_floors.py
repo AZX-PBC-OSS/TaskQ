@@ -19,7 +19,7 @@ import pytest
 #: The floors exactly as executed (atk/upgrade-paths, clean venv, 3.12):
 #: asyncpg==0.31.0, redis==8.0.1, pydantic==2.13.4, uuid-utils==1.0.0,
 #: fastapi==0.140.0 — full import battery, migrate up, worker run, and the
-#: README quickstart all pass at these versions.
+#: readme quickstart all pass at these versions.
 TESTED_FLOORS: dict[str, str] = {
     "asyncpg": "0.31.0",
     "redis": "8.0.1",

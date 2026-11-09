@@ -308,7 +308,7 @@ async def test_consume_shielded_writes_complete_when_task_is_cancelled() -> None
 
     write_completed = asyncio.Event()
     # Why an event at write entry: the cancel must land while the shielded
-    # mark_succeeded is IN FLIGHT. A fixed sleep raced consumer startup
+    # mark_succeeded is in flight. A fixed sleep raced consumer startup
     # under load - cancelled too early (during setup), the write never
     # starts and the test fails at the write_completed wait below. The
     # event is set at the exact point the pin needs: inside the write,
@@ -427,7 +427,7 @@ async def test_consume_control_flow_paths_complete_without_error() -> None:
 
 async def test_consume_start_to_close_timeout_routes_to_mark_failed_or_retry() -> None:
     """start_to_close timeout routes to mark_failed_or_retry with
-    TimeoutError("start_to_close") and does NOT call mark_cancelled.
+    TimeoutError("start_to_close") and does not call mark_cancelled.
     """
 
     async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
@@ -552,7 +552,7 @@ async def test_consume_external_cancel_routes_to_mark_cancelled() -> None:
 
     Actor loops; an external coroutine sets the cancel_event and calls
     task.cancel(). Oracle: mark_cancelled called (under shield);
-    mark_failed_or_retry NOT called.
+    mark_failed_or_retry not called.
     """
 
     # Why an event at actor entry: the cancel must land while the actor is

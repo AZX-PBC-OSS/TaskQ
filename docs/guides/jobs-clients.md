@@ -361,8 +361,8 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
    this actor. Raises `SingletonCollisionError` on collision — **including the actor's own
    self-enqueued successor** (a singleton tick that enqueues its own next round collides with
    itself; the working shapes are in [actors.md's singleton section](actors.md#singleton-actors)).
-   Cron fires now carry the same
-   `metadata["singleton"]` stamp and pre-flight: previously the flag was client-enqueue-only
+   Cron fires carry the same
+   `metadata["singleton"]` stamp and pre-flight as client enqueues
    (see [Cron Scheduling: singleton and `max_pending` interaction](cron.md#singleton-and-max_pending-interaction)).
  4. **`max_pending` count check**: if `ref.max_pending` is set, counts `pending + scheduled` jobs
     for this actor. Raises `MaxPendingExceededError` when `count >= max_pending`. Single enqueues
@@ -620,10 +620,9 @@ EnqueueItem(
 On **every** enqueue arm (single, batch, and COPY (`enqueue_batch_fast`)),
 an interval-form `schedule_to_close` (`retry.time_budget` on the actor) is
 anchored to the **database clock at enqueue time**
-(`clock_timestamp() + interval`). The batch and COPY arms previously
-anchored it to `scheduled_at + interval`, so a future-scheduled item's
-budget started when it became dispatchable. Under the unified contract a
-future-scheduled batch item with a short `time_budget` fails
+(`clock_timestamp() + interval`), never to
+`scheduled_at + interval`: a future-scheduled batch item with a short
+`time_budget` fails
 `DeadlineExceeded` (via the deadline sweep) **before it is ever
 dispatched**. If you batch future-scheduled jobs with deadlines, size
 `time_budget` from enqueue time, not from `scheduled_at`.
@@ -1198,7 +1197,10 @@ Streams live progress events for this job. When Redis is configured, subscribes 
 Redis pub/sub channel and yields `ProgressEvent` objects in real time. When Redis is not
 available, falls back to polling Postgres every 500 ms and synthesising events from row diffs.
 
-Yields until a `terminal=True` event is produced (the job reached a terminal status).
+Yields until a `terminal=True` event is produced (the job reached a terminal status). The
+first event is the row as it stands when the stream opens — the same contract `TaskQ.stream()`
+documents — so a consumer attaching to an already-running job does not starve until the
+actor's next publish.
 
 `progress_stream()` does not advance the handle's `row` property; its Redis path fetches no
 rows, and advancing only on the PG fallback would make the semantics backend-dependent.
@@ -1231,10 +1233,11 @@ async for event in handle.progress_stream():
 - Raises `NotImplementedError` when using `InMemoryBackend`: the in-memory backend does not
   support pub/sub.
 - Requires the `redis` extra (`uv add "taskq-py[redis]"`) for real-time delivery. Without Redis the
-  fallback polls Postgres at 500 ms intervals. On that PG poll transport, a database failure
-  lasting longer than the transport's failure budget ends the stream with `StreamUnavailable`
-  (shorter blips retry silently; the last failure is chained as `__cause__`) — see the
-  [Exceptions API reference](../api-reference/exceptions.md).
+  fallback polls Postgres at 500 ms intervals. On either transport, a database failure
+  lasting at least the transport's failure budget ends the stream with `StreamUnavailable` —
+  the PG poll transport's fetches, and on the Redis path, the safety-net re-reads behind the
+  subscription (shorter blips retry silently; the last failure is chained as `__cause__`) —
+  see the [Exceptions API reference](../api-reference/exceptions.md).
 
 For the HTTP SSE endpoint that browser clients can subscribe to, see
 [Progress & Streaming](progress.md).

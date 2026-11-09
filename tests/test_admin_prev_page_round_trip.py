@@ -2,7 +2,7 @@
 (forward-then-backward, backward-then-forward) drops no row, duplicates
 no row, and never reorders one.
 
-Ported red from the #564 red-team finding (their
+Ported red from the #564 adversarial review finding (their
 ``test_archive_cursor_union_seam_attacks.py`` xfail pin, on the branch
 that carries the UNION archive shape): the backward (``cursor_dir=prev``)
 fetch takes the ``_FETCH_SIZE`` rows NEAREST the cursor, re-sorts them
@@ -18,7 +18,7 @@ and ``reference[94]`` is never served.
 The shipped prev tests (``test_web_admin_pagination_order.py``) seed ten
 rows — under one page — so the truncation never bites them. These pins
 walk full multi-page populations and compare ROW-EXACT against a
-reference ``ORDER BY finished_at DESC NULLS LAST, id DESC`` over the
+reference ``ORDER BY finished_at DESC NULLS last, id DESC`` over the
 same population: a duplicate, a drop, or a gap anywhere is a failure.
 
 Every shown page below is computed by the route's own truncation
@@ -51,7 +51,7 @@ from taskq.web.admin._constants import (  # pyright: ignore[reportPrivateUsage]
     _FETCH_SIZE,
     _PAGE_SIZE,
 )
-from taskq.web.admin._factory import (  # pyright: ignore[reportPrivateUsage]  # Why: the template filters the route's own Environment registers; the render pins below run the SAME environment shape.
+from taskq.web.admin._factory import (  # pyright: ignore[reportPrivateUsage]  # Why: the template filters the route's own Environment registers; the render pins below run the same environment shape.
     _iso_attr,
     _time_ago,
 )
@@ -73,7 +73,7 @@ _TERMINAL = sorted({"succeeded", "failed", "cancelled", "crashed", "abandoned"})
 
 # The exact cursor-width constants the page walk runs with: the boundary
 # attacks size their populations from these, so a future change to either
-# constant re-lands the attacks at the NEW boundary instead of silently
+# constant re-lands the attacks at the new boundary instead of silently
 # testing nothing. The equality is pinned against the admin's own
 # _FETCH_SIZE below (test_display_slice_boundary_arithmetic), not assumed.
 FETCH = _PAGE_SIZE + 1
@@ -298,7 +298,7 @@ def _flatten(pages: list[list[Record]]) -> list[UUID]:
 
 def _flatten_backward(pages: list[list[Record]]) -> list[UUID]:
     """Backward-walk pages in DISPLAY order: the walk fetches the page
-    nearest the cursor FIRST, so each fetched page PREPENDS the rows seen
+    nearest the cursor first, so each fetched page PREPENDS the rows seen
     so far (the operator walking back is rebuilding the forward order
     from the seam toward the top)."""
     result: list[UUID] = []
@@ -342,7 +342,7 @@ async def test_backward_walk_row_exact_within_one_page(
     await _seed(walk_conn, walk_schema, rows)
     reference = await _reference_ids(walk_conn, walk_schema)
 
-    # Backward from a VALUE cursor 30 rows deep: one prev page, under the
+    # Backward from a value cursor 30 rows deep: one prev page, under the
     # truncation boundary, must be exactly reference[:30].
     deep = reference[30]
     value_cursor = await walk_conn.fetchrow(
@@ -354,10 +354,10 @@ async def test_backward_walk_row_exact_within_one_page(
     _assert_row_exact(walked, reference[:30], "backward-from-value-cursor walk")
 
     # Backward from a NULL-seam cursor (the walk's first NULL row): the
-    # prev pages must rebuild the whole valued prefix — the OR arm's job.
+    # prev pages must rebuild the whole valued prefix — the or arm's job.
     # Small population: 40 valued + 10 NULL, so the 40 rows before the
     # seam cursor fit one fetch — this isolates the backward NULL-seam
-    # PREDICATE from the display-truncation defect pinned below.
+    # predicate from the display-truncation defect pinned below.
     small = [base - timedelta(days=i % 9, seconds=i) for i in range(40)]
     small += [None] * 10
     await walk_conn.execute(f'TRUNCATE TABLE "{walk_schema}".jobs_archive CASCADE')
@@ -445,7 +445,7 @@ async def test_backward_walk_row_exact_across_multiple_pages(
 async def test_full_round_trip_forward_then_backward_is_row_exact(
     walk_conn: asyncpg.Connection, walk_schema: str
 ) -> None:
-    """Walk the FULL population forward, then turn prev at EVERY page
+    """Walk the FULL population forward, then turn prev at every page
     boundary: each backward walk must rebuild exactly the rows before
     that boundary — no drop, no dup, no gap, no reorder. The forward leg
     itself is pinned row-exact first, so a red here is the backward
@@ -486,7 +486,7 @@ async def test_full_round_trip_backward_then_forward_is_row_exact(
     reference = await _reference_ids(walk_conn, walk_schema)
 
     _pages, boundaries = await _walk_forward_pages(walk_conn, walk_schema)
-    deep_boundary = boundaries[-1]  # the first row of the LAST forward page
+    deep_boundary = boundaries[-1]  # the first row of the last forward page
     deep_index = (len(boundaries) - 1) * _PAGE_SIZE
 
     # The backward leg: from the deep boundary back to the top.
@@ -498,10 +498,10 @@ async def test_full_round_trip_backward_then_forward_is_row_exact(
     )
     _assert_row_exact(back_ids, expected_prefix, "backward leg")
 
-    # The forward leg resumes from the row immediately BEFORE the deep
+    # The forward leg resumes from the row immediately before the deep
     # boundary — the backward display's row nearest the walk's start (the
     # last row of the nearest-cursor page, reference[deep_index - 1]).
-    # Resuming from the OLDEST page instead would re-cross pages the
+    # Resuming from the oldest page instead would re-cross pages the
     # backward leg already served — dups by composition, not by defect.
     last_seen = back_pages[0][-1]
     resume_cursor = (_cursor_field(last_seen["finished_at"]), str(last_seen["id"]))
@@ -528,7 +528,7 @@ async def test_prev_walk_survives_an_identical_finished_at_tie_seam(
     to the fetch/page constants (exactly _PAGE_SIZE, _FETCH_SIZE,
     _FETCH_SIZE + 1, _FETCH_SIZE - 1 rows sharing one finished_at), each
     followed by an older distinct value — a full backward walk across
-    every boundary INSIDE the tie groups must stay row-exact."""
+    every boundary inside the tie groups must stay row-exact."""
     base = datetime.now(UTC) - timedelta(days=10)
     rows: list[datetime | None] = []
     for width in (_PAGE_SIZE, FETCH, FETCH + 1, FETCH - 1):
@@ -549,7 +549,7 @@ async def test_prev_walk_survives_an_identical_finished_at_tie_seam(
     _assert_row_exact(walked, expected, "backward walk across tie seams")
 
 
-# ── the slice's boundary arithmetic, against the ACTUAL constants ────────
+# ── the slice's boundary arithmetic, against the actual constants ────────
 
 
 def _fake_rows(n: int, *, offset: int = 0) -> list[asyncpg.Record]:
@@ -566,8 +566,8 @@ def test_display_slice_boundary_arithmetic() -> None:
     cursor) must serve the WHOLE fetch: Python's negative slice on a
     3-row list returns 3 — proven here, not assumed.  A fetch EXACTLY
     _PAGE_SIZE long serves whole in both directions.  A full _FETCH_SIZE
-    fetch serves the rows NEAREST the cursor backward (its LAST
-    _PAGE_SIZE) and the FARTHEST forward (its FIRST _PAGE_SIZE).  An
+    fetch serves the rows NEAREST the cursor backward (its last
+    _PAGE_SIZE) and the FARTHEST forward (its first _PAGE_SIZE).  An
     empty fetch serves an empty page in both directions — no crash, no
     negative-slice wraparound.
     """
@@ -576,7 +576,7 @@ def test_display_slice_boundary_arithmetic() -> None:
         "below are sized from that relationship"
     )
 
-    # The dry LAST prev page: only 3 rows before the cursor.
+    # The dry last prev page: only 3 rows before the cursor.
     short = _fake_rows(3)
     shown = _display_slice(short, forward=False)
     assert len(shown) == 3, "a short backward fetch serves every row it brought back"
@@ -589,7 +589,7 @@ def test_display_slice_boundary_arithmetic() -> None:
     assert [r["id"] for r in _display_slice(exact, forward=False)] == list(range(_PAGE_SIZE))
     assert [r["id"] for r in _display_slice(exact, forward=True)] == list(range(_PAGE_SIZE))
 
-    # A FULL fetch (51 rows): the two directions drop OPPOSITE ends.
+    # A full fetch (51 rows): the two directions drop opposite ends.
     full = _fake_rows(_FETCH_SIZE)
     back = [r["id"] for r in _display_slice(full, forward=False)]
     fwd = [r["id"] for r in _display_slice(full, forward=True)]
@@ -692,8 +692,8 @@ async def test_short_prev_fetch_serves_the_rows_nearest_the_cursor(
 async def test_next_prev_next_cycle_at_a_seam_is_row_exact(
     walk_conn: asyncpg.Connection, walk_schema: str
 ) -> None:
-    """The resolution-order twin: the route resolves _paginated_page ONCE
-    before the truncation, and the NEXT cursor is built from the SHOWN
+    """The resolution-order twin: the route resolves _paginated_page once
+    before the truncation, and the next cursor is built from the SHOWN
     rows' last element — so a full next→prev→next cycle around one seam
     must re-serve each page row-exact.  This is the reader the moved
     resolution could have broken while fixing PREV."""
@@ -714,7 +714,7 @@ async def test_next_prev_next_cycle_at_a_seam_is_row_exact(
     # 1. next: unpaged first page, then one turn.
     page1 = [r["id"] for r in _shown(await _fetch_page(walk_conn, walk_schema, None), None, "next")]
     assert page1 == reference[:_PAGE_SIZE]
-    # 2. next again from page 1's last SHOWN row.
+    # 2. next again from page 1's last shown row.
     page2 = [
         r["id"]
         for r in _shown(
@@ -724,14 +724,14 @@ async def test_next_prev_next_cycle_at_a_seam_is_row_exact(
         )
     ]
     assert page2 == reference[_PAGE_SIZE : 2 * _PAGE_SIZE]
-    # 3. prev from page 2's FIRST shown row (the seam the operator clicked).
+    # 3. prev from page 2's first shown row (the seam the operator clicked).
     seam = _cursor_of(page2[0])
     back = [
         r["id"]
         for r in _shown(await _fetch_page(walk_conn, walk_schema, seam, "prev"), seam, "prev")
     ]
     assert back == reference[:_PAGE_SIZE], "prev from page 2's seam re-serves page 1 row-exact"
-    # 4. next AGAIN, from the prev page's LAST shown row — the route's
+    # 4. next again, from the prev page's last shown row — the route's
     # next-cursor construction on a prev-served page.
     resume = _cursor_of(back[-1])
     again = [

@@ -6,12 +6,12 @@ wait distribution (clean vs deferred SEPARATED, the confound labeled),
 the fleet-imbalance table with its utilization verdict badges, the
 overprovisioning flags, the drain estimates with their ``has_traffic``
 honesty, and the cron fan-out ledger — through the admin router on a
-plain Postgres 18 container AND a TimescaleDB 2.30.1 (PG18) hypertable
+plain Postgres 18 container and a TimescaleDB 2.30.1 (PG18) hypertable
 conversion, the same both-modes matrix ``tests/test_insights.py`` runs
 for the SQL layer itself.
 
-The badge claims are the behavioral ones and are pinned red-first: a
-healthy fleet renders NO verdict badge anywhere on the page; a verdict
+The badge claims are the behavioral ones and are pinned a
+healthy fleet renders no verdict badge anywhere on the page; a verdict
 badge renders only on the pathological shape that earns it
 (over-capacity utilization, an unservable queue, an idle fleet, a
 runaway schedule).
@@ -104,9 +104,9 @@ async def _migrate(conn: asyncpg.Connection, schema: str) -> None:
 
 # ── The seeded shapes ────────────────────────────────────────────────────
 #
-# TWO schemas per mode. The MIXED schema carries every pathological shape
-# beside a healthy queue; the HEALTHY schema carries ONLY the healthy
-# fleet, so "the healthy fleet renders NO badges" is a whole-page claim,
+# two schemas per mode. The mixed schema carries every pathological shape
+# beside a healthy queue; the healthy schema carries only the healthy
+# fleet, so "the healthy fleet renders no badges" is a whole-page claim,
 # not a row-scoped one.
 
 
@@ -117,7 +117,7 @@ async def _seed_healthy_fleet(conn: asyncpg.Connection, schema: str) -> None:
       capacity 8; 2 due pending → utilization 0.25 (no badge).
     * 5 clean terminal jobs + 4 schedule fires, all terminalised inside
       the window → the drain estimate HAS traffic (eta 2 ÷ (9/3600) =
-      800 s → "13m") and the queue is NOT overprovisioned (9 ≥ 2).
+      800 s → "13m") and the queue is not overprovisioned (9 ≥ 2).
     * The schedule's fires == clearance in the current window and its
       prior is empty → ``runaway_trending`` false.
     """
@@ -166,16 +166,16 @@ async def _seed_healthy_fleet(conn: asyncpg.Connection, schema: str) -> None:
 async def _seed_mixed_fleet(conn: asyncpg.Connection, schema: str) -> None:
     """Every pathological shape beside the healthy queue of the same name.
 
-    * ``starve_q``  — due work, NO live worker → utilization NULL → the
+    * ``starve_q``  — due work, no live worker → utilization NULL → the
       unservable badge.
     * ``overcap_q`` — 5 due jobs behind capacity 1 x 1 → utilization 5.0 →
       the over-capacity badge.
     * ``idle_q``    — 2 live workers, zero due depth, zero
       terminalisations in the window → the idle-fleet badge.
-    * ``quiet_q``   — due depth, NO window traffic → the drain section
+    * ``quiet_q``   — due depth, no window traffic → the drain section
       must say so, never render an eta.
     * ``runaway_a`` — 6 fires this window (1 cleared) and 3 in the prior
-      hour (0 cleared): fires > cleared in BOTH windows → the runaway
+      hour (0 cleared): fires > cleared in both windows → the runaway
       badge renders at the 1h window (at the 24h default the prior
       window is empty, so the verdict is honestly false — pinned too).
     * The healthy queue carries a deferred (snoozed) row and a second
@@ -194,7 +194,7 @@ async def _seed_mixed_fleet(conn: asyncpg.Connection, schema: str) -> None:
         finished_age_s=150.0,
         snooze_count=1,
     )
-    # A second actor whose ONLY trace is wait rows: visible only when the
+    # A second actor whose only trace is wait rows: visible only when the
     # per-actor x queue toggle groups the wait table by (actor, queue).
     for _ in range(2):
         await _seed_terminal_job(
@@ -247,7 +247,7 @@ async def _seed_mixed_fleet(conn: asyncpg.Connection, schema: str) -> None:
             queue="ledger_q",
             actor="runaway_a",
             wait_s=1.0,
-            finished_age_s=5400.0,  # created ~90 min ago: the PRIOR 1h window
+            finished_age_s=5400.0,  # created ~90 min ago: the prior 1h window
             status="pending",
             schedule_id=sid,
         )
@@ -282,7 +282,7 @@ def _mount(pool: asyncpg.Pool, schema: str) -> _Mounted:
 async def lab(plain_dsn: str, timescale_dsn: str) -> AsyncIterator[_Lab]:
     """Both containers, four schemas (mixed + healthy per mode), four apps.
 
-    The dev-env trio is set HERE because ``create_router`` loads settings
+    The dev-env trio is set here because ``create_router`` loads settings
     at module-fixture time, before the function-scoped autouse fixture
     would have run (the hypertables suite's idiom).
     """
@@ -408,11 +408,11 @@ async def test_wait_distribution_separates_clean_from_deferred(
     html = await _html(mixed)
     assert "clean" in html
     assert "deferred" in html
-    # The honest labeling: deferred rows measure the FINAL leg only (the
+    # The honest labeling: deferred rows measure the final leg only (the
     # deferral moved scheduled_at forward), never the operator's own
     # snooze choice folded into queue latency.
     assert "final leg" in html
-    # The segments are separate ROWS for the same queue, not a blend:
+    # The segments are separate rows for the same queue, not a blend:
     # the healthy queue has both a clean and a deferred row.
     wait_rows = [r for r in _rows_containing(html, "healthy_q") if "deferred" in r or "clean" in r]
     assert any("clean" in r and "deferred" not in r for r in wait_rows), (
@@ -464,7 +464,7 @@ async def test_overprovisioning_flags_the_idle_fleet_with_the_window_named(
     assert _IDLE_FLEET in html, "idle_q must render the idle-fleet badge"
     assert "Idle fleet" in html
     # The window the verdict was computed over is named on the badge:
-    # a single-window TRUE is a hypothesis, and the page says which
+    # a single-window true is a hypothesis, and the page says which
     # window the hypothesis is about.
     badge_rows = [r for r in _rows_containing(html, "idle_q") if _IDLE_FLEET in r]
     assert badge_rows and "24h" in badge_rows[0], "the idle-fleet badge must name its window"
@@ -475,7 +475,7 @@ async def test_drain_eta_renders_humanly_and_no_traffic_is_honest(
 ) -> None:
     """The healthy queue's eta renders as a human duration (2 due ÷
     (9 completions / 3600 s) = 800 s → "13m"); the quiet queue — due
-    depth, NO window traffic — says so explicitly and NEVER renders an
+    depth, no window traffic — says so explicitly and never renders an
     eta, because eta=0 would read as 'already drained'."""
     mixed, _ = matrix
     html = await _html(mixed)
@@ -491,9 +491,9 @@ async def test_cron_ledger_renders_counts_and_the_runaway_badge(
     matrix: tuple[_Mounted, _Mounted],
 ) -> None:
     """The ledger shows fires/cleared/outstanding per schedule; the
-    schedule whose fires outrun clearance in BOTH 1h windows renders the
+    schedule whose fires outrun clearance in both 1h windows renders the
     runaway badge — at the 24h default the prior window is empty, so the
-    verdict is honestly false and NO badge renders (the window
+    verdict is honestly false and no badge renders (the window
     dependency is part of the claim)."""
     mixed, _ = matrix
     default_html = await _html(mixed)
@@ -516,8 +516,8 @@ async def test_cron_ledger_renders_counts_and_the_runaway_badge(
 
 
 async def test_healthy_fleet_renders_no_badges(matrix: tuple[_Mounted, _Mounted]) -> None:
-    """THE red-first behavioral claim: the healthy fleet's page renders
-    NO verdict badge anywhere — no over-capacity, no unservable, no
+    """The behavioral claim: the healthy fleet's page renders
+    no verdict badge anywhere — no over-capacity, no unservable, no
     idle fleet, no runaway."""
     _, healthy = matrix
     html = await _html(healthy)
@@ -526,7 +526,7 @@ async def test_healthy_fleet_renders_no_badges(matrix: tuple[_Mounted, _Mounted]
     )
     # And the healthy queue's drain eta renders humanly: 2 due ÷
     # (9 completions / 86400 s) = 19200 s → "5h 20m". The rate is the
-    # window's OWN length, not an hour: 24h of traffic spread thin.
+    # window's own length, not an hour: 24h of traffic spread thin.
     assert "5h 20m" in html
 
 

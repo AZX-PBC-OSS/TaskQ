@@ -3,8 +3,8 @@ kind is configurable.
 
 The adoption blocker this fixes: ``rate_limit_aware_classifier`` returned
 ``RetryOverride(kind="indefinite")`` UNCONDITIONALLY on a claimed 429, so
-a consumer whose actors are ``transient`` with no ``time_budget`` (the
-warden's six media jobs) met a sustained 429 storm with indefinite
+a consumer whose actors are ``transient`` with no ``time_budget`` (a
+six-job media feed) met a sustained 429 storm with indefinite
 retries and no deadline — the haunt the §5 danger block documents — and
 could not say "429 → BOUNDED retry" without hand-rolling a classifier.
 The factory makes the claim a construction-time knob:
@@ -16,7 +16,7 @@ The factory makes the claim a construction-time knob:
   composition).
 
 The parsing, the garbage rules, and the bounds are SHARED across modes
-(never forked). This file pins: the warden-shaped red/green storm, every
+(never forked). This file pins: the red/green storm shape, every
 mode's exact override shape, the identity of the built-in with the
 factory at defaults, the verbatim-delay invariant, and the parser's
 finite-hint grammar (huge-but-finite clamps to the operator's ceiling —
@@ -105,24 +105,24 @@ def _job_state(*, attempt: int = 1, max_attempts: int = 3) -> JobRetryState:
     )
 
 
-def _warden_policy() -> RetryPolicy:
-    """The warden's shape: a transient policy, no ``time_budget`` (a
+def _storm_policy() -> RetryPolicy:
+    """The storm shape: a transient policy, no ``time_budget`` (a
     transient actor's budget is dropped at enqueue anyway) — the config
     the rev lane was disqualified on."""
     return RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
 
 
-# ── the warden-shaped red/green: the storm, bounded at last ────────
+# ── the red/green: the storm, bounded at last ───────────────────────
 
 
-def test_warden_red_builtin_cannot_bound_the_storm() -> None:
+def test_red_builtin_cannot_bound_the_storm() -> None:
     """RED (the adoption blocker, the haunt pin's shape replayed as a
-    storm walk): warden-shaped config — a transient policy, no
+    storm walk): the storm shape — a transient policy, no
     time_budget, the BUILT-IN — meets a sustained 429 storm and the
-    decision ladder NEVER terminates. The built-in cannot express
+    decision ladder never terminates. The built-in cannot express
     '429 → bounded'; every attempt retries, past max_attempts forever."""
     actor = StubActorConfig(
-        retry=_warden_policy(),
+        retry=_storm_policy(),
         retry_classifier=rate_limit_aware_classifier,
     )
     storm = _HttpxStyleError(429)
@@ -135,8 +135,8 @@ def test_warden_red_builtin_cannot_bound_the_storm() -> None:
         )
 
 
-def test_warden_green_transient_mode_terminates_with_hint_honored() -> None:
-    """GREEN: the SAME storm through the factory's transient mode
+def test_green_transient_mode_terminates_with_hint_honored() -> None:
+    """GREEN: the same storm through the factory's transient mode
     terminates at max_attempts, and every retry along the way carries the
     server's hint end-to-end (jitter=0.0: the hint's own number, subject
     to the documented bounds — the 24 h default ceiling above it, the
@@ -154,7 +154,7 @@ def test_warden_green_transient_mode_terminates_with_hint_honored() -> None:
     assert isinstance(decision, Fail), "max_attempts is the stopper in transient mode"
 
 
-def test_warden_green_transient_mode_terminates_along_the_curve_fallback() -> None:
+def test_green_transient_mode_terminates_along_the_curve_fallback() -> None:
     """GREEN, hintless variant: a 429 with no Retry-After header gets the
     kind-only override (the declared curve computes *when* — 5 s base,
     jitter=0) and max_attempts still stops the storm."""
@@ -259,7 +259,7 @@ def test_fail_loud_on_garbage_claim_kind(bad: object) -> None:
         make_rate_limit_aware_classifier(bad)  # type: ignore[arg-type]  # Why: the test feeds deliberately off-contract values to pin the fail-loud validation
 
 
-# ── the identity pin: the built-in IS the factory at defaults ──────
+# ── the identity pin: the built-in is the factory at defaults ──────
 
 
 _IDENTITY_BATTERY: list[BaseException] = [
@@ -284,7 +284,7 @@ _IDENTITY_BATTERY: list[BaseException] = [
     ReservationUnavailable("pool", timedelta(seconds=30), source="reservation"),
 ]
 # (The battery is seconds-form only: the HTTP-date parse reads the clock,
-# and the identity pin runs both classifiers against the SAME inputs
+# and the identity pin runs both classifiers against the same inputs
 # without injection. The date form's identity is structural — the two
 # share one parse — and its behavior is pinned in
 # test_retry_after_header_sniffing.py.)
@@ -368,7 +368,7 @@ def test_verbatim_hint_clamped_by_max_retry_backoff_end_to_end() -> None:
     assert decision.retry_delay == timedelta(seconds=60)
 
 
-# ── parser alignment 1: huge-but-finite hints CLAMP, not fall back ─
+# ── parser alignment 1: huge-but-finite hints clamp, not fall back ─
 
 
 def test_huge_but_finite_hint_is_honored_verbatim_at_classifier_level() -> None:
@@ -397,8 +397,8 @@ def test_huge_hint_saturates_never_overflows() -> None:
     assert result.delay == timedelta.max
 
 
-def test_warden_huge_hint_clamps_to_max_retry_backoff_end_to_end() -> None:
-    """WARDEN PIN: ``max_retry_backoff=120 s`` + a '1e20'-class hint →
+def test_huge_hint_clamps_to_max_retry_backoff_end_to_end() -> None:
+    """END-TO-END PIN: ``max_retry_backoff=120 s`` + a '1e20'-class hint →
     the decision is Retry(EXACTLY 120 s) — the ceiling clamping an
     oversized hint, not the curve fallback the old parse produced."""
     policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
@@ -554,7 +554,7 @@ def test_zero_hint_keeps_the_curve_fallback_rule() -> None:
 # the decision path before this hardening:
 #
 # * a non-timedelta ``delay`` raised AttributeError/TypeError inside
-#   ``RetryClassifier._retry_decision``'s ceiling arithmetic — OUT of
+#   ``RetryClassifier._retry_decision``'s ceiling arithmetic — out of
 #   ``decide_after_failure``, whose contract is that a broken hook is
 #   logged and skipped, never propagated (the dispatch loop's failure
 #   path died);
@@ -575,7 +575,7 @@ def test_model_construct_garbage_delay_never_escapes_the_adapter() -> None:
 
     for bad_delay in ("not-a-timedelta", Mock(), 90.0, object()):
         bogus = RetryOverride.model_construct(kind="transient", delay=bad_delay)
-        actor = StubActorConfig(retry=_warden_policy(), retry_classifier=lambda e, a, _b=bogus: _b)
+        actor = StubActorConfig(retry=_storm_policy(), retry_classifier=lambda e, a, _b=bogus: _b)
 
         decision = decide_after_failure(actor, Exception("x"), _job_state())
 
@@ -680,7 +680,7 @@ def test_the_shape_guard_never_rejects_an_honest_override() -> None:
     )
 )
 def test_property_any_header_value_never_crashes_and_stays_finite(value: str) -> None:
-    """Property: for ANY header value, a claimed 429 always classifies,
+    """Property: for any header value, a claimed 429 always classifies,
     and the delay — when present — is a finite positive timedelta. No
     input can crash the classifier (the OverflowError saturation), and
     garbage degrades to delay=None, never to a bogus delay."""

@@ -94,7 +94,7 @@ def main() -> None:
 
 
 async def _main_async() -> None:
-    # Same logger posture as stress_dispatch.main(): WARNING root + filtering
+    # Same logger posture as stress_dispatch.main(): warning root + filtering
     # bound logger so the solver's per-dep debug records never render.
     logging.root.setLevel(logging.WARNING)
     structlog.configure(

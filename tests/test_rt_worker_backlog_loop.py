@@ -179,12 +179,12 @@ async def _drive_one_sample(
     return observed[0]
 
 
-# ── (a) UNCONDITIONAL: leadership held by nobody still feeds the gauges ──
+# ── (a) unconditional: leadership held by nobody still feeds the gauges ──
 
 
 async def test_backlog_gauges_fed_with_leadership_held_by_nobody() -> None:
-    """THE loop-level pin for hosting nothing behind the gate: ``is_leader``
-    is NEVER set on the deps - the exact condition of the second-schema
+    """The loop-level pin for hosting nothing behind the gate: ``is_leader``
+    is never set on the deps - the exact condition of the second-schema
     lock loss - and the backlog detectors must still report. A leader gate
     reintroduced here is the detector hosted behind the failure it
     detects."""
@@ -349,7 +349,7 @@ async def test_actor_backlog_fetch_failure_still_feeds_the_fleet_gauges() -> Non
     )
 
 
-# ── (d) demotion: backlog authority SURVIVES, leader-scoped gauges clear ──
+# ── (d) demotion: backlog authority survives, leader-scoped gauges clear ──
 
 
 async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
@@ -358,7 +358,7 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
     demotion must clear them (no authority over numbers it stopped
     sampling); the backlog gauges - jobs-by-status, the scheduled-count
     twin, oldest due age, expired leases and the per-(actor, queue) pair -
-    are every-worker samplers, so demotion must NOT clear them - clearing
+    are every-worker samplers, so demotion must not clear them - clearing
     would mute the detectors under the exact leadership failure they
     exist to expose."""
     import taskq.obs._otel as otel_mod
@@ -590,7 +590,7 @@ async def test_oldest_due_age_and_by_status_against_real_schema(
     age is the seconds since the oldest DUE scheduled job became due
     (EXTRACT(EPOCH ...) over the due set only - future-scheduled and
     already-pending rows must not hold it back), and the by-status cache
-    carries EVERY status present, not a merged count."""
+    carries every status present, not a merged count."""
     schema = module_pg_schema.schema_name
 
     now = datetime.now(UTC)
@@ -646,7 +646,7 @@ async def test_running_lease_expired_counts_only_expired_running_jobs(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """The zombie-running shape is visible: the expired-lease count covers
-    exactly the running rows whose lease is past AND that carry no cancel
+    exactly the running rows whose lease is past and that carry no cancel
     in flight, not future leases, not pending rows, not running rows that
     hold no lease, and not cancelling rows (the reclaim sweep deliberately
     waits out the cancel grace ladder for those, so an expired lease
@@ -679,7 +679,7 @@ async def test_running_lease_expired_counts_only_expired_running_jobs(
     # …a running row holding no lease at all (NULL never satisfies the
     # bound)…
     await _seed_running_job(clean_pg_conn, schema, locked_by_worker=None, lock_expires_at=None)
-    # …a running row PAST its lease but mid-cancel (cancel_phase = 1: the
+    # …a running row past its lease but mid-cancel (cancel_phase = 1: the
     # reclaim sweep's grace ladder owns this row, so the carve-out, not the
     # lease bound, must exclude it)…
     await _seed_running_job(

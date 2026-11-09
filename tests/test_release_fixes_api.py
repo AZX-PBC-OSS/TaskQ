@@ -174,10 +174,10 @@ async def test_listen_notify_callback_drops_oldest_on_overflow(
     # Why capsys, not caplog: taskq's structlog logger renders to stdout via
     # PrintLogger unless taskq.obs.setup_logging() has bridged it into
     # stdlib logging, which this unit test does not (and should not) set up.
-    from taskq.web.admin._listen import _QUEUE_MAXSIZE, _make_notify_callback
+    from taskq.workflows.api._listen_pump import DEFAULT_QUEUE_MAXSIZE, make_notify_callback
 
-    queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=3)
-    cb = _make_notify_callback(queue, "test_channel")
+    queue: asyncio.Queue[object] = asyncio.Queue(maxsize=3)
+    cb = make_notify_callback(queue, channel="test_channel")
 
     for i in range(5):
         cb(None, 0, "test_channel", f"payload-{i}")  # type: ignore[arg-type]  # Why: connection arg unused by the callback body.
@@ -189,11 +189,11 @@ async def test_listen_notify_callback_drops_oldest_on_overflow(
 
     out = capsys.readouterr().out
     assert out.count("listen-queue-overflow-drop-oldest") == 1  # logged once, not once per drop
-    assert _QUEUE_MAXSIZE == 1000  # documented default cap
+    assert DEFAULT_QUEUE_MAXSIZE == 1000  # documented default cap
 
 
 # ---------------------------------------------------------------------------
-# 9. Sync actor + LOOP-scoped dependency startup warning
+# 9. Sync actor + loop-scoped dependency startup warning
 # ---------------------------------------------------------------------------
 
 

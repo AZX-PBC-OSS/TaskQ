@@ -30,7 +30,10 @@ Async-native, Postgres-backed background job library for Python 3.12+.
   typed sub-flows; `step(..., cache=True)` dedups unchanged work across
   runs; a redeploy's in-flight runs are named by the versioning
   contract. See [Workflows](docs/guides/workflows.md) and the
-  [production checklist](docs/guides/production-checklist.md).
+  [production checklist](docs/guides/production-checklist.md). The
+  measurement estate (the evidence corpus — the claims registry, the
+  capture files, the runs) lives on the `evidence/taskqflow` branch,
+  not in this tree.
 - **Actors**: decorate plain `async def` (or sync) functions with `@actor`;
   payloads are validated with Pydantic models and dispatched as typed
   `ActorRef` handles.

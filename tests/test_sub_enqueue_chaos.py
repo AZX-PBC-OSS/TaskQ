@@ -96,7 +96,7 @@ async def _dispatch_job(
     )
 
 
-# ── LOOP-scope connection dies mid-enqueue ─────────────────────
+# ── loop-scope connection dies mid-enqueue ─────────────────────
 
 
 async def test_tc1_transaction_conn_dies_mid_enqueue(

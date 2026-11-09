@@ -1,4 +1,4 @@
-"""THE CHAOS SUITE: the flake drill and the SIGKILL crash drill,
+"""The flake drill and the SIGKILL crash drill,
 REPEATEDLY (5 iterations), the variance recorded honestly. Every
 iteration's invariants are the drills' own, UNCONDITIONAL: all
 transactions reach typed terminal, nothing lost, nothing duplicated,
@@ -38,7 +38,7 @@ async def _run_flake_drill(pool: asyncpg.Pool, schema: str, iteration: int) -> d
     raw = await await_terminal(pool, schema, str(claim.flow_id), timeout_s=800)
     report = CompletionReport.model_validate(raw)
 
-    # THE INVARIANTS (unconditional — every iteration, no exceptions).
+    # the invariants (unconditional — every iteration, no exceptions).
     assert report.failed == [], f"iteration {iteration}: transactions died: {report.failed[:10]}"
     assert report.cleared == sorted(t.txn_id for t in batch.transactions)
     assert len(report.cleared) == len(set(report.cleared)), "a transaction cleared twice"
@@ -83,10 +83,10 @@ async def _run_crash_drill(
         message=f"iteration {iteration}: the fan-out never went live",
     )
 
-    # THE CRASH: the fleet dies mid-fan-out.
+    # the fleet dies mid-fan-out.
     await fleet.kill_all()
 
-    # THE RESTART: a fresh worker resumes.
+    # a fresh worker resumes.
     await fleet.start(1)
     raw = await await_terminal(pool, schema, str(claim.flow_id), timeout_s=600)
     report = CompletionReport.model_validate(raw)

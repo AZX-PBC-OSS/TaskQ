@@ -14,6 +14,7 @@ from uuid import UUID
 
 __all__ = [
     "BTREE_MAX_ITEM_BYTES",
+    "BUDGET_EXHAUSTED_MESSAGE",
     "CANCEL_ORIGIN_ABANDONED",
     "CANCEL_ORIGIN_COOPERATIVE",
     "CANCEL_ORIGIN_FORCED",
@@ -72,6 +73,7 @@ __all__ = [
     "progress_global_channel",
     "quote_ident",
     "require_schema",
+    "resolve_priority_stamp",
     "schema_lock_name",
     "wake_channel",
     "worker_channel",
@@ -265,7 +267,7 @@ cancelled, never re-available.
 """
 
 CANCEL_ORIGIN_PEER_FAILURE: Final[str] = "CancelledByPeerFailure"
-"""``error_class`` the workflow fail-closed peer-cascade stamps (T06).
+"""``error_class`` the workflow fail-closed peer-cascade stamps.
 
 A running peer was cancelled because a SIBLING's terminal failure failed
 their shared join closed — the cancel nobody requested and no hook ran
@@ -286,6 +288,11 @@ or an operator cross-reading them sees two different incidents."""
 ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED: Final[str] = "MaxAttemptsExceeded"
 """``error_class`` the retry-budget-exhausted arm stamps when a job's
 attempts are spent."""
+
+BUDGET_EXHAUSTED_MESSAGE: Final[str] = "retry budget exhausted"
+"""``error_message`` the retry-budget-exhausted arm records (the row, the
+attempt record, and the workflow deferral's exhausted verdict — one
+literal, every surface)."""
 
 ERROR_CLASS_WORKER_CRASHED: Final[str] = "WorkerCrashed"
 """``error_class`` the leader sweeps stamp on a row whose worker died
@@ -698,6 +705,34 @@ def check_priority_domain(value: int, *, what: str = "priority") -> None:
         )
 
 
+#: The ``wf_priority`` stamp's own integer grammar — the SQL face's
+#: regex (the drain's fetch resolves the stamp in SQL with the same
+#: accept/refuse shape the Python parse below runs).
+PRIORITY_STAMP_INT_PATTERN: Final[str] = r"^[+-]?[0-9]+$"
+
+
+def resolve_priority_stamp(raw: object) -> int | None:
+    """The ``wf_priority`` stamp's parse → domain-clamp → degrade
+    cascade, stated once (every reader of the root's stamped override
+    calls this).
+
+    A stamp a hand-crafted row rendered unparseable (``int`` raises
+    ``TypeError``/``ValueError``) or parseable but outside the
+    ``smallint`` column's domain (``check_priority_domain``'s refusal,
+    caught) degrades to no override — the declarations, or the column
+    default, speak; a priority is an ordering hint, never a correctness
+    input worth crashing the door on. ``None`` = no override stamped.
+    """
+    if raw is None:
+        return None
+    try:
+        parsed = int(raw)  # type: ignore[call-overload]  # Why: the jsonb decode is text-or-None at runtime; the int() is the parse.
+        check_priority_domain(parsed, what="the root's wf_priority stamp")
+    except (TypeError, ValueError):
+        return None
+    return parsed
+
+
 # Beyond 2**53 an IEEE-754 double cannot represent every integer: the
 # neighbors alias, so a bound like 10**25 stored in a float column accepts
 # 10**25 - 1 (measured). Any integral constraint past this magnitude on a
@@ -981,8 +1016,8 @@ addresses the outbox row) and the BACKEND's dispatch-fence templates
 (``taskq.backend._dispatch_sql``), whose terminal-flow leg carries the
 ESCALATION-KIND exemption — the one workflow row a TERMINAL flow's
 dispatch fence still admits (a flow's death must not orphan its
-pages-a-human duty). Backend must not import workflows (the §16.1
-import law), so the fence substitutes this constant as a token; the two
+pages-a-human duty). Backend must not import workflows (the import
+law), so the fence substitutes this constant as a token; the two
 faces cannot drift.
 """
 
@@ -1004,14 +1039,14 @@ imported BY ``registry``, defining it in ``registry`` would be circular.
 
 
 def base_name_collides_with_reserved_prefix(base_name: str) -> bool:
-    """True if a keyed ref's ``f"{base_name}:{key}"`` names ALWAYS land in
+    """True if a keyed ref's ``f"{base_name}:{key}"`` names always land in
     the reserved queue-cap namespace.
 
     The concrete name is ``f"{base_name}:{key}"``; every such name starts
     with ``QUEUE_CONCURRENCY_PREFIX`` exactly when ``base_name`` itself
     starts with the prefix (e.g. ``"taskq:global:queue:x"``) or equals it
     minus the trailing colon (``"taskq:global:queue"``, the ``":"``
-    separator then completes the prefix for ANY key). Both are rejected at
+    separator then completes the prefix for any key). Both are rejected at
     ref-construction time so the collision surfaces at startup instead of
     as a per-job ``ValueError`` from the ``register()`` prefix guard.
 

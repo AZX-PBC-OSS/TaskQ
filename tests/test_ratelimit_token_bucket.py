@@ -342,7 +342,7 @@ async def test_pg_fallback_disabled_re_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """when rate_limit_pg_fallback_enabled=False, Redis errors
-    propagate; PG path is NOT called."""
+    propagate; PG path is not called."""
     import redis as _redis_mod
 
     tb = _redis_bucket(name="fallback-off")
@@ -419,7 +419,7 @@ async def test_acquire_redis_works_without_python_clock() -> None:
     assert r.allowed is True
 
 
-# ── Redis fake: ARGV order, key format, register_script once ─────────
+# ── Redis fake: argv order, key format, register_script once ─────────
 
 
 class _FakeAsyncScript:
@@ -450,7 +450,7 @@ class _FakeRedisClient:
         self.hmget_return: list[object] | None = None
         self.hmget_calls: list[tuple[str, list[str]]] = []
         self.deleted_keys: list[str] = []
-        # TIME-domain clock served to redis_time_seconds(); defaults to
+        # time-domain clock served to redis_time_seconds(); defaults to
         # _START's epoch so ts-vs-now deltas are exactly zero unless a
         # test overrides it.
         self.time_return: list[int] = [int(_START.timestamp()), 0]
@@ -573,7 +573,7 @@ async def test_redis_argv_order_and_key_format() -> None:
     key = call["keys"][0]
     assert key == "taskq:taskq_test:rl:tb:{my_bucket}"
 
-    # ARGV carries no clock: the script reads redis TIME for now.
+    # argv carries no clock: the script reads redis time for now.
     argv = call["args"]
     assert len(argv) == 4
     assert argv[0] == 100.0
@@ -664,7 +664,7 @@ def test_token_bucket_reexported() -> None:
 
 
 async def test_refund_restores_tokens() -> None:
-    """In-memory refund adds count tokens back (refund amount = count, NOT decision.remaining)."""
+    """In-memory refund adds count tokens back (refund amount = count, not decision.remaining)."""
     tb = _bucket(capacity=100, refill=10)
     clock = FakeClock(_START)
 
@@ -934,7 +934,7 @@ async def test_refund_redis_dispatches_to_refund_script() -> None:
     assert len(script_obj.calls) == 1
     call = script_obj.calls[0]
     assert call["keys"][0] == "taskq:taskq_test:rl:tb:{refund-redis}"
-    # ARGV carries no clock: the script reads redis TIME for now.
+    # argv carries no clock: the script reads redis time for now.
     assert call["args"] == [5, 100.0, 10.0]
 
 
@@ -1204,42 +1204,21 @@ async def test_acquire_pg_defensive_row_none_denies_never_admits() -> None:
     assert r.backend == "postgres"
 
 
+# NOTE (the mock-subtraction cure): the acquire-decode fake arms (the fused
+# statement's RETURNING row decoded into allowed/remaining/retry_after) are
+# deleted — tests/test_ratelimit_token_bucket_pg.py owns the decode against
+# real rows (test_pg_burst_throttle_refill: the allowed/remaining monotone
+# decode, the denial's positive retry_after under refill, the rewind-refill).
+# The peek/reset/fixed-quota arms had no real sibling; they converted there
+# (peek-exhausted, peek-no-row, reset-delete, fixed-quota retry_after None).
+# The defensive no-RETURNING-row arm stays as the fault injection it is (a
+# trigger swallowing RETURNING is not a state real rows can produce).
+
+
 # ── acquire() postgres: existing-row decode (allowed + denied) ────────
 
 
-async def test_acquire_pg_existing_row_allowed_decodes_state() -> None:
-    """acquire() decodes the fused statement's RETURNING row, the final
-    token count and the decision bit, and reports both."""
-    pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 6.0, "granted": True})
-    tb = _pg_bucket(capacity=10, refill=1, name="pg-row-existing-allowed")
-
-    r = await tb.acquire(count=4, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
-
-    assert r.allowed is True
-    assert r.remaining == 6.0
-    assert r.retry_after == timedelta(0)
-
-
-async def test_acquire_pg_existing_row_denied_with_refill_computes_retry_after() -> None:
-    """acquire() denied by the fused row's decision bit with refill>0
-    computes retry_after from the deficit against the reported tokens."""
-    pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 0.0, "granted": False})
-    tb = _pg_bucket(capacity=10, refill=2, name="pg-row-existing-denied")
-
-    r = await tb.acquire(count=5, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
-
-    assert r.allowed is False
-    assert r.retry_after is not None
-    assert abs(r.retry_after.total_seconds() - 2.5) < 1e-9
-
-
-async def test_acquire_pg_existing_row_denied_fixed_quota_retry_after_none() -> None:
-    """acquire() denied by the fused row's decision bit with refill=0
-    reports retry_after=None, a fixed quota has no recovery time."""
-    pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 0.0, "granted": False})
-    tb = _pg_bucket(capacity=10, refill=0, name="pg-row-existing-fixed")
-
-    r = await tb.acquire(count=1, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
-
-    assert r.allowed is False
-    assert r.retry_after is None
+# NOTE (the mock-subtraction cure): the remaining decode arms converted to
+# tests/test_ratelimit_token_bucket_pg.py (see the note above the defensive
+# arm). The fake answered the fused statement's row from a configured dict -
+# the real pack answers with the real statement's own row.

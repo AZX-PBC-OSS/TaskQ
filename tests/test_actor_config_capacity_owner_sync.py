@@ -1,0 +1,754 @@
+"""The capacity owner's sync pins (the code-deploy opt-in).
+
+``sync_actor_config``'s UPSERT deliberately omits the capacity columns
+from the ``DO UPDATE SET`` clause: an existing row's
+``max_concurrent``/``max_pending``/``result_ttl`` survive every
+subsequent boot (the operator-owns law). Consequence: for an actor whose
+capacity terms ride the CODE — best-effort dampers riding
+``max_concurrent`` — a changed literal deploys NOTHING after first
+boot; editing code silently does nothing.
+
+The opt-in is per-actor: ``@actor(capacity_owner="code")`` /
+``@app.actor(capacity_owner="code")``. For code-owned actors the
+upsert's SET clause INCLUDES ``max_concurrent`` and ``result_ttl`` (the
+retry contract's own law, on the capacity axes); the queue and
+``max_pending`` stay operator-owned for both owners. With no code-owned
+rows the statement is byte-identical to the operator's alone.
+
+Pins here:
+* a code-owned actor's capacity change deploys by code after first boot
+  (real PG);
+* a default actor's row is untouched by a code change (real PG);
+* the seed INSERT path is unchanged (real PG);
+* the declaration surface accepts and rejects the right shapes;
+* the operator statement is byte-identical when code-owned rows ride
+  along (the statement partition).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import asyncpg
+import pytest
+import structlog
+import structlog.types
+from pydantic import BaseModel
+
+from taskq._ids import new_base62
+from taskq._json import dumps_str, loads
+from taskq.actor import actor
+from taskq.actor_config import ActorConfig
+from taskq.exceptions import ActorConfigDriftList
+from taskq.worker.startup import sync_actor_config
+
+
+class _Probe(BaseModel):
+    """The vanilla decorator pins' payload model (module level — the
+    ref's hint resolution reads the module's namespace)."""
+
+    doc_id: str
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# The fake connection (test_actor_config_sync.py's own shape, local copy —
+# cross-test-module imports of fakes are a collection-order fragility)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class FakeRecord:
+    """A record-like object that supports dict-style key access."""
+
+    _fields: dict[str, object] = field(default_factory=dict[str, object])
+
+    def __getitem__(self, key: str) -> object:
+        return self._fields[key]
+
+
+class FakeAsyncpgConnection:
+    """A test-double for ``asyncpg.Connection`` that records SELECT/UPSERT calls."""
+
+    def __init__(self) -> None:
+        self._select_rows: list[FakeRecord] = []
+        self._transaction_count: int = 0
+        self._fetch_calls: list[tuple[str, list[Any]]] = []
+        self._execute_calls: list[tuple[str, list[Any]]] = []
+
+    def set_select_rows(self, rows: list[FakeRecord]) -> None:
+        self._select_rows = list(rows)
+
+    async def fetch(self, query: str, *params: Any) -> list[FakeRecord]:
+        self._fetch_calls.append((query, list(params)))
+        return list(self._select_rows)
+
+    async def execute(self, query: str, *params: Any) -> str:
+        self._execute_calls.append((query, list(params)))
+        return "OK"
+
+    def transaction(self) -> FakeTransaction:
+        return FakeTransaction(self)
+
+
+class FakeTransaction:
+    """Async context manager that records enter/exit."""
+
+    def __init__(self, fake_conn: FakeAsyncpgConnection) -> None:
+        self._conn = fake_conn
+        self._entered = False
+
+    async def __aenter__(self) -> FakeTransaction:
+        self._conn._transaction_count += 1
+        self._entered = True
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        if not self._entered:
+            raise RuntimeError("transaction exited without entering")
+
+
+def _make_record(
+    actor: str,
+    max_concurrent: int | None = None,
+    max_pending: int | None = None,
+    queue: str = "default",
+    result_ttl: float | None = None,
+    metadata: dict[str, object] | None = None,
+    max_attempts: int = 3,
+    retry_kind: str = "transient",
+) -> FakeRecord:
+    md = metadata if metadata is not None else {}
+    return FakeRecord(
+        {
+            "actor": actor,
+            "max_concurrent": max_concurrent,
+            "max_pending": max_pending,
+            "queue": queue,
+            "result_ttl": result_ttl,
+            "metadata": dumps_str(md),
+            "max_attempts": max_attempts,
+            "retry_kind": retry_kind,
+        }
+    )
+
+
+def _make_config(
+    actor: str,
+    max_concurrent: int | None = None,
+    max_pending: int | None = None,
+    queue: str = "default",
+    result_ttl: float | None = None,
+    metadata: dict[str, object] | None = None,
+    capacity_owner: str = "operator",
+    max_attempts: int = 3,
+    retry_kind: str = "transient",
+) -> ActorConfig:
+    return ActorConfig(
+        actor=actor,
+        max_concurrent=max_concurrent,
+        max_pending=max_pending,
+        queue=queue,
+        result_ttl=result_ttl,
+        metadata=metadata if metadata is not None else {},
+        capacity_owner=capacity_owner,
+        max_attempts=max_attempts,
+        retry_kind=retry_kind,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Unit-tier: the statement partition (fake connection)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_the_default_sync_keeps_its_single_operator_statement() -> None:
+    """The write-shape law, count-shaped: a sync with no code-owned
+    rows runs EXACTLY one upsert (one statement per sync — the boot's
+    write amplification stays at one). The statement's OUTCOME (the
+    stored capacity and queue surviving a changed literal) is the
+    real-PG pins' law below."""
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows([_make_record("X", max_concurrent=5, queue="default")])
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType]  # Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking.
+        [_make_config("X", max_concurrent=3)],
+    )
+
+    assert len(fake_conn._execute_calls) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Unit-tier: the events (the deploy is visible, never silent)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_code_owned_capacity_divergence_logs_the_code_change_event(
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
+    """A code-owned actor's stored/registered capacity mismatch is the
+    WARNING that announces the deploy (the retry contract's own event
+    shape): the upsert is about to overwrite the stored value with the
+    literal — visible, never silent. The same actor's max_pending
+    mismatch stays the operator-override INFO (it is not code-owned)."""
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows(
+        [_make_record("X", max_concurrent=5, max_pending=100, queue="default")]
+    )
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType]  # Why: unit-test double, see the sibling sync pins.
+        [
+            _make_config(
+                "X",
+                max_concurrent=7,
+                max_pending=200,
+                result_ttl=120.0,
+                capacity_owner="code",
+            )
+        ],
+    )
+
+    change_events = [
+        e for e in structlog_capture if e["event"] == "actor-config-capacity-code-change"
+    ]
+    code_fields = {e["field"] for e in change_events}
+    assert code_fields == {"max_concurrent", "result_ttl"}, (
+        "the code-owned fields' deploy must announce itself, one event per field"
+    )
+    override_events = [
+        e for e in structlog_capture if e["event"] == "actor-config-capacity-override"
+    ]
+    override_fields = {e["field"] for e in override_events}
+    assert override_fields == {"max_pending"}, (
+        "max_pending stays operator-owned even for a code-owned actor: its "
+        "divergence is the override log, never the code-change warning"
+    )
+
+
+@pytest.mark.asyncio
+async def test_default_capacity_divergence_keeps_the_override_log(
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
+    """The regression guard: a DEFAULT actor's capacity mismatch is
+    exactly today's INFO override event — the code-change warning must
+    never fire for it (the operator-owns law holds, byte-identically)."""
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows([_make_record("X", max_concurrent=5, queue="default")])
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType]  # Why: unit-test double, see the sibling sync pins.
+        [_make_config("X", max_concurrent=3)],
+    )
+
+    assert not [
+        e for e in structlog_capture if e["event"] == "actor-config-capacity-code-change"
+    ], "a default actor's divergence is never a code deploy"
+    override_events = [
+        e for e in structlog_capture if e["event"] == "actor-config-capacity-override"
+    ]
+    assert {e["field"] for e in override_events} == {"max_concurrent"}
+
+
+@pytest.mark.asyncio
+async def test_code_owned_drift_never_raises_and_metadata_law_unchanged() -> None:
+    """The code-owned opt-in does not touch the DRIFT families: metadata
+    still raises (structural), and a code-owned row's capacity mismatch
+    is never an ``ActorConfigDriftList``."""
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows(
+        [_make_record("X", max_concurrent=5, queue="default", metadata={"env": "prod"})]
+    )
+
+    with pytest.raises(ActorConfigDriftList):
+        await sync_actor_config(
+            fake_conn,  # pyright: ignore[reportArgumentType]  # Why: unit-test double, see the sibling sync pins.
+            [
+                _make_config(
+                    "X",
+                    max_concurrent=7,
+                    capacity_owner="code",
+                    metadata={"env": "staging"},
+                )
+            ],
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# The declaration surfaces (accepts and rejects the right shapes)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_the_vanilla_surface_accepts_the_owner_names() -> None:
+    """``@actor(capacity_owner=...)`` accepts exactly the two owner names
+    and carries them on the ref."""
+
+    @actor(capacity_owner="code")
+    async def code_owned(payload: _Probe) -> str:
+        return payload.doc_id  # pragma: no cover - the pin drives the declaration
+
+    assert code_owned.capacity_owner == "code"
+
+    @actor()
+    async def default_owned(payload: _Probe) -> str:
+        return payload.doc_id  # pragma: no cover
+
+    assert default_owned.capacity_owner == "operator"
+
+
+@pytest.mark.parametrize("bad", ["fleet", "CODE", "operator ", "", None, True, 5])
+def test_the_vanilla_surface_rejects_the_wrong_shapes(bad: object) -> None:
+    """Anything but the two owner names is the refused declaration —
+    ``ValueError`` at the decoration site, never a silent anything."""
+    with pytest.raises(ValueError, match="capacity_owner"):
+
+        @actor(capacity_owner=bad)  # type: ignore[arg-type]  # Why: the refused shapes are the pin's subject — the checker's own refusal and the runtime door agree.
+        async def refused(payload: _Probe) -> str:
+            return payload.doc_id  # pragma: no cover
+
+
+def test_the_wf_surface_accepts_and_rejects_the_owner_shapes() -> None:
+    """``@app.actor(capacity_owner=...)``: the same door, the wf face —
+    the two owner names accepted, anything else refused."""
+    from pydantic import BaseModel
+
+    from taskq.workflows import StepContext, WorkflowApp
+
+    class Ingest(BaseModel):
+        doc_id: str
+
+    app = WorkflowApp()
+
+    @app.actor(capacity_owner="code", max_concurrent=4)
+    async def code_owned(ctx: StepContext, params: Ingest) -> str:
+        return params.doc_id  # pragma: no cover - the runner drives real bodies
+
+    assert code_owned.capacity_owner == "code"
+
+
+@pytest.mark.parametrize("bad", ["fleet", "CODE", "operator ", "", None, True, 5])
+def test_the_wf_surface_rejects_the_wrong_shapes(bad: object) -> None:
+    """The wf face's reject parametrization (the review's 4a): the same
+    seven bad shapes the vanilla surface pins — every one is the refused
+    declaration at the wf decorator, never a silent anything."""
+    from pydantic import BaseModel
+
+    from taskq.workflows import StepContext, WorkflowApp
+
+    class Ingest(BaseModel):
+        doc_id: str
+
+    app = WorkflowApp()
+    with pytest.raises(ValueError, match="capacity_owner"):
+
+        @app.actor(capacity_owner=bad)  # type: ignore[arg-type]  # Why: the refused shapes are the pin's subject.
+        async def refused(ctx: StepContext, params: Ingest) -> str:
+            return params.doc_id  # pragma: no cover
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# The projection carries the declaration (the wf face's ride)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_the_projection_carries_the_code_owner() -> None:
+    """The wf face: the handle's declaration rides the wiring into the
+    decl and the projection's ``ActorConfig`` — the cohort the sync
+    consumes is marked code-owned; a bare cohort stays "operator"."""
+    from pydantic import BaseModel
+
+    from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
+    from taskq.workflows._worker_execution import project_workflow_actor_configs
+
+    class Ingest(BaseModel):
+        doc_id: str
+
+    class Report(BaseModel):
+        ref: str
+
+    app = WorkflowApp()
+
+    @app.actor(capacity_owner="code", max_concurrent=4, result_ttl=120.0)
+    async def capped(ctx: StepContext, params: Ingest) -> Report:
+        return Report(ref=params.doc_id)  # pragma: no cover - the runner drives real bodies
+
+    @app.actor()
+    async def bare(ctx: StepContext, params: Ingest) -> Report:
+        return Report(ref=params.doc_id)  # pragma: no cover
+
+    @app.workflow("code-owner-flow")
+    def code_owner_flow() -> Promise[object]:
+        one = step(capped, Ingest(doc_id="d"), key="one", actor="wf-code")
+        two = step(bare, one, key="two", actor="wf-bare")
+        return build(two)
+
+    rows = {c.actor: c for c in project_workflow_actor_configs()}
+    assert rows["wf-code"].capacity_owner == "code"
+    assert rows["wf-code"].max_concurrent == 4
+    assert rows["wf-code"].result_ttl == 120.0
+    assert rows["wf-bare"].capacity_owner == "operator", (
+        "a cohort with no owner declaration projects the default — the operator-owns law, unchanged"
+    )
+
+
+def test_the_code_owner_participates_in_the_one_cap_law() -> None:
+    """The owner declaration is a CAPACITY TERM: two healthy declarations
+    fighting over one actor's terms — differing owners included — is the
+    refused drift (the across-workflows arm), never a silent skip."""
+    from pydantic import BaseModel
+
+    from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
+    from taskq.workflows._worker_execution import (
+        WorkflowActorCapacityConflictError,
+        project_workflow_actor_configs,
+    )
+
+    class Ingest(BaseModel):
+        doc_id: str
+
+    class Report(BaseModel):
+        ref: str
+
+    app_one = WorkflowApp()
+
+    @app_one.actor(capacity_owner="code", max_concurrent=4)
+    async def handle_one(ctx: StepContext, params: Ingest) -> Report:
+        return Report(ref=params.doc_id)  # pragma: no cover
+
+    @app_one.workflow("owner-flow-one")
+    def owner_flow_one() -> Promise[object]:
+        return build(step(handle_one, Ingest(doc_id="d"), key="one", actor="wf-shared"))
+
+    app_two = WorkflowApp()
+
+    @app_two.actor(max_concurrent=4)
+    async def handle_two(ctx: StepContext, params: Ingest) -> Report:
+        return Report(ref=params.doc_id)  # pragma: no cover
+
+    @app_two.workflow("owner-flow-two")
+    def owner_flow_two() -> Promise[object]:
+        return build(step(handle_two, Ingest(doc_id="d"), key="two", actor="wf-shared"))
+
+    with pytest.raises(WorkflowActorCapacityConflictError, match="capacity_owner"):
+        project_workflow_actor_configs()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Integration-tier (real PG via pg_conn)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def _ensure_schema(conn: asyncpg.Connection, schema: str) -> None:
+    """The schema via the SHIPPED migrations — the house pattern (a
+    fresh schema + ``apply_pending``), never a hand-rolled shadow DDL:
+    a second copy of the table's DDL drifts from the migrations the
+    moment either side moves."""
+    from taskq.migrate import apply_pending
+
+    await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    await apply_pending(conn, schema=schema)
+
+
+async def _read_row(conn: asyncpg.Connection, schema: str, actor: str) -> dict[str, object]:
+    row = await conn.fetchrow(
+        f"SELECT actor, max_concurrent, max_pending, queue, result_ttl, "  # noqa: S608  # Why: the schema identifier is the fixture's own (module_pg_schema); asyncpg cannot bind identifiers.
+        f"metadata, max_attempts, retry_kind "
+        f'FROM "{schema}".actor_config WHERE actor = $1',
+        actor,
+    )
+    assert row is not None, f"the row for {actor!r} must exist"
+    record = dict(row)
+    record["metadata"] = loads(record["metadata"])
+    return record
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_code_owned_capacity_change_deploys_after_first_boot(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """The core pin: a code-owned actor's capacity change
+    deploys by code after first boot. Boot 1 seeds the row from the
+    literal; boot 2 carries a CHANGED literal — the stored row READS the
+    new values. A set-clause-less upsert leaves the row at boot 1's values
+    forever: editing code silently did nothing."""
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    boot_one = [_make_config("damper", max_concurrent=2, result_ttl=60.0, capacity_owner="code")]
+    await sync_actor_config(pg_conn, boot_one, schema=schema)
+    seeded = await _read_row(pg_conn, schema, "damper")
+    assert seeded["max_concurrent"] == 2
+    assert seeded["result_ttl"] == 60.0
+
+    boot_two = [_make_config("damper", max_concurrent=8, result_ttl=300.0, capacity_owner="code")]
+    await sync_actor_config(pg_conn, boot_two, schema=schema)
+    deployed = await _read_row(pg_conn, schema, "damper")
+    assert deployed["max_concurrent"] == 8, (
+        "the code-owned actor's max_concurrent change deploys by code — the "
+        "upsert's SET clause rewrites it from the literal on every boot"
+    )
+    assert deployed["result_ttl"] == 300.0, "result_ttl deploys with it"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_default_actor_row_is_untouched_by_a_code_change(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """The operator-owns law (byte-identity, real PG): a DEFAULT actor's
+    row survives a changed literal untouched — boot 2's upsert cannot
+    flip it back, exactly the pre-opt-in behavior."""
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    boot_one = [_make_config("operator", max_concurrent=2, result_ttl=60.0)]
+    await sync_actor_config(pg_conn, boot_one, schema=schema)
+
+    boot_two = [_make_config("operator", max_concurrent=9, result_ttl=900.0)]
+    await sync_actor_config(pg_conn, boot_two, schema=schema)
+    stored = await _read_row(pg_conn, schema, "operator")
+    assert stored["max_concurrent"] == 2, "the stored value wins on every conflict"
+    assert stored["result_ttl"] == 60.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_seed_insert_path_is_unchanged(pg_conn: asyncpg.Connection) -> None:
+    """A code-owned actor's first sync seeds every column from the
+    literal — the same INSERT list, the same seed-only shape as the
+    default actor's. And a convergence boot (same literal) leaves the
+    row untouched-and-equal."""
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    first = [
+        _make_config(
+            "seeded",
+            max_concurrent=3,
+            max_pending=50,
+            queue="gpu",
+            result_ttl=45.0,
+            capacity_owner="code",
+        )
+    ]
+    await sync_actor_config(pg_conn, first, schema=schema)
+    row = await _read_row(pg_conn, schema, "seeded")
+    assert row["max_concurrent"] == 3
+    assert row["max_pending"] == 50
+    assert row["queue"] == "gpu"
+    assert row["result_ttl"] == 45.0
+
+    # The seed is the default actor's seed too: a default actor's first
+    # boot seeds identically (one law, one INSERT list).
+    await sync_actor_config(
+        pg_conn,
+        [_make_config("vanilla", max_concurrent=3, max_pending=50, queue="gpu", result_ttl=45.0)],
+        schema=schema,
+    )
+    vanilla = await _read_row(pg_conn, schema, "vanilla")
+    assert {k: v for k, v in vanilla.items() if k != "actor"} == {
+        k: v for k, v in row.items() if k != "actor"
+    }, "the seed INSERT path is owner-blind"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_code_owned_queue_and_max_pending_changes_do_not_deploy(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """The exclusions hold on real PG: a code-owned actor's changed queue
+    and max_pending literals stay out of the SET clause — the stored
+    queue (the move-queue law) and the stored backlog cap (the
+    producer-side admission's lever) are the operator's, for both
+    owners."""
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    boot_one = [
+        _make_config(
+            "both", max_concurrent=2, max_pending=30, queue="default", capacity_owner="code"
+        )
+    ]
+    await sync_actor_config(pg_conn, boot_one, schema=schema)
+
+    boot_two = [
+        _make_config(
+            "both", max_concurrent=2, max_pending=99, queue="critical", capacity_owner="code"
+        )
+    ]
+    await sync_actor_config(pg_conn, boot_two, schema=schema)
+    stored = await _read_row(pg_conn, schema, "both")
+    assert stored["queue"] == "default", "the queue assignment is never code-owned"
+    assert stored["max_pending"] == 30, "max_pending is never code-owned"
+    assert stored["max_concurrent"] == 2  # the unchanged literal deploys as itself
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_conflict_arm_deploys_the_code_families_and_keeps_the_operators(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """The conflict arm's OUTCOME, every family, both ownership faces —
+    the documented contract read off the rows after a second boot whose
+    literals all changed:
+
+    * the operator families (the queue assignment, ``max_pending``) keep
+      the STORED values — the move-queue law and the producer-side
+      admission's lever hold for both owners;
+    * the code families (the retry contract: ``max_attempts`` +
+      ``retry_kind``) rewrite from the literal on every boot — the
+      declaration of record wins, for both owners;
+    * metadata rewrites from the registered value under ``force=True``
+      (the structural family's own overwrite path);
+    * the capacity columns follow the row's owner (stored for the
+      operator face, rewritten for the code face — the sibling pins'
+      law, asserted here beside the families above so one boot's row
+      reads whole).
+    """
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    boot_one = [
+        _make_config(
+            "operator",
+            max_concurrent=2,
+            max_pending=30,
+            queue="default",
+            result_ttl=60.0,
+            metadata={"env": "prod"},
+        ),
+        _make_config(
+            "code",
+            max_concurrent=2,
+            max_pending=30,
+            queue="default",
+            result_ttl=60.0,
+            capacity_owner="code",
+            metadata={"env": "prod"},
+        ),
+    ]
+    await sync_actor_config(pg_conn, boot_one, schema=schema)
+
+    boot_two = [
+        _make_config(
+            "operator",
+            max_concurrent=2,
+            max_pending=99,
+            queue="critical",
+            result_ttl=60.0,
+            metadata={"env": "staging"},
+            max_attempts=7,
+            retry_kind="indefinite",
+        ),
+        _make_config(
+            "code",
+            max_concurrent=8,
+            max_pending=99,
+            queue="critical",
+            result_ttl=300.0,
+            capacity_owner="code",
+            metadata={"env": "staging"},
+            max_attempts=7,
+            retry_kind="indefinite",
+        ),
+    ]
+    await sync_actor_config(pg_conn, boot_two, schema=schema, force=True)
+
+    for row_actor, owned_mc, owned_ttl in (("operator", 2, 60.0), ("code", 8, 300.0)):
+        row = await _read_row(pg_conn, schema, row_actor)
+        assert row["queue"] == "default", (
+            f"{row_actor}: the stored queue survives the changed literal (the move-queue law)"
+        )
+        assert row["max_pending"] == 30, (
+            f"{row_actor}: the stored backlog cap survives the changed literal"
+        )
+        assert row["max_attempts"] == 7, (
+            f"{row_actor}: the retry contract rewrites from the literal on every boot"
+        )
+        assert row["retry_kind"] == "indefinite"
+        assert row["metadata"] == {"env": "staging"}, (
+            f"{row_actor}: force=True overwrites the stored metadata from the registered value"
+        )
+        assert row["max_concurrent"] == owned_mc, (
+            f"{row_actor}: the capacity column follows the row's owner"
+        )
+        assert row["result_ttl"] == owned_ttl
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# The converged boot's quiet — the deploy's outcome, read off the rows
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_converged_code_owned_boot_is_quiet(
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
+    """The review's 4(b): a CONVERGED code-owned boot (the stored row
+    already reads the literal) emits no ``actor-config-capacity-code-change``
+    event — the deploy warning is DIVERGENCE-GATED (it announces a change,
+    and a converged boot changes nothing). A boot that warned on every
+    converge would be noise about nothing."""
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows(
+        [_make_record("X", max_concurrent=7, result_ttl=120.0, queue="default")]
+    )
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType]  # Why: unit-test double, see the sibling sync pins.
+        [_make_config("X", max_concurrent=7, result_ttl=120.0, capacity_owner="code")],
+    )
+
+    assert not [
+        e for e in structlog_capture if e["event"] == "actor-config-capacity-code-change"
+    ], "a converged code-owned boot is quiet — the warning is divergence-gated"
+    assert not [e for e in structlog_capture if e["event"] == "actor-config-capacity-override"], (
+        "and it is not an operator override either"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_code_owned_uncapping_deploys_null_and_warns(
+    pg_conn: asyncpg.Connection,
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
+    """The NULL-out (the re-review's residual 2): a code-owned actor
+    whose literal UNCAPS (a numeric cap → ``None``) deploys the NULL —
+    the code-owned SET assigns unconditionally (the declaration-of-
+    record-wins law) — and the deploy announces itself: the
+    ``actor-config-capacity-code-change`` warning carrying
+    ``registered=None`` against the STORED old value, one event per
+    field. A cap-blind sync leaves the stored cap at its
+    first-registration value forever: un-capping by code silently did
+    nothing."""
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    boot_one = [_make_config("uncap", max_concurrent=2, result_ttl=60.0, capacity_owner="code")]
+    await sync_actor_config(pg_conn, boot_one, schema=schema)
+    seeded = await _read_row(pg_conn, schema, "uncap")
+    assert seeded["max_concurrent"] == 2
+    assert seeded["result_ttl"] == 60.0
+
+    boot_two = [_make_config("uncap", max_concurrent=None, result_ttl=None, capacity_owner="code")]
+    await sync_actor_config(pg_conn, boot_two, schema=schema)
+    uncapped = await _read_row(pg_conn, schema, "uncap")
+    assert uncapped["max_concurrent"] is None, (
+        "the code-owned un-cap deploys: the SET clause assigns the NULL "
+        "unconditionally — the declaration of record wins"
+    )
+    assert uncapped["result_ttl"] is None
+
+    change_events = [
+        e for e in structlog_capture if e["event"] == "actor-config-capacity-code-change"
+    ]
+    announced = {e["field"]: (e["registered"], e["stored"]) for e in change_events}
+    assert announced == {
+        "max_concurrent": (None, 2),
+        "result_ttl": (None, 60.0),
+    }, "each un-capped field's deploy announces registered=None against the stored old value"

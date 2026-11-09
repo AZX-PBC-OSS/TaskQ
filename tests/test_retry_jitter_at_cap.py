@@ -3,10 +3,11 @@
 The backoff curve saturates at the cap - the default exponential policy
 from attempt 11 on, every ``fixed``/``linear`` policy whose base meets the
 cap, every ``indefinite`` job, every reclaimed cohort at the ceiling, and
-the operator's ``max_retry_backoff``. Jitter used to be applied to the
-saturated value and the result clipped at the cap, so the upper half of the
-band collapsed onto ``cap`` exactly and roughly half of any capped cohort
-came due at the same instant - the thundering herd jitter exists to
+the operator's ``max_retry_backoff``. Jitter applied to the
+SATURED value with the result clipped at the cap collapses the upper half of the
+band onto ``cap`` exactly and lands roughly half of any capped cohort
+at the same instant - the thundering herd jitter exists to prevent. Jitter
+is applied to the PRE-CLIP value.
 prevent, on precisely the retries most likely to be a fleet-wide event.
 
 The cap is now a bound on the jitter BAND, not on the drawn value: the band

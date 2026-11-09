@@ -150,7 +150,7 @@ def test_complete_stale_batches_sql_refuses_a_non_identifier_schema() -> None:
 async def test_a_cancelled_batch_counts_against_the_sizer_and_raises() -> None:
     """The server cancelling the batch statement (statement_timeout) is the
     breaker's control signal: the batch machinery must feed it to the
-    sizer AND re-raise, so the caller's failure path retries at the
+    sizer and re-raise, so the caller's failure path retries at the
     latched reduced tier while everything committed before stays."""
     sizer = _RecordingSizer()
     conn = _ScriptedConn(fail_other_fetches_with=asyncpg.QueryCanceledError("statement_timeout"))
@@ -176,7 +176,7 @@ async def test_a_cancelled_batch_counts_against_the_sizer_and_raises() -> None:
 async def test_a_cancelled_archive_write_counts_against_the_sizer_and_raises() -> None:
     """Same contract on the archive variant: the write statement's deadline
     abort is the breaker's signal too (the candidate window and the
-    archive write are two statements of ONE batch)."""
+    archive write are two statements of one batch)."""
 
     class _WriteCancels(_ScriptedConn):
         async def fetch(self, sql: str, *args: object) -> Sequence[dict[str, Any]]:
@@ -264,7 +264,7 @@ async def test_a_full_batch_loops_for_another() -> None:
     assert result.by_status == {"failed": size}
 
 
-# ── The breaker arms on ANY repeated batch failure ───────────────────────
+# ── The breaker arms on any repeated batch failure ───────────────────────
 #
 # The reduced tier is the safety net for the next unknown prune failure
 # mode, so the sizer must hear about every batch failure, not only the
@@ -367,7 +367,7 @@ class _WriteViolatesNTimes(_ScriptedConn):
 
 
 async def test_a_non_deadline_batch_failure_counts_against_the_sizer_and_raises() -> None:
-    """THE pin: a repeated non-deadline failure arms the reduced tier.
+    """The pin: a repeated non-deadline failure arms the reduced tier.
 
     The breaker's control signal is an aborted batch, and a batch that
     aborts on a UniqueViolation (or any other transient error the
@@ -408,7 +408,7 @@ async def test_a_non_deadline_batch_failure_counts_against_the_sizer_and_raises(
 async def test_a_non_deadline_archive_write_failure_counts_against_the_sizer() -> None:
     """Same contract on the archive variant, failing the write arm: the
     candidate window answers, the lock-bearing write raises, and that
-    abort is the breaker's signal too (the two statements are ONE batch)."""
+    abort is the breaker's signal too (the two statements are one batch)."""
 
     sizer = _RecordingSizer()
     conn = _WriteViolatesNTimes(fail_times=3)
@@ -475,9 +475,9 @@ async def test_an_unexpected_prune_batch_error_is_counted_on_the_metric_plane(
     """A non-deadline prune batch failure must surface on a counter.
 
     The deadline family has ``sweep_timeouts``; an archive
-    UniqueViolation-class error used to have NOTHING - the prune loop
-    logged, backed off, and retried, and every metric read healthy while
-    the drain silently stopped. The counter must name the sweep and fire
+    UniqueViolation-class error has its own counter - without it the prune loop
+    logs, backs off, and retries, and every metric reads healthy while
+    the drain silently stops. The counter names the sweep and fires
     on the failure path, so a silent stoppage can never be invisible again.
     """
     sizer = SweepBatchSizer(default_size=4, divisor=4, failure_threshold=3, window_secs=600.0)

@@ -156,7 +156,7 @@ class TestCancellationPath:
         detached inner write is still running, and the inner write FAILS.
 
         The failure must be logged (shield-detached-task-failed) and must
-        NOT surface as asyncio's "Task exception was never retrieved".
+        not surface as asyncio's "Task exception was never retrieved".
         """
         started = asyncio.Event()
         release = asyncio.Event()
@@ -271,7 +271,7 @@ class TestCancelAbandonSite:
             liveness=LoopLiveness(),
             # The drain's shutdown handover reads the orchestration phase
             # to pick the held abandon's verdict (mark_cancelled under an
-            # active orchestration, mark_abandoned otherwise); NONE keeps
+            # active orchestration, mark_abandoned otherwise); none keeps
             # the ladder's own terminal here.
             shutdown_phase=ShutdownPhase.NONE,
         )

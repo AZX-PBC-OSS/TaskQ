@@ -21,7 +21,7 @@ import pytest
 import structlog.testing
 
 from taskq.worker import (
-    health as health_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace whose os binding must carry the stat fake (patch where it is LOOKED UP).
+    health as health_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace whose os binding must carry the stat fake (patch where it is looked up).
 )
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.health import (
@@ -381,7 +381,7 @@ async def test_unix_collision_with_health_port_still_serves_tcp() -> None:
 
         # Partial-start cleanup: the TCP listener is gone (no leaked fd
         # serving probes for a dead worker), the peer's file was never this
-        # server's to unlink, and stop() does not WARN about "not the one
+        # server's to unlink, and stop() does not warn about "not the one
         # this worker bound" for a socket it never bound at all. Checked
         # with the peer still live: its own close() unlinks its path, and
         # that must stay the only thing that ever does.
@@ -439,7 +439,7 @@ async def test_a_directory_at_the_socket_path_with_a_port_set_reports_the_real_c
         )
         assert "unusable" in str(excinfo.value)
         # The ownership contract is the same as the collision's: the TCP
-        # probe listener is up and must be stopped by THIS server.
+        # probe listener is up and must be stopped by this server.
         resp = await _tcp_get(_port(server), "/live")
         assert resp.startswith(b"HTTP/1.0 200 OK\r\n"), resp
     finally:
@@ -556,8 +556,8 @@ async def test_stop_when_the_stat_cannot_read_the_inode_never_unlinks(
         stop_module_unlinks.append(path)
         real_unlink(path)  # type: ignore[arg-type]
 
-    # Patch where the names are LOOKED UP - the health module's own ``os``
-    # binding (HealthServer.stop's ownership probe and unlink) - NOT through
+    # Patch where the names are looked up - the health module's own ``os``
+    # binding (HealthServer.stop's ownership probe and unlink) - not through
     # to the global os module. The old global spelling also blinded
     # asyncio's own same-inode socket cleanup (unix_events resolves ``os``
     # globally too), which is what made the previous "file survives"
@@ -615,7 +615,7 @@ async def test_stop_with_the_socket_already_unlinked_is_clean() -> None:
         )
     finally:
         with contextlib.suppress(OSError):
-            await server.stop()  # idempotent backstop; also ENOENT-clean now
+            await server.stop()  # idempotent backstop; also enoent-clean now
 
 
 async def test_unix_and_tcp_both_collide_refuses_startup_and_leaves_the_peer_alone() -> None:
@@ -689,7 +689,7 @@ async def test_drip_fed_headers_do_not_hold_the_connection_open() -> None:
     A peer sending one *valid* header line just under the per-line timeout never trips it while
     holding a connection - and its server task - indefinitely. The TCP listener is
     network-reachable, so the whole head-read is bounded by ``health_request_timeout`` regardless
-    of per-line progress. Discovered downstream in cennan's bridge; it belongs here.
+    of per-line progress.
     """
     async with _running() as (server, settings):
         deadline: float = settings.health_request_timeout

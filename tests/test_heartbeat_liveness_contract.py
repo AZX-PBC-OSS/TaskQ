@@ -9,7 +9,7 @@ staleness budget it applies to the registration is ``period * 5`` with a
   tests against a synthetic name. A mutation that deletes the
   ``deps.liveness.tick`` call from the loop survived every existing pin
   (the heartbeat tests hand the loop a ``MagicMock`` liveness and never
-  assert on it), so the wiring was red-first here;
+  assert on it), so the wiring was here;
 * the registration carries the loop's configured period, so the watchdog
   budgets against the operator's cadence, not a hardcoded one;
 * a FAILED tick still ticks the registry: a failed tick is not a beat

@@ -479,6 +479,67 @@ async def test_ti5_import_error_at_fire_time(pg_dsn: str) -> None:
         assert sched["last_fired_at"] is None
 
 
+async def test_success_tick_resets_the_failure_ladder(pg_dsn: str) -> None:
+    """Two failing ticks, then a fire that succeeds: the success tick
+    resets consecutive_failures to 0, clears last_fire_error, stamps
+    last_fired_at, and advances next_fire_at - the recovering schedule
+    re-arms fully, on the real rows the batched UPDATEs touch.
+
+    (Converted from tests/test_cron_loop.py's fake arm in the
+    mock-subtraction cure: the fake asserted the UPDATE's SET spelling;
+    this pins the STATE the spelling buys.)
+    """
+    async with _open_cron_single(pg_dsn, f"test_cron_{new_base62()}") as (
+        schema,
+        _stack,
+        deps,
+        backend,
+        worker_id,
+    ):
+        async with deps.dispatcher_pool.acquire() as conn:
+            await _insert_actor_config(conn, schema, "recovering_actor")
+            await _insert_schedule(
+                conn,
+                schema,
+                "recovering_actor",
+                payload_factory="nonexistent.module.fn",
+                next_fire_at=datetime.now(UTC) - timedelta(hours=2),
+            )
+
+        for _ in range(2):
+            async with _tick_conn(deps.dispatcher_pool, schema) as conn:
+                async with conn.transaction():
+                    await tick_cron(conn, deps.settings, backend, schema, worker_id)
+
+        # The factory is fixed: a static payload fires without one.
+        async with deps.dispatcher_pool.acquire() as conn:
+            await conn.execute(
+                f'UPDATE "{schema}".cron_schedules '
+                "SET payload_factory = NULL, "
+                'metadata = \'{"static_payload": {"recovered": true}}\'::jsonb '
+                "WHERE actor = 'recovering_actor'"
+            )
+
+        async with _tick_conn(deps.dispatcher_pool, schema) as conn:
+            async with conn.transaction():
+                await tick_cron(conn, deps.settings, backend, schema, worker_id)
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            sched = await conn.fetchrow(
+                f"SELECT consecutive_failures, last_fire_error, last_fired_at, "
+                f'next_fire_at FROM "{schema}".cron_schedules '
+                "WHERE actor = 'recovering_actor'",
+            )
+
+        assert sched is not None
+        assert sched["consecutive_failures"] == 0, "the success tick must reset the ladder"
+        assert sched["last_fire_error"] is None, "the success tick must clear the error"
+        assert sched["last_fired_at"] is not None, "the success tick must stamp the fire"
+        assert sched["next_fire_at"] > datetime.now(UTC) - timedelta(hours=1), (
+            "the success tick must advance next_fire_at into the future"
+        )
+
+
 # ── Tick query uses partial index ────────────────────────────────────
 
 
@@ -546,7 +607,7 @@ async def test_ti6_tick_query_uses_partial_index(pg_dsn: str) -> None:
 @pytest.mark.asyncio
 async def test_ti7_migration_schema_correctness(pg_dsn: str) -> None:
     """Apply M0 migration against fresh schema.
-    Oracle: consecutive_failures column exists with NOT NULL DEFAULT 0;
+    Oracle: consecutive_failures column exists with not NULL DEFAULT 0;
     freshly inserted row defaults to 0; column appears exactly once in
     information_schema.columns."""
     async with _open_cron_single(pg_dsn, f"test_cron_{new_base62()}") as (
@@ -766,8 +827,8 @@ async def test_tc1_leader_failover_mid_tick(pg_dsn: str, monkeypatch: pytest.Mon
 @pytest.mark.asyncio
 async def test_tc2_base_exception_propagates(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Factory raises SystemExit (BaseException, not Exception).
-    The except Exception handler does NOT catch it; consecutive_failures
-    is NOT incremented; the _cron_loop task terminates."""
+    The except Exception handler does not catch it; consecutive_failures
+    is not incremented; the _cron_loop task terminates."""
     import taskq.worker.cron_loop as cron_loop_mod
 
     async with _open_cron_single(pg_dsn, f"test_cron_{new_base62()}") as (
@@ -863,7 +924,7 @@ async def test_tn2_both_payload_factory_and_static_payload_raises_value_error(
         assert count == 0
 
 
-# ── Actor existence NOT validated at create_schedule() ──────────────
+# ── Actor existence not validated at create_schedule() ──────────────
 
 
 @pytest.mark.asyncio
@@ -912,7 +973,7 @@ async def test_tn3_actor_not_validated_at_create_time(pg_dsn: str) -> None:
         assert sched["consecutive_failures"] >= 1
 
 
-# ── Clock-domain isolation (C7): server clock owns the fire chain ──
+# ── Clock-domain isolation: server clock owns the fire chain ──
 #
 # The due-check is server-side (`next_fire_at <= now()`), so every seed the
 # loop feeds croniter must come from the same domain: the catch-up cutoff
@@ -961,7 +1022,7 @@ async def _tick_conn(
     back to the pool CLEAN, or asyncpg flags the release with an
     InterfaceWarning (escalated to an error by this module's pin): the pool
     would hand another waiter a session that still LISTENs on the gate
-    channel and still runs a foreign callback.  So on EVERY exit path,
+    channel and still runs a foreign callback.  So on every exit path,
     including a tick that raised (a rollback leaves the client-side
     registration even though Postgres discarded the LISTEN), retire the
     gate: one round trip first, so the self-NOTIFY a committed tick sent is
@@ -1123,7 +1184,7 @@ async def test_ti11_due_by_server_clock_fires_under_python_clock_skew(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """C7 regression guard, behavior statement: a cron job whose due time
-    passed while the leader's Python clock was skewed fires EXACTLY ONCE
+    passed while the leader's Python clock was skewed fires EXACTLY once
     when the clock catches up - the fire decision and the chained next
     fire are server-anchored, with no wall-clock luck involved.
 
@@ -1131,7 +1192,7 @@ async def test_ti11_due_by_server_clock_fires_under_python_clock_skew(
     shim, 10 minutes behind), not raced against a live second boundary.
     The due seed is 30 minutes stale by the SERVER clock on a monthly
     cron: within the 1h catch-up window, so the fire is a plain due fire,
-    and the chained next fire is the first of NEXT month - weeks into the
+    and the chained next fire is the first of next month - weeks into the
     server's future, so no assertion here depends on where the test
     happens to land inside a minute or hour boundary (the date_trunc seed
     this test used before could leave the chained next fire 60ms ahead of
@@ -1247,16 +1308,16 @@ async def test_ti12_fired_job_dispatch_eligible_under_ahead_clock_skew(
 
 # ── dst_strategy survives the round trip through the database ──────
 #
-# `dst_strategy` is a persisted, CHECK-constrained column set through the
+# `dst_strategy` is a persisted, check-constrained column set through the
 # public schedule API, and `fire_schedule` has a whole branch that enqueues a
-# SECOND job for the repeated hour when it is 'allof'.  That branch is only
+# second job for the repeated hour when it is 'allof'.  That branch is only
 # reachable if the tick actually reads the column back.
 
 
 @pytest.mark.asyncio
 async def test_allof_schedule_fires_both_occurrences_of_a_repeated_hour(pg_dsn: str) -> None:
     """A schedule stored with ``dst_strategy='allof'`` whose next fire lands in
-    a DST fall-back overlap enqueues BOTH occurrences of the ambiguous local
+    a DST fall-back overlap enqueues both occurrences of the ambiguous local
     time - the contract 'allof' exists to provide.
 
     America/New_York fell back on 2025-11-02 at 02:00 EDT → 01:00 EST, so local
@@ -1282,7 +1343,7 @@ async def test_allof_schedule_fires_both_occurrences_of_a_repeated_hour(pg_dsn: 
                 "TASKQ_CRON_CATCH_UP_WINDOW": "P3650D",
             }
         )
-        fire_at = datetime(2025, 11, 2, 5, 0, tzinfo=UTC)  # 01:00 EDT, before the repeat
+        fire_at = datetime(2025, 11, 2, 5, 0, tzinfo=UTC)  # 01:00 edt, before the repeat
 
         async with deps.dispatcher_pool.acquire() as conn:
             await _insert_actor_config(conn, schema, "allof_actor")
@@ -1313,7 +1374,7 @@ async def test_allof_schedule_fires_both_occurrences_of_a_repeated_hour(pg_dsn: 
             f"'allof' must enqueue both occurrences of the repeated hour, got {scheduled_ats}"
         )
         # The due fire is enqueued immediately (server-stamped "now"); the
-        # SECOND occurrence of the ambiguous 01:30 is enqueued for its own
+        # second occurrence of the ambiguous 01:30 is enqueued for its own
         # instant, 06:30Z - the one a 'skip' schedule never produces.
         assert datetime(2025, 11, 2, 6, 30, tzinfo=UTC) in scheduled_ats
 

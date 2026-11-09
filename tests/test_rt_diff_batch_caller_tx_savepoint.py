@@ -19,7 +19,7 @@ savepoint is pinned in
 tests/test_singleton_violation_savepoint_isolation.py. What neither pins is
 the batch tier driven end to end against the real engine: the typed refusal
 out, the caller's transaction still answering statements, a follow-up
-enqueue INSIDE the same transaction committing, and nothing from the
+enqueue inside the same transaction committing, and nothing from the
 poisoned batch surviving - with the in-memory twin recording the identical
 caller-visible outcome (same typed error, same attributed actor, same
 stored state) so a suite validated against it sees the refusal shape

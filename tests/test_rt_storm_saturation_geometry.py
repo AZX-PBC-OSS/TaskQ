@@ -1,7 +1,7 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team storm: pool-contention GEOMETRY at full saturation.
+"""Adversarial review storm: pool-contention GEOMETRY at full saturation.
 
-The question (distinct from the pinned per-site reds): with EVERY
+The question (distinct from the pinned per-site reds): with every
 dimension of the worker's connection budget loaded at once - both
 consumer slots holding their slot-pool transaction connections while
 their terminal writes wait on ``worker_pool``
@@ -27,7 +27,7 @@ Geometry (from ``worker/dispatch.py`` ``dispatch_one_job``,
   pinned-red class - ``test_rt_locks_terminal_write_pool_starvation``
   covers ``mark_cancelled``/heartbeat starvation and
   ``test_rt_locks_sweep_notify_pool_unbounded`` covers the sweep
-  notify-pool acquire; NOT duplicated here). This file's angle: at
+  notify-pool acquire; not duplicated here). This file's angle: at
   full worker_pool saturation the queued terminal write merely WAITS
   (degrade), resolves the moment one conn returns (no deadlock), and
   the affected row's designed recovery is lock-lease expiry + sweep 1.
@@ -185,7 +185,7 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
         schema_name=schema,
         max_concurrency=str(_MAX_CONCURRENCY),
         # The coherent pair, raised for the storm: the heartbeat tick runs
-        # CONCURRENTLY with the saturation's slot jobs and the sweep on one
+        # concurrently with the saturation's slot jobs and the sweep on one
         # shared PG container, so its round trips contend; the factory's
         # 0.1s command budget (glued to the cascade floor by the settings'
         # own invariant) fires a protocol TimeoutError under exactly that
@@ -214,7 +214,7 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
                 wid,
             )
         # Two mid-flight slot jobs (live leases) + one more for the
-        # saturation phase, all held by the LIVE worker; one expired-lock
+        # saturation phase, all held by the live worker; one expired-lock
         # sweep victim held by the dead worker (the mass-crash shape -
         # the live worker's heartbeat tick must not re-lease it).
         job_a, job_b, job_c, victim = (new_job_id() for _ in range(4))

@@ -53,10 +53,11 @@ def test_worst_case_shutdown_is_phases_plus_tail() -> None:
 def test_taskq_defaults_cover_the_modelled_worst_case() -> None:
     """The shipped default must cover the modelled worst case.
 
-    History: the default used to be 60s while the modelled worst case at
-    the default graces was 67s - every deployment running the defaults
-    raised its own ``shutdown-budget-exceeds-termination-grace`` boot
-    warning, which made the warning pure noise (a downstream redteam
+    The default must cover the modelled worst case: a default below it
+    (60s against a 67s worst case at the default graces) makes every
+    default deployment raise its own
+    ``shutdown-budget-exceeds-termination-grace`` boot
+    warning - the warning pure noise (a downstream redteam
     finding). The tail counts the conditional per-slot pool's close
     and the two credential-provider closes (42s), putting the modelled
     worst case at 82s; 85 keeps 3s of
@@ -94,9 +95,7 @@ def test_sufficient_budget_is_recognised() -> None:
 
 
 # The claim "deps.py bounds the publish drain with this same constant, so the
-# model cannot drift from the real teardown" used to be a grep of
-# open_worker_deps' source for "timeout=PUBLISH_DRAIN_TIMEOUT_SECS". It is now
-# executed instead, in
+# model cannot drift from the real teardown" is executed, not grepped, in
 # tests/test_worker_deps_teardown.py::test_teardown_bounds_the_publish_drain_by_the_shared_constant:
 # that test shrinks the constant to 50ms, hands the real open_worker_deps a
 # publish that never lands, and fails if teardown outlives the bound.
@@ -261,7 +260,7 @@ def test_release_park_lease_capped_warning_is_silent_at_the_defaults() -> None:
 def test_disown_floor_warning_fires_at_the_defaults_with_the_arithmetic() -> None:
     """The disown residue: 63 needed, 60 shipped: surfaced, not enforced.
 
-    The double-write-failure shape (the RELEASING write AND the consumer's
+    The double-write-failure shape (the RELEASING write and the consumer's
     both failing) leaves the row to lease expiry, and the earliest reclaim
     (last heartbeat + lease) must stay behind the deadline trip + exit
     tail where an outlived actor dies. At the defaults that demands 63
@@ -304,7 +303,7 @@ def test_disown_floor_warning_is_quiet_once_the_lease_covers_it() -> None:
 
 
 def test_disown_floor_warning_fires_without_the_watchdog() -> None:
-    """THE pin (#313's aggravator): the warning must not be gated on the
+    """The pin (#313's aggravator): the warning must not be gated on the
     watchdog.
 
     The double-failure residue exists whether or not the watchdog is

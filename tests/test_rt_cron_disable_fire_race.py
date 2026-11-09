@@ -1,16 +1,16 @@
-"""Red-team pins for the tick's SUCCESS-write races (the failure-write
+"""Adversarial review pins for the tick's SUCCESS-write races (the failure-write
 half is `test_rt_cron_failure_domains.py`'s C3 pin; this file attacks the
 other two arms of the same race window).
 
 The batched enqueue and the successes UPDATE are separate statements in
 one transaction, and an operator's ``UPDATE cron_schedules SET enabled =
 false`` (or ``DELETE``) can commit between them on a second connection.
-The failure UPDATE guards itself with ``AND s.enabled = true`` (pinned
+The failure UPDATE guards itself with ``and s.enabled = true`` (pinned
 there); neither the enqueue nor the successes UPDATE can or does:
 
 * the enqueue is a plain batched INSERT with no schedule conjunct to
   filter on, and
-* guarding the successes UPDATE WITHOUT guarding the enqueue would
+* guarding the successes UPDATE without guarding the enqueue would
   strand the already-enqueued job behind an un-advanced
   ``next_fire_at``: on re-enable, the catch-up recompute would fire the
   already-delivered slot a SECOND time.  The two writes must therefore
@@ -93,7 +93,7 @@ class TestMidTickDisable:
         one job), the disable survives the successes UPDATE (which touches
         no enabled column), the successes advance still applies (the row
         records the fire that happened and moves past the delivered slot),
-        and re-enabling afterward does NOT re-deliver the fired slot: the
+        and re-enabling afterward does not re-deliver the fired slot: the
         guarded-enqueue-without-guarded-advance shape would double-deliver
         here, which is why the advance must stay unguarded.
         """
@@ -142,7 +142,7 @@ class TestMidTickDisable:
         # Re-enable: the delivered slot must not re-deliver. next_fire_at
         # is a future hour boundary, so the next tick is idle for this
         # schedule - the double-delivery a naive guarded-advance fix
-        # would introduce shows up here as a SECOND job.
+        # would introduce shows up here as a second job.
         await clean_pg_conn.execute(
             f'UPDATE "{schema}".cron_schedules SET enabled = true WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; id is $-bound.
             schedule_id,

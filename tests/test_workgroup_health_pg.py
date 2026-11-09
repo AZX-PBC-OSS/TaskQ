@@ -20,7 +20,7 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.settings import TaskQSettings
 from taskq.worker import (
-    workgroup as workgroup_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace whose time binding must carry the clock-skew tripwire (patch where it is LOOKED UP).
+    workgroup as workgroup_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace whose time binding must carry the clock-skew tripwire (patch where it is looked up).
 )
 from taskq.worker.workgroup import (
     WorkerHealthConfig,
@@ -66,7 +66,7 @@ async def _verdict(
     day ahead - unguarded this inflates the age by 86400 s and kills a healthy
     child."""
     real_time = time.time
-    # Patch where the name is LOOKED UP - the workgroup module's own ``time``
+    # Patch where the name is looked up - the workgroup module's own ``time``
     # binding (the supervisor clock a regression would read there) - not
     # through to the global time module (tests/_ns_patch.py).
     monkeypatch.setattr(

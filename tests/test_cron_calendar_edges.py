@@ -1,4 +1,4 @@
-"""Red-team calendar-edge attacks on the cron machinery.
+"""Adversarial review calendar-edge attacks on the cron machinery.
 
 * **Never-landing day-of-month forms (the finding)** - ``croniter.is_valid``
   certifies expressions no calendar date can ever satisfy (``0 0 30 2 *``:
@@ -15,7 +15,7 @@
   expression), and a ``compute_next_fire_after`` answer whose error names
   the expression and the diagnosis instead of croniter's bare message.
 * **The 6-field (seconds) form across DST** - croniter 6.x's 6-field form
-  orders fields ``min hour dom mon dow sec`` (seconds LAST).  Spring-forward:
+  orders fields ``min hour dom mon dow sec`` (seconds last).  Spring-forward:
   a match inside the gap answers the gap-end instant the same day, seconds
   preserved, for every strategy; fall-back: ``skip``/``firstof`` take the
   fold-0 occurrence, ``allof`` returns the pair, and a fold-1 seed advances
@@ -29,7 +29,7 @@
   exactly one immediate job, no hallucinated Feb-30/31 fire.
 * **Tick-level gap-day wall seed** - a row whose stored instant is the EST
   reading of a spring-forward wall that does not exist fires its slot
-  within the window and advances to the NEXT day's match: the due judgment
+  within the window and advances to the next day's match: the due judgment
   stays on the instant (server domain), the advance on the local wall, no
   double fire of the shifted gap instant.
 * **Tick-level poison containment** - a direct-to-DB poisoned row (poison
@@ -91,7 +91,7 @@ _LANDABLE_CONTROLS = [
     "0 0 31 * *",  # fires in every 31-day month
     "0 0 30 2,3 *",  # February 30 never, but March 30 does
     "0 0 L * *",  # last-day-of-month
-    "0 0 29 2 1",  # DOM-vs-DOW OR rule: any February Monday lands
+    "0 0 29 2 1",  # DOM-vs-dow or rule: any February Monday lands
     "59 23 31 12 * *",  # 6-field Dec 31 23:59
 ]
 
@@ -148,7 +148,7 @@ def test_register_cron_rejects_poison_spec_constructed_directly(expr: str) -> No
 @pytest.mark.parametrize("expr", _LANDABLE_CONTROLS)
 def test_landable_controls_still_accepted(expr: str) -> None:
     """Guard against an overfix: every control lands on a real date (some
-    only on leap years, some only via the DOM-vs-DOW OR rule) and must keep
+    only on leap years, some only via the DOM-vs-DOW or rule) and must keep
     passing the gate the poison tests tighten."""
     assert cron(expr, actor="rt_landable_probe").cron_expr == expr
 
@@ -171,7 +171,7 @@ def test_compute_next_fire_after_never_lands_names_expression_and_diagnosis() ->
     )
 
 
-# ── The 6-field (seconds) form across DST ────────────────────────────────
+# ── The 6-field (seconds) form across dst ────────────────────────────────
 
 
 class TestSixFieldSecondsAcrossDst:
@@ -179,7 +179,7 @@ class TestSixFieldSecondsAcrossDst:
 
     def test_spring_forward_gap_match_fires_at_gap_end_same_day(self) -> None:
         """Daily 02:30:30 (6-field) on NY's 2026-03-08 (02:00→03:00 gap):
-        the match inside the gap answers 03:00:30 the SAME day (gap end +
+        the match inside the gap answers 03:00:30 the same day (gap end +
         the expression's seconds), not the next day's match.  Seed is the
         day before, 12:00Z."""
         out = compute_next_fire_after("30 2 * * * 30", _NY, datetime(2026, 3, 7, 12, 0, tzinfo=UTC))
@@ -212,7 +212,7 @@ class TestSixFieldSecondsAcrossDst:
             ], f"{strategy} must take the earlier occurrence, got {[d.isoformat() for d in out]}"
 
     def test_fall_back_allof_returns_both_occurrences(self) -> None:
-        """``allof`` owes BOTH occurrences of the repeated :30:30 - one
+        """``allof`` owes both occurrences of the repeated :30:30 - one
         fold-0 instant, one fold-1, an hour apart in UTC."""
         out = compute_next_fire_after(
             "30 1 * * * 30", _NY, datetime(2026, 11, 1, 0, 0, tzinfo=UTC), dst_strategy="allof"
@@ -224,7 +224,7 @@ class TestSixFieldSecondsAcrossDst:
 
     def test_fall_back_fold1_seed_advances_beyond_the_range(self) -> None:
         """From a fold-1 seed inside the repeated range the next owed fire
-        is the NEXT day's match (the range's earlier occurrences are all
+        is the next day's match (the range's earlier occurrences are all
         spent) - never an instant at or before the seed."""
         seed = datetime(2026, 11, 1, 1, 30, 30, tzinfo=ZoneInfo(_NY), fold=1)
         out = compute_next_fire_after("30 1 * * * 30", _NY, seed)
@@ -233,7 +233,7 @@ class TestSixFieldSecondsAcrossDst:
         )
 
     def test_gap_end_answer_is_not_a_fixed_point(self) -> None:
-        """Seeding the NEXT compute with the gap-end answer (03:00:30 EDT,
+        """Seeding the next compute with the gap-end answer (03:00:30 EDT,
         not itself a cron match) must advance to the next day's 02:30:30
         EDT: the shifted instant must never leave the schedule re-firing or
         stuck."""
@@ -305,7 +305,7 @@ class TestTickCalendarEdges:
         module_pg_schema: ModulePgSchema,
     ) -> None:
         """A ``0 0 31 * *`` row whose slot is the most recent 31st (>48h
-        old, far beyond the 1h window): ONE immediate job, the skip warning,
+        old, far beyond the 1h window): one immediate job, the skip warning,
         and next_fire_at re-anchored on the server clock to the next REAL
         31st - no hallucinated Feb-30/31 fire between."""
         schema = module_pg_schema.schema_name
@@ -340,8 +340,8 @@ class TestTickCalendarEdges:
         }
         # The collapse doctrine (pinned at C4 in test_rt_cron_time_semantics.py):
         # the immediate job consumes the re-anchored first-future slot, so
-        # next_fire_at is the 31st AFTER the re-anchor.  Pinned here at
-        # monthly scale: the answer must still be a REAL 31st strictly after
+        # next_fire_at is the 31st after the re-anchor.  Pinned here at
+        # monthly scale: the answer must still be a real 31st strictly after
         # the tick (no Feb-30/31 hallucination, no off-by-one), even though
         # the collapse shifts a monthly schedule's phase - the consequence
         # is reported, the arithmetic is what this file pins.

@@ -6,7 +6,7 @@ heartbeat columns, and reservation_slots leases for jobs locked by this
 worker, except the jobs the worker has disowned (``WorkerDeps.disowned_jobs``:
 finished with, outcome unrecordable), whose leases must lapse so the
 reclaim sweep can hand them back. The tick's whole command sequence runs
-under ONE command-timeout budget (see the tick block and
+under one command-timeout budget (see the tick block and
 :func:`_lease_renewal_threshold` for the lease-model arithmetic that
 depends on it), with a bounded rollback-or-close teardown. The jobs-lock
 renewal is threshold-gated (:func:`_lease_renewal_threshold`): a row
@@ -66,7 +66,7 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _meter = get_meter()
 
-#: The fraction of ``heartbeat_interval`` a FAILED tick waits before its
+#: The fraction of ``heartbeat_interval`` a failed tick waits before its
 #: prompt retry. A failed tick is not a beat - the one-beat-per-interval
 #: cadence promise counts beats, and a tick that raised stamped nothing -
 #: so the failed tick must not also consume the full inter-beat sleep:
@@ -103,9 +103,9 @@ def _lease_renewal_threshold(
     Sizing, measured against the ENFORCED failed-tick bound, not a
     hoped-for one. The heartbeat's tick runs its whole command sequence
     (BEGIN, the three writes, the still-held probe, the cancel hook's
-    statements, COMMIT) under ONE ``asyncio.timeout(
+    statements, COMMIT) under one ``asyncio.timeout(
     heartbeat_command_timeout)`` budget, and its teardown - the
-    rollback AND the bounded close - SHARES that one budget's remainder
+    rollback and the bounded close - SHARES that one budget's remainder
     (the close's bound is recomputed from the deadline at its own
     instant, never a second full budget). A failed tick is therefore
     bounded by, with every term enforced:
@@ -119,8 +119,8 @@ def _lease_renewal_threshold(
     so a failed tick costs at most ``acquire + budget`` and the worst
     failed cycle (tick start to tick start) is
     ``heartbeat_interval + heartbeat_command_timeout``. The cascade to
-    the isolate decision adds ONE more span the failed cycles do not
-    cover: the LAST good beat's TAIL, from its renewal point (mid-tick,
+    the isolate decision adds one more span the failed cycles do not
+    cover: the last good beat's TAIL, from its renewal point (mid-tick,
     where the gate re-stamped the lease) to the next tick's start -
     bounded by ``max(heartbeat_interval, heartbeat_command_timeout)``
     (the cadence when the last beat was cheap, the budget's remainder
@@ -129,17 +129,17 @@ def _lease_renewal_threshold(
     consecutive failure, and the lease must still be valid at that
     decision.
 
-    A premise: a failed tick is NOT bounded by
+    A premise: a failed tick is not bounded by
     "acquire-block then a timed-out command"
-    (interval + ONE command timeout): the tick
+    (interval + one command timeout): the tick
     issues >= 3 commands each separately bounded by the pool's
     per-query command timeout, and the transaction's teardown adds its
     own round trip, so a brownout tick (a contended acquire, then two
     just-under-timeout statements, then a timeout) lasted acquire +
     ~3 command-timeouts, which a floor of (F+1) * (interval +
-    command_timeout) WITHOUT the tail term did not cover: a legal skip at 49.5s of a 60s lease
+    command_timeout) without the tail term did not cover: a legal skip at 49.5s of a 60s lease
     followed by four such failed ticks let the lease expire 3.2-9.2s
-    BEFORE the isolate decision while the unconditional renewal
+    before the isolate decision while the unconditional renewal
     survived. The per-tick command budget above makes the bound true by
     enforcement, and this floor sizes against it.
     * The integration attack measured the ENFORCED
@@ -152,7 +152,7 @@ def _lease_renewal_threshold(
       rollback had consumed the remainder (the measured cascade:
       2.758s against a 2.4s floor at F=2, I=0.5, c=0.15). The
       shared-remainder teardown makes the per-tick cost
-      ``acquire + ONE budget`` by enforcement, and the tail term in the
+      ``acquire + one budget`` by enforcement, and the tail term in the
       floor below makes the accounting cover the measured span.
 
     Consequences, stated directly:
@@ -228,7 +228,7 @@ def _lease_renewal_threshold(
     floor formula and every number above stay true; the prompt retry
     only ever SHORTENS failed cycles, and every bound here is an
     upper bound on the cascade's wall clock. What the retry buys is
-    the recovery side of the ledger: after ONE transient blip the next
+    the recovery side of the ledger: after one transient blip the next
     GOOD beat lands within ``(1 + _FAILED_TICK_RETRY_FRACTION) *
     interval`` of the last one instead of at twice the interval, which
     is what makes the ops guidance's ``heartbeat_timeout >= 2x
@@ -253,7 +253,7 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
     'SELECT id FROM "{schema}".jobs '
     "WHERE id = ANY($1::uuid[]) AND locked_by_worker = $2 AND status = 'running'"
 )
-# The claim-loss reconcile: rows this worker CLAIMED (running, locked
+# The claim-loss reconcile: rows this worker claimed (running, locked
 # here, ``started_at`` stamped by the claim CTE) that no in-memory
 # structure holds - no registry entry, no claim intent, never queued,
 # never disowned. Exactly one producer-side event loses the ids: a
@@ -269,7 +269,7 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
 # attempt rows, reclaim events and budget predicates - the recovery
 # every "recovers by lock-lease expiry" docstring already promises.
 #
-# The disown REFUNDS the claim-time increment. Dispatch stamps
+# The disown refunds the claim-time increment. Dispatch stamps
 # ``attempt = j.attempt + 1`` at claim (backend/_dispatch_sql.py), before
 # any actor sees the job, and this reconcile's rows are exactly the ones
 # the increment was charged for and no execution ever covered: no
@@ -302,13 +302,13 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
 # never started, and with it gone the ``started_at <`` bound below stops
 # matching the row whatever id re-probes it. NULL is the honest value,
 # the same "never started" the attempt-ledger arms already exclude (the
-# sweep's reclaim INSERT fences a NULL stamp OUT of the ledger entirely -
+# sweep's reclaim INSERT fences a NULL stamp out of the ledger entirely -
 # the standing-claim fence in _sweeps.py's _SWEEP_1_ATTEMPTS_BATCH_SQL: a
 # refunded number records no attempt row, so the next claim's re-mint of
 # the number cannot double-count - and the next claim stamps it fresh),
 # so no reader learns a new shape - only the fabrication goes away.
 #
-# The reconcile NEVER touches a phase-carrying row (``cancel_phase <> 0``).
+# The reconcile never touches a phase-carrying row (``cancel_phase <> 0``).
 # The cancel ladder's poll owns those rows - mark_retry's header grants
 # every phase-carrying row to the ladder ("a phase-carrying row matches no
 # arm ... for the cancel ladder to terminalise") - and the ladder's
@@ -319,14 +319,14 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
 # finally deregistered) leaves the row running, locked here, carrying its
 # phase, held by NOTHING - every in-memory exclusion passes, and once the
 # claim-stamped started_at ages past the lease the reconcile reads the
-# EXECUTED attempt as "a claim that never reached an actor" and refunds
+# executed attempt as "a claim that never reached an actor" and refunds
 # it. The refund steals the ledger row the abandon's INSERT is about to
 # write, and the un-stamp poisons that INSERT besides: job_attempts.
-# started_at is NOT NULL, the abandon's fused write raises
+# started_at is not NULL, the abandon's fused write raises
 # NotNullViolationError, the drain re-queues and re-raises, the heartbeat
 # burns its failure budget on the same poisoned row every tick, and the
 # isolate it finally declares fails the same way - one fenced row under a
-# tight lease wedges the worker's heartbeat loop AND strands the row
+# tight lease wedges the worker's heartbeat loop and strands the row
 # (running, attempt refunded, started_at NULL, no ledger, no owner). The
 # phase-carve-out hands the row back to the writer the header already
 # named: the walk escalates and abandons it, ledger and effects balance.
@@ -335,24 +335,22 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
 # together) stays reconcile-eligible on purpose: the walk's arms key on
 # the phase, so only a phase-carrying row is provably the ladder's.
 #
-# THE LEDGER GUARD (the NOT EXISTS): the registry is not the only proof
-# an attempt started - the attempt ledger is the durable one. The
-# isolate-self write (this module's shutdown path), the sweep's reclaim
-# INSERT and a retried terminal write each record (job_id, attempt)
-# BEFORE their row's charge is settled, and a body whose session died
-# under connection chaos drops its registry entry while that record
-# stands. Refunding such a row erases the executed attempt's charge
-# while the ledger keeps it: the counter and the ledger diverge (the
-# soak's reconciliation pin reads exactly that divergence as a
-# double-applied claim), and the next claim REVISITS the attempt number
-# the PK already carries - the collision the ATTEMPT_REFUND_SQL
-# fragment's safety argument explicitly excludes ("a non-terminal
-# release writes no job_attempts row"). The conjunct enforces the
-# fragment's premise with data: a row the ledger has recorded is a
-# started attempt, its charge stands, and the lease lapse - not this
-# refund - owns its reclaim. The designed refund (a claim whose reply
-# was lost before any actor, registry entry or ledger row existed)
-# matches nothing here and proceeds unchanged.
+# the registry is not the only proof an attempt started - the attempt ledger is
+# the durable one. The isolate-self write (this module's shutdown path), the
+# sweep's reclaim INSERT and a retried terminal write each record (job_id,
+# attempt) before their row's charge is settled, and a body whose session died
+# under connection chaos drops its registry entry while that record stands.
+# Refunding such a row erases the executed attempt's charge while the ledger
+# keeps it: the counter and the ledger diverge (the soak's reconciliation pin
+# reads exactly that divergence as a double-applied claim), and the next claim
+# revisits the attempt number the PK already carries - the collision the
+# ATTEMPT_REFUND_SQL fragment's safety argument explicitly excludes ("a
+# non-terminal release writes no job_attempts row"). The conjunct enforces the
+# fragment's premise with data: a row the ledger has recorded is a started
+# attempt, its charge stands, and the lease lapse - not this refund - owns its
+# reclaim. The designed refund (a claim whose reply was lost before any actor,
+# registry entry or ledger row existed) matches nothing here and proceeds
+# unchanged.
 _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE = (
     'UPDATE "{schema}".jobs j SET '  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg has no parameter binding for identifiers (the still-held template's same shape).
     f"attempt = {ATTEMPT_REFUND_SQL}, started_at = NULL "
@@ -439,9 +437,9 @@ async def _failed_tick_ledger(
 ) -> bool:
     """Record a failed heartbeat tick and decide whether the worker isolates.
 
-    BOTH failure arms of the tick funnel here, the transient arm (a PG
+    both failure arms of the tick funnel here, the transient arm (a PG
     blip: connection loss, 40001, a timeout) and the unexpected arm
-    (anything else). The ledger is deliberately ONE threshold, not two: a
+    (anything else). The ledger is deliberately one threshold, not two: a
     persistent non-transient fault (a REVOKE'd UPDATE, a driver contract
     violation) fails every tick exactly as a dead PG does, and a
     two-threshold ledger (the transient arm counts, the unexpected
@@ -464,7 +462,7 @@ async def _failed_tick_ledger(
     stronger than the guard's, and it is the right one for THIS loop:
     ``isolate_self`` proactively transitions the running rows (pending /
     crashed / cancelled, with ``HeartbeatLost`` attempt rows) on a fresh
-    direct connection BEFORE signalling shutdown, because the loop that
+    direct connection before signalling shutdown, because the loop that
     keeps every lease alive is the one component that must never die by
     exception. The lease arithmetic also binds to this one threshold:
     :func:`_lease_renewal_threshold` sizes the renewal gate against
@@ -511,9 +509,9 @@ async def heartbeat_loop(
     interval = deps.settings.heartbeat_interval
     lock_lease = timedelta(seconds=deps.settings.lock_lease)
     schema = deps.settings.schema_name
-    # The tick's single command budget: ONE
+    # The tick's single command budget: one
     # heartbeat_command_timeout for the tick's whole command sequence
-    # (BEGIN + writes + probes + hook + COMMIT, and the post-tx drain's
+    # (begin + writes + probes + hook + COMMIT, and the post-tx drain's
     # share). See the tick block below for why the sequence, not each
     # statement, is the unit the lease model needs bounded.
     tick_command_budget = deps.settings.heartbeat_command_timeout
@@ -570,7 +568,7 @@ async def heartbeat_loop(
             _tick_raised = False
             # The tick's single command budget: None
             # until the acquire lands -- the acquire is bounded by its
-            # own timeout (the interval) OUTSIDE this budget -- then the
+            # own timeout (the interval) outside this budget -- then the
             # deadline every later phase of the tick shares.
             budget_deadline: float | None = None
             try:
@@ -578,8 +576,8 @@ async def heartbeat_loop(
                     budget_deadline = time.monotonic() + tick_command_budget
                     tx = conn.transaction()
                     try:
-                        # ONE command-timeout for the tick's whole command
-                        # sequence: BEGIN, the liveness write, the gated
+                        # one command-timeout for the tick's whole command
+                        # sequence: begin, the liveness write, the gated
                         # renewal, the reservation-lease write, the
                         # still-held probe, the lost-claim reconcile
                         # probe, the cancel hook's statements,
@@ -596,7 +594,7 @@ async def heartbeat_loop(
                         # assumed away (the reproduced default-settings
                         # lease-lapse window). A tick whose statements
                         # legitimately need more than one command-timeout
-                        # IN TOTAL now fails fast here instead: raise
+                        # in total now fails fast here instead: raise
                         # TASKQ_HEARTBEAT_COMMAND_TIMEOUT for that regime
                         # (the renewal threshold's floor absorbs the
                         # raised value automatically -- see
@@ -636,9 +634,9 @@ async def heartbeat_loop(
                             # $4. Rows with a per-job heartbeat_timeout, rows
                             # with no lease stamp, and rows at/under the
                             # threshold renew; fresh leases are left alone so a
-                            # healthy beat stops paying a non-HOT update per
+                            # healthy beat stops paying a non-hot update per
                             # running row per tick. parse_rowcount on the tag
-                            # now counts rows RENEWED this tick, not rows held.
+                            # now counts rows renewed this tick, not rows held.
                             jobs_tag = await conn.execute(
                                 update_jobs_lock_sql,
                                 worker_id,
@@ -660,7 +658,7 @@ async def heartbeat_loop(
                                 deps.disowned_jobs.difference_update(set(disowned) - still_held)
                             # The claim-loss reconcile: running rows locked
                             # here that nothing holds. The exclusion binds
-                            # the THREE maps in one array - registered +
+                            # the three maps in one array - registered +
                             # intents (held_ids), queued (parked in the
                             # local queue), and this tick's disowned
                             # snapshot - and the lease-length grace on
@@ -669,7 +667,7 @@ async def heartbeat_loop(
                             # refunded (the claim-time increment of a
                             # never-started execution goes back) and
                             # disowned: this tick's renewal has already
-                            # run, the NEXT tick stops renewing them, and
+                            # run, the next tick stops renewing them, and
                             # Sweep 1 owns the reclaim from there.
                             lost_excluded = sorted(
                                 {
@@ -708,7 +706,7 @@ async def heartbeat_loop(
                                     raise OSError(
                                         f"cancel_controller.run_in_tx failed: {hook_exc!r}"
                                     ) from hook_exc
-                            # The commit rides the SAME budget: a commit
+                            # The commit rides the same budget: a commit
                             # that would push the sequence past the
                             # command-timeout is cut, the tick fails
                             # without the commit having been confirmed,
@@ -717,18 +715,18 @@ async def heartbeat_loop(
                             # re-stamps, so an unconfirmed commit is
                             # benign: the next tick rewrites them).
                             await tx.commit()
-                            # The disown lands AFTER the commit, never
-                            # before: the disown is MEMORY state with no
+                            # The disown lands after the commit, never
+                            # before: the disown is memory state with no
                             # rollback, and the reconcile's exclusion set
                             # folds it - a disown applied before a tick
                             # whose commit then failed (the in-tx cancel
                             # hook's OSError above, a cut commit, a
                             # dropped connection) would survive the
-                            # rollback while the REFUND it belongs to
+                            # rollback while the refund it belongs to
                             # un-applies, and the row would match neither
                             # the renewal nor the reconcile ever again:
                             # the refund is lost permanently, the lease
-                            # lapses, and Sweep 1 reclaims at the CHARGED
+                            # lapses, and Sweep 1 reclaims at the charged
                             # attempt - issue 458's "crashed, never ran"
                             # record, resurrected by a brownout tick.
                             # Applied post-commit there is no await
@@ -740,26 +738,26 @@ async def heartbeat_loop(
                             if lost_rows:
                                 deps.disowned_jobs.update(lost_ids)  # pyright: ignore[reportPossiblyUnboundVariable]  # Why: lost_ids is bound exactly when lost_rows is truthy - the same guard guards both; the pair is not reassigned between.
                     except BaseException:
-                        # Teardown, bounded by the SAME budget's
-                        # remainder, deliberately OUTSIDE the expired
+                        # Teardown, bounded by the same budget's
+                        # remainder, deliberately outside the expired
                         # asyncio.timeout scope: an await started after
-                        # the scope expired is NOT re-cancelled (measured
+                        # the scope expired is not re-cancelled (measured
                         # , asyncio.timeout fires once), so the teardown
                         # must carry its own bound rather than hide
                         # inside the dead scope. The ROLLBACK and the
-                        # CLOSE SHARE that one remainder - the close's
+                        # close share that one remainder - the close's
                         # bound is recomputed from the deadline at its
                         # own instant, so a rollback that consumed the
                         # remainder leaves the close an immediate
                         # terminate, never a second full command budget.
                         # This is what holds the failed tick's enforced
-                        # cost to acquire + ONE budget (see
+                        # cost to acquire + one budget (see
                         # _lease_renewal_threshold): a close that took
-                        # a FULL second budget after the rollback
+                        # a full second budget after the rollback
                         # had already consumed the remainder would run a
                         # cascade of such ticks
                         # (F+1) * (interval + 2 * command_timeout) past
-                        # the last renewal PLUS the last good beat's
+                        # the last renewal plus the last good beat's
                         # tail - measurably past the very cascade floor
                         # the settings validator enforces (the
                         # attack test pins the observed overrun).
@@ -783,7 +781,7 @@ async def heartbeat_loop(
                             # and the pool discards the closed connection
                             # on release. Bounded by what the budget
                             # still has left (shared with the rollback
-                            # above, NOT a second budget): this is the
+                            # above, not a second budget): this is the
                             # budget-exhausted path, so it is also the
                             # path that keeps the failed tick inside the
                             # lease model's h + c bound.
@@ -793,7 +791,7 @@ async def heartbeat_loop(
                                 max(0.0, budget_deadline - time.monotonic()),
                                 family="mid_run",
                             )
-                        # Re-raise the tick's ORIGINAL exception (a bare
+                        # Re-raise the tick's original exception (a bare
                         # raise re-raises it identically): a teardown
                         # timeout or the close's bounds must never
                         # displace what actually failed the tick, least
@@ -804,7 +802,7 @@ async def heartbeat_loop(
                 _tick_raised = True
                 raise
             finally:
-                # Why finally: run_post_tx MUST follow run_in_tx on every tick
+                # Why finally: run_post_tx must follow run_in_tx on every tick
                 # (see taskq.worker.cancel's module docstring).  Phase-3 jobs
                 # queued before an error would otherwise never be drained, and
                 # the drain is also where an abandon that could not apply is
@@ -812,7 +810,7 @@ async def heartbeat_loop(
                 # by the time this runs, the transaction has committed or
                 # rolled back, so mark_abandoned cannot self-deadlock here.
                 if cancel_controller is not None:
-                    # post_tx shares the tick's ONE command budget: it
+                    # post_tx shares the tick's one command budget: it
                     # runs under whatever the deadline has left, and is
                     # deferred to the next tick when nothing is left (an
                     # expired asyncio.timeout does not re-cancel an
@@ -821,7 +819,7 @@ async def heartbeat_loop(
                     # The controller's deque persists, so a deferred
                     # drain loses nothing. When the acquire itself
                     # failed, no budget was consumed: post_tx drains the
-                    # PREVIOUS ticks' queue under a full budget of its
+                    # previous ticks' queue under a full budget of its
                     # own (the acquire's own timeout already bounds that
                     # tick).
                     left = (
@@ -842,7 +840,7 @@ async def heartbeat_loop(
                         except Exception as post_exc:
                             # A post-tx failure on a healthy tick is the tick's
                             # failure and propagates to the handlers below; on an
-                            # already-failing tick it must NOT displace the
+                            # already-failing tick it must not displace the
                             # original error, which is the root cause worth
                             # reporting. (A mid-drain budget cut lands here as
                             # TimeoutError: the in-flight abandon is shielded
@@ -875,7 +873,7 @@ async def heartbeat_loop(
             # keep their semantics. For rows the gate skipped (still
             # above the threshold) the true remaining is anywhere up to
             # the full lease, the sample is the "if this beat renewed
-            # everything" floor, never an overstatement of a RENEWED
+            # everything" floor, never an overstatement of a renewed
             # row's remaining, and the threshold's own sizing is pinned
             # by the _lease_renewal_threshold unit and property tests
             # rather than by this histogram.
@@ -909,7 +907,7 @@ async def heartbeat_loop(
             if await _failed_tick_ledger(deps, worker_id, shutdown, e):
                 return
         except Exception as e:
-            # The unexpected arm counts toward the SAME isolate threshold
+            # The unexpected arm counts toward the same isolate threshold
             # as the transient arm (see _failed_tick_ledger): a persistent
             # non-transient error must isolate the worker, not loop
             # forever as a functional zombie whose counter never moves.
@@ -926,8 +924,8 @@ async def heartbeat_loop(
             )
             if await _failed_tick_ledger(deps, worker_id, shutdown, e):
                 return
-        # The wait is anchored to the tick's START, not its end, so the
-        # beat cadence is the interval however long a SUCCESSFUL tick
+        # The wait is anchored to the tick's start, not its end, so the
+        # beat cadence is the interval however long a successful tick
         # took. A fixed post-tick sleep instead makes the cadence
         # tick_duration + interval, and a tick may legitimately run for
         # nearly a whole interval, the pool acquire above is bounded at
@@ -936,10 +934,10 @@ async def heartbeat_loop(
         # already late, and cannot become a hot loop, because the next
         # tick's own pool acquire is bounded at the interval and paces it.
         #
-        # A FAILED tick is NOT a beat, so it does not get the inter-beat
+        # A failed tick is not a beat, so it does not get the inter-beat
         # wait either. Sleeping the full remaining interval after a tick
         # that raised made the gap between good beats twice the interval
-        # after ONE transient blip (the failed tick stamped nothing, then
+        # after one transient blip (the failed tick stamped nothing, then
         # the loop slept a whole interval anyway): the recovery beat
         # landed at the ``heartbeat_timeout >= 2x interval`` floor the
         # ops guidance calls safe rather than inside it, and a sweep
@@ -957,7 +955,7 @@ async def heartbeat_loop(
         # retry succeeds and resets it - so one transient failure never
         # consumes the isolate budget, and repeated failures still
         # isolate on the (max_heartbeat_failures + 1)-th consecutive
-        # one (each failed cycle is now SHORTER, which only moves that
+        # one (each failed cycle is now shorter, which only moves that
         # decision earlier inside the lease the cascade floor sizes -
         # see _lease_renewal_threshold).
         remaining = max(0.0, interval - (time.monotonic() - tick_start))
@@ -975,7 +973,7 @@ async def heartbeat_loop(
 _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
     # scheduled_at rides for the attempt ledger's due_at stamp: the value
     # this snapshot reads is the claim-time due time of each running row's
-    # attempt (the isolate arbiter below RESCHEDULES the re-pend arm, so
+    # attempt (the isolate arbiter below reschedules the re-pend arm, so
     # its own RETURNING cannot carry it - see
     # 01.00.20_04_pre_attempt_due_at.sql).
     "SELECT id, attempt, started_at, scheduled_at, max_attempts, retry_kind, cancel_phase "
@@ -990,39 +988,39 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # All are present in VALID_TRANSITIONS.
 # The heartbeat-pool failure forces a fresh asyncpg
 # connection, so the worker cannot rely on its in-memory status being
-# current.  The SQL self-guards via WHERE status='running' AND
+# current.  The SQL self-guards via WHERE status='running' and
 # locked_by_worker=$2, which atomically serialises the read+write and
 # ensures only rows still belonging to this worker transition.  Note:
 # error_class='HeartbeatLost' is intentionally distinct from Sweep 1's
 # 'WorkerCrashed', a heartbeat-lost worker may still be alive but
 # partitioned, while Sweep 1 assumes the worker is gone.
 
-# Branch-for-branch mirror of _sweeps.py's _SWEEP_1_SQL SET clause,
+# Branch-for-branch mirror of _sweeps.py's _SWEEP_1_SQL set clause,
 # sharing its budget predicate and hand-back delay verbatim, the
 # property test tests/test_leader_property.py asserts row-state
 # equivalence between this path and the sweep, so any branch change
-# there (the operator-intent-first CASE ordering: cancel_phase != 0
+# there (the operator-intent-first case ordering: cancel_phase != 0
 # terminalises 'cancelled' ahead of the budget arm, cancel-column
 # preservation on the cancel arm, clock_timestamp() for terminal
-# timestamps) must be mirrored here. The mirror covers the SET
-# clause's SHAPE; the crashed arm's error_class/error_message VALUES
+# timestamps) must be mirrored here. The mirror covers the set
+# clause's shape; the crashed arm's error_class/error_message VALUES
 # are deliberately distinct: 'HeartbeatLost' plus this module's own
 # message, where the sweep stamps 'WorkerCrashed' plus the
 # deadline-naming message from _ATTEMPT_MESSAGES, for the same
 # reason the attempt rows differ: the sweep's reclaim means the
-# LEADER declared the holder dead, isolate means the worker itself
+# leader declared the holder dead, isolate means the worker itself
 # declared PG unreachable and is walking away. The job row must
 # self-describe on the crashed arm either way (leaving both fields
 # NULL would claim the mirror without honoring it).
-# Note the mirror covers the SET clause, NOT the
+# Note the mirror covers the set clause, not the
 # selection predicate: the sweep leaves cancel-in-flight jobs alone until
 # cancel_grace + cleanup_grace + 60s has passed (a merely-slow
 # cancellation isn't pre-empted), while isolate applies the 'cancelled'
-# arm immediately, deliberate asymmetry, since isolate means THIS worker
+# arm immediately, deliberate asymmetry, since isolate means this worker
 # is going away now and there is no lock-holder left to complete the
 # cooperative protocol.
 #
-# Isolate WRITES the reclaim event row. Every reclaim rides the
+# Isolate writes the reclaim event row. Every reclaim rides the
 # crash-reclaim outbox channel (kind='state_change', detail
 # reason='lock_expired', the slice poll_reclaim_events tails and the
 # event-retention carve-out keeps): without it, an isolate-reclaimed job
@@ -1057,7 +1055,7 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 #: ``_SWEEP_1_SQL``'s message fragments follow.
 _ISOLATE_CRASHED_MESSAGE = "worker heartbeat connection lost before terminal state was reported"
 #
-#: The statement is built as ONE constant: the literal with the sweep's
+#: The statement is built as one constant: the literal with the sweep's
 #: shared fragments substituted by name (``str.replace``, not ``format``,
 #: so ``{schema}`` stays the only placeholder the caller renders).
 #: ``$3`` is the effective-cap ceiling (max_retry_backoff, seconds),
@@ -1145,7 +1143,7 @@ async def isolate_self(
     host = dsn_host(pg_dsn)
     schema = deps.settings.schema_name
     require_schema(schema)
-    # Stop the claim path FIRST, before any snapshot or join: this worker
+    # Stop the claim path first, before any snapshot or join: this worker
     # is walking away, so the producer must start no new claim rounds, and
     # the producer's own exit pass (drain_local_queue_to_pending) hands
     # back what it claimed but never dispatched. The stop event also
@@ -1172,16 +1170,16 @@ async def isolate_self(
     # arithmetic explainable (selected rows = pending + crashed +
     # cancelled + lost_race).
     jobs_lost_race_count = 0
-    # The re-pend's exclusion set is deliberately NOT captured here: a
+    # The re-pend's exclusion set is deliberately not captured here: a
     # snapshot taken this early re-pends every row claimed
     # during the join window below (the producer keeps claiming for the
     # window's whole bound), handing back rows whose local handlers were
     # live. The capture lives inside _inner, after the join, immediately
     # before the SELECT that binds it.
-    # Actors still executing in THIS process: their rows are excluded by
+    # Actors still executing in this process: their rows are excluded by
     # that late capture, and they take the same route the shutdown
     # orchestrator's
-    # CANCELLING phase gives them: the SHUTDOWN origin stamp plus the cancel event
+    # cancelling phase gives them: the shutdown origin stamp plus the cancel event
     # routes each consumer's unwinding through its mark_interrupted arm,
     # which earns the exit-proving hold and releases the row with the
     # spent attempt standing. Where PG is truly unreachable and the
@@ -1193,7 +1191,7 @@ async def isolate_self(
         active.ctx.cancel_event.set()
         if active.cancel_origin is CancelOrigin.NONE:
             active.cancel_origin = CancelOrigin.SHUTDOWN
-            active.ctx._set_cancel_origin(CancelOrigin.SHUTDOWN)  # pyright: ignore[reportPrivateUsage]  # Why: the isolate path is the other designated shutdown-side writer of the context's origin stamp, same contract as the orchestrator's CANCELLING phase.
+            active.ctx._set_cancel_origin(CancelOrigin.SHUTDOWN)  # pyright: ignore[reportPrivateUsage]  # Why: the isolate path is the other designated shutdown-side writer of the context's origin stamp, same contract as the orchestrator's cancelling phase.
         if active.cancel_phase < CancelPhase.COOPERATIVE:
             active.cancel_phase = CancelPhase.COOPERATIVE
             active.cancel_observed_at = loop.time()
@@ -1205,7 +1203,7 @@ async def isolate_self(
         # outer bound (the grace periods the actor's own unwinding may
         # take, plus close slack). Entries still alive when the join ends
         # keep their rows excluded from the re-pend: the exclusion is
-        # captured AFTER this join (inside _inner), so both they and every
+        # captured after this join (inside _inner), so both they and every
         # claim this process took while it ran are in it. Lock-lease
         # expiry is the backstop for rows whose unwinding never finishes.
         join_bound = (
@@ -1248,18 +1246,18 @@ async def isolate_self(
                 crashed = 0
                 cancelled = 0
                 lost_race = 0
-                # The reclaim events, batched into ONE insert at the end
+                # The reclaim events, batched into one insert at the end
                 # of the transaction (the sweep's own event writer shape:
                 # the microsecond ladder on the row ordinal keeps
                 # occurred_at co-monotonic with the bigserial id the
                 # watermark protocol reads).
                 event_job_ids: list[JobId] = []
                 event_details: list[object] = []
-                # The re-pend's exclusion set, captured as LATE as the
-                # statement boundary allows: AFTER the actor join above,
+                # The re-pend's exclusion set, captured as late as the
+                # statement boundary allows: after the actor join above,
                 # with no await between this capture and the SELECT below
-                # that binds it. held_ids() covers BOTH maps, the
-                # registered consumers (executing now) AND the claim
+                # that binds it. held_ids() covers both maps, the
+                # registered consumers (executing now) and the claim
                 # intents (taken off local_queue, not yet registered). The
                 # intents are the easy one to miss: a consumer parked in
                 # the take-to-register window has already claimed its row
@@ -1271,11 +1269,11 @@ async def isolate_self(
                 # runs it concurrently with the local body, a double run,
                 # and the local terminal write then loses the
                 # attempt-epoch fence (silently discarded).
-                # queued_ids() is included HERE even though the DRAINING
+                # queued_ids() is included here even though the draining
                 # exit hand-back excludes it on purpose (held_ids' own
                 # docstring): a row parked in local_queue during this
                 # window is still this process's to execute - the consumer
-                # loops are free to take and run it (only their NEXT
+                # loops are free to take and run it (only their next
                 # iteration honours the stop events, and the
                 # shutdown_event-only fall-through runs a job taken on the
                 # final turn even after shutdown.set()) - so re-pending it
@@ -1311,7 +1309,7 @@ async def isolate_self(
                         # job_attempts' PRIMARY KEY (job_id, attempt): an
                         # unconditional INSERT on the lost row is a
                         # non-transient constraint error that aborts the
-                        # WHOLE transaction and collapses the isolation of
+                        # whole transaction and collapses the isolation of
                         # rows that are still this worker's. Only the
                         # winner of the transition writes the attempt row.
                         # fetchrow, not execute+parse_rowcount: the
@@ -1331,8 +1329,8 @@ async def isolate_self(
                         # the same trustworthy-read doctrine the attempt
                         # row's fence below runs on: a refund that commits
                         # in the SELECT->arbiter window de-charges and
-                        # un-stamps the row BEFORE the arbiter takes its
-                        # lock, and the arbiter's own CASE then re-pends it
+                        # un-stamps the row before the arbiter takes its
+                        # lock, and the arbiter's own case then re-pends it
                         # (the budget conjunct re-evaluates on the live
                         # row). A classification from the SELECT snapshot
                         # would call that same row 'crashed' - its snapshot
@@ -1349,11 +1347,11 @@ async def isolate_self(
                         elif new_status == "cancelled":
                             cancelled += 1
                         else:
-                            # The arbiter's CASE has exactly one remaining
+                            # The arbiter's case has exactly one remaining
                             # arm: crashed - the not-pending,
                             # not-operator-cancelled outcome of the budget
-                            # CASE. Total by construction: no unmapped
-                            # status can reach here without a CASE
+                            # case. Total by construction: no unmapped
+                            # status can reach here without a case
                             # evolution, and the exhaustiveness pin
                             # (tests/test_obs_reclaim_counters.py) fails CI
                             # before that day comes - the same doctrine as
@@ -1362,7 +1360,7 @@ async def isolate_self(
                         # The reclaim rides the crash-reclaim outbox
                         # channel exactly like the sweep's rows (see the
                         # module comment). reason='lock_expired' is the
-                        # CHANNEL key -- the slice poll_reclaim_events
+                        # channel key -- the slice poll_reclaim_events
                         # tails and the retention carve-out keeps -- not
                         # a per-row lease claim: this row's lease may
                         # still be live (isolate fires on heartbeat-
@@ -1382,45 +1380,41 @@ async def isolate_self(
                         }
                         event_job_ids.append(JobId(row["id"]))
                         event_details.append(jsonb_param(detail))
-                        # THE STANDING-CLAIM FENCE, read from the ARBITER's
-                        # RETURNING - never from the SELECT snapshot above.
-                        # The gap this closes (the soak's reconciliation red,
-                        # ``attempt counter 1 vs 2 attempt rows``): the
-                        # claim-loss reconcile's refund
-                        # (_RECONCILE_LOST_CLAIMS_SQL, the same worker's
+                        # the standing-claim fence, read from the arbiter's
+                        # RETURNING - never from the SELECT snapshot above. The
+                        # gap this closes ````: the claim-loss reconcile's
+                        # refund (_RECONCILE_LOST_CLAIMS_SQL, the same worker's
                         # heartbeat pool, or the shutdown drain's
                         # ATTEMPT_REFUND_SQL arm) can commit in the window
-                        # between this path's SELECT and the guarded UPDATE
-                        # - the SELECT takes no row lock, the refund matches
+                        # between this path's SELECT and the guarded UPDATE -
+                        # the SELECT takes no row lock, the refund matches
                         # exactly the row it sees there (running, locked by
-                        # this worker, its charge de-charged and its
-                        # started_at un-stamped), and an arbiter judging
-                        # only (status + holder, no standing-claim conjunct)
-                        # would win the transition anyway, then the INSERT
-                        # below would write the SNAPSHOT's (attempt,
-                        # started_at) - an epoch minted AFTER the refund
-                        # that the live counter never carried. The next
-                        # claim re-mints that number
-                        # (the refund's whole point) and the ledger closes
-                        # the lineage with more attempt rows than the
-                        # counter. The arbiter is the trustworthy read: it
-                        # takes the row lock, so no refund can interleave
-                        # after it, and a refund before it shows up in the
-                        # RETURNING as the un-stamped, de-charged row. A
-                        # returned NULL stamp is a charge this isolate never
-                        # owned: record NO attempt row (the reclaim event
-                        # above still lands - the reclaim happened and is
-                        # audited; the execution the crashed row would
-                        # assert never did), and leave the re-pend standing,
-                        # the same fenced shape Sweep 1's reclaim leaves
-                        # (its batched INSERT carries the twin fence,
-                        # _SWEEP_1_ATTEMPTS_BATCH_SQL's ``WHERE a.started_at
-                        # IS NOT NULL``). The fence also keeps
+                        # this worker, its charge de-charged and its started_at
+                        # un-stamped), and an arbiter judging only (status +
+                        # holder, no standing-claim conjunct) would win the
+                        # transition anyway, then the INSERT below would write
+                        # the snapshot's (attempt, started_at) - an epoch
+                        # minted after the refund that the live counter never
+                        # carried. The next claim re-mints that number (the
+                        # refund's whole point) and the ledger closes the
+                        # lineage with more attempt rows than the counter. The
+                        # arbiter is the trustworthy read: it takes the row
+                        # lock, so no refund can interleave after it, and a
+                        # refund before it shows up in the RETURNING as the
+                        # un-stamped, de-charged row. A returned NULL stamp is
+                        # a charge this isolate never owned: record no attempt
+                        # row (the reclaim event above still lands - the
+                        # reclaim happened and is audited; the execution the
+                        # crashed row would assert never did), and leave the
+                        # re-pend standing, the same fenced shape Sweep 1's
+                        # reclaim leaves (its batched INSERT carries the twin
+                        # fence, _SWEEP_1_ATTEMPTS_BATCH_SQL's ``WHERE
+                        # a.started_at is not NULL``). The fence also keeps
                         # INSERT_ATTEMPT_SQL's raw stamp from hitting
-                        # job_attempts.started_at's NOT NULL on exactly this
-                        # shape (a NotNullViolation here would abort the
-                        # whole isolation transaction and strand every
-                        # sibling row with it).
+                        # job_attempts.started_at's not NULL on exactly this
+                        # shape (a NotNullViolation here would abort the whole
+                        # isolation transaction and strand every sibling row
+                        # with it).
                         if updated["started_at"] is not None:
                             await conn.execute(
                                 insert_attempt_sql,
@@ -1437,10 +1431,10 @@ async def isolate_self(
                                 # The attempt's due time: the claim-time
                                 # scheduled_at from the snapshot SELECT (the
                                 # arbiter's re-pend already rescheduled the row,
-                                # so its RETURNING cannot carry it; the ONLY
+                                # so its RETURNING cannot carry it; the only
                                 # writer between claim and isolate is nobody -
                                 # the loop was blocked - so the snapshot value
-                                # IS the claim-time due time).
+                                # is the claim-time due time).
                                 row["scheduled_at"],
                             )
                     if event_job_ids:

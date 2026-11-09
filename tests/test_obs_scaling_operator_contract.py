@@ -30,14 +30,14 @@ Five pins live here:
    worker whose queue has no routed actor (the stranded class), zero live
    workers under positive depth, and a worker FLAPPING live → dead → live
    across ticks (the series must churn, never freeze stale).
-5. The sampler's SQL: the utilization gauge's NUMERATOR is the DUE-NOW
-   population (``status = 'pending' AND scheduled_at <= statement_timestamp()``),
-   NOT the depth gauge's wider pending+scheduled population — a
+5. The sampler's SQL: the utilization gauge's NUMERATOR is the DUE-now
+   population (``status = 'pending' and scheduled_at <= statement_timestamp()``),
+   not the depth gauge's wider pending+scheduled population — a
    future-armed wave must not read as starvation. Both sampler templates
    are pinned textually (no container) and against
    ``fetch_queue_imbalance``'s own ``due``/``cap`` CTEs on a real migrated
    schema (the integration pins): the gauge and the SQL twin must report
-   the SAME ratio for the same fleet, omission-for-omission.
+   the same ratio for the same fleet, omission-for-omission.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ from taskq.worker._leader_sweeps import (  # pyright: ignore[reportPrivateUsage]
 
 _PG_IMAGE = "postgres:18"
 
-_CAP = otel_mod._MAX_QUEUE_LABEL_VALUES  # pyright: ignore[reportPrivateUsage]  # Why: the tests assert behaviour AT the cap; duplicating the constant would let it drift from the thing it guards.
+_CAP = otel_mod._MAX_QUEUE_LABEL_VALUES  # pyright: ignore[reportPrivateUsage]  # Why: the tests assert behaviour at the cap; duplicating the constant would let it drift from the thing it guards.
 
 
 @pytest.fixture
@@ -115,7 +115,7 @@ def test_utilization_gauge_reports_one_series_per_queue(
 def test_utilization_gauge_clears_on_an_empty_sample(
     utilization_reader: InMemoryMetricReader,
 ) -> None:
-    """A queue with zero effective capacity reports NO utilization series
+    """A queue with zero effective capacity reports no utilization series
     (the sampler omits it), so an empty cache must clear the series rather
     than freeze it at the last ratio."""
     obs_mod.update_queue_utilization_cache({"default": 0.5})
@@ -128,7 +128,7 @@ def test_utilization_gauge_is_capped_like_the_depth_gauge(
     utilization_reader: InMemoryMetricReader,
 ) -> None:
     """Same partition as taskq.queue.depth / taskq.queue.live_workers: the
-    largest ``cap`` queues keep their series, the rest collapse onto ONE
+    largest ``cap`` queues keep their series, the rest collapse onto one
     ``_other_`` series carrying their summed utilization, so the three
     gauges share a label vocabulary and a bound and a PromQL join on
     ``queue`` cannot fan out."""
@@ -251,7 +251,7 @@ def test_utilization_zero_capacity_rows_omit_the_series() -> None:
 
 
 def test_utilization_positive_capacity_with_no_due_depth_has_no_series() -> None:
-    """An idle queue (capacity, workers, zero due rows) carries NO
+    """An idle queue (capacity, workers, zero due rows) carries no
     utilization series — the numerator iteration keys on the depth dict.
     That absence is unambiguous to an operator because the alarm rule is
     `depth > 0 AND no series`: with depth 0 there is nothing to starve."""
@@ -282,7 +282,7 @@ def test_utilization_series_churns_when_a_worker_flaps() -> None:
             for dp in _points(reader, "taskq.queue.utilization")
             if dp.attributes
         }
-        assert returned == {"q": 0.25}  # live again: the FRESH ratio (4 ÷ (8 x 2)), recomputed
+        assert returned == {"q": 0.25}  # live again: the fresh ratio (4 ÷ (8 x 2)), recomputed
     finally:
         obs_mod.update_queue_utilization_cache({})
         del gauge  # the provider-owned gauge drops with its reader
@@ -293,7 +293,7 @@ def test_utilization_series_churns_when_a_worker_flaps() -> None:
 
 def test_due_depth_template_is_the_due_now_population_not_the_depth_gauges() -> None:
     """The utilization numerator's template must be the dispatch index's
-    own population — pending AND due — NOT the depth gauge's wider
+    own population — pending and due — not the depth gauge's wider
     pending+scheduled population. A template that reads the IN-list would
     make every future-armed wave (scheduled jobs, cron armings) inflate
     the ratio: an operator would scale for work that cannot be claimed
@@ -353,12 +353,12 @@ async def fleet_env(plain_dsn: str) -> AsyncIterator[tuple[Any, str]]:
     * ``multi``   — TWO actors routed to it (max_concurrent 5 + 3), two
       live workers serving it: the routing-join exactness (capacity 8,
       effective 16).
-    * ``ghost``   — due rows and a live worker, but NO actor_config row
+    * ``ghost``   — due rows and a live worker, but no actor_config row
       for the queue: the stranded class (capacity 0, series omitted).
     * ``uncapped``— one actor with max_concurrent NULL (uncapped) and a
       live worker: the capacity sum excludes it, so the series is
       omitted — the docs' caveat on what that absence can mean.
-    * ``armed``   — due-now pending rows AND future-armed scheduled rows:
+    * ``armed``   — due-now pending rows and future-armed scheduled rows:
       the due-now/armed discrimination (the numerator must read the due
       set only).
     """
@@ -411,7 +411,7 @@ async def fleet_env(plain_dsn: str) -> AsyncIterator[tuple[Any, str]]:
         )
         # Two live workers: multi gets both, ghost and uncapped one each,
         # and armed one — so the armed queue's utilization computes on
-        # both sides from its DUE rows alone (4, never the 6 armed ones).
+        # both sides from its due rows alone (4, never the 6 armed ones).
         for queues in (["multi", "ghost"], ["multi", "uncapped", "armed"]):
             await conn.execute(
                 f"""INSERT INTO {schema}.workers
@@ -455,7 +455,7 @@ async def test_sampler_reads_report_the_twin_s_ratio_for_the_same_fleet(
     live_workers = {row["queue"]: int(row["count"]) for row in live_rows}
     capacity = {row["queue"]: int(row["actor_capacity"]) for row in cap_rows}
 
-    # The numerator DISCRIMINATES due-now from armed: the armed queue's 6
+    # The numerator discriminates due-now from armed: the armed queue's 6
     # future-armed rows are invisible to it (total depth would read 10).
     assert due_depth["armed"] == 4, due_depth
     # The routing join is exact: two actors (5+3) routed to one queue sum to 8.
@@ -474,7 +474,7 @@ async def test_sampler_reads_report_the_twin_s_ratio_for_the_same_fleet(
             f"twin reports {expected!r} — the scrape and the SQL contract "
             "disagree for the same fleet"
         )
-    # The omissions line up too, and for the twin's OWN reasons: the
+    # The omissions line up too, and for the twin's own reasons: the
     # stranded class and the uncapped queue have utilization NULL on both
     # sides, and the starved multi queue reads > 1 on both.
     assert "ghost" not in gauge and twin["ghost"]["utilization"] is None

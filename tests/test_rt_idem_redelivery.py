@@ -1,13 +1,13 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""RED-TEAM pins: crash redelivery is at-least-once, side effects stay fenced (S5).
+"""The adversarial-review pins: crash redelivery is at-least-once, side effects stay fenced (S5).
 
 The documented delivery contract (``docs/guides/ops.md``: "Delivery is
 at-least-once. A worker that dies mid-job has its jobs reclaimed after the
 lock lease expires and retried"; ``docs/architecture.md``: the same): a
-worker crash mid-execution REDIVERS the job and it runs AGAIN. The
+worker crash mid-execution REDIVERS the job and it runs again. The
 idempotency key is an ENQUEUE-dedup channel, not an execution-dedup channel -
 it must not block the redelivery, and the redelivery must not duplicate the
-row. What must NOT survive the crash are the claimed side effects: a stale
+row. What must not survive the crash are the claimed side effects: a stale
 attempt's progress flush and a stale attempt's terminal write are fenced out
 by the attempt epoch, so the redelivered attempt's writes are the only ones
 that land.
@@ -15,7 +15,7 @@ that land.
 Pinned against real Postgres, one deterministic crash (the lock expiry the
 reclaim sweep arbitrates, the same boundary a real process death reaches):
 
-* the redelivery claims the SAME job id and runs it again (at-least-once),
+* the redelivery claims the same job id and runs it again (at-least-once),
 * still exactly one row for the idempotency pair (no enqueue-side duplicate),
 * a stale attempt's progress flush is fenced out (no double progress write),
 * a stale attempt's terminal write is fenced out (no double result).
@@ -75,7 +75,7 @@ async def _flush_progress(
 
 async def test_crash_redelivery_runs_again_and_stale_writes_stay_fenced(pg_dsn: str) -> None:
     """Worker crash mid-execution with an idempotency key: the reclaim sweep
-    re-pends the job, the redelivery runs it AGAIN on the same id (the
+    re-pends the job, the redelivery runs it again on the same id (the
     documented at-least-once contract, the key dedupes enqueue not
     execution), the row count never doubles, and the dead attempt's progress
     and terminal writes are fenced out."""
@@ -114,7 +114,7 @@ async def test_crash_redelivery_runs_again_and_stale_writes_stay_fenced(pg_dsn: 
                 row.id,
             )
 
-        # The redelivery: SAME job id, a later attempt epoch.
+        # The redelivery: same job id, a later attempt epoch.
         claimed2 = await backend.dispatch_batch(worker_id, ["default"], 10, _LEASE)
         assert [j.id for j in claimed2] == [row.id], (
             f"CONTRACT (at-least-once): the crash redelivery re-claims the SAME "

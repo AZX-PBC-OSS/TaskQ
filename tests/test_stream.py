@@ -374,7 +374,7 @@ async def _count_listen_connections(pool: asyncpg.Pool) -> int:
     """Count connections registered as LISTENers in this database.
 
     The match is anchored (``LIKE 'LISTEN%'``): pg_stat_activity.query
-    holds a backend's LAST statement, so a substring match also hits the
+    holds a backend's last statement, so a substring match also hits the
     counting query's own backend and every idle pool connection whose
     last statement merely mentioned the word - noise that cancels out in
     a single-shot count and skews a repeated poll.

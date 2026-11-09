@@ -7,7 +7,7 @@ so the "from two concurrent workers against the
 same job" clause is satisfied for every method.
 
 PG fails mid-way through a terminal write - nothing lands. The mark_*
-terminal writes are ONE fused statement (jobs UPDATE + job_attempts
+terminal writes are one fused statement (jobs UPDATE + job_attempts
 INSERT + job_events INSERT in a single data-modifying-CTE statement -
 see _terminal.py's module docstring), so the mid-flight seam is inside
 the statement itself; this test is the executable proof that "Every
@@ -94,7 +94,7 @@ class TestConcurrentTerminalWrites:
 
         mark_abandoned: pre-set cancel_phase=2; both callers invoke
         mark_abandoned (no worker_id arg); the SQL ``status='running'
-        AND cancel_phase=2`` gate serializes; exactly one True, one
+        and cancel_phase=2`` gate serializes; exactly one True, one
         False.
 
         write_cancel_request (running + cancel_phase=0 case): both
@@ -268,7 +268,7 @@ class TestConcurrentTerminalWrites:
             assert events[0]["kind"] == "state_change"
 
         elif method == "mark_retry_after":
-            # consume_budget=True: the winner's deferral IS a real
+            # consume_budget=True: the winner's deferral is a real
             # execution - one attempt row, one event of its own.
             assert row["status"] == "scheduled"
             assert len(attempts) == 1
@@ -301,7 +301,7 @@ class TestTransactionRollbackOnMidFlightFailure:
     is therefore absorbed, not fatal - by design.
 
     What still must hold, and what this test pins: the mark_* terminal
-    writes are ONE fused statement (jobs UPDATE + job_attempts INSERT +
+    writes are one fused statement (jobs UPDATE + job_attempts INSERT +
     job_events INSERT in a single data-modifying-CTE statement - see
     _terminal.py's module docstring), so a failure anywhere in it commits
     nothing. The surviving genuine mid-flight failure is the death of the
@@ -405,7 +405,7 @@ class TestTransactionRollbackOnMidFlightFailure:
             )
 
             # The raises tuple deliberately excludes builtin OSError:
-            # builtin TimeoutError IS an OSError, so catching OSError here
+            # builtin TimeoutError is an OSError, so catching OSError here
             # would let a wait_for timeout (the injection never landing)
             # masquerade as the victim's connection death. The observed
             # death shape is asyncpg's ConnectionDoesNotExistError - a

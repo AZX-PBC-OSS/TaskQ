@@ -1,4 +1,4 @@
-"""Red-team attacks on the SSE progress bridge's broker-facing waits.
+"""Adversarial review attacks on the SSE progress bridge's broker-facing waits.
 
 Hunt scope: ``src/taskq/web/progress.py`` - the streaming loop's Redis
 dependency, connection lifetime, and the SSE slot cap.
@@ -69,7 +69,7 @@ from taskq.constants import progress_channel
 from taskq.testing.assertions import wait_for_condition
 from taskq.web.progress import (
     _BROKER_READ_GRACE_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the pin derives its budget from the loop's own read deadline.
-    _event_generator,  # pyright: ignore[reportPrivateUsage]  # Why: red-team tests exercise the production generator directly rather than reimplementing it.
+    _event_generator,  # pyright: ignore[reportPrivateUsage]  # Why: adversarial review tests exercise the production generator directly rather than reimplementing it.
     _resolve_last_event_id,  # pyright: ignore[reportPrivateUsage]  # Why: pins the malformed Last-Event-ID branch, which no existing test covers.
     create_router,
 )
@@ -264,7 +264,7 @@ async def test_wedged_broker_read_must_be_app_bounded() -> None:
     pubsub double that outlives the delegated ``timeout=`` parameter - must
     terminate the stream within a bounded window.
 
-    CURRENT VIOLATION: progress.py:184-187 delegates the ONLY bound to
+    CURRENT VIOLATION: progress.py:184-187 delegates the only bound to
     ``pubsub.get_message(..., timeout=heartbeat_secs)`` - nothing in this
     module cancels a read that never returns - so 15 heartbeat intervals
     later the generator task is still pending, holding the Redis
@@ -322,7 +322,7 @@ async def test_wedged_broker_read_must_be_app_bounded() -> None:
             "the asyncio task and the SSE slot."
         )
     finally:
-        # Bounded teardown so the RED state can never hang the test run.
+        # Bounded teardown so the red state can never hang the test run.
         task.cancel()
         with contextlib.suppress(BaseException):
             await task

@@ -110,7 +110,7 @@ def report(results: list[ABResult]) -> None:
         print(f"{r.name:<38} {a:>14} {b:>14} {r.speedup:>8.2f}x  {flag}{warn}")
 
 
-# ── Bench 1: DI solver reflection (per-job) ──────────────────────────
+# ── Bench 1: di solver reflection (per-job) ──────────────────────────
 
 _BENCH_DIR = "benchmarks"
 
@@ -331,7 +331,7 @@ def _payloads() -> dict[str, dict[str, object]]:
         "blob": "x" * 32768,
         "rows": [{"i": i, "v": i * 1.5, "s": f"row-{i}"} for i in range(700)],
     }
-    nul_literal = {  # literal backslash-u-0000 TEXT - prefilter hits, but legal
+    nul_literal = {  # literal backslash-u-0000 text - prefilter hits, but legal
         "text": "safe \\u0000 literal",
         "rows": [{"i": i, "s": f"row-{i} \\u0000 text"} for i in range(40)],
     }
@@ -782,7 +782,7 @@ def bench_evict_keyed() -> list[ABResult]:
     import heapq
     from random import Random
 
-    rng = Random(42)  # noqa: S311  # Why: seeded PRNG shapes last_used timings; nothing security-sensitive.
+    rng = Random(42)  # noqa: S311  # Why: seeded prng shapes last_used timings; nothing security-sensitive.
     n = 10_000
     now = time.monotonic()
     # last_used times: 80% idle > 60s old, 20% recent
@@ -866,7 +866,7 @@ def run_stall_probes() -> None:
     # between the legal nul_literal payload (prefilter hit + walk) and catch.
     nul_literal = payloads["nul_literal"]
 
-    burst_10k = datetime(2026, 3, 8, 2, 0, 0, tzinfo=UTC)  # DST window in NY
+    burst_10k = datetime(2026, 3, 8, 2, 0, 0, tzinfo=UTC)  # dst window in ny
     exprs = ["*/5 * * * *"] * 10_000
 
     def cron_burst() -> None:
@@ -939,7 +939,7 @@ def main() -> None:
     parser.add_argument("--stall", action="store_true", help="run event-loop stall probes")
     args = parser.parse_args()
 
-    # Match production log config (INFO, stdlib-filtered) so the DI solver's
+    # Match production log config (info, stdlib-filtered) so the di solver's
     # per-dep debug logging doesn't pay terminal rendering inside timed regions.
     from taskq.obs._structlog import setup_logging
 

@@ -8,19 +8,19 @@ overlapping transaction pins the MVCC horizon, VACUUM cannot reclaim,
 and the claim query's B-tree scans degenerate through the dead tuples
 the claims themselves left behind (brandur measured 15x lock-time
 degradation; PlanetScale: SKIP LOCKED "lifts the floor, not the
-ceiling" - identical dead-tuple scans under both). The worker-side cure
+ceiling" - identical dead-tuple scans under both). The worker-side fix
 is brandur's own: bound the claim predicate at the worker's last
 successfully-claimed id (UUIDv7, time-ordered, so the bound is a
 position in creation order) and the seek lands on live tuples instead
 of walking the dead zone.
 
-THE TRADE, stated plainly: the bound is a SELECTION predicate, not a
+TRADE, stated plainly: the bound is a SELECTION predicate, not a
 hint. Any pending row whose id falls below this worker's cursor -
 a skewed producer's UUIDv7 minted behind it, a row the round's LIMIT
 window never reached, a priority or backdated-scheduled_at divergence
 between claim order and id order - is invisible to the claim query
 until the jitter reset forgets the cursor. The design accepts a
-stranding bounded by ONE reset window (default 60s, the only knob) in
+stranding bounded by one reset window (default 60s, the only knob) in
 exchange for a claim scan that no longer degrades with the table's dead
 tuple count. The bound is proven, not assumed:
 ``tests/test_dispatch_claim_cursor_pg.py::test_a_lower_id_job_is_claimed_within_one_reset_window``
@@ -99,7 +99,7 @@ class ClaimCursor:
     ) -> None:
         self._reset_seconds = reset_seconds
         self._clock = clock
-        # The draw of the scale FACTOR: zero-arg, called once per armed
+        # The draw of the scale factor: zero-arg, called once per armed
         # entry, expected to return values in [0.5, 1.5].
         self._jitter = jitter
         # queue -> (last claimed id, expires_at). expires_at is armed once
@@ -130,7 +130,7 @@ class ClaimCursor:
         if existing is not None:
             if existing[0] >= job_id:
                 return
-            # Higher-id refresh: the id moves, the window does NOT re-arm.
+            # Higher-id refresh: the id moves, the window does not re-arm.
             # The reset is periodic from the entry's creation (see the
             # constant's docstring); extending it on every claim would let
             # a hot queue's cursor live forever, the never-heals state the

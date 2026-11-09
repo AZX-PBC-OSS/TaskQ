@@ -1,10 +1,10 @@
-"""Red-team scratch: is the actor-cohort rotation bound PROVABLE (exactly
+"""Adversarial review scratch: is the actor-cohort rotation bound PROVABLE (exactly
 ceil(actor_count / limit) rounds) or merely probabilistic?
 
-The rotation tiebreak is ``actor_claimed_at ASC NULLS FIRST`` stamped once
-per round for every admitted actor with the SAME statement_timestamp().
+The rotation tiebreak is ``actor_claimed_at ASC NULLS first`` stamped once
+per round for every admitted actor with the same statement_timestamp().
 If the stamp is a true round-robin (each round admits a disjoint,
-previously-least-recently-served cohort), the bound should be TIGHT: with
+least-recently-served cohort), the bound should be TIGHT: with
 ``actor_count`` actors and a round ``limit``, every actor should be served
 within ceil(actor_count / limit) rounds -- not just "eventually" within
 some generous round budget.
@@ -90,7 +90,7 @@ async def _first_round_served(
     limit_n: int,
     rounds: int,
 ) -> dict[str, int]:
-    """Map actor -> the 1-indexed round it was FIRST served in."""
+    """Map actor -> the 1-indexed round it was first served in."""
     first_served: dict[str, int] = {}
     for round_no in range(1, rounds + 1):
         rows = await _dispatch(conn, schema, sql_template, queues, limit_n)

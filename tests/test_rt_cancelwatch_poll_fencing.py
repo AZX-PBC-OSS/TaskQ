@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a per-test fixed identifier, not user input; every value is $-bound.
 
-"""Red-team pins: readers must fence on a cancel request that lost the race.
+"""Adversarial review pins: readers must fence on a cancel request that lost the race.
 
 Three GREEN pins over the real PG protocol, covering the
 heartbeat/cancel/watchdog interplay's "lost race" corners:
@@ -21,7 +21,7 @@ heartbeat/cancel/watchdog interplay's "lost race" corners:
    write lands, later ticks write nothing further.
 
 3. **Heartbeat renewal is ownership-fenced.**
-   ``UPDATE_JOBS_LOCK_SQL`` carries ``WHERE locked_by_worker = $1 AND
+   ``UPDATE_JOBS_LOCK_SQL`` carries ``WHERE locked_by_worker = $1 and
    status = 'running'`` - after a reclaim re-dispatches the job to another
    worker, the old holder's renewals are 0-row no-ops that leave the new
    holder's lease untouched.
@@ -196,7 +196,7 @@ async def test_stale_cancel_request_on_terminal_row_is_inert(
                 new_job_id(),
             )
 
-        # Registry entry maximally triggerable: already COOPERATIVE, both
+        # Registry entry maximally triggerable: already cooperative, both
         # deadlines long past. Three full ticks against the terminal row.
         await deps.active_jobs.register(job_id, _sleeper(), make_ctx(job_id, worker_id))
         entry = deps.active_jobs.get(job_id)
@@ -334,7 +334,7 @@ async def test_renewal_noops_after_reclaim_and_spares_new_holder(
     """A reclaimed job's rows no longer renew for the old holder.
 
     Contract: ``UPDATE_JOBS_LOCK_SQL`` is fenced on ``locked_by_worker =
-    $1 AND status = 'running'`` - once Sweep 1 re-pends the job and another
+    $1 and status = 'running'`` - once Sweep 1 re-pends the job and another
     worker re-dispatches it, the old holder's heartbeat renewal is a 0-row
     no-op and the new holder's ``lock_expires_at`` is untouched (no
     interference between the stale holder's ticks and the live one).

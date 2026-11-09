@@ -13,7 +13,7 @@ The contract under test:
 * the confounds the SQL layer documents are carried into the terminal:
   a deferred wait row is LABELED (reschedules excluded from the clean
   percentiles), a no-traffic drain renders the honest
-  "no traffic in window" caveat and NEVER an eta of 0, an
+  "no traffic in window" caveat and never an eta of 0, an
   over-threshold balance row renders a marker, and a runaway cron
   schedule renders the trending verdict;
 * ``--help`` documents every column's meaning;
@@ -85,7 +85,7 @@ class _FakeConn:
         raise AssertionError(f"unexpected statement handed to the connection: {query[:120]!r}")
 
     async def execute(self, query: str, *args: object) -> Any:
-        # The write-trap: the read-only contract makes `fetch` the ONLY data
+        # The write-trap: the read-only contract makes `fetch` the only data
         # method the command may call. Recording before raising keeps a
         # failing test's evidence readable; the raise (or the empty
         # `written` assertion) is what reds a command that starts writing.
@@ -289,7 +289,7 @@ def test_wait_empty_window_reports_nothing_to_report(
 def test_balance_over_threshold_row_renders_a_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """BEHAVIORAL (red-first): a queue whose utilization exceeds 1 is the
+    """BEHAVIORAL (): a queue whose utilization exceeds 1 is the
     starved shape; its row must be MARKED, not silently presented among
     the healthy ones."""
     _patch_conn(
@@ -388,8 +388,8 @@ def test_balance_renders_the_utilization_and_capacity_columns(
 def test_drain_no_traffic_renders_the_honest_string_never_eta_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """BEHAVIORAL (red-first — red on eta=0): a window with no
-    terminalisations has NO estimate. The honest caveat is the string the
+    """BEHAVIORAL (— red on eta=0): a window with no
+    terminalisations has no estimate. The honest caveat is the string the
     module documents, never a 0 that would read as 'already drained'."""
     _patch_conn(
         monkeypatch,
@@ -637,7 +637,7 @@ def test_every_statement_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_no_write_ever_reaches_the_connection(monkeypatch: pytest.MonkeyPatch) -> None:
-    """BEHAVIORAL (red-first): the pin is the CONNECTION, not the statement
+    """BEHAVIORAL (): the pin is the CONNECTION, not the statement
     text. `fetch` is the only data method the command may call — the
     write-trap `execute`/`executemany` methods on the fake red the first
     invocation that reaches for one, even a write hiding in a statement
@@ -661,7 +661,7 @@ def test_no_write_ever_reaches_the_connection(monkeypatch: pytest.MonkeyPatch) -
 def test_no_write_rides_the_all_surface_before_its_tables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A write smuggled in BEFORE or BETWEEN the reads (a setup statement on
+    """A write smuggled in before or BETWEEN the reads (a setup statement on
     the shared connection) is still a write. Every statement the whole
     `all` surface issues — fetch and otherwise — must be in `executed`,
     none in `written`."""
@@ -686,7 +686,7 @@ def test_no_write_rides_the_all_surface_before_its_tables(
 def test_guards_fire_before_any_connection_is_opened(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """BEHAVIORAL (red-first): the refusals must happen before
+    """BEHAVIORAL (): the refusals must happen before
     ``asyncpg.connect`` is even ATTEMPTED — mid-incident, an unauthorized
     option combination must not open a socket to the fleet at all. The
     existing pins assert no statement ran; this one asserts no
@@ -770,7 +770,7 @@ def test_metacharacter_actor_and_queue_values_never_reach_sql(
     rows, never SQL fragments: a value carrying metacharacters cannot
     inject, the issued statements stay byte-identical to the module's
     own templates, and the command still exits 0 (the filter just keeps
-    nothing). The value must not appear in ANY issued statement."""
+    nothing). The value must not appear in any issued statement."""
     hostile = "x'; DROP TABLE jobs; --"
     conn = _FakeConn(wait_rows=[_wait_row("email", "clean")])
     conn._wait_rows[0]["actor"] = "x"  # the per-actor grouping carries the actor key
@@ -849,7 +849,7 @@ def test_drain_absurd_eta_stays_readable(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_cron_runaway_verdict_is_the_exact_marker(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fires with ZERO cleared across BOTH windows is the maximal runaway
+    """Fires with ZERO cleared across both windows is the maximal runaway
     shape: the verdict cell must be the exact documented marker."""
     _patch_conn(
         monkeypatch,
@@ -981,7 +981,7 @@ def test_unicode_and_long_names_stay_readable(monkeypatch: pytest.MonkeyPatch) -
 def test_help_contract_covers_every_rendered_column_and_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """BEHAVIORAL (red-first): --help is the operator's column dictionary,
+    """BEHAVIORAL (): --help is the operator's column dictionary,
     so it is pinned against what the renderers ACTUALLY render, not
     against a hand-copied list. Every header each surface renders (and
     every marker string the renderers emit) must appear in --help —
@@ -1013,11 +1013,11 @@ def test_help_contract_covers_every_rendered_column_and_marker(
     assert captured, "every surface must render a table to capture headers from"
     help_result = runner.invoke(app, ["insights", "--help"])
     assert help_result.exit_code == 0
-    # CI's environment makes rich colorize the help even without a TTY
+    # CI's environment makes rich colorize the help even without a tty
     # (the run-36369327985 lesson: the words arrive interleaved with
     # \x1b[..m escapes, and a whitespace-only normalization still misses
-    # every marker). Presentation is not contract: strip the FULL escape
-    # grammar (SGR, private-mode CSI, two-byte escapes, OSC) through the
+    # every marker). Presentation is not contract: strip the full escape
+    # grammar (sgr, private-mode csi, two-byte escapes, osc) through the
     # shared idiom before matching.
     plain = plain_cli_output(help_result.output).lower()
     for headers in captured:
@@ -1201,7 +1201,7 @@ def test_insights_drain_busy_queue_renders_an_eta_not_the_caveat(
         "",
     )
     assert email_line, "the busy queue must render a drain row"
-    # The eta CELL is never the bare "0s" (a zero would read as "already
+    # The eta cell is never the bare "0s" (a zero would read as "already
     # drained"); "30m0s" legitimately contains the substring, so check the
     # cell, not the substring.
     assert email_line.split()[-1] != "0s"

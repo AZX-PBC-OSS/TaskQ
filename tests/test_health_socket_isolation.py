@@ -363,7 +363,7 @@ async def test_second_worker_on_a_colliding_health_port_refuses_to_start(
     newcomer must refuse to start (HealthTcpBindError) while the worker
     already bound keeps serving untouched.
 
-    Both workers here are configured with the SAME ``health_port`` (and
+    Both workers here are configured with the same ``health_port`` (and
     deliberately distinct unix socket paths, so only the TCP listener
     collides).
     """

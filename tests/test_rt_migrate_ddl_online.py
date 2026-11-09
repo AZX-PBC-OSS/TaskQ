@@ -1,15 +1,15 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team: 01.00.08's NOT VALID + VALIDATE CHECK constraint under deploy.
+"""Adversarial review: 01.00.08's not VALID + VALIDATE CHECK constraint under deploy.
 
 The denial-counters migration adds ``jobs_max_attempts_check`` in two phases
-(NOT VALID, then VALIDATE) so the validation scan runs under the weaker
+(not VALID, then VALIDATE) so the validation scan runs under the weaker
 SHARE UPDATE EXCLUSIVE lock instead of stalling the fleet. Two contracts:
 
 * the constraint must END validated (``convalidated``) and bind new writes
-  immediately (NOT VALID semantics: every new write is checked from the
+  immediately (not VALID semantics: every new write is checked from the
   moment the constraint exists);
 * a pre-existing violating row must fail the apply CLEANLY: the whole
-  migration transaction rolls back (columns AND constraint AND version row
+  migration transaction rolls back (columns and constraint and version row
   together), the ledger does not advance, and a re-run re-attempts
   identically - never the "version advanced + DDL rolled back = permanently
   skipped" corruption shape.
@@ -68,7 +68,7 @@ async def _drop(pg_dsn: str, schema: str) -> None:
 
 
 async def test_max_attempts_check_ends_validated_and_binds_new_writes(pg_dsn: str) -> None:
-    """The NOT VALID + VALIDATE pattern must land a VALIDATED constraint that
+    """The not VALID + VALIDATE pattern must land a VALIDATED constraint that
     also rejects new violating writes immediately."""
     schema = f"tmg_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
@@ -104,7 +104,7 @@ async def test_validate_failure_rolls_back_whole_migration_and_stays_rerunnable(
     pg_dsn: str,
 ) -> None:
     """A pre-existing violating row (hand-rolled write, legal before
-    01.00.08) must fail the apply with NO partial state: the version row is
+    01.00.08) must fail the apply with no partial state: the version row is
     transactional with the DDL, so nothing is applied, nothing is recorded,
     and a re-run re-attempts identically instead of silently skipping."""
     schema = f"tmg_{new_base62()}".lower()

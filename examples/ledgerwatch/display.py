@@ -2,11 +2,11 @@
 
 An operator watches three ways, all over the same rows:
 
-1. THE DISPLAY API — ``run_display`` / ``keyed_display`` (the
+1. the DISPLAY API — ``run_display`` / ``keyed_display`` (the
    ledger-derived states with the progress inside).
-2. THE ADMIN APP — the full UI mounted into a host FastAPI app
+2. the ADMIN APP — the full UI mounted into a host FastAPI app
    (``/admin/workflows/{run_id}`` is the run explorer).
-3. THE LISTENERS — the typed progress stream (and the holds' stream on
+3. the LISTENERS — the typed progress stream (and the holds' stream on
    the same machinery), direct async iteration.
 """
 

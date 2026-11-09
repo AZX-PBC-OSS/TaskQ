@@ -1,4 +1,4 @@
-"""Fresh red-team eyes on the boundaries of the five deployment-wave fixes.
+"""Fresh adversarial review eyes on the boundaries of the five deployment-wave fixes.
 
 The fixing pass verified each fix's headline contract; this file re-attacks
 the shapes at the EDGE of those pins - the reverse directions, the
@@ -23,7 +23,7 @@ defect with evidence attached.  Per fix:
 3. **The mirror's batch atomicity pre-validation** - the two mixed-defect
    orderings (poison id in a capped-REFUSED group vs an admitted group),
    the three-way collision, and the fast tier's inheritance - each driven
-   on BOTH backends and diffed.
+   on both backends and diffed.
 4. **The lock-budget settings plumbing** - the edge values (0 / negative /
    huge) at the settings boundary and at the advisory-lock seam, and the
    honest scoping fact: the budgets bind the single-enqueue path only; the
@@ -127,7 +127,7 @@ async def attack_pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 
 class TestDenialReasonCarveOutBoundaries:
-    """The ``'unavailable'`` reason must be reachable ONLY by the
+    """The ``'unavailable'`` reason must be reachable only by the
     store-failure synthesis, and no denial - of either reason, at any
     attempt number - may terminalise the job outside its own deadline
     arm."""
@@ -248,7 +248,7 @@ class TestDenialReasonCarveOutBoundaries:
         module_pg_schema: ModulePgSchema,
     ) -> None:
         """A saturation denial at ``attempt == max_attempts`` reschedules -
-        the SAME non-consuming path an ``'unavailable'`` denial takes.
+        the same non-consuming path an ``'unavailable'`` denial takes.
 
         Pinned to the 429 contract: a denial reports that the fleet had no
         slot, which says nothing about the work, so it can neither spend
@@ -302,7 +302,7 @@ class TestDenialReasonCarveOutBoundaries:
 
     async def test_mirror_matches_the_three_unavailable_boundaries(self) -> None:
         """All three arms on the in-memory twin: past-deadline terminalises,
-        and exact-max stays scheduled with the refund for BOTH denial
+        and exact-max stays scheduled with the refund for both denial
         reasons - observably identical to the PG arms above."""
         backend = InMemoryBackend(clock=FakeClock(_NOW))
         backend.register_actor_config(actor="mirror_actor")
@@ -746,7 +746,7 @@ async def _claim(
 
 
 class TestDispatchCombinatorics:
-    """The depth oracle pinned ONE actor/queue/cohort.  These drive the
+    """The depth oracle pinned one actor/queue/cohort.  These drive the
     combinatorics the restructured CTEs meet in production."""
 
     pytestmark = pytest.mark.integration
@@ -858,7 +858,7 @@ class TestDispatchCombinatorics:
         """30 fairness cohorts of 4 due rows each, one actor, one round-robin
         queue, ``limit_n`` 60: the per-cohort bounded probes must surface
         every cohort's top rows - the claimed set carries exactly two rows
-        from EVERY cohort (all rank-1s then all rank-2s), the starvation
+        from every cohort (all rank-1s then all rank-2s), the starvation
         invariant under the new probe shape."""
         schema = module_pg_schema.schema_name
         await _add_queue(clean_pg_conn, schema, "cohort_q", "round_robin")
@@ -1072,7 +1072,7 @@ class TestDispatchCombinatorics:
     async def test_residual_zero_actor_coexists_with_null_cap_actor(
         self, clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema
     ) -> None:
-        """An actor at ``max_concurrent`` (residual 0), an actor OVER it
+        """An actor at ``max_concurrent`` (residual 0), an actor over it
         (the GREATEST arm must clamp to 0, never negative), a partially
         loaded actor (residual 1 claims exactly one), and a NULL-cap actor
         (residual = limit_n) in one round: each claims exactly what its own
@@ -1240,7 +1240,7 @@ async def _store_mirror_row(backend: InMemoryBackend, jid: UUID, actor: str) -> 
 
 
 async def _mirror_with_pending(actor: str, *, cap: int = 1) -> InMemoryBackend:
-    """A mirror holding ONE pre-existing pending row for *actor* - the
+    """A mirror holding one pre-existing pending row for *actor* - the
     over-cap seed the batch partition refuses."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
     await backend.enqueue(
@@ -1261,7 +1261,7 @@ async def _mirror_with_pending(actor: str, *, cap: int = 1) -> InMemoryBackend:
 def _mirror_pending(backend: InMemoryBackend, actor: str) -> int:
     return sum(
         1
-        for row in backend._jobs.values()  # pyright: ignore[reportPrivateUsage]  # Why: counting the mirror's stored rows per actor - the store IS the observable under test.
+        for row in backend._jobs.values()  # pyright: ignore[reportPrivateUsage]  # Why: counting the mirror's stored rows per actor - the store is the observable under test.
         if row.actor == actor and row.status in ("pending", "scheduled")
     )
 
@@ -1279,7 +1279,7 @@ async def _pg_pending(app: JobsApp, schema: str, actor: str) -> int:
 
 class TestMirrorBatchAtomicityOrderings:
     """The two mixed-defect orderings, the three-way collision, and the fast
-    tier - each driven on the mirror AND on PG, and diffed."""
+    tier - each driven on the mirror and on PG, and diffed."""
 
     pytestmark = pytest.mark.integration
 
@@ -1666,7 +1666,7 @@ class TestCronStoredCapBoundaries:
         module_pg_schema: ModulePgSchema,
     ) -> None:
         """(b) stored 10 + literal 2: the tick admits up to TEN - the stored
-        value is authoritative in BOTH directions, loosening the code
+        value is authoritative in both directions, loosening the code
         literal exactly as it tightens it.  Ten due schedules all fire."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -1698,9 +1698,9 @@ class TestCronStoredCapBoundaries:
         module_pg_schema: ModulePgSchema,
     ) -> None:
         """(c) No invented coupling, either direction: a singleton actor
-        with a stored cap fires exactly ONE of three due schedules (the
+        with a stored cap fires exactly one of three due schedules (the
         singleton gate, registry-declared, dominating the cap), while an
-        actor with the same stored cap but NO singleton flag fires all
+        actor with the same stored cap but no singleton flag fires all
         three - a stored max_pending never implies single-flight, and the
         singleton flag never consults the stored row."""
         schema = module_pg_schema.schema_name

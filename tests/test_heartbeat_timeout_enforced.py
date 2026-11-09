@@ -145,7 +145,7 @@ async def test_stale_heartbeat_reclaims_running_job(
       heartbeat arm can reclaim this row; the lease arm's predicate is
       false by an hour.
     * **fresh holder** - same ``heartbeat_timeout``, heartbeat stamped
-      now. Its leased job must NOT be reclaimed: the sweep classifies by
+      now. Its leased job must not be reclaimed: the sweep classifies by
       the holder's silence, not by the mere presence of the knob.
     * **fresh heartbeat, expired lease** - the lease arm must still
       reclaim a heartbeat-configured row (the new arm narrows nothing the

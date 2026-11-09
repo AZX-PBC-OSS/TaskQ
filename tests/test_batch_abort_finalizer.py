@@ -233,7 +233,7 @@ class TestClockSkewResilience:
 
         assert tri == "scheduled", f"mark_snoozed returned {tri!r}, expected 'scheduled'"
 
-        # Jump the clock forward by 1 hour (simulates WSL clock skew)
+        # Jump the clock forward by 1 hour (simulates wsl clock skew)
         clock.move_to(_START + timedelta(hours=1))
 
         # The job should still be scheduled (not failed)

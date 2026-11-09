@@ -15,7 +15,7 @@
     // The progress render state: the last sequence either feed accepted,
     // the fingerprint of the progress the timeline currently renders
     // (seeded from the server-rendered snapshot at boot), and the entry
-    // node the render patches in place. The sequence cursor is the EXACT
+    // node the render patches in place. The sequence cursor is the exact
     // decimal string, not a Number: JS numbers are IEEE doubles, exact
     // only up to 2^53, and a cursor that lost digits lets a seq the page
     // never rendered compare equal to the cursor and be dropped as a
@@ -60,7 +60,7 @@
     //
     // The render is update-in-place: the entry's nodes are built once and
     // every later tick patches only the nodes whose value changed, so a
-    // repeated identical poll performs ZERO DOM writes. Rebuilding the
+    // repeated identical poll performs zero DOM writes. Rebuilding the
     // entry (or appending a fresh one) per tick is what made a
     // polling-degraded page flicker: each poll repainted the whole
     // section.
@@ -94,11 +94,11 @@
     // on a poisoned state - the fingerprint machine must be the one part
     // of the page that cannot crash on its input. Past the cap, states
     // compare equal whatever their deeper content. The honest bound and
-    // its cost: the cap (64) sits BELOW what the worker accepts - orjson's
+    // its cost: the cap (64) sits below what the worker accepts - orjson's
     // encoder stores states hundreds deep (the Python pins hold 200 and
     // refuse 600) - so a legal server-stored state can be deeper than the
     // cap, and a tick whose changes all land below it canonicalizes to the
-    // same fingerprint as the tick before and is DROPPED as a duplicate.
+    // same fingerprint as the tick before and is dropped as a duplicate.
     // The deep change renders only when a later tick also changes
     // something at or above the cap (step, percent, detail, or a shallower
     // data field); dedup itself stays sound (a repeated tick still writes
@@ -135,7 +135,7 @@
     // The single gate both feeds render through (the SSE stream and the
     // poll tick): a sequence that does not advance the cursor, an empty
     // state, and a state whose fingerprint the timeline already renders
-    // are dropped BEFORE any DOM work, so a repeated identical poll
+    // are dropped before any DOM work, so a repeated identical poll
     // performs zero DOM writes.
     // The exact decimal-sequence gate: the cursor advances only on a
     // strictly greater sequence, compared as BigInt over the exact
@@ -150,7 +150,7 @@
         return normalized === "0" ? null : normalized;
     }
 
-    // One exemption, and only for a terminal body the POLL observes: a
+    // One exemption, and only for a terminal body the poll observes: a
     // durable terminal state is the delivery even when its seq trails
     // the cursor. The lost-flush cut leaves the row behind what the wire
     // already carried (the flushes lagged the fanout, the redispatched
@@ -171,7 +171,7 @@
         }
 
         // Fail open on a fingerprint computation that itself fails: a
-        // tick whose state cannot be fingerprinted must RENDER (the
+        // tick whose state cannot be fingerprinted must render (the
         // timeline shows the latest state) rather than freeze the page
         // behind a dropped exception. With the depth-capped canonicalize
         // above this is unreachable for JSON-parsed state; it exists so
@@ -188,7 +188,7 @@
     }
 
     function buildProgressEntry() {
-        // The SAME Tailwind classes the server template renders the
+        // The same Tailwind classes the server template renders the
         // snapshot entry with (job_detail.html's progress block): a live
         // node built with different (or none) popped in unstyled the
         // moment the first event landed - an invisible bar where the
@@ -236,7 +236,7 @@
 
     // The data <pre>'s text: pretty-printed JSON, bounded by the same
     // depth cap the fingerprint uses - stringify on a poisoned deep state
-    // would RangeError exactly where the old canonicalize could, so the
+    // would RangeError exactly where canonicalize could, so the
     // render degrades to a notice instead of throwing out of the tick.
     function stringifyDataBounded(data) {
         try {
@@ -251,7 +251,7 @@
         if (!timeline) return;
 
         if (!renderedEntry) {
-            // First live render: REPLACE the server-rendered snapshot. The
+            // First live render: replace the server-rendered snapshot. The
             // snapshot entry (or the "No progress recorded." placeholder)
             // is stale the moment a live event lands - appending next to it
             // showed the twin: the snapshot frozen at boot above the live
@@ -329,7 +329,7 @@
     }
 
     // ---------------------------------------------------------------------------
-    // Polling helpers (fetch-based; no HTMX involvement)
+    // Polling helpers (fetch-based; no htmx involvement)
     // ---------------------------------------------------------------------------
 
     const TERMINAL_STATUSES = new Set([
@@ -371,13 +371,13 @@
                     // server compares, quoted, at any magnitude.
                     // body.progress_seq is a JS number (a double):
                     // above 2^53 it loses digits, so it is the
-                    // FALLBACK only, for a response with no ETag -
+                    // fallback only, for a response with no ETag -
                     // precision-limited there, documented at the
                     // cursor declaration. Read off ``res`` here, then
-                    // pass ``res.json()`` through UNTOUCHED: the next
+                    // pass ``res.json()`` through untouched: the next
                     // .then receives the body whether json() answered
                     // with a promise (the browser) or the value itself
-                    // (a stub), and a .then chained ON json()'s return
+                    // (a stub), and a .then chained on json()'s return
                     // would throw on the plain-object shape.
                     tickEtag = res.headers && typeof res.headers.get === "function"
                         ? res.headers.get("ETag")
@@ -394,7 +394,7 @@
                     );
                     if (TERMINAL_STATUSES.has(body.status)) {
                         stopPolling();
-                        // The poll can be the ONLY discoverer of the
+                        // The poll can be the only discoverer of the
                         // terminal: in the lost-flush cut the terminal
                         // envelope never rides the wire, so the stream can
                         // never learn the job is over from a frame - left

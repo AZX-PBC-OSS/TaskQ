@@ -6,7 +6,7 @@ is every job's progress state still exactly-once and whole?
 The surface is PR 478's diff (reverted): the client recovery skip plus the
 stream's reconnect catch-up. The question is conservation - a balancing
 counter per scenario: every sequence the durable row carried above a
-recovery cursor is delivered to the subscriber EXACTLY ONCE (no duplicate
+recovery cursor is delivered to the subscriber EXACTLY once (no duplicate
 delivery, no rewind, no blackhole), and a skip leaves no committed side
 effect.
 
@@ -15,7 +15,7 @@ uvicorn socket (in-process ASGI transports buffer the body, so no
 mid-stream frame - a disconnect, a mid-stream death - is observable
 there; a real socket is the honest transport for this class):
 
-1. reconnect double-delivery: the catch-up snapshot, live deltas, AND a
+1. reconnect double-delivery: the catch-up snapshot, live deltas, and a
    replayed frame on one stream - the delivered multiset must have no
    duplicate sequence;
 2. a paused (all-commands-blocked) Dragonfly DURING the stream: the read
@@ -58,6 +58,7 @@ import uvicorn
 
 from taskq.constants import progress_channel
 from taskq.migrate import apply_pending
+from taskq.testing.fixtures import TEST_REDIS_CONNECT_TIMEOUT_SECS
 from tests.web_progress.test_integration import (  # pyright: ignore[reportPrivateUsage]  # Why: the conservation attacks reuse the integration suite's app/seed scaffolding verbatim rather than forking it.
     SCHEMA_LABEL,  # pyright: ignore[reportPrivateUsage]
     _make_app,  # pyright: ignore[reportPrivateUsage]
@@ -92,19 +93,19 @@ async def pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 @pytest_asyncio.fixture
 async def redis_client(private_redis_url: str) -> AsyncIterator[aioredis.Redis]:
-    # PRIVATE broker (killable_redis_container + redis_url_for, db 0), not the
-    # shared pair: this module's pins pause the broker. A ``CLIENT PAUSE`` is a
-    # broker-GLOBAL command - it starves EVERY co-tenant connection on the
+    # private broker (killable_redis_container + redis_url_for, db 0), not the
+    # shared pair: this module's pins pause the broker. A ``client pause`` is a
+    # broker-global command - it starves every co-tenant connection on the
     # broker it targets, and the shared pair hosts every redis-marked test of
     # the invocation across all xdist workers (the historical record: this
-    # module's shared-broker PAUSE band turned the leg's 5s-budget pings into
+    # module's shared-broker pause band turned the leg's 5s-budget pings into
     # TimeoutError-at-read, the exact CI signature). A per-test disposable
     # Dragonfly (~1s boot) keeps the scenario's premise - admin, stream and
-    # publisher ride ONE broker - while the pause reaches no one else.
+    # publisher ride one broker - while the pause reaches no one else.
     #
-    # socket_timeout is EXPLICIT here because redis-py 8 defaults it to 5s
+    # socket_timeout is explicit here because redis-py 8 defaults it to 5s
     # (redis._defaults.DEFAULT_SOCKET_TIMEOUT), and the default fires on a
-    # fresh connection's handshake read (HELLO/PING inside
+    # fresh connection's handshake read (hello/ping inside
     # on_connect_check_health) whenever a co-tenant-stretched CI runner
     # delays the container's reply past 5s: redis.exceptions.TimeoutError
     # ("Timeout reading from localhost:...") kills the wire task inside
@@ -113,7 +114,14 @@ async def redis_client(private_redis_url: str) -> AsyncIterator[aioredis.Redis]:
     # the tests' own (the stream reader's overall_timeout, the explicit
     # asyncio.timeout around the paused-broker publish), so the client
     # here waits as long as those bounds allow, the pre-8 default.
-    client = aioredis.from_url(private_redis_url, socket_timeout=None)
+    # socket_connect_timeout: the dns/connect band (see
+    # TEST_REDIS_CONNECT_TIMEOUT_SECS) - the connect phase is setup
+    # weather, not this scenario's subject.
+    client = aioredis.from_url(
+        private_redis_url,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    )
     try:
         yield client
     finally:
@@ -162,15 +170,15 @@ async def _stream_frames(
     exception that ended the read (``None`` = clean EOF or the ``until``
     predicate firing, both a controlled close). Every exit reaps the
     abandoned-``aiter_lines`` finalization cascade and sse-starlette's
-    parked watcher INSIDE the call (the same discipline the integration
+    parked watcher inside the call (the same discipline the integration
     suite's collector applies): a ``until`` break suspends the httpx
     generator chain, and CPython finalizes it one wave per generator -
     the module loop must be clean at test end.
 
     ``on_connected`` (optional) is called the moment the streaming
-    response is established (its headers received). The product runs BOTH
+    response is established (its headers received). The product runs both
     the broker subscribe and the PG catch-up query in the handler body
-    BEFORE the response is constructed - no SSE byte is written before
+    before the response is constructed - no SSE byte is written before
     either completes - so headers-received is the strongest "the
     subscription is live and the catch-up has been resolved" observable,
     including the silence case where the durable row sits BELOW the
@@ -243,8 +251,8 @@ async def test_reconnect_delivers_every_sequence_exactly_once(
     subscription_live = asyncio.Event()
 
     async def _wire() -> None:
-        # The wire arms on the OBSERVED stream establishment, not a blind
-        # sleep: the product subscribes AND resolves the catch-up in the
+        # The wire arms on the observed stream establishment, not a blind
+        # sleep: the product subscribes and resolves the catch-up in the
         # handler body before the response is returned (headers received
         # = subscription live), so the wire's flush + live delta + replay
         # land on a subscribed reader. A blind sleep raced the connect
@@ -301,16 +309,22 @@ async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once
     """
     job_id = await _seed_running_job(pool, progress_seq=3, progress_state={"step": 3})
     channel = progress_channel(SCHEMA_LABEL, job_id)
-    # The admin connection rides the SAME broker the stream and the
+    # The admin connection rides the same broker the stream and the
     # publisher use; the pause must reach every client of it. Patient
     # reads for the same reason the redis_client fixture is explicit
     # (redis-py 8's 5s default socket_timeout is a handshake-read
     # timeout, not part of this scenario's contract; the publish inside
     # the pause is bounded by its own asyncio.timeout below).
-    admin = aioredis.from_url(private_redis_url, socket_timeout=None)
+    # socket_connect_timeout: the dns/connect band (see
+    # TEST_REDIS_CONNECT_TIMEOUT_SECS).
+    admin = aioredis.from_url(
+        private_redis_url,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    )
     try:
         # Healthy start: the snapshot (seq 3), then one delta whose flush
-        # lands. Once that delta is OBSERVED as delivered, the broker
+        # lands. Once that delta is observed as delivered, the broker
         # stops serving writes.
         pause_fired = asyncio.Event()
         subscription_live = asyncio.Event()
@@ -324,15 +338,15 @@ async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once
                 delta4_seen.set()
 
         async def _wire() -> None:
-            # Armed on the OBSERVED stream establishment (headers
+            # Armed on the observed stream establishment (headers
             # received = the subscription is live - see the harness
             # docstring); a blind sleep raced the connect under runner
             # load and could fire the whole wire - the publish, the
-            # flush, even the PAUSE - before the subscriber existed.
+            # flush, even the pause - before the subscriber existed.
             await asyncio.wait_for(subscription_live.wait(), timeout=10.0)
             await redis_client.publish(channel, _pub(job_id, 4, step=4))
             await _update_progress(pool, job_id, progress_seq=4, progress_state={"step": 4})
-            # The pause fires only once the survivor has OBSERVED the
+            # The pause fires only once the survivor has observed the
             # seq-4 delta: the pre-pause cursor is then 4 by
             # construction, not by a sleep's bet.
             await asyncio.wait_for(delta4_seen.wait(), timeout=10.0)
@@ -360,15 +374,15 @@ async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once
 
         await wire_task
         assert pause_fired.is_set()
-        # The flushes ride PG, not the broker: seq 6 lands durably INSIDE
-        # the pause window - the PAUSE holds 6 s, the wire task's bounded
+        # The flushes ride PG, not the broker: seq 6 lands durably inside
+        # the pause window - the pause holds 6 s, the wire task's bounded
         # publish consumed at most 2 s of it, so what remains is the
         # pause's own budget, not a sleep's bet (the wire publish never
         # happens for 6; at the reconnect the durable row is what heals).
         await _update_progress(pool, job_id, progress_seq=6, progress_state={"step": 6})
 
         # The flush that outlives the pause is at seq 7, published to the
-        # wire. The publish rides OUT the pause window: PAUSE holds
+        # wire. The publish rides out the pause window: pause holds
         # commands and executes them the moment the pause lifts, so this
         # bounded publish is both the expiry clock and the post-pause
         # fanout - it lands after the delayed seq-5 command the broker
@@ -383,7 +397,7 @@ async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once
 
         # The pause delayed the fanout but lost nothing: the survivor
         # delivered every published sequence - 3, 4, the delayed 5, the
-        # post-pause 7 - each EXACTLY ONCE, never a duplicate.
+        # post-pause 7 - each exactly once, never a duplicate.
         assert _delivered_seq_multiset(frames) == Counter({3: 1, 4: 1, 5: 1, 7: 1}), frames
 
         reconnect, _elapsed, _failure = await _stream_frames(
@@ -439,7 +453,7 @@ async def test_recovery_below_the_cursor_on_a_terminal_row_answers_done(
 
     async def _wire() -> None:
         await asyncio.wait_for(stream_established.wait(), timeout=10.0)
-        # The retry attempt's own frames, published AFTER the reconnect:
+        # The retry attempt's own frames, published after the reconnect:
         # under the F4 contract the stream has already answered done - a
         # stream that said done delivers nothing further, and the client's
         # page-level recovery is the poll bridge (this scenario's old
@@ -465,7 +479,7 @@ async def test_recovery_below_the_cursor_on_a_terminal_row_answers_done(
         )
 
     # NOTHING spurious: no replay of 5/6, no rewind to the durable 4 -
-    # and no blackhole: the stream SAYS done and EOFs, freeing the
+    # and no blackhole: the stream says done and EOFs, freeing the
     # subscription and the SSE slot.
     assert _delivered_seq_multiset(frames) == Counter(), frames
     events = [f["event"] for f in frames if "event" in f]
@@ -487,7 +501,7 @@ async def test_recovery_below_the_cursor_on_a_live_row_stays_silent_then_deliver
 
     async def _wire() -> None:
         await asyncio.wait_for(stream_established.wait(), timeout=10.0)
-        # The row is LIVE (running, seq 4 < cursor 6): the reconnect must
+        # The row is live (running, seq 4 < cursor 6): the reconnect must
         # neither replay nor rewind, and the live frames that follow flow.
         await redis_client.publish(channel, _pub(job_id, 7, step=7))
         await redis_client.publish(channel, _pub(job_id, 8, step=8))

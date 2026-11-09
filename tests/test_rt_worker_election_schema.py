@@ -7,7 +7,7 @@ drive the actual election code path - ``MaintenanceLeader._election_loop``
 with real connections against migrated schemas - so a regression anywhere
 between ``schema_lock_name`` and the lease statements (elect, dedicated
 conns, is_leader) fails here, not just at the lock name. The regression
-shape within ONE schema is pinned too: the loser records an election
+shape within one schema is pinned too: the loser records an election
 failure per lost cycle and keeps retrying - no teardown, no phantom
 leadership - and a demoted leader's row stops being renewed, so the next
 worker takes the schema over once that lease lapses.
@@ -49,7 +49,7 @@ _CONTENTION_METRIC = "taskq.leader.lock_contention"
 async def module_pg_schema_b(
     module_pg_schema: ModulePgSchema,
 ) -> AsyncIterator[ModulePgSchema]:
-    """A SECOND migrated schema in the SAME database as the primary.
+    """A SECOND migrated schema in the same database as the primary.
 
     Same derivation as the isolation tests' second schema (hex suffix
     swapped for ``_b``) so the name stays inside the identifier budget
@@ -177,7 +177,7 @@ async def _await_election(
 ) -> asyncio.Task[None]:
     """Run the leader's election loop until it wins (or fail the test)."""
     shutdown = asyncio.Event()
-    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the production election loop IS the test.
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the production election loop is the test.
     try:
         await asyncio.wait_for(leader._deps.is_leader.wait(), timeout=timeout_secs)
     finally:
@@ -246,7 +246,7 @@ async def test_two_real_election_loops_both_win_their_own_schema(
         await ledger_b.close_all()
 
 
-# ── W1 regression shape: the WITHIN-schema loser ─────────────────────────
+# ── W1 regression shape: the within-schema loser ─────────────────────────
 
 
 @pytest.fixture
@@ -278,11 +278,11 @@ async def test_election_loser_records_failure_and_retries(
     module_pg_schema: ModulePgSchema,
     election_metrics: InMemoryMetricReader,
 ) -> None:
-    """Within ONE schema the lease row serializes: while a live holder holds
+    """Within one schema the lease row serializes: while a live holder holds
     it, the follower loses every cycle, records an election failure per lost
     attempt, and RETRIES - the loop stays alive with is_leader unset, and no
     leader row is written by the loser (no teardown, no phantom leadership).
-    Contention is deliberately NOT recorded per lost cycle here: following a
+    Contention is deliberately not recorded per lost cycle here: following a
     stable live holder is the healthy steady state, and the per-transition
     semantics are pinned by the stable-fleet test below."""
     from taskq.testing.otel import counter_value
@@ -305,9 +305,9 @@ async def test_election_loser_records_failure_and_retries(
         await _await_election(holder)
 
         shutdown = asyncio.Event()
-        task = asyncio.create_task(follower._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the production election loop IS the test.
+        task = asyncio.create_task(follower._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the production election loop is the test.
         try:
-            # The failure counter IS the observable: waiting on it is a
+            # The failure counter is the observable: waiting on it is a
             # deadline-bounded condition, not a pacing sleep.
             await wait_for_condition(
                 lambda: counter_value(election_metrics, _FAILURES_METRIC) >= 3,
@@ -400,7 +400,7 @@ async def test_stable_follower_does_not_sustain_contention_like_a_stuck_holder(
             return counter_value(election_metrics, _FAILURES_METRIC)
 
         shutdown = asyncio.Event()
-        task = asyncio.create_task(follower._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the production election loop IS the test.
+        task = asyncio.create_task(follower._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the production election loop is the test.
         try:
             # Windows measured in lost cycles (the loop's own emitted
             # observable), not wall-clock sleeps: the first window is the
@@ -448,15 +448,15 @@ async def test_stable_follower_does_not_sustain_contention_like_a_stuck_holder(
         await ledger_follower.close_all()
 
 
-# ── W10: demote, then the next worker wins the SAME schema ───────────────
+# ── W10: demote, then the next worker wins the same schema ───────────────
 
 
 async def test_demoted_leaders_lease_lapses_for_the_next_worker(
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """A full promote/demote cycle on ONE schema: the demoted leader's row
+    """A full promote/demote cycle on one schema: the demoted leader's row
     stops being renewed, so once the lease it wrote has lapsed a second
-    worker takes the SAME schema over - a handover bounded by the lease the
+    worker takes the same schema over - a handover bounded by the lease the
     demoted pod itself chose, never by anything holding a connection open.
     A short leader_lease brings that horizon inside the test."""
     pg_dsn = module_pg_schema.pg_dsn
@@ -515,7 +515,7 @@ async def test_a_pinging_holder_without_a_lease_is_not_taken_over(
     found in place -- the previous holder's, already lapsed or about to be.
     Judging such a row on the expiry alone declares a pod that is pinging
     every heartbeat to be dead, and two processes run the maintenance loops
-    at once. The row is takeable only once BOTH signals have stopped, so a
+    at once. The row is takeable only once both signals have stopped, so a
     live pinger keeps the role and a silent one still loses it.
     """
     pg_dsn = module_pg_schema.pg_dsn
@@ -610,7 +610,7 @@ async def test_a_pinging_holder_without_a_lease_is_not_taken_over(
         await ping_conn.close()
 
 
-# ── Red-team: a sustained empty-row gap must not look like a single blip ──
+# ── Adversarial review: a sustained empty-row gap must not look like a single blip ──
 
 
 async def test_sustained_empty_row_records_contention_every_cycle_not_once(
@@ -624,11 +624,11 @@ async def test_sustained_empty_row_records_contention_every_cycle_not_once(
     no row to observe at all "is a handover in flight, a transition too,
     and is recorded once the same way" as a holder transition. But the
     guard is ``observed is None or observed != self._observed_holder``:
-    when the row is absent, ``observed`` is ``None`` on EVERY call, so the
+    when the row is absent, ``observed`` is ``None`` on every call, so the
     ``observed is None`` short-circuit fires unconditionally regardless of
     what ``self._observed_holder`` was last cycle (also ``None``, once the
     first absent-row event has run) - this is the opposite of "recorded
-    once": an absent row records EVERY cycle for as long as it stays
+    once": an absent row records every cycle for as long as it stays
     absent, indistinguishable from a probe that cannot read the row at
     all (the runbook's other legitimate sustained-contention shape). That
     happens to be safe for the "cannot read the row" case the runbook

@@ -51,7 +51,7 @@ class _SlotTable:
         Existing rows are untouched (the PG ``ensure_slots`` conflict arm
         never touches holder state, and the mark converges toward false,
         born-true rows keep it here exactly as PG's
-        ``keyed = existing AND EXCLUDED`` keeps theirs).
+        ``keyed = existing and EXCLUDED`` keeps theirs).
         """
         with self._lock:
             bucket = self._buckets.setdefault(bucket_name, {})

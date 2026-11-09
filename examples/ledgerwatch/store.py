@@ -86,7 +86,7 @@ class LedgerWatchStore:
         return await self._pool_ref.get()
 
     async def record_batch(self, batch: Batch) -> bool:
-        """The batch's delivery record. Returns True for the FIRST
+        """The batch's delivery record. Returns True for the first
         delivery (the at-least-once feed's dedup face at the app's own
         table — the framework's run-key arbiter is the stronger door;
         this row is the operator-facing delivery ledger)."""
@@ -100,7 +100,7 @@ class LedgerWatchStore:
         return row is not None
 
     async def escalate_to_compliance(self, txn_id: str, batch_id: str, flow_id: str) -> bool:
-        """The Expired arm's escalation: ONE durable row per txn, ever."""
+        """The Expired arm's escalation: one durable row per txn, ever."""
         pool = await self._pool()
         row = await pool.fetchval(
             f'INSERT INTO "{self._schema}".lw_compliance_queue (txn_id, batch_id, flow_id)'  # noqa: S608  # Why: as above.

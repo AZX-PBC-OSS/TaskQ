@@ -60,7 +60,7 @@ def test_observability_guide_cron_failures_row_matches_the_shipped_reconcile() -
     told the balance can sit permanently non-zero would distrust a metric
     the code has made trustworthy."""
     text = (_DOCS / "guides" / "observability.md").read_text()
-    # Anchor on the metrics-table ROW (the pipe-delimited row prefix),
+    # Anchor on the metrics-table row (the pipe-delimited row prefix),
     # not the first mention of the instrument anywhere in the file: a
     # prose cross-reference earlier in the guide -- another row citing
     # this gauge's label cap, say -- steals a first-occurrence anchor and

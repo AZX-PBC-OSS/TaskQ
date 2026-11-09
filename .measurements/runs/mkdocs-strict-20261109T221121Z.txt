@@ -1,0 +1,7 @@
+# mkdocs build --strict at the re-stamp head 4441dd642fbd47501d2830eba3622869551d68d5
+  - design/seam-audit-matrix.md
+  - design/tors-adoption-map.md
+  - guides/agent-loops.md
+INFO    -  Documentation built in 15.94 seconds
+rc=0
+head: 4441dd642fbd47501d2830eba3622869551d68d5

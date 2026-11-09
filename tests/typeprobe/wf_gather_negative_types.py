@@ -1,4 +1,4 @@
-"""THE API LANE'S FIX-ROUND PROBES (the fresh reviewer's findings F1-1 +
+"""The API gather probes:
 F1-2) — the honest shapes:
 
 * F1-1: the HETEROGENEOUS gather's truth — the elements unify to the
@@ -43,7 +43,7 @@ async def config_body(ctx: Any) -> Config:
     return Config(name="c")
 
 
-# ── F1-1: the heterogeneous gather — THE UNION IS THE SHAPE (GREEN) ─────
+# ── F1-1: the heterogeneous gather — the union is the shape (green) ─────
 
 
 async def probe_heterogeneous_gather_infers_the_union() -> None:
@@ -60,7 +60,7 @@ async def probe_heterogeneous_gather_infers_the_union() -> None:
         return build(joined)
 
 
-# ── F1-1: the EXPLICIT UPCAST — the documented form (GREEN) ─────────────
+# ── F1-1: the explicit upcast — the documented form (green) ─────────────
 
 
 async def probe_heterogeneous_gather_explicit_upcast() -> None:
@@ -77,7 +77,7 @@ async def probe_heterogeneous_gather_explicit_upcast() -> None:
         return build(joined)
 
 
-# ── F1-2: the residual slot NEVER takes a real promise (RED) ────────────
+# ── F1-2: the residual slot never takes a real promise (red) ────────────
 
 
 async def probe_residual_takes_real_promise() -> None:

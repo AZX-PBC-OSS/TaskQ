@@ -15,7 +15,7 @@ The contract these tests pin, layer by layer:
   supervisor restart-loops it against the burst budget with the real
   reason buried in its stderr stream).
 * End to end: a child spawned by the supervisor's own ``_spawn_child``
-  resolves the ref IN ITS OWN PROCESS and acquires its Postgres
+  resolves the ref IN ITS own PROCESS and acquires its Postgres
   connections through the provider - the ref crosses the spawn envelope
   as a resolvable string, never a serialized provider object (pinned
   against the live database by the integration test at the bottom).
@@ -143,15 +143,15 @@ async def test_spawned_child_acquires_connections_through_the_provider(
 ) -> None:
     """A child spawned the workgroup's way - ``--pg-credential-provider
     module:attr`` on its command line, no ``env=`` override - must resolve
-    the ref IN THE CHILD and acquire its Postgres connections THROUGH the
+    the ref IN the CHILD and acquire its Postgres connections THROUGH the
     provider (children need the credential at connect
     time, so the Entra/managed-identity segment can adopt workgroups).
 
     The child's inherited ``TASKQ_PG_DSN`` is stripped of its userinfo, so
-    the provider is the ONLY route to a working credential: a child that
+    the provider is the only route to a working credential: a child that
     silently fell back to a static DSN password could not authenticate and
     would never register. Readiness therefore proves both halves at once -
-    the child booted (a fresh workers-row heartbeat) AND the spy provider
+    the child booted (a fresh workers-row heartbeat) and the spy provider
     was invoked under the child's own pid (recorded to a file only the
     child process writes). The provider ref crosses the spawn envelope as
     a resolvable ``module:attr`` string, never a serialized provider
@@ -172,7 +172,7 @@ async def test_spawned_child_acquires_connections_through_the_provider(
     # userinfo, sslmode=disable (the documented test-container opt-out of
     # the provider path's ensure_sslmode_require - the container runs no
     # TLS). The spy provider hands back exactly the userinfo this strip
-    # removed, so authentication succeeds ONLY through it.
+    # removed, so authentication succeeds only through it.
     parsed = urlparse(module_pg_schema.pg_dsn)
     user = parsed.username or ""
     password = parsed.password or ""

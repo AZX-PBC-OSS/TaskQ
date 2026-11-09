@@ -12,7 +12,7 @@ releases cleanly). Every subsequent tick on the new leader then returns here.
 Cron stops firing fleet-wide, and neither `taskq.cron.disabled_schedules` nor
 `consecutive_failures` moves, because `fire_schedule` never runs.
 
-Note this narrows the original report: the leader lock path is NOT the same
+Note this narrows the original report: the leader lock path is not the same
 shape. `leader.py` calls `record_election_attempt(won=False)` and logs a warning
 on every failure branch, and the prune/archive sweeps log on contention too.
 Cron was the genuine outlier.
@@ -52,6 +52,7 @@ _CONTENTION_COUNTER = "taskq.cron.lock_contention"
 
 class _RecordingConn:
     """Records every statement :func:`tick_cron` issues.
+    fail-closed-exempt: the advisory-lock CONTENTION fault injection: the refused/timed-out lock probe, deterministically
 
     The lock verdict is the only input; everything downstream of it is what
     the tests observe.  The tick's one folded statement carries the verdict

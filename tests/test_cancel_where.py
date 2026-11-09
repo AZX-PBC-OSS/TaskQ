@@ -197,7 +197,7 @@ async def test_cancel_where_ignores_filter_limit() -> None:
 
 async def test_cancel_where_already_cooperative_cancel_not_recounted() -> None:
     """A running job already in cooperative cancel (cancel_phase=1) is
-    NOT double-counted by a subsequent cancel_where call."""
+    not double-counted by a subsequent cancel_where call."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
 
     args = make_enqueue_args(tags=("tenant-acme",), scheduled_at=_NOW)

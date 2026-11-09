@@ -1,5 +1,5 @@
 {
-  // T01's probe-corpus config — DELIBERATELY SEPARATE from the root
+  // The probe corpus's config — deliberately separate from the root
   // pyproject [tool.pyright]: the root's `tests` executionEnvironment
   // sets reportArgumentType = false (the repo-wide relaxation for the
   // suite's duck-typed seams), which would MUTE exactly the violations

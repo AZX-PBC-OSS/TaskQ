@@ -1,8 +1,8 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team attacks on the stranded-jobs detector's blind spots.
+"""Adversarial review attacks on the stranded-jobs detector's blind spots.
 
-The detector's entire predicate is ``status IN ('pending','scheduled') AND
-NOT EXISTS (actor_config row)`` (src/taskq/worker/_leader_sweeps.py:1228-1236)
+The detector's entire predicate is ``status IN ('pending','scheduled') and
+not EXISTS (actor_config row)`` (src/taskq/worker/_leader_sweeps.py:1228-1236)
 - it keys on actor_config presence only. Two permanently-undispatchable
 strand shapes are invisible to it:
 
@@ -203,7 +203,7 @@ async def _seed_strand_shapes(conn: asyncpg.Connection, schema: str) -> tuple[UU
 async def test_stranded_detector_sees_both_strand_shapes(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The detector must count BOTH strand shapes. Today it counts only the
+    """The detector must count both strand shapes. Today it counts only the
     deleted-actor_config shape - a pending row WITH actor_config on an
     unserved queue is invisible to the gauge."""
     schema = f"torp_{new_base62()}".lower()
@@ -454,7 +454,7 @@ _STRAY_UNSERVED_LABEL = "stray-unserved-label-queue"
 async def test_repend_with_no_actor_config_reports_only_the_config_shape(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A re-pended row whose actor has no config row is ONE strand, reported
+    """A re-pended row whose actor has no config row is one strand, reported
     in the config category alone.
 
     Without a config row there is no assignment to route by, so "is the
@@ -483,7 +483,7 @@ async def test_repend_with_no_actor_config_reports_only_the_config_shape(
             _GHOST_ACTOR,
             _GHOST_LABEL_QUEUE,
         )
-        # A live worker serving the row's LABEL queue: the strongest form of
+        # A live worker serving the row's label queue: the strongest form of
         # the contrast - even with the label served, the NULL-assignment arm
         # must not report an unserved queue.
         await conn.execute(
@@ -560,7 +560,7 @@ async def test_unserved_event_names_the_queue_dispatch_would_route_by(
             _STRAY_UNSERVED_LABEL,
         )
         await _seed_assignment_routed_strand(conn, schema)
-        # One worker serving the queues that ARE served in this scenario:
+        # One worker serving the queues that are served in this scenario:
         # the stray actor's current assignment and the re-pended row's label.
         await conn.execute(
             f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',

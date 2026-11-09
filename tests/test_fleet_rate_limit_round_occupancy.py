@@ -9,8 +9,8 @@ fetched at all) rather than fetching-then-rejecting.
 
 The hypothesis this test was written to check: TaskQ's own docs
 (docs/guides/rate-limiting.md, "Wiring to Actors") state the dispatch
-sequence as claim the row (dispatch SQL, `FOR UPDATE SKIP LOCKED`), THEN
-attempt `acquire_for_actor`, and only THEN decide admission -- so a
+sequence as claim the row (dispatch SQL, `FOR UPDATE SKIP LOCKED`), then
+attempt `acquire_for_actor`, and only then decide admission -- so a
 claimed-but-denied job already consumed one of the round's
 `dispatch_batch(..., limit_n=N)` slots before the denial is known. If a
 queue mixed a fully-saturated rate-limited actor with a healthy,
@@ -18,7 +18,7 @@ unlimited actor sharing one queue, this predicted the round's claim
 budget could be spent disproportionately on jobs about to be denied,
 reducing the healthy actor's throughput.
 
-Measured result (see the passing assertions below): this does NOT
+Measured result (see the passing assertions below): this does not
 happen at the scale tested (a 40-job saturated backlog against a 10-job
 healthy cohort, 4 slots/round). Reading `src/taskq/backend/_dispatch_sql.py`
 after the fact explains why: dispatch computes a `per_actor_capacity`

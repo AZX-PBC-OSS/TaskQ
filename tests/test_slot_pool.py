@@ -13,7 +13,7 @@ see its failure mode:
 * **Supply rule** (integration, real PG): ``max_concurrency + 1``
   concurrent acquires all succeed - the pool genuinely holds a
   connection per slot plus the reserve, not just a configured number.
-* **Single-flight readiness** (unit): concurrent probes share ONE
+* **Single-flight readiness** (unit): concurrent probes share one
   in-flight slot-pool ping, which is what makes the one-connection
   reserve sufficient; and a failing shared probe fails every waiter
   that joined it.
@@ -497,7 +497,7 @@ async def test_shared_probe_failure_fails_every_waiter() -> None:
 
 async def test_cancelled_waiter_does_not_cancel_the_shared_probe() -> None:
     """A cancelled readiness request must not take the shared probe with
-    it - the next waiter still joins the SAME in-flight ping, which is
+    it - the next waiter still joins the same in-flight ping, which is
     what keeps the one-connection reserve sufficient. A shield-less
     implementation fails here: the first cancellation kills the probe
     and the survivor pays a second acquire (and the reserve contention
@@ -507,7 +507,7 @@ async def test_cancelled_waiter_does_not_cancel_the_shared_probe() -> None:
 
     waiter_to_cancel = asyncio.create_task(_ping_slot_pool(deps))
     # Deterministic sequencing, no timing sleeps: wait for the probe to
-    # have STARTED (the pool fires `acquired` inside acquire()), then
+    # have started (the pool fires `acquired` inside acquire()), then
     # one scheduler yield lets the survivor run to its first await -
     # by which point it has either joined the in-flight probe or
     # started a second one, and the count below says which.
@@ -542,15 +542,15 @@ async def test_sequential_probes_each_ping_freshly() -> None:
 
 # ── Registered-connection setup carries onto slot connections ────────────
 #
-# At max_concurrency == 1 the actor receives the LOOP-registered
+# At max_concurrency == 1 the actor receives the loop-registered
 # connection itself, so whatever the application configured on it - a
 # ``set_type_codec`` registration, an ``init``/``setup`` callback, a
-# ``SET ROLE``, a ``search_path`` or any other server setting - is
+# ``set role``, a ``search_path`` or any other server setting - is
 # present by construction. The moment max_concurrency rises above 1 the
 # worker hands actors connections out of its own per-slot pool instead.
 # Unless that pool builds its connections with the same setup, a
 # deployment's behaviour changes silently with a concurrency knob:
-# RLS-driving roles vanish, a custom search_path resolves different
+# rls-driving roles vanish, a custom search_path resolves different
 # tables, and a domain type the application registered a codec for comes
 # back as a raw string. Nothing fails loudly - the actor just reads and
 # writes the wrong thing. These pins are the reason the per-slot pool is
@@ -560,11 +560,11 @@ async def test_sequential_probes_each_ping_freshly() -> None:
 # read back off the live connection and replayed as startup GUCs - the
 # driver exposes it. Codecs and init hooks are sealed inside the
 # driver's per-connection state with no read-back, so they carry only
-# when the registration DECLARES them: a LOOP-scope factory registration
+# when the registration declares them: a loop-scope factory registration
 # whose factory exposes its init hook (with_connection_init /
 # make_dedicated_conn_factory's setup) gets the hook replayed as the
 # slot pool's init; a raw register_value connection gets one boot-time
-# WARN naming that channel, and the pins below hold both sides of the
+# warn naming that channel, and the pins below hold both sides of the
 # line.
 
 
@@ -621,7 +621,7 @@ async def test_slot_pool_boot_fails_loudly_when_the_inherited_role_is_unassumabl
     module_pg_schema: Any,
 ) -> None:
     """A ``role`` read off the registered connection that the slot pool's
-    own connecting user is NOT permitted to assume must fail the pool
+    own connecting user is not permitted to assume must fail the pool
     build loudly, not silently degrade some slot connections to a
     different role than others.
 
@@ -641,12 +641,12 @@ async def test_slot_pool_boot_fails_loudly_when_the_inherited_role_is_unassumabl
     unpriv_user = f"unpriv_{schema}"
     target_role = f"unassumable_{schema}"
     try:
-        # An unprivileged LOGIN role, deliberately never GRANTed
+        # An unprivileged login role, deliberately never granted
         # membership in target_role - that missing grant is the
         # boundary condition this test exercises. The slot pool's own
         # connecting DSN user is swapped to this role, not the
         # superuser the container's default DSN authenticates as
-        # (which can SET ROLE to anything, so the failure this test
+        # (which can set role to anything, so the failure this test
         # pins would never trigger against it).
         await bootstrap_conn.execute(f"CREATE ROLE \"{unpriv_user}\" LOGIN PASSWORD 'unpriv'")
         await bootstrap_conn.execute(f'CREATE ROLE "{target_role}" NOLOGIN')
@@ -708,7 +708,7 @@ async def test_raw_registered_type_codecs_warn_and_do_not_reach_slot_connections
     module_pg_schema: Any,
 ) -> None:
     """The raw-channel boundary: a codec applied to a ``register_value``
-    LOOP connection is NOT inherited by slot connections - loudly.
+    LOOP connection is not inherited by slot connections - loudly.
 
     asyncpg seals per-connection codec state at connect time (probed:
     no public or private read-back exists, and ``asyncpg.connect`` takes
@@ -757,7 +757,7 @@ async def test_raw_registered_type_codecs_warn_and_do_not_reach_slot_connections
             "the warning must name the supported channel so an operator can act on it"
         )
 
-        # The divergence itself, pinned in both directions: the codec IS
+        # The divergence itself, pinned in both directions: the codec is
         # live on the registered connection (the registration worked),
         # and the slot connection answers with the driver's default -
         # the documented, warned-about non-inheritance.
@@ -785,11 +785,11 @@ async def test_slot_connections_inherit_codecs_through_a_hook_carrying_factory(
     connection the slot pool warms decodes with the same codec.
 
     ``with_connection_init`` applies the hook to the connection it
-    produces AND declares it on the factory; ``_maybe_open_slot_pool``
+    produces and declares it on the factory; ``_maybe_open_slot_pool``
     reads the declaration off the DI registry entry (only a ``factory``
     registration can carry one) and threads it into the slot pool's
     ``init``. This is the inheritance the raw channel cannot provide -
-    and with it in force, the not-inherited warning must NOT fire.
+    and with it in force, the not-inherited warning must not fire.
     """
     settings = _make_settings(max_concurrency=2, pg_dsn_direct=module_pg_schema.pg_dsn)
 
@@ -842,7 +842,7 @@ async def test_slot_connections_inherit_codecs_through_a_hook_carrying_factory(
         on_registered = await registered.fetchval("SELECT '{\"a\": 1}'::json")
         assert on_registered == {"decoded_by": "init-hook-codec"}
 
-        # …and the inherited init applied it to EVERY connection the pool
+        # …and the inherited init applied it to every connection the pool
         # warmed at build time (min_size == max_size, so every acquire is
         # a distinct physical connection) - not just the first acquire.
         conns = await asyncio.gather(
@@ -877,7 +877,7 @@ async def test_a_failing_inherited_init_hook_refuses_boot(
 
     async def failing_init(conn: asyncpg.Connection) -> None:
         # A value the server rejects outright (InvalidParameterValue) -
-        # a dotted custom-GUC name would NOT do: Postgres accepts those
+        # a dotted custom-GUC name would not do: Postgres accepts those
         # lazily, so the hook would succeed and prove nothing.
         await conn.execute("SET statement_timeout TO 'not-a-duration'")
 
@@ -921,7 +921,7 @@ async def test_a_failing_inherited_init_hook_refuses_boot(
 async def test_slot_pool_warns_once_when_the_registration_declares_no_init_hook() -> None:
     """Unit half of the boundary: any registration without a declared
     hook - a value provider, a bare factory, no registry at all - opens
-    the slot pool WITHOUT the registration's codecs and says so exactly
+    the slot pool without the registration's codecs and says so exactly
     once at WARN. The failure mode this guards is the warning going
     missing: the codec divergence itself raises nothing anywhere."""
     settings = _make_settings(max_concurrency=2, pg_dsn_direct="postgresql://u:p@h:5432/db")

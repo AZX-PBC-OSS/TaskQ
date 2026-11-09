@@ -1,4 +1,4 @@
-"""Shared real-PG attack harness for the bounded cron tick red-team files.
+"""Shared real-PG attack harness for the bounded cron tick adversarial review files.
 
 No tests live here.  The ``tests/test_rt_cron_*.py`` files drive
 :func:`taskq.worker.cron_loop.tick_cron` against a real Postgres schema
@@ -26,9 +26,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Generator
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from functools import cache
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
@@ -36,6 +39,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, EnqueueArgs, JobRow
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
+from taskq.cron import repeated_range_bounds
 from taskq.settings import WorkerSettings
 
 _HOURLY = "0 * * * *"
@@ -155,7 +159,7 @@ class JobIdCollisionBackend(PostgresBackend):
     """Backend whose batched enqueue genuinely fails with a server-side
     ``UniqueViolationError`` (``jobs_pkey``) on the caller's connection.
 
-    Before the FIRST batched INSERT, the first planned arg's job id is
+    Before the first batched INSERT, the first planned arg's job id is
     committed by a SECOND connection - the client write that won the race
     to that id in production - then the real ``enqueue_batch`` INSERT runs
     and genuinely violates ``jobs_pkey`` for real, with no asyncpg
@@ -354,6 +358,77 @@ class FrozenClockConn:
         return getattr(self._conn, name)
 
 
+class InjectedClockConn:
+    """Delegates to a real connection with the tick's every clock read injected.
+
+    A scenario whose instants are FIXED calendar values - the DST overlap
+    family's 2026-11-01 fold - is wall-calendar-immune only when every clock
+    the tick reads sees the same injected instant. The tick reads the clock
+    in two statements, three load-bearing positions, and leaving any of them
+    live re-arms the exact bomb the pins exist to defuse (each position armed
+    one measured red when the box's wall clock crossed the 2026 fall-back):
+
+    * the due bound - ``next_fire_at <= statement_timestamp()`` in the due
+      read's WHERE: with a live bound, a schedule whose pinned
+      ``next_fire_at`` lies before the real clock is simply not due, and the
+      scenario's due shape evaporates;
+    * the planning clock - ``statement_timestamp() AS server_now`` in the due
+      read's projection: the catch-up cutoff (``fire_at < server_now -
+      cron_catch_up_window``) and every croniter seed derive from it, so a
+      live clock more than a window past the pinned slot flips a
+      within-window catch-up into a beyond-window recompute mid-drive, and
+      the walk from a live-clock seed answers the POST-overlap shape;
+    * the batched enqueue's status decision -
+      ``COALESCE(t.scheduled_at, clock_timestamp()) > clock_timestamp()``
+      in the batch INSERT: a pre-scheduled occurrence lands 'scheduled' only
+      while the clock the INSERT reads sits before the occurrence's own
+      instant, so a live clock past the pinned fold silently demotes the
+      future twin to 'pending'.
+
+    FrozenClockConn is the narrower sibling: it pins only the planning clock
+    and leaves the due bound live - the right shape for scenarios whose
+    instants are derived from the live server clock each run (relative
+    boundary pins). This class is the right shape for scenarios whose
+    instants are explicit calendar constants. The due read and the batch
+    INSERT are both issued through ``fetch``; the rewrites are literal-
+    substring pins on those statements, the same injection discipline the
+    due-bound-only wrappers used. A template drift that renames any pinned
+    expression turns the pin into a silent no-op - and the pinned scenarios
+    red again at the next wall-calendar crossing, the failure that says the
+    pin stopped saying anything.
+    """
+
+    _PLANNING_CLOCK = "statement_timestamp() AS server_now"
+    _DUE_BOUND = "next_fire_at <= statement_timestamp()"
+    _ENQUEUE_STATUS = "COALESCE(t.scheduled_at, clock_timestamp()) > clock_timestamp()"
+
+    def __init__(self, conn: asyncpg.Connection, now: datetime) -> None:
+        self._conn = conn
+        self._now = now
+
+    def _pinned(self, sql: str) -> str:
+        iso = f"'{self._now.isoformat()}'::timestamptz"
+        sql = sql.replace(self._PLANNING_CLOCK, f"{iso} AS server_now")
+        sql = sql.replace(self._DUE_BOUND, f"next_fire_at <= {iso}")
+        sql = sql.replace(self._ENQUEUE_STATUS, f"COALESCE(t.scheduled_at, {iso}) > {iso}")
+        return sql
+
+    async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
+        return await self._conn.fetch(self._pinned(sql), *args)
+
+    async def fetchrow(self, sql: str, *args: object) -> asyncpg.Record | None:
+        return await self._conn.fetchrow(sql, *args)
+
+    async def fetchval(self, sql: str, *args: object) -> object | None:
+        return await self._conn.fetchval(sql, *args)
+
+    async def execute(self, sql: str, *args: object) -> object:
+        return await self._conn.execute(sql, *args)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+
 # ── Seeding helpers ────────────────────────────────────────────────────
 
 
@@ -503,6 +578,145 @@ def next_ten_min_boundary(after: datetime) -> datetime:
     """The first 10-minute grid point strictly after *after*."""
     floored = ten_min_floor(after)
     return floored if floored > after else floored + timedelta(minutes=10)
+
+
+# ── dst fall-back discovery: the drives' dates from the zone's own rules ──
+
+
+@dataclass(frozen=True, slots=True)
+class FallbackTransition:
+    """One fall-back transition of a zone, with the repeated wall range the
+    scheduler's own :func:`taskq.cron.repeated_range_bounds` answers for it.
+
+    The walls are naive and dated (``range_end`` may sit on the date after
+    ``range_start`` - a repeated range that crosses local midnight), the
+    instants are UTC.  The stored walls carry ``fold=0`` - a wall's two
+    passes are named by the fields, not the fold - so the obvious
+    ``wall.replace(tzinfo=zone)`` resolves to the pre-transition occurrence;
+    the passes are read through the ``*_utc`` fields or :meth:`fold_instant`,
+    which apply the fold explicitly.  A repeated range plays twice: every
+    wall inside ``[range_start, range_end)`` occurs once at the
+    pre-transition offset (fold 0) and once at the post-transition offset
+    (fold 1).
+    """
+
+    zone: str
+    transition_utc: datetime
+    range_start: datetime
+    range_end: datetime
+    width_minutes: int
+
+    def fold_instant(self, wall: datetime, fold: int) -> datetime:
+        """The UTC instant a naive wall inside the repeated range resolves to
+        at *fold* (0 = pre-transition offset, 1 = post-transition offset)."""
+        return wall.replace(tzinfo=ZoneInfo(self.zone), fold=fold).astimezone(UTC)
+
+    @property
+    def range_start_fold0_utc(self) -> datetime:
+        """The repeated range's first wall at the pre-transition offset."""
+        return self.fold_instant(self.range_start, fold=0)
+
+    @property
+    def range_start_fold1_utc(self) -> datetime:
+        """The repeated range's first wall at the post-transition offset -
+        the fold-1 pass's first slot."""
+        return self.fold_instant(self.range_start, fold=1)
+
+    @property
+    def last_fold0_slot_utc(self) -> datetime:
+        """The repeated range's last wall at the pre-transition offset."""
+        return self.fold_instant(self.range_end - timedelta(minutes=1), fold=0)
+
+    @property
+    def range_end_utc(self) -> datetime:
+        """The first wall past the repeated range - unambiguous, so it
+        resolves at the post-transition offset."""
+        return self.fold_instant(self.range_end, fold=0)
+
+
+def _offset_at(instant: datetime, tz: ZoneInfo) -> timedelta:
+    """The zone's UTC offset at *instant* - the offset of an aware datetime
+    is never None, narrowed here once for the scan's comparisons."""
+    offset = instant.astimezone(tz).utcoffset()
+    assert offset is not None, "an aware datetime's utcoffset is never None"
+    return offset
+
+
+@cache
+def _scan_fallback_transitions(
+    zone: str, first_year: int, last_year: int
+) -> tuple[FallbackTransition, ...]:
+    """The scan behind :func:`fallback_transitions`, memoized per zone and
+    window.  The cached value is a tuple - an immutable shape cannot be
+    re-dated through a caller's reference."""
+    tz = ZoneInfo(zone)
+    found: list[FallbackTransition] = []
+    step = timedelta(days=1)
+    minute = timedelta(minutes=1)
+    window_end = datetime(last_year, 1, 1, tzinfo=UTC)
+    cursor = datetime(first_year, 1, 1, tzinfo=UTC)
+    offset_before = _offset_at(cursor, tz)
+    while cursor < window_end:
+        probe = cursor + step
+        offset_after = _offset_at(probe, tz)
+        if offset_after != offset_before:
+            # A day-granularity scan cannot miss a transition (real
+            # transitions are months apart); this binary search pins it to
+            # the minute.
+            lo, hi = cursor, probe
+            while hi - lo > minute:
+                mid = lo + (hi - lo) / 2
+                if _offset_at(mid, tz) == offset_before:
+                    lo = mid
+                else:
+                    hi = mid
+            transition_utc = hi.replace(second=0, microsecond=0)
+            if offset_after < offset_before:
+                bounds = repeated_range_bounds(transition_utc.astimezone(tz), tz)
+                if bounds is not None:
+                    range_start, range_end = bounds
+                    # The scheduler's bounds carry the seed wall's fold (the
+                    # transition instant resolves as a fold-1 wall), which
+                    # would smuggle the later pass into every naive reading
+                    # of the stored wall - the stored walls are fold-0.
+                    range_start = range_start.replace(fold=0)
+                    range_end = range_end.replace(fold=0)
+                    width = int((range_end - range_start).total_seconds() // 60)
+                    found.append(
+                        FallbackTransition(
+                            zone=zone,
+                            transition_utc=transition_utc,
+                            range_start=range_start,
+                            range_end=range_end,
+                            width_minutes=width,
+                        )
+                    )
+            offset_before = offset_after
+        cursor = probe
+    return tuple(found)
+
+
+def fallback_transitions(zone: str, first_year: int, last_year: int) -> list[FallbackTransition]:
+    """The zone's fall-back transitions whose repeated wall range starts
+    inside the fixed window ``[first_year, last_year)``, discovered from the
+    installed zoneinfo.
+
+    The DST drives date their instants from a zone's own rules rather than
+    hardcoded calendar dates: a zone's rule is a fact of the installed zone
+    database, and that database moves between vintages - a rule change can
+    remove a transition a hardcoded date was built on, leaving the drive's
+    premise false and the pin red on every vintage that no longer contains
+    it.  Discovery over a fixed window keeps the premise true on any vintage
+    carrying the zone's history, reads nothing but the named zone, and never
+    consults the runner's clock or ``TZ`` environment.  The ranges are
+    characterized by the scheduler's own ``repeated_range_bounds`` so a
+    drive's walls are the same bounds the tick's delivery hop walks.
+
+    Returns a fresh list per call: the result is the caller's to order or
+    trim, and a shared cached list would let one caller's reordering re-date
+    every later caller's discovery.
+    """
+    return list(_scan_fallback_transitions(zone, first_year, last_year))
 
 
 # ── The wedge: planning-time pause inside the tick's transaction ───────

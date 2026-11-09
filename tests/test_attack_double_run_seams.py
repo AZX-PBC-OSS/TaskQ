@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a test-fixture identifier, validated by render()/open_fleet upstream; every value is $-bound.
-"""Red-team pins: the double-run seams of the current combined main.
+"""Adversarial review pins: the double-run seams of the current combined main.
 
 The hunt class: one (job, attempt) executing twice, or one job running on
 two workers concurrently, through the NEW seams - the cancel ladder's
@@ -9,7 +9,7 @@ server-side clock anchors.
 
 The seams and the fleet shape each pin:
 
-1. THE PARKED ROW (the unheld walk's ownership test). The walk reads
+1. the PARKED ROW (the unheld walk's ownership test). The walk reads
    ``active_jobs.get(id) is None`` as "unheld: the body exited and its
    outcome write was cancel-fenced". A row PARKED in the local queue (the
    producer's ``mark_enqueued`` mark, no consumer take yet) also has no
@@ -21,16 +21,16 @@ The seams and the fleet shape each pin:
    abandoned row never appears again. A body run after the job's terminal
    write - the run-after-terminal shape the effects ledger reconciles
    against. The contract: the unheld walk must exclude every row this
-   process still owns (the registry's held ids AND the queued ids), the
+   process still owns (the registry's held ids and the queued ids), the
    same ownership doctrine every hand-back pass applies.
 
-2. THE INTENT WINDOW (the same walk, the take-to-register class). A row
+2. the INTENT WINDOW (the same walk, the take-to-register class). A row
    with a standing claim intent (taken, not yet registered) also reads as
    unheld. The abandon applies while the intent stands; the late
    registration then runs the body on a terminal row. Same contract as
    pin 1, the second map of the ownership pair.
 
-3. THE FENCE ORDER (two workers on one phase-2 unheld row). The walk's
+3. the FENCE ORDER (two workers on one phase-2 unheld row). The walk's
    abandon and worker B's reclaim machinery (the crash-reclaim sweep and
    the dispatch claim) race on the same row with its lease expired.
    Whichever order commits, the row terminalises EXACTLY once, is never
@@ -39,7 +39,7 @@ The seams and the fleet shape each pin:
    reclaim arm, and the loser of the race must absorb (the abandon's
    guard, the sweep's snap) rather than double-write.
 
-4. THE CLAIM-LOSS RECONCILE under the fleet shape. The heartbeat tick's
+4. the CLAIM-LOSS RECONCILE under the fleet shape. The heartbeat tick's
    reconcile statement refunds rows "nothing holds"; its exclusion array
    binds the registry's three maps. The unit pins assert the array's
    contents against a mock pool; this pin runs the REAL rendered template
@@ -73,19 +73,19 @@ _QUEUE = "default"
 # The graces collapsed so the ladder's whole schedule (observe -> escalate
 # -> abandon) fits inside a handful of ticks - the repro stays deterministic
 # without depending on how long a body takes to reach its first await.
-# The heartbeat command budget is RAISED from the testing factory's 0.1s
+# The heartbeat command budget is raised from the testing factory's 0.1s
 # for the same reason the fleet's other clocks are deliberate: the
 # heartbeat pool's connections carry asyncpg's command_timeout, and the
-# pins run the REAL tick and reconcile statements through it. A traced
+# pins run the real tick and reconcile statements through it. A traced
 # runner under xdist co-tenancy (the coverage leg: the tracer's own CPU
-# tax on one shared 4-core VM and one shared PG container) pushed the
+# tax on one shared 4-core vm and one shared PG container) pushed the
 # reconcile UPDATE's single round trip past 100ms and asyncpg raised a
 # bare TimeoutError out of protocol.pyx - a transport budget firing, not
 # a verdict any pin asserts. The lock_lease rides along to satisfy the
 # settings' own cascade invariant (max(interval, timeout) +
 # (max_heartbeat_failures + 1) * (interval + timeout) <= lock_lease:
 # max(1.0, 2.0) + 4 * 3.0 = 14.0 <= 15) and because no pin's contract touches the
-# lease: the reconcile grace ages started_at an HOUR past it, the
+# lease: the reconcile grace ages started_at an hour past it, the
 # ladders are driven by hand, and the claims ride _fleet.py's own
 # FLEET_LOCK_LEASE. 2s keeps every transport hang loud (pytest-timeout
 # owns the wall bound) while the budget stops being the binding
@@ -178,7 +178,7 @@ async def _job_phase(fleet: Fleet, job_id: JobId) -> int:
 
 
 async def _effects_after_terminal(fleet: Fleet, job_id: JobId) -> int:
-    """Body-effect rows written AFTER the job's terminal write.
+    """Body-effect rows written after the job's terminal write.
 
     The exactly-once reconciliation: a body runs under a live claim, so
     every effect it writes precedes the job's terminal write. An effect
@@ -222,7 +222,7 @@ async def _parked_row_ticks(fleet: Fleet, job_id: JobId) -> None:
     pod_a = fleet.pod("pod-a")
     await _claim_one_to_pod(fleet, "pod-a", job_id)
     # The producer's park mark: the row sits in local_queue, unclaimed by
-    # any consumer. The registry has NO entry for it - the parked shape.
+    # any consumer. The registry has no entry for it - the parked shape.
     pod_a.deps.active_jobs.mark_enqueued(job_id)
 
     requested = await pod_a.backend.write_cancel_request(job_id, "operator")
@@ -252,7 +252,7 @@ def _spawn_body(fleet: Fleet, job_id: JobId) -> asyncio.Task[object]:
     pod_a = fleet.pod("pod-a")
 
     async def _body() -> None:
-        # The body's effect, written when the body STARTS - what a real
+        # The body's effect, written when the body starts - what a real
         # actor's first side effect is. Under the contract this lands
         # while the row is still live (running, held); under the hole it
         # lands after the abandon committed.
@@ -422,7 +422,7 @@ async def test_phase2_row_never_reenters_the_fleet_while_the_abandon_races_the_s
 
     Two legs, two rows, one contract:
 
-    - SWEEP-FIRST: worker B's reclaim machinery reaches the row BEFORE the
+    - SWEEP-first: worker B's reclaim machinery reaches the row before the
       walk's abandon. The sweep's cancel branch must terminalise the row
       itself ('cancelled'), never re-pend it: a row carrying an in-flight
       cancel request re-enters the claim cycle through no arm.
@@ -472,7 +472,7 @@ async def test_phase2_row_never_reenters_the_fleet_while_the_abandon_races_the_s
             sweep_first_id,
         )
 
-        # Worker B's sweep loop ALONE, to exhaustion.
+        # Worker B's sweep loop alone, to exhaustion.
         for _ in range(_MAX_TICKS):
             async with pod_b.deps.worker_pool.acquire() as sweep_conn:
                 count = await PostgresBackend.sweep_expired_locks(
@@ -603,13 +603,13 @@ async def test_reconcile_never_refunds_a_row_a_claim_intent_holds(pg_dsn: str) -
 
     schema = f"seam_reconcile_{new_uuid().hex[:8]}"
     # The reconcile statement rides the heartbeat pool, whose per-query
-    # command_timeout is the TICK's budget - and the suite's fleet defaults
+    # command_timeout is the tick's budget - and the suite's fleet defaults
     # set that budget to 0.1s. A tick's statement sequence gets that whole
     # budget on a healthy machine, but this pin runs one statement of it
-    # under a SHARED container while sibling xdist workers run their own
+    # under a shared container while sibling xdist workers run their own
     # migrations and bursts against the same cluster: a single round trip
     # there can exceed 100ms on runner-starved legs, and the bare asyncpg
-    # TimeoutError then reds the pin BEFORE its own assertions run (the CI
+    # TimeoutError then reds the pin before its own assertions run (the CI
     # failure's traceback is exactly that - a protocol timeout at the
     # fetch, not a refund). What the pin binds is the reconcile's refund
     # semantics, not the tick's command cadence, so the fleet this pin
@@ -650,7 +650,7 @@ async def test_reconcile_never_refunds_a_row_a_claim_intent_holds(pg_dsn: str) -
         )
         settings.schema_name = schema
         reconcile_sql = _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE.format(schema=schema)
-        # The tick's exact lease binding: the FLEET's own lock_lease, not a
+        # The tick's exact lease binding: the fleet's own lock_lease, not a
         # separately loaded default - the pin binds the tick's rendered
         # statement, and the tick reads the lease off the settings its pods
         # run with.

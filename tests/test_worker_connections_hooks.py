@@ -101,7 +101,7 @@ def _make_conn_factory(fake: _FakeConn) -> object:
 
 
 async def test_concrete_pools_not_closed_on_teardown() -> None:
-    """Caller-owned concrete pools are NOT closed by open_worker_deps."""
+    """Caller-owned concrete pools are not closed by open_worker_deps."""
     settings = _make_settings()
     dispatcher = _FakePool()
     heartbeat = _FakePool()
@@ -123,7 +123,7 @@ async def test_concrete_pools_not_closed_on_teardown() -> None:
         assert deps.notify_conn is notify
         assert deps.leader_conn is leader
 
-    # Teardown must NOT close caller-owned resources.
+    # Teardown must not close caller-owned resources.
     assert not dispatcher.closed
     assert not heartbeat.closed
     assert not worker.closed
@@ -177,7 +177,7 @@ async def test_factory_pools_closed_on_teardown() -> None:
         assert deps.notify_conn is notify
         assert deps.leader_conn is leader
 
-    # Teardown MUST close TaskQ-owned resources.
+    # Teardown must close TaskQ-owned resources.
     assert dispatcher.closed
     assert heartbeat.closed
     assert worker.closed
@@ -210,7 +210,7 @@ async def test_factory_redis_closed_on_teardown() -> None:
 
 
 async def test_concrete_redis_not_closed_on_teardown() -> None:
-    """Caller-owned Redis client is NOT closed by open_worker_deps."""
+    """Caller-owned Redis client is not closed by open_worker_deps."""
     settings = _make_settings()
     fake_redis = MagicMock()
     fake_redis.aclose = AsyncMock()
@@ -289,7 +289,7 @@ async def test_caller_owned_leader_conn_without_factory_or_dsn_fails_fast() -> N
 
 
 async def test_caller_owned_notify_conn_without_factory_or_dsn_is_allowed() -> None:
-    """A caller-owned notify_conn without a rebuild path is NOT a startup
+    """A caller-owned notify_conn without a rebuild path is not a startup
     error - NOTIFY is best-effort (poll fallback); the listener disables
     itself gracefully if the conn drops and cannot be rebuilt."""
     settings = _make_settings()
@@ -382,7 +382,7 @@ async def test_unoverridden_direct_role_with_none_direct_dsn_fails_fast() -> Non
         dispatcher_pool_factory=_make_pool_factory(_FakePool()),
         heartbeat_pool_factory=_make_pool_factory(_FakePool()),
         worker_pool_factory=_make_pool_factory(_FakePool()),
-        # notify_conn NOT overridden - requires the direct DSN.
+        # notify_conn not overridden - requires the direct DSN.
         leader_conn_factory=_make_conn_factory(_FakeConn()),
     )
     with pytest.raises(ValueError, match="pg_dsn_direct is None"):
@@ -402,7 +402,7 @@ async def test_unoverridden_worker_pool_with_none_pooled_dsn_fails_fast() -> Non
     conns = WorkerConnections(
         dispatcher_pool_factory=_make_pool_factory(_FakePool()),
         heartbeat_pool_factory=_make_pool_factory(_FakePool()),
-        # worker_pool NOT overridden - requires the pooled DSN.
+        # worker_pool not overridden - requires the pooled DSN.
         notify_conn_factory=_make_conn_factory(_FakeConn()),
         leader_conn_factory=_make_conn_factory(_FakeConn()),
     )

@@ -1,10 +1,10 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team attacks on the batch CAS: live count, abort-vs-complete, and the
+"""Adversarial review attacks on the batch CAS: live count, abort-vs-complete, and the
 member-append window.
 
 Hunted interleavings, worked out on paper from ``_batch_sql.py`` first:
 
-1. ``_COMPLETE_BATCH_SQL``'s NOT EXISTS guard vs a CONCURRENT MEMBER APPEND
+1. ``_COMPLETE_BATCH_SQL``'s not EXISTS guard vs a CONCURRENT MEMBER APPEND
    (RED).  The guard arbitrates "in this statement's own snapshot", and a
    READ COMMITTED snapshot cannot see another transaction's uncommitted
    member INSERT.  The appender is real: ``enqueue_batch_streaming``
@@ -13,7 +13,7 @@ Hunted interleavings, worked out on paper from ``_batch_sql.py`` first:
    existing batch is forwarded verbatim, and the terminal-outcome hook
    calls ``complete_batch`` on the worker's terminal connection.  So:
    appender inserts member M2 (uncommitted) → the last known member's hook
-   runs ``complete_batch`` → NOT EXISTS sees only terminal members → the
+   runs ``complete_batch`` → not EXISTS sees only terminal members → the
    batch flips to 'complete' → the append commits → the invariant
    "a complete batch has no non-terminal members" is violated, and every
    ``wait_for_batch``-style reader that sees 'complete' stops waiting
@@ -33,7 +33,7 @@ Hunted interleavings, worked out on paper from ``_batch_sql.py`` first:
    last writer of.  One terminal status, abort wins, both members terminal.
 
 The ``increment_batch_failures`` count-vs-write race (counts CTE snapshot
-vs the caller) is safe by construction and NOT attacked here: the hook at
+vs the caller) is safe by construction and not attacked here: the hook at
 ``taskq/batch.py`` discards ``_remaining`` and decides purely on
 ``count >= threshold``, and completion is re-arbitrated server-side.
 
@@ -385,7 +385,7 @@ async def test_a_members_terminal_write_is_not_blocked_by_an_in_flight_append(
     The bounded counter wait expires, the increment is skipped (the
     streak stays 0), the failure itself is recorded row-side, and the
     writer's own transaction is never poisoned by the raw 55P03. The
-    appender keeps its lock until AFTER the hook has returned, so an
+    appender keeps its lock until after the hook has returned, so an
     unbounded park could only surface as the wait_for expiring."""
     schema = f"tqr_{new_base62()}".lower()
     stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)

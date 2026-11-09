@@ -40,7 +40,7 @@ async def _reap_stream_teardown_tasks(
     *,
     reap_timeout: float = 5.0,
 ) -> None:
-    """Reap every task the stream interaction minted, INSIDE the call phase.
+    """Reap every task the stream interaction minted, inside the call phase.
 
     See the module docstring for the two task shapes (the dropped
     sse-starlette shutdown watcher and the abandoned-``aiter_lines``
@@ -63,7 +63,7 @@ async def _reap_stream_teardown_tasks(
         reference this function holds (including the completed finalizer
         tasks, whose coroutine pins the generator it just closed) dies
         when this frame returns, so the driver's next ``gc.collect()``
-        sees the chain's NEXT generator actually garbage.
+        sees the chain's next generator actually garbage.
         """
         # The shutdown watcher parks forever; it only finishes cancelled.
         # The finalizer tasks are awaited, never cancelled (see module docstring).
@@ -89,7 +89,7 @@ async def _reap_stream_teardown_tasks(
             raise AssertionError("\n".join(lines))
 
     while True:
-        # Release the PREVIOUS wave's task references first: a completed
+        # Release the previous wave's task references first: a completed
         # finalizer task still pins the generator it closed, and a
         # generator still reachable cannot be finalized, so a collect run
         # under it mints nothing and the loop would report a quiescence
@@ -100,10 +100,10 @@ async def _reap_stream_teardown_tasks(
         # happens, which must be inside the call, not at some later test's
         # gc pause.
         gc.collect()
-        # One loop turn BEFORE the quiescence snapshot: the loop's
+        # One loop turn before the quiescence snapshot: the loop's
         # asyncgen finalizer hook schedules the athrow task with
         # ``call_soon_threadsafe(create_task, agen.aclose())`` - the task
-        # is only CREATED on the next turn. A synchronous
+        # is only created on the next turn. A synchronous
         # collect-then-snapshot reports quiescence while the final
         # finalization's task is still pending creation, and the reap
         # returns leaving exactly that straggler for pytest teardown.

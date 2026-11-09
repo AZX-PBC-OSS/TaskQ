@@ -94,7 +94,7 @@ def test_unpin_cached_loggers_restores_capture_for_pinned_proxy(
     )
 
     # The inter-test reset the suite guard has always performed: it assigns a
-    # FRESH processor list, orphaning the list instance the pinned proxy's
+    # fresh processor list, orphaning the list instance the pinned proxy's
     # assembled logger still holds by reference - which is exactly why a
     # config-only reset cannot restore capture for it.
     structlog.reset_defaults()
@@ -403,7 +403,7 @@ def test_configured_wrapper_class_is_stdlib_bound_logger() -> None:
     obs_mod.setup_logging()
 
     cfg = structlog.get_config()
-    # A SUBCLASS, not the class itself: `_ExcInfoSafeBoundLogger` overrides
+    # A subclass, not the class itself: `_ExcInfoSafeBoundLogger` overrides
     # `.exception()` so it never reaches `logging.Logger.exception`, which
     # hard-codes `exc_info=True` onto the record for every root handler to
     # read. The stdlib-bridge contract this test guards is the base class.
@@ -478,7 +478,7 @@ def test_worker_settings_log_format_rejects_invalid_value() -> None:
 
 def test_worker_settings_log_format_rejects_invalid_value_even_when_validate_disabled() -> None:
     # Regression: choices= is a built-in constraint that load_from_dict(..., validate=False)
-    # skips, so log_format previously accepted arbitrary strings under validate=False.
+    # skips, so an unvalidated log_format accepted arbitrary strings.
     # The validator hook runs regardless of validate=, closing the hole.
     from dotenvmodel import ConstraintViolationError
 
@@ -1004,7 +1004,7 @@ def test_redact_payload_handles_realistic_payloads() -> None:
 
 def test_log_line_with_redacted_payload_hash_leaks_no_payload_fragments() -> None:
     """The operator-facing contract redaction exists for: a rendered log
-    line that carries the redacted payload hash carries NO fragment of the
+    line that carries the redacted payload hash carries no fragment of the
     payload it stands for. A caller who logs ``payload_hash=redact_payload
     (payload)`` - the only sanctioned way payload-derived data reaches a
     log line - must never see payload content in the rendered output."""
@@ -1088,8 +1088,8 @@ async def test_cancel_where_notify_failed_event_name_is_kebab(
     # Declared BackendSettings field, read directly by cancel_where now that
     # the protocol carries the event-writer knobs: supply it explicitly so
     # the Mock stands in for a real settings object instead of relying on
-    # Mock auto-attributes (whose child-Mock values no longer pass through
-    # an int() coercion that used to mask them).
+    # Mock auto-attributes (whose child-Mock values do not survive
+    # the int() coercion).
     mock_deps.settings.event_writer_batch_size = DEFAULT_EVENT_WRITER_BATCH_SIZE
     mock_deps.settings.event_writer_statement_timeout_ms = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS
     pool = Mock()

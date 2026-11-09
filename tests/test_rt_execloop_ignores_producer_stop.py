@@ -1,4 +1,4 @@
-"""Red-team: DRAINING re-pends local_queue rows but di_consumer_loop keeps
+"""Adversarial review: DRAINING re-pends local_queue rows but di_consumer_loop keeps
 dequeuing them, producing double-execution of actor side effects.
 
 Contract under attack: once DRAINING fires (``deps.producer_stop_event.set()``
@@ -6,7 +6,7 @@ at shutdown.py:187, immediately followed by ``drain_local_queue_to_pending``
 re-pending every claimed-but-unstarted row back to 'pending' so another
 worker can reclaim it), THIS worker's own consumer loop must stop pulling
 jobs off ``local_queue`` - otherwise the re-pended row is claimable by a
-second worker AND still eligible to run here, via a stale local copy.
+second worker and still eligible to run here, via a stale local copy.
 
 Hypothesis (verified against the current tree): ``di_consumer_loop``'s outer
 loop guard is ``while not shutdown_event.is_set()`` (src/taskq/worker/run.py,
@@ -23,7 +23,7 @@ This test drives ``di_consumer_loop`` directly (no Postgres): it seeds one
 job into ``local_queue``, flips ``producer_stop_event`` (mirroring
 shutdown.py:187's DRAINING entry) while leaving ``shutdown_event`` unset
 (mirroring shutdown.py:313 firing only after all later phases complete),
-and asserts the loop does NOT dispatch that job. Today it does - a fresh
+and asserts the loop does not dispatch that job. Today it does - a fresh
 green pin of the current, non-existent guard.
 """
 
@@ -126,7 +126,7 @@ async def test_di_consumer_loop_stops_dequeuing_once_draining_starts(
         return "succeeded"
 
     # Why the spy: it is the execution observable for "this worker ran the
-    # stale local_queue copy of a job that DRAINING already re-pended in the
+    # stale local_queue copy of a job that draining already re-pended in the
     # DB" - di_consumer_loop calls the run-module global dispatch_one_job.
     monkeypatch.setattr(run_module, "dispatch_one_job", _spy_dispatch)
 
@@ -134,14 +134,14 @@ async def test_di_consumer_loop_stops_dequeuing_once_draining_starts(
     shutdown_event = asyncio.Event()
     deps = _DepsStub()
 
-    # Seed the job into local_queue BEFORE DRAINING - this mirrors a job
+    # Seed the job into local_queue before draining - this mirrors a job
     # already claimed and sitting in this worker's queue when shutdown
     # begins (the exact row drain_local_queue_to_pending re-pends).
     local_queue.put_nowait(job)
 
     loop_task = asyncio.create_task(
         di_consumer_loop(
-            deps,  # type: ignore[arg-type]  # Why: duck-typed WorkerDeps stub carrying the real DRAINING signals under test.
+            deps,  # type: ignore[arg-type]  # Why: duck-typed WorkerDeps stub carrying the real draining signals under test.
             local_queue,
             shutdown_event,
             backend=backend,
@@ -155,17 +155,17 @@ async def test_di_consumer_loop_stops_dequeuing_once_draining_starts(
         )
     )
 
-    # Simulate orchestrate_shutdown's DRAINING entry (shutdown.py:184-188):
-    # shutdown_phase -> DRAINING, producer_stop_event.set() - WITHOUT
+    # Simulate orchestrate_shutdown's draining entry (shutdown.py:184-188):
+    # shutdown_phase -> draining, producer_stop_event.set() - without
     # setting shutdown_event, exactly as the real orchestrator does (it only
-    # sets shutdown_event at the very end, after CANCELLING/FORCING/
-    # RELEASING have all completed - shutdown.py:313).
+    # sets shutdown_event at the very end, after cancelling/forcing/
+    # releasing have all completed - shutdown.py:313).
     await asyncio.sleep(0)
     deps.shutdown_phase = ShutdownPhase.DRAINING
     deps.producer_stop_event.set()
 
-    # Give the consumer loop a chance to act on (or ignore) the DRAINING
-    # signal before we tear the test down. It must NOT dispatch the job.
+    # Give the consumer loop a chance to act on (or ignore) the draining
+    # signal before we tear the test down. It must not dispatch the job.
     for _ in range(5):
         await asyncio.sleep(0)
         if spy_job_ids:

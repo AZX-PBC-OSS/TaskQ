@@ -133,7 +133,7 @@ class SAMLSettings(DotEnvConfig):
         default=None,
         description="SP cert (signed requests / encrypted assertions).",
     )
-    # Why SecretStr: the SP's private key is the secret half of the keypair
+    # Why SecretStr: the sp's private key is the secret half of the keypair
     # (its public half sp_x509_cert and the IdP's idp_x509_cert stay plain ,
     # published certificates, not credentials); session_secret signs session
     # cookies. Same dotenvmodel-native masking rationale as OIDCSettings.
@@ -243,7 +243,7 @@ def _schema_name_validator(value: str, ctx: ValidatorContext) -> str:
             f"([A-Za-z_][A-Za-z0-9_]*), got {value!r}"
         )
     if len(value) > 63:
-        # NAMEDATALEN is 64 including the terminator, so Postgres silently
+        # namedatalen is 64 including the terminator, so Postgres silently
         # truncates longer identifiers, while Redis channel templates
         # interpolate the full string, quietly diverging between stores.
         # A length cap belongs in this hook, not `max_length=`, because
@@ -532,7 +532,7 @@ class TaskQSettings(DotEnvConfig):
         "resources are rebuilt; DSN/static credentials are unaffected.",
     )
 
-    # -- SSO / SAML -------------------------------------------------------
+    # -- sso / saml -------------------------------------------------------
     sso_backend: str = Field(
         default="none",
         validator=_sso_backend_validator,
@@ -541,7 +541,7 @@ class TaskQSettings(DotEnvConfig):
         "or 'saml' (taskq[saml]). See docs/guides/sso.md.",
     )
     # Why SecretStr: the bearer credential for the health/metrics routes ,
-    # same dotenvmodel-native masking rationale as the SSO secrets. Two
+    # same dotenvmodel-native masking rationale as the sso secrets. Two
     # gotchas pinned by the cli's unwrap: a SecretStr is always truthy (even
     # the empty default), and an unset env var loads the field as None ,
     # hence the Optional annotation and the None-safe set-check. DSN fields
@@ -657,7 +657,7 @@ class TaskQSettings(DotEnvConfig):
     # pre-knob ceilings the module constants supplied.
     #
     # Declared here rather than on WorkerSettings because enqueue is a
-    # CLIENT path: a producer process builds TaskQSettings and never a
+    # client path: a producer process builds TaskQSettings and never a
     # WorkerSettings, so budgets that lived on the subclass were
     # unreachable from the side that actually takes these locks. The
     # client's own per-query pool bound follows these knobs rather than
@@ -736,7 +736,7 @@ class TaskQSettings(DotEnvConfig):
     # -- Optional TimescaleDB hypertables ---------------------------------
     # On TaskQSettings (not WorkerSettings) because the conversion runs from
     # the `taskq migrate up` deploy step, which loads this model. The
-    # retention INTERVALS the conversion derives chunk sizes and policies
+    # retention intervals the conversion derives chunk sizes and policies
     # from stay worker-scoped (TASKQ_ARCHIVE_RETENTION_PERIOD,
     # TASKQ_EVENT_RETENTION_PERIOD); the deploy step loads WorkerSettings for
     # that step, see taskq.timescale.
@@ -828,7 +828,7 @@ class TaskQSettings(DotEnvConfig):
         ``tests/test_client_cli_first_use_bounded.py``'s precedence tests
         in both directions.
 
-        Why this exists: ``load()`` validates EVERY field, so a caller
+        Why this exists: ``load()`` validates every field, so a caller
         that needs one value (the client's schema default, its lock-budget
         overlay) would fail on a malformed setting it never uses.
         This method resolves the value; validation stays the caller's,
@@ -955,7 +955,7 @@ _VALID_LOG_EVENTS_LEVELS = frozenset({"info", "warning", "off", "debug"})
 
 
 def _log_events_level_validator(value: str, ctx: ValidatorContext) -> str:
-    # Case-insensitive like log_level, normalized LOWERCASE: the events
+    # Case-insensitive like log_level, normalized lowercase: the events
     # level feeds the structlog filter's classification comparison
     # directly, and the classification table's names are lowercase.
     normalized = value.lower()
@@ -1051,7 +1051,7 @@ class WorkerSettings(TaskQSettings):
     lease must outlive the worst coherent failed-beat cascade to the
     heartbeat's isolate decision - the last good beat's tail plus the
     failed cycles - with the per-tick command budget (shared by each
-    failed beat's sequence AND teardown) making the cycle bound true
+    failed beat's sequence and teardown) making the cycle bound true
     by enforcement.
     """
 
@@ -1145,7 +1145,7 @@ class WorkerSettings(TaskQSettings):
         "stay healthy while the index rots - keeps the probes on index choices the bound "
         "cannot position), so the bounded-stranding trade buys no robust end-to-end "
         "improvement; see tests/perf/test_mvcc_claim_degradation.py for the curves and the "
-        "TaskQClaimLatencyDegraded runbook for the primary cure. Enable it for fleets whose "
+        "TaskQClaimLatencyDegraded runbook for the primary fix. Enable it for fleets whose "
         "shape matches the isolated-surface measurement (single-queue, monotone claim "
         "streams, fresh statistics).",
     )
@@ -1166,9 +1166,9 @@ class WorkerSettings(TaskQSettings):
     # literals, not imported, because of dependency direction, not driver
     # binding (unlike the enqueue budgets above: both ratelimit modules
     # keep their asyncpg import under TYPE_CHECKING). Those modules
-    # CONSUME this settings object, their PG acquire and refund paths
+    # consume this settings object, their PG acquire and refund paths
     # read these fields off it, and importing anything under
-    # taskq.ratelimit runs the package's DI provider, which imports this
+    # taskq.ratelimit runs the package's di provider, which imports this
     # module at runtime, so a runtime import here would close a
     # settings → ratelimit → settings cycle. Drift between the literals
     # and the constants is pinned by
@@ -1999,23 +1999,23 @@ class WorkerSettings(TaskQSettings):
         "row is narration — the drain's arbiter already inserted the "
         "consumer rows and wf_join_fire is the exactly-once ledger — and "
         "without this TTL the delivered population grows monotonically "
-        "forever (the D2 soak's finding: 5.9k at close, monotone, no "
+        "forever (measured in the soak: 5.9k at close, monotone, no "
         "pruner). One bounded committed batch per leader tick; "
         "UNDELIVERED rows are never touched (the drain owns them — a "
         "deleted undelivered row is a lost delivery). timedelta(0) "
         "DISABLES the sweep, the deletion-sweep family's zero-means-off "
         "sentinel (a brand-new deletion loop's safe misconfiguration is "
-        "off), deliberately opposite to the prune family's "
+        "off), opposite to the prune family's "
         "zero-means-now. Negative values raise at settings load.",
     )
 
-    # -- Workflow step-cache retention (T25) --------------------------
+    # -- Workflow step-cache retention --------------------------
     workflow_step_cache_sweep_period: timedelta = Field(
         default=timedelta(hours=1),
         validator=_non_negative_timedelta,
         description="TASKQ_WORKFLOW_STEP_CACHE_SWEEP_PERIOD. How often "
         "the leader's retention arm prunes the cross-run step cache's "
-        "EXPIRED rows (T25: the in-DB TTL's corpses — the lookup's "
+        "EXPIRED rows (the in-DB TTL's corpses — the lookup's "
         "freshness leg already refuses them; this arm deletes the dead "
         "weight so the expired population never grows monotone-forever). "
         "One bounded committed batch per pass; FRESH rows are never "
@@ -2024,6 +2024,126 @@ class WorkerSettings(TaskQSettings):
         "deletion-sweep family's zero-means-off sentinel (a brand-new "
         "deletion loop's safe misconfiguration is off). Negative values "
         "raise at settings load.",
+    )
+
+    # -- Workflow flow-history retention -------------------------------
+    # five arms for the six tables that grow monotone-forever with no
+    # retention arm and no FK for the job prune to cascade: wf_edge,
+    # wf_step_ledger, wf_join_fire, wf_signals, wf_node_progress — and
+    # wf_node_stream, which rides the node_progress arm's statement (the
+    # stream fold: one pass, two batch-bounded deletes — the
+    # doomed flows' progress rows and their stream rings; a dead node's
+    # ring, nodes x 64 rows, never had a pruner of its own). Each arm is
+    # two-pass (the two-pass law): the flows-side pass selects the
+    # terminal-aged roots first (a tiny jobs-side set via
+    # jobs_finished_at_idx — step_key '__flow__', a terminal status, the
+    # root's finished_at past the period) and deletes each selected
+    # flow's rows via the table's flow_id index; the rootless pass (the
+    # orphan class — the row's pointee absent or not a flow root) rides
+    # a separate batch-bounded walk on a coarser cadence, seeking
+    # strictly past its arm's persisted cursor (wf_rootless_sweep_state,
+    # 01.00.36_01 — the persisted-cursor fix: a live pk front's rows are
+    # visited once and the walk moves past them, never re-reading the
+    # same first batch forever). The batch is the prune family's own
+    # knob (prune_batch_size: the arms never borrowed
+    # event_writer_batch_size). The defaults are timedelta(0) — zero =
+    # off — deliberately opposite to the outbox/step-cache precedents
+    # (which default on): those prune derived data (a delivered outbox
+    # row's narration, an expired cache corpse — deleting them loses
+    # nothing re-derivable); these prune the flow history itself (the
+    # attempt ledger, the fire ledger, the signals). Default-off keeps
+    # the upgrade safe — no surprise deletes on an existing estate — the
+    # operator opts in.
+    workflow_edge_retention_period: timedelta = Field(
+        default=timedelta(0),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_EDGE_RETENTION_PERIOD. The age past "
+        "which a TERMINAL flow's wf_edge rows delete. wf_edge has no "
+        "timestamp column of its own, so the age clock is the flow root's "
+        "finished_at (the prune family's terminal-age column). A "
+        "NULL-stamped terminal root (the stamp never landed) is SKIPPED — "
+        "never doomed: no history is removed that has no honest age — "
+        "and the arm's rate-limited warning "
+        "(wf-retention-null-finished-at) fires when a pass OBSERVES one: "
+        "fix the stamp or backfill it, the rows stay until they carry an "
+        "honest age (the conservative shape). The edges are "
+        "pure flow-structure narration on a terminal flow (the join "
+        "counter's truth dies with the flow). timedelta(0) DISABLES the "
+        "arm — zero-means-off, the deletion-sweep family's sentinel; "
+        "default OFF because this prunes FLOW HISTORY (not derived "
+        "data): the upgrade is safe by default, the operator opts in. "
+        "Negative values raise at settings load.",
+    )
+    workflow_step_ledger_retention_period: timedelta = Field(
+        default=timedelta(0),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_STEP_LEDGER_RETENTION_PERIOD. The age "
+        "past which a TERMINAL flow's wf_step_ledger rows delete (one row "
+        "per attempt — the hot table's fastest grower; a terminal flow's "
+        "running row is the phantom class the reap arm fences first, and "
+        "outright deletion reconstructs the same). The flows-side pass "
+        "ages by the flow root's finished_at; the rootless orphan class "
+        "(the pointee not a flow root) ages by the row's own created_at "
+        "on its coarser-cadence pass. timedelta(0) DISABLES "
+        "the arm — zero-means-off, the deletion-sweep family's sentinel; "
+        "default OFF because this prunes FLOW HISTORY (not derived data): "
+        "the upgrade is safe by default, the operator opts in. Negative "
+        "values raise at settings load.",
+    )
+    workflow_join_fire_retention_period: timedelta = Field(
+        default=timedelta(0),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_JOIN_FIRE_RETENTION_PERIOD. The age "
+        "past which a TERMINAL flow's wf_join_fire rows delete (the "
+        "exactly-once ledger is dead weight on a terminal flow — a "
+        "terminal flow never re-fires). The flows-side pass ages by the "
+        "flow root's finished_at; the rootless orphan class (the pointee "
+        "not a flow root) ages by the row's own fired_at on its "
+        "coarser-cadence pass. timedelta(0) DISABLES the arm — "
+        "zero-means-off, the deletion-sweep family's sentinel; default "
+        "OFF because this prunes FLOW HISTORY (not derived data): the "
+        "upgrade is safe by default, the operator opts in. Negative "
+        "values raise at settings load.",
+    )
+    workflow_signals_retention_period: timedelta = Field(
+        default=timedelta(0),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_SIGNALS_RETENTION_PERIOD. The age "
+        "past which a TERMINAL flow's wf_signals rows delete — INCLUDING "
+        "a terminal flow's HELD signals, which are exactly the "
+        "abandoned-hold class (nothing will ever deliver them: the wait "
+        "site is terminal). A LIVE flow's holds are never touched. The "
+        "flows-side pass ages by the flow root's finished_at; the "
+        "rootless orphan class (the pointee not a flow root) ages by the "
+        "row's own created_at on its coarser-cadence pass. timedelta(0) "
+        "DISABLES the arm — zero-means-off, the deletion-sweep family's "
+        "sentinel; default OFF because this prunes FLOW HISTORY (not "
+        "derived data): the upgrade is safe by default, the operator "
+        "opts in. Negative values raise at settings load.",
+    )
+    workflow_node_progress_retention_period: timedelta = Field(
+        default=timedelta(0),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_NODE_PROGRESS_RETENTION_PERIOD. The "
+        "age past which a TERMINAL flow's wf_node_progress rows delete "
+        "(the state channel outlives its flows forever; the flow is "
+        "reached through the node's jobs row — wf_node_progress has no "
+        "flow column). The flows-side pass joins the terminal-aged "
+        "flows' node rows (the flow-nodes expression index) and deletes "
+        "their progress rows by the PK probe; the rootless orphan "
+        "classes (the node gone, the node without the flow_id stamp, "
+        "the pointee not a flow root) age by the row's own updated_at on "
+        "the coarser-cadence pass. THE SAME ARM CARRIES THE SIXTH TABLE "
+        "(the stream fold): the terminal-aged flows' "
+        "wf_node_stream rows (the STREAM channel — a dead node's ring, "
+        "nodes x 64 rows, had no pruner) delete in the same pass, and "
+        "the rootless pass runs the stream's own orphan walk (the node "
+        "gone, or the carried flow link not a root, aged by emitted_at). "
+        "timedelta(0) DISABLES the arm — zero-means-off, the "
+        "deletion-sweep family's sentinel; default OFF because this "
+        "prunes FLOW HISTORY (not derived data): the upgrade is safe by "
+        "default, the operator opts in. Negative values raise at "
+        "settings load.",
     )
 
     # -- Per-status prune retention --------------------------------
@@ -2171,7 +2291,10 @@ class WorkerSettings(TaskQSettings):
         le=1048576,
         description="TASKQ_PROGRESS_DATA_MAX_BYTES. Maximum serialised byte "
         "length of the ``data`` dict in a single progress call. Payloads "
-        "exceeding this limit raise ProgressTooLarge . "
+        "exceeding this limit raise ProgressTooLarge. Snapshot-style "
+        "publishers (full-document snapshots as ``data``) must size the "
+        "cap at or above their payload bound: once one snapshot exceeds "
+        "it, every later snapshot raises too. "
         "Range: 1 KiB - 1 MiB; default 16 KiB.",
     )
     progress_publish_global: bool = Field(
@@ -2356,7 +2479,7 @@ class WorkerSettings(TaskQSettings):
         errors: list[ValidationError] = []
 
         # Empty-env guard: a present-but-empty value for a non-Optional
-        # non-str field coerces to None and SKIPS every constraint and
+        # non-str field coerces to None and skips every constraint and
         # validator (dotenvmodel validates coerced values; None is its
         # "no value" sentinel), so the None would flow into this method's
         # cross-field arithmetic as a raw TypeError (NoneType + float), or
@@ -2397,15 +2520,15 @@ class WorkerSettings(TaskQSettings):
 
         # lock_lease invariant: the lease must outlive the worst coherent
         # failed-beat cascade. A heartbeat tick's failed cycle is
-        # bounded, with the per-tick command budget enforced AND the
+        # bounded, with the per-tick command budget enforced and the
         # teardown (rollback + bounded close) sharing that one budget's
         # remainder, by max(heartbeat_interval, tick cost) where the
         # tick cost is heartbeat_interval (the pool acquire's own
-        # timeout) + ONE heartbeat_command_timeout (the tick's whole
+        # timeout) + one heartbeat_command_timeout (the tick's whole
         # command sequence plus its teardown): a failed cycle is at most
         # heartbeat_interval + heartbeat_command_timeout. The cascade
-        # from the LAST RENEWAL (mid-tick, where the gate re-stamps the
-        # lease) adds the last good beat's TAIL - from that renewal
+        # from the last renewal (mid-tick, where the gate re-stamps the
+        # lease) adds the last good beat's tail - from that renewal
         # point to the next tick's start, at most
         # max(heartbeat_interval, heartbeat_command_timeout) - and the
         # isolate decision lands on the (max_heartbeat_failures + 1)-th
@@ -2416,7 +2539,7 @@ class WorkerSettings(TaskQSettings):
         # guarantees that gate's floor can never exceed the lease it
         # guards. A bare (F+1) * (interval + 2 * command_timeout) rule
         # both ignores the command-timeout term's
-        # sharing (a teardown close that burns a SECOND
+        # sharing (a teardown close that burns a second
         # full budget after the rollback consumed the remainder runs the
         # observed cascade past the floor) and
         # drops the last good beat's tail. Tightening note: this
@@ -2443,10 +2566,10 @@ class WorkerSettings(TaskQSettings):
                 )
             )
 
-        # Park-tail vs heartbeat-exit: NO hard error here, deliberately:
+        # Park-tail vs heartbeat-exit: no hard error here, deliberately:
         # see WorkerSettings.release_park_lease_cap. The release park is
         # capped by the lease in the consumer itself, which makes the
-        # single-RELEASING-write-failure exposure structurally impossible
+        # single-releasing-write-failure exposure structurally impossible
         # for every config that loads; a cross-field rejection here would
         # refuse configs that are safe under the cap (and would break
         # every fast test fixture that zeroes the graces against the
@@ -2501,9 +2624,9 @@ class WorkerSettings(TaskQSettings):
         # is never spawned, and a stale tick only costs a transient NotReady,
         # which is not worth blocking boot over.
         #
-        # The producer loop is deliberately NOT checked here: it is not
+        # The producer loop is deliberately not checked here: it is not
         # wrapped in asyncio.timeout (dispatch_batch is a multi-statement
-        # transaction, BEGIN + dispatch CTE + INSERTs + COMMIT, plus a
+        # transaction, begin + dispatch CTE + INSERTs + COMMIT, plus a
         # queue-mode resolve on cache miss (the worker-side TTL cache in
         # taskq.backend._dispatch.QueueModeCache), each bounded
         # separately by the pool's command_timeout), so the timeout +
@@ -2547,7 +2670,7 @@ class WorkerSettings(TaskQSettings):
         # Lag-watchdog lease invariant: a stalled event loop must die (the
         # terminal lag watchdog trips at watchdog_loop_lag_budget) before
         # its leases can expire (lock_lease), otherwise the leader sweep
-        # reclaims LIVE jobs' locks mid-stall and the worker wakes from the
+        # reclaims live jobs' locks mid-stall and the worker wakes from the
         # stall to find its work reassigned. The heartbeat_interval term is
         # the worst-case age the last beat can carry when the stall starts,
         # so the trip is guaranteed to land inside the lease. Only checked
@@ -2612,22 +2735,18 @@ class WorkerSettings(TaskQSettings):
         # operator only meets at the os._exit. Same watchdog gating as
         # the lease invariant above.
         #
-        # THE WARN BUDGET VS THE CHECK CADENCE (the LedgerWatch F6 cure —
-        # the warning storm's config cannot boot): the tier-1 warn's
-        # healthy baseline IS the sampling period — the detector polls
-        # once per watchdog_check_interval and schedules the beat it
-        # measures from the same poll, so a healthy loop's observed lag
-        # is ~check_interval by construction. A warn budget at or below
-        # the check interval therefore warns on EVERY healthy poll — and
-        # each warn dumps every live asyncio task, the dump blocks the
-        # loop, the block triggers the next warn: a self-sustaining
-        # storm (the adoption team's measured shape: warn 0.4 / check
-        # 0.5 passed this lattice's pre-cure legs, then 295 warn+dump
-        # pairs starved the worker's heartbeat past the fleet's
-        # readiness timeout). Same watchdog gating as the lease
-        # invariant above; the remedy is taught (raise the warn budget —
-        # comfortably above the check interval, below the terminal
-        # budget).
+        # the tier-1 warn's healthy baseline is the sampling period — the
+        # detector polls once per watchdog_check_interval and schedules the
+        # beat it measures from the same poll, so a healthy loop's observed lag
+        # is ~check_interval by construction. A warn budget at or below the
+        # check interval therefore warns on every healthy poll — and each warn
+        # dumps every live asyncio task, the dump blocks the loop, the block
+        # triggers the next warn: a self-sustaining storm (the measured shape:
+        # warn 0.4 / check 0.5 passes this lattice's unguarded legs, then 295
+        # warn+dump pairs starved the worker's heartbeat past the fleet's
+        # readiness timeout). Same watchdog gating as the lease invariant
+        # above; the remedy is taught (raise the warn budget — comfortably
+        # above the check interval, below the terminal budget).
         if self.watchdog_enabled and (
             self.watchdog_loop_lag_warn_budget <= self.watchdog_check_interval
         ):
@@ -2684,7 +2803,7 @@ class WorkerSettings(TaskQSettings):
         The shutdown phase graces plus the bounded-close tail that unwinds
         after them (see :func:`taskq._close.worst_case_teardown_tail`).
 
-        This is deliberately NOT enforced by ``post_load``. The cross-field
+        This is deliberately not enforced by ``post_load``. The cross-field
         validator there rejects a config outright, and a budget below this
         dead-backend worst case is a legitimate operator choice (a tight
         dev deployment that would rather be SIGKILLed mid-unwind than wait
@@ -2742,7 +2861,7 @@ class WorkerSettings(TaskQSettings):
 
         which is exactly the bound that makes the parked consumer's
         release write land before the earliest reclaim (last heartbeat,
-        up to one interval stale, plus the lease) for ANY config: the
+        up to one interval stale, plus the lease) for any config: the
         write starts by ``cancel + cap`` and spends at most the terminal
         write's budget, and ``cancel + (lock_lease - heartbeat -
         write_budget) + write_budget <= (cancel + cleanup_grace -
@@ -2785,7 +2904,7 @@ class WorkerSettings(TaskQSettings):
         """The ``lock_lease`` the disown path needs (warning floor; the
         shipped default is 63 vs lock_lease 60 and marginally fails).
 
-        When BOTH release writers fail their writes (the RELEASING phase's
+        When both release writers fail their writes (the RELEASING phase's
         and the consumer's: the consumer's exhaustion disowns the row),
         the row stays ``running`` behind a lease the heartbeat has already
         stopped renewing, and the leader's reclaim sweep becomes the only
@@ -2798,7 +2917,7 @@ class WorkerSettings(TaskQSettings):
         + release_exit_tail_seconds``
 
         At the shipped defaults that is 63 against ``lock_lease`` 60: a
-        residue of ~3s that requires the double write failure AND a sweep
+        residue of ~3s that requires the double write failure and a sweep
         tick landing inside it. Surfaced as a startup warning, not a hard
         fail: the shipped default would not load otherwise, and whether to
         spend 3 more seconds of lease on a double-failure residue is a

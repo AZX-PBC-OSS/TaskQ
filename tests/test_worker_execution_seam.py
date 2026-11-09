@@ -1,23 +1,23 @@
-"""THE FLEET EXECUTOR'S OWN TESTS (the evidence-integrity cure 1a: the
-scoped-coverage gate's least-tested seam is its most important new one).
+"""The fleet executor's own tests (``taskq/workflows/_worker_execution.py``
+is the scoped-coverage gate's least-tested seam and its most important one).
 
-``taskq/workflows/_worker_execution.py`` is THE queue-IS-the-runtime seam:
+``taskq/workflows/_worker_execution.py`` is the queue-IS-the-runtime seam:
 the app registry (the capability predicate's input), the boot projection
 (F3 — the cohorts the fleet's dispatch LATERAL reads), and the execution
 door (a claimed row EXECUTES on the claiming worker, exactly once). The
-execution-cure's probes (``.measurements/execution-probe/*``) proved the
+execution-fix's probes (``.measurements/execution-probe/*``) proved the
 seam on a live deployment; these pins hold it on every battery run:
 
-* **THE REGISTRY** — weak membership, the reset seam, the capability
+* **the REGISTRY** — weak membership, the reset seam, the capability
   predicate's exact law;
-* **THE PROJECTION** — the cohorts a compiled graph can stamp, the
+* **the PROJECTION** — the cohorts a compiled graph can stamp, the
   one-queue-per-actor refusal, the deterministic order, the
   ``workflow_actor`` metadata stamp (the estate sees the population);
-* **THE DOOR** — the claimed/intercepted/executed-once/queue-routed path
+* **the DOOR** — the claimed/intercepted/executed-once/queue-routed path
   against a live PG: the fleet's ``dispatch_batch`` claims the row
   (queue-routed through the projected cohort, capability-fenced),
   ``execute_flow_job`` resolves the body from the REGISTERED definition,
-  runs the runner's own machinery, and the body lands EXACTLY ONCE; and
+  runs the runner's own machinery, and the body lands EXACTLY once; and
   every unresolvable shape (no flow link, a vanished row, no step key,
   an unstamped root, an uncompiled name) refuses LOUD
   (``WorkflowBodyUnresolvableError``) — the parking semantics, never a
@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 
 
 def _claimed_row(record: asyncpg.Record) -> JobRow:
-    """The claimed record decoded through the backend's OWN read model
+    """The claimed record decoded through the backend's own read model
     (the same decode the fleet's dispatch loop performs)."""
     return _job_row_from_record(record)
 
@@ -75,7 +75,7 @@ _EXECUTIONS: list[str] = []
 
 
 async def _observed_body(ctx: Any, params: Ingest) -> Report:
-    """The door's victim body: records ITS OWN execution (the
+    """The door's victim body: records ITS own execution (the
     executed-exactly-once observation is the body's append, read back
     after the door returns)."""
     _EXECUTIONS.append(str(params.doc_id))
@@ -83,6 +83,10 @@ async def _observed_body(ctx: Any, params: Ingest) -> Report:
 
 
 # ── the registry + the capability predicate (pure) ───────────────────────
+
+
+async def _seam_body(ctx: object) -> dict[str, str]:
+    return {}
 
 
 def test_the_app_registry_is_weak_and_resettable() -> None:
@@ -94,7 +98,19 @@ def test_the_app_registry_is_weak_and_resettable() -> None:
         app = WorkflowApp()
         seam.register_app(app)
         assert app in seam.iter_imported_apps()
-        assert seam.workflow_execution_capable() is True
+        # an imported app is not capability — at least one runnable workflow
+        # must project. An app that declares no workflow cannot resolve a body.
+        assert seam.workflow_execution_capable() is False, (
+            "an imported app with no runnable workflow is not capability"
+        )
+
+        @app.workflow("seam-capability-probe")
+        def seam_capability_probe() -> Promise[object]:
+            return build(step(_seam_body, key="probe"))
+
+        assert seam.workflow_execution_capable() is True, (
+            "the mounted app's runnable workflow projects the capability"
+        )
         seam.reset_app_registry_for_tests()
         assert seam.iter_imported_apps() == []
         assert seam.workflow_execution_capable() is False, (
@@ -122,10 +138,10 @@ def test_the_compiled_cache_round_trips_and_misses_loud() -> None:
 
 
 def test_the_runner_door_carries_the_apps_deps_binding(wf_pool: asyncpg.Pool) -> None:
-    """THE DEPS SEAM'S WORKER DOOR (the DI capability): the compile
+    """The deps seam's worker door (the DI capability): the compile
     carries the app's bound instance (``WorkflowApp(deps=…)``) and
     ``_runner_for`` — the worker-hosted execution door's runner factory —
-    hands THE instance to its runner, the SAME binding the vanilla door
+    hands the instance to its runner, the same binding the vanilla door
     and the packaged run read. No re-mint, no registry probe, no
     getattr-string: the instance rides the compiled object."""
     seam.reset_app_registry_for_tests()
@@ -148,8 +164,50 @@ def test_the_runner_door_carries_the_apps_deps_binding(wf_pool: asyncpg.Pool) ->
         seam.reset_app_registry_for_tests()
 
 
+def test_the_runner_door_hands_each_worker_its_own_runner(wf_pool: asyncpg.Pool) -> None:
+    """The runner cache's behavior, from the caller's side: the same
+    (schema, workflow, worker) against the same pool hands back the same
+    runner (one deps binding, one validation per worker process), a
+    different worker_id hands back a DIFFERENT one (the worker-scoped
+    identity — the runner's state never crosses workers), and a swapped
+    pool re-mints (a stale pool's cached runner never serves a new
+    pool). The cache dict stays internal — the pin asserts what callers
+    receive."""
+    seam.reset_app_registry_for_tests()
+    try:
+        app = WorkflowApp()
+
+        @app.workflow("seam_runner_cache_flow")
+        def seam_runner_cache_flow() -> Promise[object]:
+            node = step(
+                _observed_body, Ingest(doc_id="d"), key="solo", actor="wf-seam", queue="q-seam"
+            )
+            return build(node)
+
+        app.get("seam_runner_cache_flow")  # the door's compile + registration
+        worker_id = JobId(new_uuid())
+        first = seam._runner_for("seam_runner_cache_flow", wf_pool, "cache_probe_schema", worker_id)
+        second = seam._runner_for(
+            "seam_runner_cache_flow", wf_pool, "cache_probe_schema", worker_id
+        )
+        assert second is first, "identical callers share one runner"
+        other_worker = seam._runner_for(
+            "seam_runner_cache_flow", wf_pool, "cache_probe_schema", JobId(new_uuid())
+        )
+        assert other_worker is not first, "a different worker's runner is distinct"
+        swapped_pool = cast(
+            Any, object()
+        )  # a different pool object; the constructor only stores it
+        re_minted = seam._runner_for(
+            "seam_runner_cache_flow", swapped_pool, "cache_probe_schema", worker_id
+        )
+        assert re_minted is not first, "a swapped pool re-mints the runner"
+    finally:
+        seam.reset_app_registry_for_tests()
+
+
 def test_the_projection_projects_the_declared_cohorts() -> None:
-    """Every imported app's workflows compile HERE (the D1 registry
+    """Every imported app's workflows compile here (the D1 registry
     populates as a side effect) and the graphs' (actor, queue) cohorts
     project as sorted ``ActorConfig`` rows stamped ``workflow_actor`` —
     the dispatch capacity LATERAL's visible population."""
@@ -174,8 +232,8 @@ def test_the_projection_projects_the_declared_cohorts() -> None:
                     "the estate sees the population as PROJECTED (F3)"
                 )
         # The projection's compile side effect: the D1 registry holds the
-        # definition in THIS process (the door's body resolution). The
-        # compile is DETERMINISTIC, not memoized: a re-derive is equal,
+        # definition in this process (the door's body resolution). The
+        # compile is deterministic, not memoized: a re-derive is equal,
         # not identical (the registry's own idempotency law).
         compiled = cast("CompiledWorkflow", seam.get_compiled_workflow("seam_projection_flow"))
         assert compiled.name == "seam_projection_flow"
@@ -185,10 +243,10 @@ def test_the_projection_projects_the_declared_cohorts() -> None:
 
 
 def test_the_projection_refuses_one_actor_over_two_queues() -> None:
-    """THE ONE-QUEUE LAW: one actor name declared over TWO queues is the
+    """The one-queue law: one actor name declared over TWO queues is the
     refused defect (``actor_config`` is keyed by actor) — the split
     placement is expressed with DISTINCT actor names per queue. TWO
-    granularities (the F2-3 isolation's law): a workflow whose OWN
+    granularities (the F2-3 isolation's law): a workflow whose own
     cohorts conflict skips THAT WORKFLOW LOUDLY (the healthy apps boot);
     the conflict ACROSS workflows/apps is the raise (skipping one side
     silently would make its rows unclaimable — the invisible cohort by
@@ -203,19 +261,18 @@ def test_the_projection_refuses_one_actor_over_two_queues() -> None:
             second = step(_observed_body, node, key="two", actor="wf-split", queue="gpu")
             return build(second)
 
-        # THE WORKFLOW'S OWN CONFLICT: the skip-loudly arm (F2-3) — the
-        # boot survives, the defect is NAMED, the broken workflow's
-        # cohorts project NOTHING (the isolation pin owns the log's
-        # shape; here the seam's contract: the projection does NOT
+            # the skip-loudly arm (F2-3) — the boot survives, the defect is named,
+
+        # the broken workflow's cohorts project NOTHING (the isolation pin owns
+        # the log's shape; here the seam's contract: the projection does not
         # raise on the workflow's own conflict).
         configs = seam.project_workflow_actor_configs()
         assert all(c.actor != "wf-split" for c in configs), (
             "the conflicting workflow's cohorts projected NOTHING"
         )
 
-        # THE CROSS-WORKFLOW CONFLICT: the raise — two HEALTHY
-        # declarations fighting over one cohort name is the drift the
-        # guards refuse, never a silent skip.
+        # the raise — two healthy declarations fighting over one cohort name is
+        # the drift the guards refuse, never a silent skip.
         healthy = WorkflowApp()
 
         @healthy.workflow("seam_conflict_other")
@@ -301,12 +358,12 @@ async def test_the_door_executes_a_claimed_row_exactly_once_queue_routed(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """THE FLEET PATH, end to end: the app registered → the projection
+    """The fleet path, end to end: the app registered → the projection
     stamps the cohorts → ``create_flow`` writes the root + the node row →
     ``dispatch_batch`` CLAIMS the row (queue-routed through the projected
     cohort, capability-fenced) → ``execute_flow_job`` resolves the body
     from the REGISTERED definition and runs the runner's own machinery →
-    the body executed EXACTLY ONCE, the node terminalized."""
+    the body executed EXACTLY once, the node terminalized."""
     seam.reset_app_registry_for_tests()
     _EXECUTIONS.clear()
     try:
@@ -323,8 +380,8 @@ async def test_the_door_executes_a_claimed_row_exactly_once_queue_routed(
         runner = FlowRunner(app.get("seam_door_flow"), module_pg_pool, wf_schema)
         flow_id = (await runner.create_flow(input={"doc_id": "claimed"})).flow_id
 
-        # THE QUEUE ROUTING: the node row sits on the projected cohort's
-        # queue and the fleet's dispatch claims it for the CAPABLE worker.
+        # the node row sits on the projected cohort's queue and the fleet's
+        # dispatch claims it for the capable worker.
         dispatched = await dispatch_batch(
             wf_conn,
             sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
@@ -345,10 +402,9 @@ async def test_the_door_executes_a_claimed_row_exactly_once_queue_routed(
             worker_id=JobId(worker_id),
             job=job,
         )
-        # THE DOOR'S RECORD (the fleet-truth law): the execution returns
-        # the FlowExecution record — the outcome label AND the REAL
-        # identities the door resolved on the way; the assert reads the
-        # Record, never a bare string.
+        # the execution returns the FlowExecution record — the outcome label
+        # and the real identities the door resolved on the way; the assert
+        # reads the Record, never a bare string.
         assert outcome.outcome == "succeeded", outcome
         assert outcome.step_key == "solo" and outcome.workflow_name == "seam_door_flow"
         assert _EXECUTIONS == ["claimed"], (
@@ -358,15 +414,15 @@ async def test_the_door_executes_a_claimed_row_exactly_once_queue_routed(
             f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', record["id"]
         )
         assert node is not None and node["status"] == "succeeded", node
-        # The runner's OWN ledger machinery ran (the same tx1/tx2, not a
+        # The runner's own ledger machinery ran (the same tx1/tx2, not a
         # second execution semantics): one claim row, the flow terminal.
         claims = await wf_conn.fetchval(
             f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1', flow_id
         )
         assert claims == 1, claims
-        # The ledger claim is TERMINAL (the runner's own finalize ran —
+        # The ledger claim is terminal (the runner's own finalize ran —
         # tx1/tx2, not a second execution semantics). The root row is a
-        # CACHE, never the decider: its terminal verdict belongs to the
+        # cache, never the decider: its terminal verdict belongs to the
         # maintenance derivation, not to this door.
         ledger_status = await wf_conn.fetchval(
             f'SELECT status FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1', flow_id
@@ -404,7 +460,7 @@ def _running_row(job_id: JobId, metadata: dict[str, object], *, actor: str = "wf
 async def test_the_door_refuses_a_row_without_a_flow_link(
     wf_schema: str, module_pg_pool: asyncpg.Pool
 ) -> None:
-    """The door is for workflow rows ONLY: a claimed row whose metadata
+    """The door is for workflow rows only: a claimed row whose metadata
     carries no ``flow_id`` refuses LOUD (the intercept never routes one
     here; a hand-routed one names itself)."""
     with pytest.raises(seam.WorkflowBodyUnresolvableError, match="no flow_id"):
@@ -446,13 +502,18 @@ async def test_the_door_refuses_a_row_without_a_step_key(
 ) -> None:
     """The claimed-row read model needs the step identity; a row with no
     ``step_key`` (the flow root itself, routed by defect) refuses LOUD."""
+    root_flow = str(new_uuid())
     root_id = await wf_conn.fetchval(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata) "
+        "retry_kind, status, step_key, metadata, fairness_key) "
         "VALUES ($1, 'flow', 'default', '{}', 3, 'transient', 'running', NULL, "
-        "$2::jsonb) RETURNING id",
+        "$2::jsonb, $3) RETURNING id",
         new_uuid(),
-        json.dumps({"flow_id": str(new_uuid()), "workflow": "seam_root"}),
+        json.dumps({"flow_id": root_flow, "workflow": "seam_root"}),
+        # the run's cohort (the shipped shape — the check's own law); the
+        # pin's subject is the door's refusal of the missing step
+        # identity, never the cohort's absence.
+        root_flow,
     )
     with pytest.raises(seam.WorkflowBodyUnresolvableError, match="gone or carries no step_key"):
         await seam.execute_flow_job(
@@ -474,11 +535,12 @@ async def test_the_door_refuses_a_flow_root_without_a_workflow_stamp(
     flow_id = new_uuid()
     node_id = await wf_conn.fetchval(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, deps_pending) "
+        "retry_kind, status, step_key, metadata, fairness_key, deps_pending) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'solo', "
-        "$2::jsonb, 0) RETURNING id",
+        "$2::jsonb, $3, 0) RETURNING id",
         new_uuid(),
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
@@ -486,7 +548,7 @@ async def test_the_door_refuses_a_flow_root_without_a_workflow_stamp(
         "VALUES ($1, 'flow', 'default', '{}', 3, 'transient', 'running', '__flow__', "
         "$2::jsonb)",
         flow_id,
-        json.dumps({"flow_id": str(flow_id)}),  # NO 'workflow' stamp
+        json.dumps({"flow_id": str(flow_id)}),  # no 'workflow' stamp
     )
     with pytest.raises(seam.WorkflowBodyUnresolvableError, match="stamps no workflow name"):
         await seam.execute_flow_job(
@@ -507,11 +569,12 @@ async def test_the_door_refuses_an_uncompiled_workflow_name(
     flow_id = new_uuid()
     node_id = await wf_conn.fetchval(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, deps_pending) "
+        "retry_kind, status, step_key, metadata, fairness_key, deps_pending) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'solo', "
-        "$2::jsonb, 0) RETURNING id",
+        "$2::jsonb, $3, 0) RETURNING id",
         new_uuid(),
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '

@@ -109,7 +109,7 @@ async def test_idle_loop_reads_parked_through_the_real_watchdog_path() -> None:
 
 
 async def test_hot_call_soon_churn_reads_busy_through_the_real_watchdog_path() -> None:
-    """THE RED PROOF (red on the shape-only classifier): a loop saturated
+    """The red proof (red on the shape-only classifier): a loop saturated
     by ``call_soon`` churn is 100% busy scheduling callbacks, but its
     thread sits inside the ZERO-TIMEOUT select ``_run_once`` makes when
     ready callbacks are queued. Measured on the unguarded code: 657/658
@@ -122,8 +122,8 @@ async def test_hot_call_soon_churn_reads_busy_through_the_real_watchdog_path() -
     this pin holds the busy verdict so the discriminator cannot silently
     regress to the shape-only read."""
     loop = asyncio.get_running_loop()
-    # pytest-asyncio runs this module at loop scope MODULE - one shared
-    # loop for every test in the file - so the spinner MUST be stopped by
+    # pytest-asyncio runs this module at loop scope module - one shared
+    # loop for every test in the file - so the spinner must be stopped by
     # the test's own finally (the iteration cap alone would keep it
     # spinning for seconds into the following tests' idle windows).
     spin_stop = threading.Event()
@@ -141,7 +141,7 @@ async def test_hot_call_soon_churn_reads_busy_through_the_real_watchdog_path() -
             loop.call_soon(spinner)
             await asyncio.sleep(0.4)
     finally:
-        # Post the stop BEFORE any later scheduling: the shared loop runs
+        # Post the stop before any later scheduling: the shared loop runs
         # the next test's body only after this unwinds.
         spin_stop.set()
     parked, busy, _unreadable = probe.tally()
@@ -154,7 +154,7 @@ async def test_hot_call_soon_churn_reads_busy_through_the_real_watchdog_path() -
 
 
 async def test_loop_blocked_inside_a_callback_reads_busy() -> None:
-    """A loop blocked INSIDE a callback (the frame is the callback, not
+    """A loop blocked inside a callback (the frame is the callback, not
     select) reads busy for the whole block."""
     loop = asyncio.get_running_loop()
     block_started = asyncio.Event()
@@ -207,7 +207,7 @@ async def test_nested_loop_on_the_loop_thread_is_a_cpython_runtime_error() -> No
 
 def test_classifier_timeout_local_discriminator_pins() -> None:
     """The classifier's timeout-local arm: 0 (ready callbacks queued) is
-    NOT parked; a positive timer wait and None (nothing scheduled) ARE;
+    not parked; a positive timer wait and None (nothing scheduled) ARE;
     an unreadable local falls back to the shape-only verdict."""
     import os
 
@@ -243,7 +243,7 @@ def _has_uvloop() -> bool:
 
 @pytest.mark.skipif(not _has_uvloop(), reason="uvloop is not installed")
 def test_under_uvloop_the_signal_reads_honestly_busy() -> None:
-    """Under uvloop (NOT a CPython selector loop - the documented
+    """Under uvloop (not a CPython selector loop - the documented
     boundary) the classifier never reads garbage and never reads parked:
     the loop thread's Python frames sit in the runner, the shape pair
     never matches, and every verdict is the honest-busy False. An
@@ -284,7 +284,7 @@ def _cumulative(publish: dict[str, object]) -> dict[str, dict[str, int]]:
 
 def test_windowed_delta_across_a_skipped_publish_reports_no_double_window() -> None:
     """A FAILED heartbeat tick between two publishes still calls
-    ``metadata_value()`` (the anchor advances BEFORE the write that then
+    ``metadata_value()`` (the anchor advances before the write that then
     rolls back). The stalls of the rolled-back window are lost from the
     PUBLISHED windows - a coverage gap - but the delta never reports a
     double window and never fabricates: the next publish's span and its
@@ -299,12 +299,12 @@ def test_windowed_delta_across_a_skipped_publish_reports_no_double_window() -> N
     assert _stalls(publish_1) == {"actor_a": {"blocking_call": 1}}
 
     # Window 2: a stall lands, the tick calls metadata_value() (anchor
-    # advances), and the write FAILS - the payload dies with the rollback.
+    # advances), and the write fails - the payload dies with the rollback.
     tally.record("actor_a", kind="blocking_call")
     lost_payload = tally.metadata_value()  # never published
     assert _stalls(lost_payload) == {"actor_a": {"blocking_call": 1}}
 
-    # Window 3: the recovery beat publishes. The delta must be THIS
+    # Window 3: the recovery beat publishes. The delta must be this
     # window's stalls only - not a double window (which would re-report
     # the lost segment), not a fabricated count.
     tally.record("actor_b", kind="gil_held")
@@ -449,7 +449,7 @@ class _SharedPool:
 async def test_failed_tick_keeps_the_idle_drain_metrics_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The failed tick's idle drain is METRICS-ONLY: the histogram point
+    """The failed tick's idle drain is METRICS-only: the histogram point
     stands, the row's payload dies with the rolled-back transaction, and
     the next tick's window starts fresh (no key, no second histogram
     point for the same samples)."""
@@ -491,7 +491,7 @@ async def test_failed_tick_keeps_the_idle_drain_metrics_only(
         )
 
     await _liveness_reached(1)  # tick 1's write landed
-    # Samples recorded INSIDE tick 2's window: the tick that will fail
+    # Samples recorded inside tick 2's window: the tick that will fail
     # (its drain happens before the failing write).
     for parked in (True, False):
         deps.loop_idle.record_sample(parked=parked)
@@ -513,14 +513,14 @@ async def test_failed_tick_keeps_the_idle_drain_metrics_only(
         ]
 
     # The failed tick's drain recorded its point (metrics-only), tick 1's
-    # window recorded its own, and tick 3's EMPTY window recorded nothing:
+    # window recorded its own, and tick 3's empty window recorded nothing:
     # exactly two points, the drained windows never double-counted.
     points = _idle_points()
     assert sum(p.count for p in points) == 2, (
         f"expected 2 histogram samples (tick 1's window + the failed "
         f"tick's metrics-only drain), got {sum(p.count for p in points)}"
     )
-    # The recovery tick's write carried NO loop_idle key (its window was
+    # The recovery tick's write carried no loop_idle key (its window was
     # empty) and no fabricated counts.
     _sql3, args3 = conn.liveness_calls[2]
     payload = json.loads(str(args3[1]))
@@ -535,7 +535,7 @@ async def test_failed_tick_keeps_the_idle_drain_metrics_only(
 async def test_concurrent_metadata_merges_on_one_workers_row_no_lost_update(
     pg_dsn: str,
 ) -> None:
-    """Two writers racing the SAME workers row's
+    """Two writers racing the same workers row's
     ``metadata = metadata || $2::jsonb`` merge must not lose either
     side's key: READ COMMITTED re-evaluates the blocked UPDATE against
     the committed row version, so the second merge concats onto the
@@ -625,8 +625,8 @@ async def test_full_confusion_chain_rate_limit_denial_does_not_skew(
     snooze (an attempt-row reschedule arm) -> claim -> succeed.
 
     Pins, per attempt: due_at(k) is THAT attempt's own claim-time
-    scheduled_at; the denial writes NO attempt row and its reschedule
-    becomes the NEXT claim's honest due time; the snoozed arm stamps the
+    scheduled_at; the denial writes no attempt row and its reschedule
+    becomes the next claim's honest due time; the snoozed arm stamps the
     pre-reschedule value via its same-snapshot CTE; and the chain
     reconstructs due_at(k) -> started_at(k) -> due_at(k+1)."""
     from taskq.backend._protocol import ErrorInfo
@@ -656,7 +656,7 @@ async def test_full_confusion_chain_rate_limit_denial_does_not_skew(
             )
         await backend.scheduled_to_pending()
 
-    # Attempt 1: claimed against the enqueue's scheduled_at, FAILS-RETRY.
+    # Attempt 1: claimed against the enqueue's scheduled_at, fails-retry.
     claimed = await backend.dispatch_batch(
         worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=30)
     )
@@ -675,9 +675,9 @@ async def test_full_confusion_chain_rate_limit_denial_does_not_skew(
     assert rescheduled_1 > due_1
 
     # Attempt 2 (first mint): claimed against rescheduled_1, then the
-    # RATE-LIMIT DENIAL - claimed, refunded, rescheduled, NO attempt row.
+    # rate-limit denial - claimed, refunded, rescheduled, no attempt row.
     # The denial's delay rides the 1s MIN_DEFERRAL floor (no backdate
-    # here: the denial's own reschedule must be the value the NEXT claim
+    # here: the denial's own reschedule must be the value the next claim
     # takes the row against, which is the skew being probed).
     await _backdate_and_promote()
     claimed = await backend.dispatch_batch(
@@ -707,8 +707,8 @@ async def test_full_confusion_chain_rate_limit_denial_does_not_skew(
     assert n_rows == 1, "the denial writes NO attempt row"
     assert row_attempt == 1, "the denial refunds the claim's attempt increment"
 
-    # Attempt 2 (RE-minted over the refunded number): claimed against the
-    # DENIAL's reschedule - the row is left exactly as the denial left
+    # Attempt 2 (re-minted over the refunded number): claimed against the
+    # denial's reschedule - the row is left exactly as the denial left
     # it (the 1s deferral elapses, the promotion sweep moves it to
     # pending, no backdate touches the denial's reschedule).
     await asyncio.sleep(1.1)
@@ -735,7 +735,7 @@ async def test_full_confusion_chain_rate_limit_denial_does_not_skew(
     rescheduled_2 = await _scheduled_at()
     assert rescheduled_2 > due_2
 
-    # Attempt 3: claimed against rescheduled_2, SUCCEEDS.
+    # Attempt 3: claimed against rescheduled_2, succeeds.
     await _backdate_and_promote()
     claimed = await backend.dispatch_batch(
         worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=30)
@@ -777,7 +777,7 @@ async def test_due_at_migration_checksum_honest_on_an_already_migrated_db(
     01.00.20_04 and every migration bundled after it (01.00.21_01
     today; the expectation is derived from ``discover()`` itself, so the
     next bundled migration extends this pin instead of breaking it) —
-    records their rendered checksums, reports NO drift (the ledger is
+    records their rendered checksums, reports no drift (the ledger is
     honest), and a second apply_pending is a clean no-op."""
     from taskq.migrate import apply_pending, checksum_drifts, discover
 
@@ -785,7 +785,7 @@ async def test_due_at_migration_checksum_honest_on_an_already_migrated_db(
     conn = await asyncpg.connect(pg_dsn)
     try:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        # The world BEFORE the new file: every earlier migration, applied
+        # The world before the new file: every earlier migration, applied
         # raw with their ledger rows recorded (the dev DB's state).
         migrations = discover()
         index = next(i for i, m in enumerate(migrations) if m.version == "01.00.20_04")
@@ -796,7 +796,7 @@ async def test_due_at_migration_checksum_honest_on_an_already_migrated_db(
                 earlier.key,
                 earlier.checksum(schema),
             )
-        # The upgrade: EXACTLY the pending tail applies — everything from
+        # The upgrade: exactly the pending tail applies — everything from
         # the 01.00.20_04 cutoff onward (01.00.20_04 itself through the
         # bundled set's end: main's 01.00.21_01 archive keyset index
         # today). Derived from discover()'s own ordering, never a
@@ -871,9 +871,9 @@ def test_loop_idle_histogram_records_both_endpoints() -> None:
     assert sum(point.bucket_counts) == 2, (
         f"both endpoint samples recorded, got {point.bucket_counts}"
     )
-    # The Python SDK's buckets are upper-inclusive: 0.0 lands in the FIRST
+    # The Python SDK's buckets are upper-inclusive: 0.0 lands in the first
     # bucket (upper edge 0.0) and 1.0 in the bucket whose upper edge is
-    # 1.0 - both inside the explicit set, the (+1.0, inf) tail EMPTY
+    # 1.0 - both inside the explicit set, the (+1.0, inf) tail empty
     # (nothing spills past the bounded range).
     assert point.bucket_counts[0] == 1, "the never-busy 0.0 sample clipped away"
     assert point.bucket_counts[len(point.explicit_bounds) - 1] == 1, (

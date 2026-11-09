@@ -1,0 +1,5 @@
+# the bands leg (tests/test_wf_perf_bands.py + tests/test_wf_status_pins.py + tests/test_wf_schema_migration.py, integration on) at the re-stamp head 4441dd642fbd47501d2830eba3622869551d68d5
+................................                                         [100%]
+32 passed in 34.07s
+rc=0
+head: 4441dd642fbd47501d2830eba3622869551d68d5

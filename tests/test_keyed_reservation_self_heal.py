@@ -200,7 +200,7 @@ async def test_heal_window_does_not_survive_eviction_and_re_registration(
 ) -> None:
     """The heal window bounds a busy bucket to one probe per window - and
     must not outlive the bucket: after evict + re-register + a fresh row
-    deletion, the FIRST denied acquire heals again."""
+    deletion, the first denied acquire heals again."""
     await _fresh_schema(pg_dsn)
 
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
@@ -269,11 +269,11 @@ async def test_busy_denial_window_defers_a_later_zero_rows_heal(
 
     Sequence: a contended bucket denies (probe, stamp); the rows then
     vanish (a sibling worker's drain) while the window still stands; the
-    next denial is deferred with NO probe. Shrink the window to zero and
+    next denial is deferred with no probe. Shrink the window to zero and
     the next denial probes, heals, and acquires.
     """
     # import_module, not `import ... as`: the ratelimit package re-exports
-    # the `registry` SINGLETON under the same name as this submodule, so
+    # the `registry` singleton under the same name as this submodule, so
     # `import taskq.ratelimit.registry as x` binds the instance, and a
     # monkeypatch against it never reaches the module global the heal
     # reads. Same workaround as test_keyed_reservation_hardening.py.
@@ -452,7 +452,7 @@ async def test_pending_cap_follows_the_setting_on_the_opportunistic_path(
 
 async def test_cap_veto_is_logged_once_per_eviction_call() -> None:
     """At the pending cap, an eviction call that must shed N+1 buckets
-    records N and logs the veto count ONCE: pending at cap means
+    records N and logs the veto count once: pending at cap means
     reclamation is falling behind (the drain cannot keep up with the
     eviction rate) - an onset signal for the operator alongside the
     steady pending-depth gauge, not a silent skip."""
@@ -522,7 +522,7 @@ async def test_cancelled_heal_does_not_leave_a_standing_window_stamp(
         with pytest.raises(asyncio.CancelledError):
             await _acquire(reg, ref, pool, settings)
 
-        # Job C's denial must probe IMMEDIATELY: the cancelled heal left
+        # Job C's denial must probe immediately: the cancelled heal left
         # no standing stamp, so the window does not suppress it.
         with pytest.raises(ReservationUnavailable):
             await _acquire(reg, ref, pool, settings)
@@ -540,7 +540,7 @@ async def test_heal_failure_counts_every_attempt_but_warns_once_per_window(
     monkeypatch: pytest.MonkeyPatch,
     otel_reader: InMemoryMetricReader,
 ) -> None:
-    """A persistently-failing probe retries the heal on EVERY denial (the
+    """A persistently-failing probe retries the heal on every denial (the
     stamp is rolled back so the next denial re-probes): the failure
     COUNTER records each attempt - metrics aggregate - but the WARNING is
     rate-limited to one per bucket per heal window. A busy bucket with a

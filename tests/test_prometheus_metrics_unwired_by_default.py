@@ -60,7 +60,7 @@ def test_docs_never_show_the_prometheus_metric_reader_wiring_step() -> None:
     endpoint's "automatic" claim stopped being misleading.
     """
     result = subprocess.run(
-        ["grep", "-rl", "PrometheusMetricReader", "docs/"],  # noqa: S607  # Why: grep resolved from PATH, as elsewhere in this suite; fixed literal argv, no shell.
+        ["grep", "-rl", "PrometheusMetricReader", "docs/"],  # noqa: S607  # Why: grep resolved from path, as elsewhere in this suite; fixed literal argv, no shell.
         capture_output=True,
         text=True,
         cwd=".",
@@ -90,7 +90,7 @@ def test_metrics_endpoint_should_serve_taskq_series_under_documented_setup() -> 
     from scratch") together promise a working scrape target once the
     ``[prometheus]`` extra is installed. This mounts the router exactly as
     `taskq ui serve` does (src/taskq/cli.py: `create_metrics_router(None)`,
-    no `registry=` override) in a subprocess with NO OTel env vars set -
+    no `registry=` override) in a subprocess with no OTel env vars set -
     the default state after `pip install taskq-py[prometheus]` per
     docs/guides/admin-ui.md's Docker Compose example, which sets only
     TASKQ_PG_DSN / TASKQ_REDIS_URL / TASKQ_ADMIN_HOST / TASKQ_ADMIN_PORT
@@ -112,8 +112,8 @@ def test_metrics_endpoint_should_serve_taskq_series_under_documented_setup() -> 
     # Run in a clean subprocess: the module-level instruments in
     # taskq.obs._otel bind to whichever MeterProvider is active at first
     # import (get_meter() called at module load, per obs/_otel.py), and
-    # create_metrics_router's auto-wiring sets the process-GLOBAL provider
-    # behind OTel's set-once guard - neither may share process state with
+    # create_metrics_router's auto-wiring sets the process-global provider
+    # behind otel's set-once guard - neither may share process state with
     # anything a prior test in this suite configured.
     script = """
 from fastapi import FastAPI

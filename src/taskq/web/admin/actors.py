@@ -170,10 +170,10 @@ def register(router: APIRouter) -> None:
         purge_queue = form.get("purge_queue") == "true"
 
         async with pool.acquire() as conn, conn.transaction():
-            # ONE transaction around the deregistration and its audit
+            # one transaction around the deregistration and its audit
             # row: deregister_actor opens nested transactions of its own
             # (savepoints on a real connection), and the outer block makes
-            # the whole deregistration atomic WITH the audit row, so an
+            # the whole deregistration atomic with the audit row, so an
             # actor can never vanish while the record of who removed it
             # fails to land (or the reverse).
             try:
@@ -186,7 +186,7 @@ def register(router: APIRouter) -> None:
                 raise HTTPException(status_code=409, detail=str(exc)) from None
             # The purge_queue arm is the destructive multi-row piece
             # (every active job on the actor's orphaned queue), so the
-            # audit row records its SCOPE, not just the flag: which queue
+            # audit row records its scope, not just the flag: which queue
             # was purged and how many rows each stage touched. A trail
             # that says "purge: true" without naming the queue or the row
             # counts cannot answer "what exactly did this button delete".

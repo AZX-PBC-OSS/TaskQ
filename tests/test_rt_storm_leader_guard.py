@@ -1,4 +1,4 @@
-"""Red-team storm: the leader's guard-fatal backstop vs the storm that
+"""Adversarial review storm: the leader's guard-fatal backstop vs the storm that
 caused it.
 
 The question: when a slow/overloaded database makes every sweep tick
@@ -13,10 +13,10 @@ Model (from ``worker/_transient.py`` and ``worker/_leader_sweeps.py``
 ``_sweep_loop``):
 
 * Every error a slow-DB storm produces is in ``TRANSIENT_PG_ERRORS``.
-  The sweep loop catches that tuple per sweep call BEFORE its
+  The sweep loop catches that tuple per sweep call before its
   ``except Exception`` backstop clause - a storm error is logged as a
-  warning, marks the iteration unclean, and NEVER reaches
-  ``guard.unexpected``. Crash-looping is NOT the designed answer to a
+  warning, marks the iteration unclean, and never reaches
+  ``guard.unexpected``. Crash-looping is not the designed answer to a
   slow database: the designed answer is per-tick warnings, drains that
   pause (committed batches stay committed), and - for the prune family -
   the ``SweepBatchSizer`` one-way reduced-tier latch.
@@ -94,17 +94,17 @@ async def test_slow_db_storm_errors_never_reach_the_fatal_guard() -> None:
             raise exc
         except TRANSIENT_PG_ERRORS:
             # The per-sweep catch: warning + iteration_clean = False.
-            # guard.unexpected is NOT called - this is the critical
+            # guard.unexpected is not called - this is the critical
             # asymmetry under test.
             pass
 
     # The storm bought zero fatalities: the first genuinely-unexpected
-    # error after it is strike ONE of five, not strike 101.
+    # error after it is strike one of five, not strike 101.
     guard.unexpected(RuntimeError("a real bug, not a PG moment"))
     # No raise: streak is 1 < 5. (If the storm had leaked into the
     # guard, this call would have raised the storm's 100th error.)
 
-    # And five consecutive REAL bugs still raise the original - the
+    # And five consecutive real bugs still raise the original - the
     # backstop stays reachable for what it exists for.
     with pytest.raises(RuntimeError, match="a real bug"):
         for _ in range(DEFAULT_MAX_CONSECUTIVE_UNEXPECTED - 1):

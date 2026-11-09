@@ -70,7 +70,7 @@ def median_ns(fn: Callable[..., str], *args: Any) -> float:
 
 
 def main() -> int:
-    # ── GREEN: byte-equality of cached vs direct render ────────────────
+    # ── green: byte-equality of cached vs direct render ────────────────
     for name, template in TEMPLATES:
         for schema in SCHEMAS:
             direct = template.format(schema=schema)
@@ -85,7 +85,7 @@ def main() -> int:
         else:
             raise AssertionError("invalid schema identifier must still raise")
 
-    # ── RED/GREEN: interleaved A/B batches ─────────────────────────────
+    # ── red/green: interleaved A/B batches ─────────────────────────────
     a_batches: list[float] = []
     b_batches: list[float] = []
     for _ in range(INTERLEAVED_BATCHES):

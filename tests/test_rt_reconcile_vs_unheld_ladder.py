@@ -1,18 +1,18 @@
-"""Red-team: the claim-loss reconcile vs the cancel ladder's unheld walk.
+"""Adversarial review: the claim-loss reconcile vs the cancel ladder's unheld walk.
 
 Two writers now own the same row class on current main, and their premises
 collide for one row shape:
 
 * The claim-loss reconcile (``worker/heartbeat.py``) reads ``running`` rows
-  locked to this worker that NO in-memory structure holds (no registry
+  locked to this worker that no in-memory structure holds (no registry
   entry, no claim intent, not queued, not disowned) and whose claim-stamped
   ``started_at`` has aged past one full lease. Its premise: "no registry
   entry means no actor ever ran this claim", so it refunds the claim-time
   attempt increment, un-stamps ``started_at``, and disowns the row for
   Sweep 1.
-* The cancel ladder's unheld walk (``worker/cancel.py``) reads the SAME
+* The cancel ladder's unheld walk (``worker/cancel.py``) reads the same
   rows when they carry an operator cancel flag (the poll's predicate:
-  ``locked_by_worker = this worker AND cancel_requested_at IS NOT NULL AND
+  ``locked_by_worker = this worker and cancel_requested_at IS not NULL and
   status = 'running'``). Its premise: the poll's predicate is ownership,
   the walk escalates the flag to phase 2 and abandons the row.
 
@@ -34,7 +34,7 @@ makes the second bound pass first). The refund erases the executed
 attempt's charge: the row abandons at the REFUNDED attempt number, and
 ``mark_abandoned``'s ledger INSERT collides with the genuine earlier
 attempt's row (``ON CONFLICT DO NOTHING``), so the attempt whose body
-actually ran has NO ``job_attempts`` row anywhere.
+actually ran has no ``job_attempts`` row anywhere.
 
 The contract pinned here: the reconcile must never touch a row carrying an
 operator cancel. The ladder owns flagged rows while the worker lives (the
@@ -79,7 +79,7 @@ _ACTOR = "reconcile_ladder_actor"
 
 #: The reconcile's grace is one full lease on ``started_at``; seeds age the
 #: stamp by double that so the probe fires on the first tick. The aged stamp
-#: IS the long-body premise: the body ran two leases, the heartbeat renewed
+#: is the long-body premise: the body ran two leases, the heartbeat renewed
 #: the lease in flight, and the claim stamp never moved.
 _LEASE = timedelta(seconds=3.0)
 _GRACE_AGING = "6 seconds"
@@ -165,9 +165,9 @@ async def _fenced_outcome_write(
     conn: asyncpg.Connection, schema: str, job_id: UUID, worker_id: UUID, row: dict[str, Any]
 ) -> None:
     """The body's exit through the cancel fence: the real rendered
-    ``mark_retry`` with the attempt's OWN correct fence values (attempt,
-    claim_epoch, ownership), so the ONLY failing conjunct is
-    ``cancel_phase = 0``. A phase-carrying row matches NO arm: no row comes
+    ``mark_retry`` with the attempt's own correct fence values (attempt,
+    claim_epoch, ownership), so the only failing conjunct is
+    ``cancel_phase = 0``. A phase-carrying row matches no arm: no row comes
     back, the write no-ops, and the consumer's unconditional finally
     deregisters (the caller's registry is empty by construction)."""
     rec = await conn.fetchrow(
@@ -254,7 +254,7 @@ def _heartbeat_deps(pg_dsn: str, schema: str, pool: asyncpg.Pool) -> WorkerDeps:
 async def _one_tick(deps: WorkerDeps, worker_id: UUID) -> None:
     """Run the real ``heartbeat_loop`` for exactly one tick, synchronised on
     the tick-duration hook (the idiom the heartbeat pins use). The real
-    cancel controller is wired: this file's seam is the reconcile AND the
+    cancel controller is wired: this file's seam is the reconcile and the
     ladder's unheld walk in one tick, both writers present."""
     import taskq.worker.heartbeat as hb_mod
     from taskq.worker.cancel import make_cancel_controller
@@ -320,7 +320,7 @@ async def test_reconcile_never_refunds_an_executed_attempt_the_ladder_owns(
     worker_id = new_uuid()
     await _seed_worker(clean_pg_conn, schema, worker_id)
     # One spent attempt with a genuine ledger row: the number the refund
-    # lands on must be VISIBLY stolen from a real execution.
+    # lands on must be visibly stolen from a real execution.
     job_id = await _seed_pending_job(clean_pg_conn, schema, max_attempts=3, attempt=1)
     await _seed_genuine_attempt_row(clean_pg_conn, schema, job_id)
 
@@ -329,7 +329,7 @@ async def test_reconcile_never_refunds_an_executed_attempt_the_ladder_owns(
     assert claimed["status"] == "running"
     assert claimed["attempt"] == 2, "the claim charges the attempt at claim time"
 
-    # 2. The body runs LONGER than the lease (the lease renewed in flight,
+    # 2. The body runs longer than the lease (the lease renewed in flight,
     #    the claim stamp never moved) and exits through the cancel fence.
     await _operator_cancel(clean_pg_conn, schema, job_id)
     await _age_started_at(clean_pg_conn, schema, job_id)
@@ -341,7 +341,7 @@ async def test_reconcile_never_refunds_an_executed_attempt_the_ladder_owns(
     assert row["status"] == "running" and row["cancel_phase"] == 1
     assert row["locked_by"] == str(worker_id)
 
-    # 3. The real heartbeat tick: the reconcile AND the ladder's unheld walk
+    # 3. The real heartbeat tick: the reconcile and the ladder's unheld walk
     #    (a real cancel controller, both writers of this seam).
     deps = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
     await _one_tick(deps, worker_id)
@@ -370,8 +370,8 @@ async def test_reconcile_never_refunds_an_executed_attempt_the_ladder_owns(
         f"the ladder's abandon must terminalise the unheld row, got {row}"
     )
 
-    # 5. THE LEDGER: the executed attempt's row must exist. On main the
-    #    abandon's INSERT ran at the REFUNDED number, collided with the
+    # 5. the ledger: the executed attempt's row must exist. On main the
+    #    abandon's INSERT ran at the refunded number, collided with the
     #    genuine attempt-1 row, and the body's attempt vanished.
     attempts = await _attempt_rows(clean_pg_conn, schema, job_id)
     assert [(a["attempt"], a["outcome"]) for a in attempts] == [
@@ -391,7 +391,7 @@ async def test_reconcile_still_owns_the_unflagged_lost_claim(
 ) -> None:
     """Control: the fix must not blind the reconcile to its own class.
 
-    A running row locked here, held by nothing, NO cancel flag: the
+    A running row locked here, held by nothing, no cancel flag: the
     reconcile refunds and disowns it exactly as the issue-458 contract
     pins, and Sweep 1's budget predicate reads the restored budget."""
     schema = module_pg_schema.schema_name

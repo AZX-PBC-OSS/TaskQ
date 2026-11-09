@@ -51,7 +51,7 @@ from taskq.worker.leader import build_leader_lease_sql
 
 pytestmark = pytest.mark.integration
 
-# Generous horizons: these tests pin WHICH rows the predicates accept, not
+# Generous horizons: these tests pin which rows the predicates accept, not
 # how time passes - the lapsed states are arranged by backdating, never by
 # sleeping.
 _LEASE_SECS = 3600.0
@@ -161,7 +161,7 @@ async def test_unclaimed_role_is_winnable_while_another_session_holds_the_courte
     await _create_worker(lease_conn, schema, candidate)
 
     # A session the fleet does not control holds the schema's courtesy lock
-    # - the shape a dead-without-FIN candidate or a slow-to-exit resigning
+    # - the shape a dead-without-fin candidate or a slow-to-exit resigning
     # leader leaves behind.
     holder = await asyncpg.connect(module_pg_schema.pg_dsn)
     try:
@@ -519,7 +519,7 @@ async def test_an_old_release_pod_taking_over_the_row_does_not_open_a_stale_expi
 
     # The new-release leader is deposed by an old-release pod's unguarded,
     # unconditional four-column upsert (the pre-lease shape: no WHERE clause,
-    # no expires_at in its SET list). This is the production old-release
+    # no expires_at in its set list). This is the production old-release
     # statement, reproduced verbatim rather than invoked, since the fix
     # deleted that code path from this release.
     await lease_conn.execute(

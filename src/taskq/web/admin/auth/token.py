@@ -23,7 +23,7 @@ def token_auth(expected_token: str) -> Callable[..., Any]:
     would accept any request, which is a fail-open misconfiguration.
 
     The returned callable carries a ``session_verifier`` attribute -- the
-    re-check long-lived SSE streams re-invoke (#316) -- so a router built with
+    re-check long-lived SSE streams re-invoke  -- so a router built with
     this dependency re-validates the live request's bearer token at every
     keepalive tick and before every streamed event.
     """

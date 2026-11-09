@@ -260,7 +260,7 @@ def test_unique_states_default() -> None:
     The default covers ``succeeded`` - the state that says the work
     already happened, which is the precise condition a ``unique_for``
     window exists to detect - and still excludes the failure states,
-    which mean the work did not happen. (This pin previously asserted
+    which mean the work did not happen. (The pin asserts
     the narrower three-state default; the window deliberately widened to
     cover success, and the explicit three-state set remains the opt-out.)
     """

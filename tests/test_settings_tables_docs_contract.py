@@ -48,7 +48,7 @@ no vacuous skips):
 - **``TASKQ_QUEUES``** is the one factory default; its docs cell is the
   list literal ``["default"]``, compared quote-style-normalized.
 
-The drills at the bottom prove the pin is red-first in-suite: each
+The scenarios at the bottom prove the pin is in-suite: each
 feeds a mutated copy (a staled default, a new undocumented field, a
 phantom documented name) through the same reconciliation the real
 assertions use and asserts the specific failure is reported. The same
@@ -94,7 +94,7 @@ class _DocsRow:
 
 
 def _split_cells(line: str) -> list[str]:
-    """Split a table line on ``|`` -- NOT on the escaped ``\\|`` the docs
+    """Split a table line on ``|`` -- not on the escaped ``\\|`` the docs
     use inside type cells (``str \\| None``), which would otherwise shift
     every later column (this bug silently misread Default cells)."""
     return [c.replace("\\|", "|").strip() for c in re.split(r"(?<!\\)\|", line)]
@@ -282,7 +282,7 @@ def _default_matches(default: object, cell: str) -> bool:
     return False  # an unknown default shape is never silently pinnable
 
 
-# ── reconciliation (shared by the real pins and the drills) ────────────
+# ── reconciliation (shared by the real pins and the scenarios) ────────────
 
 
 def _documented_unknown_settings(
@@ -378,9 +378,9 @@ def test_every_code_setting_is_documented_in_a_docs_table() -> None:
     )
 
 
-# ── red-first drills ───────────────────────────────────────────────────
-# The pin's failure modes, proven in-suite: each drill feeds a mutated
-# copy through the SAME reconciliation the real assertions run and
+# ── scenarios ───────────────────────────────────────────────────
+# The pin's failure modes, proven in-suite: each scenario feeds a mutated
+# copy through the same reconciliation the real assertions run and
 # asserts the specific offender is named.
 
 
@@ -429,10 +429,10 @@ def test_drill_a_phantom_documented_setting_turns_the_pin_red() -> None:
                 "TASKQ_MAX_CONCURENCY",
             ),  # the missing-second-c typo configuration.md warns about
             default_cell="`4`",
-            where="drill",
+            where="scenario",
         ),
     ]
     offenders = _documented_unknown_settings(phantom_rows, inventory)
-    assert offenders == ["TASKQ_MAX_CONCURENCY tabulated at drill matches no settings field"], (
+    assert offenders == ["TASKQ_MAX_CONCURENCY tabulated at scenario matches no settings field"], (
         offenders
     )

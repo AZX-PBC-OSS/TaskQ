@@ -10,7 +10,7 @@ supply. A guard that cannot catch that class is theatre; this file exists
 so the whole class fails at authoring time.
 
 Mechanism: ``asyncpg.Connection.prepare`` against a real, fully migrated
-schema (the suite's ``module_pg_schema`` fixture). Prepare parses AND
+schema (the suite's ``module_pg_schema`` fixture). Prepare parses and
 plans against the catalog with ``$n`` parameter types inferred and
 executes nothing - the parse-and-validate semantics an ``EXPLAIN``
 wrapper would give, without fabricating parameter values and without
@@ -94,7 +94,7 @@ pytestmark = pytest.mark.integration
 _WALK_ROOTS: Final = (taskq.backend, taskq.worker, taskq.ratelimit)
 
 # The discovery net: any module-level string carrying a statement keyword.
-# The completeness test below then forces EVERY discovered constant to be
+# The completeness test below then forces every discovered constant to be
 # either prepared or explicitly registered - nothing drops out silently.
 # A constant the net cannot see (a pure expression fragment with no
 # statement keyword, e.g. the reclaim budget predicate) is only ever
@@ -202,6 +202,20 @@ def _render_extra(placeholder: str, owning_module: str, body: str) -> object:
         return value
     if placeholder == "outbox_multiplier":
         return RECLAIM_OUTBOX_RETENTION_MULTIPLIER
+    if placeholder == "capacity_set":
+        # taskq.worker.startup renders its shared actor_config upsert
+        # body's {capacity_set} slot by token replacement with its own
+        # face constants (the operator face fills it empty, the
+        # code-owned face fills it from _CODE_OWNED_CAPACITY_SET);
+        # rendering with the owning module's constant is that module's
+        # own render path.
+        value = getattr(importlib.import_module(owning_module), "_CODE_OWNED_CAPACITY_SET", None)
+        if not isinstance(value, str):
+            raise AssertionError(
+                f"{owning_module}._CODE_OWNED_CAPACITY_SET is no longer a string; "
+                "the actor-config upsert's slot render changed - re-review this resolver"
+            )
+        return value
     raise AssertionError(
         f"unregistered render placeholder {{{placeholder}}} on a constant in "
         f"{owning_module} - register the value production substitutes in "
@@ -233,7 +247,7 @@ def _render_constant(qualified: str, body: str, schema: str) -> str:
     return body.format(schema=schema, **extras)
 
 
-# ── Registries: the discovered constants this guard does NOT prepare raw ──
+# ── Registries: the discovered constants this guard does not prepare raw ──
 #
 # Every entry is a claim with a tripwire, same doctrine as the bounded-writes
 # audit's _EXEMPT: the reason is the review, and the completeness test below
@@ -242,7 +256,7 @@ def _render_constant(qualified: str, body: str, schema: str) -> str:
 
 # Interpolation fragments and token templates, validated through the rendered
 # product(s) that carry them: qualified name -> (products, marker, reason).
-# A None marker pins VERBATIM containment - the product's text must contain
+# A None marker pins verbatim containment - the product's text must contain
 # the fragment's whole current body, which is how str.replace interpolation
 # works; a str marker is a distinctive line that must survive the product's
 # token substitution.
@@ -314,7 +328,7 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
             "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",
             "taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",
         ),
-        "-- THE DISPATCH FENCE (P3 rule 4's second leg, T04, + the worker",
+        "-- THE DISPATCH FENCE (P3 rule 4's second leg, + the worker",
         "a token template (the __WF_ALIAS__/__WF_TERMINAL__ holes are "
         "substituted by _wf_dispatch_fence per alias, never .format), never "
         "a standalone statement; its rendered text rides the two dispatch "
@@ -348,7 +362,7 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
     "taskq.backend._sweeps:_SWEEP_RESULT_TTL_GUARD_SQL": (
         ("taskq.backend._sweeps:_SWEEP_RESULT_TTL_SQL",),
         None,
-        "the T18 expiry-eats-children guard fragment (a NOT-EXISTS conjunct "
+        "the expiry-eats-children guard fragment (a NOT-EXISTS conjunct "
         "carrying {schema} holes), never a standalone statement; spliced at "
         "the window's LIMIT into _SWEEP_RESULT_TTL_BASE_SQL to make "
         "_SWEEP_RESULT_TTL_SQL — the rolling-deploy tolerance's fallback runs "
@@ -364,7 +378,7 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         'JOIN "{schema}".jobs fl ON fl.id = e.flow_id',
         "a NOT-EXISTS guard fragment, never a standalone statement; "
         "composed onto the archive candidate windows (the prune + the "
-        "per-actor variant) — T18's parent-prune hold; the guard's "
+        "per-actor variant) — the parent-prune hold; the guard's "
         "rendered text is validated through the products' prepare",
     ),
     "taskq.backend._sweeps:_SWEEP_IDLE_KEYED_BUCKETS_BODY": (
@@ -442,7 +456,7 @@ _PREFIX_COMPLETIONS: Final[dict[str, tuple[str, str]]] = {
 # reason). The tripwire below renders the fragment exactly as its consumer
 # does and asserts the rendered text still appears in every named field -
 # _COVERED_BY's containment demand, extended to the shapes the net is blind
-# to. mark_interrupted is deliberately ABSENT from ATTEMPT_REFUND_SQL's
+# to. mark_interrupted is deliberately absent from ATTEMPT_REFUND_SQL's
 # products: the interruption charges the attempt it ran (the fragment's own
 # comment), so its statement must not carry the refund.
 _FRAGMENTS_PASSED_INTO_PRODUCTS: Final[
@@ -510,16 +524,16 @@ _NOT_PG_SQL: Final[dict[str, tuple[str, str]]] = {
 
 # ── The plan-on-vanilla carve-out: capability probes ──────────────────
 #
-# Statements keyed by a distinctive substring of the statement's OWN TEXT
+# Statements keyed by a distinctive substring of the statement's own text
 # (never a count, never a name that can drift silently - the completeness
 # test below fails a marker nothing renders to) that are exempted from the
-# PLAN demand only.  A capability probe's whole job is to ASK the catalog
+# plan demand only.  A capability probe's whole job is to ask the catalog
 # a question some deployments cannot answer: the entry below,
 # ``_RETENTION_POLICY_FLOOR_PROBE_SQL``, references
-# ``timescaledb_information.hypertables`` - a view that exists ONLY on
-# TimescaleDB - so its prepare on a fully migrated VANILLA schema raises
+# ``timescaledb_information.hypertables`` - a view that exists only on
+# TimescaleDB - so its prepare on a fully migrated vanilla schema raises
 # ``UndefinedTableError``.  That is the probe's shape, not a defect: the
-# UndefinedTable is the runtime's designed fail-open INPUT, caught by the
+# UndefinedTable is the runtime's designed fail-open input, caught by the
 # probe's own try in ``taskq.backend._retention_floor.retention_policy_floor``
 # (the asyncpg-free module the floor moved into out of ``taskq.timescale``)
 # - ``except Exception`` → debug log → None → the caller's sweep runs
@@ -529,14 +543,14 @@ _NOT_PG_SQL: Final[dict[str, tuple[str, str]]] = {
 # the parse-layer fail-open pin (a row without the probe's keys reads as
 # "no answer").
 #
-# The smoke guard keeps its PARSE teeth on the probe: asyncpg's ``prepare``
+# The smoke guard keeps its parse teeth on the probe: asyncpg's ``prepare``
 # fuses parse and plan, and PostgreSQL reports a syntax error before it
 # ever resolves a missing relation - so on vanilla the probe's very
-# ``UndefinedTableError`` is proof its parse succeeded, and any OTHER
+# ``UndefinedTableError`` is proof its parse succeeded, and any other
 # error (a ``PostgresSyntaxError`` above all, but also a permission gap or
 # anything not the designed catalog-missing input) reds below exactly like
 # an ordinary statement's failure.  What the probe is excused from is only
-# the demand that it PLAN against a catalog it exists to discover is
+# the demand that it plan against a catalog it exists to discover is
 # absent.
 _PLAN_ON_VANILLA_BY_DESIGN: Final[tuple[tuple[str, str], ...]] = (
     (
@@ -676,7 +690,7 @@ async def test_every_shipped_statement_parses_and_plans_against_a_live_schema(
                         f"  {type(exc).__name__}: {str(exc).splitlines()[0]}\n"
                         f"    rendered by: {', '.join(sources)}"
                     )
-                # The carved-out probe's DESIGNED vanilla input: the missing
+                # The carved-out probe's designed vanilla input: the missing
                 # catalog is the fail-open's own question, and reaching name
                 # resolution proves the parse succeeded.
                 continue
@@ -756,7 +770,7 @@ def test_the_guard_has_no_silent_gaps() -> None:
     assert not broken_cover, "Broken covered-by registrations:\n  " + "\n  ".join(broken_cover)
 
     # The dispatch template's tripwire is the reverse marker direction: the
-    # rendered variants must carry NO fragment holes.
+    # rendered variants must carry no fragment holes.
     token_leaks = [
         product
         for product in _COVERED_BY["taskq.backend._dispatch_sql:_DISPATCH_SQL_TEMPLATE"][0]

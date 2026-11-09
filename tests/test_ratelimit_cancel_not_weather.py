@@ -29,7 +29,7 @@ client's read parks until ``socket_timeout`` expires. The client is a REAL
 ``redis.asyncio.Redis`` whose config is proven against the REAL container
 first (a ``TIME`` round trip must answer), then pointed at the blackhole:
 ``driver_info=None`` and ``protocol=2`` remove the connect-phase round trips
-(no CLIENT SETINFO, no HELLO) so the FIRST read is the command's own, and
+(no CLIENT SETINFO, no HELLO) so the first read is the command's own, and
 ``retries=0`` disables redis-py's client-level retry so one read is exactly
 one ``socket_timeout`` window: the timeline is the mandate's: read (0 to 0.5s)
 -> backoff (0.25s) -> second read (0.75 to 1.25s).
@@ -90,7 +90,7 @@ def _client(url: str) -> redis_async.Redis:
     round trips (no CLIENT SETINFO, no HELLO), so the first read the client
     ever makes is the command's own. ``retries=0``: redis-py's client-level
     retry is disabled, one read is exactly one ``socket_timeout`` window.
-    The SAME config is proven against the real container in each pin (the
+    The same config is proven against the real container in each pin (the
     sanity ``TIME`` round trip) before the blackhole arms.
     """
     return redis_async.from_url(
@@ -107,7 +107,7 @@ def _client(url: str) -> redis_async.Redis:
 class _BlackholeProxy:
     """The zombie proxy's relay shape minus the forwarding.
 
-    Accepts every connection and NEVER responds: the handler parks forever,
+    Accepts every connection and never responds: the handler parks forever,
     no byte is read, no byte is written. The client's write lands in the
     socket buffer and its read parks until ``socket_timeout`` expires: the
     read that never returns.
@@ -193,7 +193,7 @@ async def test_cancel_delivered_mid_read_ends_the_task_never_re_arms(
 ) -> None:
     """The REAL read that never returns; the cancel delivered inside the
     SECOND read's window (after the first retry's backoff). The task ends
-    CANCELLED: the cancellation propagates, the retry NEVER re-arms past a
+    CANCELLED: the cancellation propagates, the retry never re-arms past a
     delivered cancellation (the read count stops at 2: the first read's
     genuine timeout was weathered, the second was the cancellation), no
     verdict, no fallback call."""
@@ -204,7 +204,7 @@ async def test_cancel_delivered_mid_read_ends_the_task_never_re_arms(
     client = _client(victim_url)
     reads: list[dict[str, object]] = []
     # One flag per read the budget could ever run (plus the drive's own
-    # reads): the drive's redis_call raises the flag of ITS ordinal.
+    # reads): the drive's redis_call raises the flag of its ordinal.
     read_started = [asyncio.Event() for _ in range(RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS + 1)]
     pg_calls: list[RateLimitDecision] = []
     try:
@@ -232,7 +232,7 @@ async def test_cancel_delivered_mid_read_ends_the_task_never_re_arms(
         )
 
         # The timeline: the first read times out at 0.5s, the retry's backoff
-        # runs, the second read begins; the cancel lands INSIDE its window.
+        # runs, the second read begins; the cancel lands inside its window.
         await _wait_read_started(read_started, 2)
         await asyncio.sleep(_SECOND_READ_SETTLE_S)
         task.cancel()
@@ -323,7 +323,7 @@ async def test_absorbed_cancellation_surfacing_as_timeout_is_never_weathered(
             # while this task is parked, and the layer that catches it does
             # not re-raise (the shape redis's own read machinery produces
             # when the cancellation arrives mid-read). The task runs on with
-            # cancelling() > 0: the cancellation is IN the task, unhandled.
+            # cancelling() > 0: the cancellation is in the task, unhandled.
             parked.set()
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.sleep(30.0)

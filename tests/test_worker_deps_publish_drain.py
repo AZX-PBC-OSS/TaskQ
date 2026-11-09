@@ -3,7 +3,7 @@
 ``open_worker_deps`` (src/taskq/worker/deps.py) registers a teardown
 callback (``_drain_pending_publishes``) via ``stack.push_async_callback``
 *after* the Redis client's own ``aclose`` callback - because
-``AsyncExitStack`` unwinds LIFO, the drain runs BEFORE the client closes,
+``AsyncExitStack`` unwinds LIFO, the drain runs before the client closes,
 giving in-flight ``WorkerDeps.pending_publish_tasks`` up to 2 seconds to
 finish before the connection they depend on goes away.
 

@@ -1,4 +1,4 @@
-"""THE PROOF, MEASURED: the claim path's MVCC death spiral, reproduced
+"""The proof, measured: the claim path's MVCC death spiral, reproduced
 through the real claim statements, and the claim cursor's measured
 scope on it.
 
@@ -16,12 +16,12 @@ transaction pinned from before the churn - VACUUM dead, index-item
 killing disabled - and bulk claim-shaped churn to the dead-tuple
 levels):
 
-1. THE SPIRAL REPRODUCES (gated): the full strict-FIFO claim statement,
+1. the SPIRAL REPRODUCES (gated): the full strict-FIFO claim statement,
    driven through the shipped render on a held connection, degrades
    with the dead-tuple count - measured 2.8x p50 at 90k dead. If the
    naive arm does not degrade, the protocol broke and the comparison is
    meaningless.
-2. THE CURSOR'S SURFACE (gated): the claim statement's label-routed
+2. the CURSOR'S SURFACE (gated): the claim statement's label-routed
    candidate probe - the fragment the shipped render carries, mechanically
    rebound to standalone parameters, with the scalar id bound the
    cursor wiring passes - degrades strictly less than the same probe
@@ -29,7 +29,7 @@ levels):
    on PG18 the bound joins the Index Cond (the Index Searches
    machinery re-descends past the dead zone; probe-measured 615 -> 182
    buffers at 20k dead).
-3. THE FULL-PATH MASK (reported, not gated - this is the finding the
+3. the FULL-PATH MASK (reported, not gated - this is the finding the
    PR contributes back): the statement's OTHER dead-coupled surfaces -
    the (queue, actor) pair-recursion walks and the has_pending probes
    the planner serves from the id-less order-only indexes under the
@@ -37,7 +37,7 @@ levels):
    estimates stay healthy while the index rots) - dominate at depth
    and are cursor-blind by construction. The gauges
    (taskq.claim.degradation_ratio) see the whole truth; the runbook's
-   primary cure (kill the pinning transaction, let VACUUM drain) is
+   primary fix (kill the pinning transaction, let VACUUM drain) is
    what they page for; the cursor is the bounded, measured mitigation
    on the candidate surface.
 
@@ -112,7 +112,7 @@ def _probe_sql(cursor: bool, schema: str) -> str:
     SHIPPED fragment (no hand-copied SQL): the lateral correlations
     (``pac.actor``, ``sq.queue_name``) become parameters, the shipped
     limit/oversample parameters renumber, and the cursor variant carries
-    the SAME bound text the cursor render ships (renumbered). The shipped
+    the same bound text the cursor render ships (renumbered). The shipped
     render's containment of the shipped bound is asserted in the test, so
     the measured surface cannot drift from what production dispatches.
     """
@@ -120,7 +120,7 @@ def _probe_sql(cursor: bool, schema: str) -> str:
     # The admission LIMIT folds to the uncapped-actor residual: the
     # standalone probe has no queue-cap CTE to scalar-probe, and the
     # harness fleet declares no max_concurrent, so residual == limit_n.
-    # The residual is the LAST parameter, numbered per variant so both
+    # The residual is the last parameter, numbered per variant so both
     # probes' parameter sets stay contiguous (the plain probe has no
     # cursor param to skip).
     sql = sql.replace(
@@ -133,14 +133,13 @@ def _probe_sql(cursor: bool, schema: str) -> str:
     sql = sql.replace("sq.queue_name", "$2")
     sql = sql.replace("$2::int", "$3::int")
     sql = sql.replace("$5::int", "$4::int")
-    # THE CAPABILITY CTE (the fence's own dependency): the shipped fence
-    # references wf_exec_capable — the standalone probe carries the
-    # statement's CTE definition with the params probe REBOUND (the
-    # harness has no params CTE and no worker identity; a NULL worker id
-    # reads capable = false, and the harness's rows are all vanilla — the
-    # fence's step_key short-circuit never evaluates the subplan, so the
-    # measured surface is the vanilla path's, which is the point).
-    # Mechanically rebound from the SHIPPED constant — never hand-copied.
+    # the shipped fence references wf_exec_capable — the standalone probe
+    # carries the statement's CTE definition with the params probe rebound (the
+    # harness has no params CTE and no worker identity; a NULL worker id reads
+    # capable = false, and the harness's rows are all vanilla — the fence's
+    # step_key short-circuit never evaluates the subplan, so the measured
+    # surface is the vanilla path's, which is the point). Mechanically rebound
+    # from the shipped constant — never hand-copied.
     cte = (
         _WF_EXEC_CAPABLE_CTE.replace(
             "(SELECT worker_id FROM params)",
@@ -176,7 +175,7 @@ async def test_cursor_claim_degrades_less_than_naive_under_pinned_mvcc_horizon(
     pool = backend._dispatcher_pool
     assert pool is not None, "dispatcher_pool required for the A/B harness"
 
-    # The measured probe surface is the SHIPPED render's own fragment.
+    # The measured probe surface is the shipped render's own fragment.
     assert "AND j2.id >= $6::uuid" in backend._sql.dispatch_strict_fifo_cursor, (
         "the shipped cursor render lost the claim-cursor bound - the A/B "
         "would measure a surface production does not dispatch"
@@ -191,8 +190,8 @@ async def test_cursor_claim_degrades_less_than_naive_under_pinned_mvcc_horizon(
             "default",
         )
 
-        # ── the pin: a REPEATABLE READ transaction that has written, held
-        # open for EVERYTHING below. Every version the churn kills after
+        # ── the pin: a repeatable read transaction that has written, held
+        # open for everything below. Every version the churn kills after
         # this snapshot is unreclaimable and un-killable (the pin can see
         # the old versions, so the executor may not even hint them).
         pin = await asyncpg.connect(str(deps.settings.pg_dsn))
@@ -239,7 +238,7 @@ async def test_cursor_claim_degrades_less_than_naive_under_pinned_mvcc_horizon(
             # can position; stale estimates are the spiral's own
             # planner-blindness - dead rows are invisible to every fresh
             # snapshot - and the harness controls for it to measure the
-            # SCAN, not the planner).
+            # scan, not the planner).
             return max_churn_id
             return max_churn_id
 
@@ -270,7 +269,7 @@ async def test_cursor_claim_degrades_less_than_naive_under_pinned_mvcc_horizon(
                     ids,
                 )
 
-        # The probe arms: the SHIPPED candidates probe, with and without
+        # The probe arms: the shipped candidates probe, with and without
         # the scalar bound. One shared bound advances with the cursor
         # arm's claims.
         probe_plain = _probe_sql(cursor=False, schema=schema)
@@ -336,10 +335,10 @@ async def test_cursor_claim_degrades_less_than_naive_under_pinned_mvcc_horizon(
                 if level > churned:
                     churn_top = await grow_dead(level - churned)
                     churned = level
-                # The worker claimed THROUGH the bloat: the level's probe
+                # The worker claimed through the bloat: the level's probe
                 # bound sits at the dead zone's top edge (in production
                 # the spiral's own claims maintain exactly this - they
-                # make the dead tuples in id order). PINNED for the whole
+                # make the dead tuples in id order). pinned for the whole
                 # level: the probe measurement must not move the bound it
                 # measures against. The claim wiring's own cursor advances
                 # with its rounds, the production behavior.
@@ -350,7 +349,7 @@ async def test_cursor_claim_degrades_less_than_naive_under_pinned_mvcc_horizon(
                 # SELECTs (they consume nothing) and the claim rounds
                 # draw their batches from it.
                 await supply(20_000)
-                # Fresh statistics for the level's plan choice - AFTER the
+                # Fresh statistics for the level's plan choice - after the
                 # supply lands, so the planner's estimates see the live
                 # rows and serve the probes from the id-carrying probe
                 # index (the ordered LIMIT read), the plan the bound can
@@ -373,7 +372,7 @@ async def test_cursor_claim_degrades_less_than_naive_under_pinned_mvcc_horizon(
                             probe_naive_curve.append(p_elapsed)
                         else:
                             probe_cursor_curve.append(p_elapsed)
-                        # the FULL statement, the real wiring, the render
+                        # the full statement, the real wiring, the render
                         # picked by the bound exactly as production picks it
                         if arm == "naive":
                             elapsed, _rows = await claim_round(

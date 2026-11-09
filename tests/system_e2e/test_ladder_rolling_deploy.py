@@ -8,7 +8,7 @@ the second generation's ladder still between phases.
 
 The composition layers the rolling-deploy
 shape (generation A drains while generation B serves) over the
-ladder's NEW seams - the full-poll walk (held AND unheld rows) and its
+ladder's NEW seams - the full-poll walk (held and unheld rows) and its
 controller-side sighting map.
 
 System invariants: every flagged row ends terminal, owned by exactly one
@@ -17,7 +17,7 @@ generation's shutdown honouring the operator's request ('cancelled'), or
 the next leader's reclaim sweep cancel branch ('cancelled' - the only
 owner a row whose holder died mid-ladder has left); the cancel audit
 columns survive the honouring; the conservation counter balances across
-BOTH tables; and the composition actually fired (the walk's abandon
+both tables; and the composition actually fired (the walk's abandon
 landed, work crossed the deploy boundary, the archive moved).
 """
 
@@ -101,10 +101,10 @@ async def test_rolling_deploy_mid_ladder_exit_conserves_every_flagged_row(
     worker_a: WorkerProc | None = None
     worker_b: WorkerProc | None = None
     try:
-        # Generation A boots and fills its slots: DEFYING bodies (the
+        # Generation A boots and fills its slots: defying bodies (the
         # ladder walks them held: the holder honours the request, the
         # body absorbs every cancel the ladder delivers, the graces
-        # expire, and the abandon owns the row - DETERMINISTICALLY, on
+        # expire, and the abandon owns the row - deterministically, on
         # any host speed; a cancellable body would honour instantly and
         # the abandon would depend on the host stalling the holder
         # past the graces) and flaky bodies (the retry write a flag
@@ -132,7 +132,7 @@ async def test_rolling_deploy_mid_ladder_exit_conserves_every_flagged_row(
             await asyncio.sleep(0.05)
         assert running >= 2, f"generation A never filled its slots: {running}"
 
-        # The operator arms cancels on EVERYTHING the fleet holds: the
+        # The operator arms cancels on everything the fleet holds: the
         # defying (held - the holder honours the request, the body
         # absorbs every cancel, and the ladder's own escalation owns
         # them: phase 2 at +1s grace, the abandon at +2s), the flaky
@@ -145,12 +145,12 @@ async def test_rolling_deploy_mid_ladder_exit_conserves_every_flagged_row(
         # whose error_class is the abandon's own origin. The holder-side
         # ladder's own arithmetic lands the abandon by one observation
         # interval + the two graces + two tick cadences (the ladder's
-        # documented 3.5s at the tier's pinned settings); the WAIT budgets
+        # documented 3.5s at the tier's pinned settings); the wait budgets
         # that cascade stretched by the tier's load factor - a loaded
         # runner pays co-tenancy on every heartbeat tick between the
         # stages - instead of a fixed nap that makes the premise a bet
         # on the host's weather. The pin itself does not move: the
-        # abandon MUST land.
+        # abandon must land.
         abandon_deadline = time.monotonic() + ((0.5 + 1.0 + 1.0 + 1.0) * TIER_LOAD_STRETCH + 5.0)
         abandoned_early = 0
         while time.monotonic() < abandon_deadline:
@@ -177,7 +177,7 @@ async def test_rolling_deploy_mid_ladder_exit_conserves_every_flagged_row(
         await asyncio.sleep(1.0)  # B claims them; its ladder arms mid-grace
         await _arm_cancels(conn, schema, "deploy-window-b")
 
-        # A exits while the FLEET's ladders are live (B's rows are
+        # A exits while the fleet's ladders are live (B's rows are
         # between phases; A's own are terminal or in A's shutdown's
         # hands). Whatever A's shutdown honours or leaves, B and the
         # sweeps own the survivors.

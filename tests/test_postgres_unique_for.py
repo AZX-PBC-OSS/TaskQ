@@ -429,7 +429,7 @@ async def test_constraint_name_disambiguation(
 ) -> None:
     """Singleton actor, monkeypatch preflight singleton check
     to return no rows. Two concurrent enqueues race at INSERT; second
-    raises SingletonCollisionError (NOT a was_existing=True dedup return).
+    raises SingletonCollisionError (not a was_existing=True dedup return).
     Confirms constraint-name disambiguation under PG."""
     deps, pg_backend = clean_jobs_app
     schema = deps.settings.schema_name

@@ -159,7 +159,7 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl,
 """.strip()
 
 # Each capacity column is only overwritten when its paired boolean
-# "touch" flag is true; otherwise the CASE expression preserves the
+# "touch" flag is true; otherwise the case expression preserves the
 # current value. This lets one statement express "set to N", "clear to
 # NULL", and "leave alone" for all three fields without dynamic SQL.
 _SET_ACTOR_CONFIG_CAPACITY_SQL = """
@@ -324,7 +324,7 @@ _MOVE_GET_ASSIGNMENT_SQL = """
 SELECT queue FROM "{schema}".actor_config WHERE actor = $1
 """.strip()
 
-# The assignment lock is taken in the FINAL transaction, after the backlog
+# The assignment lock is taken in the final transaction, after the backlog
 # drain, and before the flip, so a concurrent move/deregister/boot-upsert
 # for the same actor serializes there instead of interleaving with the
 # write. Keyed single row by the table's primary key.
@@ -348,14 +348,14 @@ ON CONFLICT (name) DO NOTHING
 
 # The backlog rewrite: bounded committed batches, the deregister force-drain
 # doctrine verbatim (this module's own precedent for an actor-scoped
-# backlog rewrite). MATERIALIZED is essential, without it the planner
+# backlog rewrite). materialized is essential, without it the planner
 # may inline the LIMIT-ed matching CTE into the UPDATE as a nested loop and
 # update more rows than the LIMIT admits. The repeated queue/status
 # predicate on the UPDATE re-evaluates rows concurrently modified since the
-# snapshot (EPQ-safe): a dispatcher claiming a windowed row between the
+# snapshot (epq-safe): a dispatcher claiming a windowed row between the
 # statement's snapshot and its lock is dropped from the affected count, and
-# the drain terminates on the WINDOW count (matched_count), never the
-# affected count, so an EPQ drop cannot end it early with matching rows
+# the drain terminates on the window count (matched_count), never the
+# affected count, so an epq drop cannot end it early with matching rows
 # beyond the window. No job_events row is written: a queue re-label is a
 # routing change, not a state change, the row stays pending/scheduled and
 # the event kinds that are written (state_change | cancel_request |
@@ -458,7 +458,7 @@ async def move_actor_queue(
     batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
     statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
 ) -> ActorQueueMoveResult:
-    """Move an actor to a different queue in ONE operator action.
+    """Move an actor to a different queue in one operator action.
 
     This is the one-step replacement for the four-write lockstep (code
     literal + stored row + consumed-queue set + target ``queues`` row)
@@ -469,21 +469,21 @@ async def move_actor_queue(
       LIMIT, per-batch server-side ``statement_timeout`` with the sweeps'
       capture/restore discipline, termination on the WINDOW count so an
       EPQ drop cannot end it early). Each batch rewrites up to
-      ``batch_size`` of the actor's OWN pending/scheduled rows onto the
+      ``batch_size`` of the actor's own pending/scheduled rows onto the
       target queue, the actor predicate keeps a neighbor's rows on the
       source queue, so they drain through the target's consumers. Running
       rows are untouched: each finishes on the worker that claimed it, and
       a row that instead re-pends keeps its original queue label as an
       audit trail but is routed at dispatch by the actor's CURRENT
       assignment (``taskq/backend/_dispatch_sql.py``'s routing contract:
-      ``started_at IS NOT NULL`` rows follow ``actor_config.queue``), so
+      ``started_at IS not NULL`` rows follow ``actor_config.queue``), so
       the running-job tail drains through the target's consumers too. A
       crash mid-drain leaves the batches already committed as partial
       progress; a re-run continues where it stopped (the drain's queue
       predicate skips rows earlier batches moved), and the abort itself
       is observable, the ``actor-queue-move-aborted`` event carries the
       committed-so-far count.
-    * **The flip** then lands in ONE final transaction: the assignment row
+    * **The flip** then lands in one final transaction: the assignment row
       is locked (``FOR UPDATE``), the target queue's row inherits the
       source queue's ``mode`` and ``max_concurrent`` when (and only when)
       the target has no row, otherwise a round_robin queue's move
@@ -495,12 +495,12 @@ async def move_actor_queue(
       there). The cron leader's fires follow the stored queue, so they
       land on the target from the flip on.
 
-    The flip lands AFTER the drain so a crash between the phases leaves a
+    The flip lands after the drain so a crash between the phases leaves a
     re-runnable state (the stored assignment still names the source queue,
     so a re-run re-drains and re-flips); a crash after the flip means the
     move was already complete. Any failure after the first committed
     batch, the drain's own aborts (a per-batch ``statement_timeout``, a
-    lost connection) and the flip's races alike, is re-raised AFTER the
+    lost connection) and the flip's races alike, is re-raised after the
     ``actor-queue-move-aborted`` event logs the durable state: *actor*,
     *from_queue*, *to_queue*, *jobs_moved* (this call's committed count),
     and *error_class*. The committed rows are real partial progress no
@@ -579,7 +579,7 @@ async def move_actor_queue(
                 # discarded the SET LOCAL.
                 await _restore_statement_timeout(conn, prev_timeout)
             matched = int(row["matched_count"]) if row is not None else 0
-            # Affected rows only, an EPQ-dropped row is never reported as moved.
+            # Affected rows only, an epq-dropped row is never reported as moved.
             jobs_moved += int(row["moved_count"]) if row is not None else 0
             if matched < batch_size:
                 break
@@ -634,7 +634,7 @@ async def move_actor_queue(
         # already committed and that the raised exception cannot carry.
         # error_class only (not the message): the exception text leaves the
         # trust boundary for whatever telemetry backend is configured, and
-        # asyncpg str() appends the server's DETAIL quoting row values.
+        # asyncpg str() appends the server's detail quoting row values.
         logger.error(
             "actor-queue-move-aborted",
             actor=actor,
@@ -679,13 +679,13 @@ SELECT id::text FROM "{schema}".cron_schedules
 # The FROM-CTE snapshot pattern (same as backend/_cancel_bulk.py): the CTE
 # captures each row's pre-cancel status, UPDATE ... RETURNING can only see
 # the new value, and the repeated status predicate on the target
-# re-evaluates rows concurrently modified since the snapshot (EPQ-safe).
-# MATERIALIZED is essential: without it the planner may inline the
+# re-evaluates rows concurrently modified since the snapshot (epq-safe).
+# materialized is essential: without it the planner may inline the
 # LIMIT-ed matching CTE into the UPDATE as a nested loop and update more
 # rows than the LIMIT admits. The final SELECT aggregates from both CTEs
-# so the same statement returns the WINDOW count (``matched_count``) as
+# so the same statement returns the window count (``matched_count``) as
 # well as the affected rows, the drain terminates on the window count,
-# never the affected count, which an EPQ drop shorts while matching rows
+# never the affected count, which an epq drop shorts while matching rows
 # remain beyond the window.
 _DEREGISTER_CANCEL_PENDING_SQL = """
 WITH matching AS MATERIALIZED (
@@ -774,7 +774,7 @@ async def _finalize_deregister(
         actor,
     )
     if not deleted_rows:
-        # Handles the concurrent-delete race: under READ COMMITTED, a
+        # Handles the concurrent-delete race: under read committed, a
         # concurrent transaction could delete the row between our
         # preflight check and this DELETE.
         raise ActorNotFoundError(actor)
@@ -954,11 +954,11 @@ async def deregister_actor(
         # capture/restore discipline) so the event INSERT-to-COMMIT span
         # is enforced, not merely hoped, inside the
         # RECLAIM_EVENT_VISIBILITY_DELAY margin. Termination keys on the
-        # WINDOW count the statement returns from its own MATERIALIZED
+        # window count the statement returns from its own materialized
         # matching CTE, never the UPDATE's affected-row count, which an
-        # EPQ drop (a dispatcher claiming a windowed row mid-statement)
+        # epq drop (a dispatcher claiming a windowed row mid-statement)
         # shorts while matching rows remain beyond the window. The
-        # affected count drives only jobs_cancelled, so an EPQ-dropped
+        # affected count drives only jobs_cancelled, so an epq-dropped
         # row is never reported as cancelled.
         event_batch_sql = INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema)
         jobs_cancelled = 0

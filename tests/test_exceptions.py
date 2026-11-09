@@ -66,7 +66,7 @@ def test_reservation_unavailable_zero_retry_after_accepted() -> None:
     assert exc.retry_after == timedelta(0)
 
 
-# ── retry_after coalesce contract (is None, NOT truthiness) ────────
+# ── retry_after coalesce contract (is None, not truthiness) ────────
 
 
 def _coalesce(retry_after_in: timedelta | None) -> timedelta:
@@ -521,7 +521,7 @@ class TestActorDeregistrationErrors:
         assert "2 running job(s)" in msg
         assert "cannot be cancelled by force=True" in msg
         assert "wait for them to finish" in msg
-        # Must NOT contain the force=False remediation advice
+        # Must not contain the force=False remediation advice
         assert "pass" not in msg.lower().split("force=true")[0]
 
     def test_actor_has_enabled_schedules_error_carries_ids(self) -> None:
@@ -614,7 +614,7 @@ def test_public_validate_actor_payload_does_not_embed_payload_values() -> None:
 
 def test_validate_actor_payload_single_sanitized_implementation() -> None:
     """``taskq.validate_actor_payload`` and the ``taskq.exceptions``
-    re-export are the SAME sanitized implementation from
+    re-export are the same sanitized implementation from
     ``taskq._validation`` - the unsanitized duplicate that embedded the raw
     payload in its message is gone from the public surface."""
     from taskq import exceptions as exceptions_mod
@@ -632,17 +632,17 @@ def test_schema_not_migrated_error_does_not_claim_worker_auto_migrates() -> None
     cancel path (see ``taskq.client._jobs``) when the backend reports
     ``UndefinedTableError``, i.e. the schema was never migrated.
 
-    Per ``settings.py`` (``migrate_on_start`` is "Consumed ONLY by
+    Per ``settings.py`` (``migrate_on_start`` is "Consumed only by
     ``taskq ui serve`` -- the worker ignores it") and the startup warning
     emitted in ``_bootstrap.py`` (`migrate-on-start-ignored-by-worker`), the
-    worker process does NOT read ``TASKQ_MIGRATE_ON_START`` and will never
+    worker process does not read ``TASKQ_MIGRATE_ON_START`` and will never
     "automatically migrate at worker startup" because of it.
 
     The exception message must not tell operators the opposite: that setting
     ``TASKQ_MIGRATE_ON_START=true`` will cause automatic migration "at worker
     startup". That remedy is false and, followed literally, leads to a
     crash-loop at worker boot (see the pending-migrations guard in
-    ``_bootstrap.py``) rather than the silent no-op it used to produce.
+    ``_bootstrap.py``) rather than a silent no-op.
     """
     exc = SchemaNotMigratedError(schema="taskq")
     message = str(exc)

@@ -1,6 +1,6 @@
 # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 # (No file-level S608 noqa: none of this file's statements match the S608 SELECT-interpolation pattern.)
-"""Red-team pin (PG): the leader probes cannot see a read-only server - writes can.
+"""Adversarial review pin (PG): the leader probes cannot see a read-only server - writes can.
 
 The leader's liveness probes are pure reads - ``SELECT 1`` on ``deps.leader_conn``
 (election loop) and on the monitor conn (watchdog loop, leader.py ``fetchval``
@@ -47,7 +47,7 @@ async def test_probes_and_locks_succeed_where_leader_writes_fail_read_only(
         # The session-level equivalent of a failover's read-only window.
         await conn.execute("SELECT set_config('default_transaction_read_only', 'on', false)")
 
-        # The watchdog / election probe shape: a pure read - SUCCEEDS.
+        # The watchdog / election probe shape: a pure read - succeeds.
         probed = await conn.fetchval("SELECT 1")
         assert probed == 1, (
             "precondition: the pure-read probe must succeed on a read-only session - "
@@ -55,9 +55,9 @@ async def test_probes_and_locks_succeed_where_leader_writes_fail_read_only(
             "asymmetry would not exist"
         )
 
-        # The election lock shape: the session-scoped advisory-lock acquire is NOT
-        # a database write - it SUCCEEDS on a read-only server, so an election can
-        # even WIN the lock on a server where the upsert that follows must fail.
+        # The election lock shape: the session-scoped advisory-lock acquire is not
+        # a database write - it succeeds on a read-only server, so an election can
+        # even win the lock on a server where the upsert that follows must fail.
         got_lock = await conn.fetchval(
             "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
             schema_lock_name("maintenance_leader", schema),
@@ -68,7 +68,7 @@ async def test_probes_and_locks_succeed_where_leader_writes_fail_read_only(
             "would fail loudly on read-only and the asymmetry would be half as deep"
         )
 
-        # Every leader WRITE shape: fails 25006 on the very same session.
+        # Every leader write shape: fails 25006 on the very same session.
         with pytest.raises(asyncpg.ReadOnlySQLTransactionError) as excinfo:
             await conn.execute(f'CREATE TABLE "{schema}"."rt_write_probe" (i int)')
         assert excinfo.value.sqlstate == "25006", (

@@ -1,10 +1,10 @@
-"""The finalize-family pins (T04): pin 1 (the deps fingerprint — the snapshot write reds, the shipped arm heals), pin 6 (duplicate finalizes → one decrement, the rowcount gate), pin 13 (THE ATTEMPT-FENCE — the zombie loses).
+"""The finalize-family pins: pin 1 (the deps fingerprint — the snapshot write reds, the shipped arm heals), pin 6 (duplicate finalizes → one decrement, the rowcount gate), pin 13 (the ATTEMPT-FENCE — the zombie loses).
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
 home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
 file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
-the unfenced variants kept in this file forever as the convicted shapes.
+the unfenced variants kept in this file forever as the rejected shapes.
 """
 
 # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
@@ -13,6 +13,7 @@ the unfenced variants kept in this file forever as the convicted shapes.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import asyncpg
@@ -36,7 +37,7 @@ from tests._wf_fixtures import (
     seed_running_node,
 )
 
-# ── Pin 1: THE deps = -1 FINGERPRINT (the snapshot write) ───────────────
+# ── Pin 1: the deps = -1 fingerprint (the snapshot write) ───────────────
 
 
 @pytest.mark.integration
@@ -48,7 +49,7 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     engine_redlog: RedLog,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE FINGERPRINT: a sweep that WRITES FROM A SNAPSHOT (the count read
+    """The fingerprint: a sweep that WRITES FROM A SNAPSHOT (the count read
     outside the child's row lock) strands the join — the counter jumps
     backward off the ledger's truth when it races a committed decrement.
     The shipped lock-first arm: drift 0, deterministic (0/100)."""
@@ -57,9 +58,9 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
 
-    # The interleave the pin convicts, deterministically: the snapshot
-    # read (un-terminal = 1) happens BEFORE a finalize's decrement
-    # commits, the snapshot write lands AFTER.
+    # The interleave the pin rejects, deterministically: the snapshot
+    # read (un-terminal = 1) happens before a finalize's decrement
+    # commits, the snapshot write lands after.
     snapshot_count = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".wf_edge e '
         f'JOIN "{wf_schema}".jobs p ON p.id = e.parent_id '
@@ -83,18 +84,18 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     after = await node_state(wf_conn, wf_schema, join_id)
     assert after["deps_pending"] == 0, after  # the decrement committed
 
-    # THE RED — A REAL ENGINE MUTATION: the shipped rederive's reconcile
-    # WRITE-GUARD flipped (`<>` → `=`, the arm never writes a correction):
-    # the drifted row's counter NEVER returns to the ledger's truth — the
-    # join stays in join-wait forever on a terminal parent (the snapshot
-    # write's fingerprint made permanent). The shipped guard heals it.
+    # the shipped rederive's reconcile write-guard flipped (`<>` → `=`, the arm
+    # never writes a correction): the drifted row's counter never returns to
+    # the ledger's truth — the join stays in join-wait forever on a terminal
+    # parent (the snapshot write's fingerprint made permanent). The shipped
+    # guard heals it.
     import taskq.workflows._sql as sql_module
 
     mutated_rederive = wf_sql.rederive_sweep.replace(
         "AND j.deps_pending <> c.unterminal::smallint",
         "AND j.deps_pending = c.unterminal::smallint",
     )
-    assert mutated_rederive != wf_sql.rederive_sweep, "the mutation drill did not arm"
+    assert mutated_rederive != wf_sql.rederive_sweep, "the mutation test did not arm"
     monkeypatch.setattr(sql_module, "REDERIVE_SWEEP_SQL", mutated_rederive)
     mutated_sql = render_workflow_sql(wf_schema)
     await wf_conn.execute(
@@ -115,16 +116,16 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
         "broken (the reconcile write is load-bearing)"
     )
 
-    # THE SHIPPED ARM heals the drift: the drifted row is join-wait again
-    # (deps 1, pending, blocking join); the arm counts un-terminal parents
-    # from the LEDGER (0), reconciles the cache back to 0, and the fire
-    # stays exactly one (the PK refuses a second).
+    # the shipped arm heals the drift: the drifted row is join-wait again (deps
+    # 1, pending, blocking join); the arm counts un-terminal parents from the
+    # ledger (0), reconciles the cache back to 0, and the fire stays exactly
+    # one (the PK refuses a second).
     await sweep_join_rederive(module_pg_pool, wf_sql)
     healed = await node_state(wf_conn, wf_schema, join_id)
     assert healed["deps_pending"] == 0, healed
     assert await fire_count(wf_conn, wf_schema, join_id) == 1, "still exactly one fire"
 
-    # THE SHIPPED ARM on a fresh join: the same finalize + sweep interleave
+    # the shipped arm on a fresh join: the same finalize + sweep interleave
     # lands exactly-once, and 100 re-derives drift nothing.
     join2 = await seed_join(wf_conn, wf_schema, flow_id, step_key="join2", deps=1)
     parent2 = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="b")
@@ -155,7 +156,7 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     assert await fire_count(wf_conn, wf_schema, join2) == 1
 
 
-# ── Pin 22: THE BUILD-TIME REFUSALS (the stranded invisible join) ───────
+# ── Pin 22: the build-time refusals (the stranded invisible join) ───────
 
 
 def test_pin_22_empty_fork_and_edgeless_join_refused(engine_redlog: RedLog) -> None:
@@ -191,7 +192,7 @@ def test_pin_22_empty_fork_and_edgeless_join_refused(engine_redlog: RedLog) -> N
     )
 
 
-# ── Pin 23: THE DECREMENT GUARD (the >= 0 flip — the gremlin's fingerprint)
+# ── Pin 23: the decrement guard (the >= 0 flip — the gremlin's fingerprint)
 @pytest.mark.integration
 async def test_pin_23_tx2_decrement_guard_deps_never_negative(
     wf_conn: asyncpg.Connection,
@@ -200,8 +201,8 @@ async def test_pin_23_tx2_decrement_guard_deps_never_negative(
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
 ) -> None:
-    """THE GREMLIN PIN: tx2 runs TWICE on ONE admitted view — the second
-    decrement must be a NO-OP. The shipped guard is ``j.deps_pending > 0``
+    """The gremlin pin: tx2 runs TWICE on one admitted view — the second
+    decrement must be a no-OP. The shipped guard is ``j.deps_pending > 0``
     (the rowcount gate): a zeroed counter is not decrementable, the
     counter can never go negative, and the fire stays exactly one. The
     gremlin flips the guard to ``>= 0`` — the deps = -1 fingerprint, the
@@ -215,7 +216,7 @@ async def test_pin_23_tx2_decrement_guard_deps_never_negative(
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
 
-    # ONE admitted view, tx2 TWICE (the duplicate-delivery shape tx2's own
+    # one admitted view, tx2 twice (the duplicate-delivery shape tx2's own
     # fence does not see — tx1's rowcount gate admitted this worker once).
     async with module_pg_pool.acquire() as tx2_conn:
         first_hits, first_fired = await engine_mod._run_tx2(  # pyright: ignore[reportPrivateUsage]  # Why: the pin drives the tx2 seam directly — the guard under mutation lives here.
@@ -242,7 +243,7 @@ async def test_pin_23_tx2_decrement_guard_deps_never_negative(
     assert await fire_count(wf_conn, wf_schema, join_id) == 1, "still exactly one fire"
 
 
-# ── Pin 24: THE FLOW-STATUS LEG IN TX2 (the finalize on a cancelled flow)
+# ── Pin 24: the flow-status leg in TX2 (the finalize on a cancelled flow)
 @pytest.mark.integration
 async def test_pin_24_finalize_on_cancelled_flow_never_decrements(
     wf_conn: asyncpg.Connection,
@@ -251,7 +252,7 @@ async def test_pin_24_finalize_on_cancelled_flow_never_decrements(
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
 ) -> None:
-    """THE GREMLIN PIN, green-half: the finalize path fires on a CANCELLED
+    """The gremlin pin, green-half: the finalize path fires on a CANCELLED
     flow — tx1's attempt fence admits the node's own terminal (the fence is
     the attempt token, not the flow's), and tx2's DECREMENT must refuse via
     the flow-status EXISTS leg: the counter freezes, the join never fires.
@@ -291,16 +292,16 @@ async def test_pin_24_finalize_on_cancelled_flow_never_decrements(
     )
 
 
-# ── Pin 6: DUPLICATE-FINALIZE (the rowcount gate) ────────────────────────
+# ── Pin 6: duplicate-finalize (the rowcount gate) ────────────────────────
 
 
 @pytest.mark.integration
 async def test_pin_6_duplicate_finalizes_one_decrement(
     wf_conn: asyncpg.Connection, wf_schema: str, module_pg_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """50 duplicate finalizes → 1 decrement: tx2 runs ONLY when tx1's
+    """50 duplicate finalizes → 1 decrement: tx2 runs only when tx1's
     fenced UPDATE returned a row. The join fires exactly once, when the
-    LAST parent's first admitted finalize lands — never prematurely."""
+    last parent's first admitted finalize lands — never prematurely."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=2)
     parent_a = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="a")
@@ -310,7 +311,7 @@ async def test_pin_6_duplicate_finalizes_one_decrement(
 
     async def fifty_duplicates(target: JobId, step: str) -> None:
         for _ in range(50):
-            # Each duplicate presents a DIFFERENT (stale) worker view: only
+            # Each duplicate presents a different (stale) worker view: only
             # the row's own first finalize can win the fence.
             view = await claim_view(wf_conn, wf_schema, target)
             res = await finalize_node(
@@ -330,9 +331,9 @@ async def test_pin_6_duplicate_finalizes_one_decrement(
 
     await fifty_duplicates(parent_a, "a")
     state = await node_state(wf_conn, wf_schema, join_id)
-    assert state["deps_pending"] == 1, state  # ONE decrement total from a
+    assert state["deps_pending"] == 1, state  # one decrement total from a
 
-    # parent_b's OWN finalize (the row's current claim view) admits exactly
+    # parent_b's own finalize (the row's current claim view) admits exactly
     # one more decrement, hitting 0 — the fire.
     b_worker, b_attempt, b_epoch = await claim_view(wf_conn, wf_schema, parent_b)
     result = await finalize_node(
@@ -353,7 +354,7 @@ async def test_pin_6_duplicate_finalizes_one_decrement(
     assert (await node_state(wf_conn, wf_schema, join_id))["status"] == "pending"
 
 
-# ── Pin 25: THE FIRE'S EXACTLY-ONCE BELT (the concurrent fire window) ───
+# ── Pin 25: the fire's exactly-once belt (the concurrent fire window) ───
 
 
 @pytest.mark.integration
@@ -364,24 +365,24 @@ async def test_pin_25_concurrent_fire_window_one_row(
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
 ) -> None:
-    """F-R4's drill: TWO fire paths race ONE join in one window — the
+    """The scenario: TWO fire paths race one join in one window — the
     engine's tx2 fire (``fired_by='finalize'``, the decrement just hit 0)
     and the sweep's healing fire (``fired_by='sweep'``, the rederive arm
     re-deriving firable from the LEDGER while the counter already says 0).
     Both guards pass; the belt decides: the UNIQUE(join_job_id) +
     ``ON CONFLICT DO NOTHING`` make the loser a CLEAN empty (no second
     fire row, no crash) — exactly one fire row, exactly one winning
-    return. THE REAL WINDOW the reviewer named: both paths pass their
+    return. the REAL WINDOW: both paths pass their
     WHERE (the join row stays pending with the join marker; neither fire
-    flips it), so the belt is the ONLY thing between the race and the
-    double fire — this drill stages it, and the belt's removal REDS (the
+    flips it), so the belt is the only thing between the race and the
+    double fire — this scenario stages it, and the belt's removal REDS (the
     in-suite twin below; the source-level capture:
     ``.measurements/attack/R4-red-fire-belt.txt``)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
-    # tx1's commit shape: the parent terminalizes; then the REAL guarded
+    # tx1's commit shape: the parent terminalizes; then the real guarded
     # decrement (the engine's tx2 leg) lands — deps_pending 0. Both fire
     # paths are now live on the same join: the engine's own fire, and any
     # sweep pass that re-derives from the ledger.
@@ -403,10 +404,10 @@ async def test_pin_25_concurrent_fire_window_one_row(
 
     engine_rows, sweep_rows = await asyncio.gather(engine_fire(), sweep_fire())
 
-    # THE BELT'S VERDICT: exactly one fire row; exactly one path's
-    # RETURNING carried it (the loser is a clean EMPTY — the DO NOTHING —
-    # never an error); the join row itself stays pending (the fire record
-    # is the exactly-once marker, the join's own dispatch is the drain's).
+    # exactly one fire row; exactly one path's RETURNING carried it (the loser
+    # is a clean EMPTY — the DO NOTHING — never an error); the join row itself
+    # stays pending (the fire record is the exactly-once marker, the join's own
+    # dispatch is the drain's).
     assert await fire_count(wf_conn, wf_schema, join_id) == 1, "exactly one fire"
     assert len(engine_rows) + len(sweep_rows) == 1, (
         f"the concurrent window double-fired or double-refused: "
@@ -423,14 +424,13 @@ async def test_pin_25_concurrent_fire_window_one_row(
         },
     )
 
-    # THE CONVICTED TWIN (kept forever, the file's doctrine): the belt
-    # DROPPED from the rendered statement — the second fire path RAISES
-    # the UniqueViolation the belt absorbs (a sweep tick that errors into
-    # its tolerance arm every pass, a finalize that 500s), and the double
-    # insert is one constraint away from two continuation sets. The
-    # constraint still holds the line (one row) — the belt is what makes
-    # the loss GRACEFUL, which is why its removal greens the rowcount-only
-    # pins and needed its own drill.
+    # kept forever, the file's doctrine. the belt dropped from the rendered
+    # statement — the second fire path raises the UniqueViolation the belt
+    # absorbs (a sweep tick that errors into its tolerance arm every pass, a
+    # finalize that 500s), and the double insert is one constraint away from
+    # two continuation sets. The constraint still holds the line (one row) —
+    # the belt is what makes the loss graceful, which is why its removal greens
+    # the rowcount-only pins and needed its own scenario.
     twin_flow = await seed_flow(wf_conn, wf_schema)
     twin_join = await seed_join(wf_conn, wf_schema, twin_flow, deps=1)
     twin_parent = await seed_running_node(wf_conn, wf_schema, twin_flow, step_key="t")
@@ -442,14 +442,14 @@ async def test_pin_25_concurrent_fire_window_one_row(
     )
     await wf_conn.fetch(wf_sql.decrement, twin_parent, twin_flow)
     beltless = wf_sql.fire.replace("    ON CONFLICT (join_job_id) DO NOTHING\n", "")
-    assert beltless != wf_sql.fire, "the belt-mutation drill did not arm"
+    assert beltless != wf_sql.fire, "the belt-mutation scenario did not arm"
     first = await wf_conn.fetchrow(beltless, twin_join, twin_flow, new_uuid(), "finalize")
     assert first is not None, "the twin's first (beltless) fire did not win"
     with pytest.raises(asyncpg.exceptions.UniqueViolationError):
         await wf_conn.fetch(beltless, twin_join, twin_flow, new_uuid(), "sweep")
     assert await fire_count(wf_conn, wf_schema, twin_join) == 1, (
         "the constraint held the line even without the belt — the belt's "
-        "conviction is the graceful loss, not the row count"
+        "contract is the graceful loss, not the row count"
     )
     engine_redlog.red(
         "pin25-beltless-fire-raises",
@@ -459,7 +459,7 @@ async def test_pin_25_concurrent_fire_window_one_row(
     )
 
 
-# ── Pin 13: THE ATTEMPT-FENCE (the zombie's finalize loses) ─────────────
+# ── Pin 13: the attempt-fence (the zombie's finalize loses) ─────────────
 
 
 @pytest.mark.integration
@@ -470,17 +470,16 @@ async def test_pin_13_attempt_fence(
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
 ) -> None:
-    """The finalize CAS guarded by ROW STATUS ONLY loses to the zombie on
-    the NEXT attempt's re-claim: reclaim → re-claim re-arms the row
+    """The finalize CAS guarded by ROW STATUS only loses to the zombie on
+    the next attempt's re-claim: reclaim → re-claim re-arms the row
     running (attempt 2) → the zombie's finalize WINS the status-only CAS,
-    corrupting the result AND the counter. THE ATTEMPT IS THE FENCING
-    TOKEN: ``AND attempt = $n`` (plus the worker and claim-epoch
+    corrupting the result and the counter. the ATTEMPT IS the FENCING
+    TOKEN: ``and attempt = $n`` (plus the worker and claim-epoch
     conjuncts) — the stale attempt's write no-ops."""
     flow_id = await seed_flow(wf_conn, wf_schema)
 
-    # THE CONVICTED VARIANT (status-only CAS, no attempt/epoch conjunct):
-    # the row is re-claimed to attempt 2, and the zombie (attempt 1's
-    # worker) terminalizes it.
+    # status-only CAS, no attempt/epoch conjunct. the row is re-claimed to
+    # attempt 2, and the zombie (attempt 1's worker) terminalizes it.
     node = await seed_running_node(wf_conn, wf_schema, flow_id)
     stale_worker, _stale_attempt, _stale_epoch = await claim_view(wf_conn, wf_schema, node)
     await wf_conn.execute(
@@ -498,7 +497,7 @@ async def test_pin_13_attempt_fence(
     )
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
-        "WHERE id = $1 AND status = 'running'",  # NO attempt conjunct
+        "WHERE id = $1 AND status = 'running'",  # no attempt conjunct
         node,
     )
     corrupted = await node_state(wf_conn, wf_schema, node)
@@ -511,9 +510,9 @@ async def test_pin_13_attempt_fence(
         "the status-only variant did not lose to the zombie — the red comparator is broken"
     )
 
-    # THE SHIPPED FENCE: the same choreography — the zombie's finalize
-    # (stale worker, attempt 1, epoch 0) NO-OPS; the fresh attempt's
-    # finalize owns the terminal and the counter.
+    # the same choreography — the zombie's finalize (stale worker, attempt 1,
+    # epoch 0) no-ops; the fresh attempt's finalize owns the terminal and the
+    # counter.
     join2 = await seed_join(wf_conn, wf_schema, flow_id, step_key="join2", deps=1)
     node2 = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="b")
     await seed_edge(wf_conn, wf_schema, join2, node2, flow_id)
@@ -563,20 +562,11 @@ async def test_pin_13_attempt_fence(
     assert await fire_count(wf_conn, wf_schema, join2) == 1, "exactly one fire"
 
 
-# ── THE F4 PIN: THE FAN-IN ENVELOPE WITHIN THE ESTATE'S RESULT CAP ──────
-# (ported verbatim from the perf front's conviction —
-# feat/verify-perf @ c8822df4a, tests/perf/test_wf_overhead_ledger.py —
-# into the finalize-family pack: the bypassed write is THIS family's
-# TERMINAL_MARK face. The fixtures are this tree's own wf faces.)
-
-
-# ── THE F4 PIN: THE FAN-IN ENVELOPE WITHIN THE ESTATE'S RESULT CAP ──────
-# (ported from the perf front's conviction — feat/verify-perf @
-# c8822df4a, tests/perf/test_wf_overhead_ledger.py — into the
-# finalize-family pack: the bypassed write is THIS family's
+# ── the F4 pin: the fan-in envelope within the estate's result cap ──────
+# (the fan-in envelope's contract, from tests/perf/test_wf_overhead_ledger.py
+# into the finalize-family pack: the bypassed write is this family's
 # TERMINAL_MARK face. The model + the bodies live at module level so the
-# body-hints walk resolves them — the port's one deviation, documented
-# on the pin.)
+# body-hints walk resolves them.)
 
 
 class _F4ItemsIn(BaseModel):
@@ -599,35 +589,35 @@ async def test_pin_fanin_envelope_within_the_estate_result_cap(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
 ) -> None:
-    """THE FAN-IN ENVELOPE'S SIZE DISCIPLINE (the payload-bloat finding,
-    MEASURED at the perf front's head): a NO-aggregate map's join row
-    collects every child's result into ONE jsonb envelope through the wf
-    finalize's TERMINAL_MARK — and that write checks NO
+    """The fan-in envelope's size discipline (the payload-bloat finding,
+    MEASURED at the recorded head): a no-aggregate map's join row
+    collects every child's result into one jsonb envelope through the wf
+    finalize's TERMINAL_MARK — and that write checks no
     ``result_max_bytes``: the estate's 64 KiB terminal cap (the plain
     job's non-retryable ResultTooLarge fence, ``settings.result_max_bytes``
     default) does not bind the workflow's own terminal write.
 
-    THE MEASURED FACE (700 children x ~1 KiB each, the tuned perf
+    the MEASURED FACE (700 children x ~1 KiB each, the tuned perf
     cluster): the join row landed ``result_size_bytes = 730_001`` —
     11.1x the 64 KiB cap; the ceiling at the fan-in bound with cap-sized
-    children (5000 x 64 KiB) is ~305 MiB of jsonb in ONE row.
+    children (5000 x 64 KiB) is ~305 MiB of jsonb in one row.
 
-    THE CURE'S SHAPE: the failures' own collect ALREADY compacts past
+    The failures' own collect ALREADY compacts past
     its cap (``FANIN_FAILURES_BYTE_CAP`` + the ``__truncated__`` marker +
     the ledger pointer, pinned in ``test_wf_pruner_pins.py``) — the
     collected RESULT envelope lacks the same discipline. Mirroring it
     (compact past the cap, the full collect stays on the child rows the
-    read-side aggregate already reads) is the one-mechanism cure; this
+    read-side aggregate already reads) is the one-mechanism fix; this
     pin FLIPS GREEN the day it lands.
 
-    THE PORT'S ONE DEVIATION (the repro's fidelity fix): the model and
-    the bodies live at MODULE level (above) — the perf front's
+    The model and
+    the bodies live at MODULE level (above) — the recorded
     function-local ``ItemsIn`` is invisible to the body-hints walk (the
     closure cell carries only the body's own free variables; the
-    annotation is a string under the future-import), and the front's
+    annotation is a string under the future-import), and the walk's
     local definition reds at the AttributeError, never at the size
     assert — an unfaithful repro. Module level = the annotation
-    resolves, the body runs, the map forks, and the red names THE
+    resolves, the body runs, the map forks, and the red names the
     ENVELOPE'S BYTES (the finding's actual face)."""
     import taskq.workflows as wf
     from taskq.workflows import Promise, WorkflowApp, build, map_source, step
@@ -653,6 +643,99 @@ async def test_pin_fanin_envelope_within_the_estate_result_cap(
         f"the fan-in envelope is {int(size)} bytes — {int(size) / cap:.1f}x the "
         "estate's 64 KiB result cap: the wf terminal write bypasses the "
         "size discipline every plain job's terminal enforces (the "
-        "payload-bloat finding; the cure is the failures' own compaction "
+        "payload-bloat finding; the fix is the failures' own compaction "
         "mechanism mirrored to the collect)"
     )
+
+
+class _F4FatOut(BaseModel):
+    i: int
+    fat: str
+
+
+async def _f4_consumer(ctx: Any, items: list[_F4FatOut]) -> dict[str, int]:
+    """The CONSUMER's seat (the read-side pin's body): the declared
+    param says ``list[...]`` — the join's collect is this body's input,
+    truncated or not."""
+    return {"kept": len(items)}
+
+
+@pytest.mark.integration
+async def test_pin_fanin_truncated_envelope_unwraps_at_the_consumer_decode(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """The F4 fix's read side (the envelope-cap fix's own regression,
+    rejected by the recertifier): the bounded collect's envelope is
+    THREE keys over the cap — ``{"value": […], "__truncated__": N,
+    "detail_home": …}`` — and a decode that unwraps by
+    ``len(decoded) == 1`` never unwraps it, and
+    every consumer wired past a truncating collect received the
+    ENVELOPE DICT where its declared param says ``list[...]`` — the
+    typed decode died ``Input should be a valid list, input_type=dict``
+    and the run failed (the LedgerWatch chaos feed's live face:
+    ``__truncated__: 272``).
+
+    ``decode_result`` unwraps the runner's envelope
+    BY ITS KNOWN KEY SET — ``value`` alone or ``value`` + the F4
+    markers — so both faces reach the consumer's typed decode as the
+    declared list; and the truncated face's ``detail_home`` contract is
+    HONORED: the runner re-reads the FULL collect off the children's
+    own result rows (the same ordered parent read the join packed), so
+    the consumer's decoded param is the WHOLE collect, never a silent
+    kept-prefix (the LedgerWatch scenario's own demand — a 272-item
+    silent loss is the C7 family's dead letter wearing the cap's hat).
+    The raw row keeps the bounded
+    markers, and the finalize's metadata receipt
+    (``wf_collect_truncated``) carries the count where the reads
+    decide — this pin reads both (the receipt's count names exactly
+    the items the ROW no longer spells)."""
+    import taskq.workflows as wf
+    from taskq.workflows import Promise, WorkflowApp, build, map_source, step
+
+    app = WorkflowApp()
+
+    @app.workflow("f4_readside")
+    def f4_readside() -> Promise[object]:
+        items = map_source(step(_f4_emit, _F4ItemsIn(), key="src"), _f4_fat_item)
+        return build(step(_f4_consumer, items, key="consume"))
+
+    result = await wf.run(app.get("f4_readside"), wf_pool, wf_schema)
+    assert result.outcome == "terminal", (
+        f"the consumer wired past a truncating collect failed at its "
+        f"typed decode (the envelope leaked as the param's value): {result}"
+    )
+    decoded = result.result
+    assert isinstance(decoded, dict) and set(decoded) == {"kept"}, (
+        f"the consumer's dict return survived the round-trip: {decoded!r}"
+    )
+    kept = decoded["kept"]
+    assert kept == 700, (
+        f"the consumer's decoded param must be the FULL collect (the "
+        f"detail re-read off the child rows — the detail_home contract): "
+        f"got {kept!r} of 700"
+    )
+    async with wf_pool.acquire() as conn:
+        # S608 is per-file-ignored for this pack (the schema identifier is
+        # the fixture's own settings-validated identifier; values $-bound
+        # or the step key's literal).
+        row = await conn.fetchrow(
+            f"SELECT result, metadata FROM \"{wf_schema}\".jobs WHERE step_key = 'src.join'"
+        )
+    assert row is not None, "the join row did not terminalize"
+    raw = row["result"]
+    raw_doc: Any = json.loads(raw) if isinstance(raw, str) else raw
+    assert isinstance(raw_doc, dict) and "__truncated__" in raw_doc, (
+        f"the join row's RAW envelope lost the honest markers: {raw_doc!r}"
+    )
+    spelled = len(raw_doc["value"])
+    assert int(raw_doc["__truncated__"]) == 700 - spelled > 0, raw_doc
+    meta_raw = row["metadata"]
+    meta_doc: Any = json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
+    receipt = meta_doc.get("wf_collect_truncated") if isinstance(meta_doc, dict) else None
+    assert receipt is not None, (
+        "the join row's metadata carries no truncation receipt — the count "
+        "must surface where the reads decide (wf_collect_truncated), never "
+        "swallowed by the decode's unwrap"
+    )
+    assert int(receipt["count"]) == 700 - spelled, receipt

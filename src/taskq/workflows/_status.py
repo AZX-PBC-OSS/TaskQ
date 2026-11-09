@@ -1,38 +1,37 @@
-"""The workflow status derivation + the rows-only reconstruction (T08).
+"""The workflow status derivation + the rows-only reconstruction.
 
-THE §17.5 DERIVATION TABLE — the workflow-level status derived from the
+the DERIVATION TABLE — the workflow-level status derived from the
 NODE statuses, precedence applied IN ORDER. No status cache exists to
 corrupt: the ledger is the status store, and the derivation is a PURE
 function over the grouped rollup's rows (the crash-safety proof is the
 derivation's corollary — the status can be RECONSTRUCTED from rows alone;
 there is no cache, only rows to re-read).
 
-THE ABSORBED-FAILURE CLAUSE COMES FIRST (re-red-team B2 — the clause that
-makes T06's gate and T07's maybe pin hold): a ``failed`` node whose
+the ABSORBED-FAILURE CLAUSE COMES first (the clause that
+makes the fail-closed gate and the maybe policy hold): a ``failed`` node whose
 failure was ABSORBED by its edge's declared policy (``collect``, or a
 ``maybe`` edge — the edge ledger records the policy; the join row's
 ``failures`` array records the absorption) derives through its PARENT'S
-outcome, NOT ``failed`` — a partial-failure collect (997 Ok + 3 Failed)
+outcome, not ``failed`` — a partial-failure collect (997 Ok + 3 Failed)
 and a maybe-absorption derive ``complete``/the parent's outcome, never
 ``failed``. The absorption is on the record: the edge ledger's policy +
 the absorbed-child list are how the derivation KNOWS — never a heuristic.
 
-THE CANONICAL NODE VOCABULARY (the two derived pending-row shapes):
 join-wait = ``pending`` + ``deps_pending > 0``; held = ``pending`` + the
 ``scheduled_at`` deadline + the unresolved signal row. No ``hold`` /
 ``pending_join`` status exists to group — both are pending-row
 representations, derived to ``blocked`` here.
 
-THE TERMINAL-CRASH CLASS (T20/T21's crashed-terminal wedge — the
+the TERMINAL-CRASH CLASS (the crashed-terminal wedge — the
 semantics decision, the design law): a jobs row in status ``crashed`` or
 ``abandoned`` is TERMINAL-FOR-REAL, and the derivation folds it into the
-FAILED-CLASS terminal. THE WHY: the state machine's totality table gives
+FAILED-CLASS terminal. the WHY: the state machine's totality table gives
 both statuses ZERO outbound transitions
 (``statemachine.VALID_TRANSITIONS``); a row reaches ``crashed`` only
 through the reclaim's crashed branch — the attempt budget exhausted
 (``{has_budget}`` false at reclaim time) — and ``abandoned`` only
 through ``mark_abandoned`` (the rolling-deploy record). NOTHING will
-ever revive either: the row's OWN state decides, deterministically. The
+ever revive either: the row's own state decides, deterministically. The
 REAL crash recovery is the reclaim of a ``running`` row whose holder
 died WITH budget remaining — that row re-pends and never carries the
 crash terminal, so ``crashed`` is never the reclaim's input (the old
@@ -47,7 +46,7 @@ DIFFERENT class: the attempt-level reclaim receipt (the row re-pends —
 see ``reconstruct_workflow_status``), and they stay out of the terminal
 read.
 
-§17.5's no-zombie promise holds BY this fold: every node status maps to
+the no-zombie promise holds BY this fold: every node status maps to
 exactly one workflow status, and the terminal classes cannot derive
 liveness.
 """
@@ -73,31 +72,30 @@ __all__ = [
 WorkflowStatus = Literal["running", "failed", "blocked", "complete", "cancelled", "pending"]
 
 #: The jobs-table terminal statuses (the statemachine's vocabulary) —
-#: the reconstruction's never-granted read draws the terminal CLASSES
+#: the reconstruction's never-granted read draws the terminal classes
 #: from this set (``_NEVER_GRANTED_SQL``), and the derivation folds the
 #: terminal-crash class into the failed-class terminal.
 _TERMINAL: Final[frozenset[str]] = frozenset(
     {"succeeded", "failed", "cancelled", "crashed", "abandoned"}
 )
 
-#: THE TERMINAL-CRASH CLASS — the node statuses that fold into the
-#: failed-class terminal (the module docstring's semantics decision):
-#: both are deterministic deaths with zero outbound transitions in the
-#: state machine's totality table, and no sweep arm ever reclaims them.
+#: the terminal-crash class — the node statuses that fold into the failed-class
+#: terminal: both are deterministic deaths with zero outbound transitions in
+#: the state machine's totality table, and no sweep arm ever reclaims them.
 _TERMINAL_CRASH_CLASS: Final[frozenset[str]] = frozenset({"crashed", "abandoned"})
 
 
 @dataclass(frozen=True, slots=True)
 class NodeView:
     """One node's derived view — the per-node rollup row's inputs plus the
-    pending-row shapes (T08's canonical vocabulary):
+    pending-row shapes (the canonical vocabulary):
 
     * ``status`` — the jobs row's status;
     * ``deps_pending`` — the join counter (join-wait = pending + > 0);
     * ``blocking_reason`` — the row's metadata.blocking_reason (a
       blocked-with-reason row: orphan_parent / failed_parent /
       body_unavailable);
-    * ``held`` — the held-row representation (T03: pending + the
+    * ``held`` — the held-row representation (pending + the
       ``scheduled_at`` deadline + the unresolved signal row);
     * ``absorbed`` — the node's failure was ABSORBED by its edge's
       declared policy (collect / maybe — the edge ledger + the join row's
@@ -117,8 +115,8 @@ class NodeView:
 
     @property
     def is_join_wait(self) -> bool:
-        """Join-wait: pending + deps_pending > 0 (T03's representation —
-        the name T08/T15 reference)."""
+        """Join-wait: pending + deps_pending > 0 (the held representation's own
+        shape)."""
         return self.status == "pending" and self.deps_pending > 0
 
     @property
@@ -127,7 +125,7 @@ class NodeView:
         join-wait (deps > 0), or a blocked-with-reason stamp. Two markers
         never read as blocks: the bare 'join' marker on a deps == 0 row is
         a FIRED join (claimable like any other row), and 'body_unavailable'
-        is the R2-2 loudness record on a fired join whose body never
+        is the loudness record on a fired join whose body never
         resolved — the delivery CONTINUED (the run proceeds; the operator
         sees the warning), the row is not blocked."""
         if self.status != "pending":
@@ -142,20 +140,20 @@ class NodeView:
 
     @property
     def counts_failed(self) -> bool:
-        """THE ABSORBED-FAILURE CLAUSE: a failed node whose failure was
+        """A failed node whose failure was
         absorbed derives through its PARENT'S outcome — it does not
         trigger the derivation's ``failed`` row."""
         return self.status == "failed" and not self.absorbed
 
 
 def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
-    """The §17.5 derivation table, precedence applied in order. THE
-    TOTALITY IS A PROPERTY (GAPS-ESTATE F6a): for EVERY input multiset the
-    derivation yields EXACTLY ONE workflow status — a new node
-    representation added without a table row reds the property (the
+    """The derivation table, precedence applied in order. the
+    TOTALITY IS A PROPERTY: for every input multiset the
+    derivation yields EXACTLY one workflow status — a new node
+    representation added without a table row breaks the property (the
     totality is the test, ``tests/test_wf_status_property.py``).
 
-    THE TERMINAL-CRASH FOLD comes first (the module docstring's semantics
+    the TERMINAL-CRASH FOLD comes first (the module docstring's semantics
     decision): ``crashed``/``abandoned`` node rows enter the table as the
     failed-class terminal — the raw status stays on the
     :class:`NodeView`, the fold is the derivation's own row-0."""
@@ -164,11 +162,11 @@ def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
         for n in nodes
     )
     nodes = folded
-    # 1. any node running OR any cancel in flight → running. THE
-    #    LIVENESS VOCABULARY (the crashed-terminal wedge's cure): exactly
-    #    ONE jobs status is live-executing — ``running``, the reclaim
+    # 1. any node running or any cancel in flight → running. the
+    #    liveness vocabulary (the crashed-terminal wedge's fix): exactly
+    #    one jobs status is live-executing — ``running``, the reclaim
     #    arms' only input (a holder that died with budget remaining
-    #    re-pends from here). ``crashed``/``abandoned`` are TERMINALS
+    #    re-pends from here). ``crashed``/``abandoned`` are terminals
     #    (zero outbound transitions; the reclaim's crashed branch wrote
     #    them precisely because nothing would ever revive the row) — the
     #    old predicate read them as "the reclaim's input" and the wedge
@@ -176,18 +174,18 @@ def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
     #    ``running`` forever.
     if any(n.status == "running" for n in nodes) or any(n.cancel_in_flight for n in nodes):
         return "running"
-    # 2. THE ABSORBED FAILURES COME FIRST (B2): an absorbed failure derives
+    # 2. the absorbed failures come first (B2): an absorbed failure derives
     #    through its parent's outcome — the failed row below reads only
-    #    NON-absorbed failures (counts_failed).
+    #    non-absorbed failures (counts_failed).
     if any(n.counts_failed for n in nodes):
         return "failed"
     # 3. any node held, join-wait, or blocked → blocked (the pending-row
     #    representations — no hold/pending_join status exists to group).
     if any(n.is_blocked_row for n in nodes):
         return "blocked"
-    # 4. all terminal-succeeded/skipped → complete. An ABSORBED failure
+    # 4. all terminal-succeeded/skipped → complete. An absorbed failure
     #    derives through its parent here: the collect's workflow completes
-    #    with the failure report (T06's gate; T07's maybe pin).
+    #    with the failure report (the fail-closed gate; the maybe policy).
     if nodes and all(n.status in ("succeeded", "failed", "skipped") or n.absorbed for n in nodes):
         return "complete"
     # 5. any cancelled → cancelled.
@@ -197,14 +195,14 @@ def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
     return "pending"
 
 
-# ── THE RECONSTRUCTION (D4's two-source rule) ───────────────────────────
+# ── the reconstruction (D4's two-source rule) ───────────────────────────
 #
-# Reconstruction from rows alone covers TWO terminal classes:
-#   * ATTEMPTED terminals via the LEDGER (the wf_step_ledger's terminal
+# Reconstruction from rows alone covers two terminal classes:
+#   * attempted terminals via the ledger (the wf_step_ledger's terminal
 #     rows — the attempt ran, the outcome is the ledger's);
-#   * NEVER-GRANTED terminals (a budget-killed pending iteration, a
-#     cancelled pending node, a skip) via the NODE ROW'S error jsonb —
-#     they have NO ledger rows; the terminal CLASS rides the error row.
+#   * never-granted terminals (a budget-killed pending iteration, a
+#     cancelled pending node, a skip) via the node row's error jsonb —
+#     they have no ledger rows; the terminal class rides the error row.
 # The two-source rule is what makes the G7 always-on assertion lawful in
 # every workflow integration test (the reconstruction helper the fixture
 # calls; the docs state the rule).
@@ -235,18 +233,18 @@ async def reconstruct_workflow_status(
     ledger_rows = await conn.fetch(_LEDGER_TERMINALS_SQL.format(schema=wsql.schema), flow_id)
     never_granted = await conn.fetch(_NEVER_GRANTED_SQL.format(schema=wsql.schema), flow_id)
 
-    # The ABSORPTION record: which nodes' failures the edge ledger
-    # absorbed (the policy + the absorbed-child list are ON THE RECORD).
-    # The terminal-crash class reads through the SAME clause (the fold's
+    # The absorption record: which nodes' failures the edge ledger
+    # absorbed (the policy + the absorbed-child list are on the record).
+    # The terminal-crash class reads through the same clause (the fold's
     # consistency: the derivation folds crashed/abandoned into the
     # failed-class terminal, so an absorbing edge absorbs the crash the
     # way it absorbs the failure — the SQL maintenance leg's
-    # _absorbed_exists predicate is status-blind on the parent for
+    # absorbed_exists predicate is status-blind on the parent for
     # exactly this reason).
     absorbed_keys = {r["step_key"] for r in node_rows if r["absorbed"] and r["status"] in _TERMINAL}
     ledger_by_key: dict[str, str] = {}
     for r in ledger_rows:
-        # The ledger's LATEST terminal row for the step (attempt-ordered
+        # The ledger's latest terminal row for the step (attempt-ordered
         # arrival — the dict overwrite is the latest-write truth).
         ledger_by_key[r["step_key"]] = r["status"]
 
@@ -254,7 +252,7 @@ async def reconstruct_workflow_status(
     for r in node_rows:
         status = r["status"]
         if status == "pending" and r["step_key"] in ledger_by_key:
-            # The LEDGER IS THE STATUS STORE: a pending row whose ledger
+            # The ledger is the status store: a pending row whose ledger
             # terminal exists (the crash window) reconstructs through the
             # ledger's outcome.
             status = ledger_by_key[r["step_key"]]
@@ -266,15 +264,15 @@ async def reconstruct_workflow_status(
                 absorbed=r["step_key"] in absorbed_keys,
             )
         )
-    # The never-granted terminals (no ledger rows — the terminal CLASS
+    # The never-granted terminals (no ledger rows — the terminal class
     # rides the node row's error jsonb / error columns): a cancelled
     # pending node, a budget-killed iteration, a skip. The
-    # terminal-crash class rides here too — the row's own status IS the
+    # terminal-crash class rides here too — the row's own status is the
     # record (the reclaim's crashed branch: the budget exhausted) — and
-    # the derivation folds it into the failed-class terminal. THE
-    # LEDGER'S 'crashed' ROWS STAY OUT of the terminal read above
-    # (succeeded/failed only): a ledger crash is the ATTEMPT-level
-    # reclaim receipt — the row re-pends and re-claims (the REAL crash
+    # the derivation folds it into the failed-class terminal. the
+    # ledger's 'crashed' rows stay out of the terminal read above
+    # (succeeded/failed only): a ledger crash is the attempt-level
+    # reclaim receipt — the row re-pends and re-claims (the real crash
     # recovery), never a terminal the reconstruction would read through.
     for r in never_granted:
         nodes.append(NodeView(status=r["status"]))

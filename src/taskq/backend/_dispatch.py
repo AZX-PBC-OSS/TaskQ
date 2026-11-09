@@ -217,7 +217,7 @@ async def _dispatch_batch(
     ``None`` keeps the pre-cache contract, resolve on every call, for
     standalone callers that want fresh resolution.
 
-    A claim deliberately writes NO ``job_events`` row. pending→running is
+    A claim deliberately writes no ``job_events`` row. pending→running is
     the dispatcher's bookkeeping, not an outcome transition, and a claim
     is the one act every admission-denial cycle repeats, under the 429
     denial contract a denied job is claimed and rescheduled until capacity
@@ -237,13 +237,13 @@ async def _dispatch_batch(
     failure, not a claim record.
     """
     queue_attr = queues[0] if queues else ""
-    # The round's claim-cursor bound: the OLDEST live per-queue cursor
+    # The round's claim-cursor bound: the oldest live per-queue cursor
     # among the round's queues (one scalar - the seek only materializes
     # from a plan-constant bound; a per-lateral variable bound was
     # measured to lose the Index Searches positioning and land at naive
     # cost). None when no round queue holds a live cursor, or the feature
     # is off: the plain renders run then. Per-queue isolation note: a
-    # queue with no cursor never binds a round on its own; a queue WITH a
+    # queue with no cursor never binds a round on its own; a queue with a
     # cursor binds the round at its own high-water mark, and any queue's
     # rows below the round's bound strand for at most one jitter reset
     # (the bounded trade backend/_claim_cursor.py documents).
@@ -252,11 +252,11 @@ async def _dispatch_batch(
     # whose row locks end with the statement, and nothing else in the round
     # needs a shared snapshot, the mode resolve and the claimable probe are
     # read-only, and an empty round holds no locks between iterations.
-    # asyncpg sends BEGIN and COMMIT as their own round trips, so a
+    # asyncpg sends begin and COMMIT as their own round trips, so a
     # transaction here only tripled the cost of every claim; the claim is
     # one statement, so autocommit already gives it all the atomicity it
     # needs.
-    # The pool acquire is the round's FIRST stage, and its wait (the part
+    # The pool acquire is the round's first stage, and its wait (the part
     # that can raise) happens on the context manager's __aenter__, so it is
     # acquired explicitly and released in the finally below. The wait is a
     # different quantity from the SQL latency the sibling stages feed
@@ -276,7 +276,7 @@ async def _dispatch_batch(
         raise
     # The wait ended in a connection: record it here too. A completed
     # wait is still a wait: the pool-exhausted pod whose multi-second
-    # waits eventually SUCCEED (the case the histogram exists to make
+    # waits eventually succeed (the case the histogram exists to make
     # visible) runs its SQL only after the wait, and only this record
     # separates the two quantities in the metric stream.
     record_pool_acquire_duration(queue_attr, time.monotonic() - acquire_started)
@@ -327,11 +327,10 @@ async def _dispatch_batch(
                 if round_bound is not None:
                     sql_stmt = sql.dispatch_strict_fifo_cursor
                 else:
-                    # THE FLIP-BACK (the rv2 finding's cure): the statement
-                    # is derived from THIS attempt's bound, never carried —
-                    # a cursor render pinned by an earlier iteration must
-                    # not survive its own bound's expiry (the expired entry
-                    # dropped the $6 bind and the wire refused the arity:
+                    # the statement is derived from this attempt's bound, never
+                    # carried — a cursor render pinned by an earlier iteration
+                    # must not survive its own bound's expiry (the expired
+                    # entry dropped the $6 bind and the wire refused the arity:
                     # the raw InterfaceError that crossed the round). The
                     # round-robin exemption rides the same re-derivation.
                     sql_stmt = (
@@ -355,7 +354,7 @@ async def _dispatch_batch(
                 # claimable remains, or every row of the candidate
                 # window is row-locked by peers, the window is
                 # deliberately bounded (residual x oversample per cohort
-                # probe) and SKIP LOCKED slides only within it, so more
+                # probe) and skip locked slides only within it, so more
                 # than oversample dispatchers on one (actor, queue) can
                 # lock the whole window and starve the rest while deeper
                 # rows sit unlocked. The probe arbitrates before a wider
@@ -396,13 +395,13 @@ async def _dispatch_batch(
                 )
             # The claimed records are decoded to JobRows while the round's
             # connection is still checked out: a poisoned row's terminal
-            # fail-write (see _decode_claimed_rows) runs on THIS
+            # fail-write (see _decode_claimed_rows) runs on this
             # connection. Decoding after the release made every fail-write
             # raise InterfaceError ("connection has been released back to
             # the pool") and degrade to the retry-next-round warning, the
             # poison row then loops through claim and reclaim forever -
             # the real-PG pin caught exactly that.
-            # The cursor advances on ADMISSION (the statement claimed the
+            # The cursor advances on admission (the statement claimed the
             # row; a later decode failure terminalizes the row through
             # its own fence without un-claiming it), per row, only for
             # queues this round polled (the re-pended arm can claim a row
@@ -415,8 +414,8 @@ async def _dispatch_batch(
                     if rec_queue in _round_queues:
                         claim_cursor.advance(rec_queue, rec["id"])
             rows = await _decode_claimed_rows(conn, sql, records, worker_id, queue_attr)
-            # Claims deliberately write NO job_events rows (see this
-            # function's docstring above): the dispatch log line and OTEL
+            # Claims deliberately write no job_events rows (see this
+            # function's docstring above): the dispatch log line and otel
             # span carry the observability.
         except asyncpg.exceptions.InternalClientError:
             # A server-side abort (a 1ms statement_timeout is the sharpest
@@ -451,7 +450,7 @@ async def _decode_claimed_rows(
 ) -> list[JobRow]:
     """Convert the claimed records, failing a poisoned row terminally.
 
-    The decode boundary sits AFTER the claim statement has committed (the
+    The decode boundary sits after the claim statement has committed (the
     claim is one autocommit UPDATE...RETURNING), so a row whose jsonb
     columns decode to garbage has ALREADY cost its claim. Letting the
     decode exception escape here makes the whole round the producer loop's

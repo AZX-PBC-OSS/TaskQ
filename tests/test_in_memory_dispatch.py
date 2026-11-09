@@ -263,7 +263,7 @@ class TestNoClockAdvanceReturns:
         ``run_until_drained`` returns immediately if nothing is
         dispatchable but a future-scheduled job exists.  The job stays
         in ``scheduled`` status.  This tests the "no FakeClock, return"
-        branch that was previously untested (review finding 4).
+        branch the review's finding 4 named.
         """
         from dataclasses import replace as _replace
 
@@ -569,7 +569,7 @@ class TestPayloadValidationFailureRouting:
 async def test_run_until_drained_handles_reservation_unavailable() -> None:
     """ReservationUnavailable raised by stub produces a scheduled row
     with metadata['awaiting'] == 'reservation:<bucket>', the
-    rate_limit_blocked_count counter incremented on the row, and NO
+    rate_limit_blocked_count counter incremented on the row, and no
     attempt row for the denial (a denial is admission control, not an
     execution - the only attempt row is the eventual success).
     """
@@ -979,7 +979,7 @@ async def test_property_identity_invariant(
             f"has {count} running jobs"
         )
 
-    # Secondary invariant: ALL dispatched rows have status "running"
+    # Secondary invariant: all dispatched rows have status "running"
     for row in dispatched:
         assert row.status == "running"
 

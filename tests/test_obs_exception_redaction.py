@@ -7,7 +7,7 @@ called `span.record_exception(exc)` and `set_status(..., str(exc))` with no
 redaction, while the same codebase already routes DSNs through `dsn_host()` so
 credentials never reach logs -- the span path bypassed that discipline.
 
-The real leak is NOT DSN passwords, which is what was originally reported.
+The real leak is not DSN passwords, which is what was originally reported.
 Verified by execution: asyncpg connection failures carry no credentials. The
 actual vector is that `str()` of an asyncpg `PostgresError` appends the
 server's `DETAIL:` line, and for a constraint violation that quotes the
@@ -122,7 +122,7 @@ def test_uri_query_param_password_is_masked(raw: str) -> None:
     safe = safe_exception_message(Exception(raw))
     for secret in ("hunter2", "p%40ss"):
         assert secret not in safe
-    # The parameter NAME survives -- an operator can see which setting carried
+    # The parameter name survives -- an operator can see which setting carried
     # the credential -- and every non-credential parameter is untouched.
     assert "password=***" in safe
     assert "sslmode=require" in safe or "db.internal" in safe
@@ -405,7 +405,7 @@ def test_stacktrace_is_redacted_under_except_star() -> None:
 
 
 # A per-file check that _dispatch_sql.py spells the call
-# `record_exception_safe(span, exc)` used to sit here. It is subsumed by
+# `record_exception_safe(span, exc)` is subsumed by
 # test_no_raw_record_exception_remains_anywhere below: that guard is repo-wide,
 # so a dispatch site reverting to `span.record_exception(exc)` fails there
 # whatever file it lives in, and the redaction behaviour itself is pinned by
@@ -653,7 +653,7 @@ def test_log_fields_carrying_exception_text_are_listed_for_scrubbing() -> None:
     assert offenders == [], f"unlisted exception-text log fields: {offenders}"
 
 
-# ── repr()-flattened DETAIL lines ───────────────────────────────────
+# ── repr()-flattened detail lines ───────────────────────────────────
 
 
 def test_repr_flattened_detail_line_is_scrubbed_but_hint_survives() -> None:
@@ -683,7 +683,7 @@ def test_repr_flattened_detail_line_is_scrubbed_but_hint_survives() -> None:
     assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
 
     assert "subject-424242" not in safe
-    # Sensible single-line shape: the class, the primary template and the HINT
+    # Sensible single-line shape: the class, the primary template and the hint
     # survive, and the repr's closing quote is kept rather than amputated.
     assert safe == "RuntimeError('some failure\\nHINT:  try another identity_key')"
 
@@ -715,7 +715,7 @@ def test_repr_flattened_detail_inside_an_exception_group_is_scrubbed() -> None:
     assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
 
     # Exact shape: the group structure and primary message survive, the closers
-    # are kept, and only the DETAIL payload is gone.
+    # are kept, and only the detail payload is gone.
     assert safe == "ExceptionGroup('group', [RuntimeError('some failure')])"
 
 
@@ -783,10 +783,10 @@ def test_scrub_preserves_non_detail_escaped_newlines() -> None:
 # ── substring prefilters on _scrub_text (perf: error-storm hot path) ────
 #
 # Each scrub regex requires a literal trigger substring in the subject:
-# _PG_DETAIL_RE and _PG_DETAIL_ESCAPED_RE need "DETAIL:"; _URI_CRED_RE needs
+# _PG_DETAIL_RE and _PG_DETAIL_ESCAPED_RE need "detail:"; _URI_CRED_RE needs
 # "://"; _URI_PARAM_CRED_RE needs a password-family parameter name followed
-# by "=" (and does NOT need "://" - bare "host/db?password=…" must stay
-# masked). The prefilter must therefore be a NECESSARY-condition guard per
+# by "=" (and does not need "://" - bare "host/db?password=…" must stay
+# masked). The prefilter must therefore be a necessary-condition guard per
 # regex: skipping when the substring is absent never changes output, only
 # cost. These tests pin both the skip and the byte-identical outputs.
 
@@ -1033,7 +1033,7 @@ def test_password_containing_regex_metacharacters_is_fully_masked(raw: str) -> N
     as a regex fragment -- a password that happens to contain characters with
     regex meaning (``.``, ``$``, ``(``, ``)``, ``+``, ``*``, ``[``, ``]``) is
     ordinary data to ``re.sub`` and must be masked whole, not partially matched
-    or used to corrupt the substitution."""
+    or corrupting the substitution."""
     safe = safe_exception_message(Exception(raw))
     assert "***" in safe
     for fragment in ("hun.ter2$", "a(b)c+d*e[f]"):
@@ -1068,12 +1068,12 @@ def test_sslpassword_libpq_form_at_end_of_string_is_masked() -> None:
     assert safe == "host=db user=app sslpassword=***"
 
 
-# ── the marker prefix must stay LINEAR under adversarial input ──
+# ── the marker prefix must stay linear under adversarial input ──
 #
 # _PG_DETAIL_RE's ExceptionGroup marker prefix was originally spelled
 # ``(?:[ \t]*[|+][ \t]*)*`` -- a quantifier inside a quantifier. Given one
-# DETAIL line anywhere in the text (all the ``"DETAIL:" in text`` prefilter
-# needs) plus a line of markers with no DETAIL after it, the engine
+# detail line anywhere in the text (all the ``"detail:" in text`` prefilter
+# needs) plus a line of markers with no detail after it, the engine
 # re-partitioned the marker run across the repetitions in exponentially
 # many ways and tried them all: ~60 ms at 20 markers, ~4x per marker pair
 # added, effectively unbounded past the mid-20s. The scrub runs
@@ -1088,7 +1088,7 @@ def test_sslpassword_libpq_form_at_end_of_string_is_masked() -> None:
 
 #: The retired, catastrophically-backtracking form of _PG_DETAIL_RE, kept
 #: verbatim as the equivalence oracle: the one-pass character class that
-#: replaced it must accept exactly the same marker-prefixed DETAIL lines.
+#: replaced it must accept exactly the same marker-prefixed detail lines.
 _RETIRED_MARKER_PREFIX_DETAIL_RE = re.compile(
     r"^(?:[ \t]*[|+][ \t]*)*[ \t]*DETAIL:.*$", re.MULTILINE
 )
@@ -1120,8 +1120,8 @@ def test_detail_scrub_stays_under_a_time_bound_on_marker_runs() -> None:
     from taskq.obs._redact_exc import scrub_exception_field
 
     cases: list[tuple[str, str]] = [
-        # The poison-message shape: a real DETAIL line plus a 2000-marker
-        # line with no DETAIL on it (the anchored match FAILS on that line,
+        # The poison-message shape: a real detail line plus a 2000-marker
+        # line with no detail on it (the anchored match fails on that line,
         # which is where the retired pattern re-partitioned the run).
         (
             "poison-message-marker-run",
@@ -1134,7 +1134,7 @@ def test_detail_scrub_stays_under_a_time_bound_on_marker_runs() -> None:
         ("marker-run-100k", "DETAIL: legit\n" + "| " * 100_000 + "tail\n"),
         ("dense-marker-run-100k", "DETAIL: legit\n" + "|" * 100_000 + "\n"),
         ("markers-before-detail-100k", "| " * 100_000 + "DETAIL: secret row value\n"),
-        # The escaped-newline companion's fail-closed leg: a DETAIL whose
+        # The escaped-newline companion's fail-closed leg: a detail whose
         # tail matches no safe delimiter scrubs through end of line, over a
         # 100k run of closers.
         (
@@ -1154,7 +1154,7 @@ def test_detail_scrub_stays_under_a_time_bound_on_marker_runs() -> None:
         assert isinstance(
             scrubbed, str
         )  # Why: narrows the object return for the membership assert below.
-        # Non-vacuous: the subject really exercised the DETAIL scrub, so the
+        # Non-vacuous: the subject really exercised the detail scrub, so the
         # budget was spent on the work, not skipped by a prefilter miss.
         assert "DETAIL:" not in scrubbed, label
 
@@ -1172,16 +1172,16 @@ def test_detail_scrub_stays_bounded_on_a_rendered_exception_group() -> None:
     the budget is a real discrimination only on a quiet serial runner. The
     linear render+scrub of these groups measures ~0.3 ms locally, but the
     matrix lane's co-tenancy (two xdist workers plus their containers on a
-    4-core runner) descheduled the run's thread inside the measured window
-    and read 405 ms on healthy code (CI run 36815836388) -- the budget
-    measured the environment, not the matcher, and no budget that could
+    4-core runner) deschedules the run's thread inside the measured window
+    and reads hundreds of ms on healthy code -- the budget
+    then measures the environment, not the matcher, and no budget that could
     catch a super-linear matcher survives that deschedule. Red on demand:
     a per-call tracer park (the ``--cov`` cost class) lands the same
     observable deterministically -- 66 traced calls in the timed region,
     269 ms, red 3/3 on the unfixed test. The parallel lanes keep the
     super-linear guards that scale: the structural no-nested-quantifier
     sweep, the byte-identical equivalence pin, and the 100k-marker budget
-    legs above. A complexity assertion cannot live HERE: the organic shape
+    legs above. A complexity assertion cannot live here: the organic shape
     cannot scale past ``traceback``'s ``max_group_depth`` (depth 8 and
     depth 30 render near-identical text), so growth-vs-baseline has no
     signal on this member's own inputs -- the marker-run legs own the
@@ -1258,24 +1258,24 @@ def test_detail_pattern_accepts_the_same_lines_as_the_retired_marker_shape() -> 
     )
 
     corpus: list[str] = [
-        # Realistic PG error text: primary template, DETAIL, HINT, CONTEXT.
+        # Realistic PG error text: primary template, detail, hint, context.
         'duplicate key value violates unique constraint "jobs_pkey"\n'
         "DETAIL:  Key (idempotency_key)=(tenant-4417-ssn) already exists.\n"
         'HINT:  Perhaps "idempotency_key" is unique for a reason.\n'
         "CONTEXT:  PL/pgSQL function taskq.enqueue(text) line 12 at SQL statement",
         "error:\n  DETAIL: Key (k)=(v) exists.\nHINT: check",
         "detail: lowercase is not Postgres's spelling",
-        # Marker-prefixed DETAIL lines at every organic nesting depth.
+        # Marker-prefixed detail lines at every organic nesting depth.
         "| DETAIL:  Key (k)=(v)",
         "| | DETAIL:  Key (k)=(v)",
         "| | | | DETAIL:  Key (k)=(v)",
         "\t| \t+ DETAIL: mixed markers",
-        # Group header/separator lines: must SURVIVE both patterns.
+        # Group header/separator lines: must survive both patterns.
         "  | ExceptionGroup: layer-0 (1 sub-exception)",
         "  +-+---------------- 1 ----------------",
         "| HINT:  structural, kept",
-        # Adversarial marker runs, with and without a DETAIL anchor. Runs
-        # stay at <=16 markers BECAUSE the retired oracle is itself
+        # Adversarial marker runs, with and without a detail anchor. Runs
+        # stay at <=16 markers because the retired oracle is itself
         # exponential on a failing marker run (the perf pin above holds the
         # 100k-marker legs; 2^16 partitions is already far more re-split
         # ambiguity than any real prefix produces).
@@ -1289,7 +1289,7 @@ def test_detail_pattern_accepts_the_same_lines_as_the_retired_marker_shape() -> 
     ]
 
     # Real rendered groups at depths 1-3 (the depths that render inside
-    # max_group_depth), each with a DETAIL-bearing PG error at the bottom.
+    # max_group_depth), each with a detail-bearing PG error at the bottom.
     for levels in (1, 2, 3):
         exc: BaseException = _unique_violation("Key (identity_key)=(subject-31337) exists.")
         for depth in range(levels):
@@ -1305,7 +1305,7 @@ def test_detail_pattern_accepts_the_same_lines_as_the_retired_marker_shape() -> 
             )
 
     # Randomized sweep over the alphabet the two prefixes can disagree on:
-    # marker/whitespace runs, the DETAIL anchor, and filler text around
+    # marker/whitespace runs, the detail anchor, and filler text around
     # them, at random line positions.
     rng = random.Random(20260917)  # noqa: S311  # Why: a fixed seed keeps the equivalence sweep deterministic; nothing cryptographic.
     alphabet = [" ", "\t", "|", "+", "DETAIL:", "x", "Key (k)=(v)", "HINT:", "\n"]
@@ -1315,7 +1315,7 @@ def test_detail_pattern_accepts_the_same_lines_as_the_retired_marker_shape() -> 
             for _ in range(rng.randint(2, 25))
         ]
         # Guarantee the scrub has something to do in most (not all) sweeps:
-        # a DETAIL-less text pins the no-match path just as tightly.
+        # a detail-less text pins the no-match path just as tightly.
         if rng.random() < 0.8:
             lines[rng.randrange(len(lines))].append("DETAIL: seeded")
         corpus.append("\n".join("".join(parts) for parts in lines))
@@ -1368,7 +1368,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
     guard's edge: an ``ATOMIC_GROUP`` / possessive-repeat boundary is not
     crossed for the containment check (an outer quantifier cannot
     re-partition what an atomic group committed -- though a nested pair
-    fully INSIDE one is still flagged by the recursion, since it explodes
+    fully inside one is still flagged by the recursion, since it explodes
     within its own single match attempt); and the overlapping-alternation
     shape (``(?:a|a)*``, equally catastrophic, equally absent here) is
     not analysed -- an alternation inside a repeat must keep DISJOINT
@@ -1390,7 +1390,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
     # API, no type stubs), and importlib keeps the guard working on every
     # interpreter that can run the suite while pyright stays quiet without
     # a blanket ignore. No try/except around the import on purpose: a
-    # future Python that moves the parser again must FAIL this guard
+    # future Python that moves the parser again must fail this guard
     # loudly, not pass it vacuously.
     sre_parser: Any = importlib.import_module("re._parser")
     sre_constants: Any = importlib.import_module("re._constants")
@@ -1471,7 +1471,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
             f"the nested-quantifier walker failed to flag the known-catastrophic {bad!r} "
             "-- the guard is vacuous and cannot be trusted"
         )
-    # And it must NOT flag the mitigated shapes an author might reasonably
+    # And it must not flag the mitigated shapes an author might reasonably
     # reach for (atomic/possessive boundaries), or it would cry wolf.
     for ok in (
         r"(?>a*)b",
@@ -1516,7 +1516,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
     # future function-local re.compile never becomes a module attribute.
     # The AST pass audits every *.compile(...) call site in the package's
     # own source wherever it sits -- a constant pattern is checked on the
-    # spot; a NON-constant pattern is acceptable only as the right-hand
+    # spot; a non-constant pattern is acceptable only as the right-hand
     # side of a module-level assignment, whose compiled object lands in a
     # module attribute that pass one audited (asserted below, closing the
     # loop); anywhere else -- a function body, a conditional, an inline
@@ -1610,14 +1610,14 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
 # scrubbed by _PG_DETAIL_ESCAPED_RE -- was half-updated: the line-anchored
 # _PG_DETAIL_RE had
 # gained the ``[ \t|+]*`` ExceptionGroup marker class, the escaped companion
-# had kept ``[ \t]*``, so a marker-prefixed DETAIL line inside an exception
+# had kept ``[ \t]*``, so a marker-prefixed detail line inside an exception
 # message shipped verbatim once repr() flattened its newline. That is the
 # branch's own named poison vector -- adversarial text echoed into an
 # exception message -- so the parity gap was a leak on exactly the threat
 # model the perf fix had closed the stall for. The escaped scrub's
 # closers terminator also ended in ``\s*``: ``\s`` crosses
-# newlines, so on CR-bearing text a DETAIL value carrying quote + closers +
-# a CR/LF boundary satisfied the repr-tail leg by peering PAST the line end,
+# newlines, so on cr-bearing text a detail value carrying quote + closers +
+# a cr/lf boundary satisfied the repr-tail leg by peering past the line end,
 # and the scrub stopped at the mid-value quote, keeping closers the
 # no-closers control scrubbed. The pins below cover both, red-for-old.
 
@@ -1638,7 +1638,7 @@ def test_repr_channel_scrubs_marker_prefixed_detail_lines() -> None:
     def _marker_detail_message() -> str:
         return "some failure\n| | DETAIL:  Key (identity_key)=(" + "tenant-secret-88" + ") exists."
 
-    # (1) A plain exception whose message carries a marker-prefixed DETAIL
+    # (1) A plain exception whose message carries a marker-prefixed detail
     # line: repr flattens the newline, the markers ride the escaped anchor.
     safe = scrub_exception_field("error", repr(RuntimeError(_marker_detail_message())))
     assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
@@ -1664,7 +1664,7 @@ def test_repr_channel_scrubs_marker_prefixed_detail_lines() -> None:
     assert "tenant-secret-88" not in safe
 
     # (4) A repr line embedded in a rendered traceback (real newlines
-    # around it) -- the documented MULTILINE case, now with markers: the
+    # around it) -- the documented multiline case, now with markers: the
     # escaped anchor must see through them there too.
     embedded = (
         "Traceback (most recent call last):\n"
@@ -1682,7 +1682,7 @@ def test_repr_channel_scrubs_marker_prefixed_detail_lines() -> None:
 def test_repr_channel_boundary_is_line_shaped_detail_only() -> None:
     """The deliberate boundary both channels share: a DETAIL that is not
     line-initial -- no real newline, no escaped newline, no marker prefix
-    BEFORE it on the line -- is not a DETAIL *line*, and neither channel
+    before it on the line -- is not a DETAIL *line*, and neither channel
     scrubs it.
 
     This is the redactor's standing shape law (true at ``bd30c1b`` and on
@@ -1704,8 +1704,8 @@ def test_repr_channel_boundary_is_line_shaped_detail_only() -> None:
         "if this ever scrubs, an unanchored DETAIL matcher crept in -- "
         "check what else it now deletes"
     )
-    # ...while the same text WITH a newline before the markers is a
-    # marker-prefixed DETAIL line and must be scrubbed (the parity case).
+    # ...while the same text with a newline before the markers is a
+    # marker-prefixed detail line and must be scrubbed (the parity case).
     lined = repr(RuntimeError("boom\n| | DETAIL:  Key (k)=(" + "subject-2" + ") exists."))
     safe = scrub_exception_field("error", lined)
     assert isinstance(safe, str)  # Why: see above.
@@ -1726,8 +1726,8 @@ def test_repr_escaped_terminator_cannot_cross_a_line_boundary() -> None:
     """
     from taskq.obs._redact_exc import scrub_exception_field
 
-    # The CR-rendered blank line shape: the value carries
-    # quote + closers + a CR/LF boundary. The scrub must NOT accept the
+    # The cr-rendered blank line shape: the value carries
+    # quote + closers + a cr/lf boundary. The scrub must not accept the
     # closers as a repr tail across that boundary -- it fails closed and
     # the closers ride the scrub (more deletion, never less).
     crlf = (
@@ -1743,7 +1743,7 @@ def test_repr_escaped_terminator_cannot_cross_a_line_boundary() -> None:
         "tail by a terminator that peers across the CR/LF boundary -- the "
         "scrub must fail closed there and delete more, never less"
     )
-    # The line-wise boundary, stated directly: text on the NEXT physical
+    # The line-wise boundary, stated directly: text on the next physical
     # line is outside this line-bounded scrub's reach (``.`` never crosses
     # a real newline) -- identically for the shape and its no-closers
     # control below. Covering the next line is the line-channel's job on
@@ -1751,8 +1751,8 @@ def test_repr_escaped_terminator_cannot_cross_a_line_boundary() -> None:
     assert "PART2-SECRET-TAIL" in safe
 
     # The control -- same structure, no quote+closers in the value -- scrubs
-    # its DETAIL line and leaves the next line alone: the shape above must
-    # not scrub LESS of its own line than the control does.
+    # its detail line and leaves the next line alone: the shape above must
+    # not scrub less of its own line than the control does.
     control = "RuntimeError('some failure\\nDETAIL:  Key (k)=(PART1-PLAIN-VALUE)\r\n\r\nPART2-CONTROL more')"
     safe_control = scrub_exception_field("error", control)
     assert isinstance(safe_control, str)  # Why: see above.
@@ -1793,13 +1793,13 @@ def test_repr_line_embedded_in_a_traceback_keeps_its_closers() -> None:
     assert "another exception occurred" in safe
 
 
-# ── bearer / JWT / AWS-signature credential masks (issue #317) ───────────
+# ── bearer / JWT / aws-signature credential masks (issue #317) ───────────
 #
 # A managed-identity access token reached logs through ``error=str(exc)``:
 # an azure-identity-shaped ``HttpResponseError`` appends the HTTP body to
 # ``str(exc)``, the body carries a raw bearer JWT, and the scrub pipeline's
-# masks (DETAIL lines, URI userinfo, password-family query params) matched
-# none of it. These tests pin the new masks AND the false-positive boundary:
+# masks (detail lines, URI userinfo, password-family query params) matched
+# none of it. These tests pin the new masks and the false-positive boundary:
 # a conservative JWT shape must not mangle short ids or non-JWT base64.
 
 _ACCESS_TOKEN = (
@@ -1897,7 +1897,7 @@ _B64_CREDS_463 = "ZGVwbG95LWJvdDpWc21aN2Yza1Exd1A5eFIy"  # deploy-bot:<secret>
 @pytest.mark.parametrize(
     "raw",
     [
-        f"Bearer {_OPAQUE_463}",  # the raw header VALUE: no header name
+        f"Bearer {_OPAQUE_463}",  # the raw header value: no header name
         f"bearer {_OPAQUE_463}",
         f"Token {_OPAQUE_463}",  # the GitHub scheme, raw value
         f"Basic {_B64_CREDS_463}",  # base64 user:password, raw value
@@ -1960,7 +1960,7 @@ def test_bare_scheme_words_in_prose_bind_verbatim(prose: str) -> None:
 
 def test_bare_scheme_digitless_long_value_rides_documented() -> None:
     """The bare-scheme pass's stated fail-open limit, pinned as a decision:
-    a 16+ char value with NO digit after a bare scheme word rides -- every
+    a 16+ char value with no digit after a bare scheme word rides -- every
     realistic credential alphabet carries digits, and requiring one is
     what keeps "token"/"basic" out of prose. A JWT-shaped value is backed
     up by the JWT pass regardless."""
@@ -2060,23 +2060,23 @@ def test_benign_dotted_and_base64_like_strings_survive_scrubbing(benign: str) ->
     assert _scrub_text(benign) == benign
 
 
-# ── red-team round two: what the #317 masks still missed ─────────────────
+# ── the masks' second pass: what the #317 masks still missed ─────────────────
 #
-# Every test below was run against the d1cebcf1 shape of the fix and FAILED
+# Every test below was run against the d1cebcf1 shape of the fix and failed
 # there before its source change landed here (red/green). The holes:
 #
-# * a bearer header rendered with QUOTES around it -- the JSON and Python
+# * a bearer header rendered with quotes around it -- the JSON and Python
 #   repr shapes (``"Authorization": "Bearer ..."``, ``{'Authorization':
 #   'Bearer ...'}``) -- sat between the name and the colon and the bearer
 #   pattern only allowed spaces and tabs there. A JWT under such a header
-#   escaped via the JWT pass, but an OPAQUE token escaped entirely.
+#   escaped via the JWT pass, but an opaque token escaped entirely.
 # * an opaque access token under its own name in a response body (the
 #   module docstring promised raw body tokens were covered; only the
 #   JWT-shaped ones were). OAuth token names are credential carriers by
 #   RFC 6749 regardless of the token's shape, so the value is masked by
 #   name now.
 # * a CloudFront-style ``Signature=`` query parameter: also a presigned
-#   AWS credential, and its value is base64url, which the hex-only value
+#   aws credential, and its value is base64url, which the hex-only value
 #   class could not even partially claim.
 # * a percent-encoded ``sig=`` value: the value class stopped at ``%`` and
 #   the tail rode through after the mask.
@@ -2220,11 +2220,11 @@ def test_percent_encoded_sig_value_is_masked_whole() -> None:
 @pytest.mark.parametrize(
     "benign",
     [
-        # A base64 IMAGE payload: standard base64 carries / + = and no dots,
+        # A base64 image payload: standard base64 carries / + = and no dots,
         # so no three-segment JWT shape and nothing the masks may claim.
         "img data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0"
         "+QAAAAlwSFlzAAALEwAACxMBAJqcGAAAA/?",
-        # A Kubernetes-style FQDN: five labels, several short -- no
+        # A Kubernetes-style fqdn: five labels, several short -- no
         # three-16+-segment run.
         "dial worker-7f9d.taskq-workers.production.svc.cluster.local:9010 refused",
         # A W3C traceparent-style dotted trace id: long segments, but two
@@ -2258,7 +2258,7 @@ def test_clean_error_line_runs_no_regex(monkeypatch: pytest.MonkeyPatch) -> None
     """Every regex pass in :func:`_scrub_text` sits behind a substring
     prefilter stating a NECESSARY condition for the pattern to match. This
     pin makes that claim executable in the strict direction: on error text
-    that carries none of the triggers, NO compiled pattern in the module may
+    that carries none of the triggers, no compiled pattern in the module may
     run ``sub`` at all -- a dropped or typo'd prefilter (the cheap path
     silently turning into a six-regex scan on every record) turns this red,
     even though the masking output would be byte-identical.
@@ -2359,3 +2359,22 @@ def test_scrubbing_a_realistic_traceback_preserves_the_diagnostics() -> None:
         "scrub exists to deliver; a scrub that rewrites them is the "
         "over-redaction the masking doctrine forbids"
     )
+
+
+def test_scrub_exception_field_escapes_even_a_treated_value() -> None:
+    """A ``ScrubbedText`` built by a seam predating the surrogate escape
+    (``nul_escaped``'s output, for one) arrives at the log processor
+    already carrying the treated type - and, if its source seam did not
+    escape, a lone surrogate in it. The processor's passthrough for the
+    treated type must not let that through: the escape is idempotent, so
+    the field closes at the one seam every log field passes through.
+    """
+    from taskq.obs._redact_exc import ScrubbedText, scrub_exception_field
+
+    value = ScrubbedText("cannot open file \udcff")
+    safe = scrub_exception_field("error_message", value)
+    assert isinstance(safe, str) and "\udcff" not in safe
+    assert "\\udcff" in safe, f"the treated value's surrogate must be escaped; got {safe!r}"
+    # Idempotence: an escaped ScrubbedText passes byte-for-byte.
+    again = scrub_exception_field("error_message", safe)
+    assert again == safe

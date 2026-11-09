@@ -1,4 +1,4 @@
-"""Red-team attacks on the two newest `taskq.cron` branches.
+"""Adversarial review attacks on the two newest `taskq.cron` branches.
 
 Both target code added after the bounded-sweep fix, and both were
 verified red by direct run before being written here - neither is
@@ -48,8 +48,8 @@ from taskq.cron import _factory_cache, compute_next_fire_after, resolve_payload
 
 _TZ = "America/New_York"
 _NY = ZoneInfo(_TZ)
-# Fall-back morning: 2025-11-02 02:00 EDT -> 01:00 EST; 01:00-01:59:59
-# occurs twice. fold=0 is EDT (UTC-4), fold=1 is EST (UTC-5).
+# Fall-back morning: 2025-11-02 02:00 edt -> 01:00 est; 01:00-01:59:59
+# occurs twice. fold=0 is edt (UTC-4), fold=1 is est (UTC-5).
 _FALLBACK_DAY = (2025, 11, 2)
 
 
@@ -111,13 +111,13 @@ def test_allof_exact_minute_seed_with_later_inhour_matches_owes_them_first() -> 
     """FINDING (fixed): the seed branch fired too broadly.
 
     The seed check of the time (``_seed_is_first_occurrence_of_match``,
-    since reworked into ``_next_fold1_fire``) answered True for ANY
+    since reworked into ``_next_fold1_fire``) answered True for any
     exact-minute seed on a match inside the ambiguous hour, and the
     branch then returned the fold-1 twin unconditionally.  That is only
-    right when the seed's minute is the LAST owed match of the hour
+    right when the seed's minute is the last owed match of the hour
     (the yearly ``30 1 1 11 *`` case the branch was built for).  Under
     a minutely expression, an exact seed at 01:30 fold-0 owes 01:31
-    fold-0 ONE MINUTE later - the walk's answer, and the same answer
+    fold-0 one MINUTE later - the walk's answer, and the same answer
     this file pins for the sub-minute seeds above.  Measured while red:
     the branch returned the 01:30 fold-1 twin (06:30 UTC), silently
     skipping every fire from 01:31 through the twin.
@@ -152,7 +152,7 @@ def test_allof_exact_minute_seed_with_later_inhour_matches_owes_them_first() -> 
             datetime(2026, 11, 1, 1, 30, 30, tzinfo=_NY, fold=0),
             datetime(2026, 11, 1, 6, 30, 30, tzinfo=UTC),
         ),
-        # seed past the range's only match: the MATCH's fold-1 twin is
+        # seed past the range's only match: the match's fold-1 twin is
         # owed - not the seed's (01:30:45 fold-1 is not a fire instant)
         (
             "30 1 1 11 *",
@@ -160,14 +160,14 @@ def test_allof_exact_minute_seed_with_later_inhour_matches_owes_them_first() -> 
             datetime(2026, 11, 1, 6, 30, tzinfo=UTC),
         ),
         # late in a minutely range: the fold-1 pass re-plays from 01:00 -
-        # the seed's own twin (01:59 fold-1) is owed LAST, not first
+        # the seed's own twin (01:59 fold-1) is owed last, not first
         (
             "* * * * *",
             datetime(2026, 11, 1, 1, 59, 0, tzinfo=_NY, fold=0),
             datetime(2026, 11, 1, 6, 0, tzinfo=UTC),
         ),
         # the same from a seconds-carrying server-clock seed - the walk
-        # alone answers 02:00 (or a pair with a PAST 01:00 fold-0 member),
+        # alone answers 02:00 (or a pair with a past 01:00 fold-0 member),
         # skipping the fold-1 pass entirely
         (
             "* * * * *",
@@ -187,7 +187,7 @@ def test_fold0_seed_routes_to_the_fold1_pass_once_fold0_matches_are_spent(
     cron_expr: str, seed: datetime, expected_utc: datetime
 ) -> None:
     """Class closure: every fold-0 seed inside a repeated range whose
-    fold-0 pass is spent owes the fold-1 pass's FIRST match.
+    fold-0 pass is spent owes the fold-1 pass's first match.
 
     The instances above were all live before `_next_fold1_fire` (year
     skips, the seed's phantom twin, a pair containing an instant before
@@ -247,7 +247,7 @@ def test_allof_exact_minute_seed_still_returns_the_fold1_twin() -> None:
     """The branch's founding case keeps working - a guard against overfix.
 
     A seed exactly on the earlier occurrence (seconds and microseconds
-    zero) of a repeated hour with NO later in-hour match genuinely owes
+    zero) of a repeated hour with no later in-hour match genuinely owes
     the fold-1 twin under `allof`; a fix for the findings above must not
     delete that.  Re-scoped by the coverage triage from the every-minute
     expression it was first written with to the single-match premise it
@@ -255,7 +255,7 @@ def test_allof_exact_minute_seed_still_returns_the_fold1_twin() -> None:
     the in-hour matches, which is the finding test above - the two had
     pinned contradictory outputs for the same input.
     """
-    year, month, day = (2026, 11, 1)  # Nov 1 2026 is NY's fall-back Sunday
+    year, month, day = (2026, 11, 1)  # Nov 1 2026 is ny's fall-back Sunday
     seed = datetime(year, month, day, 1, 30, tzinfo=_NY, fold=0)
     out = compute_next_fire_after("30 1 1 11 *", _TZ, seed, dst_strategy="allof")
     assert [d.astimezone(UTC) for d in out] == [datetime(year, month, day, 6, 30, tzinfo=UTC)], (
@@ -267,7 +267,7 @@ def test_allof_exact_minute_seed_still_returns_the_fold1_twin() -> None:
 @pytest.mark.parametrize(
     ("strategy", "cron_expr", "tz_name", "seed", "expected_utc"),
     [
-        # skip/firstof from a fold-1 seed with MULTIPLE in-range matches
+        # skip/firstof from a fold-1 seed with multiple in-range matches
         # still ahead of the seed's wall: the range's slots each fire
         # once, at the earlier occurrence - all spent before a fold-1
         # seed - so the walk-past-the-range loop owes the first match
@@ -288,7 +288,7 @@ def test_allof_exact_minute_seed_still_returns_the_fold1_twin() -> None:
             datetime(2026, 11, 1, 1, 0, tzinfo=_NY, fold=1),
             datetime(2026, 11, 1, 7, 0, tzinfo=UTC),
         ),
-        # skip with a SINGLE remaining in-range candidate: one loop
+        # skip with a single remaining in-range candidate: one loop
         # iteration, and the first match beyond the range is tomorrow's
         (
             "skip",
@@ -297,7 +297,7 @@ def test_allof_exact_minute_seed_still_returns_the_fold1_twin() -> None:
             datetime(2026, 11, 1, 1, 0, tzinfo=_NY, fold=1),
             datetime(2026, 11, 2, 6, 30, tzinfo=UTC),
         ),
-        # allof from the LAST in-range match's fold-1 occurrence: the
+        # allof from the last in-range match's fold-1 occurrence: the
         # fold-1 pass is spent too, so the walk's beyond-range answer
         # stands (the fold-1 branch falls through)
         (
@@ -358,7 +358,7 @@ def test_allof_fold1_seed_owes_the_next_fold1_match_not_the_spent_fold0() -> Non
     precedes its fold-1 occurrence in UTC, so from a seed already inside
     the fold-1 pass the next minute's fold-0 member is spent by
     construction - yet the walk returns it first: a function named
-    ``compute_next_fire_after`` answering an instant BEFORE its seed.
+    ``compute_next_fire_after`` answering an instant before its seed.
     The tick stores the first member as ``next_fire_at``; the schedule
     then sits due in the past and re-fires already-played slots (the
     over-delivery half of the regression the parity file pins at tick

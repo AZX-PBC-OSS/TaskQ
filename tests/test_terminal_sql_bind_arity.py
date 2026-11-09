@@ -125,7 +125,7 @@ def _aliases(tree: ast.Module) -> tuple[dict[str, ast.expr], frozenset[str]]:
     """Simple ``name = <expr>`` bindings anywhere in the module (the test
     files bind ``stmt = sql.mark_x`` style intermediates). Last wins.
 
-    Also returns the names assigned MORE THAN ONCE where any assignment is
+    Also returns the names assigned MORE THAN once where any assignment is
     a mark_* statement reference: a conditional re-bind (``if``/``else``
     arms assigning the same name) can carry more statements than the one
     the last-wins map resolves it to, so a fetch through such a name is

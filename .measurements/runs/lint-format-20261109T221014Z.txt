@@ -1,0 +1,5 @@
+# lint-format (ruff check . + ruff format --check .) at the re-stamp head 4441dd642fbd47501d2830eba3622869551d68d5
+All checks passed!
+1885 files already formatted
+rc=0
+head: 4441dd642fbd47501d2830eba3622869551d68d5

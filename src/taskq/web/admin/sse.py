@@ -26,7 +26,7 @@ from taskq.obs import (
     record_sse_rejection,
 )
 from taskq.settings import TaskQSettings
-from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS
+from taskq.web._sse_limit import session_gate
 from taskq.web.admin._factory import (
     get_pg_pool,
     get_realtime_mode,
@@ -56,7 +56,7 @@ _SSE_HEADERS: dict[str, str] = {
 def _get_semaphore(topic: str, max_connections: int) -> asyncio.Semaphore:
     # The limit is part of the key, the same mechanism
     # taskq.web._sse_limit applies: the map is module-global and outlives
-    # any one mount, so keying by topic alone let the FIRST mount's limit
+    # any one mount, so keying by topic alone let the first mount's limit
     # silently govern every later mount of the same topic at a different
     # ``admin_max_sse_connections`` (the test suite mounts the admin
     # router repeatedly with different settings). A mount that disagrees
@@ -65,51 +65,6 @@ def _get_semaphore(topic: str, max_connections: int) -> asyncio.Semaphore:
     if scoped not in _TOPIC_SEMAPHORES:
         _TOPIC_SEMAPHORES[scoped] = asyncio.Semaphore(max_connections)
     return _TOPIC_SEMAPHORES[scoped]
-
-
-def _session_gate(
-    session_verifier: Callable[[], Awaitable[bool]] | None,
-    schema: str | None,
-) -> Callable[[], Awaitable[bool]]:
-    """The #316 mid-stream re-check, built once per stream: runs before
-    the first frame and once per loop iteration — before every yielded
-    event and at every keepalive tick. A failure ends the stream (fail
-    closed); a verifier exception is revocation; a check that outlives
-    ``SESSION_RECHECK_TIMEOUT_SECS`` is unknown state, also revocation
-    (a hung host verifier must not freeze the stream inside its own
-    keepalive path)."""
-    recheck_count = {"n": 0}
-
-    async def _session_still_valid() -> bool:
-        if session_verifier is None:
-            return True
-        first_check = recheck_count["n"] == 0
-        try:
-            recheck_count["n"] += 1
-            return bool(
-                await asyncio.wait_for(
-                    session_verifier(),
-                    timeout=SESSION_RECHECK_TIMEOUT_SECS,
-                )
-            )
-        except TimeoutError:
-            # A verifier that outlives its bound is an unknown session
-            # state, not a pass: fail closed, and say WHY -- a hung verifier
-            # (wedged IdP introspection call) wedging the stream is a
-            # different incident from a revoked session.
-            logger.warning(
-                "admin-sse-session-recheck-timeout",
-                topic=schema,
-                timeout_secs=SESSION_RECHECK_TIMEOUT_SECS,
-                stream_phase="initial" if first_check else "streaming",
-            )
-            return False
-        except Exception:
-            # Fail closed: an unknown session state must not keep an
-            # admin stream open.
-            return False
-
-    return _session_still_valid
 
 
 async def _sse_generator(
@@ -122,7 +77,7 @@ async def _sse_generator(
     """Stream admin state_change events (or keepalives) as SSE strings.
 
     ``session_verifier`` is the request-scoped re-check for post-revocation
-    auth (#316): it runs before the first frame and once per loop iteration --
+    auth : it runs before the first frame and once per loop iteration --
     before every yielded event and at every keepalive tick -- and a failure
     ends the stream, the finally releasing the topic's semaphore slot. Any
     exception out of the verifier is treated as revocation (fail closed), and
@@ -131,7 +86,12 @@ async def _sse_generator(
     path.
     """
 
-    _session_still_valid = _session_gate(session_verifier, schema)
+    _session_still_valid = session_gate(
+        session_verifier,
+        logger,
+        timeout_warning="admin-sse-session-recheck-timeout",
+        timeout_fields={"topic": schema},
+    )
 
     try:
         if not await _session_still_valid():
@@ -177,9 +137,9 @@ async def _sse_generator(
                 # Deterministic, bounded release of the LISTEN connection.
                 # An ``async for`` never closes its iterator, and every
                 # exit that is not the feed's own exhaustion - a client
-                # disconnect closes THIS generator, never the inner one -
+                # disconnect closes this generator, never the inner one -
                 # abandons *feed* mid-iteration. Without this close, the
-                # feed's finally (remove_listener, UNLISTEN,
+                # feed's finally (remove_listener, unlisten,
                 # pool.release) runs only when the GC finalizes the
                 # abandoned generator: an unbounded delay pinning a
                 # session-scoped LISTEN connection against the pool's
@@ -191,7 +151,7 @@ async def _sse_generator(
                 #
                 # The close must also survive the very cancellation that
                 # interrupts the stream. wait_for cancels the task it is
-                # waiting on when the WAIT itself is cancelled, and a
+                # waiting on when the wait itself is cancelled, and a
                 # cancelled stream re-delivers cancellation at every
                 # checkpoint (an anyio cancel scope does; that is the
                 # shape every ASGI server streams under). Unshielded, the
@@ -214,7 +174,7 @@ async def _sse_generator(
                 # A close that outlives the bound gives up loudly (the
                 # wait_for TimeoutError is logged below, and the feed's
                 # own cleanup is cancellation-tolerant and finishes the
-                # release detached - see _listen._release_listen_connection),
+                # release detached - see _listen_pump.release_listen_connection),
                 # no worse than the GC-driven status quo it replaces.
                 try:
                     await shield_with_retrieval(
@@ -223,7 +183,7 @@ async def _sse_generator(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    # The close failed on THIS (observed) path - a
+                    # The close failed on this (observed) path - a
                     # suppressed-in-the-feed infra error surfaced by the
                     # closer. Silent suppression would hide a release that
                     # never happened; the detached path is covered by
@@ -259,7 +219,7 @@ async def _holds_generator(
     session_verifier: Callable[[], Awaitable[bool]] | None = None,
     topic: str = "holds",
 ) -> AsyncGenerator[str, None]:
-    """Stream the HITL broadcast (T26) as SSE ``hold`` frames — the
+    """Stream the HITL broadcast as SSE ``hold`` frames — the
     TYPED listener's events (``HoldCreated`` / ``HoldResolved`` /
     ``HoldExpired`` / ``Backfilled``) straight to the browser, the open
     holds BACKFILLED at subscribe (a page render sees the pending
@@ -267,16 +227,23 @@ async def _holds_generator(
     rides every (re)backfill: a hold resolved or expired during an
     outage never announces its own death — the browser board drops any
     card the snapshot disowns. The resolve/deliver door is UNCHANGED —
-    this is the read face only. The #316 session re-check gates every
-    frame exactly as the state_change feed's does; the bounded shielded
-    close is the same shape (a client disconnect closes THIS generator;
-    the listener's pump and its dedicated LISTEN connection must
-    release deterministically)."""
+    this is the read face only. The session re-check gates every
+    frame exactly as the state_change feed's does; the exit runs one bounded,
+    cancellation-shielded teardown whose listener stop sits in the frame
+    close's inner finally (a client disconnect closes THIS generator; the
+    frames unsubscribe, the pump stops, and that pump stop is what returns
+    the dedicated LISTEN connection — the release is only as sustainable as
+    the stop)."""
     from taskq.workflows.api._hitl_listen import (
-        HitlListener,  # the import law (§16.1): lazy, never at module scope
+        HitlListener,  # the import law (the import law): lazy, never at module scope
     )
 
-    _session_still_valid = _session_gate(session_verifier, schema)
+    _session_still_valid = session_gate(
+        session_verifier,
+        logger,
+        timeout_warning="admin-sse-session-recheck-timeout",
+        timeout_fields={"topic": schema},
+    )
     try:
         if not await _session_still_valid():
             logger.warning("admin-sse-session-revoked", topic=schema, stream_phase="initial")
@@ -310,26 +277,47 @@ async def _holds_generator(
                 else:
                     yield f"event: hold\ndata: {frame.model_dump_json()}\n\n"
         finally:
-            # The pump is NOT the frames iterator: closing the iterator
-            # abandons the consumer's queue, never the pump task or its
-            # dedicated LISTEN connection. Both teardowns are bounded
-            # and shielded (the state feed's close, twice over).
-            try:
-                await shield_with_retrieval(
-                    asyncio.wait_for(frames.aclose(), timeout=CLOSE_TIMEOUT_SECS)
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "admin-sse-holds-close-failed",
-                    topic=schema,
-                    error_type=type(exc).__name__,
-                    error=str(exc),
-                )
-            await shield_with_retrieval(
-                asyncio.wait_for(listener.stop(), timeout=CLOSE_TIMEOUT_SECS)
-            )
+            # One bounded teardown owns both halves of this consumer's
+            # exit: the frames close runs first (it unsubscribes this
+            # consumer's queue from the fan-out), and the listener stop
+            # runs in the close's inner finally (it cancels and reaps
+            # the pump task — the pump stop is what returns the
+            # dedicated LISTEN connection). Stop therefore runs on
+            # every exit that reaches this teardown — a successful
+            # close, the logged ordinary close failure, the close's
+            # own timeout, or a BaseException out of the close,
+            # cancellation included. The whole coroutine is awaited
+            # exactly once through shield_with_retrieval: a
+            # cancellation delivered here detaches the teardown — the
+            # detached teardown and the stop's nested shielded release
+            # cleanup may then outlive this caller, including at the
+            # stop bound — while the cancellation still propagates out
+            # of this generator and the detached outcome is retrieved
+            # (and logged when it failed). The two bounds are the same
+            # CLOSE_TIMEOUT_SECS, sequential and independent; they
+            # bound TaskQ's cooperative waits only — neither universal
+            # completion nor a universal wall-clock connection-release
+            # guarantee (a cleanup that detached under the shield runs
+            # until the backend operations themselves return). A
+            # frames-close timeout can also defer the inner iterator's
+            # own unsubscribe finalization; a stop that returns through
+            # its reap phase still ends every subscriber by clearing
+            # the fan-out registry, even when the inner frames close
+            # timed out.
+            async def teardown() -> None:
+                try:
+                    await asyncio.wait_for(frames.aclose(), timeout=CLOSE_TIMEOUT_SECS)
+                except Exception as exc:
+                    logger.warning(
+                        "admin-sse-holds-close-failed",
+                        topic=schema,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                finally:
+                    await asyncio.wait_for(listener.stop(), timeout=CLOSE_TIMEOUT_SECS)
+
+            await shield_with_retrieval(teardown())
     finally:
         semaphore.release()
         record_sse_connection_closed("admin", topic)
@@ -338,7 +326,7 @@ async def _holds_generator(
 def register(router: APIRouter) -> None:
     """Attach the ``GET /sse/mode`` probe and the ``GET /sse/{topic}`` SSE endpoint.
 
-    ``/sse/mode`` is registered FIRST: FastAPI matches routes in registration
+    ``/sse/mode`` is registered first: FastAPI matches routes in registration
     order, so the probe must exist before the ``{topic}`` catch-all or the
     topic route claims the path (and answers 400 for an unknown topic).
     """
@@ -389,14 +377,14 @@ def register(router: APIRouter) -> None:
         # Bind the request into the re-check once: the verifier reads the same
         # session cookie the request arrived with, and a session revoked
         # mid-stream fails the re-check even though those bytes are unchanged
-        # (#316). None when the host wired no verifier: the stream then
+        # . None when the host wired no verifier: the stream then
         # authenticates once at subscribe only, with no mid-stream re-check.
         _session_verifier: Callable[[], Awaitable[bool]] | None = (
             (lambda: session_verifier(request)) if session_verifier is not None else None
         )
         if topic == "holds":
-            # THE HITL BROADCAST FACE (T26): the typed listener's events
-            # — backfilled at subscribe, then the live NOTIFYs.
+            # the typed listener's events — backfilled at subscribe, then the
+            # live NOTIFYs.
             gen = _holds_generator(
                 semaphore,
                 lambda: get_pg_pool(request),

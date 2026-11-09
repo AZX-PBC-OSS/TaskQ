@@ -275,7 +275,7 @@ async def test_flow1_doctor_ignores_stale_worker_row(
     schema, dsn = module_pg_schema.schema_name, module_pg_schema.pg_dsn
 
     # A pending job for an actor whose config row exists (seeded), on the
-    # queue a GHOST worker row still claims to subscribe.
+    # queue a ghost worker row still claims to subscribe.
     job_ids = await _insert_pending_jobs(
         clean_pg_conn, schema, actor="test_actor", queue="default", n=1
     )
@@ -299,7 +299,7 @@ async def test_flow1_doctor_ignores_stale_worker_row(
     )
     assert str(job_ids[0]) not in r.stdout  # the finding names the actor, not the job
 
-    # Control: the same fleet with a FRESH heartbeat for the worker row does
+    # Control: the same fleet with a fresh heartbeat for the worker row does
     # count as serving - no unserved finding for that queue.
     await clean_pg_conn.execute(f'DELETE FROM "{schema}".workers')  # noqa: S608  # Why: schema is identifier-validated upstream.
     fresh = new_uuid()
@@ -327,14 +327,14 @@ async def test_flow1_act_branch_the_cap_knob_opens_and_closes_the_queue(
     dispatch query re-reads max_concurrent every dispatch cycle"). A
     walkthrough that only raises the cap next to a drain would pass even
     if the knob moved nothing - the worker drains regardless. This closes
-    the loop in BOTH directions against a real worker:
+    the loop in both directions against a real worker:
 
-    - the lever OFF (the documented ``0, DRAIN MODE`` value - cli.md
+    - the lever off (the documented ``0, DRAIN MODE`` value - cli.md
       documents the 0 state as "deliberately stopped; jobs enqueue and
       never run"): a real ``--until-idle`` worker cannot move the queue
       and exits 4 (the documented "idle-max-runtime exceeded before drain
       completed" code), jobs still pending;
-    - the lever ON: the SAME command with N=2 unstrands the queue with no
+    - the lever ON: the same command with N=2 unstrands the queue with no
       restart - the worker drains, jobs succeed, exit 0.
 
     Only the stored cap changed between the two legs; whatever moved the
@@ -353,7 +353,7 @@ async def test_flow1_act_branch_the_cap_knob_opens_and_closes_the_queue(
         payload=json.dumps({"run_id": "act-branch", "user_id": "u1", "email": "u1@example.com"}),
     )
 
-    # The lever OFF: the documented DRAIN MODE value, read back as 0.
+    # The lever off: the documented drain mode value, read back as 0.
     r = await _arun_cli(
         schema, dsn, "actor-config", "set", "send_welcome_email", "--max-concurrent", "0"
     )
@@ -389,7 +389,7 @@ async def test_flow1_act_branch_the_cap_knob_opens_and_closes_the_queue(
         f"a cap-0 queue drained anyway - DRAIN MODE does not stop dispatch:\n{r.stdout}"
     )
 
-    # The lever ON: the same live command with N=2, no restart step.
+    # The lever on: the same live command with N=2, no restart step.
     r = await _arun_cli(
         schema, dsn, "actor-config", "set", "send_welcome_email", "--max-concurrent", "2"
     )
@@ -649,7 +649,7 @@ async def test_flow3_worker_fleet_bootstrap_health_verify(
 
 # ── Flow 4: "set up alerting" (observability.md + rules.yaml) ────────────
 #
-# The rules read WORKER-side series (ops.md §8: "the rules read worker-side
+# The rules read worker-side series (ops.md §8: "the rules read worker-side
 # series the admin process's /jobs/health/metrics never carries"), so the
 # documented path is: set TASKQ_METRICS_PORT on every worker, scrape /metrics,
 # import rules.yaml. This walkthrough boots a real worker with the port set
@@ -676,7 +676,7 @@ async def test_flow4_metrics_scrape_serves_the_series_the_rules_read(
     an absent series, the docs' "absent, not 0" convention), so the walk
     seeds pending work first - including a job for an actor with no
     actor_config row, the stranded{reason="no_actor_config"} shape.
-    taskq_heartbeat_misses_total is deliberately NOT asserted: it only
+    taskq_heartbeat_misses_total is deliberately not asserted: it only
     exists after a failed heartbeat tick, and a healthy worker never
     records one.
     """

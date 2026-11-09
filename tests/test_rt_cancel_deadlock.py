@@ -16,14 +16,14 @@ decides row-lock order):
 
 * 102 matching pending jobs at ``batch_size=100`` → batch 1 (the 100
   lowest ids) commits; batch 2 = the two highest ids.
-* The drain is gated INSIDE batch 2's transaction - its driving UPDATE
+* The drain is gated inside batch 2's transaction - its driving UPDATE
   has already locked both batch-2 rows, and the gate holds the batch's
   first event INSERT open.
 * A second connection then takes ``LOCK TABLE job_events IN SHARE
   MODE``: the drain's event INSERT (RowExclusive on job_events) cannot
   proceed while the drain still holds both job-row locks.
 * The gate opens; the drain's INSERT blocks on the table lock (its
-  deadlock detector arms NOW), and only then - after the test observes
+  deadlock detector arms now), and only then - after the test observes
   the drain waiting - the second connection requests one of the
   drain-held rows ``FOR UPDATE``.  That closes a genuine cross-type
   cycle: drain (holds job row locks, wants the job_events table lock) ↔
@@ -85,7 +85,7 @@ class _DeadlockWitnessConn:
     transaction (before its first event INSERT), and counts the genuine
     deadlocks the drain's event writes raise.
 
-    The drain takes a fresh connection per batch AND per retry attempt,
+    The drain takes a fresh connection per batch and per retry attempt,
     so the counters and the gate live on the pool-level state object.
     """
 
@@ -220,7 +220,7 @@ async def test_real_deadlock_mid_drain_retries_cleanly_with_no_phantoms(
         )
         await state.gate_entered.wait()
 
-        # The holder's half of the cycle: the SHARE table lock makes the
+        # The holder's half of the cycle: the share table lock makes the
         # drain's event INSERT (RowExclusive on job_events) wait.
         await holder.execute(
             f'LOCK TABLE "{schema}".job_events IN SHARE MODE'
@@ -231,7 +231,7 @@ async def test_real_deadlock_mid_drain_retries_cleanly_with_no_phantoms(
 
         # Close the cycle from the other side: the holder now wants a
         # row the drain's batch-2 driving UPDATE holds.  The drain's
-        # detector armed first, so the DRAIN's batch is the transaction
+        # detector armed first, so the drain's batch is the transaction
         # Postgres aborts.
         await asyncio.wait_for(
             holder.execute(

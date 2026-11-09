@@ -4,11 +4,11 @@ Regression: the stale-batch completion block ended
 up nested inside ``if rl.has_keyed_rate_limits:`` - a PROCESS-LOCAL
 registry condition - and lost its leader gating. Consequences:
 
-- Deployments not using keyed rate-limit refs (the default) NEVER ran the
+- Deployments not using keyed rate-limit refs (the default) never ran the
   sweep: batches whose completion hook was lost (consumer crash between
   the terminal write and ``complete_batch``/``abort_batch``) stayed
   ``active`` forever, ``wait_for_batch`` could snooze indefinitely, and
-  ``prune_old_batches`` (which only deletes ``completed_at IS NOT NULL``
+  ``prune_old_batches`` (which only deletes ``completed_at IS not NULL``
   rows) never caught up - unbounded ``batches`` growth.
 - Non-leaders could run it while the actual leader might not.
 
@@ -20,7 +20,7 @@ gated on a PG-shaped backend (``hasattr`` on ``sweep_leaked_reservation_slots``
 in-memory backend does not provide).
 
 These tests pin that wiring while preserving the de-gating of keyed
-eviction: every worker sweeps its OWN registry each tick, leader or not.
+eviction: every worker sweeps its own registry each tick, leader or not.
 """
 
 import asyncio
@@ -156,22 +156,17 @@ async def _drive_sweep_loop(
     seconds: float,
     stop_on: Callable[[], bool] | None = None,
 ) -> None:
-    """Run ``_sweep_loop`` for up to *seconds* (or until *stop_on*), then stop it."""
+    """Run ``_sweep_loop`` for up to *seconds* (or until *stop_on*), under
+    the lifecycle supervisor, which stops it gracefully on exit."""
     import taskq.worker._leader_sweeps as sweeps_mod
+    from tests._loop_control import managed_loop
 
-    shutdown = asyncio.Event()
-    task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the loop directly, matching tests/test_leader_sweep_rl_registry.py
-    try:
+    async with managed_loop(lambda shutdown: sweeps_mod._sweep_loop(ctx, shutdown)):
         deadline = monotonic() + seconds
         while monotonic() < deadline:
             if stop_on is not None and stop_on():
                 break
             await asyncio.sleep(0.01)
-    finally:
-        shutdown.set()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
 
 
 @contextlib.contextmanager
@@ -223,7 +218,7 @@ def _draining_stale_batches() -> Generator[list[dict[str, Any]], None, None]:
 
 
 async def test_stale_batch_sweep_runs_for_leader_without_keyed_rate_limits() -> None:
-    """A leader with a registry holding NO keyed refs (the default deployment
+    """A leader with a registry holding no keyed refs (the default deployment
     shape) still runs the stale-batch completion sweep.
 
     A sweep nested inside ``if rl.has_keyed_rate_limits:`` never
@@ -252,7 +247,7 @@ async def test_stale_batch_sweep_drains_within_one_tick() -> None:
     drive window (the fixture's sweep interval is the default 30 s).
     """
     # The module's own _deps() pins sweep_interval to 0.01 s so negative
-    # assertions survive several ticks; THIS test needs the opposite -
+    # assertions survive several ticks; this test needs the opposite -
     # an interval long enough that only drain calls, not later ticks,
     # can produce the second call inside the window.
     settings_deps = _deps(is_leader=True)
@@ -284,7 +279,7 @@ async def test_stale_batch_sweep_skipped_when_not_leader() -> None:
     runs the leader's sweep.
     """
     registry = RateLimitRegistry()
-    # Fresh stamp: the entry is NOT idle, so eviction keeps it and
+    # Fresh stamp: the entry is not idle, so eviction keeps it and
     # ``has_keyed_rate_limits`` stays true for the whole drive window.
     _seed_keyed_rate_limit(registry, idle_secs=0.0)
     ctx = _ctx(is_leader=False, registry=registry)
@@ -297,7 +292,7 @@ async def test_stale_batch_sweep_skipped_when_not_leader() -> None:
 
 async def test_keyed_rate_limit_eviction_still_runs_when_not_leader() -> None:
     """Semantics pin: keyed eviction is de-gated from leadership - a
-    non-leader worker still evicts idle keyed rate limits from its OWN
+    non-leader worker still evicts idle keyed rate limits from its own
     registry each tick. The stale-batch fix must not regress this."""
     registry = RateLimitRegistry()
     bucket = _seed_keyed_rate_limit(registry, idle_secs=7200.0)  # idle 2 h > 1 h threshold

@@ -248,7 +248,7 @@ class TestInMemoryRetryJob:
         """retry_job clears a schedule_to_close that has already elapsed.
 
         Twin of the PG template's ``CASE WHEN schedule_to_close <=
-        clock_timestamp() THEN NULL`` arm: the twin's own dispatch claim
+        clock_timestamp() then NULL`` arm: the twin's own dispatch claim
         (testing/_dispatch.py) admits a row only when its deadline is NULL
         or strictly in the future, so re-pending with a stale deadline
         intact would hand back a row no claim can ever reach - the operator

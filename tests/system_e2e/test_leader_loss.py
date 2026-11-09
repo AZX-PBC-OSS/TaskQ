@@ -68,7 +68,7 @@ async def _wait_leader_holds_running(
     """Block until the maintenance leader holds the locks of ``want``
     running tagged rows; return the leader's in-flight job ids.
 
-    The kill's premise is this ONE consistent observation (leader row and
+    The kill's premise is this one consistent observation (leader row and
     lock ownership read together): the elected leader is the lock holder
     of in-flight work. A bare "rows are running" check does not bind the
     two facts - the leader's dispatch loop can lose every claim round to

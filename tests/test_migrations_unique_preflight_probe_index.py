@@ -6,7 +6,7 @@ index that served it was partial on the ACTIVE status triple, so any
 actor folding a terminal state into ``unique_states`` (the documented
 ``succeeded`` dedup use) degraded the probe, on the enqueue path, to a
 sequential scan. Migration 01.00.15_01 adds the non-partial
-``(actor, identity_key, status)`` index the probe needs for ANY status
+``(actor, identity_key, status)`` index the probe needs for any status
 set; these pins hold the migration to that contract, following the
 index-audit idiom (migration pins plus EXPLAIN plan pins on a seeded
 schema, as tests/test_index_audit.py and tests/test_postgres_unique_for.py

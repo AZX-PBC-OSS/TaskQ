@@ -1,5 +1,5 @@
 """The sync-friction lane's pins: each test is RED at the audited tip and
-GREEN after its cure. One test per pinnable friction item.
+GREEN after its fix. One test per pinnable friction item.
 
 - item 4: ``taskq worker --queues a b c`` — the space-separated form fails
   with an error that teaches the repeat-the-flag contract, not "No such
@@ -24,12 +24,18 @@ class TestQueuesFlagTeachesRepeatForm:
     teach that contract."""
 
     def test_space_separated_queues_error_teaches_repeat_form(self) -> None:
+        from taskq.testing.assertions import plain_cli_output
+
         result = runner.invoke(
             app,
             ["worker", "--actors", "tests.test_cli_worker:_REGISTRY", "--queues", "a", "b", "c"],
         )
         assert result.exit_code != 0
-        output = result.output
+        # rich colorizes the error box on the CI's forced-color terminal — the
+        # escape codes ride inside words, so a raw substring assertion is
+        # environment-dependent. The plain, whitespace-collapsed text is stable
+        # in any terminal.
+        output = plain_cli_output(result.output)
         assert "No such command" not in output, (
             "the error must not point at nonexistent subcommands"
         )

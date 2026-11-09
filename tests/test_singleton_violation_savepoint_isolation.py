@@ -72,6 +72,9 @@ class _ConnStandin:
     """ConnLike stand-in routing calls by SQL substring and recording the
     savepoint shape around each statement.
 
+    fail-closed-exempt: the savepoint-isolation fault injection: an
+    injected UniqueViolationError mid-transaction (no PG).
+
     ``caller_tx_open`` models the two caller shapes the savepoint must
     distinguish: a caller-owned OPEN transaction (True - the caller owns
     the scope, and a nested ``transaction()`` is a SAVEPOINT of it) and a

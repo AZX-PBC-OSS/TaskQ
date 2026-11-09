@@ -8,7 +8,7 @@ there means one black-holed holder (dead TCP, no FIN - the server reaps
 it only via keepalives) stalls that bucket's admission until then: a
 silent hang, the worst failure this project ships.
 
-The log-style sliding window in the SAME package is already bounded
+The log-style sliding window in the same package is already bounded
 (``_acquire_pg_log``: advisory two-tier, fail-closed denial on budget
 exhaustion - see ``tests/test_ratelimit_sliding_window_pg_lock.py``).
 This module pins the same contract for the two row-lock paths:
@@ -101,6 +101,7 @@ class _NullSavepoint:
 
 class _RowLockFakeConn:
     """ConnLike stand-in modelling a stuck row lock on the bucket row.
+        fail-closed-exempt: the row-lock WAIT's contention fault injection: a deterministic holder owning the row
 
     The fused acquires (token bucket and GCRA) take the bucket
     row's lock in the ``ON CONFLICT (bucket_name) DO UPDATE`` arm, so
@@ -149,7 +150,7 @@ class _RowLockFakeConn:
                 # the decision bit the statement carried home.
                 row = {"tokens_after": 4.0, "granted": True}
             else:
-                # GCRA fused acquire: the advanced TAT and the statement
+                # gcra fused acquire: the advanced tat and the statement
                 # clock the arithmetic used.
                 row = {"new_tat": 1000.25, "now_s": 1000.0}
             self.fused_results.append(row)
@@ -165,7 +166,7 @@ class _RowLockFakeConn:
 
 
 class _BlackHoleRowLockConn(_RowLockFakeConn):
-    """Row-lock statement that NEVER returns (network black hole: the
+    """Row-lock statement that never returns (network black hole: the
     server is unreachable, the statement never completes), only the
     client-side wait_for backstop can bound this."""
 
@@ -232,11 +233,11 @@ class TestTokenBucketRowLockBoundedWaitUnit:
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
         # The GUC budget was set for this transaction.
         assert conn.set_config_values == ["100ms"]
-        # Only the acquire's OWN transaction wrapper opened: the fused
+        # Only the acquire's own transaction wrapper opened: the fused
         # statement needs no savepoint of its own (a refusal aborts the
         # transaction outright and the bound dies with it).
         assert conn.savepoint_opens == 1
-        # Fail closed: the fused acquire never RETURNED, a statement that
+        # Fail closed: the fused acquire never returned, a statement that
         # raised spent and admitted nothing (statement-level atomicity).
         assert conn.fused_results == [], (
             "a timed-out racer wrote bucket state - the denial must be "
@@ -298,7 +299,7 @@ class TestTokenBucketRowLockBoundedWaitUnit:
             lock_timeout_ms=0.0,
         )
         assert decision.allowed is True
-        # Indefinite mode opens NO transaction at all: the fused
+        # Indefinite mode opens no transaction at all: the fused
         # statement is one autocommit round trip, its row lock ending
         # with the statement.
         assert conn.savepoint_opens == 0, (
@@ -331,7 +332,7 @@ class TestTokenBucketRowLockBoundedWaitUnit:
         # well before any plausible unbounded hang.
         assert elapsed >= 0.5, f"the backstop must outlast the 100ms budget, took {elapsed:.3f}s"
         assert elapsed < 2.0, f"the backstop must bound the black hole, took {elapsed:.3f}s"
-        # Fail closed: the fused acquire never RETURNED.
+        # Fail closed: the fused acquire never returned.
         assert conn.fused_results == []
 
 
@@ -361,8 +362,8 @@ class TestGcraRowLockBoundedWaitUnit:
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
         assert conn.set_config_values == ["100ms"]
         assert conn.savepoint_opens == 1
-        # Fail closed: the fused upsert never RETURNED, a statement that
-        # raised advanced no TAT and admitted nothing.
+        # Fail closed: the fused upsert never returned, a statement that
+        # raised advanced no tat and admitted nothing.
         assert conn.fused_results == [], (
             "a timed-out racer advanced the TAT - the denial must be "
             "fail closed, never an admission."
@@ -409,7 +410,7 @@ class TestGcraRowLockBoundedWaitUnit:
     async def test_lock_timeout_budget_zero_waits_indefinitely(self) -> None:
         """``lock_timeout_ms <= 0`` disables the bound - the GUC
         convention, pinned by contract: the granted fake proves the
-        indefinite mode is ONE autocommit statement with no GUC
+        indefinite mode is one autocommit statement with no GUC
         statements and no transaction of its own."""
         sw = _sw("gcra_row_lock_unit3")
         conn = _RowLockFakeConn(select_times_out=False, select_row=_GCRA_ROW)
@@ -446,7 +447,7 @@ class TestGcraRowLockBoundedWaitUnit:
         assert decision.retry_after == timedelta(milliseconds=100.0)
         assert elapsed >= 0.5, f"the backstop must outlast the 100ms budget, took {elapsed:.3f}s"
         assert elapsed < 2.0, f"the backstop must bound the black hole, took {elapsed:.3f}s"
-        # Fail closed: the fused upsert never RETURNED.
+        # Fail closed: the fused upsert never returned.
         assert conn.fused_results == []
 
 
@@ -479,7 +480,7 @@ class TestTokenBucketRefundRowLockBoundedWaitUnit:
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
         # The GUC budget was set for this transaction.
         assert conn.set_config_values == ["100ms"]
-        # One savepoint from the refund's OWN transaction wrapper, one
+        # One savepoint from the refund's own transaction wrapper, one
         # wrapping the lock-taking read.
         assert conn.savepoint_opens == 2
         # Never a silent success: the refund UPDATE never executed.
@@ -544,7 +545,7 @@ class TestTokenBucketRefundRowLockBoundedWaitUnit:
             _fake_settings(),
             lock_timeout_ms=0.0,
         )
-        # Only the refund's OWN transaction wrapper opened - indefinite
+        # Only the refund's own transaction wrapper opened - indefinite
         # mode adds no savepoint of its own.
         assert conn.savepoint_opens == 1, "indefinite mode must not open a savepoint"
         assert conn.set_config_values == [], "indefinite mode must not touch the GUC"
@@ -724,7 +725,7 @@ class TestRowLockBoundedWaitPg:
 # That matters because these budgets bound admission, not a background sweep.
 # With rate_limit_pg_fallback_enabled on, a Redis outage funnels the whole
 # fleet's admission through these row locks; budget exhaustion is a fail-closed
-# DENIAL that sheds load, and on the refund side it raises. An operator riding
+# denial that sheds load, and on the refund side it raises. An operator riding
 # out a slow-holder incident needs to widen the budget, and one riding out a
 # latency incident needs to narrow it, and today neither is possible without a
 # code change and a redeploy.
@@ -992,9 +993,9 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
     dedicated connections keep the CONFIGURED value: no admission
     acquire runs on them.
 
-    There is deliberately NO settings-level cross-field validator here:
+    There is deliberately no settings-level cross-field validator here:
     refusing a valid configuration would be strictly weaker than
-    honouring it. (This class previously pinned the pre-reconciliation
+    honouring it. (An earlier shape of this class pinned the pre-reconciliation
     defect - a widened budget silently accepted and then truncated at
     run time; its negative form is ungreenable now that the derivation
     exists, and its own failure message instructed this rewrite.)
@@ -1002,7 +1003,7 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
 
     def test_shipped_defaults_keep_the_pool_bound_byte_identical(self) -> None:
         """A deployment that sets nothing gets exactly the pre-knob pool
-        bound: the pairs carry each budget's shipped constant as BOTH the
+        bound: the pairs carry each budget's shipped constant as both the
         configured and default value, and the derivation returns the
         configured floor untouched."""
         settings = _operator_settings()

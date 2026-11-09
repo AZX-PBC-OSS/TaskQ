@@ -149,7 +149,7 @@ async def test_queue_overview_counts_match_the_rows(counted_fleet: httpx.AsyncCl
             f"queue {queue}'s rendered counts {cells[:5]} disagree with the "
             f"database rows {expected_cells[1:]} (page lies, DB truth)"
         )
-    # A queue whose rows are ALL terminal is not a row of zeros: it is
+    # A queue whose rows are all terminal is not a row of zeros: it is
     # absent, and its finished rows inflate no other queue's numbers.
     assert "gamma" not in rows, "a terminal-only queue must not appear on the active-jobs overview"
 
@@ -231,7 +231,7 @@ async def archived_probe(
 async def test_archived_job_detail_renders_the_archived_attempt_history(
     archived_probe: tuple[str, httpx.AsyncClient],
 ) -> None:
-    """The archive fallback renders the job AND its attempt history truthfully."""
+    """The archive fallback renders the job and its attempt history truthfully."""
     job_id, client = archived_probe
     response = await client.get(f"/jobs/{job_id}")
     assert response.status_code == 200, (

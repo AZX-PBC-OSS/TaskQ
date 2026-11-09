@@ -1,7 +1,7 @@
-"""Red-team locks: unbounded terminal-write pool acquires starve the heartbeat loop.
+"""Adversarial review locks: unbounded terminal-write pool acquires starve the heartbeat loop.
 
 ``backend/_terminal.py``'s ``_mark_cancelled`` acquires from its pool with
-NO timeout (``async with pool.acquire() as conn:``) and
+no timeout (``async with pool.acquire() as conn:``) and
 ``backend/postgres.py`` routes ``mark_cancelled`` to the HEARTBEAT pool,
 while the heartbeat loop's own acquire is bounded
 (``worker/heartbeat.py`` - ``acquire(timeout=interval)``) and its
@@ -28,7 +28,7 @@ from taskq._ids import new_job_id, new_uuid
 from taskq.backend._sql_templates import render as render_sql
 from taskq.backend._terminal import _mark_cancelled
 from taskq.settings import WorkerSettings
-from taskq.testing.asyncpg_chaos import (  # pyright: ignore[reportPrivateUsage]  # Why: the recording pool's ctx subclass must BE the pool's own checkout type for the override to typecheck; same package contract the double documents.
+from taskq.testing.asyncpg_chaos import (  # pyright: ignore[reportPrivateUsage]  # Why: the recording pool's ctx subclass must be the pool's own checkout type for the override to typecheck; same package contract the double documents.
     ChaosConnection,
     ChaosPool,
     _ChaosAcquireCtx,
@@ -83,7 +83,7 @@ def _starved_pool() -> ChaosPool:
 #: = 0.25) - the guard must outlive any bound the shipped code can pass
 #: (so the bound's own TimeoutError is what the test observes, never the
 #: guard), while any bound at or above the guard is too loose to protect
-#: the heartbeat loop and fails the contract by STATE (the recorded
+#: the heartbeat loop and fails the contract by state (the recorded
 #: kwarg), not by wall clock.
 _ACQUIRE_GUARD_S = 0.5
 
@@ -190,8 +190,8 @@ async def test_mark_cancelled_pool_acquire_must_be_bounded() -> None:
             timeout=_ACQUIRE_GUARD_S,
         )
     except TimeoutError:
-        # Two waits can end this probe: the pool's OWN honored bound
-        # (the DESIGNED terminal-write infra failure - the contract
+        # Two waits can end this probe: the pool's own honored bound
+        # (the designed terminal-write infra failure - the contract
         # holding) or the test's guard (nothing internal ended the wait
         # - the contract violated). bounded_failure says which fired.
         if not pool.bounded_failure:

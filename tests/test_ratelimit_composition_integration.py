@@ -1,4 +1,4 @@
-"""Integration and chaos tests for AND-composition against real backends.
+"""Integration and chaos tests for and-composition against real backends.
 
 through (chaos / failure-mode), (property test with
 Hypothesis), and (consumer snooze translation). These verify rollback resilience, composition
@@ -305,8 +305,8 @@ async def test_composition_invariants(
 
     import random
 
-    rng_rl = random.Random(rl_seed)  # noqa: S311 # Why: seeded PRNG for deterministic test name generation, not security
-    rng_res = random.Random(res_seed)  # noqa: S311 # Why: seeded PRNG for deterministic test name generation, not security
+    rng_rl = random.Random(rl_seed)  # noqa: S311 # Why: seeded prng for deterministic test name generation, not security
+    rng_res = random.Random(res_seed)  # noqa: S311 # Why: seeded prng for deterministic test name generation, not security
 
     rl_names: list[str] = [f"rl_{rng_rl.randint(0, 99999)}" for _ in range(n_rate_limits)]
     res_names: list[str] = [f"res_{rng_res.randint(0, 99999)}" for _ in range(m_reservations)]

@@ -191,7 +191,7 @@ async def test_connection_loss_mid_acquire(
 
 
 @pytest.fixture(scope="function")
-def _chaos_pg() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedFunction] # Why: pytest injects this fixture; pyright does not trace decorator-based DI
+def _chaos_pg() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedFunction] # Why: pytest injects this fixture; pyright does not trace decorator-based di
     skip_test_without_docker()
     with PostgresContainer(
         image="postgres:18-alpine",

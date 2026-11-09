@@ -7,7 +7,7 @@ pins the MVCC horizon, VACUUM cannot reclaim, and the claim query's
 B-tree scans degenerate through the dead tuples the claims themselves
 left behind - 15x lock-time degradation measured, and SKIP LOCKED only
 "lifts the floor, not the ceiling" (identical dead-tuple scans under
-both). The literature's first cure is the PREDICTOR: the degradation is
+both). The literature's first fix is the PREDICTOR: the degradation is
 visible in the claim-latency DISTRIBUTION before the backlog explodes.
 
 These gauges are that predictor, under the obs conventions (dotted
@@ -20,14 +20,14 @@ cardinality):
 - ``taskq.claim.claims_per_second``: the claim throughput the window
   observed, per queue.
 - ``taskq.claim.degradation_ratio``: the p99 against its rolling
-  baseline (minute-bucketed p99s kept for 24h). THE gauge: crossing
+  baseline (minute-bucketed p99s kept for 24h). the gauge: crossing
   ~10x is the pinned-horizon signature - see the
   ``TaskQClaimLatencyDegraded`` runbook.
 
 Pinned here (fast tier): the recording hook and its bounds, the pure
 math (percentiles, rate, ratio, warm-up, the divide-by-zero floor), the
 empty-not-zero discipline, and the cardinality doctrine (the queue label
-is the ONLY label, bounded at record time; nothing job-shaped can reach
+is the only label, bounded at record time; nothing job-shaped can reach
 a label).
 """
 
@@ -147,7 +147,7 @@ def test_claims_per_second_is_the_window_rate() -> None:
 
 def test_an_empty_window_yields_no_data_point_not_zero() -> None:
     """The empty-not-zero discipline: a worker that has claimed nothing
-    (fresh boot, or a queue that saw no traffic) yields NO observation - a
+    (fresh boot, or a queue that saw no traffic) yields no observation - a
     0 would read as a flatlining claim rate and could silence (or worse,
     fire) the rate-shaped operands downstream."""
     reset_claim_health_state()
@@ -196,7 +196,7 @@ def test_a_healthy_worker_reads_ratio_one() -> None:
 
 
 def test_a_cold_start_reports_no_ratio_not_a_fabricated_one() -> None:
-    """The warm-up guard: without a warmed baseline the ratio reports NO
+    """The warm-up guard: without a warmed baseline the ratio reports no
     data point, not a confident 1x and not a divide-by-zero monster. A
     cold worker's first minutes cannot page anyone."""
     reset_claim_health_state()
@@ -302,16 +302,16 @@ def test_the_health_dataclass_carries_exactly_the_runbook_operands() -> None:
 
 
 def test_the_hot_load_scrape_is_clean_for_three_seconds() -> None:
-    """FINDING 11's PIN (RED-FIRST): the gauge callbacks scrape on the
+    """the gauge callbacks scrape on the
     OTel collection THREAD while the claim path records on the EVENT-
-    LOOP thread — the pre-cure stores had no lock, and the two walkers
+    LOOP thread — the two walkers
     raced inside the deque/dict: **287 RuntimeErrors in 3 s of hot
     load** ("deque mutated during iteration"), every raise killing the
     callback's observation batch — the alert's operand VANISHED exactly
-    when the queue was hottest. THE CURE: the read is ATOMIC (the
+    when the queue was hottest. the CONTRACT: the read is ATOMIC (the
     stores' lock — the snapshot and the record each hold it for their
     whole walk). This pin hammers the record path on a writer thread
-    while a scraper thread snapshots continuously for 3 s and convicts:
+    while a scraper thread snapshots continuously for 3 s and rejects:
     ZERO RuntimeErrors, and the scrape's operands PRESENT (zero is a
     number, not an error — a warmed baseline reports a NUMBER)."""
     import threading
@@ -326,7 +326,7 @@ def test_the_hot_load_scrape_is_clean_for_three_seconds() -> None:
     def _record_hot(tid: int) -> None:
         # The claim path's shape: one record per claim round, the clock
         # advancing. The ts step lands >5 minute-buckets inside the 3 s
-        # wall, so the baseline WARMED and the ratio is a NUMBER by the
+        # wall, so the baseline warmed and the ratio is a number by the
         # final scrapes (the empty/ratio-None face is the cold-start's
         # own pin, not this one).
         ts = _T0 + float(tid)
@@ -335,12 +335,12 @@ def test_the_hot_load_scrape_is_clean_for_three_seconds() -> None:
                 record_claim_latency(f"hot-q{tid}", 0.001, now=ts)
                 ts += 0.05
                 time_mod.sleep(0.0005)
-        except BaseException as exc:  # Why: the pin convicts ANY raise on the hot path.
+        except BaseException as exc:  # Why: the pin rejects any raise on the hot path.
             with errors_lock:
                 errors.append(exc)
 
     def _scrape_hot() -> None:
-        # The OTel collection thread's shape: the FIVE gauge callbacks'
+        # The otel collection thread's shape: the five gauge callbacks'
         # snapshots, back to back, for the whole window.
         try:
             while not stop.is_set():
@@ -348,14 +348,13 @@ def test_the_hot_load_scrape_is_clean_for_three_seconds() -> None:
                 with errors_lock:
                     operands_seen.append(bool(snap) and snap["hot-q0"].p99_seconds >= 0.0)
                 time_mod.sleep(0.001)
-        except BaseException as exc:  # Why: the convicted shape raised RuntimeError here.
+        except BaseException as exc:  # Why: the rejected shape raised RuntimeError here.
             with errors_lock:
                 errors.append(exc)
 
-    # THE PRODUCTION SHAPE'S CONCURRENCY: several claim paths recording
-    # (the loop + the fleet's rounds) AND several gauge callbacks
-    # scraping at once — the pre-cure race needed BOTH walkers live (the
-    # convicted run: 287 RuntimeErrors in 3 s).
+    # several claim paths recording (the loop + the fleet's rounds) and several
+    # gauge callbacks scraping at once — the race needs both walkers live (the
+    # rejected run: 287 RuntimeErrors in 3 s).
     threads = [threading.Thread(target=_record_hot, args=(i,)) for i in range(4)]
     threads += [threading.Thread(target=_scrape_hot) for _ in range(3)]
     for t in threads:

@@ -1,10 +1,10 @@
-"""The step ledger + the run-key arbiter + the idempotency contract (T05).
+"""The step ledger + the run-key arbiter + the idempotency contract.
 
 Idempotency keys are assigned as ``scope = workflow run``,
 ``key = (step_key [, map_index])`` against the EXISTING composite
 ``(idempotency_scope, idempotency_key)`` arbiter
 (``jobs_idempotency_scope_key_uniq``, ``backend/_enqueue.py``'s speculative
-lock budgets and typed conflict path) — NOT the dropped single-column index
+lock budgets and typed conflict path) — not the dropped single-column index
 (``jobs_idempotency_key_uniq``, dropped by
 ``01.00.03_01_post_idempotency_scope_drop_old_index.sql``). Idempotency keys
 stay TEXT — they are business keys ``(workflow, step_key[, map_index])``,
@@ -18,26 +18,26 @@ double-runs are the failure class this layer exists to prevent.
 Map-child retries claim the same row: the retried child's step key is
 ``(workflow, map node, map_index)`` → the ON CONFLICT path returns the
 recorded result rather than re-executing (the memoized lookup consults any
-prior TERMINAL ledger row for the step; ``attempt`` is NOT in that key — a
+prior TERMINAL ledger row for the step; ``attempt`` is not in that key — a
 retried child claims a NEW attempt row, but the replay returns the recorded
 result).
 
 RUN-LEVEL IDEMPOTENCY (G2): ``workflows.run(flow, input, key=…)`` claims
-against the SAME composite arbiter with ``scope = 'workflow-run'``: a
-conflict RETURNS THE EXISTING RUN (its id + status), never a second silent
+against the same composite arbiter with ``scope = 'workflow-run'``: a
+conflict RETURNS the EXISTING RUN (its id + status), never a second silent
 run. The pin's origin is the founding incident (a stale fixed key silently
 returned a PRIOR run's id with a 202 and launched nothing — "the dedup
 lives in whoever remembers the key"): the run key makes the ARBITER the
 rememberer.
 
-CRON x WORKFLOW COMPOSITION (G3 — the rule's ONE home): a cron entry fires
-``wf.run`` with the CRON-SLOT KEY as the run key (G2's arbiter —
+CRON x WORKFLOW COMPOSITION (G3 — the rule's one home): a cron entry fires
+``wf.run`` with the CRON-SLOT KEY as the run key (the run-key arbiter's arbiter —
 ``scope='workflow-run', key='<flow>:<slot-timestamp>'``), so the two dedup
-regimes COMPOSE instead of racing: same slot twice → ONE run.
+regimes COMPOSE instead of racing: same slot twice → one run.
 
-THE HONEST BOUNDARY (the contract the docs state as semantics): exactly-once
+Exactly-once
 for DB-LOCAL effects (steps share the enqueue connection pattern; the ledger
-PK physically blocks double-recording); AT-LEAST-ONCE for external effects,
+PK physically blocks double-recording); AT-LEAST-once for external effects,
 with the ledger dedup. Join/reducer BODIES are covered by the same boundary:
 a raising reducer rolls tx2 back and the body RE-RUNS on re-fire.
 """
@@ -52,9 +52,12 @@ from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.workflows._capability import validate_required_worker_schema
 from taskq.workflows._sql import WorkflowSql
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     # Type-only export: JSONValue lives in tors' stubs, not its runtime
     # module -- future annotations make the string-form uses safe.
     from tors import JSONValue
@@ -74,12 +77,11 @@ __all__ = [
 
 #: The run-key arbiter's scope (G2). The step-level scope is
 #: ``workflow:{flow_id}`` (one flow run namespaces its own step keys).
-#: THE SCOPE IS NAMESPACED PER FLOW (the run-key collision attack's cure):
-#: :func:`run_idempotency_scope` composes ``workflow-run:<flow name>`` —
-#: the bare constant is the PRE-FIX shape, a GLOBAL scope in which two
-#: DIFFERENT workflows sharing a naive key (a slot timestamp, ``"nightly"``)
-#: collide silently (the second flow's run returned the FIRST flow's run
-#: id + status, launched nothing).
+#: :func:`run_idempotency_scope` composes ``workflow-run:<flow name>`` — the
+#: bare constant is the pre-fix shape, a global scope in which two different
+#: workflows sharing a naive key (a slot timestamp, ``"nightly"``) collide
+#: silently (the second flow's run returned the first flow's run id + status,
+#: launched nothing).
 RUN_IDEMPOTENCY_SCOPE: Final[str] = "workflow-run"
 
 #: The typed claim verdicts (the claim surface's honest vocabulary).
@@ -93,7 +95,7 @@ TERMINAL_JOB_STATUSES: Final[frozenset[str]] = frozenset(TERMINAL_STATUSES)
 class FlowEntry(Protocol):
     """The flow definition's registered shape the run-key claim needs (the
     typed door — a bare ``int`` or attribute-less object is a checker
-    error, the T01 negative probes pin it). ``name`` namespaces the
+    error, the negative type probes pin it). ``name`` namespaces the
     arbiter's scope (``workflow-run:<name>``)."""
 
     name: str
@@ -141,7 +143,7 @@ class LedgerClaim:
     attempt increments at claim); a conflicting claim returns the EXISTING
     row, whose terminal ``result`` is the memoized answer.
     ``result`` is the TYPED door: the memoized payload is a JSON value —
-    never a bare ``Any`` (the T01 probe: any method call on it is a checker
+    never a bare ``Any`` (the type probe: any method call on it is a checker
     error).
     ``ledger_id`` is the claimed LEDGER ROW's own id (the RETURNING id) —
     the strongest terminal-write key: the finalize that holds it pins the
@@ -158,6 +160,12 @@ class LedgerClaim:
     error_class: str | None
     error_message: str | None
     ledger_id: JobId | None = None
+    # the RETURNING updated_at — the arbiter's re-use re-stamps it, so a fence
+    # keyed on THIS instant can never mark a row a LATER claimant re-minted
+    # onto the same arbiter tuple (the refund's own law: the ledger re-claims
+    # the SAME arbiter row — the winner and the zombie share the id, never the
+    # instant).
+    claimed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,10 +174,10 @@ class RunClaim:
     run; a conflicting caller gets the EXISTING run's id + status — never a
     second silent run.
 
-    THE CLAIM SURFACE HONEST (the run-key failure lie's cure): the
-    pre-cure surfaces discarded ``status`` and returned a bare id — the
-    caller could not tell 'already running' from 'already failed' without
-    a second query, and a FAILED run's key replayed as a silent 202. The
+    The claim surface is honest: the
+    verdict carries ``status`` — a bare id would leave the caller unable
+    to tell 'already running' from 'already failed' without
+    a second query, and a FAILED run's key would replay as a silent 202. The
     typed verdict is :attr:`kind`: ``created`` (THIS caller's run),
     ``existing-running`` (the live run's id — idempotent replay), or
     ``existing-terminal`` (the REFUSED-TO-REUSE verdict, stated LOUDLY:
@@ -181,10 +189,13 @@ class RunClaim:
     flow_id: JobId
     created: bool
     status: str
+    #: The root's immutable internal guard, read back at the run-key arbiter so
+    #: initial node creation inherits the stored value rather than a Python echo.
+    required_worker_schema: int | None = None
 
     @property
     def kind(self) -> RunClaimKind:
-        """The typed verdict (the T01 door's law: a member access, never a
+        """The typed verdict (the verdict door's law: a member access, never a
         bare value to decode at the call site)."""
         if self.created:
             return "created"
@@ -203,12 +214,12 @@ async def claim_step_ledger(
     map_index: int | None,
     attempt: int,
 ) -> LedgerClaim:
-    """The step-ledger claim: ONE round trip (P1 FINAL's idempotent-claim
+    """The step-ledger claim: one round trip (P1 FINAL's idempotent-claim
     shape — ``INSERT … ON CONFLICT DO UPDATE … RETURNING``, never
     check-then-insert; verified 30 reps x 10 concurrent).
 
-    THE LEDGER-CLAIM-ATOMIC RULE (hardening H6): the claim and the attempt's
-    ``running`` ledger row are ONE statement — a two-transaction variant
+    The claim and the attempt's
+    ``running`` ledger row are one statement — a two-transaction variant
     leaves a cancel in the window fencing NOTHING (the attempt isn't on the
     record yet), the row appears POST-CANCEL as a phantom ``running``.
     """
@@ -234,6 +245,7 @@ async def claim_step_ledger(
         result=_decode_jsonb(rec["result"]),
         error_class=rec["error_class"],
         error_message=rec["error_message"],
+        claimed_at=rec["updated_at"],
     )
 
 
@@ -271,25 +283,27 @@ async def insert_flow_run(
     entry: FlowEntry,
     run_key: str,
     extra_metadata: dict[str, object] | None = None,
+    required_worker_schema: int | None = None,
 ) -> RunClaim:
-    """The RUN-KEY claim (G2): the flow's root row inserted under the
+    """The RUN-KEY claim: the flow's root row inserted under the
     ``workflow-run:<flow name>`` scope with the caller's key — the composite
     arbiter is the rememberer. A conflict returns the EXISTING run's id +
     status.
 
-    *entry* is the flow definition's registered shape (T09's API; the
+    *entry* is the flow definition's registered shape (the API; the
     TYPED door — :class:`FlowEntry`, the protocol the negative probes
-    pin). *extra_metadata* rides the SAME insert (T28's provenance
-    stamps — the child root's parent pointers land in the create's ONE
+    pin). *extra_metadata* rides the same insert (the child flow's provenance
+    stamps — the child root's parent pointers land in the create's one
     transaction; ``None`` = the shipped shape byte-identical).
     """
+    if required_worker_schema is not None:
+        validate_required_worker_schema(required_worker_schema)
     flow_id = new_uuid()
-    # THE WORKFLOW NAME STAMP (the reducer resolution's durable leg): the
-    # root's metadata names the workflow whose REGISTERED DEFINITION
-    # carries the run's step bodies — the sweep's fire arm resolves a
-    # healed join's reducer from that definition (D1, BODY-FROM-
-    # DEFINITION), in whatever process heals. Schema-level, not
-    # process-level: the memo in workflows/_reducers.py is a cache only.
+    # the root's metadata names the workflow whose registered definition
+    # carries the run's step bodies — the sweep's fire arm resolves a healed
+    # join's reducer from that definition (D1, body-from- definition), in
+    # whatever process heals. Schema-level, not process-level: the memo in
+    # workflows/_reducers.py is a cache only.
     root_metadata: dict[str, object] = {"flow_id": str(flow_id)}
     if entry.name:
         root_metadata["workflow"] = entry.name
@@ -307,17 +321,24 @@ async def insert_flow_run(
         dumps_jsonb_str(root_metadata),
         run_idempotency_scope(entry.name),
         run_key,
+        required_worker_schema,
     )
     if inserted is not None:
-        return RunClaim(flow_id=JobId(inserted["id"]), created=True, status=inserted["status"])
+        return RunClaim(
+            flow_id=JobId(inserted["id"]),
+            created=True,
+            status=inserted["status"],
+            required_worker_schema=inserted["required_worker_schema"],
+        )
 
-    # The arbiter's conflict path: the EXISTING run's id + status, never a
+    # The arbiter's conflict path: the existing run's id + status, never a
     # second silent run (the founding-incident shape — "202 + a new run" —
-    # is the convicted variant, kept RED forever by the pin).
+    # is the rejected variant; the pin keeps its rejection honest).
     existing = await conn.fetchrow(wsql.flow_run_read, run_idempotency_scope(entry.name), run_key)
     assert existing is not None  # the arbiter conflict implies the row exists
     return RunClaim(
         flow_id=JobId(existing["id"]),
         created=False,
         status=existing["status"],
+        required_worker_schema=existing["required_worker_schema"],
     )

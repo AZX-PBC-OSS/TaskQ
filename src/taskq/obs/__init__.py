@@ -5,7 +5,7 @@ Instead, it emits OpenTelemetry spans and metrics and lets operators wire any
 OTLP-compatible backend by configuring environment variables (or by passing an
 already-configured ``TracerProvider`` / ``MeterProvider``).
 
-Logs are NOT an OTel signal here: the library attaches no ``LoggingHandler``
+Logs are not an OTel signal here: the library attaches no ``LoggingHandler``
 and emits no log records through a ``LoggerProvider``. :func:`setup_logging`
 configures structlog over the stdlib ``logging`` root logger, so log lines
 reach a telemetry backend only if the operator has attached a handler to that
@@ -166,6 +166,8 @@ from taskq.obs._redact_exc import (
     safe_exception_message,
     safe_repr,
     safe_str,
+    safe_traceback_text,
+    safe_type_name,
     set_exception_message_max_chars,
     set_exception_redaction_enabled,
 )
@@ -272,6 +274,8 @@ __all__ = [
     "safe_repr",
     "safe_start_span",
     "safe_str",
+    "safe_traceback_text",
+    "safe_type_name",
     "set_exception_message_max_chars",
     "set_exception_redaction_enabled",
     "set_otel_enabled",

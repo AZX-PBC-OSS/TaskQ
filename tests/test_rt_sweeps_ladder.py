@@ -1,4 +1,4 @@
-"""Red-team attacks on the occurred_at ladder and mixed-writer co-monotonicity.
+"""Adversarial review attacks on the occurred_at ladder and mixed-writer co-monotonicity.
 
 ``job_events.occurred_at`` must be non-decreasing in ``id`` order across
 ALL rows - that is the property ``poll_reclaim_events``' trailing
@@ -223,7 +223,7 @@ async def test_batch_ladder_keeps_stamps_strictly_increasing_and_inside_real_tim
     )
     assert len(events) == rows_n
     # The ladder's skew budget: (rows - 1) microseconds past real time.
-    # real_now is evaluated one round trip AFTER the batch committed, so
+    # real_now is evaluated one round trip after the batch committed, so
     # every stamp must sit at or below it - a deterministic bound because
     # a round trip dwarfs 19 microseconds.
     max_ladder_skew = timedelta(microseconds=rows_n - 1)
@@ -254,7 +254,7 @@ async def test_written_timestamps_agree_within_one_reclaim(
     the driving UPDATE, ``occurred_at`` by the event INSERT one round
     trip later - and both must be ``clock_timestamp()``-domain so they
     agree with each other and with other writers.  A regression to
-    transaction-start ``now()`` on the event side stamps it BEFORE the
+    transaction-start ``now()`` on the event side stamps it before the
     finished_at the same transaction wrote; on the job side it stamps
     finished_at before an earlier-committed event.  Either inversion is
     caught here per row.

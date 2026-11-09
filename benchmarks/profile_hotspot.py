@@ -66,7 +66,7 @@ def bench_target(name: str) -> Callable[[], Any]:
     if name == "retry":
         return bh.bench_retry_policy
     if name == "di":
-        # The per-job DI solve is the dispatch hot path; introspection is its
+        # The per-job di solve is the dispatch hot path; introspection is its
         # dominant ingredient, so profile both.
         return lambda: (bh.bench_di_solver(), bh.bench_di_introspection_only())
     raise SystemExit(f"unknown bench {name!r}; choices: jsonb, decode, cron, rows, retry, di")

@@ -274,13 +274,13 @@ class _CountingPool:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# LAYER 1 - the boundedness contract.  These assert the properties the
+# layer 1 - the boundedness contract.  These assert the properties the
 # bounded implementation enforces; a regression to an unbounded single
 # transaction (no LIMIT on the matching CTE, per-row event writes) fails
 # here.
 #
 # Contract context: making ``cancel_where`` bounded was an API-CONTRACT
-# DECISION, not a mechanical refactor - the documented contract
+# decision, not a mechanical refactor - the documented contract
 # (``src/taskq/backend/_protocol.py`` on ``JobFilter``: "for
 # ``cancel_where``, the ``limit``, ``cursor`` and ``order_by`` fields are
 # ignored - a bulk cancel is not paginated") now means "cancel everything
@@ -357,7 +357,7 @@ async def test_bulk_cancel_event_writes_are_bounded_per_transaction(
     This is the assertion that ties the site to the critical invariant.
     ``RECLAIM_EVENT_VISIBILITY_DELAY`` (2 seconds,
     ``src/taskq/constants.py``) guarantees ``poll_reclaim_events`` never skips
-    a lower-``id`` event ONLY while every ``job_events`` writer commits within
+    a lower-``id`` event only while every ``job_events`` writer commits within
     that margin; its docstring names "an abnormally large batch inserted in one
     transaction" as a known violation, and the consequence as a **silently
     missed event** -- no error raised anywhere.
@@ -492,8 +492,8 @@ async def test_bulk_cancel_of_running_jobs_is_also_bounded(
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# LAYER 2 - CORRECTNESS PINNING.  Every test below PASSES NOW and MUST STILL
-# PASS AFTER the fix.  The fix rewrites SQL that mutates job state and writes
+# layer 2 - correctness pinning.  Every test below passes now and must still
+# pass after the fix.  The fix rewrites SQL that mutates job state and writes
 # the audit log, so these pin the observable behaviour that must not change.
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -507,7 +507,7 @@ async def test_pins_every_matching_job_reaches_cancelled_and_others_are_untouche
 
     Completeness and containment: every job matching the predicate ends in
     terminal ``cancelled`` with ``finished_at`` stamped, and every job that does
-    NOT match is bit-for-bit untouched -- same status, no ``finished_at``, no
+    not match is bit-for-bit untouched -- same status, no ``finished_at``, no
     ``cancel_requested_at``, ``cancel_phase`` still 0, and not one ``job_events``
     row written against it.
 
@@ -583,9 +583,9 @@ async def test_pins_state_change_from_state_is_each_jobs_actual_previous_status(
 
     That is the exact thing a careless batching rewrite breaks: collapsing this
     into a shared-detail batch (one ``$3::jsonb`` detail for the whole
-    ``unnest``) would silently stamp ONE ``from_state`` on every event and
+    ``unnest``) would silently stamp one ``from_state`` on every event and
     corrupt the audit log for half the rows, with every count assertion still
-    passing.  The mix seeded here (pending AND scheduled, cancelled in one call)
+    passing.  The mix seeded here (pending and scheduled, cancelled in one call)
     is what catches it.
 
     Also pinned: exactly one ``state_change`` and exactly one ``cancel_request``
@@ -730,9 +730,9 @@ async def test_pins_running_jobs_get_cooperative_cancel_not_terminal_status(
     """LAYER 2 - pins the behaviour the bounded drain must preserve.
 
     The two arms are not interchangeable and a rewrite must not merge them: a
-    ``running`` job is NEVER moved to terminal ``cancelled`` by a bulk cancel.
+    ``running`` job is never moved to terminal ``cancelled`` by a bulk cancel.
     It gets ``cancel_phase=1`` and ``cancel_requested_at`` stamped, stays
-    ``running``, and receives a ``cancel_request`` event but NO ``state_change``
+    ``running``, and receives a ``cancel_request`` event but no ``state_change``
     event -- the worker owns the terminal write.
 
     Also pinned: ``locked_by_worker`` is carried out as a NOTIFY target for
@@ -940,8 +940,8 @@ async def test_pins_returned_count_equals_the_number_actually_cancelled(
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# LAYER 3 - the scaling contract. Layer 1 bounds what ONE transaction does;
-# these bound how the drain behaves ACROSS transactions as the backlog
+# layer 3 - the scaling contract. Layer 1 bounds what one transaction does;
+# these bound how the drain behaves across transactions as the backlog
 # grows. A bulk cancel that is bounded per batch can still be unusable at
 # scale in two ways an operator feels and no layer-1 assertion can see:
 # each batch costing more than the last (quadratic total drain), and a
@@ -958,7 +958,7 @@ def _plan_rows_discarded(node: dict[str, Any]) -> int:
     measure of wasted work, deterministic for a fixed seed and independent
     of machine speed.
 
-    Buffers are deliberately NOT the oracle here. A drain that re-walks
+    Buffers are deliberately not the oracle here. A drain that re-walks
     every already-cancelled row still shows nearly flat buffer counts
     while the whole table fits in shared cache, so a buffer-based
     assertion passes at test scale and says nothing about the backlog
@@ -1069,7 +1069,7 @@ async def test_drain_batch_cost_does_not_grow_as_the_backlog_is_cancelled(
     statement flipped to the re-walk shape for the rest of the drain
     (measured on the red leg: ``[0, 0, 0, 0, 0, 0, 0, 141, 161, 181]`` -- the
     ``+ batch_size`` per batch and the +1 probe row are the seq scan visiting
-    every already-cancelled row). Re-ANALYZE between batches is not the cure
+    every already-cancelled row). Re-ANALYZE between batches is not the fix
     but the trigger at that scale: injecting ``VACUUM (ANALYZE)`` before
     every batch at 200 rows reproduces the flip deterministically
     (``[0, 0, 0, 0, 0, 101, 121, 141, 161, 0]``). At 2000 rows the choice is
@@ -1078,7 +1078,7 @@ async def test_drain_batch_cost_does_not_grow_as_the_backlog_is_cancelled(
     ``VACUUM (ANALYZE)`` injection no longer flips it (measured, 3 runs,
     100 batches each: all zero). Real backlogs sit far on the decisive side
     of that margin: at 200k rows drained in 20k-row batches with a
-    ``VACUUM (ANALYZE)`` before EVERY batch (more adversarial than any
+    ``VACUUM (ANALYZE)`` before every batch (more adversarial than any
     production autovacuum), every batch stayed on the cursor walk and
     discarded nothing. So the pin deepens the backlog to take the planner
     out of the coin toss instead of weakening what it asserts; the bound
@@ -1111,7 +1111,7 @@ async def test_drain_batch_cost_does_not_grow_as_the_backlog_is_cancelled(
     # Re-bind the statement with the arguments the drain itself passed,
     # substituting this test's tag for the probe's. Hand-spelling the
     # argument list here instead would pin the statement's parameter
-    # COUNT -- an implementation detail -- so a drive statement that
+    # count -- an implementation detail -- so a drive statement that
     # gained a parameter (a keyset cursor, say) would fail these on
     # arity rather than on the cost they exist to measure.
     drive_args = (["tenant-acme"], *probe_args[1:])
@@ -1171,7 +1171,7 @@ async def test_drain_batch_cost_is_independent_of_non_matching_backlog(
     filter is the whole point. If the drive statement's cost tracks the
     table's total pending population rather than the match set, then every
     tenant's offboard slows down as the fleet grows, and the only symptom
-    is a command that used to finish and now times out -- with nothing
+    is a command that times out where it once finished -- with nothing
     about that tenant's own backlog having changed, so nothing in their
     metrics explains it.
 
@@ -1254,7 +1254,7 @@ async def test_running_arm_drain_batch_cost_does_not_grow_as_requests_accumulate
     run at the start of the backlog or at its end.
 
     The running arm re-selects "the next ``batch_size`` matching rows with
-    ``status='running' AND cancel_phase=0``" on every pass, and a row it
+    ``status='running' and cancel_phase=0``" on every pass, and a row it
     already requested STAYS ``running`` (the worker owns the terminal
     write) - only ``cancel_phase`` moves. If the plan cannot skip the
     already-requested rows, batch N pays for the (N-1) * batch_size rows
@@ -1270,7 +1270,7 @@ async def test_running_arm_drain_batch_cost_does_not_grow_as_requests_accumulate
     choice between the cursor-bounded walk and the Seq Scan + Sort re-walk
     is a coin toss that a mid-drain autovacuum statistics refresh flips,
     and re-ANALYZE between batches is the flip's trigger at that scale, not
-    its cure. At 2000 rows the walk wins decisively whatever the stats
+    its fix. At 2000 rows the walk wins decisively whatever the stats
     refresh does, and the per-batch cost bound below is unchanged.
     """
     schema = module_pg_schema.schema_name
@@ -1536,7 +1536,7 @@ async def test_partial_drain_progress_is_durable_and_a_rerun_resumes(
     )
     assert final_cancelled == total, "the re-run must converge the whole match set"
 
-    # Exactly one state_change per job across BOTH runs: a resumed drain
+    # Exactly one state_change per job across both runs: a resumed drain
     # that re-walked committed rows would double-write their events.
     event_rows = await conn.fetchval(
         f'SELECT count(*) FROM "{schema}".job_events e '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
@@ -1558,17 +1558,17 @@ async def test_partial_drain_progress_is_durable_and_a_rerun_resumes(
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# LAYER 2b: the fixpoint rounds. Mid-drain re-pends behind the
+# layer 2b: the fixpoint rounds. Mid-drain re-pends behind the
 # keyset cursor, and their termination/cost bound.
 #
 # The keyset cursor that keeps each batch cheap (perf-evidence-bulk-cancel.md)
-# has a blind spot no single pair of passes can close: a matching RUNNING row
+# has a blind spot no single pair of passes can close: a matching running row
 # rescheduled mid-drain (crash reclaim → pending, denial snooze → scheduled,
 # shutdown interrupt → pending, consumer retry → scheduled/pending) lands at
-# an id the pending arm's cursor has ALREADY passed, and the running arm,
+# an id the pending arm's cursor has already passed, and the running arm,
 # strictly after it, matching only `running AND cancel_phase = 0`, cannot
 # see the re-pended row either.  The pre-rounds drain returned normally with
-# such a row uncancelled, contradicting the "cancels EVERY matching job"
+# such a row uncancelled, contradicting the "cancels every matching job"
 # contract.  These tests interleave real concurrent writers (the production
 # reclaim sweep, a churn producer) between the drain's batches through a
 # pool stand-in, then pin that the next round's fresh-cursor pass catches
@@ -1581,7 +1581,7 @@ class _DrainSpyPool:
     """Pool stand-in that interleaves a hook between the drain's batches
     and records every driving fetchrow's arm and keyset cursor.
 
-    The hook fires BEFORE each acquire's transaction opens, the one
+    The hook fires before each acquire's transaction opens, the one
     moment a concurrent writer can act on rows the drain has windowed
     past without contending a held row lock, and runs on the RAW pool,
     exactly where a real reclaim sweep or peer producer would run.
@@ -1697,7 +1697,7 @@ async def test_repend_behind_the_cursor_is_caught_by_the_next_round(
     Reproduction of the defect on the pre-rounds drain: the row was
     'running' when the pending arm windowed past its id (no window ever
     held it), the sweep hands it back 'pending' between the two arms,
-    and the running arm matches only ``running AND cancel_phase = 0``,
+    and the running arm matches only ``running and cancel_phase = 0``,
     so the call returned normally with the row uncancelled.  The fix's
     next round restarts the pending arm's cursor at the bottom of the
     key space and cancels the straggler there.
@@ -1708,7 +1708,7 @@ async def test_repend_behind_the_cursor_is_caught_by_the_next_round(
     worker_id = new_uuid()
     await create_worker(conn, schema, worker_id)
 
-    # Seeded FIRST and 20ms before the pending backlog: job ids are
+    # Seeded first and 20ms before the pending backlog: job ids are
     # UUIDv7 (millisecond precision + random tail), so the sleep puts
     # the running row's id strictly below every backlog id: the
     # pending arm's first batch advances the cursor past it.
@@ -1729,7 +1729,7 @@ async def test_repend_behind_the_cursor_is_caught_by_the_next_round(
     async def _sweep_the_running_row_on_arm2(n: int) -> None:
         # Acquire ordinal 4 = the running arm's first batch: the pending
         # arm drained 3 batches (2, 2, 0 windows) and its cursor is above
-        # the running row's id; the running arm's transaction has NOT
+        # the running row's id; the running arm's transaction has not
         # opened yet, so the production sweep acts on the unlocked row
         # exactly where a real leader's tick would.
         if n != 4 or swept:
@@ -1802,7 +1802,7 @@ async def test_cancel_in_flight_reclaimed_mid_drain_is_terminal_cancelled(
     'cancelled', but via arm 1 directly (``cancelled_directly`` reads 5,
     not the asserted 4, and the preserved-audit-column assertions fail
     (the sweep wiped the phase before the round cancelled it).  So the
-    scenario pins each fix independently AND their composition.  With
+    scenario pins each fix independently and their composition.  With
     both fixes the sweep itself terminalises the row 'cancelled', the
     honest resolution for a request whose only cooperative writer is
     provably gone, with the audit columns preserved.
@@ -1900,7 +1900,7 @@ async def test_drain_rounds_terminate_at_the_first_empty_round(
 
     This is the bound proof for the no-churn case: the second pass is the
     price of the fix (one extra empty two-arm pass), and it is paid
-    ONCE, not per batch: a regression to an unbounded loop shows up as
+    once, not per batch: a regression to an unbounded loop shows up as
     more pending-arm drains, and a regression to the single-pass drain as
     exactly one.
     """
@@ -1939,7 +1939,7 @@ async def test_drain_rounds_are_hard_capped_under_sustained_repend_churn(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """The adversarial termination bound: a producer that re-feeds the
-    match set on EVERY batch of the drain is a steady input, and an
+    match set on every batch of the drain is a steady input, and an
     uncapped while-progress fixpoint would chase it forever.
 
     The hard cap (``_MAX_CANCEL_DRAIN_ROUNDS``) is what keeps one call's

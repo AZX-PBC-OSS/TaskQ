@@ -1,6 +1,6 @@
-"""THE DUPLICATE-FEED DRILL — the feed is at-least-once; ingestion is
+"""the DUPLICATE-FEED DRILL — the feed is at-least-once; ingestion is
 idempotent: zero double-effects under (a) a re-delivered delivery (the
-SAME delivery id — the run-key arbiter's claim) and (b) overlapping
+same delivery id — the run-key arbiter's claim) and (b) overlapping
 documents under a NEW delivery id (the register's idempotency)."""
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ async def test_duplicate_feed_zero_double_effects(
 ) -> None:
     docs: list[DocPayload] = make_docs(24, prefix="dup")
 
-    # (a) THE SAME DELIVERY, DELIVERED TWICE (the feed's redelivery).
+    # (a) the same delivery, delivered twice (the feed's redelivery).
     delivery_id = f"dup-{secrets.token_hex(4)}"
     batch = DeliveryBatch(delivery_id=delivery_id, docs=docs)
     flow_a_pages = await deliver_batch(pool, schema, batch)
@@ -46,7 +46,7 @@ async def test_duplicate_feed_zero_double_effects(
     status = await await_terminal(pool, schema, flow_a, timeout_s=240)
     assert status == "succeeded"
 
-    # (b) THE SAME DOCUMENTS, re-delivered under a NEW delivery id: the
+    # (b) the same documents, re-delivered under a new delivery id: the
     # register dedupes; no document re-processes.
     second = DeliveryBatch(delivery_id=f"dup2-{secrets.token_hex(4)}", docs=docs)
     flow_c_pages = await deliver_batch(pool, schema, second)
@@ -56,21 +56,21 @@ async def test_duplicate_feed_zero_double_effects(
     status_c = await await_terminal(pool, schema, flow_c, timeout_s=240)
     assert status_c == "succeeded", f"the re-delivery run terminal-failed: {status_c}"
 
-    # ZERO DOUBLE-EFFECTS, measured:
-    # 1. the register holds each document EXACTLY once;
+    # zero double-effects, measured:
+    # 1. the register holds each document exactly once;
     n_docs = await pool.fetchval(
         f'SELECT count(*) FROM "{schema}".docshelf_documents WHERE doc_id LIKE $1',  # noqa: S608  # Why: the interpolated value is the app's settings-validated schema identifier; every caller-controlled value is $N-bound.
         "dup-%",  # Why: the interpolated value is the app's settings-validated schema identifier; every caller-controlled value is $N-bound.
     )
     assert int(n_docs) == len(docs)
 
-    # 2. every chunk extracted successfully EXACTLY once across ALL runs;
+    # 2. every chunk extracted successfully exactly once across all runs;
     summary = await store.api_call_summary(pool, schema)
     double_success = [k for k, v in summary.items() if v.get("success", 0) > 1]
     assert double_success == [], f"chunks extracted MORE THAN ONCE: {double_success}"
 
     # 3. the first delivery's digest is the complete typed receipt, and
-    #    the re-delivery's digest is the HONEST EMPTY (a re-delivery
+    #    the re-delivery's digest is the honest empty (a re-delivery
     #    processes nothing — the born-zero receipt).
     runner = FlowRunner(SHELF_APP.get("docshelf_batch"), pool, schema)
     digest = ShelfDigest.model_validate(await runner.result(flow_a))

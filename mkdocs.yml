@@ -98,13 +98,14 @@ nav:
       - Tutorial: guides/tutorial.md
   - Guides:
       - Actors: guides/actors.md
+      - The Scenario Grounds: guides/scenario-grounds.md
       - Jobs & Clients: guides/jobs-clients.md
       - Workers: guides/workers.md
       - Rate Limiting: guides/rate-limiting.md
       - Retries: guides/retries.md
       - Workflows (DAG Engine): guides/workflows.md
       - Agent Fleets (LLM-gated): guides/agent-fleet.md
-      - Event-Intel Pipelines: guides/event-pipeline.md
+      - Event Pipelines: guides/event-pipeline.md
       - Task Stacks: guides/task-stacks.md
       - DocShelf (the Adoption Story): guides/docshelf.md
       - Pattern Catalog: guides/patterns.md

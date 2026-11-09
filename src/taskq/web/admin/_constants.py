@@ -11,7 +11,7 @@ from taskq.client._args import (
     _MAX_TAG_LENGTH,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the enqueue-side tag length contract rather than redefining a drifting copy of it.
 )
 
-# The status closed sets are the STATE MACHINE's own (statemachine.py is
+# The status closed sets are the state machine's own (statemachine.py is
 # their single home and the prune sweep's archive encoding): deriving them
 # here, never hand-copying the string sets, means a status added to the
 # machine follows without this module's copy drifting out from under the
@@ -22,7 +22,7 @@ _ALL_STATUSES: frozenset[str] = _TERMINAL_STATUSES | _ACTIVE_STATUSES
 _PAGE_SIZE: int = 50
 _FETCH_SIZE: int = _PAGE_SIZE + 1
 
-# ── The ONE source for the status colors ────────────────────────────────
+# ── The one source for the status colors ────────────────────────────────
 # Both renderers of a status's color read these: the server (job_card's
 # ``status_badge`` macro, via the Jinja globals the factory registers) and
 # the client (admin.js derives its STATUS_COLORS / CHIP_COLORS /
@@ -30,7 +30,7 @@ _FETCH_SIZE: int = _PAGE_SIZE + 1
 # hand-maintained copies - three in admin.js, one in the macro - drifted
 # exactly the way copies do; a status whose chip the JS knows but the
 # server does not renders two different colors on one page. A new status
-# gains an entry HERE or nowhere.
+# gains an entry here or nowhere.
 STATUS_CHIP_CLASSES: dict[str, str] = {
     "pending": "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300",
     "scheduled": "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
@@ -40,6 +40,10 @@ STATUS_CHIP_CLASSES: dict[str, str] = {
     "cancelled": "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
     "crashed": "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
     "abandoned": "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
+    # skipped is a workflow node status (not a job state-machine member):
+    # informational — the branch that did not run — so it reads sky,
+    # distinct from failed's red and pending's gray.
+    "skipped": "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300",
 }
 
 STATUS_TEXT_CLASSES: dict[str, str] = {
@@ -51,6 +55,7 @@ STATUS_TEXT_CLASSES: dict[str, str] = {
     "cancelled": "text-orange-600 dark:text-orange-400",
     "crashed": "text-red-600 dark:text-red-400",
     "abandoned": "text-gray-500 dark:text-gray-500",
+    "skipped": "text-sky-600 dark:text-sky-400",
 }
 
 # The badge chip's structural classes, prefixed to the status's color set

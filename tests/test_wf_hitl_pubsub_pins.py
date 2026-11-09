@@ -1,25 +1,17 @@
-"""T26 — THE HITL BROADCAST'S PINS: the transactional NOTIFY legs, the
+"""The HITL broadcast's pins: the transactional NOTIFY legs, the
 zero-window backfill, the resolve wake, the expiry fail-close, the
-escalation interplay — plus the hostile-review round's P6-P10: the
-reconnect reconcile, the concurrent-consumer fan-out, the schema
-isolation, the payload-size bound, the resolve-rollback silence.
+escalation interplay — plus the hold-broadcast pins: the reconnect
+reconcile, the concurrent-consumer fan-out, the schema isolation, the
+payload-size bound, the resolve-rollback silence.
 
-The red-first evidence: P1's convicted variant (the knock sent OUTSIDE
-the transaction — a rolled-back hold-create that still broadcasts) is
-captured as the mutation drill through ``hitl_redlog``; the shipped
-legs are transactional by construction (``pg_notify`` inside the
-caller's tx — PG delivers on commit only). P6/P7/P9 were RED at the
-pre-cure head (the reconnect hole, the partitioned stream, the unnamed
-cap — the reds captured in ``.measurements/t26-cure-pins-red.txt``);
-P8/P10 convict their variant as a PERMANENT drill (the unfiltered
-channel ear; the lying resolve knock — reproducible forever, recorded
-through ``hitl_redlog``).
-
-The channels are GLOBAL; the schema rides the payload (the
-schema-per-module estate shares one database across many schemas —
+The shipped legs are transactional by construction (``pg_notify`` inside
+the caller's tx — PG delivers on commit only). The mutation red for the
+broadcast-outside-the-transaction variant is captured through
+``hitl_redlog``. The channels are GLOBAL; the schema rides the payload
+(the schema-per-module estate shares one database across many schemas —
 ``pg_notify`` is per-database; the listener filters by payload). The
-legacy ``taskq_wf_holds`` pointer knob keeps its pinned shape (T10's
-pin 12); the broadcast legs ride their own channels.
+legacy ``taskq_wf_holds`` pointer knob keeps its pinned shape; the
+broadcast legs ride their own channels.
 """
 
 from __future__ import annotations
@@ -90,7 +82,7 @@ async def _held_flow(
     name: str,
 ) -> tuple[JobId, FlowRunner, JobId]:
     """A flow whose single node HOLDS: created, driven to the hold
-    (T10's helper's shape; ``name`` is UNIQUE PER TEST — D1)."""
+    (the hold machinery's helper's shape; ``name`` is UNIQUE PER TEST — D1)."""
     app = WorkflowApp()
 
     @app.workflow(name)
@@ -110,7 +102,7 @@ async def _held_flow(
 
 class _RawKnocks:
     """A raw pg_notify consumer on the MODULE's database (pin 12's
-    vacuous-audit cure): collects (channel, payload) pairs."""
+    vacuous-audit fix): collects (channel, payload) pairs."""
 
     def __init__(self, dsn: str, *channels: str) -> None:
         self._dsn = dsn
@@ -135,7 +127,7 @@ class _RawKnocks:
         return [payload for ch, payload in self.knocks if ch == channel]
 
 
-# ── T26-P1: the create leg is TRANSACTIONAL (a rollback is silent) ──────
+# ── the expiry-as-value-P1: the create leg is transactional (a rollback is silent) ──────
 
 
 async def test_hold_create_broadcast_is_transactional_and_shaped(
@@ -145,23 +137,23 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
     module_pg_schema: Any,
     hitl_redlog: RedLog,
 ) -> None:
-    """Pin (a): the hold-create broadcast rides the INSERT's OWN tx —
+    """Pin (a): the hold-create broadcast rides the INSERT's own tx —
     the payload is the POINTER set (schema, flow_id, run_id, hold_id,
     signal, node_key, created_at), never the payload content; and a
-    rolled-back hold-create emits NO notification.
+    rolled-back hold-create emits no notification.
 
-    THE RED (the convicted variant, captured): the knock sent OUTSIDE
-    the tx (autocommit) outlives its row — the drill rolls the INSERT
+    The knock sent OUTSIDE
+    the tx (autocommit) outlives its row — the scenario rolls the INSERT
     back under a knock that already fired, and the broadcast LIES (a
     hold the rows disown). The shipped leg cannot lie: the NOTIFY
     commits or nothing does."""
-    # ── THE RED DRILL (the pre-cure shape): the knock on a separate
+    # ── the mutation pin (the rejected shape): the knock on a separate
     # autocommit connection, the insert rolled back under it. ──
     drill_hold = str(new_uuid())
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_CREATED_CHANNEL) as knocks:
-        drill = await asyncpg.connect(module_pg_schema.pg_dsn)
+        scenario = await asyncpg.connect(module_pg_schema.pg_dsn)
         try:
-            await drill.execute(
+            await scenario.execute(
                 "SELECT pg_notify($1, $2)",
                 HOLD_CREATED_CHANNEL,
                 json.dumps({"schema": wf_schema, "hold_id": drill_hold}),
@@ -170,7 +162,7 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
                 await wf_conn.execute(
                     f'INSERT INTO "{wf_schema}".wf_signals '
                     "(id, workflow_id, node_key, signal_name, hold_epoch, call_id, status) "
-                    "VALUES ($1::uuid, $2::uuid, 'drill', 'Approval', 1, 'call:drill', 'held')",
+                    "VALUES ($1::uuid, $2::uuid, 'scenario', 'Approval', 1, 'call:scenario', 'held')",
                     drill_hold,
                     str(new_uuid()),
                 )
@@ -178,37 +170,37 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
         except RollbackDrillError:
             pass
         finally:
-            await drill.close()
+            await scenario.close()
         await asyncio.sleep(0.2)
         drill_knocks = [k for k in knocks.of(HOLD_CREATED_CHANNEL) if drill_hold in k]
         row = await wf_conn.fetchval(
             f'SELECT id FROM "{wf_schema}".wf_signals WHERE id = $1', uuid_module.UUID(drill_hold)
         )
-        assert row is None, "the drill's insert did not roll back — the drill proves nothing"
+        assert row is None, "the scenario's insert did not roll back — the scenario proves nothing"
         assert drill_knocks, (
-            "the pre-cure mutation did not reproduce the dragon — the drill is vacuous"
+            "the mutation did not reproduce the rejected shape — the scenario is vacuous"
         )
         hitl_redlog.red(
-            "T26-P1-create-knock-outside-the-tx",
+            "the expiry-as-value-P1-create-knock-outside-the-tx",
             "the broadcast sent OUTSIDE the hold's transaction (autocommit): the knock "
             "outlives its rolled-back row — the broadcast LIES about a hold the rows disown",
             {"knocks_without_row": len(drill_knocks), "row_committed": False},
         )
 
-    # ── THE GREEN: the shipped leg — create through the real wait site,
+    # ── the green: the shipped leg — create through the real wait site,
     # the knock shaped, the pointer only. ──
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_create_broadcast_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="create_broadcast_flow"
     )
     hold_row = await wf_conn.fetchrow(
         f'SELECT id, created_at FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
     )
     assert hold_row is not None
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_CREATED_CHANNEL) as knocks:
-        # A SECOND hold (new epoch) through the REAL leg — its knock is
+        # A second hold (new epoch) through the real leg — its knock is
         # the shipped one's witness.
         hold_id = await register_hold(
             wf_conn,
@@ -218,7 +210,7 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
             node_key="review",
             signal_name="Approval",
             hold_epoch=2,
-            call_id="call:T26-shape",
+            call_id="call:the expiry-as-value-shape",
             payload_schema={"Approval": {"type": "object", "properties": {}}},
             timeout_s=120.0,
         )
@@ -239,15 +231,15 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
     assert doc["hold_id"] == str(hold_id)
     assert doc["flow_id"] == str(flow_id) and doc["run_id"] == str(flow_id)
     assert doc["signal"] == "Approval" and doc["node_key"] == "review"
-    # THE POINTER-ONLY LAW: the knock names the hold, never carries it.
+    # the knock names the hold, never carries it.
     assert "doc_id" not in json.dumps(doc)
 
 
 class RollbackDrillError(Exception):
-    """The drill's own unwinding (named — never a bare raise)."""
+    """The scenario's own unwinding (named — never a bare raise)."""
 
 
-# ── T26-P2: the zero-window backfill + the dedup ────────────────────────
+# ── the expiry-as-value-P2: the zero-window backfill + the dedup ────────────────────────
 
 
 async def test_listener_backfills_open_holds_and_dedups(
@@ -255,17 +247,17 @@ async def test_listener_backfills_open_holds_and_dedups(
     wf_schema: str,
     wf_pool: asyncpg.Pool,
 ) -> None:
-    """Pin (b): a hold created BEFORE the listener's start is STILL
+    """Pin (b): a hold created before the listener's start is still
     delivered — the first event is the backfilled ``HoldCreated``; and
     a hold the snapshot already announced dedups its own late NOTIFY
-    (one id, ONE created event — the LISTEN→snapshot race's duplicate
+    (one id, one created event — the LISTEN→snapshot race's duplicate
     is unrepresentable in the stream)."""
 
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_backfill_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="backfill_flow"
     )
     hold_row = await wf_conn.fetchrow(
         f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
@@ -275,20 +267,19 @@ async def test_listener_backfills_open_holds_and_dedups(
 
     listener = HitlListener(wf_pool, wf_schema)
     async with listener:
-        # THE ZERO WINDOW: the hold existed BEFORE the listener — the
-        # FIRST event on THIS RUN'S filtered stream is its backfilled
-        # HoldCreated (the backfill announces every open hold in the
-        # schema — earlier tests' leftovers included; holds(run=…)
-        # scopes the stream to this run's).
+        # the hold existed before the listener — the first event on this run's
+        # filtered stream is its backfilled HoldCreated (the backfill announces
+        # every open hold in the schema — earlier tests' leftovers included;
+        # holds(run=…) scopes the stream to this run's).
         first = await asyncio.wait_for(_first_of(listener.holds(run=flow_id)), timeout=5.0)
         assert first is not None
         assert isinstance(first, HoldCreated), first
         assert first.event == "hold_created"
         assert first.hold_id == hold_id
         assert first.source == "backfill", first
-        # THE DEDUP LEG (unit, at the decoder — the snapshot's id vs its
-        # own late notify): the backfilled id's create-notify yields
-        # NOTHING; a fresh id yields the typed event.
+        # unit, at the decoder — the snapshot's id vs its own late notify. the
+        # backfilled id's create-notify yields NOTHING; a fresh id yields the
+        # typed event.
         snapshot_doc = json.dumps(
             {
                 "schema": wf_schema,
@@ -312,7 +303,7 @@ async def test_listener_backfills_open_holds_and_dedups(
         assert decoded.source == "notify"
 
 
-# ── T26-P3: the resolve wake reaches the listener ───────────────────────
+# ── the expiry-as-value-P3: the resolve wake reaches the listener ───────────────────────
 
 
 async def test_resolve_wake_reaches_the_listener(
@@ -328,7 +319,7 @@ async def test_resolve_wake_reaches_the_listener(
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_resolve_wake_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="resolve_wake_flow"
     )
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
@@ -356,7 +347,7 @@ async def _first_of(events: Any) -> Any:
 
 
 async def _next_of(listener: HitlListener, kind: str) -> Any:
-    """The listener's next event of ONE kind (the dedup-ordered stream
+    """The listener's next event of one kind (the dedup-ordered stream
     read — skips the other kinds' events)."""
     async for event in listener.events():
         if event.event == kind:
@@ -364,16 +355,16 @@ async def _next_of(listener: HitlListener, kind: str) -> Any:
     return None
 
 
-# ── T26-P4: the expiry fail-close (the worked example) ──────────────────
+# ── the expiry-as-value-P4: the expiry fail-close (the worked example) ──────────────────
 
 
 async def test_deep_research_approve_path(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE WORKED EXAMPLE'S APPROVE PATH end-to-end: the loop → the
+    """The worked example's approve path end-to-end: the loop → the
     hold → the broadcast → the resolve → the resume → the FULL REPORT.
     The REAL 120 s default stands (the approval lands first —
-    condition-not-clock); no constant is scaled on this path. THE
+    condition-not-clock); no constant is scaled on this path. the
     LISTENER'S AMENDED FACE is the surface under test: the DIRECT
     async-for over ``holds(run=...)`` — the backend author's
     zero-lookup flow (the ticket's DX section, verbatim)."""
@@ -384,8 +375,8 @@ async def test_deep_research_approve_path(
         runner = FlowRunner(dr.dr_app.get("deep_research"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         await runner.drive(flow_id, until="held")
-        # THE BROADCAST, the ceremony-free filtered stream: the closed
-        # union matched exhaustively — the backend author's tour.
+        # the broadcast, the ceremony-free filtered stream: the closed union
+        # matched exhaustively — the backend author's tour.
         created: HoldCreated | None = None
         wake: HoldResolved | None = None
         async for event in listener.holds(run=flow_id):
@@ -396,7 +387,7 @@ async def test_deep_research_approve_path(
                 case HoldResolved() | HoldExpired() | Backfilled():
                     continue
         assert created is not None, "the gate's hold never reached the holds(run=...) stream"
-        # THE HUMAN'S YES through the unchanged typed door.
+        # the human's yes through the unchanged typed door.
         client = HitlClient(wf_pool, schema=wf_schema)
         resolved = await dr.approve_continue(client, created.hold_id)
         assert resolved.status == "delivered", resolved
@@ -410,7 +401,7 @@ async def test_deep_research_approve_path(
         assert wake is not None and wake.verdict_kind == "ContinueApproval", (
             "the resolve wake never carried the verdict's declared kind"
         )
-    # THE RESUME: the loop continues to the full report.
+        # the loop continues to the full report.
     await runner.drive(flow_id, max_ticks=40)
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "succeeded", f"the approved loop never finished: {root!r}"
@@ -421,7 +412,7 @@ async def test_deep_research_approve_path(
 
 
 async def _created_for(listener: HitlListener, run_id: str) -> Any:
-    """The listener's next HoldCreated for ONE run."""
+    """The listener's next HoldCreated for one run."""
     async for event in listener.events():
         if event.event == "hold_created" and event.run_id == run_id:
             return event
@@ -439,15 +430,15 @@ async def test_deep_research_expiry_fail_close(
     carrying the finish-with-what-you-have RESULT; the broadcast
     delivered the HoldExpired.
 
-    THE SLOT LAW (asserted DURING the wait): the held node is
-    ``pending`` with the hold marker and NO worker — the worker
+    SLOT LAW (asserted DURING the wait): the held node is
+    ``pending`` with the hold marker and no worker — the worker
     RELEASED the slot; a human thinking must never hold a slot
     hostage."""
     import examples.deep_research as dr
 
     monkeypatch.setattr(
         dr, "APPROVAL_TIMEOUT_S", 1.0
-    )  # the TESTS scale it — the example keeps the 120 s
+    )  # the tests scale it — the example keeps the 120 s
 
     listener = HitlListener(wf_pool, schema=wf_schema)
     async with listener:
@@ -461,7 +452,7 @@ async def test_deep_research_expiry_fail_close(
             "(metadata->>'flow_id')::uuid = $1",
             flow_id,
         )
-        # THE SLOT LAW: no slot held while the loop waits on a human.
+        # no slot held while the loop waits on a human.
         node_row = await wf_conn.fetchrow(
             f'SELECT status, locked_by_worker, metadata FROM "{wf_schema}".jobs WHERE id = $1',
             node_id,
@@ -472,8 +463,7 @@ async def test_deep_research_expiry_fail_close(
         node_meta = node_row["metadata"]
         meta_doc = json.loads(node_meta) if isinstance(node_meta, str) else (node_meta or {})
         assert "hold" in meta_doc, f"the hold marker is gone from the node: {meta_doc}"
-        # THE EXPIRY (the sweep is the only live timer; the deadline is
-        # PG's clock): the deadline passes, the sweep abandons.
+        # the deadline passes, the sweep abandons.
         await asyncio.sleep(1.1)
         abandoned = await sweep_expired_signals(wf_pool, schema=wf_schema)
         assert abandoned >= 1
@@ -482,8 +472,8 @@ async def test_deep_research_expiry_fail_close(
             "the expiry leg never delivered for the LOOP-kind hold — the broadcast is "
             "blind to the budget-paused rows"
         )
-    # THE FAIL-CLOSE: the body caught the typed expiry — the run
-    # SUCCEEDS with the named result.
+        # the body caught the typed expiry — the run succeeds with the named
+    # result.
     await runner.drive(flow_id, max_ticks=40)
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "succeeded", (
@@ -494,27 +484,68 @@ async def test_deep_research_expiry_fail_close(
     assert isinstance(result, dict)
     assert result["status"] == "finished_with_what_you_have", result
     assert len(result["notes"]) == 3, result  # the free passes stand; nothing invented
+    # the sweep's typed event names the TIMEOUT door (the operator
+    # abandon's event reads "operator" — the same member, the door
+    # carried).
+    assert expired.abandoned_by == "timeout", expired
 
 
 async def _expired_for(listener: HitlListener, run_id: str) -> Any:
-    """The listener's next HoldExpired for ONE run."""
+    """The listener's next HoldExpired for one run."""
     async for event in listener.events():
         if event.event == "hold_expired" and event.run_id == run_id:
             return event
     return None
 
 
-# ── T26-P5: the expiry inside a LOOP's hold — the escalation leg ────────
+async def test_operator_abandon_delivers_hold_expired_with_the_operator_door(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The operator door's typed broadcast: ``HitlClient.abandon`` fires
+    the ``HoldExpired`` event carrying ``abandoned_by="operator"`` — the
+    same event the sweep sends with ``"timeout"`` (the event announces
+    the DEFINED abandoned state, whichever door wrote it; the wait's
+    outcome is the ``Expired`` member carrying the same door)."""
+    from taskq.workflows.api._hitl import HitlClient as _Client
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> str:
+        outcome = await ctx.wait_signal(Approval, timeout_s=120.0)
+        assert isinstance(outcome, Approval)
+        return "answered"
+
+    app = WorkflowApp()
+
+    @app.workflow("pubsub_abandon_flow")
+    def pubsub_abandon_flow() -> Promise[object]:
+        return build(step(hold_body, Ingest(doc_id="d1"), key="review"))
+
+    listener = HitlListener(wf_pool, wf_schema)
+    async with listener:
+        runner = FlowRunner(app.get("pubsub_abandon_flow"), wf_pool, wf_schema)
+        flow_id = (await runner.create_flow()).flow_id
+        await runner.drive(flow_id, until="held")
+        client = _Client(wf_pool, schema=wf_schema)
+        (hold,) = await client.list(run=flow_id)
+        result = await client.abandon(hold.hold_id, reason="the operator's stop", principal="op-7")
+        assert result.status == "delivered", result
+        expired = await asyncio.wait_for(_expired_for(listener, str(flow_id)), timeout=5.0)
+        assert expired is not None and expired.hold_id == hold.hold_id, (
+            "the abandon door's HoldExpired never delivered"
+        )
+        assert expired.abandoned_by == "operator", expired
+
+
+# ── the expiry-as-value-P5: the expiry inside a loop's hold — the escalation leg ────────
 
 
 async def test_expiry_in_loop_escalation_leg_still_delivers(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """Pin (e): a LOOP whose hold expires with ``on_exhausted="escalate"``:
-    the typed expiry crosses the body boundary (the body does NOT
+    the typed expiry crosses the body boundary (the body does not
     fail-close — the escalation lane's scenario) → the loop exhausts
     with the body failure → the escalation row + the flow's terminal
-    commit TOGETHER → and the ESCALATION-KIND exemption's leg STILL
+    commit TOGETHER → and the ESCALATION-KIND exemption's leg still
     DELIVERS: the ``loop.escalation`` consumer dispatches through the
     REAL fleet claim despite the terminal flow (a flow's death must not
     orphan its pages-a-human duty)."""
@@ -525,10 +556,10 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
     app = WorkflowApp()
 
     async def wait_and_die(ctx: StepContext, carry: int) -> Done[int] | Refine[int]:
-        # NO fail-close here (the escalation lane's body — the opposite
-        # disposition from the example's): THE ESCALATION LADDER'S OWN
-        # USE (the amendment) — the body converts the expiry MEMBER into
-        # the RAISED failure itself (the machinery never raises it).
+        # no fail-close here (the escalation lane's body — the opposite
+        # disposition from the example's): the escalation ladder's own
+        # use (the amendment) — the body converts the expiry member into
+        # the raised failure itself (the machinery never raises it).
         outcome = await ctx.wait_signal(Approval, timeout_s=1.0)
         match outcome:
             case Approval():
@@ -541,7 +572,7 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
 
     escalation_gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=1.0)
 
-    @app.workflow("T26_escalation_expiry_flow")
+    @app.workflow("escalation_expiry_flow")
     def escalation_flow() -> Promise[object]:
         return build(
             loop(
@@ -556,11 +587,11 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
 
     listener = HitlListener(wf_pool, schema=wf_schema)
     async with listener:
-        runner = FlowRunner(app.get("T26_escalation_expiry_flow"), wf_pool, wf_schema)
+        runner = FlowRunner(app.get("escalation_expiry_flow"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         await runner.drive(flow_id, until="held")
-        # THE DEADLINE + THE SWEEP: the loop-kind hold (budget-paused)
-        # expires through the SAME arm — and the leg delivers.
+        # the loop-kind hold (budget-paused) expires through the same arm — and
+        # the leg delivers.
         await asyncio.sleep(1.1)
         abandoned = await sweep_expired_signals(wf_pool, schema=wf_schema)
         assert abandoned >= 1
@@ -569,8 +600,8 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
             "the expiry broadcast never reached the listener for the LOOP's hold — "
             "the budget-paused row went blind"
         )
-    # THE RESUME: the typed expiry crosses the body boundary → the loop
-    # exhausts WITH the escalation row; the flow terminalizes.
+        # the typed expiry crosses the body boundary → the loop exhausts with the
+    # escalation row; the flow terminalizes.
     await runner.drive(flow_id, max_ticks=40)
     flow_status = await wf_conn.fetchval(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
@@ -594,12 +625,10 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
         consumer_id,
     )
     assert consumer_row is not None and consumer_row["status"] == "pending"
-    # THE REAL FLEET CLAIM — the dispatch fence's terminal-flow leg with
-    # the ESCALATION-KIND exemption is the ONLY door this row has.
+    # the real fleet claim — the dispatch fence's terminal-flow leg with
+    # the escalation-kind exemption is the only door this row has.
     worker_id = JobId(new_uuid())
-    runner = FlowRunner(
-        app.get("T26_escalation_expiry_flow"), wf_pool, wf_schema, worker_id=worker_id
-    )
+    runner = FlowRunner(app.get("escalation_expiry_flow"), wf_pool, wf_schema, worker_id=worker_id)
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '
         "VALUES ($1, $2) ON CONFLICT (actor) DO NOTHING",
@@ -642,15 +671,15 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
     assert outcome == "succeeded", outcome
 
 
-# ── T26-P6: the reconnect reconcile (the fourth union member) ───────────
+# ── the expiry-as-value-P6: the reconnect reconcile (the fourth union member) ───────────
 
 
 class _Cards:
-    """THE TAUGHT CONSUMER'S CARD SET (the watching user's state, driven
-    ONLY by the union's events): create opens a card, resolve/expired
+    """The taught consumer's card set (the watching user's state, driven
+    only by the union's events): create opens a card, resolve/expired
     close it, and the ``Backfilled`` snapshot RECONCILES — anything open
     on the consumer's side that the snapshot's ids disown is DROPPED.
-    This is C1's consumer half: a hold resolved or expired during a
+    This is the consumer half: a hold resolved or expired during a
     listener outage never announces itself (its notify went to no one —
     the connection was down), so the SNAPSHOT is the only witness."""
 
@@ -676,23 +705,23 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
     wf_pool: asyncpg.Pool,
     hitl_redlog: RedLog,
 ) -> None:
-    """Pin P6 (the reconnect-reconcile hole — the hostile review's C1):
+    """Pin P6 (the reconnect-reconcile hole):
     ``_backfill()`` selects only ``status='held'``, so a hold RESOLVED
     during a listener outage never clears the consumer's card — the
     create event announced it, nothing ever announced its death.
 
-    THE CURE: the FOURTH union member — ``Backfilled(open_hold_ids=…)``
-    — emitted after EVERY (re)backfill; the consumer drops anything not
-    in the snapshot. THE RED (captured at the pre-cure head): after the
+    The contract: the FOURTH union member — ``Backfilled(open_hold_ids=…)``
+    — emitted after every (re)backfill; the consumer drops anything not
+    in the snapshot. the RED (the rejected shape): after the
     reconnect the stream carried NOTHING that closes the card — the
     consume-until-reconcile timed out; the stale history even REPLAYED
     the dead hold's create (the ghost) into the new subscriber.
 
-    THE DRILL (permanent, recorded): at the outage window the card set
+    SCENARIO (permanent, recorded): at the outage window the card set
     and the ROWS diverge — the consumer still holds the card the rows
-    disown. THE C7 VERIFICATION rides the same walk: the stale
+    disown. the VERIFICATION rides the same walk: the stale
     ``_backfilled``/``_raw`` notifies announcing dead holds die the
-    SAME death — the new subscriber replays the ghost ``HoldCreated``
+    same death — the new subscriber replays the ghost ``HoldCreated``
     from the pre-outage history, and the reconcile snapshot drops its
     card (the ghost cannot survive the snapshot)."""
 
@@ -700,7 +729,7 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_reconnect_reconcile_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="reconnect_reconcile_flow"
     )
     hold_id = str(
         await wf_conn.fetchval(
@@ -712,40 +741,37 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
     cards = _Cards()
     await listener.start()
     try:
-        # THE OPEN: the backfilled create announces the hold; the taught
-        # consumer opens its card.
+        # the backfilled create announces the hold; the taught consumer opens
+        # its card.
         async with asyncio.timeout(5.0):
             async for event in listener.holds(run=flow_id):
                 cards.apply(event)
                 break
         assert cards.open == {hold_id: "Approval"}, cards.open
-        # THE OUTAGE: the listener disconnects (the pump stopped, the
-        # dedicated LISTEN connection released) — and the rows move on
-        # while nobody watches.
+        # the listener disconnects (the pump stopped, the dedicated LISTEN
+        # connection released) — and the rows move on while nobody watches.
         await listener.stop()
         client = HitlClient(wf_pool, schema=wf_schema)
         resolved = await client.resolve(hold_id, {"verdict": "approve"})
         assert resolved.status == "delivered"
-        # THE DRILL (the dragon, observed at the outage window): the
-        # consumer's card set still holds the hold the ROWS disown.
+        # the consumer's card set still holds the hold the rows disown.
         row_status = await wf_conn.fetchval(
             f'SELECT status FROM "{wf_schema}".wf_signals WHERE id = $1',
             uuid_module.UUID(hold_id),
         )
         assert row_status == "delivered" and cards.open == {hold_id: "Approval"}, (
-            "the drill's divergence is gone — the rows and the cards must "
+            "the scenario's divergence is gone — the rows and the cards must "
             "disagree HERE, or the pin proves nothing"
         )
         hitl_redlog.red(
-            "T26-P6-card-vs-rows-divergence",
+            "the expiry-as-value-P6-card-vs-rows-divergence",
             "the hold resolved during the listener outage: the consumer's card set "
             "still holds it open (no event ever announces a death the disconnected "
-            "listener cannot hear) — the snapshot reconcile is the only cure",
+            "listener cannot hear) — the snapshot reconcile is the only fix",
             {"cards_open": sorted(cards.open), "row_status": row_status},
         )
-        # THE RECONNECT: the same listener object (its HISTORY still
-        # carries the dead hold's create — the ghost), a fresh
-        # connection, a fresh backfill.
+        # the same listener object (its history still carries the dead hold's
+        # create — the ghost), a fresh connection, a fresh backfill.
         await listener.start()
         reconcile: Any = None
         async with asyncio.timeout(5.0):
@@ -760,9 +786,8 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
             "consumer's card"
         )
         assert hold_id not in reconcile.open_hold_ids, reconcile
-        # THE C7 DEATH: the ghost (the stale create in the replayed
-        # history) may cross the stream — the card does not survive the
-        # snapshot.
+        # the ghost (the stale create in the replayed history) may cross the
+        # stream — the card does not survive the snapshot.
         assert cards.open == {}, (
             f"the resolved hold's card survived the reconnect reconcile: {cards.open}"
         )
@@ -770,7 +795,7 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
         await listener.stop()
 
 
-# ── T26-P7: the concurrent-consumer fan-out (no partitioned stream) ─────
+# ── the expiry-as-value-P7: the concurrent-consumer fan-out (no partitioned stream) ─────
 
 
 async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
@@ -779,27 +804,27 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
     wf_pool: asyncpg.Pool,
     hitl_redlog: RedLog,
 ) -> None:
-    """Pin P7 (the silently single-consumer listener — the hostile
-    review's C2): the pre-cure listener pulled ONE shared queue — two
-    concurrent consumers PARTITIONED the stream (each stole the other's
+    """Pin P7 (the silently single-consumer listener): a listener that
+    pulls one shared queue — two
+    concurrent consumers PARTITION the stream (each stole the other's
     events) and ``stop()``'s single ``None`` sentinel stranded all but
-    one waiter. THE PRODUCT SHAPE is one backend listener fanning out to
+    one waiter. the PRODUCT SHAPE is one backend listener fanning out to
     N watching users (the progress stream's own pub/sub discipline —
     Redis pub/sub broadcasts, it never partitions).
 
-    THE DRILL (permanent): the convicted shape, hand-built — ONE shared
-    queue, ONE sentinel, two waiters — recorded: one consumer hauled the
+    SCENARIO (permanent): the rejected shape, hand-built — one shared
+    queue, one sentinel, two waiters — recorded: one consumer hauled the
     events, the other starved against a sentinel that was never its own.
 
-    THE GREEN: per-subscriber queues — ``holds()`` and each consumer get
-    their OWN queue + their OWN sentinel on stop; every consumer sees
-    EVERY event; both consumers END on stop."""
+    Per-subscriber queues — ``holds()`` and each consumer get
+    their own queue + their own sentinel on stop; every consumer sees
+    every event; both consumers END on stop."""
 
-    # ── THE DRILL (the convicted variant, reproducible forever) ──
+    # ── the scenario (the rejected variant, reproducible forever) ──
     shared: asyncio.Queue[int | None] = asyncio.Queue()
     for i in range(3):
         shared.put_nowait(i)
-    shared.put_nowait(None)  # THE SINGLE SENTINEL — the pre-cure stop()'s shape
+    shared.put_nowait(None)  # the single sentinel — the shape a shared-queue stop() takes
 
     async def _shared_consumer(haul: list[int]) -> None:
         while True:
@@ -810,7 +835,7 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
 
     haul_a: list[int] = []
     haul_b: list[int] = []
-    # The single sentinel ends ONE waiter; the other is stranded — the
+    # The single sentinel ends one waiter; the other is stranded — the
     # bound proves the strand (wait_for is the pin's net, not the clock).
     await asyncio.wait_for(_shared_consumer(haul_a), timeout=1.0)
     try:
@@ -819,22 +844,22 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
     except TimeoutError:
         stranded = True
     assert stranded and haul_a == [0, 1, 2] and haul_b == [], (
-        f"the convicted partition did not reproduce: a={haul_a} b={haul_b}"
+        f"the rejected partition did not reproduce: a={haul_a} b={haul_b}"
     )
     hitl_redlog.red(
-        "T26-P7-shared-queue-partition",
+        "hitl-shared-queue-partition",
         "ONE shared queue + ONE stop sentinel: two concurrent consumers partition "
         "the stream — consumer A steals every event, consumer B starves against a "
         "sentinel that is never its own",
         {"consumer_a_haul": haul_a, "consumer_b_haul": haul_b, "b_stranded": stranded},
     )
 
-    # ── THE GREEN: the shipped fan-out ──
+    # ── the green: the shipped fan-out ──
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_fanout_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="fanout_flow"
     )
     listener = HitlListener(wf_pool, wf_schema)
     await listener.start()
@@ -857,7 +882,7 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
             node_key="review",
             signal_name="Approval",
             hold_epoch=2,
-            call_id="call:T26-fanout",
+            call_id="call:hitl-fanout",
             payload_schema={"Approval": {"type": "object", "properties": {}}},
             timeout_s=120.0,
         )
@@ -870,10 +895,10 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
                 lambda: any(getattr(e, "hold_id", None) == str(hold_id) for e in events_b),
                 description="consumer B never received the create",
             )
-        # THE FAN-OUT LAW: EVERY consumer saw EVERY event — never a partition.
+            # every consumer saw every event — never a partition.
         assert any(getattr(e, "hold_id", None) == str(hold_id) for e in events_a), events_a
         assert any(getattr(e, "hold_id", None) == str(hold_id) for e in events_b), events_b
-        # THE SENTINEL LAW: stop() ends BOTH waiters (each its own None).
+        # stop() ends both waiters (each its own None).
         await listener.stop()
         await asyncio.wait_for(task_a, timeout=5.0)
         await asyncio.wait_for(task_b, timeout=5.0)
@@ -881,7 +906,7 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
         await listener.stop()
 
 
-# ── T26-P8: the schema isolation (the payload filter IS the isolation) ──
+# ── the expiry-as-value-P8: the schema isolation (the payload filter is the isolation) ──
 
 
 async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
@@ -891,13 +916,13 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
     module_pg_schema: Any,
     hitl_redlog: RedLog,
 ) -> None:
-    """Pin P8: TWO schemas on ONE database — the global channels carry
-    BOTH schemas' knocks, and the PAYLOAD FILTER is the isolation: the
+    """Pin P8: TWO schemas on one database — the global channels carry
+    both schemas' knocks, and the PAYLOAD FILTER is the isolation: the
     listener on schema A delivers A's holds and is SILENT on B's.
 
-    THE DRILL (permanent): a consumer that trusts the CHANNEL without
+    SCENARIO (permanent): a consumer that trusts the CHANNEL without
     the payload filter hears the OTHER schema's holds — the cross-schema
-    leak the convicted channel-arithmetic routing buys. THE GREEN: the
+    leak the rejected channel-arithmetic routing buys. the GREEN: the
     shipped listener filters every decoded event by the payload's
     ``schema`` field (and the ``Backfilled`` snapshot only ever lists
     ITS schema's open holds)."""
@@ -912,7 +937,7 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
     finally:
         await setup.close()
 
-    # ── THE DRILL: the unfiltered channel ear hears the other schema ──
+    # ── the scenario: the unfiltered channel ear hears the other schema ──
     foreign_id = str(new_uuid())
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_CREATED_CHANNEL) as knocks:
         leaked = await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -936,27 +961,27 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
             await leaked.close()
         await asyncio.sleep(0.2)
         assert any(foreign_id in k for k in knocks.of(HOLD_CREATED_CHANNEL)), (
-            "the drill's knock never crossed — the raw ear proves nothing"
+            "the scenario's knock never crossed — the raw ear proves nothing"
         )
         hitl_redlog.red(
-            "T26-P8-unfiltered-channel-ear",
+            "the expiry-as-value-P8-unfiltered-channel-ear",
             "a consumer that trusts the CHANNEL (pg_notify is per-DATABASE, the "
             "channels are global) hears EVERY schema's holds — the payload filter "
             "is the isolation, and without it the estate's schemas leak",
             {"foreign_schema": schema_b, "foreign_knocks": len(knocks.of(HOLD_CREATED_CHANNEL))},
         )
 
-    # ── THE GREEN: the shipped listener filters by the payload ──
+    # ── the green: the shipped listener filters by the payload ──
     foreign_flow = str(new_uuid())
     await register_hold(
-        wf_conn,  # any connection on the SAME DATABASE — the schema selects the tables
+        wf_conn,  # any connection on the same database — the schema selects the tables
         schema=schema_b,
         workflow_id=JobId(uuid_module.UUID(foreign_flow)),
         node_id=JobId(new_uuid()),
         node_key="review",
         signal_name="Approval",
         hold_epoch=1,
-        call_id="call:T26-isolation",
+        call_id="call:the expiry-as-value-isolation",
         payload_schema={"Approval": {"type": "object", "properties": {}}},
         timeout_s=120.0,
     )
@@ -965,7 +990,7 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_isolation_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="isolation_flow"
     )
     listener = HitlListener(wf_pool, wf_schema)
     async with listener:
@@ -975,9 +1000,9 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
                 seen.append(event)
                 if event.event == "backfilled":
                     break
-        # THE ISOLATION: the foreign schema's hold NEVER crossed (its
-        # notify rode the same database's same channels); the snapshot
-        # lists only THIS schema's open holds.
+                # the foreign schema's hold never crossed (its notify rode the same
+        # database's same channels); the snapshot lists only this schema's open
+        # holds.
         assert all(getattr(e, "hold_id", None) != foreign_id for e in seen), seen
         reconcile = [e for e in seen if getattr(e, "event", "") == "backfilled"]
         assert reconcile, "the backfilled snapshot never arrived"
@@ -996,7 +1021,7 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
         await teardown.close()
 
 
-# ── T26-P9: the payload-size bound (the pointer-law creep protector) ────
+# ── the expiry-as-value-P9: the payload-size bound (the pointer-law creep protector) ────
 
 
 async def test_notify_payloads_stay_under_the_named_cap(
@@ -1008,42 +1033,42 @@ async def test_notify_payloads_stay_under_the_named_cap(
 ) -> None:
     """Pin P9 (the pointer-law creep protector): PG's ``pg_notify``
     refuses a payload at 8000 bytes — and a knock refused MID-TX rolls
-    the hold's OWN transaction back with it (the create leg dies inside
+    the hold's own transaction back with it (the create leg dies inside
     register_hold's tx). The pointer payloads are SMALL by law; the cap
     must be NAMED and GUARDED so the pointer law's creep (a payload
     field grown to carry content) dies at the code seam, loudly, before
     PG's opaque error.
 
-    THE DRILL (permanent): an over-cap knock handed to pg_notify raises
-    — recorded. THE GREEN: the named cap constant + the guard in
-    ``_broadcast`` (the typed refusal BEFORE the wire) + every shipped
+    SCENARIO (permanent): an over-cap knock handed to pg_notify raises
+    — recorded. the GREEN: the named cap constant + the guard in
+    ``_broadcast`` (the typed refusal before the wire) + every shipped
     leg measured under the cap (a pathologically long — but valid —
     signal name included)."""
 
     from taskq.workflows.api._hitl import NOTIFY_PAYLOAD_MAX_BYTES, _broadcast
 
-    # ── THE DRILL: PG's own refusal (what an unguarded over-cap knock costs) ──
-    drill = await asyncpg.connect(module_pg_schema.pg_dsn)
+    # ── the scenario: PG's own refusal (what an unguarded over-cap knock costs) ──
+    scenario = await asyncpg.connect(module_pg_schema.pg_dsn)
     refused = "unreached"
     try:
-        async with drill.transaction():
+        async with scenario.transaction():
             try:
-                await drill.execute("SELECT pg_notify($1, $2)", HOLD_CREATED_CHANNEL, "x" * 9000)
+                await scenario.execute("SELECT pg_notify($1, $2)", HOLD_CREATED_CHANNEL, "x" * 9000)
                 refused = "NOT-refused"
             except Exception as exc:
                 refused = f"{type(exc).__name__}: {str(exc)[:120]}"
     finally:
-        await drill.close()
+        await scenario.close()
     assert refused != "NOT-refused", "PG accepted a 9000-byte payload — the cap moved"
     hitl_redlog.red(
-        "T26-P9-over-cap-pg-notify",
+        "hitl-over-cap-pg-notify",
         "the over-cap knock reaches pg_notify UNGUARDED: PG refuses it mid-tx and "
         "the caller's whole transaction dies with the opaque server error — the "
         "pointer-law creep must die at the code seam instead, loudly, named",
         {"observed": refused},
     )
 
-    # ── THE GUARD: the named cap, refused before the wire ──
+    # ── the guard: the named cap, refused before the wire ──
     assert NOTIFY_PAYLOAD_MAX_BYTES == 8000, NOTIFY_PAYLOAD_MAX_BYTES
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
     try:
@@ -1052,18 +1077,18 @@ async def test_notify_payloads_stay_under_the_named_cap(
     finally:
         await conn.close()
 
-    # ── THE SHIPPED LEGS MEASURED: even a pathological (but valid) name ──
+    # ── the shipped legs measured: even a pathological (but valid) name ──
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     long_key = "review" * 60  # 360 chars of node key — legal, ugly
     app = WorkflowApp()
 
-    @app.workflow("T26_cap_flow")
+    @app.workflow("cap_flow")
     def cap_flow() -> Promise[object]:
         return build(step(hold_body, Ingest(doc_id="d1"), key=long_key))
 
-    runner = FlowRunner(app.get("T26_cap_flow"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("cap_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_CREATED_CHANNEL) as knocks:
@@ -1075,7 +1100,7 @@ async def test_notify_payloads_stay_under_the_named_cap(
             node_key=long_key,
             signal_name="Approval",
             hold_epoch=2,
-            call_id="call:T26-cap",
+            call_id="call:hitl-cap",
             payload_schema={"Approval": {"type": "object", "properties": {}}},
             timeout_s=120.0,
         )
@@ -1085,11 +1110,11 @@ async def test_notify_payloads_stay_under_the_named_cap(
     assert max(len(k.encode()) for k in shaped) < NOTIFY_PAYLOAD_MAX_BYTES
 
 
-# ── T26-P10: the resolve-rollback silence (symmetric to P1) ─────────────
+# ── the expiry-as-value-P10: the resolve-rollback silence (symmetric to P1) ─────────────
 
 
 class AuditBoomError(Exception):
-    """The drill's injected audit failure (named — never a bare raise)."""
+    """The scenario's injected audit failure (named — never a bare raise)."""
 
 
 async def test_rolled_back_resolve_emits_no_notification(
@@ -1100,21 +1125,21 @@ async def test_rolled_back_resolve_emits_no_notification(
     hitl_redlog: RedLog,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pin P10 (symmetric to P1): a ROLLED-BACK resolve emits NO
-    notification — the CAS + the audit + the broadcast ride ONE tx, so
+    """Pin P10 (symmetric to P1): a ROLLED-BACK resolve emits no
+    notification — the CAS + the audit + the broadcast ride one tx, so
     a resolve whose tx dies is SILENT (nothing announces a decision the
     rows disown).
 
-    THE DRILL (permanent, the convicted variant like P1's): the resolve
+    SCENARIO (permanent, the rejected variant like P1's): the resolve
     knock sent OUTSIDE the CAS's tx outlives the rollback — the
     broadcast LIES about a decision that never landed.
 
-    THE GREEN: the shipped resolve path, its tx FORCED to fail (the
+    The shipped resolve path, its tx FORCED to fail (the
     audit write injected to raise): the exception propagates, the tx
-    rolls back, the hold SURVIVES as ``held``, and NO
+    rolls back, the hold SURVIVES as ``held``, and no
     ``taskq_wf_hold_resolved`` knock ever fires."""
 
-    # ── THE DRILL: the lying knock (the knock outside the tx) ──
+    # ── the scenario: the lying knock (the knock outside the tx) ──
     drill_hold = str(new_uuid())
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_RESOLVED_CHANNEL) as knocks:
         liar = await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -1138,22 +1163,22 @@ async def test_rolled_back_resolve_emits_no_notification(
             await liar.close()
         await asyncio.sleep(0.2)
         assert any(drill_hold in k for k in knocks.of(HOLD_RESOLVED_CHANNEL)), (
-            "the drill's knock never crossed — the drill proves nothing"
+            "the scenario's knock never crossed — the scenario proves nothing"
         )
         hitl_redlog.red(
-            "T26-P10-resolve-knock-outside-the-tx",
+            "hitl-resolve-knock-outside-the-tx",
             "the resolve knock sent OUTSIDE the CAS tx (autocommit): the knock "
             "outlives the rolled-back resolve — the broadcast LIES about a "
             "decision the rows disown (P1's dragon, on the resolve leg)",
             {"lying_knocks": len(knocks.of(HOLD_RESOLVED_CHANNEL))},
         )
 
-    # ── THE GREEN: the shipped path's tx forced to fail — SILENT ──
+    # ── the green: the shipped path's tx forced to fail — silent ──
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_resolve_rollback_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="resolve_rollback_flow"
     )
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
@@ -1190,9 +1215,9 @@ async def test_rolled_back_resolve_emits_no_notification(
 async def test_wait_signals_timeout_arms_the_sweep_not_the_gate_declaration(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Pin (C8): BOTH faces declare a timeout — ``GateDecl(timeout_s=…)``
-    AND ``ctx.wait_signal(timeout_s=…)`` — and the precedence is: THE
-    WAIT'S VALUE ARMS THE SWEEP (``register_hold`` writes ``expires_at``
+    """Pin: both faces declare a timeout — ``GateDecl(timeout_s=…)``
+    and ``ctx.wait_signal(timeout_s=…)`` — and the precedence is: the
+    WAIT'S VALUE ARMS the SWEEP (``register_hold`` writes ``expires_at``
     from the wait site's ``timeout_s``); the gate's ``timeout_s`` is the
     COMPILE-VISIBLE declaration (the Mermaid face, the W1 warning) —
     never a second runtime clock. The pin holds the precedence on the
@@ -1205,11 +1230,11 @@ async def test_wait_signals_timeout_arms_the_sweep_not_the_gate_declaration(
     app = WorkflowApp()
     dissenting_gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=5.0)
 
-    @app.workflow("T26_timeout_precedence_flow")
+    @app.workflow("timeout_precedence_flow")
     def precedence_flow() -> Promise[object]:
         return build(step(hold_body, Ingest(doc_id="d1"), key="review", gates=(dissenting_gate,)))
 
-    runner = FlowRunner(app.get("T26_timeout_precedence_flow"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("timeout_precedence_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     row = await wf_conn.fetchrow(
@@ -1238,22 +1263,22 @@ async def test_loop_conditional_wait_is_the_named_shape_error(
 ) -> None:
     """Pin (C9/E13): the loop's answer-queue cursor IS the iteration
     counter — a body that CONDITIONALLY waits (some iterations, not
-    others) mis-indexes the queue SILENTLY pre-cure: the iteration
+    others) mis-indexes the queue SILENTLY: the iteration
     counter advances past answers that were never consumed, the stranded
     answer can never be read again, and a RETRY of a waited iteration
     replays the WRONG slot (the retry-replay law, broken silently).
 
-    THE CURE: the E13 RULE — the loop-kind wait site REFUSES the
+    The loop-kind wait site REFUSES the
     mis-aligned state (the iteration cursor PAST the answer queue) with
-    the named typed error: the shape law ("ONE wait per iteration")
-    gets teeth. Red-first: pre-cure the pin's loop silently minted a
-    second hold and the error never raised."""
+    the named typed error: the shape law ("one wait per iteration")
+    gets teeth. The rejected shape: the pin's loop silently mints a
+    second hold and the error never raises."""
 
     app = WorkflowApp()
 
     async def conditional_wait(ctx: StepContext, carry: int) -> Done[int] | Refine[int]:
-        # THE CONDITIONAL SHAPE: iteration 1 skips the wait (carry==1);
-        # iteration 2 waits again — the cursor/queue mis-index.
+        # iteration 1 skips the wait (carry==1); iteration 2 waits again — the
+        # cursor/queue mis-index.
         if carry == 1:
             return Refine(carry + 1)
         outcome = await ctx.wait_signal(Approval, timeout_s=120.0)
@@ -1265,7 +1290,7 @@ async def test_loop_conditional_wait_is_the_named_shape_error(
 
     gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
 
-    @app.workflow("T26_conditional_wait_flow")
+    @app.workflow("conditional_wait_flow")
     def conditional_flow() -> Promise[object]:
         return build(
             loop(
@@ -1278,7 +1303,7 @@ async def test_loop_conditional_wait_is_the_named_shape_error(
             )
         )
 
-    runner = FlowRunner(app.get("T26_conditional_wait_flow"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("conditional_wait_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     client = HitlClient(wf_pool, schema=wf_schema)
@@ -1300,13 +1325,13 @@ async def test_loop_conditional_wait_is_the_named_shape_error(
         "E13's teeth are gone (the mis-index is silent again)"
     )
     # The loop's failure-class rules route the body's exceptions through
-    # the LOOP_BODY_FAILURE class — the E13 name rides the MESSAGE.
+    # the LOOP_BODY_FAILURE class — the E13 name rides the message.
     assert node_row["error_class"] == "LoopBodyFailure", dict(node_row)
     assert (
         node_row["error_message"] is not None
         and "E13-uniform-loop-wait" in (node_row["error_message"])
     )
-    # And the stranded answer is STILL on the rows (the row is the
+    # And the stranded answer is still on the rows (the row is the
     # truth — the refusal named the shape, it destroyed nothing).
     answer = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".wf_signals WHERE workflow_id = $1 '
@@ -1318,7 +1343,7 @@ async def test_loop_conditional_wait_is_the_named_shape_error(
 
 async def test_loop_wait_shape_error_is_the_typed_seam() -> None:
     """E13's unit face: the rule fires on the cursor-past-queue state
-    ONLY for loop-kind nodes — a plain step's per-attempt cursor is
+    only for loop-kind nodes — a plain step's per-attempt cursor is
     consumption-ordered (conditional waits are legal there) and never
     sees this rule. The typed seam named: the body failure the loop's
     failure-class rules route (the same face SignalTimeoutError rides
@@ -1330,3 +1355,31 @@ async def test_loop_wait_shape_error_is_the_typed_seam() -> None:
     assert issubclass(LoopWaitShapeError, RuntimeError)
     doc = inspect.getdoc(LoopWaitShapeError) or ""
     assert "E13" in doc, doc
+
+
+async def test_holds_accepts_the_id_spelling_the_list_doors_accept(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+) -> None:
+    """The listener door binds the id's canonical form like list/get/
+    resolve: a braced UPPER spelling of one run yields THAT RUN's holds
+    (a canonicalizer that only ran on the other doors would leave this
+    stream silently EMPTY for a spelling the id doors accept); a
+    spelling that does not even parse as the id fails loud at the
+    stream's setup — the named-refusal class, never silence."""
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+        return await ctx.wait_signal(Approval, timeout_s=120.0)
+
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="listener_spelling_flow"
+    )
+    listener = HitlListener(wf_pool, wf_schema)
+    async with listener:
+        braced = "{" + str(flow_id).upper() + "}"
+        first = await asyncio.wait_for(_first_of(listener.holds(run=braced)), timeout=5.0)
+        assert first is not None and isinstance(first, HoldCreated), first
+        assert first.hold_id is not None
+        with pytest.raises(ValueError):
+            await _first_of(listener.holds(run="not-a-uuid"))

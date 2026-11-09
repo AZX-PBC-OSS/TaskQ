@@ -1,7 +1,7 @@
-"""THE PHASE-3 CURE PINS (fixer round 1) — the in-commit pins for the
-cures the attack-3 probes proved red first:
+"""The phase-3 fix pins (the phase-3 fixes) — the in-commit pins for the
+fixes whose failures the probes demonstrated first:
 
-* B2's BOTH-FIT arm: an ambiguous payload is the typed refusal UNLESS
+* B2's both-FIT arm: an ambiguous payload is the typed refusal UNLESS
   the gate declares an explicit discriminator (the small honest API).
 * H1's END-TO-END arm: the escalation consumer job RUNS (the registered
   ``loop.escalation`` body — no dead letter); the driver-path ``fail``
@@ -13,10 +13,10 @@ cures the attack-3 probes proved red first:
 * H2's audit leg: the REFUSED resolve writes the audit row that names
   the refusal, and the hold still stands.
 * The EXIT sentinel (§17.1) and the MANUAL RESUME (§17.2) — the
-  alignment-audit's Missing #1, landed red-first.
+  alignment-audit's Missing #1, landed .
 * E8: the loop CARRIER-TYPE declaration enforced (pin 5's teeth).
 
-Each pin states the cure's law; the red evidence is the attack-3 corpus
+Each pin states the fix's law; the red evidence is the pin's own failure on the unfixed tree
 (``.measurements/attack3/``) plus this file's own captured first run.
 """
 
@@ -62,7 +62,7 @@ class Strict(BaseModel):
 
 
 class Lenient(BaseModel):
-    """All-optional: ANY shape-clean dict with a/b fits it."""
+    """All-optional: any shape-clean dict with a/b fits it."""
 
     a: str = "default"
     b: str = "default"
@@ -80,17 +80,17 @@ class Report(BaseModel):
     n: int
 
 
-# ── B2's BOTH-FIT arm: the ambiguity refusal + the discriminator door ──
+# ── B2's both-fit arm: the ambiguity refusal + the discriminator door ──
 
 
 async def test_ambiguous_payload_refused_unless_the_gate_discriminates(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """A payload fitting MORE than one declared model is the typed
-    refusal (narrowing by declaration order is the convicted
+    refusal (narrowing by declaration order is the rejected
     mis-narrowing) — UNLESS the wait site declared an explicit
     discriminator, whose pick resolves the union. The both-fit shape:
-    two all-optional models — the empty object fits BOTH (every field
+    two all-optional models — the empty object fits both (every field
     defaulted)."""
 
     class Alpha(BaseModel):
@@ -129,7 +129,7 @@ async def test_ambiguous_payload_refused_unless_the_gate_discriminates(
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
     assert len(holds) == 1
-    # {} fits BOTH Alpha and Beta → the discriminator picks Beta.
+    # {} fits both Alpha and Beta → the discriminator picks Beta.
     result = await client.resolve(holds[0].hold_id, {})
     assert result.status == "delivered", result
     await runner.drive(flow_id, max_ticks=30)
@@ -142,7 +142,7 @@ async def test_ambiguous_payload_refused_unless_the_gate_discriminates(
 async def test_both_fit_without_discriminator_is_refused_hold_survives(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """The BOTH-FIT refusal: no discriminator → the delivery is refused
+    """The both-FIT refusal: no discriminator → the delivery is refused
     (the typed ambiguity error names the fitting models), the hold
     SURVIVES (nothing consumed), and the refusal is AUDITED."""
 
@@ -174,21 +174,20 @@ async def test_both_fit_without_discriminator_is_refused_hold_survives(
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
     assert len(holds) == 1
-    # THE AMBIGUITY: {} fits BOTH (all-optional) — refused without a
-    # discriminator.
+    # {} fits both (all-optional) — refused without a discriminator.
     result = await client.resolve(holds[0].hold_id, {})
     assert result.status == "refused", (
         f"the both-fit payload was {result.status!r} — narrowing by "
-        "declaration order is the convicted mis-narrowing; the ambiguous "
+        "declaration order is the rejected mis-narrowing; the ambiguous "
         "delivery must be refused"
     )
     assert "Alpha" in (result.reason or "") and "Beta" in (result.reason or ""), (
         f"the refusal does not NAME the ambiguity: {result.reason!r} — the operator sees why"
     )
-    # THE HOLD SURVIVES: still held, still listable, still resolvable.
+    # still held, still listable, still resolvable.
     holds_after = await client.list(run=flow_id)
     assert len(holds_after) == 1 and holds_after[0].hold_id == holds[0].hold_id
-    ok = await client.resolve(holds[0].hold_id, {"x": 9})  # fits Alpha ONLY
+    ok = await client.resolve(holds[0].hold_id, {"x": 9})  # fits Alpha only
     assert ok.status == "delivered", ok
     await runner.drive(flow_id, max_ticks=30)
     signals = await wf_conn.fetch(
@@ -198,7 +197,7 @@ async def test_both_fit_without_discriminator_is_refused_hold_survives(
     assert len(signals) == 1 and signals[0]["status"] == "delivered"
 
 
-# ── H1's END-TO-END arms: the escalation RUNS; the fail policy is quiet ──
+# ── H1's end-to-end arms: the escalation runs; the fail policy is quiet ──
 
 
 async def test_escalation_enqueues_and_the_registered_body_runs(
@@ -226,10 +225,10 @@ async def test_escalation_enqueues_and_the_registered_body_runs(
     assert await runner.drive(flow_id) == "terminal"
     # The outbox row is written in the exhaust's tx; the drain runs at
     # the tick's end. NOTE (the fenceable-shape pin below is the fleet
-    # truth): THIS arm's tick claims the consumer through the runner's
-    # own claimable read, which carries NO flow-status fence — the fleet
-    # dispatch claim DOES, and the escalation consumer is born into a
-    # TERMINAL flow. The in-process tick alone could never prove the
+    # truth): this arm's tick claims the consumer through the runner's
+    # own claimable read, which carries no flow-status fence — the fleet
+    # dispatch claim does, and the escalation consumer is born into a
+    # terminal flow. The in-process tick alone could never prove the
     # escalation dispatchable; see
     # test_escalation_consumer_dispatches_through_the_fleet_claim.
     await runner.tick(flow_id)
@@ -242,8 +241,8 @@ async def test_escalation_enqueues_and_the_registered_body_runs(
         f"the driver-path exhaustion wrote NO escalation outbox row: "
         f"{[r['consumer_step_key'] for r in outbox]}"
     )
-    # THE REGISTERED BODY RAN (no dead letter): the consumer job exists,
-    # terminal-succeeded, carrying the exhaustion record.
+    # no dead letter. the consumer job exists, terminal-succeeded, carrying the
+    # exhaustion record.
     consumer = await wf_conn.fetchrow(
         f'SELECT status, result, payload FROM "{wf_schema}".jobs '
         "WHERE step_key = 'loop.escalation' AND (metadata->>'flow_id')::uuid = $1",
@@ -262,7 +261,7 @@ async def test_escalation_enqueues_and_the_registered_body_runs(
 async def test_escalation_consumer_dispatches_through_the_fleet_claim(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ESCALATION'S FENCEABLE SHAPE (the FLEET-TRUTH pin): the
+    """The escalation's fenceable shape (the FLEET-TRUTH pin): the
     exhaustion tx commits the escalation's outbox row and the flow's
     terminal TOGETHER — the consumer row is BORN into a terminal flow —
     and the dispatch fence's terminal-flow leg (a workflow row on a
@@ -272,18 +271,18 @@ async def test_escalation_consumer_dispatches_through_the_fleet_claim(
     fence, while its comment named 'the fleet worker's queue poll' —
     provably false).
 
-    THE CURE (the design decision, and why): a flow's death must not
-    orphan its pages-a-human duty — the operator's page is the ONE thing
+    DESIGN (and why): a flow's death must not
+    orphan its pages-a-human duty — the operator's page is the one thing
     that must survive the flow's terminality. The fence's terminal-flow
     leg gains the ESCALATION-KIND exemption: the ``loop.escalation``
     consumer alone is dispatchable on the terminal flow; every other
     workflow row on a dead flow stays fenced. The exemption — not a
     re-ordering — is the only shape that keeps the atomicity law (the
-    outbox row + the terminal = ONE tx) AND delivers the page: the fence
+    outbox row + the terminal = one tx) and delivers the page: the fence
     is evaluated at DISPATCH time (the drain is a later pass), when the
     flow is terminal either way.
 
-    THE PIN takes the REAL claim path — ``dispatch_batch`` over the
+    the PIN takes the REAL claim path — ``dispatch_batch`` over the
     certified strict-FIFO claim SQL, a capable worker's identity — and
     the REAL fleet execution door — ``run_fleet_claimed_step``. The
     escalation consumer must be CLAIMED and RUN."""
@@ -307,9 +306,9 @@ async def test_escalation_consumer_dispatches_through_the_fleet_claim(
     runner = FlowRunner(app.get("a3cure_fleet_escalation_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
-    # The FLOW IS TERMINAL here (the exhaust committed with the outbox
-    # row in one tx). The drain inserts the consumer row; the FLEET claim
-    # is the row's ONLY dispatch door.
+    # The flow is terminal here (the exhaust committed with the outbox
+    # row in one tx). The drain inserts the consumer row; the fleet claim
+    # is the row's only dispatch door.
     await runner.tick(flow_id, execute=False)
     consumer_id = await wf_conn.fetchval(
         f'SELECT id FROM "{wf_schema}".jobs '
@@ -321,9 +320,9 @@ async def test_escalation_consumer_dispatches_through_the_fleet_claim(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
     )
     assert flow_status == "failed", flow_status
-    # The consumer's PLACEMENT rides the registered definition (the
+    # The consumer's placement rides the registered definition (the
     # actor/queue the escalation bindings resolved) — the fleet claim
-    # routes by it, so the pin stamps the SAME actor/queue pair the
+    # routes by it, so the pin stamps the same actor/queue pair the
     # drain wrote onto the row.
     consumer_row = await wf_conn.fetchrow(
         f'SELECT status, actor, queue, step_key FROM "{wf_schema}".jobs WHERE id = $1',
@@ -333,9 +332,9 @@ async def test_escalation_consumer_dispatches_through_the_fleet_claim(
     assert consumer_row["status"] == "pending"
     assert consumer_row["step_key"] == "loop.escalation"
 
-    # THE FLEET CLAIM (the real claim round, the execution fence's
+    # the fleet claim (the real claim round, the execution fence's
     # capable-worker shape — the same stamp the boot's projection writes).
-    # The RUNNER carries the claiming worker's OWN identity from here on
+    # The runner carries the claiming worker's own identity from here on
     # (the finalize's terminal-mark fence compares locked_by_worker — a
     # runner id that differs from the claim's is fenced out by design).
     worker_id = _new_uuid()
@@ -370,9 +369,9 @@ async def test_escalation_consumer_dispatches_through_the_fleet_claim(
         "terminal-flow leg refused the page-a-human duty forever: the "
         "escalation is dead code"
     )
-    # THE BODY RUNS through the fleet-claimed door: the registered
-    # escalation body executes, the consumer row terminal-succeeds
-    # carrying the exhaustion record.
+    # the body runs through the fleet-claimed door: the registered escalation
+    # body executes, the consumer row terminal-succeeds carrying the exhaustion
+    # record.
     job = next(r for r in dispatched if str(r["id"]) == str(consumer_id))
     outcome = await runner.run_fleet_claimed_step(
         flow_id,
@@ -399,7 +398,7 @@ async def test_driver_fail_policy_enqueues_nothing(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The DRIVER-path exhaustion with ``on_exhausted="fail"``: the flow
-    terminal-fails and NO escalation row is written (the policy
+    terminal-fails and no escalation row is written (the policy
     vocabulary is read by the driver, not decorative)."""
     calls: list[int] = []
 
@@ -428,7 +427,7 @@ async def test_driver_fail_policy_enqueues_nothing(
 async def test_escalates_to_registers_a_custom_body(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """The author's OWN escalation body (``escalates_to=``) is the
+    """The author's own escalation body (``escalates_to=``) is the
     registered ``loop.escalation`` step — the consumer resolves it from
     the definition registry (D1) and RUNS it."""
     escalated: list[dict[str, object]] = []
@@ -462,7 +461,7 @@ async def test_escalates_to_registers_a_custom_body(
     assert escalated[0].get("loop") == "counter", escalated
 
 
-# ── the sweep-cap arm's REACHABILITY (the vacuous pin's cure) ──────────
+# ── the sweep-cap arm's reachability (the vacuous pin's fix) ──────────
 
 
 async def test_the_final_iteration_runs_and_the_counter_reaches_the_cap(
@@ -511,16 +510,16 @@ async def test_the_final_iteration_runs_and_the_counter_reaches_the_cap(
     assert node_row["status"] == "failed"
 
 
-# ── the EXIT sentinel (§17.1) end-to-end ────────────────────────────────
+# ── the exit sentinel (§17.1) end-to-end ────────────────────────────────
 
 
 async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE TYPED EARLY-EXIT (§17.1): a body returns ``Exit(payload)`` —
+    """The typed early-exit (§17.1): a body returns ``Exit(payload)`` —
     the node terminal-succeeds with the typed payload (the envelope
     records the exit), every non-terminal DOWNSTREAM node is marked
-    skipped-WITH-THE-RECORD (the record never lies about the nodes that
+    skipped-WITH-the-RECORD (the record never lies about the nodes that
     didn't get to run), and the flow derives COMPLETE."""
     ran: list[str] = []
 
@@ -546,7 +545,7 @@ async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     assert ran == [], "the downstream node RAN after an Exit — the early exit did not exit"
-    # THE EXITED NODE: terminal-succeeded, the typed payload recorded.
+    # terminal-succeeded, the typed payload recorded.
     exited = await wf_conn.fetchrow(
         f'SELECT status, result FROM "{wf_schema}".jobs '
         "WHERE step_key = 'b' AND (metadata->>'flow_id')::uuid = $1",
@@ -556,7 +555,7 @@ async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
     assert '"exit"' in (exited["result"] or "") and "42" in (exited["result"] or ""), (
         f"the Exit's typed result is not on the node's record: {exited['result']!r}"
     )
-    # THE DOWNSTREAM: skipped WITH the record.
+    # skipped with the record.
     skipped = await wf_conn.fetchrow(
         f'SELECT status, result FROM "{wf_schema}".jobs '
         "WHERE step_key = 'tail' AND (metadata->>'flow_id')::uuid = $1",
@@ -566,7 +565,7 @@ async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
     assert "skipped" in (skipped["result"] or "") and "exit_from" in (skipped["result"] or ""), (
         f"the downstream node's record does not name the skip: {skipped['result']!r}"
     )
-    # THE LEDGER RECORDS IT: the exited node's ledger terminal exists.
+    # the exited node's ledger terminal exists.
     ledger = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
         "WHERE flow_id = $1 AND step_key = 'b' AND status = 'succeeded'",
@@ -575,18 +574,18 @@ async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
     assert ledger == 1
 
 
-# ── the MANUAL RESUME (§17.2) end-to-end ────────────────────────────────
+# ── the manual resume (§17.2) end-to-end ────────────────────────────────
 
 
 async def test_retry_node_rearms_a_failed_node_the_ladder_continues(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE OPERATOR'S MANUAL RESUME (§17.2, the §22.6 redispatch row 3):
+    """The operator's manual resume (§17.2, the §22.6 redispatch row 3):
     the audited, CAS-guarded re-arm of a terminal-FAILED node — the
     attempt ordinal CONTINUES (never resets), the blocked closure
     re-opens, the flow re-opens, and the re-run is safe by the step
     ledger (ctx.step returns recorded results). A second manual retry
-    after the node fails again buys EXACTLY ONE more attempt (the ladder
+    after the node fails again buys EXACTLY one more attempt (the ladder
     is the count)."""
     attempts: list[int] = []
 
@@ -607,7 +606,7 @@ async def test_retry_node_rearms_a_failed_node_the_ladder_continues(
     assert root == "failed"
     first_attempts = len(attempts)
 
-    # THE MANUAL RESUME (CAS-granted).
+    # the manual resume (CAS-granted).
     granted = await runner.retry_node(
         flow_id, "lonely", principal="op-7", reason="the fix deployed"
     )
@@ -616,21 +615,21 @@ async def test_retry_node_rearms_a_failed_node_the_ladder_continues(
     assert len(attempts) == first_attempts + 1, (
         f"the manual retry did not buy exactly ONE more attempt: {len(attempts)}"
     )
-    # THE ATTEMPT ORDINAL CONTINUES: the claim's counter grew past 1.
+    # the claim's counter grew past 1.
     attempt = await wf_conn.fetchval(
         f"SELECT attempt FROM \"{wf_schema}\".jobs WHERE step_key = 'lonely' "
         "AND (metadata->>'flow_id')::uuid = $1",
         flow_id,
     )
     assert attempt >= 2, f"the attempt ordinal RESET (the fresh-budget dragon): {attempt}"
-    # THE AUDIT IS A ROW.
+    # the audit is A row.
     audit = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".admin_audit '
         "WHERE action = 'workflow.retry_node' AND target_id = $1",
         f"{flow_id}:lonely",
     )
     assert audit == 1
-    # THE CAS: a node not terminal-failed is refused.
+    # a node not terminal-failed is refused.
     node_row = await wf_conn.fetchval(
         f"SELECT status FROM \"{wf_schema}\".jobs WHERE step_key = 'lonely' "
         "AND (metadata->>'flow_id')::uuid = $1",
@@ -650,7 +649,7 @@ async def test_retry_node_rearms_a_failed_node_the_ladder_continues(
     )
 
 
-# ── E8: the CARRIER-TYPE declaration enforced (T19's pin 5) ────────────
+# ── E8: the carrier-type declaration enforced (the loop drive bound's pin 5) ────────────
 
 
 async def _refines_wrong(ctx: StepContext, carry: object) -> Refine[Other]:
@@ -658,7 +657,7 @@ async def _refines_wrong(ctx: StepContext, carry: object) -> Refine[Other]:
 
 
 def test_carrier_type_mismatch_is_convicted() -> None:
-    """T19 pin 5's teeth: a loop declaring ``initial=Counter`` whose body
+    """The loop drive bound's pin 5 teeth: a loop declaring ``initial=Counter`` whose body
     refines with an UNRELATED model is the compile's refusal (the
     recorded declaration is now ENFORCED)."""
     app = WorkflowApp()
@@ -667,8 +666,8 @@ def test_carrier_type_mismatch_is_convicted() -> None:
     def carrier() -> Promise[object]:
         return build(loop("counter", _refines_wrong, initial=Counter(acc=0)))
 
-    # the PROBE SEAM (app._compile): the carrier-mismatch graph is
-    # INVALID on purpose (E8's conviction is the pin's subject) — the
+    # the probe seam (app._compile): the carrier-mismatch graph is
+    # invalid on purpose (E8's refusal is the pin's subject) — the
     # door would raise before the diagnostics could be read.
     rules = [d.rule for d in _run_rules(app._compile("a3cure_carrier_flow"))]
     assert "E8-carrier-type" in rules, (
@@ -681,7 +680,7 @@ def test_carrier_type_mismatch_is_convicted() -> None:
 def test_carrier_type_match_is_clean() -> None:
     """The zero-false-positive arm: the matching carrier compiles clean
     (and the undeclared-carry loop — the unenforceable shape — is never
-    convicted on a guess)."""
+    rejected on a guess)."""
 
     async def refines_right(ctx: StepContext, carry: object) -> Done[Counter] | Refine[Counter]:
         return Done(Counter(acc=1))
@@ -696,7 +695,7 @@ def test_carrier_type_match_is_clean() -> None:
     assert "E8-carrier-type" not in rules, rules
 
 
-# ── the MAP-JOIN consumption contract (the ecosystem mapper's defect) ──
+# ── the map-join consumption contract (the ecosystem mapper's defect) ──
 
 
 async def _map_items_source(ctx: StepContext, params: Ingest) -> list[Report]:
@@ -714,12 +713,12 @@ async def _map_tail(ctx: StepContext, items: list[dict[str, int]]) -> dict[str, 
 async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE FIRST SHAPE EVERY MAP USER WIRES: a downstream `step` consuming
-    the map's JOIN promise. The convicted shape (the mapper's red): the
+    """The first shape every map user wires: a downstream `step` consuming
+    the map's JOIN promise. The rejected shape (the mapper's red): the
     downstream rode only the outbox's side-channel — no edge row, a
     duplicate consumer row whose arg resolution found no result (the
-    runner's own assert fired). THE CURE'S CONTRACT: the join's result is
-    consumable through the SAME typed door as any node result — the edge
+    runner's own assert fired). the CONTRACT: the join's result is
+    consumable through the same typed door as any node result — the edge
     ledger + the counter (the downstream's dep is RESERVED at create, the
     fork writes the edge row at the source's finalize, the join's own
     terminal writes the collected result and releases the dep) — the
@@ -746,7 +745,7 @@ async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
     assert await runner.drive(flow_id) == "terminal"
     assert await runner.result(flow_id) == {"double": 60}
     assert ran == ["tail_tail"]
-    # THE JOIN'S COLLECTED RESULT is on the join row (the same typed door).
+    # the JOIN'S collected result is on the join row (the same typed door).
     join_row = await wf_conn.fetchrow(
         f'SELECT status, result FROM "{wf_schema}".jobs '
         "WHERE step_key = 'src.join' AND (metadata->>'flow_id')::uuid = $1",
@@ -754,16 +753,16 @@ async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
     )
     assert join_row is not None and join_row["status"] == "succeeded"
     assert '"value"' in (join_row["result"] or "") and "20" in (join_row["result"] or "")
-    # EXACTLY ONE downstream row (the side-channel's duplicate is the
-    # convicted shape — the arbiter's key is the static row's own).
+    # exactly one downstream row (the side-channel's duplicate is the
+    # rejected shape — the arbiter's key is the static row's own).
     tails = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs '
         "WHERE step_key = 'tail' AND (metadata->>'flow_id')::uuid = $1",
         flow_id,
     )
     assert tails == 1
-    # THE LEDGER: the tail's attempt history is clean (one claim, one
-    # success — no assert-littered crashed rows).
+    # the tail's attempt history is clean (one claim, one success — no
+    # assert-littered crashed rows).
     ledger = await wf_conn.fetch(
         f'SELECT status FROM "{wf_schema}".wf_step_ledger '
         "WHERE flow_id = $1 AND step_key = 'tail'",
@@ -776,14 +775,14 @@ async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
 
 
 def test_e4_does_not_convict_a_fully_annotated_body() -> None:
-    """THE ZERO-FALSE-POSITIVE DOCTRINE at E4 (the miner's red): a
-    fully-annotated body whose return type is NOT module-level (a
+    """The zero-false-positive doctrine at E4 (the miner's red): a
+    fully-annotated body whose return type is not module-level (a
     function-scope model the body's code never names — the annotation
-    string creates no closure cell, the resolved hints are {}) is NOT
-    convicted: E4's question is the annotation's PRESENCE (read from the
+    string creates no closure cell, the resolved hints are {}) is not
+    rejected: E4's question is the annotation's PRESENCE (read from the
     raw signature), never its resolvability; the type-dependent rules
     (E5/E8, the codec) keep the resolved view and SKIP the unresolvable
-    (a guess is never convicted)."""
+    (a guess is never rejected)."""
 
     class Local(BaseModel):
         n: int
@@ -801,15 +800,15 @@ def test_e4_does_not_convict_a_fully_annotated_body() -> None:
         return build(step(annotated_body, Ingest(doc_id="d1"), key="a"))
 
     rules = [d.rule for d in _run_rules(app.get("a3cure_e4_fp_flow"))]
-    assert rules == [], f"the false positive: a fully-annotated body convicted: {rules}"
+    assert rules == [], f"the false positive: a fully-annotated body rejected: {rules}"
 
 
 def test_e4_still_convicts_the_genuinely_unannotated() -> None:
-    """E4's teeth survive the raw-presence read: a body with NO return
-    annotation at all is the same conviction as before."""
+    """E4's teeth survive the raw-presence read: a body with no return
+    annotation at all is the same refusal as before."""
     from taskq.workflows.api._validate import WorkflowValidationError
 
-    async def unannotated(ctx: StepContext, params: Ingest):  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType, reportMissingTypeStubs]  # Why: THE PROBE — the genuinely unannotated body is the mutation under test.
+    async def unannotated(ctx: StepContext, params: Ingest):  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType, reportMissingTypeStubs]  # Why: the probe — the genuinely unannotated body is the mutation under test.
         return params
 
     app = WorkflowApp()
@@ -826,13 +825,13 @@ def test_e4_still_convicts_the_genuinely_unannotated() -> None:
         raise AssertionError("E4 lost its teeth — the genuinely unannotated body compiled clean")
 
 
-# ── cut #6's naming pin: the ROOT-WITH-DOT refusal ──────────────────────
+# ── cut #6's naming pin: the root-with-dot refusal ──────────────────────
 
 
 def test_wiring_key_with_a_dot_is_refused() -> None:
     """The dot is the ENGINE'S derived namespace (``<key>.item`` /
     ``<key>.join`` / ``<key>.iter<i>``) — a wiring key carrying one is
-    refused at the compile (the T17 ledger's cut #6 citation, which had
+    refused at the compile (the earlier wording's rejected citation, which had
     no test under any name before this pin)."""
     import pytest
 
@@ -845,7 +844,7 @@ def test_wiring_key_with_a_dot_is_refused() -> None:
         return build(step(_refines_wrong, Ingest(doc_id="d1"), key="bad.key"))
 
     with pytest.raises(WorkflowBuildError, match="dot"):
-        app.get("a3cure_dot_key_flow")  # the build runs at COMPILE
+        app.get("a3cure_dot_key_flow")  # the build runs at compile
 
 
 def test_loop_key_with_a_dot_is_refused() -> None:
@@ -860,16 +859,16 @@ def test_loop_key_with_a_dot_is_refused() -> None:
         return build(loop("bad.loop", _refines_wrong, max_iterations=2))
 
     with pytest.raises(WorkflowBuildError, match="dot"):
-        app.get("a3cure_dot_loop_flow")  # the build runs at COMPILE
+        app.get("a3cure_dot_loop_flow")  # the build runs at compile
 
 
-# ── E7 / W2's committed pins (the attack probes prove them red-first;
+# ── E7 / W2's committed pins (the attack probes prove them ;
 #    the validate pins file's exact-one-rule matrix gains the new rules) ──
 
 
 def test_cross_graph_smuggle_is_convicted_at_validate() -> None:
     """E7: a promise from ANOTHER app's recorder — recorded by the verb,
-    convicted by validate (the attack's A3-V2 shape, committed)."""
+    rejected by validate (the attack's A3-V2 shape, committed)."""
     from taskq.workflows.api._graph import BuildGraph, Promise
 
     app = WorkflowApp()
@@ -882,8 +881,8 @@ def test_cross_graph_smuggle_is_convicted_at_validate() -> None:
             step(_refines_wrong, mine, key="keep"), step(_refines_wrong, foreign, key="smuggled")
         )
 
-    # the PROBE SEAM (app._compile): the smuggle's graph is INVALID on
-    # purpose (E7's conviction is the pin's subject) — the door would
+    # the probe seam (app._compile): the smuggle's graph is invalid on
+    # purpose (E7's refusal is the pin's subject) — the door would
     # raise before the diagnostics could be read.
     rules = [d.rule for d in _run_rules(app._compile("a3cure_smuggle_flow"))]
     assert "E7-cross-graph-promise" in rules, rules
@@ -901,14 +900,14 @@ def test_unknown_queue_is_warned_never_refused() -> None:
     compiled = app.get("a3cure_queue_flow")
     rules = [d.rule for d in _run_rules(compiled)]
     assert "W2-unknown-queue" in rules, rules
-    compiled.validate()  # the WARNING does not refuse
+    compiled.validate()  # the warning does not refuse
 
 
 # ── the default escalation body's identity (D1's registration face) ────
 
 
 def test_default_escalation_body_is_registered_once_per_workflow() -> None:
-    """Two escalating loops on ONE workflow: the SAME default body
+    """Two escalating loops on one workflow: the same default body
     registers idempotently; two DIFFERING custom bodies are the refused
     shadow (one escalation step per workflow)."""
     from taskq.workflows.api._loop import ESCALATION_STEP_KEY
@@ -956,7 +955,7 @@ def test_default_escalation_body_is_registered_once_per_workflow() -> None:
             "two DIFFERING escalation bodies registered silently — the "
             "loop.escalation step is the refused shadow"
         )
-    # And the DEFAULT body is the SAME object every compile (the
+    # And the default body is the same object every compile (the
     # registry's idempotence holds).
     app3 = WorkflowApp()
 

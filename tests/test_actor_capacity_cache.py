@@ -266,7 +266,7 @@ async def test_change_within_ttl_is_stale_then_invalidate_picks_it_up() -> None:
     with pytest.raises(MaxPendingExceededError):
         await client.enqueue(ref, _Payload(value=2))
 
-    # Operator raises the cap. The client must NOT see it yet (stale).
+    # Operator raises the cap. The client must not see it yet (stale).
     backend.register_actor_config(actor="cap_tuned", max_pending=100)
     with pytest.raises(MaxPendingExceededError):
         await client.enqueue(ref, _Payload(value=2))
@@ -344,7 +344,7 @@ async def test_refresh_failure_falls_back_to_literal_then_recovers() -> None:
 
 
 async def test_failed_refresh_retains_last_good_snapshot() -> None:
-    """The module's fail-open contract is 'fall back to the LAST GOOD
+    """The module's fail-open contract is 'fall back to the last GOOD
     SNAPSHOT' - not to an empty table.
 
     Prime a good snapshot (stored cap 1), then make every refresh fail:
@@ -545,7 +545,7 @@ async def test_enqueue_batch_operator_raised_cap_above_literal() -> None:
     """Operator raises the cap ABOVE the literal: the batch must fit.
 
     The aggregated phase-2 check resolves the effective (stored) limit;
-    the per-item check inside the backend must see the SAME resolved
+    the per-item check inside the backend must see the same resolved
     value - if the items carried the stale literal, the in-memory
     backend's per-item check would reject the batch the client just
     admitted (a divergence the PG batch INSERT does not have)."""
@@ -586,7 +586,7 @@ def _stored_count(backend: InMemoryBackend, actor_name: str) -> int:
 async def test_enqueue_batch_streaming_honors_stored_limit() -> None:
     """The streaming chunked arm resolves the same effective caps as
     ``enqueue_batch``: a stored override on a literal-less actor must
-    refuse. The arm previously built its chunk args with no resolved
+    refuse. An arm that builds its chunk args with no resolved
     caps, so the actor carried ``max_pending=None`` and was invisible to
     the backend's cap groups - the override was silently unenforced while
     the docs claimed partition parity with ``enqueue_batch``.

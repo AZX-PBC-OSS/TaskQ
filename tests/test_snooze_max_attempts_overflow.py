@@ -70,7 +70,7 @@ def test_retry_policy_rejects_out_of_smallint_range_max_attempts() -> None:
 
 def test_enqueue_args_rejects_out_of_smallint_range_max_attempts() -> None:
     """``EnqueueArgs`` itself must refuse a ``max_attempts`` that cannot
-    fit the ``jobs.max_attempts smallint NOT NULL`` column
+    fit the ``jobs.max_attempts smallint not NULL`` column
     (migrations/01.00.00_01_pre_initial.sql:82).
 
     ``RetryPolicy`` guards the client-facing construction path, but

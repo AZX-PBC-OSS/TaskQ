@@ -56,7 +56,9 @@ Submitting any form enqueues a job and redirects to the admin job-detail page wh
 | `workgroup.toml` | Workgroup supervisor config for multi-queue worker management. Run with `uv run taskq workgroup start examples/workgroup.toml` (or `taskq workgroup validate examples/workgroup.toml` to check the config without starting). Serves the DI-free actor subset — workgroup children are plain `taskq worker` subprocesses and cannot register DI providers. |
 | `otel_setup.py` | OpenTelemetry SDK initialization for tracing with Jaeger or any OTLP collector. Run with `uv run python -m examples.otel_setup` (requires `[otel]` extra). |
 | `fastapi_app/aad.py` | Azure managed-identity (Entra ID) deployment scaffold — AAD-authenticated worker and web app wired through `taskq[aad]` credential-provider factories, including the serve-mode lifespan ownership pattern. Run with `uv run python -m examples.fastapi_app.aad worker` or `... serve` (requires Azure resources; see the [Managed Identities guide](https://AZX-PBC-OSS.github.io/TaskQ/guides/managed-identities/)). |
+| `tenant_fairness_demo/` | Multi-tenant workflows: two tenants' runs of one graph under ONE keyed rate limit on ONE `round_robin` queue, driven through the REAL fleet door. Run with `TASKQ_PG_DSN=... TASKQ_ENVIRONMENT=dev uv run python -m examples.tenant_fairness_demo.run_demo` (a reachable Postgres is the only service; see the [demo README](tenant_fairness_demo/README.md)). The run prints the per-child bucket names, the per-key acquire/deny trace, and both tenants' completion. |
 | `fastapi_app/` | Minimal FastAPI app (separate from this trigger UI) demonstrating enqueue + SSE job-event streaming + cancellation against the public client surface, with its own [README](fastapi_app/README.md). The compose stack serves it on port 8002 (profile `example`: `docker compose --profile example up`). |
+| `scenario_grounds/` | Seven runnable scenarios, one production behavior each: the fan-out with the approval hold, the three-tenant priority split, the max_concurrent damper, the reservation guard, retention live, the retry ladder, and the degraded faces. Every script drives real workflows against a real Postgres (and a real Redis when a worker joins), prints its own evidence — the states it exercised and the rows it verified — and the companion test (`tests/test_scenario_grounds.py`) asserts that evidence. See the [scenario grounds README](scenario_grounds/README.md) and [the guide](https://AZX-PBC-OSS.github.io/TaskQ/guides/scenario-grounds/). Run one: `TASKQ_PG_DSN=… uv run python -m examples.scenario_grounds.s1_fanout_hold`. |
 
 ## Actor Table
 
@@ -122,14 +124,14 @@ graph the docs example teaches — see `docs/examples/doc-ingest.md`) LIVE
 behind HTTP, with the admin's run explorer attached.
 
 The HITL broadcast's worked example lives beside it:
-`examples/deep_research.py` — the **deep-research loop** (T26): three free
+`examples/deep_research.py` — the **deep-research loop**: three free
 research passes, then the typed `ContinueApproval` gate broadcast over PG
 LISTEN/NOTIFY (watch it live on the admin's `/sse/holds` topic); the typed
 expiry is the FAIL-CLOSE — nobody watching and the run still succeeds,
 carrying the `finished_with_what_you_have` result.
 
 The typed route's worked example lives beside that:
-`examples/doc_mime_route.py` (T27) — the **document sync pipeline**: the
+`examples/doc_mime_route.py` — the **document sync pipeline**: the
 mime-type router (the text formats to the chunker's arm on the cpu queue,
 the image formats to the OCR's arm on the gpu queue, the unsupported mime
 to the dead-letter's arm — the envelope recorded, the flow lives), and
@@ -138,7 +140,7 @@ once, after the last element's text lands). Run with
 `TASKQ_PG_DSN=… uv run python examples/doc_mime_route.py`.
 
 The **embedding demo's web half** lives beside that:
-`examples/deep_research_web.py` (C10) — the hosting app's OWN approval
+`examples/deep_research_web.py` — the hosting app's OWN approval
 board: the FastAPI app-lifespan listener (ONE backend `HitlListener`),
 the per-user SSE endpoint authz-scoped by the run, the `HoldCreated`
 handler reading the ROW for the reason/deadline display, the resolve
@@ -182,7 +184,7 @@ trigger's envelope names the app's `/taskq/...` path.
 
 ```bash
 curl -X POST http://localhost:8000/workflows/doc_ingest/run
-# → 202 {"run_id": "...", "url": "/taskq/workflows/..."}   (the F3 envelope)
+# → 202 {"run_id": "...", "url": "/taskq/workflows/..."}   (the enqueue envelope)
 ```
 
 Open the returned URL ON THE APP (:8000) — the run page renders the
@@ -218,4 +220,4 @@ run's graph and patches it LIVE over SSE.
 | **Cancellation** | a run cancelled mid-flight: the named states + the audit row in the explorer | `taskq flows cancel <run_id> --reason ...` while the run is mid-flight; watch the run page |
 | **Resumability** | a worker SIGKILLed mid-node; a fresh worker re-claims; the run COMPLETES | start `taskq worker --actors examples.workflows:ACTORS --queues demo-screen,demo-cpu,demo-io,demo-classify,demo-publish,demo-enrich,default`, trigger, `kill -9` the worker mid-run, start a fresh one |
 | **Observability** | the wf gauge's LIVE scrape off the real `/metrics` endpoint (`taskq.wf_progress_nodes_total{workflow,state}` — rendered by the Prometheus bridge as `taskq_wf_progress_nodes_total`; the maintenance leader's sampler feeds it) | the capture: `.measurements/demo-legs/leg3-wf-gauge-scrape.prom` (the endpoint's byte-verbatim response, never a hand-rendered transcript) |
-| **The conditional router** | the T20 chain's conditional edges LIVE: READABLE → index, UNREADABLE → dead-letter; the totals are the fence | trigger `POST /workflows/doc_screen_router/run` (the router's own workflow — the route serves it; 202 + the run url) |
+| **The conditional router** | the router chain's conditional edges LIVE: READABLE → index, UNREADABLE → dead-letter; the totals are the fence | trigger `POST /workflows/doc_screen_router/run` (the router's own workflow — the route serves it; 202 + the run url) |

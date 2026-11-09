@@ -43,9 +43,9 @@ class TestDispatchStrictFifoSql:
 
     def test_cte_declaration_order(self) -> None:
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="schema_ns")
-        # WITH RECURSIVE is the shared template's keyword: the
+        # with recursive is the shared template's keyword: the
         # round-robin variant defines the recursive rr_keys arm under
-        # it, and a RECURSIVE list with no recursive CTE (this variant)
+        # it, and a recursive list with no recursive CTE (this variant)
         # is a no-op permission, so one template serves both.
         assert "WITH RECURSIVE params AS" in rendered
         expected_ctes = [
@@ -63,7 +63,7 @@ class TestDispatchStrictFifoSql:
             assert arm in rendered, f"CTE arm {arm!r} missing from rendered SQL"
         assert "UPDATE" in rendered, "rendered SQL must contain an UPDATE clause"
         assert rendered.index("UPDATE") > rendered.index("WITH"), "UPDATE must follow CTEs"
-        # The strict-FIFO variant defines NO recursive arm: rr_keys is
+        # The strict-FIFO variant defines no recursive arm: rr_keys is
         # the round-robin-only cohort enumeration (the template's prose
         # may mention the name; the arm must not exist - identity_dedup's
         # UNION ALL is a plain set operation, not a recursion).
@@ -80,7 +80,7 @@ class TestDispatchStrictFifoSql:
         aggregate of the fleet's ENTIRE running population per round,
         paid whether or not any actor declared a cap - O(fleet running
         rows) on the hottest statement in the library. The count
-        is now precomputed once per round over CAPPED ACTORS ONLY (see
+        is now precomputed once per round over CAPPED ACTORS only (see
         test_running_counts_precomputed_in_capped_running_cte), so an
         uncapped fleet pays zero running-row work.
         """
@@ -97,7 +97,7 @@ class TestDispatchStrictFifoSql:
             )
 
     def test_running_counts_precomputed_in_capped_running_cte(self) -> None:
-        """All three per-actor running-count reads read the ONE
+        """All three per-actor running-count reads read the one
         per-round ``capped_running`` CTE, whose count subplan is
         CASE-gated on the actor's own cap, so an uncapped actor's branch
         never executes a count and an uncapped fleet materializes an
@@ -109,7 +109,7 @@ class TestDispatchStrictFifoSql:
         re-evaluation in ``eligible_candidates`` made a capped fleet pay
         O(oversample x cap^2) running-index rows per round (measured
         28/648/2550/10100 rows at caps 5/25/50/100). The precomputed CTE
-        evaluates the count ONCE per capped live actor per round
+        evaluates the count once per capped live actor per round
         (~cap/2 rows at the same caps), and every read site consumes it
         in place of a count.
 
@@ -117,7 +117,7 @@ class TestDispatchStrictFifoSql:
         partial-index entries (the planner picks
         jobs_actor_running_idx or the jobs_locked_by_worker_running_idx
         partial at its own cost discretion) - bounded by that actor's
-        running rows, never the fleet's. The driver is the round's OWN
+        running rows, never the fleet's. The driver is the round's own
         live-actor population (``pa_actors`` plus the re-pended arm's
         ``rr_tail_keys`` actors), never a filtered scan of actor_config:
         the registry is usually never analyzed, and the unanalyzed
@@ -129,7 +129,7 @@ class TestDispatchStrictFifoSql:
             ("round_robin", DISPATCH_ROUND_ROBIN_SQL),
         ):
             rendered = sql.format(schema="taskq")
-            # The CTE is MATERIALIZED: referenced three times, an
+            # The CTE is materialized: referenced three times, an
             # inlined CTE would re-run the counts at every reference
             # site and re-create the per-claimed-row multiplication.
             assert "capped_running AS MATERIALIZED (" in rendered, (
@@ -153,7 +153,7 @@ class TestDispatchStrictFifoSql:
             assert "(SELECT DISTINCT actor FROM rr_tail_keys) ta" in cte_body, (
                 f"{variant}: the re-pended arm's actors must ride the same precomputed count"
             )
-            # ALL count work routes through the CTE: exactly one jobs
+            # all count work routes through the CTE: exactly one jobs
             # scan under the count alias in the whole statement.
             assert rendered.count(".jobs rj") == 1, (
                 f"{variant}: a running-count read escaped capped_running - "
@@ -180,7 +180,7 @@ class TestDispatchStrictFifoSql:
                 f"{variant}: the post-lock re-check must read the "
                 "precomputed count for the claimed row's actor"
             )
-            # The LIMIT 1 fence is what keeps the read at ONE evaluation
+            # The LIMIT 1 fence is what keeps the read at one evaluation
             # per claimed row: without it the projection-only lateral can
             # be pulled up and re-evaluated at every reference site.
             assert "END AS in_flight" in eligible_body
@@ -192,7 +192,7 @@ class TestDispatchStrictFifoSql:
         assert "FOR UPDATE OF j2 SKIP LOCKED" in locked_body
 
     def test_limit_bound_moved_from_locked_to_top_ids(self) -> None:
-        """The round's id set is finalized in top_ids BEFORE the heap is
+        """The round's id set is finalized in top_ids before the heap is
         touched again; locked takes its row locks over that bounded set.
 
         locked carrying its own LIMIT was the shipped shape's defect
@@ -227,7 +227,7 @@ class TestDispatchStrictFifoSql:
     def test_no_subquery_limit_bounds_anywhere(self) -> None:
         """The CTE family must never return to (SELECT ... FROM params)
         LIMIT bounds: the planner cannot fold a subquery bound into a row
-        estimate in ANY plan, so the candidate chain is estimated at the
+        estimate in any plan, so the candidate chain is estimated at the
         whole index range and the terminal joins get planned as hash
         joins over a Seq Scan of the entire pending backlog - the
         measured 1.04ms→55.8ms (1k→200k) depth scaling of that
@@ -250,7 +250,7 @@ class TestDispatchStrictFifoSql:
         candidates_body = _cte_body(rendered, "candidates")
         assert "schedule_to_close" in candidates_body
         assert "schedule_to_close IS NULL" in candidates_body
-        # Why statement_timestamp (STABLE), not clock_timestamp (VOLATILE):
+        # Why statement_timestamp (stable), not clock_timestamp (volatile):
         # a volatile bound is never an Index Cond, so the candidates lateral
         # post-scan-filters the pending backlog instead of terminating at
         # the range boundary on jobs_unrouted_actor_dispatch_idx, pinned
@@ -258,18 +258,18 @@ class TestDispatchStrictFifoSql:
         assert "schedule_to_close > statement_timestamp()" in candidates_body
 
     def test_locked_has_no_window_function(self) -> None:
-        """locked CTE must NOT contain a window function - PG forbids
+        """locked CTE must not contain a window function - PG forbids
         FOR UPDATE + window functions in the same SELECT."""
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
         locked_body = _cte_body(rendered, "locked")
         assert "OVER (" not in locked_body
 
     def test_eligible_candidates_gate_is_the_where_not_a_column(self) -> None:
-        """The cap gate lives ONLY in the WHERE clause: an in_flight at or
+        """The cap gate lives only in the WHERE clause: an in_flight at or
         past the cap drops the row, the live actor_rank window re-limits
         admission in `eligible`.
 
-        The gate must NOT also be projected as a boolean column: the shipped
+        The gate must not also be projected as a boolean column: the shipped
         shape carried a dead `boolean_gate` column computing the identical
         predicate its WHERE already applied, and no downstream CTE read it
         (the pin below is red on that shape). A second copy of the gate
@@ -314,7 +314,7 @@ class TestDispatchStrictFifoSql:
 
     def test_final_update_contains_attempt_plus_1(self) -> None:
         # The increment is pinned through its saturating form: the claim
-        # still stamps attempt + 1 on every claimed row, and the LEAST
+        # still stamps attempt + 1 on every claimed row, and the least
         # clamp at the smallint ceiling is what keeps a row parked at
         # 32767 (retry_kind='indefinite' climbs there) from turning the
         # whole round into a smallint-out-of-range driver error.
@@ -340,9 +340,9 @@ class TestDispatchStrictFifoSql:
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
         locked_body = _cte_body(rendered, "locked")
         assert "FOR UPDATE OF j2 SKIP LOCKED" in locked_body
-        # Window functions must NOT be in locked
+        # Window functions must not be in locked
         assert "OVER (" not in locked_body
-        # But they MUST exist in downstream CTEs (the split is mandatory)
+        # But they must exist in downstream CTEs (the split is mandatory)
         candidates_body = _cte_body(rendered, "candidates")
         eligible_candidates_body = _cte_body(rendered, "eligible_candidates")
         assert "OVER (" in candidates_body or "OVER (" in eligible_candidates_body
@@ -369,7 +369,7 @@ class TestDispatchStrictFifoSql:
         assert "oversample" in params_body
         candidates_body = _cte_body(rendered, "candidates")
         # The admission LIMIT carries the queue-cap headroom fold:
-        # LEAST(pac.residual, queue_cap_headroom) * $5, NULL
+        # least(pac.residual, queue_cap_headroom) * $5, NULL
         # (no held cap bucket for the pair) leaves the residual alone.
         assert "LIMIT LEAST(" in candidates_body
         assert "SELECT qc.headroom FROM queue_cap_headroom qc" in candidates_body
@@ -379,9 +379,9 @@ class TestDispatchStrictFifoSql:
         """The terminal UPDATE re-finds its rows through a one-shot id
         array, with the pending re-check as the race guard.
 
-        The ANY(ARRAY(SELECT ...)) shape is the depth bound for the
+        The any(ARRAY(SELECT ...)) shape is the depth bound for the
         terminal write: the array materializes once as an InitPlan and
-        ``id = ANY(<array>)`` is served either as a Bitmap Index Scan on
+        ``id = any(<array>)`` is served either as a Bitmap Index Scan on
         jobs_pkey (deep backlogs) or as a scan-level filter (shallow
         ones) - both carry at most limit_n rows per node. A FROM-clause
         join against eligible would leave the join strategy to the
@@ -408,7 +408,7 @@ class TestDispatchStrictFifoSql:
 
     def test_per_actor_capacity_prefilters_idle_actors(self) -> None:
         """per_actor_capacity must carry an idle-actor prefilter that drops
-        actors with no pending rows on the round's queues BEFORE the
+        actors with no pending rows on the round's queues before the
         candidates CROSS JOIN fans the per-(actor, queue) lateral seek out
         over every registered actor.
 
@@ -430,7 +430,7 @@ class TestDispatchStrictFifoSql:
 
         Override-safety is the critical half of the shape: the
         probe must cover exactly the queues in the round's params -
-        NOT the actor's actor_config home queue - so an
+        not the actor's actor_config home queue - so an
         ``enqueue(queue=...)`` override that lands a pending job on any
         subscribed queue keeps that actor probed. An actor filtered here
         contributes zero candidate rows either way (the lateral's
@@ -552,7 +552,7 @@ class TestDispatchRoundRobinSql:
         union - never a window over every due row of the pair.
 
         A window function cannot short-circuit: the shipped shape
-        computed ROW_NUMBER over EVERY due pending row and only then
+        computed ROW_NUMBER over every due pending row and only then
         filtered fairness_rank <= residual * oversample, so the WindowAgg
         (and the scan feeding it) paid full backlog depth every round.
         Per-cohort top-k probes yield the identical
@@ -569,13 +569,13 @@ class TestDispatchRoundRobinSql:
             "never indexes)"
         )
         # The admission LIMIT carries the queue-cap headroom fold:
-        # LEAST(pac.residual, queue_cap_headroom) * $5, NULL
+        # least(pac.residual, queue_cap_headroom) * $5, NULL
         # (no held cap bucket for the pair) leaves the residual alone.
         assert "LIMIT LEAST(" in candidates_body
         assert "SELECT qc.headroom FROM queue_cap_headroom qc" in candidates_body
         assert "pac.residual * $5::int" not in candidates_body
-        # The fairness window sits INSIDE the per-pair lateral, over the
-        # bounded probe union - one partition per cohort of THIS
+        # The fairness window sits inside the per-pair lateral, over the
+        # bounded probe union - one partition per cohort of this
         # (actor, queue) pair, never a cross-pair merge of equal keys.
         assert "PARTITION BY COALESCE(c.fairness_key, '__null__')" in candidates_body
         assert "ROW_NUMBER() OVER (" in candidates_body

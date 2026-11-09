@@ -144,8 +144,10 @@ def test_register_conflicting_token_bucket_raises_naming_both() -> None:
 
     message = str(excinfo.value)
     assert "dup" in message
-    assert repr(a) in message
-    assert repr(b) in message
+    # the refusal names the differing fields with both sides' values — never
+    # the repr (an address, not a diagnosis).
+    assert "capacity: 10 vs 20" in message
+    assert "object at 0x" not in message
 
 
 # ── Finding 6: terminal-write failure must not mislabel the actor error ──
@@ -221,7 +223,7 @@ async def test_handle_generic_exception_propagates_infra_write_failure() -> None
 async def test_dispatch_exception_swallows_infra_failure_all_handlers(
     path: str,
 ) -> None:
-    """Infra failures during ANY terminal handler's write are caught in
+    """Infra failures during any terminal handler's write are caught in
     _run_terminal_path - not just _handle_generic_exception's - so they can
     never be re-dispatched into generic handling as the actor's failure."""
     import asyncpg
@@ -339,9 +341,9 @@ def test_worker_fenced_terminal_templates_carry_the_attempt_epoch_conjunct() -> 
     """Every worker-fenced terminal-write template must fence on the
     attempt epoch, one conjunct deeper than the worker fence.
 
-    The worker fence (``status = 'running' AND locked_by_worker = $n``)
+    The worker fence (``status = 'running' and locked_by_worker = $n``)
     cannot distinguish attempt N's stale handler from attempt N+1's live
-    one on the SAME worker after a stall → sweep reclaim → same-worker
+    one on the same worker after a stall → sweep reclaim → same-worker
     redispatch: the stale handler's terminal write matches the guard and
     falsely terminalises the redispatched attempt with the old attempt's
     result. Guard against this with an attempt-identity epoch on every
@@ -424,7 +426,7 @@ async def test_sub_job_enqueuer_enqueue_batch_uses_supplied_batch_id() -> None:
 
         async def get_batch(self, batch_id: UUID) -> BatchRow | None:
             # The fallback arm reads the batch row before writing members:
-            # a terminal row must refuse, an ACTIVE row appends. The double
+            # a terminal row must refuse, an active row appends. The double
             # answers with an active row so the write proceeds, and records
             # the queried id so the test pins the supplied batch_id
             # passthrough at the read boundary too.
@@ -460,7 +462,7 @@ async def test_sub_job_enqueuer_enqueue_batch_uses_supplied_batch_id() -> None:
     row = handles[0]._row
     assert row.metadata is not None
     assert row.metadata.get("batch_id") == str(supplied_batch_id)
-    # The fallback arm's terminal-batch preflight queried THIS id: the
+    # The fallback arm's terminal-batch preflight queried this id: the
     # supplied batch_id reached the read boundary, not a regenerated one.
     assert backend.get_batch_calls == [supplied_batch_id]
 

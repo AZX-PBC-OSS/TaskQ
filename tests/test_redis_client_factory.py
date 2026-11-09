@@ -2,7 +2,7 @@
 
 Born from the redis exposure audit: every client TaskQ builds internally
 carries the resilience kwargs (health checks, TCP keepalive, a real Retry
-with ``retry_on_error``) and deliberately NO ``socket_timeout`` (see the
+with ``retry_on_error``) and deliberately no ``socket_timeout`` (see the
 builder's docstring for why a global socket timeout would change pubsub
 blocking-read semantics). The no-bare-``from_url`` construction pin lives
 in ``tests/test_redis_construction_pin.py``.
@@ -34,9 +34,9 @@ def test_build_redis_client_sets_resilience_kwargs() -> None:
 
     retry = kwargs["retry"]
     assert isinstance(retry, Retry)
-    # ONE attempt (see RETRY_RETRIES): the retry buys the reconnect, never
+    # one attempt (see RETRY_RETRIES): the retry buys the reconnect, never
     # the outage — a fatter budget measured starving the worker dispatcher's
-    # funded tick on real CI runners (PR #647).
+    # funded tick on real CI runners (pr #647).
     assert retry.get_retries() == 1
     # `_backoff` is private but the only accessor redis-py exposes; pin the
     # class so a silent swap to NoBackoff (retry = immediate re-fire into a
@@ -65,7 +65,7 @@ def test_build_redis_client_pins_socket_timeout() -> None:
     # A bound-pin, not an absence: redis-py 8.x's asyncio Connection already
     # defaults socket_timeout to 5s (redis._defaults.DEFAULT_SOCKET_TIMEOUT),
     # and the fail-closed surfaces' bounded wall depends on it — the rate
-    # limiter's with_pg_fallback wraps its redis call in NO app-level
+    # limiter's with_pg_fallback wraps its redis call in no app-level
     # wait_for, so against a black-holed broker the socket timeout is the
     # only bound per read. Pinning the value makes that bound structural
     # instead of inherited (redis-py's asyncio default was None for years
@@ -74,6 +74,20 @@ def test_build_redis_client_pins_socket_timeout() -> None:
     # when block=True, overriding the socket timeout explicitly).
     kwargs = build_redis_client("redis://localhost:6379/0").connection_pool.connection_kwargs
     assert kwargs["socket_timeout"] == 5.0
+
+
+def test_build_redis_client_pins_socket_connect_timeout() -> None:
+    # The connect phase's bound, pinned for the same reason as
+    # socket_timeout above: redis-py 8.x defaults socket_connect_timeout
+    # to 5s independently of socket_timeout, the fail-closed bounded wall
+    # includes it (a black-holed broker burns this budget per attempt),
+    # and a redis-py minor that moved the default would silently move
+    # that wall. Behavior is byte-identical today. The test broker
+    # fixtures dial with a deliberately different budget —
+    # taskq.testing.fixtures.TEST_REDIS_CONNECT_TIMEOUT_SECS — because a
+    # loaded runner's container dns is setup weather, not unavailability.
+    kwargs = build_redis_client("redis://localhost:6379/0").connection_pool.connection_kwargs
+    assert kwargs["socket_connect_timeout"] == 5.0
 
 
 def test_build_redis_client_returns_fresh_retry_per_call() -> None:
@@ -102,7 +116,7 @@ def test_import_discipline_redis_extras_are_optional(module: str) -> None:
     # The [redis] extra is optional: no module may import redis at module
     # scope. build_redis_client defers the import like every other site.
     # Module top-level only, skipping `if TYPE_CHECKING:` guards (stubs are
-    # free) and function bodies (a def-local import IS the call-time
+    # free) and function bodies (a def-local import is the call-time
     # discipline this pin enforces).
     import ast
 

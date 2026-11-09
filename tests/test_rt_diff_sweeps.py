@@ -46,6 +46,42 @@ async def _s1_branches_and_cap(side: DiffSide) -> None:
     side.record("sweep_counts", [first, rest, drained])
 
 
+async def _planted_lease_costamps_with_created_at(side: DiffSide) -> None:
+    # The runner's wall between the anchor and the plant: the PG side
+    # consumes it, the frozen mirror never sees it.
+    if side.kind == "pg":
+        import asyncio
+
+        await asyncio.sleep(1.0)
+    await side.plant(
+        "p1",
+        status="running",
+        worker_token="w1",
+        started_ago_s=None,
+        lock_expired_ago_s=1.0,
+    )
+    side.record("planted", "ok")
+
+
+async def test_diff_planted_lease_reads_its_own_costamp(pg_dsn: str) -> None:
+    """A planted row's lease and created_at stamp from one bound instant -
+    the projection reads the lease's duration against created_at when the
+    row has no writer stamp, so a server-clock lease beside an
+    anchor-bound created_at would read the runner's wall between the
+    anchor and the plant into the planted shape (1 against the mirror's
+    0, under a 1s delay)."""
+    mem, pg = await run_differential(_planted_lease_costamps_with_created_at, pg_dsn=pg_dsn)
+    assert_mirror(
+        "a planted row's lease and created_at co-stamp: the lease's "
+        "duration above created_at reads the scenario's own offsets on "
+        "both backends, however much wall the runner consumed before the "
+        "plant",
+        mem,
+        pg,
+    )
+    assert pg["jobs"]["p1"]["lock_expires_at"] == -1
+
+
 async def test_diff_sweep1_branches_cap_and_drain(pg_dsn: str) -> None:
     """Sweep 1's three-way CASE, under a cap, drained to completion: identical
     per-branch states, retry backoff, cleared lock bookkeeping, and audit rows."""
@@ -73,13 +109,13 @@ async def _s1_cancel_margin_window(side: DiffSide) -> None:
     await side.enqueue("inflight", scheduled_in=-30.0, max_attempts=3, retry_jitter=0.0)
     await side.dispatch("wholder", ["default"], limit=1)
     await side.write_cancel_request("inflight", "margin-probe")
-    # Expired only 40s ago: past the lease, but NOT past the
+    # Expired only 40s ago: past the lease, but not past the
     # cancel_grace + cleanup_grace + 60s deep margin - the carve-out holds.
     await side.mutate("inflight", lock_expired_ago_s=40.0)
     held = await side.sweep_reclaim()
     side.record("shallow_sweep", held)
     # Now past the deep margin (130s): the carve-out releases it and the
-    # sweep's cancel arm terminalises the row (PR : never a re-pend).
+    # sweep's cancel arm terminalises the row (pr: never a re-pend).
     await side.mutate("inflight", lock_expired_ago_s=130.0)
     deep = await side.sweep_reclaim()
     side.record("deep_sweep", deep)
@@ -153,7 +189,7 @@ async def test_diff_sweep2_deadline_never_dispatched(pg_dsn: str) -> None:
 
 
 async def _s2_deadline_retried_job(side: DiffSide) -> None:
-    # A job that RAN once (attempt row written at (job, 1) by the retry arm)
+    # A job that ran once (attempt row written at (job, 1) by the retry arm)
     # and rescheduled; its deadline then passes while it waits. S2 selects
     # it - and PG's batched attempt INSERT targets (job_id, attempt) again.
     await side.enqueue("retried", scheduled_in=-30.0, stc_in=300.0, max_attempts=3)
@@ -163,7 +199,7 @@ async def _s2_deadline_retried_job(side: DiffSide) -> None:
     try:
         swept = await side.sweep_deadline()
         side.record("sweep", swept)
-    except Exception as exc:  # Why: the typed outcome IS the observable; recorded by name.
+    except Exception as exc:  # Why: the typed outcome is the observable; recorded by name.
         side.record("sweep", type(exc).__name__)
 
 
@@ -189,9 +225,9 @@ async def test_diff_sweep2_deadline_after_retry_attempt_pk(pg_dsn: str) -> None:
 
 
 async def test_diff_sweep2_deadline_retried_job_does_not_wedge(pg_dsn: str) -> None:
-    """Red-team test: S2 must fail an overdue job that already
+    """Adversarial review test: S2 must fail an overdue job that already
     ran an attempt (retry arm wrote a job_attempts row at the same attempt
-    number) WITHOUT raising ``UniqueViolationError`` on the ``job_attempts_pkey``
+    number) without raising ``UniqueViolationError`` on the ``job_attempts_pkey``
     and without leaving the job wedged at 'scheduled' forever.
 
     Expected/correct behavior: the deadline sweep should terminally fail the

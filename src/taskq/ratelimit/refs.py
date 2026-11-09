@@ -43,14 +43,14 @@ def _validate_keyed_base_name(v: str) -> str:
     The two keyed paths resolve concrete names identically
     (``f"{base_name}:{key}"``) and are deliberately kept on the same
     validation strictness, keep any change to one in the other by
-    changing it HERE, once.
+    changing it here, once.
 
     Beyond charset/length, rejects a ``base_name`` whose derived concrete
     names would land inside the reserved queue-cap namespace
     (:data:`~taskq.constants.QUEUE_CONCURRENCY_PREFIX`): the character
     allowlist includes ``":"``, so such a ``base_name`` would pass the
     charset check, sail through DI validation (which skips keyed refs ,
-    their concrete names only exist at acquire time), and then make EVERY
+    their concrete names only exist at acquire time), and then make every
     job on the actor die with ``ValueError`` from the ``register()``
     prefix guard, forever, since registration never succeeds and the
     failing path is retried per job. Failing here instead surfaces the

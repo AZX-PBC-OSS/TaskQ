@@ -100,7 +100,7 @@ _StackFrame = tuple[str, int, str, int]
 _StackSample = tuple[_StackFrame, ...]
 
 # Hard wall on the pre-exit metrics flush. force_flush has no usable
-# timeout against a hung OTLP collector (the gRPC exporter ignores
+# timeout against a hung otlp collector (the gRPC exporter ignores
 # timeout_millis, and self-bounds at 10s+), so the
 # flush runs on a daemon thread with this join deadline: a wedged exporter
 # costs at most this many seconds, never more, and the thread dies with
@@ -582,7 +582,7 @@ class ShutdownWatchdog:
     shutdown still accumulates dumps right up to the trip. On deadline:
     trip: with a distinct reason when the straggler is a tracked actor
     handle (a thread the cancel could never reach) rather than a stall.
-    Cancelled on clean exit, AFTER the tracked-actor reap gate (see
+    Cancelled on clean exit, after the tracked-actor reap gate (see
     :func:`await_tracked_actor_reap`): the watchdog is what bounds the
     reap, so it must outlive the TaskGroup whenever a tracked actor does.
     """
@@ -644,15 +644,12 @@ class ShutdownWatchdog:
                 # the finally, cancelling this task at the wait point leaks
                 # both inner event-wait tasks until loop teardown.
                 #
-                # THE TEARDOWN'S OWN ORDER (the same cure the reload
-                # schedule's loop carries — the leaked-task guard's
-                # conviction): CANCEL ALL the pending waiters first, THEN
-                # reap each. The one-per-lap shape let the reaper's OWN
-                # concurrent cancellation (cancel() landing mid-reap)
-                # re-raise out of the FIRST reap and orphan the SECOND
-                # waiter — the leaked Event.wait the pin convicts. Our
-                # own cancel still propagates: after the bounded reap
-                # completes, never swallowed.
+                # cancel all the pending waiters first, then reap each. The
+                # one-per-lap shape let the reaper's own concurrent
+                # cancellation (cancel() landing mid-reap) re-raise out of the
+                # first reap and orphan the second waiter — the Event.wait leak
+                # the pin exercises. Our own cancel still propagates: after the
+                # bounded reap completes, never swallowed.
                 pending = [t for t in (shutdown_started, shutdown_task) if not t.done()]
                 for t in pending:
                     t.cancel()
@@ -661,7 +658,7 @@ class ShutdownWatchdog:
                     try:
                         await reap_cancelled_child(t)
                     except asyncio.CancelledError as exc:
-                        # the reaper re-raised OUR cancel: noted — the
+                        # the reaper re-raised our cancel: noted — the
                         # remaining children are reaped first.
                         own = exc
                 if own is not None:
@@ -671,7 +668,7 @@ class ShutdownWatchdog:
         t0 = self._clock()
         if self._on_shutdown_started is not None:
             self._on_shutdown_started(t0)
-        # Anchor the deadline on the FIRST shutdown signal when known
+        # Anchor the deadline on the first shutdown signal when known
         # (orchestration spends the cancel/cleanup graces before
         # shutdown_event is set, so anchoring on the event alone would
         # double-count them against termination_grace_period).
@@ -692,7 +689,7 @@ class ShutdownWatchdog:
             elapsed = self._clock() - t0
             if elapsed >= self._deadline:
                 # The distinct reason matters: a live tracked actor handle
-                # at the deadline is NOT a stall: the shutdown completed,
+                # at the deadline is not a stall: the shutdown completed,
                 # the TaskGroup exited, and an executor thread the cancel
                 # could never reach is still running its body. The trip is
                 # the designed exit for exactly that shape (the release
@@ -720,7 +717,7 @@ class ShutdownWatchdog:
             # a full dump interval of check lag as its margin: an
             # unclipped sleep consumes that margin exactly (a deadline
             # passing just after a check is observed up to
-            # dump_interval late, and deadline + lag + flush then EQUALS
+            # dump_interval late, and deadline + lag + flush then equals
             # the hold's scheduled_at, zero margin): while a clipped
             # final sleep lands the check on the deadline and keeps the
             # whole dump-interval term as real margin. Straggler dumps
@@ -728,7 +725,7 @@ class ShutdownWatchdog:
             # final partial interval.
             remaining = self._deadline - (self._clock() - t0)
             await asyncio.sleep(min(self._dump_interval, max(0.0, remaining)))
-            # Re-read the clock AFTER the sleep so the gate reflects when
+            # Re-read the clock after the sleep so the gate reflects when
             # the dump would actually fire, not when the iteration began.
             if self._clock() - t0 < self._dump_gate_secs:
                 continue
@@ -756,7 +753,7 @@ def _run_once_frame_timeout(frame: Any) -> float | object | None:
     passed to its ``selector.select`` call, ``_TIMEOUT_UNREAD`` when no
     such frame (or no such local) is in the chain.
 
-    Read from the SAME off-loop frame walk that produced the stack sample:
+    Read from the same off-loop frame walk that produced the stack sample:
     a thread suspended inside the select syscall has its ``_run_once``
     frame frozen, and ``f_locals`` of a suspended frame is a plain
     snapshot. When the loop thread resumes mid-read the GIL serialises the
@@ -765,7 +762,7 @@ def _run_once_frame_timeout(frame: Any) -> float | object | None:
 
     The value is the idle/churn discriminator: ``_run_once`` sets
     ``timeout = 0`` exactly when ready callbacks are queued (the loop is
-    mid-dispatch, about to run work - NOT idle) and a positive or ``None``
+    mid-dispatch, about to run work - not idle) and a positive or ``None``
     timeout when it is about to wait for timers/IO (the genuine park).
     """
     walk = frame
@@ -800,7 +797,7 @@ def _classify_loop_parked(
     """Is the event-loop thread parked in its idle selector wait?
 
     Reads one sampled frame chain of the loop thread (the watchdog thread
-    already samples these for stall attribution - this is the SAME
+    already samples these for stall attribution - this is the same
     mechanism, applied every poll instead of only during stalls). A
     CPython asyncio loop with no ready callbacks parks inside its
     selector: the innermost Python frame is ``selectors.py:select``
@@ -816,7 +813,7 @@ def _classify_loop_parked(
     ``select(0)`` for nearly all of its wall time, so shape-only
     classification read a 100%-busy loop as ~100% parked). The
     ``_run_once`` frame's ``timeout`` local is the discriminator: 0 means
-    ready callbacks are queued (mid-dispatch, NOT parked); a positive or
+    ready callbacks are queued (mid-dispatch, not parked); a positive or
     ``None`` timeout is the genuine park. Callers that could not read the
     local (``_TIMEOUT_UNREAD`` - a CPython frame-shape drift) fall back to
     the shape-only verdict, which keeps the churn over-report for that
@@ -865,7 +862,7 @@ class LoopLagWatchdog:
     joins TWO signals:
 
     - loop lag (the beat gap): the loop is not scheduling; and
-    - the watchdog thread's OWN wakeup gap: how far each
+    - the watchdog thread's own wakeup gap: how far each
       ``_stop.wait(poll_interval)`` overshoots the requested interval.
       An overshoot beyond one full interval means the watchdog thread
       itself was starved of the GIL, which is what synchronous work that
@@ -942,7 +939,7 @@ class LoopLagWatchdog:
     def _beat(self) -> None:
         self._last_beat = self._clock()
         # A beat means the loop scheduled again: the stall is over. Clear
-        # the latch so the NEXT stall gets a fresh tier-1 warning instead
+        # the latch so the next stall gets a fresh tier-1 warning instead
         # of riding this one's, and drop the stall's sample ring and
         # classifier signal with it.
         self._warned = False
@@ -1032,7 +1029,7 @@ class LoopLagWatchdog:
         frame = sys._current_frames().get(ident)
         if frame is None:
             return None
-        # One frame read serves BOTH the shape sample and the timeout
+        # One frame read serves both the shape sample and the timeout
         # local: two reads could straddle a scheduling boundary and mix
         # verdicts (the shape of one instant with the timeout of another).
         sample = _sample_frame_stack(frame)
@@ -1064,7 +1061,7 @@ class LoopLagWatchdog:
 
         Shared by both tiers (warn and trip), so every stall the watchdog
         reports names the actor that caused it when the sampled stack can
-        name one. The span of the running attempt is deliberately NOT
+        name one. The span of the running attempt is deliberately not
         recorded: OTel span operations are not thread-safe, and the
         attempt's span lives on the loop thread, so recording a span event
         from this daemon thread risks corrupting it mid-block.
@@ -1130,7 +1127,7 @@ class LoopLagWatchdog:
         _event_loop_lag.record(lag)
         # DEBUG_ONLY (TASKQ_LOG_EVENTS_LEVEL=debug; see
         # taskq.obs._structlog's classification table): the loop-lag
-        # trace, one line per landed beat. stdlib INFO deliberately -
+        # trace, one line per landed beat. stdlib info deliberately -
         # the events-level filter, not the root logger level, owns this
         # line's visibility; it is dropped at info/warning/off. The
         # thread runs off-loop: the log call here is the same best-effort

@@ -1,4 +1,4 @@
-"""Red-team: workgroup TOML validation gaps beyond the known provider opt-out.
+"""Adversarial review: workgroup TOML validation gaps beyond the known provider opt-out.
 
 Two config shapes pass ``WorkgroupConfig.from_toml`` validation today
 that cannot produce a working child:
@@ -19,7 +19,7 @@ that cannot produce a working child:
    - no health.enabled gate on the bind), so a long-named child dies at
    spawn, and the supervisor restart-loops it against the burst budget
    until ``gave_up`` - a permanently dead worker blessed by validation.
-   Any name ≥ 49 chars yields a path ≥ 109 chars, unbindable on BOTH
+   Any name ≥ 49 chars yields a path ≥ 109 chars, unbindable on both
    major platforms.
 
 2. **``queues = []``** - a worker that consumes nothing. The supervisor
@@ -52,7 +52,7 @@ _ACTORS = "myapp.actors:registry"
 # (".sock") = 60 chars of fixed overhead around the worker name.
 _SOCKET_FIXED_OVERHEAD = 60
 _LINUX_SUN_PATH = 108  # sockaddr_un.sun_path on Linux (incl. NUL)
-_MACOS_SUN_PATH = 104  # sockaddr_un.sun_path on macOS/BSD (incl. NUL)
+_MACOS_SUN_PATH = 104  # sockaddr_un.sun_path on macOS/bsd (incl. NUL)
 
 # Two distinct boundaries, both derived from the constants:
 _BINDABLE_ON_ALL_PLATFORMS = min(_LINUX_SUN_PATH, _MACOS_SUN_PATH) - 1 - _SOCKET_FIXED_OVERHEAD
@@ -83,7 +83,7 @@ def test_rejects_worker_name_that_overflows_the_health_socket_path(tmp_path: Pat
     off by ~17-20 chars, and the child binds the socket unconditionally
     (src/taskq/worker/_bootstrap.py:1240), so the worker dies at spawn
     and restart-loops into burst give-up."""
-    name = "w" * _UNBINDABLE_EVERYWHERE_MIN  # path = 109 chars: unbindable on Linux AND macOS
+    name = "w" * _UNBINDABLE_EVERYWHERE_MIN  # path = 109 chars: unbindable on Linux and macOS
     cfg = _write_config(
         tmp_path,
         f"""

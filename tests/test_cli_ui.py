@@ -440,7 +440,7 @@ def test_ui_serve_lifespan_creates_pool_and_redirects_root(
 # timeout) applied via ``close_pool_bounded``; the shrink seam is the
 # same module-global monkeypatch convention as
 # tests/test_worker_deps_teardown.py. The lifespan is driven directly
-# (not via TestClient) so ``asyncio.timeout`` can bound the RED state.
+# (not via TestClient) so ``asyncio.timeout`` can bound the red state.
 
 
 def _capture_app_for_lifespan(
@@ -503,7 +503,7 @@ async def test_ui_serve_lifespan_terminates_hung_pool_close(
 
     assert isinstance(app, FastAPI)
     # Why the outer timeout: unguarded, lifespan exit awaits Pool.__aexit__
-    # (unbounded close), so the RED state would hang forever instead of
+    # (unbounded close), so the red state would hang forever instead of
     # failing fast.
     async with asyncio.timeout(5):
         async with app.router.lifespan_context(app):
@@ -542,7 +542,7 @@ async def test_ui_serve_lifespan_fast_pool_close_not_terminated(
 # via ``close_redis_bounded``, and the preserved eager-initialize
 # semantics of ``Redis.__aenter__``. The shrink seam is the same
 # module-global monkeypatch convention as the pool tests above; the
-# lifespan is driven directly so ``asyncio.timeout`` can bound the RED
+# lifespan is driven directly so ``asyncio.timeout`` can bound the red
 # state.
 
 
@@ -565,7 +565,7 @@ async def test_ui_serve_lifespan_bounds_hung_redis_close(
 
     assert isinstance(app, FastAPI)
     # Why the outer timeout: unguarded, lifespan exit awaits Redis.__aexit__
-    # (shielded, unbounded aclose), so the RED state would hang forever
+    # (shielded, unbounded aclose), so the red state would hang forever
     # instead of failing fast.
     with structlog.testing.capture_logs() as captured:
         async with asyncio.timeout(5):
@@ -582,7 +582,7 @@ async def test_ui_serve_lifespan_bounds_hung_redis_close(
     assert len(timeout_events) == 1, (
         f"expected 1 redis-teardown-close-timeout log, got {captured!r}"
     )
-    # label= identifies WHICH client hung (review N7) - the UI admin client,
+    # label= identifies which client hung (review N7) - the UI admin client,
     # matching the ui-admin pool label.
     assert timeout_events[0].get("label") == "ui-admin", (
         f"expected label=ui-admin on the timeout event, got {timeout_events[0]!r}"
@@ -613,7 +613,7 @@ async def test_ui_serve_lifespan_redis_initialize_failure_still_closes_client(
     """A redis client whose initialize() fails (broker down at startup) is
     still closed during lifespan unwind: from_url() has already allocated
     the connection pool, so failed eager setup must not leak it. Pins that
-    the bounded-close callback is pushed BEFORE initialize() is awaited."""
+    the bounded-close callback is pushed before initialize() is awaited."""
     redis_client = _FakeRedisInitializeRaises()
     app = _capture_app_for_lifespan(monkeypatch, _FakePool(), redis_client)
 
@@ -1184,7 +1184,7 @@ def test_ui_serve_fully_opted_out_in_production(monkeypatch: pytest.MonkeyPatch)
             assert resp.status_code == 200
 
 
-# ── SSO bundle built from settings: pass-through pins ─────────────────────
+# ── sso bundle built from settings: pass-through pins ─────────────────────
 
 
 def _saml_env(**overrides: str) -> dict[str, str]:
@@ -1206,7 +1206,7 @@ def _captured_saml_config(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) 
     """Run _build_sso_bundle against spied create_saml_auth; return the config it built.
 
     The spy replaces the backend factory, so no onelogin/libxmlsec1 install
-    is needed to pin what the CLI layer threads INTO it: the pass-through
+    is needed to pin what the CLI layer threads into it: the pass-through
     is the behavior under test, not the bundle it produces.
     """
     import taskq.cli as cli_mod

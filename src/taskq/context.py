@@ -118,6 +118,8 @@ class JobContext[P: BaseModel]:
     _sync_actor_task: asyncio.Task[object] | None = None
     _tx_unwind_task: asyncio.Task[object] | None = None
     _actor_body_task: asyncio.Task[object] | None = None
+    _actor_body_finished_at: float | None = None
+    _actor_body_outcome: tuple[object, BaseException | None] | None = None
     _tx_rollback_collision_window: bool = False
 
     @property
@@ -145,7 +147,7 @@ class JobContext[P: BaseModel]:
         actor code.
 
         ``object.__setattr__`` because the dataclass is frozen: the origin
-        is process state that arrives AFTER construction (the registry
+        is process state that arrives after construction (the registry
         entry's), exactly as the ``cancel_event``/``_abort_requested``
         fields mutate through their own methods rather than assignment.
         """
@@ -200,6 +202,46 @@ class JobContext[P: BaseModel]:
         after construction, exactly as the other two handles do.
         """
         object.__setattr__(self, "_actor_body_task", task)
+
+    def _record_actor_body_finished_at(self, when: float) -> None:
+        """Record the actor body's real finish time on the event loop's
+        monotonic clock, keeping the earliest stamp. The start_to_close
+        enforcement and the sync dispatch's executor thread are the
+        writers, never actor code. The rescue must judge the body by when
+        it finished, not by when the enforcement's continuation resumed:
+        a loop stall between the two is the runner's latency. The
+        enforcement resets the stamp before arming.
+        ``object.__setattr__`` because the dataclass is frozen.
+        """
+        if self._actor_body_finished_at is None or when < self._actor_body_finished_at:
+            object.__setattr__(self, "_actor_body_finished_at", when)
+
+    def _record_actor_body_outcome(self, value: object, exc: BaseException | None) -> None:
+        """Record the actor body's own outcome: the returned value, or the
+        exception it raised, with the sync thread's ``SystemExit`` already
+        carried. The sync dispatch's thread body and the enforcement's
+        body frame are the writers; both record before their finish
+        stamp, never actor code. The rescue reads this record when the
+        deadline's cancel landed on a body task that had already
+        finished, where the task's own ``result()`` is a CancelledError.
+        Earliest-wins (only when unset), so the thread's in-time record
+        survives the deadline's later cancellation of the async frame.
+        The context is per attempt and the enforcement resets the record
+        with the stamp before arming. ``object.__setattr__`` because the
+        dataclass is frozen.
+        """
+        if self._actor_body_outcome is None:
+            object.__setattr__(self, "_actor_body_outcome", (value, exc))
+
+    def _reset_actor_body_attempt_record(self) -> None:
+        """Clear the body's finish stamp and outcome record. Called by
+        the start_to_close enforcement before arming a fresh deadline,
+        never by actor code. The context is per attempt; the reset makes
+        that guarantee explicit. ``object.__setattr__`` because the
+        dataclass is frozen.
+        """
+        object.__setattr__(self, "_actor_body_finished_at", None)
+        object.__setattr__(self, "_actor_body_outcome", None)
 
     def _set_tx_rollback_collision_window(self) -> None:
         """Stamp the tx path's rollback-collision window as OPEN. Called by
@@ -312,14 +354,14 @@ class JobContext[P: BaseModel]:
         :func:`taskq.progress._publish._publish_progress_event_coalesced`
         for the full residual.
         """
-        # Numeric type-and-finiteness gates FIRST, before any serialization
+        # Numeric type-and-finiteness gates first, before any serialization
         # or buffer mutation (the established no-mutation-on-raise contract
         # this call's other guards hold): the buffer's retire protocol keys
         # on ``==`` equality between the pending state and the flushed
         # snapshot, and ``nan != nan`` is True in Python, so a single
         # ``percent=float("nan")`` call would never retire its pending
         # entry - the buffer stays dirty forever and the flush loop
-        # re-writes the row EVERY tick for the job's remaining lifetime
+        # re-writes the row every tick for the job's remaining lifetime
         # (unbounded work a one-line actor bug produces). The same gate
         # keeps the wire honest: orjson and pydantic both silently
         # serialize a non-finite float as ``null``, so today's inf percent
@@ -357,7 +399,7 @@ class JobContext[P: BaseModel]:
             # path's ``model_dump_json``: this is the only
             # ``progress_data_max_bytes`` enforcement in the codebase, and it
             # must raise ``ProgressTooLarge`` synchronously to the actor
-            # BEFORE the oversized dict enters the coalesce buffer (and from
+            # before the oversized dict enters the coalesce buffer (and from
             # there the durable PG jsonb). ``_publish_progress_event`` is
             # fire-and-forget, a failure there is logged, never raised, so
             # the cap cannot move below this call; and pydantic cannot reuse
@@ -379,7 +421,7 @@ class JobContext[P: BaseModel]:
                 # anywhere in ``data`` is refused here exactly as the
                 # enqueue door refuses it in a payload, because downstream
                 # it is the same permanent jsonb defect - the flush's own
-                # guard would only SKIP the row (and re-log the error every
+                # guard would only skip the row (and re-log the error every
                 # tick forever, the actor none the wiser), the durable
                 # progress never landing. Refusal at the call is the
                 # actor-visible failure; the flush guard stays as the
@@ -389,7 +431,7 @@ class JobContext[P: BaseModel]:
             if detail is not None:
                 # The detail string passes through the same publish-time
                 # serialization ``data`` does: an unencodable detail (a lone
-                # surrogate) raises to the actor HERE, before it enters the
+                # surrogate) raises to the actor here, before it enters the
                 # coalesce buffer and detonates at the durable write as a
                 # failure no terminal-write classification answers for. The
                 # settings-wiring condition is the data guard's own: an
@@ -399,8 +441,8 @@ class JobContext[P: BaseModel]:
                 detail_json = dumps(detail)
                 # The same bound ``data`` obeys, measured the same way
                 # (serialized bytes): a detail is unbounded today, and the
-                # coalesce buffer holds the LATEST value only, so a
-                # multi-megabyte detail would ride every flush and TOAST the
+                # coalesce buffer holds the latest value only, so a
+                # multi-megabyte detail would ride every flush and toast the
                 # jobs row's progress_state jsonb at actor call rate.
                 detail_limit = self._worker_settings.progress_data_max_bytes
                 if len(detail_json) > detail_limit:
@@ -427,7 +469,7 @@ class JobContext[P: BaseModel]:
         if buffer is None or buffer.attempt != self.attempt:
             # Epoch-fenced read (the issue-461 class): the buffer at the
             # key is per-attempt, and a same-worker re-claim of the job
-            # seeds a NEW buffer at the same key while this stale
+            # seeds a new buffer at the same key while this stale
             # attempt's context still exists. A stale ctx must neither
             # mix its progress state into the live attempt's buffer nor
             # consume the live attempt's seq: the epoch conjunct no-ops
@@ -462,7 +504,7 @@ class JobContext[P: BaseModel]:
                 # (consumers discard a stale seq), so a call racing a
                 # running publish only latches its event on the buffer and
                 # the running task re-publishes the latch when its round
-                # trip lands. The latch is what keeps the FINAL publish of
+                # trip lands. The latch is what keeps the final publish of
                 # a job from being lost: a trailing call either publishes
                 # directly (gate free) or is drained by the in-flight task
                 # before it releases the gate. Residual, mirrored in

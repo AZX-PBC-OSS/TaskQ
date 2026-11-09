@@ -37,6 +37,7 @@ from pydantic import (
     model_validator,
 )
 
+from taskq._json import sanitize_surrogates
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
 from taskq.constants import (
     DEFAULT_MAX_RETRY_BACKOFF,
@@ -192,6 +193,28 @@ class JobRetryState(NamedTuple):
 
 _production_rng = random.Random(secrets.randbits(128))  # noqa: S311  Why: random.Random is for timing jitter, not cryptography; seeded via secrets.randbits(128) by design
 
+
+def _safe_type_name(exception: BaseException) -> str:
+    """The exception's class name, readable and renderable.
+
+    The actor's exception class is attacker-adjacent code: a metaclass can
+    raise on the ``__name__`` access itself (the classification would die
+    mid-handler and strand the row running) or return a non-string. A
+    raising or non-string name degrades to a constant marker; a string name
+    is surrogate-escaped for the stores and renderers it reaches.
+    """
+    try:
+        name = type(exception).__name__
+    except BaseException:
+        return "<exception type name failed>"
+    if not isinstance(name, str):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the runtime defense against a metaclass property returning a non-string; the type cannot model the hostile case.
+        try:
+            name = str(name)
+        except BaseException:
+            return "<exception type name failed>"
+    return sanitize_surrogates(name)
+
+
 # Why: an ``indefinite`` policy has no attempt ceiling, so ``attempt`` is
 # unbounded and the exponential arm's exponent must be clamped somewhere
 # (the pre-clamp shape, ``base_s * 2 ** (attempt - 1)`` over Python ints,
@@ -199,7 +222,7 @@ _production_rng = random.Random(secrets.randbits(128))  # noqa: S311  Why: rando
 # attempt >= 1025, escaping compute_backoff → classify →
 # _dispatch_exception and crashing the failure path instead of retrying).
 # The bound is 67 because it is the smallest clamp that cannot change any
-# timedelta-representable curve AND cannot overflow on either evaluator:
+# timedelta-representable curve and cannot overflow on either evaluator:
 #
 # * Curve preservation: timedelta's microsecond resolution puts the
 #   smallest positive ``base`` at 1e-6 s and the largest representable
@@ -208,14 +231,14 @@ _production_rng = random.Random(secrets.randbits(128))  # noqa: S311  Why: rando
 #   (1e-6 * 2**67 >= 1.4e14 >= 8.6e13), min(cap_s, ...) saturates at
 #   cap_s with or without the clamp, and base == 0 yields 0 either way.
 # * Overflow: the SQL twin (_RECLAIM_RAW_BACKOFF_SQL) evaluates
-#   ``base * power(2.0, e)`` in float8, and Postgres RAISES
+#   ``base * power(2.0, e)`` in float8, and Postgres raises
 #   "value out of range: overflow" (SQLSTATE 22003, a data error the
 #   leader's transient classification deliberately excludes) where this
 #   module's float multiply saturates to inf and lets min() land on the
 #   cap.  A clamp at the float ceiling (the historical 1023) kept
 #   power() itself in range but let the multiply overflow for any
 #   base > ~2 once the attempt passed ~1021, a non-transient error in
-#   the leader sweep's failure path AND a parity break against this
+#   the leader sweep's failure path and a parity break against this
 #   twin.  base * 2**67 <= ~1.3e34 for any timedelta-representable base,
 #   ~274 orders of magnitude below the float8 ceiling (~1.8e308).
 _MAX_BACKOFF_EXPONENT: Final[int] = 67
@@ -241,7 +264,7 @@ def _reclaim_jitter_fraction(job_id: UUID, attempt: int) -> float:
     decimal, both pure ASCII, so the database encoding cannot change the
     hashed bytes), same uint32 interpretation of the prefix, same float8
     division.  The leader's sweep, a partitioned worker's isolate_self, and
-    the in-memory mirror therefore all draw the SAME fraction for the same
+    the in-memory mirror therefore all draw the same fraction for the same
     row instead of three independent ``random()`` draws.
 
     Why derived rather than random: a row's reclaim delay is computed by
@@ -374,7 +397,7 @@ def compute_backoff(
     with the band fitted under the cap before the draw (see
     :func:`_capped_jitter_band`), so a saturated row spreads over
     ``[cap·(1-j), cap]`` instead of stacking on the cap.
-    This is NOT Full Jitter (uniform(0, raw)) because Full Jitter
+    This is not Full Jitter (uniform(0, raw)) because Full Jitter
     collapses toward zero on attempt 1, causing thundering-herd
     retries. See Marc Brooker, "Exponential Backoff And Jitter",
     AWS Architecture Blog, and the AWS SDKs' published jitter debate.
@@ -399,7 +422,7 @@ def compute_backoff(
 
     raw = _raw_backoff_seconds(base_s, cap_s, policy.backoff, attempt)
     lower, upper = _capped_jitter_band(raw, cap_s, policy.jitter)
-    # One draw, as uniform(a, b) is a + (b - a) * random(): identical RNG
+    # One draw, as uniform(a, b) is a + (b - a) * random(): identical rng
     # consumption to the symmetric multiplication below the cap.
     delay = _draw_in_band(lower, upper, source.random(), cap_s)
     return timedelta(seconds=delay)
@@ -448,7 +471,7 @@ def _compute_reclaim_backoff(  # pyright: ignore[reportUnusedFunction]  # Why: c
     raw = _raw_backoff_seconds(base_s, cap_s, policy.backoff, attempt)
     lower, upper = _capped_jitter_band(raw, cap_s, policy.jitter)
     # The monopolisation floor, wrapping the draw exactly as the SQL twin
-    # wraps it (GREATEST after the band and the cap): a row stamped with a
+    # wraps it (greatest after the band and the cap): a row stamped with a
     # zero or negative base by an earlier release draws zero or a negative
     # value from its own curve, and a sub-floor re-pend delay would make
     # the row claimable at or before the instant the sweep hands it back,
@@ -565,7 +588,7 @@ def _override_shape_error(override: object) -> str | None:
     if not isinstance(override, RetryOverride):
         return f"not a RetryOverride, a {type(override).__name__}"
     delay = override.delay
-    if delay is not None and not isinstance(delay, timedelta):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the declared type is timedelta | None, but this guard exists precisely for a model_construct'd RetryOverride whose fields bypassed pydantic validation — at runtime delay can be anything; the isinstance IS the check.
+    if delay is not None and not isinstance(delay, timedelta):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the declared type is timedelta | None, but this guard exists precisely for a model_construct'd RetryOverride whose fields bypassed pydantic validation — at runtime delay can be anything; the isinstance is the check.
         return f"delay is a {type(delay).__name__}, not a timedelta | None"
     kind = override.kind
     if kind is None:
@@ -711,29 +734,29 @@ _RETRY_AFTER_HEADERS: Final[tuple[str, str]] = ("retry-after", "x-retry-after")
 #: The seconds-form grammar of a ``Retry-After`` value: digits with an
 #: optional ``.``-fraction (``"120"``, ``"0.5"``). A comma decimal
 #: (``"1,5"``), a sign (``"+30"``, ``"-30"``), scientific notation
-#: (``"1e3"``), and embedded whitespace (``"12 34"``) are NOT the grammar
+#: (``"1e3"``), and embedded whitespace (``"12 34"``) are not the grammar
 #: and degrade to the curve fallback like every other garbage value. The
 #: grammar is deliberately this small: a rate-limit hint is a human-scale
 #: count of seconds, and every parser trick beyond the fraction (locale
 #: decimals, exponents) is a divergence surface between consumers, not a
 #: feature — a consumer wanting a richer grammar fences the header in
 #: their own classifier first (composition order, §5). This grammar is a
-#: TIGHTENING of the previous ``int()`` parse, not a preservation: the
+#: tightening of the previous ``int()`` parse, not a preservation: the
 #: old parse silently honored a leading sign (``"+30"`` → 30 s), an
 #: underscore digit separator (``"1_000"`` → 1000 s), and non-ASCII
 #: decimal digits (``"١٢٣"`` → 123 s) — none of them an RFC 9110
-#: delta-seconds form (``1*DIGIT``, ASCII); all three are curve-fallback
+#: delta-seconds form (``1*digit``, ASCII); all three are curve-fallback
 #: garbage now. Pinned in ``tests/test_rate_limit_claim_kind.py``.
 _RETRY_AFTER_SECONDS_PATTERN: Final[re.Pattern[str]] = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 
 #: The parse-level saturation for a finite hint whose value exceeds
 #: ``timedelta``'s representable range (a ``timedelta(seconds=10**20)``
 #: overflows, and an OverflowError escaping a classifier is exactly the
-#: crash the isolation contract exists to absorb). This is NOT a semantic
+#: crash the isolation contract exists to absorb). This is not a semantic
 #: cap: bounding a hint is the operator's ``max_retry_backoff`` ceiling's
 #: job (applied to every override delay by the decision path — "a malicious
 #: or malformed header cannot strand a job"), and a hint beyond the ceiling
-#: CLAMPS there. ``timedelta.max`` is beyond every ceiling a fleet will
+#: clamps there. ``timedelta.max`` is beyond every ceiling a fleet will
 #: ever run, so the saturation only keeps the parse crash-free while the
 #: operator's knob does the real bounding. (The former one-day parse cap
 #: is gone: it misclassified an oversized-but-finite hint as garbage —
@@ -897,7 +920,7 @@ def rate_limit_aware_classifier(
     * TaskQ's own :class:`~taskq.exceptions.ReservationUnavailable` raised
       with ``source="rate_limit"``: a shared limiter's denial surfacing in
       the actor's frame. A ``source="reservation"`` denial is a
-      concurrency-slot condition, not a rate limit, and is NOT recognized.
+      concurrency-slot condition, not a rate limit, and is not recognized.
     * Common HTTP 429 duck-types, no import required: an exception carrying
       ``.response.status_code == 429`` (httpx / httpx2 / requests'
       ``HTTPStatusError``/``HTTPError`` shapes), ``.response.status == 429``
@@ -1013,7 +1036,7 @@ def _rate_limit_claim(
         return None
 
     status = _extract_http_status(exception)
-    if status != _HTTP_STATUS_429 and type(exception).__name__ != "RateLimitError":
+    if status != _HTTP_STATUS_429 and _safe_type_name(exception) != "RateLimitError":
         return None
 
     # Claimed: sniff the server's hint. Unusable → the curve-fallback
@@ -1055,7 +1078,7 @@ def make_rate_limit_aware_classifier(
                                                                                                                     out"; a stopping condition must exist.
     ``"transient"``   ``RetryOverride(kind="transient")``,           ``max_attempts`` — the budget STAYS the        None: the attempt budget terminates the
                       ``delay=hint`` when the server sent one        stopper; the hint (when present) sets          storm even with no deadline. The intent
-                                                                     *when* within it. The bounded AND              this mode exists for: "429 → bounded
+                                                                     *when* within it. The bounded and              this mode exists for: "429 → bounded
                                                                      server-honoring shape.                         retry, and honor the server's when".
     ``None``          never claims — returns ``None`` for every      the declared policy governs everything         None: the classifier contributes no claims
                       input                                          (the identity for composition)                 to compose over; it only reserves the
@@ -1065,7 +1088,7 @@ def make_rate_limit_aware_classifier(
     Validation is at construction: a ``claim_kind`` outside the three
     modes raises ``ValueError`` here — fail loud at build time, never a
     silently-misclaiming classifier at override time. ``"non_retryable"``
-    is deliberately NOT a mode: a rate limit means "retry later" by
+    is deliberately not a mode: a rate limit means "retry later" by
     definition (§4), so stamping one non-retryable is the misclaim this
     factory exists to make impossible — build that intent with a domain
     classifier registered *before* this one (composition order), where
@@ -1111,7 +1134,7 @@ def make_rate_limit_aware_classifier(
 # ── failure taxonomy: the configurable common-shapes classifier ────────
 #
 # The defaults are documented module constants (frozen; build a variant
-# from them rather than mutating). The status sets REPLACE the built-in
+# from them rather than mutating). The status sets replace the built-in
 # defaults wholesale when passed explicitly — there is no implicit merge,
 # so what a classifier claims is always exactly what its configuration
 # says.
@@ -1124,14 +1147,14 @@ DEFAULT_TRANSIENT_STATUSES: Final[frozenset[int]] = frozenset({408, 425, *range(
 
 #: Statuses the taxonomy claims ``non_retryable``: the 4xx band minus the
 #: carve-outs {408, 425} (transient above) and {429} — 429 is the single
-#: most important status to RETRY (see the §4 danger block) and belongs to
+#: most important status to retry (see the §4 danger block) and belongs to
 #: :func:`rate_limit_aware_classifier`; the taxonomy deliberately claims
 #: nothing for it so the two compose safely in either order.
 DEFAULT_NON_RETRYABLE_STATUSES: Final[frozenset[int]] = frozenset(
     status for status in range(400, 500) if status not in {408, 425, 429}
 )
 
-#: Exception class names the taxonomy claims ``transient`` by EXACT name
+#: Exception class names the taxonomy claims ``transient`` by exact name
 #: (never by suffix — the suffix inference is opt-in via
 #: ``infer_timeout_by_suffix=True``): the stdlib timeout/connection names
 #: (``TimeoutError``, the builtin ``ConnectionError`` family — also
@@ -1143,12 +1166,12 @@ DEFAULT_NON_RETRYABLE_STATUSES: Final[frozenset[int]] = frozenset(
 #: matching needs no import), ``ServerTimeoutError`` (aiohttp),
 #: ``WriteTimeout``/``PoolTimeout`` (httpx pools),
 #: ``ReadTimeoutError``/``ConnectTimeoutError`` (urllib3 — requests'
-#: engine — and botocore, the AWS SDK; neither is a builtin
+#: engine — and botocore, the aws SDK; neither is a builtin
 #: ``TimeoutError`` subclass, so only the exact name claims them).
 #: ``Timeout`` exact matches the bare
-#: class name some AMQP/mqtt clients use. Exact-name matching is the
+#: class name some amqp/mqtt clients use. Exact-name matching is the
 #: contract: a name ending in ``Timeout`` that is not listed here (the
-#: audit's counterexample: ``pymongo.errors.ExecutionTimeout``) is NOT
+#: audit's counterexample: ``pymongo.errors.ExecutionTimeout``) is not
 #: claimed unless the consumer opts into the suffix inference.
 DEFAULT_TRANSIENT_EXCEPTION_NAMES: Final[frozenset[str]] = frozenset(
     {
@@ -1209,7 +1232,7 @@ def failure_taxonomy_classifier(
          ``DEFAULT_TRANSIENT_EXCEPTION_NAMES`` curated set;
        * ``infer_timeout_by_suffix=True`` → additionally, a class name
          ENDING in ``Timeout``/``TimeoutError`` claims transient. This is
-         the opt-in convenience flag — OFF by default, and the default is
+         the opt-in convenience flag — off by default, and the default is
          a contract: defaults never override explicit direction, so the
          library will not widen a consumer's narrowly pinned semantics.
          The cost the flag buys: it is a name heuristic, not a semantics
@@ -1238,7 +1261,7 @@ def failure_taxonomy_classifier(
        is the haunt class.
 
     Configuration replaces, never merges: passing
-    ``transient_status=frozenset({429})`` claims ONLY 429 (the 5xx band
+    ``transient_status=frozenset({429})`` claims only 429 (the 5xx band
     and 408/425 stop being transient); ``include_names`` replaces the
     default name set (extend ``DEFAULT_TRANSIENT_EXCEPTION_NAMES | {"Yours"}``
     to keep the defaults). Build the classifier once at registration and
@@ -1283,7 +1306,7 @@ def failure_taxonomy_classifier(
     infer_suffix = infer_timeout_by_suffix
 
     def classify(exception: BaseException, attempt: int) -> RetryOverride | None:
-        name = type(exception).__name__
+        name = _safe_type_name(exception)
         if name in exclude:
             return None
         status = _extract_http_status(exception)
@@ -1305,7 +1328,7 @@ class RetryClassifier:
     """Pure classifier that maps an exception + policy to a RetryDecision.
 
     The classifier decides retry-*kind* and backoff only, it is
-    deliberately NOT a deadline arbiter.  ``schedule_to_close`` is
+    deliberately not a deadline arbiter.  ``schedule_to_close`` is
     arbitrated by the SQL guard in ``mark_failed_or_retry`` (single
     arbiter, the backend's clock); a Python-side pre-check computed from
     the worker's clock would disagree with it under app↔DB skew and kill
@@ -1324,8 +1347,8 @@ class RetryClassifier:
 
         An override delay (a hook's ``RetryOverride(delay=...)`` — e.g. a
         server's ``Retry-After`` hint) is an explicit direction: it is
-        honored EXACTLY, with no jitter draw — the pre-#656 contract,
-        restored. #656 spread the override through the same
+        honored EXACTLY, with no jitter draw — the original contract,
+        restored. A prior revision spread the override through the same
         multiplicative-symmetric band as a computed curve value, which
         mutated a value the user's classifier specified (a default
         ``jitter=0.2`` turned a 90s ``Retry-After`` into a draw from
@@ -1370,7 +1393,7 @@ class RetryClassifier:
         override: RetryOverride | None = None,
     ) -> RetryDecision:
         if isinstance(exception, non_retryable_exceptions):
-            return Fail(error_class=type(exception).__name__, retryable=False)
+            return Fail(error_class=_safe_type_name(exception), retryable=False)
 
         if isinstance(exception, PayloadValidationError):
             return Fail(error_class="PayloadValidationError", retryable=False)
@@ -1401,7 +1424,7 @@ class RetryClassifier:
         override_delay = override.delay if override is not None else None
 
         if effective_kind == "non_retryable":
-            return Fail(error_class=type(exception).__name__, retryable=False)
+            return Fail(error_class=_safe_type_name(exception), retryable=False)
 
         if effective_kind == "transient":
             if attempt < policy.max_attempts:
@@ -1411,7 +1434,7 @@ class RetryClassifier:
                     max_retry_backoff=max_retry_backoff,
                     override_delay=override_delay,
                 )
-            return Fail(error_class=type(exception).__name__, retryable=False)
+            return Fail(error_class=_safe_type_name(exception), retryable=False)
 
         # effective_kind == "indefinite"
         return RetryClassifier._retry_decision(
@@ -1568,7 +1591,7 @@ def decide_after_failure(
     else:
         reconstructed_policy = RetryPolicy(
             kind=job_state.retry_kind,
-            # Why: clamp the ROW-stored value into the constructor's domain.
+            # Why: clamp the row-stored value into the constructor's domain.
             # The enqueue-time guard refuses max_attempts above
             # MAX_ENQUEUABLE_MAX_ATTEMPTS for fresh policies, but committed
             # rows written by earlier releases can legally sit at the

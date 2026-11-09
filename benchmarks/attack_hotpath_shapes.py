@@ -14,7 +14,7 @@ two shapes the audit did not profile:
 Roles mirror ``hotpath_load.py`` (worker / client / orchestrate). The worker
 role reuses the audit's own bootstrap (``hotpath_load.run_worker``) and
 actors verbatim — only the CLIENT shape differs — but installs a richer
-tracemalloc checkpoint that records EVERY K-job window (cumulative), so the
+tracemalloc checkpoint that records every K-job window (cumulative), so the
 +52.7 B/job slope's stability across window sizes is measurable in one run
 instead of one window per run.
 
@@ -47,7 +47,7 @@ LOG_DIR = RESULTS_DIR / "attack_shapes_logs"
 DSN = hl.DSN
 
 # ── the richer tracemalloc checkpoint (installed over H's) ─────────────
-# Records EVERY window: cumulative diffs at K, 2K, 3K, ... so the per-job
+# Records every window: cumulative diffs at K, 2K, 3K, ... so the per-job
 # slope's stability across window sizes is one measurement, not one.
 
 _TM_WINDOWS: list[dict[str, object]] = []
@@ -237,7 +237,7 @@ async def orchestrate(args) -> dict:
         client = asyncio.create_task(client_burst(dsn, schema, jobs, args.burst_size, args.gap_s))
 
     t0 = time.perf_counter()
-    # py-spy over the BUSY middle of the run.
+    # py-spy over the busy middle of the run.
     pyspy_proc = None
     if args.py_spy_seconds > 0:
         await asyncio.sleep(2.0)

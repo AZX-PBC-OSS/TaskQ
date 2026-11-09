@@ -4,7 +4,7 @@ it claims to verify.
 
 The walkthroughs are executable truth only while the docs cannot drift away
 from them. Reading the docs' fenced ``taskq ...`` invocations (and their
-option tables) and comparing against the walkthrough module's OWN source
+option tables) and comparing against the walkthrough module's own source
 (the ``_run_cli``/``_arun_cli``/``_spawn_worker`` calls, extracted with
 ``ast``) closes the loop in both directions:
 
@@ -34,7 +34,7 @@ _DOC_PAGES = (
     REPO_ROOT / "docs" / "guides" / "observability.md",
     REPO_ROOT / "docs" / "guides" / "insights.md",
 )
-#: The runner helpers whose literal argv IS the executed command, plus the
+#: The runner helpers whose literal argv is the executed command, plus the
 #: ``[*CLI, ...]`` list literal a raw Popen call builds.
 _RUNNER_NAMES = {"_run_cli", "_arun_cli", "_spawn_worker"}
 
@@ -106,7 +106,7 @@ def _doc_sections() -> list[tuple[str, str]]:
     nested references (``## taskq worker``'s option table, ``### taskq
     actor-config``'s ``set`` example) stay inside the command they belong
     to - which is what makes a flag binding meaningful: the flag must be
-    documented ON THE COMMAND the walkthrough executes, not anywhere in
+    documented ON the COMMAND the walkthrough executes, not anywhere in
     six pages of prose.
     """
     sections: list[tuple[str, str]] = []
@@ -181,7 +181,7 @@ def test_every_cli_step_the_walkthroughs_execute_is_documented() -> None:
     sections = _doc_sections()
     undocumted: list[str] = []
     for chain, flags in requirements:
-        # The docs document GROUP SUBCOMMAND (two words: "job cancel",
+        # The docs document GROUP subcommand (two words: "job cancel",
         # "actor-config set") with placeholder values where the walkthrough
         # passes fixture data; a one-word command ("doctor", "worker") is
         # its own chain head.

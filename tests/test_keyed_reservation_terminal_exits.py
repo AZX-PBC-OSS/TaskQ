@@ -19,9 +19,9 @@ path of the job that caused it):
   free. Pinned here.
 * **worker death** - the registry that tracks the key is gone with the
   process, so no eviction ever records the rows: the one terminal exit
-  with NO deletion path today (fleet-wide, only a row-carried staleness
+  with no deletion path today (fleet-wide, only a row-carried staleness
   marker + fleet sweep can close it - a batch delete of expired rows on
-  the next sweep cycle). NOT pinned red here; it is the documented
+  the next sweep cycle). not pinned red here; it is the documented
   residual gap.
 
 The static-bucket control in the denial pin (a statically pre-registered
@@ -138,7 +138,7 @@ async def test_denied_keyed_reservation_leaves_zero_rows_after_eviction_drain(
         )
         denied_bucket = "denial-exit:s-denied"
 
-        # The denied attempt: the keyed ref resolves FIRST (materialising
+        # The denied attempt: the keyed ref resolves first (materialising
         # its slot rows), then the full static cap denies - the rollback
         # releases the keyed slot and the job snoozes with no actor run.
         with pytest.raises(ReservationUnavailable):

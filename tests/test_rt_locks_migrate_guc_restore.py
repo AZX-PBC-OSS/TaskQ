@@ -4,9 +4,9 @@
 ``migrate.migration_advisory_lock`` (the lock context
 ``apply_pending_locked`` runs under) widens the caller connection's
 ``statement_timeout`` to unlimited unconditionally after acquiring the
-lock (``SET statement_timeout = 0``) and NEVER restores it - the
+lock (``SET statement_timeout = 0``) and never restores it - the
 docstring argues this for exit in general ("the widened state is
-deliberately NOT restored on exit"), not only the failure path.
+deliberately not restored on exit"), not only the failure path.
 ``lock_timeout``, in contrast, IS reset to unlimited (``SET
 lock_timeout = 0``) before the DDL runs.
 
@@ -41,7 +41,7 @@ async def test_successful_migration_leaves_documented_guc_state_on_caller_conn(
 
     Contract being pinned: migrate.py's migration_advisory_lock widens
     statement_timeout to 0 for the apply phase and deliberately does not
-    restore it on exit ("the widened state is deliberately NOT restored
+    restore it on exit ("the widened state is deliberately not restored
     on exit") - including the success path, per the docstring's own
     argument - while lock_timeout is explicitly reset ("Reset before the
     DDL so a legitimately long migration step is not killed by the wait

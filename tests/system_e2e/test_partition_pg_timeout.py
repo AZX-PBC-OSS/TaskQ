@@ -1,14 +1,14 @@
 """Partition weather II: TIMEOUT/SLOWDOWN (3000 ms latency) vs the connection budgets.
 
 The blackhole family (``test_partition_pg_blackhole``) cuts the wire;
-this family makes it SLOW - 3000 ms of added latency in BOTH directions,
+this family makes it SLOW - 3000 ms of added latency in both directions,
 larger than every connection budget a correctly-configured worker runs -
 and holds the pinned contract: a budgeted client fails FAST and HONESTLY
 (timeout error naming the budget that fired), never hangs. The dispatch
 loop's honesty is visible at two levels:
 
 * the client level: an asyncpg connect with a 2s budget against 6s of
-  round-trip latency fails at its OWN budget, not at the wire's;
+  round-trip latency fails at its own budget, not at the wire's;
 * the fleet level: while one worker drowns in latency, a healthy sibling
   keeps claiming and completing, and the drowned worker ends by the
   documented heartbeat cascade rather than silently wedging.
@@ -51,14 +51,14 @@ pytestmark = [pytest.mark.integration, pytest.mark.system]
 
 _TAG = "sys-partition-slow"
 
-#: The weather: 3000 ms added each way. Every budget below is DERIVED
+#: The weather: 3000 ms added each way. Every budget below is derived
 #: against it: a 2s connect budget must fire at ~2s (not the wire's 6s
 #: round trip), the dispatcher's 1s command budget at ~1s, the heartbeat
 #: cascade at 2.75s (see the module docstring's arithmetic).
 _LATENCY_MS = 3000
 
 #: asyncpg connect budget 2s + co-tenant slack 2s: the failure must land
-#: near the BUDGET, never near the wire's 6s round trip.
+#: near the budget, never near the wire's 6s round trip.
 _CONNECT_BUDGET_S = 2.0
 _CONNECT_BUDGET_SLACK_S = 2.0
 
@@ -67,7 +67,7 @@ _CONNECT_BUDGET_SLACK_S = 2.0
 #: worker claimed (lease 8s + sweep 1s + delay 1s + body) + slack.
 _FLEET_SETTLE_BUDGET_S = 25.0
 
-#: The drowned worker's exit budget, MEASURED in the latency probe: a
+#: The drowned worker's exit budget, measured in the latency probe: a
 #: worker booting against 3s one-way latency with default budgets opens
 #: its pools at their own budgets, fails the dedicated conns at theirs,
 #: and exits rc=1 at ~78s - honest, bounded. Budget: 78 + slack = 120.
@@ -97,14 +97,14 @@ async def test_slowdown_3000ms_fails_fast_and_never_hangs_the_fleet(
     worker_healthy: WorkerProc | None = None
     log_slow = tmp_path / "part-slow.log"
     try:
-        # Client-level budget pin FIRST, while the weather is armed and
+        # Client-level budget pin first, while the weather is armed and
         # deterministic: the connect budget (2s) must fire against the
         # wire's 6s round trip - fast and honest, at the client's own
         # budget plus slack, never hung.
         started = time.monotonic()
         with pytest.raises(
             BaseException
-        ) as exc_info:  # Why: the pin is WHICH budget fires and WHEN, not the exception type alone.
+        ) as exc_info:  # Why: the pin is which budget fires and when, not the exception type alone.
             await asyncpg.connect(proxied_dsn(pg_dsn, proxy), timeout=_CONNECT_BUDGET_S)
         elapsed = time.monotonic() - started
         assert isinstance(
@@ -115,20 +115,20 @@ async def test_slowdown_3000ms_fails_fast_and_never_hangs_the_fleet(
             f"{_CONNECT_BUDGET_SLACK_S}s slack - the budget did not fail fast"
         )
 
-        # Honesty control: the SAME wire, direct, connects fine - the
+        # Honesty control: the same wire, direct, connects fine - the
         # weather is latency, not a partition, and the direct path must
         # show no false failure.
         control = await asyncpg.connect(pg_dsn, timeout=10)
         await control.close()
 
         # Worker A drowns (spawned INTO the weather), worker B is clean.
-        # A runs its bootstrap at the DEFAULT tight budgets: every dial
-        # whose wire costs more than the budget must fail AT THE BUDGET -
+        # A runs its bootstrap at the default tight budgets: every dial
+        # whose wire costs more than the budget must fail at the budget -
         # measured in the latency probe: the pools open at their own
         # budget, the notify/leader dedicated conns fail at theirs, and
-        # the bootstrap exits rc=1 at ~78s - an HONEST bounded failure,
+        # the bootstrap exits rc=1 at ~78s - an honest bounded failure,
         # never a hang. That bounded exit is the pin: a worker whose wire
-        # exceeds its budgets is GONE, not wedged.
+        # exceeds its budgets is gone, not wedged.
         worker_slow = spawn_worker(
             pg_dsn,
             schema,
@@ -159,11 +159,11 @@ async def test_slowdown_3000ms_fails_fast_and_never_hangs_the_fleet(
             f"worker drowned in {_LATENCY_MS}ms latency: {counts}"
         )
 
-        # The drowned worker never hangs: it must EXIT within the measured
+        # The drowned worker never hangs: it must exit within the measured
         # bootstrap-failure bound (~78s: every pool/conn dial pays its own
         # budget then gives up) plus slack.
         exit_deadline = time.monotonic() + _DROWN_EXIT_BUDGET_S
-        while time.monotonic() < exit_deadline and worker_slow.proc.poll() is None:  # noqa: ASYNC110  # Why: the wait is a deadline OR the process's death - an Event cannot express either arm.
+        while time.monotonic() < exit_deadline and worker_slow.proc.poll() is None:  # noqa: ASYNC110  # Why: the wait is a deadline or the process's death - an Event cannot express either arm.
             await asyncio.sleep(0.5)
         if worker_slow.proc.poll() is None:
             tail = log_slow.read_text(errors="replace")[-2000:] if log_slow.exists() else "<no log>"
@@ -222,8 +222,8 @@ async def test_syn_ok_data_held_connect_budgets_hold(
             f"{_CONNECT_BUDGET_S}s budget - the budget did not fire"
         )
 
-        # redis-py's budgets: connect timeout 2s (the SYN succeeds, so the
-        # CONNECT budget passes) then the read budget 2s fires on the held
+        # redis-py's budgets: connect timeout 2s (the syn succeeds, so the
+        # connect budget passes) then the read budget 2s fires on the held
         # handshake reply; one internal retry round trip adds 2s. Bound:
         # 2 + 2 + 2 + 2 slack = 8s.
         import redis.asyncio as redis_async

@@ -149,7 +149,7 @@ class TestSubscribeWakeLockContract:
         The lock guards mutation of ``_wake_subscribers``. This test
         verifies the lock is wired through both enter and exit paths,
         which is the design surface for the callback-path assertion
-        (the callback must NOT acquire the lock).
+        (the callback must not acquire the lock).
         """
         backend = _make_backend()
         counter = 0

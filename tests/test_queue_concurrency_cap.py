@@ -106,7 +106,7 @@ async def test_concurrent_acquires_respect_2_slot_cap_across_multiple_actors() -
     ``ConcurrencyReservation`` registered under
     ``queue_concurrency_reservation_name("orders")`` with ``slots=2`` must
     never allow more than 2 concurrent acquisitions simultaneously - not
-    just eventually, but at NO instant during a parallel dispatch burst.
+    just eventually, but at no instant during a parallel dispatch burst.
 
     Five concurrent tasks each call ``acquire_for_actor`` with the queue-cap
     reservation name ALONGSIDE a distinct per-actor static reservation
@@ -164,7 +164,7 @@ async def test_concurrent_acquires_respect_2_slot_cap_across_multiple_actors() -
 
     tasks = [asyncio.create_task(_acquire_hold_release(i)) for i in range(num_tasks)]
 
-    # Bounded wait until every task has ATTEMPTED: each is either denied
+    # Bounded wait until every task has attempted: each is either denied
     # (returned, after incrementing denied_count) or holding
     # (current_concurrency incremented, parked on hold_event.wait). The
     # old fixed 0.1s sleep raced task startup under load - a task that
@@ -191,21 +191,21 @@ async def test_concurrent_acquires_respect_2_slot_cap_across_multiple_actors() -
     )
 
 
-# ── Cap interaction: queue cap AND keyed reservation AND keyed rate limit ──
+# ── Cap interaction: queue cap and keyed reservation and keyed rate limit ──
 
 
 async def test_queue_cap_composes_with_keyed_refs_and_rolls_back_across_kinds() -> None:
     """Per-queue cap + keyed reservation + keyed rate limit in one acquire:
-    AND-composition (ALL must be acquired), acquired in declaration order
+    and-composition (ALL must be acquired), acquired in declaration order
     (queue cap first, via the dispatch prepend), and a denial at any stage
     rolls back every earlier stage - across all three cap kinds.
 
     - (a) Full acquire of all three succeeds, in order.
-    - (b) With the queue-cap slot held, a second acquire is denied AT THE
+    - (b) With the queue-cap slot held, a second acquire is denied AT the
       QUEUE CAP (source="reservation", bucket is the queue-cap name) -
       the fleet-wide cap binds first.
     - (c) After actor completion (release_for_actor: reservation slots
-      freed, token permanently consumed), a re-acquire is denied AT THE
+      freed, token permanently consumed), a re-acquire is denied AT the
       RATE LIMIT; the rollback releases the queue-cap slot and the keyed
       reservation slot it had just acquired - no cross-kind leak.
     """
@@ -330,7 +330,7 @@ async def test_keyed_reservation_denial_rolls_back_queue_cap() -> None:
 
 
 def test_dispatch_no_queue_cap_preserves_actor_reservations() -> None:
-    """When the registry has NO queue-cap reservation for the job's queue,
+    """When the registry has no queue-cap reservation for the job's queue,
     ``_effective_reservations`` returns the actor's reservations unchanged
     - same object, no per-job copy on the hot path."""
     from taskq.worker.dispatch import _effective_reservations
@@ -392,11 +392,11 @@ def test_dispatch_no_rl_registry_leaves_reservations_unchanged() -> None:
 def test_effective_reservations_never_copies_registry_dict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: the dispatch hot path must NOT read the ``reservations``
+    """Regression: the dispatch hot path must not read the ``reservations``
     property, which defensively copies the whole dict - an O(n)-per-dispatch
     stall at high keyed-entry cardinality.
 
-    Patches the property to raise on ANY access; if the queue-cap check is
+    Patches the property to raise on any access; if the queue-cap check is
     ever re-implemented in terms of ``rl_registry.reservations`` (or another
     copying accessor), this test fails.
     """
@@ -459,7 +459,7 @@ def test_has_rate_limit_never_copies_registry_dict(
     ``test_effective_reservations_never_copies_registry_dict``): the
     ``rate_limits`` property defensively copies the whole dict - fine at
     startup/admin cadence, prohibitive per call at high keyed-entry
-    cardinality. Patches the property to raise on ANY access, so a
+    cardinality. Patches the property to raise on any access, so a
     re-implementation of membership checks in terms of the copying
     property fails loudly."""
 
@@ -597,7 +597,7 @@ def test_register_queue_cap_reservation_idempotent_for_same_config() -> None:
 
 def test_register_queue_cap_reservation_raises_for_unprefixed_name() -> None:
     """``register_queue_cap_reservation()`` raises ``ValueError`` for a name
-    that does NOT start with the reserved prefix - a defensive guard against
+    that does not start with the reserved prefix - a defensive guard against
     internal misuse."""
     reg = RateLimitRegistry()
     res = _reservation("user-reservation", slots=2, lease=timedelta(seconds=30))

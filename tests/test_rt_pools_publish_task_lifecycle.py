@@ -132,7 +132,7 @@ async def test_completed_publishes_are_discarded_from_the_shared_set() -> None:
 
     Two progress calls on DIFFERENT jobs with a 0.25 s pipeline round trip
     each create a tracked task (per-job coalescing means two rapid calls
-    on the SAME job share one task); while in flight the set holds both
+    on the same job share one task); while in flight the set holds both
     (the anti-GC-reference is the set's whole purpose), and once both
     round trips complete the done-callbacks must have discarded them.
     """

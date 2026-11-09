@@ -292,7 +292,7 @@ async def test_get_attempts_answers_an_archived_jobs_attempt_history(
     The get fallback (issue #314) made the ROW honest - ``handle.row``
     reports ``attempt=1`` - while ``get_attempts`` kept reading the hot
     ``job_attempts`` table only, so the same handle reported a job with
-    an attempt count and NO attempt history: the row said it ran, the
+    an attempt count and no attempt history: the row said it ran, the
     history said it never did.
     """
     _deps, backend = clean_jobs_app

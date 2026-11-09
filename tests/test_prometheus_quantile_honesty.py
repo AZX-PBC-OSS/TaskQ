@@ -30,7 +30,7 @@ SDK objects:
    a healthy dispatch fleet's served p99 stays under ``TaskQDispatchLatencyHigh``'s
    50 ms line, a healthy lock's served p99 stays over ``TaskQLockExpiringSoon``'s
    30 s line - and the one shape where a HEALTHY configuration quantiles
-   UNDER that 30 s line (the threshold sitting on the ``le="30"`` bucket
+   under that 30 s line (the threshold sitting on the ``le="30"`` bucket
    edge) is pinned and documented instead of hidden.
 
 The quantiles are APPROXIMATE by construction - that is the contract being
@@ -416,7 +416,7 @@ class TestBucketScalesAreHonest:
             f"a healthy dispatch fleet (3000 sub-50ms + 1% tail) served p99 "
             f"{served_p99:.4g} - TaskQDispatchLatencyHigh (>50ms) would page on health"
         )
-        # The 300ms sample must NOT vanish into an all-in-one-bucket top:
+        # The 300ms sample must not vanish into an all-in-one-bucket top:
         # it is distinguishable from the healthy mass (the le=0.25/0.5/1.0
         # buckets carry it alone).
         series = _served_series(exp, "dispatch")
@@ -432,7 +432,7 @@ class TestBucketScalesAreHonest:
     ) -> None:
         exp, samples = honesty
         _assert_honest(exp, samples["pool_acquire"], "pool_acquire", (0.5, 0.95, 0.99))
-        # p99 falls in the exhausted tail: it must be served ABOVE the
+        # p99 falls in the exhausted tail: it must be served above the
         # healthy sub-5ms mass (the histogram's whole point).
         served_p99 = served_histogram_quantile(0.99, _served_series(exp, "pool_acquire"))
         assert served_p99 > 1.0, (
@@ -455,7 +455,7 @@ class TestBucketScalesAreHonest:
         truth_p99 = true_quantile(0.99, samples["queue_wait"])
         # The ~45s stragglers: covered by the 30s/60s pair - the served p99
         # stays inside their bucket (error bounded by its 30s width) and on
-        # the STARVED side of the healthy sub-second mass.
+        # the starved side of the healthy sub-second mass.
         assert served_p99 > 30.0, (
             f"45s queue-wait stragglers served p99 {served_p99:.4g} - the p99 "
             "read the playbook prescribes must see the stragglers"
@@ -470,7 +470,7 @@ class TestBucketScalesAreHonest:
         errors = _assert_honest(exp, samples["lock_expires"], "lock_expires", (0.5, 0.99))
         served_p99 = served_histogram_quantile(0.99, _served_series(exp, "lock_expires"))
         # Healthy defaults (lease 60s, heartbeat 10s -> remaining ~50s): the
-        # served p99 must stay ABOVE TaskQLockExpiringSoon's 30s line.
+        # served p99 must stay above TaskQLockExpiringSoon's 30s line.
         assert served_p99 > 30.0, (
             f"healthy lock remaining-TTL served p99 {served_p99:.4g} - "
             "TaskQLockExpiringSoon would page on the default configuration"
@@ -501,7 +501,7 @@ class TestBucketScalesAreHonest:
         )
         served_p99 = served_histogram_quantile(0.99, series)
         # Healthy beats ~20us: p99 stays under 1ms (error bounded by the
-        # containing sub-ms bucket), AND the one 2s stall is in a different
+        # containing sub-ms bucket), and the one 2s stall is in a different
         # bucket than the healthy mass (le=5 bucket).
         assert served_p99 < 0.001, (
             f"healthy event-loop beats served p99 {served_p99:.4g} - the "
@@ -520,7 +520,7 @@ class TestBucketScalesAreHonest:
     def test_lock_expiring_soon_cliff_shape_quantiles_below_its_threshold(
         self, honesty: tuple[Exposition, dict[str, list[float]]]
     ) -> None:
-        """THE FOUND CLIFF (documented, not hidden): a HEALTHY
+        """The found cliff (documented, not hidden): a HEALTHY
         minimal-valid lease configuration - heartbeat_interval 5s with
         lock_lease 33s (the cascade floor for that cadence) - reads
         remaining TTL ~28s, every renewal's sample lands in the le="30"
@@ -531,7 +531,7 @@ class TestBucketScalesAreHonest:
         test_prometheus_metrics_review.py proves the firing on isolated
         series; this test pins the served bucket scale's part in it."""
         exp, _samples = honesty
-        # The served scale, from the LIVE bridge scrape of the real
+        # The served scale, from the live bridge scrape of the real
         # instrument: the le="30" edge is the cliff's landing bucket.
         finite = [le for le, _ in _served_series(exp, "lock_expires") if math.isfinite(le)]
         assert 20.0 in finite and 30.0 in finite and 45.0 in finite, finite

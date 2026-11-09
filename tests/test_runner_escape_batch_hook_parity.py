@@ -10,7 +10,7 @@ re-raise/return: the CancelledError handler calls the hook with
 it with ``_handle_generic_exception``'s terminal outcome (a handler
 whose terminal write infra-failed leaves the row RUNNING and stays
 hook-silent - the sweep is the recovery, and no batch counter may budge
-on a non-terminal write). The batch-completion check runs on ANY terminal
+on a non-terminal write). The batch-completion check runs on any terminal
 member (including those that were discarded), so a batch whose last
 member ends through an escape completes immediately - never
 sweep-deferred on a normal flow.
@@ -20,7 +20,7 @@ cooperative-cancel absorb in ``run_until_drained``, and the phase-2
 force-cancel that lands on the drain task itself) hold the same
 contract: the escape sets the terminal outcome and falls through to the
 shared hook call. These pins hold it - the member's row reaches its
-terminal state AND the batch row reaches ``complete``; re-skipping the
+terminal state and the batch row reaches ``complete``; re-skipping the
 hook on any mirror strands the batch ``active`` until the stale-batch
 sweep and turns these pins red.
 """
