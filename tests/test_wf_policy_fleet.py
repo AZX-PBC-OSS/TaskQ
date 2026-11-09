@@ -426,10 +426,16 @@ async def test_two_real_claimants_enforce_reserved_target_and_release_all_slots(
         "WHERE bucket_name = $1 AND job_id IS NOT NULL",
         guard_name,
     )
-    assert held == 0, "the completed/denied claims leaked a reservation lease"
+    assert held == 0, (
+        "the completed claim and the refused second dispatch leaked no reservation lease"
+    )
 
-    # The real denial was requeued by mark_snoozed; after the floor, another
-    # worker claims the same row and succeeds, using a fresh acquisition.
+    # The second reserved row was never claimed while the winner's slot was
+    # held (the reservation-headroom fence refused its dispatch); after the
+    # winner's release, another worker claims the same row and succeeds with
+    # a fresh acquisition. The post-claim `mark_snoozed` denial stays the
+    # fence's documented fallback and is exercised by
+    # tests/test_wf_capacity_enforcement_pins.py.
     async def completion() -> str:
         deadline = asyncio.get_running_loop().time() + 10
         while asyncio.get_running_loop().time() < deadline:
@@ -458,7 +464,7 @@ async def test_two_real_claimants_enforce_reserved_target_and_release_all_slots(
             flow_id,
         )
         raise TimeoutError(
-            f"denied reserved row did not become claimable: {[dict(r) for r in final]}"
+            f"the refused reserved row did not become claimable: {[dict(r) for r in final]}"
         )
 
     await completion()
