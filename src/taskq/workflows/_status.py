@@ -208,8 +208,9 @@ def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
 # calls; the docs state the rule).
 
 _LEDGER_TERMINALS_SQL = """\
-SELECT step_key, status FROM {schema}.wf_step_ledger
+SELECT job_id, step_key, map_index, attempt, status FROM {schema}.wf_step_ledger
 WHERE flow_id = $1::uuid AND status IN ('succeeded', 'failed')
+ORDER BY attempt, created_at, id
 """
 
 _NEVER_GRANTED_SQL = """\
@@ -242,20 +243,37 @@ async def reconstruct_workflow_status(
     # absorbed_exists predicate is status-blind on the parent for
     # exactly this reason).
     absorbed_keys = {r["step_key"] for r in node_rows if r["absorbed"] and r["status"] in _TERMINAL}
-    ledger_by_key: dict[str, str] = {}
+    # The ledger's terminal per CLAIM IDENTITY — the owning job row's id
+    # (that child's own step_key + map_index + the attempt that owns the
+    # terminal), never a dictionary keyed by step_key: ordinary map
+    # siblings share one step key, and a step-key collapse would let one
+    # child's failed retry answer for its still-live siblings. The
+    # statement's deterministic (attempt, created_at, id) order makes the
+    # overwrite below the LATEST attempt's terminal (the memoized replay's
+    # own ``ORDER BY attempt DESC`` convention) — no reliance on physical
+    # arrival order. A terminal from a historical attempt cannot relabel
+    # the node whose current claim has moved past it (the reclaim's
+    # re-pend keeps that row live; the row's own status stands).
+    ledger_by_job: dict[JobId, str] = {}
+    ledger_attempt_by_job: dict[JobId, int] = {}
     for r in ledger_rows:
-        # The ledger's latest terminal row for the step (attempt-ordered
-        # arrival — the dict overwrite is the latest-write truth).
-        ledger_by_key[r["step_key"]] = r["status"]
+        ledger_by_job[r["job_id"]] = r["status"]
+        ledger_attempt_by_job[r["job_id"]] = r["attempt"]
 
     nodes: list[NodeView] = []
     for r in node_rows:
         status = r["status"]
-        if status == "pending" and r["step_key"] in ledger_by_key:
-            # The ledger is the status store: a pending row whose ledger
-            # terminal exists (the crash window) reconstructs through the
-            # ledger's outcome.
-            status = ledger_by_key[r["step_key"]]
+        if (
+            status == "pending"
+            and r["id"] in ledger_by_job
+            and ledger_attempt_by_job[r["id"]] == r["attempt"]
+        ):
+            # The ledger is the status store: a pending row whose OWN
+            # current claim's ledger terminal exists (the crash window)
+            # reconstructs through the ledger's outcome — keyed on the
+            # row's own claim identity; a sibling's terminal can never
+            # answer for it.
+            status = ledger_by_job[r["id"]]
         nodes.append(
             NodeView(
                 status=status,

@@ -15,15 +15,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Any
 
 import asyncpg
 import pytest
 
+from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._status import (
     NodeView,
+    WorkflowStatus,
     derive_workflow_status,
     reconstruct_workflow_status,
 )
@@ -745,4 +748,302 @@ async def test_rollup_cost_gate_index_driven(
             ),
             "plan": "index-driven (jobs_wf_flow_nodes_idx, 01.00.26_02)",
         },
+    )
+
+
+# ── The reconstruction's ledger terminal identity ───────────────────────
+
+
+async def _seed_wf_row(
+    conn: asyncpg.Connection,
+    schema: str,
+    flow_id: uuid.UUID,
+    *,
+    job_id: uuid.UUID | None = None,
+    status: str,
+    step_key: str,
+    map_index: int | None = None,
+    attempt: int = 0,
+    deps_pending: int = 0,
+    metadata: dict[str, object] | None = None,
+    fairness_key: str | None = None,
+    actor: str = "wf",
+) -> None:
+    """One jobs row in the run's raw shape (the reconstruction's input)."""
+    row_id = job_id or new_uuid()
+    await conn.execute(
+        f'''INSERT INTO "{schema}".jobs
+            (id, actor, queue, payload, attempt, max_attempts, retry_kind,
+             status, step_key, map_index, deps_pending, metadata,
+             idempotency_scope, idempotency_key, fairness_key)
+            VALUES ($1, $2, 'default', '{{}}'::jsonb, $3, 3, 'transient',
+                    $4, $5, $6, $7, $8::jsonb, 'probe', $9, $10)''',
+        row_id,
+        actor,
+        attempt,
+        status,
+        step_key,
+        map_index,
+        deps_pending,
+        json.dumps({"flow_id": str(flow_id), **(metadata or {})}),
+        f"probe:{row_id}",
+        fairness_key,
+    )
+
+
+async def _seed_ledger_terminal(
+    conn: asyncpg.Connection,
+    schema: str,
+    flow_id: uuid.UUID,
+    *,
+    job_id: uuid.UUID,
+    step_key: str,
+    map_index: int | None,
+    attempt: int,
+    status: str,
+) -> None:
+    """One ledger row (the claim's own attempt record)."""
+    await conn.execute(
+        f'''INSERT INTO "{schema}".wf_step_ledger
+            (id, flow_id, job_id, step_key, map_index, attempt, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)''',
+        new_uuid(),
+        flow_id,
+        job_id,
+        step_key,
+        map_index,
+        attempt,
+        status,
+    )
+
+
+@pytest.mark.integration
+async def test_reconstruction_map_sibling_never_inherits_a_siblings_terminal(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """The ledger terminal belongs to its OWN claim — the owning job row
+    (that child's step_key + map_index + attempt) — never to the step
+    key. The live-retry window's row set: the root running, three map
+    children pending at attempt 1, the fourth re-pended scheduled at
+    attempt 2 behind its two burned attempts' ledger terminals, the
+    fan-in and the tail steps pending. The rows derive ``blocked`` (live
+    blocked rows, no failed row) and the authoritative root writer
+    agrees — the root stays ``running``.
+    RED (the step-key collapse): the pending siblings inherited the
+    failed terminal keyed by step_key alone and these same rows derived
+    ``failed`` — a live run reported dead by its own status read."""
+    flow = new_uuid()
+    meta: dict[str, object] = {"workflow": "probe_march"}
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=flow,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata=meta,
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        status="succeeded",
+        step_key="sources",
+        attempt=1,
+        metadata=meta,
+        fairness_key=str(flow),
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        status="succeeded",
+        step_key="review",
+        attempt=4,
+        metadata=meta,
+        fairness_key=str(flow),
+    )
+    for map_index in (0, 1, 2):
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow,
+            status="pending",
+            step_key="sources.item",
+            map_index=map_index,
+            attempt=1,
+            metadata=meta,
+            fairness_key=str(flow),
+        )
+    permanent = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=permanent,
+        status="scheduled",
+        step_key="sources.item",
+        map_index=3,
+        attempt=2,
+        metadata=meta,
+        fairness_key=str(flow),
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        status="pending",
+        step_key="sources.join",
+        deps_pending=4,
+        metadata={**meta, "blocking_reason": "join"},
+        fairness_key=str(flow),
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        status="pending",
+        step_key="triage",
+        deps_pending=1,
+        metadata=meta,
+        fairness_key=str(flow),
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        status="pending",
+        step_key="publish",
+        deps_pending=2,
+        metadata=meta,
+        fairness_key=str(flow),
+    )
+    for attempt in (1, 2):
+        await _seed_ledger_terminal(
+            wf_conn,
+            wf_schema,
+            flow,
+            job_id=permanent,
+            step_key="sources.item",
+            map_index=3,
+            attempt=attempt,
+            status="failed",
+        )
+
+    verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+    assert verdict == "blocked", (
+        f"the live map siblings reconstructed {verdict!r}: a sibling's failed "
+        "retry is THAT child's claim's outcome — the terminal is the ledger "
+        "row's own (job, attempt) identity, never the step key's; the "
+        "still-live pending siblings derive the blocked/live class and the "
+        "run stays live"
+    )
+    # The authoritative writer's agreement (G7's own mapping: blocked ↔
+    # running): the root maintenance leg leaves the live root untouched.
+    await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
+    root = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow
+    )
+    assert root == "running", (
+        f"the reconstruction said {verdict!r} while the root writer left the "
+        f"root {root!r} — the two derivations of one status vocabulary "
+        "disagreed on the same rows"
+    )
+
+
+@pytest.mark.integration
+async def test_reconstruction_latest_terminal_is_order_deterministic(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """The 'latest terminal' selection is the ledger's own attempt order —
+    never the heap's physical arrival order: identical logical rows
+    derive the identical verdict through a tuple move and ANALYZE. The
+    run's shape: one pending map sibling (its own claim, no terminal)
+    beside a re-pended child whose ledger carries its attempt-1 failure
+    and its attempt-2 success. The live run's verdict is ``pending``.
+    RED (the unordered overwrite): the verdict flipped with the rows'
+    physical arrival — the same logical rows, two verdicts."""
+    flow = new_uuid()
+    retried = new_uuid()
+    meta: dict[str, object] = {"workflow": "probe_march"}
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=flow,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata=meta,
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        status="pending",
+        step_key="sources.item",
+        map_index=0,
+        attempt=1,
+        metadata=meta,
+        fairness_key=str(flow),
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=retried,
+        status="scheduled",
+        step_key="sources.item",
+        map_index=1,
+        attempt=2,
+        metadata=meta,
+        fairness_key=str(flow),
+    )
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=retried,
+        step_key="sources.item",
+        map_index=1,
+        attempt=1,
+        status="failed",
+    )
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=retried,
+        step_key="sources.item",
+        map_index=1,
+        attempt=2,
+        status="succeeded",
+    )
+
+    async def sample() -> WorkflowStatus:
+        return await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+
+    first = await sample()
+    # The failed row's tuple moves (an UPDATE rewrites it at the heap's
+    # end): the logical rows are unchanged, the physical arrival order is
+    # reversed.
+    await wf_conn.execute(
+        f'''UPDATE "{wf_schema}".wf_step_ledger SET updated_at = clock_timestamp()
+            WHERE flow_id = $1 AND status = 'failed' ''',
+        flow,
+    )
+    second = await sample()
+    await wf_conn.execute(f'ANALYZE "{wf_schema}".wf_step_ledger')
+    third = await sample()
+
+    assert first == second == third == "pending", (
+        f"the same logical rows derived {first!r} → {second!r} → {third!r} "
+        "under a physical reorder + ANALYZE — the latest terminal must be "
+        "the ledger's own attempt order (deterministic), never the heap's "
+        "arrival order; the live run's verdict is 'pending'"
     )
