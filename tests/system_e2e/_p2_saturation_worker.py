@@ -147,18 +147,21 @@ async def _fetch_page(
 ) -> tuple[list[dict[str, object]], str | None]:
     """The synthetic keyset page read plus its scenario counters.
 
-    ``next_cursor`` is ``None`` exactly when no records remain after this
-    page, so a fully-consumed set terminates without an empty fetch."""
-    after = int(cursor) if cursor is not None else -1
+    The cursor token is the NEXT ordinal to fetch (inclusive): the first
+    page's token names the first unseen ordinal, so a resumed page
+    re-reads exactly the parked page's records. ``next_cursor`` is
+    ``None`` exactly when no records remain after this page, so a
+    fully-consumed set terminates without an empty fetch."""
+    after = int(cursor) if cursor is not None else 0
     rows = await conn.fetch(
         f'SELECT ordinal, record_id, content FROM "{schema}".p2sat_records '
-        "WHERE scenario_id = $1 AND ordinal > $2 ORDER BY ordinal LIMIT $3",
+        "WHERE scenario_id = $1 AND ordinal >= $2 ORDER BY ordinal LIMIT $3",
         scenario,
         after,
         PAGE_WIDTH,
     )
     page = [dict(row) for row in rows]
-    last = int(page[-1]["ordinal"]) if page else after
+    last = int(page[-1]["ordinal"]) if page else after - 1
     remaining = await conn.fetchval(
         f'SELECT count(*) FROM "{schema}".p2sat_records '
         "WHERE scenario_id = $1 AND ordinal > $2",
