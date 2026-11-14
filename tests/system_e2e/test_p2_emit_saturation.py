@@ -524,7 +524,7 @@ async def _healthy_assertions(
         source_id,
     )
     entries = await pool.fetch(
-        f"SELECT id, pid, worker_id, logical_attempt, claim_epoch, entered_at, body_returned_at "
+        f"SELECT id, pid, logical_attempt, claim_epoch, entered_at, body_returned_at "
         f'FROM "{schema}".p2sat_source_entries '
         "WHERE scenario=$1 AND flow_id=$2::uuid ORDER BY id",
         scenario,
