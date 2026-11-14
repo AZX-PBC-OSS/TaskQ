@@ -241,34 +241,31 @@ class EstateWakeCursor:
     behind it is never examined.
 
     The fair cursor alternates each pass between a FORWARD STRIDE (a
-    keyset batch from the cursor — bounded progress through a blocked
-    prefix) and a WRAP (a from-start pass whose limit is the WHOLE
-    parked population, capped by ``wrap_limit``): every parked row is
-    examined at least once per two-pass cycle REGARDLESS of how long
-    the blocked prefix is, so a row whose fit arrives at any time wakes
-    within two estate passes. The wrap never advances the stride
-    cursor (it re-examines everything next cycle); a short stride pass
-    (the estate's tail) resets the stride to the beginning by itself.
-    The leader's recovery arm owns one of these."""
+    keyset batch from the cursor) and a WRAP (a from-start pass with
+    ``exhaust=True`` — the wake pages the WHOLE matching set in
+    chunked transactions, whatever the population): every parked row
+    is examined at least once per two-pass cycle for ANY population,
+    so a row whose fit arrives at any time wakes within two estate
+    passes. The wrap never advances the stride cursor (it re-examines
+    everything next cycle); a short stride pass (the estate's tail)
+    resets the stride to the beginning by itself. The leader's
+    recovery arm owns one of these."""
 
     cursor: tuple[JobId, JobId] | None = None
-    #: The wrap pass's own bound: the parked population's cap (the
-    #: settings' own documented event-writer batch ceiling).
-    wrap_limit: int = 10_000
     _next_is_wrap: bool = False
     _issued_wrap: bool = False
 
-    def next_pass(self, batch_size: int) -> tuple[tuple[JobId, JobId] | None, int]:
-        """The next pass's ``(after, batch_size)``: a forward keyset stride
-        at the caller's batch, then a from-start wrap at the full
-        population bound."""
+    def next_pass(self, batch_size: int) -> tuple[tuple[JobId, JobId] | None, int, bool]:
+        """The next pass's ``(after, batch_size, exhaust)``: a forward
+        keyset stride at the caller's batch, then a from-start wrap that
+        pages the whole parked population."""
         if self._next_is_wrap:
             self._next_is_wrap = False
             self._issued_wrap = True
-            return None, max(batch_size, self.wrap_limit)
+            return None, batch_size, True
         self._issued_wrap = False
         self._next_is_wrap = True
-        return self.cursor, batch_size
+        return self.cursor, batch_size, False
 
     def observe(self, result: EmitWakeResult) -> None:
         """Fold one pass's result. Only a STRIDE pass moves the cursor (a
@@ -278,6 +275,12 @@ class EstateWakeCursor:
         if self._issued_wrap:
             return
         self.cursor = result.next_cursor
+
+
+#: The wake's per-transaction lock budget's own ceiling: one chunk's
+#: advisory locks (per distinct flow) plus row locks stay far below
+#: ``max_locks_per_transaction * max_connections`` at any deployment shape.
+_WAKE_MAX_CHUNK: Final[int] = 1000
 
 
 class _AdmissionLostError(Exception):
@@ -676,104 +679,170 @@ async def wake_emit_backpressure(
     flow_id: JobId | None = None,
     batch_size: int = 100,
     after: tuple[JobId, JobId] | None = None,
+    chunk_size: int = 200,
+    exhaust: bool = False,
 ) -> EmitWakeResult:
-    """Promote fitted, exactly parked sources in one fresh transaction.
+    """Promote fitted, exactly parked sources; the estate pass pages the
+    matching set in CHUNKED TRANSACTIONS under a hard per-transaction lock
+    budget.
 
-    ``flow_id`` is the post-commit accelerator. With no flow this is the
-    bounded estate recovery pass. The caller's cursor must be FAIR: a
-    pure keyset cursor never revisits a row it passed over, so under
-    continuous arrivals a parked row whose fit arrives late starves —
-    :class:`EstateWakeCursor` alternates forward strides with
-    from-start revisits, and a short/empty pass resets by itself. One
-    malformed parked record isolates to its own row (a bounded warning,
-    the pass advances past it); the valid waiters still wake.
+    ``flow_id`` is the post-commit accelerator: one flow's own parked
+    waiters (bounded by that run's own graph) in one transaction, at most
+    ``batch_size`` of them. With no flow this is the estate recovery pass,
+    and the caller's cursor must be FAIR — :class:`EstateWakeCursor`
+    alternates a forward keyset stride with a from-start WRAP
+    (``exhaust=True``). The ACTUAL guarantees, stated for ANY parked
+    population:
+
+    * COVERAGE: every parked row is examined at least once per two-pass
+      cycle — the wrap pass pages the WHOLE matching set (keyset pages of
+      ``chunk_size`` until the set is exhausted), so no blocked prefix,
+      however long, and no population size can starve a fitted waiter
+      behind it.
+    * LOCK BUDGET: each transaction processes at most ``chunk_size``
+      candidates — one advisory lock per distinct flow plus the chunk's
+      own row locks — a hard per-transaction ceiling (``chunk_size`` is
+      validated to at most 1000, far below
+      ``max_locks_per_transaction * max_connections`` at any deployment
+      shape). The wrap can never exhaust the shared lock table; its own
+      cost is ``ceil(matching/chunk_size)`` committed transactions, the
+      recovery arm's honest work for the population it recovers.
+    * ISOLATION: one malformed parked record skips its own row with a
+      bounded, named diagnostic; the valid waiters still wake. An
+      infrastructure fault aborts THAT chunk (its committed predecessors
+      stand) and propagates — the sweep's failure arm owns the retry, and
+      the next cycle's wrap re-examines the aborted chunk's rows.
     """
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError("emit-backpressure wake batch_size must be positive")
+    if type(chunk_size) is not int or not 1 <= chunk_size <= _WAKE_MAX_CHUNK:
+        raise ValueError(
+            f"emit-backpressure wake chunk_size must be an integer in "
+            f"[1, {_WAKE_MAX_CHUNK}] — the per-transaction lock budget (an "
+            "advisory lock per distinct flow plus the chunk's own row locks "
+            "must stay far below max_locks_per_transaction * connections)"
+        )
     if after is not None and flow_id is not None:
         raise ValueError("an estate cursor cannot be combined with one flow target")
 
     from taskq.workflows.api._sql_runner import render_sql
 
-    if flow_id is not None:
-        candidate_sql = render_sql(EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL, wsql.schema)
-        candidate_args: tuple[object, ...] = (flow_id, batch_size)
-    elif after is not None:
-        candidate_sql = render_sql(EMIT_BACKPRESSURE_CURSOR_CANDIDATES_SQL, wsql.schema)
-        candidate_args = (*after, batch_size)
-    else:
-        candidate_sql = render_sql(EMIT_BACKPRESSURE_CANDIDATES_SQL, wsql.schema)
-        candidate_args = (batch_size,)
-
     root_lock_sql = render_sql(EMIT_BACKPRESSURE_ROOT_LOCK_SQL, wsql.schema)
     candidate_lock_sql = render_sql(EMIT_BACKPRESSURE_CANDIDATE_LOCK_SQL, wsql.schema)
     wake_sql = render_sql(EMIT_BACKPRESSURE_WAKE_SQL, wsql.schema)
-    woken = 0
-    last: tuple[JobId, JobId] | None = None
-    count = 0
-    async with pool.acquire() as conn, conn.transaction():
-        candidates = await conn.fetch(candidate_sql, *candidate_args)
-        count = len(candidates)
-        locked_roots: dict[JobId, bool] = {}
-        for candidate in candidates:
-            source_id = JobId(candidate["id"])
-            candidate_flow = JobId(candidate["flow_id"])
-            last = (candidate_flow, source_id)
-            live_root = locked_roots.get(candidate_flow)
-            if live_root is None:
-                root = await conn.fetchrow(root_lock_sql, candidate_flow)
-                live_root = root is not None and root["status"] not in {
-                    "succeeded",
-                    "failed",
-                    "cancelled",
-                    "crashed",
-                    "abandoned",
-                }
-                locked_roots[candidate_flow] = live_root
-            if not live_root:
-                continue
+    first_page_sql: str
+    next_page_sql: str | None
+    base_args: tuple[object, ...]
+    if flow_id is not None:
+        first_page_sql = render_sql(EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL, wsql.schema)
+        next_page_sql = None  # the flow's own parked set is its graph's bound
+        base_args = (flow_id,)
+    else:
+        first_page_sql = render_sql(EMIT_BACKPRESSURE_CANDIDATES_SQL, wsql.schema)
+        next_page_sql = render_sql(EMIT_BACKPRESSURE_CURSOR_CANDIDATES_SQL, wsql.schema)
+        base_args = ()
 
-            # Canonical root -> waiter -> admission order. This fresh locked
-            # row read refutes the initial index probe before descriptor use.
-            source = await conn.fetchrow(candidate_lock_sql, source_id)
-            if source is None:
-                continue
-            try:
-                descriptor = _wait_descriptor(source["metadata"])
-            except ValueError as exc:
-                # PER-ROW ISOLATION: one malformed/corrupt parked record is
-                # that row's own fault, never the estate's — the pass skips
-                # it (the cursor already advanced past it) and the valid
-                # waiters still wake. The durable marker stays: the row is
-                # visible, named, and bounded — the operator's alert, never
-                # a poisoned recovery loop. An infrastructure fault is NOT
-                # isolated: it aborts the transaction and the sweep's own
-                # failure arm owns the retry.
-                logger.warning(
-                    "wf.emit_backpressure_waiter_invalid",
-                    flow_id=str(candidate_flow),
-                    job_id=str(source_id),
-                    error_class=type(exc).__name__,
-                    error=str(exc)[:500],
+    woken = 0
+    processed = 0
+    last: tuple[JobId, JobId] | None = None
+    page_after: tuple[JobId, JobId] | None = after
+    while True:
+        # THE PAGE'S OWN LIMIT: the wrap pages at the chunk budget; a
+        # non-exhaust pass pages at min(chunk, its remaining coverage
+        # target) — the stride's batch bound is never swallowed by a
+        # larger chunk.
+        if flow_id is not None:
+            page_limit = batch_size
+        elif exhaust:
+            page_limit = chunk_size
+        else:
+            page_limit = max(1, min(chunk_size, batch_size - processed))
+        # ONE TRANSACTION PER CHUNK: the locks (the roots' FOR UPDATE NOWAIT,
+        # the candidates' row locks, one advisory lock per distinct flow)
+        # release at this chunk's commit — the pass's lock footprint is
+        # chunk_size, never the parked population's size.
+        async with pool.acquire() as conn, conn.transaction():
+            if page_after is None:
+                candidates = await conn.fetch(first_page_sql, *base_args, page_limit)
+            else:
+                assert next_page_sql is not None
+                candidates = await conn.fetch(next_page_sql, *page_after, page_limit)
+            count = len(candidates)
+            processed += count
+            locked_roots: dict[JobId, bool] = {}
+            for candidate in candidates:
+                source_id = JobId(candidate["id"])
+                candidate_flow = JobId(candidate["flow_id"])
+                last = (candidate_flow, source_id)
+                live_root = locked_roots.get(candidate_flow)
+                if live_root is None:
+                    root = await conn.fetchrow(root_lock_sql, candidate_flow)
+                    live_root = root is not None and root["status"] not in {
+                        "succeeded",
+                        "failed",
+                        "cancelled",
+                        "crashed",
+                        "abandoned",
+                    }
+                    locked_roots[candidate_flow] = live_root
+                if not live_root:
+                    continue
+
+                # Canonical root -> waiter -> admission order. This fresh locked
+                # row read refutes the initial index probe before descriptor use.
+                source = await conn.fetchrow(candidate_lock_sql, source_id)
+                if source is None:
+                    continue
+                try:
+                    descriptor = _wait_descriptor(source["metadata"])
+                except ValueError as exc:
+                    # PER-ROW ISOLATION: one malformed/corrupt parked record is
+                    # that row's own fault, never the estate's — the pass skips
+                    # it (the paging cursor already advanced past it) and the
+                    # valid waiters still wake. The durable marker stays: the
+                    # row is visible, named, and bounded — the operator's
+                    # alert, never a poisoned recovery loop. An infrastructure
+                    # fault is NOT isolated: it aborts the chunk (its
+                    # committed predecessors stand) and the sweep's own
+                    # failure arm owns the retry.
+                    logger.warning(
+                        "wf.emit_backpressure_waiter_invalid",
+                        flow_id=str(candidate_flow),
+                        job_id=str(source_id),
+                        error_class=type(exc).__name__,
+                        error=str(exc)[:500],
+                    )
+                    continue
+                await conn.execute(wsql.emit_admission_lock, str(candidate_flow))
+                outstanding = await _outstanding(conn, wsql, candidate_flow, source_id)
+                if outstanding + descriptor.page_width > descriptor.bound:
+                    continue
+                promoted = await conn.fetchrow(wake_sql, source_id)
+                if promoted is None:
+                    continue
+                woken += 1
+                # NOTIFY accelerates an already durable pending transition. The
+                # effective actor assignment, not a stale original label, is named.
+                await conn.execute(
+                    "SELECT pg_notify($1, $2)",
+                    wake_channel(wsql.schema),
+                    str(promoted["effective_queue"]),
                 )
-                continue
-            await conn.execute(wsql.emit_admission_lock, str(candidate_flow))
-            outstanding = await _outstanding(conn, wsql, candidate_flow, source_id)
-            if outstanding + descriptor.page_width > descriptor.bound:
-                continue
-            promoted = await conn.fetchrow(wake_sql, source_id)
-            if promoted is None:
-                continue
-            woken += 1
-            # NOTIFY accelerates an already durable pending transition. The
-            # effective actor assignment, not a stale original label, is named.
-            await conn.execute(
-                "SELECT pg_notify($1, $2)",
-                wake_channel(wsql.schema),
-                str(promoted["effective_queue"]),
-            )
-    next_cursor = None if flow_id is not None or count < batch_size else last
-    return EmitWakeResult(woken=woken, next_cursor=next_cursor)
+        # THE CHUNK COMMITTED (its locks are released). The paging decision:
+        if count < page_limit:
+            # The set's end: the pass is done; a short pass resets the
+            # caller's cursor by itself (the next_cursor is None).
+            return EmitWakeResult(woken=woken, next_cursor=None)
+        if flow_id is not None:
+            # The flow accelerator's own shape: one transaction, at most
+            # batch_size of the flow's own waiters — the next post-commit
+            # seat (or the estate wrap) covers the rest.
+            return EmitWakeResult(woken=woken, next_cursor=None)
+        if not exhaust and processed >= batch_size:
+            # The pass's own coverage target: the caller's cursor advances
+            # to the last processed row.
+            return EmitWakeResult(woken=woken, next_cursor=last)
+        page_after = last
 
 
 async def wake_emit_backpressure_safely(
