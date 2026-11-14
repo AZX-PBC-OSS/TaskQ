@@ -659,7 +659,7 @@ async def _healthy_assertions(
     )
     assert failed_ledgers == 0
     provider_final = await pool.fetchrow(
-        f"SELECT fetch_calls, pages_returned, records_returned, snapshots_created, cursors_issued, "
+        f"SELECT fetch_calls, pages_returned, records_returned, "
         f'fault_gates_tripped FROM "{schema}".p2sat_provider_scenario WHERE scenario_id=$1',
         scenario,
     )
