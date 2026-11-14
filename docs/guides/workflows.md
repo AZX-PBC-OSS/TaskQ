@@ -894,8 +894,9 @@ finalize, the same fences, the same ladder. NOT a second execution
 semantics: the in-process driver and the worker's door differ only in WHO
 CLAIMED — both are a real claim sequence (each door's own claim grants
 the row's next `claim_epoch` atomically with its attempt; the ledger
-claim and every context/finalize fence carry that granted pair). A row
-whose stamped name resolves to nothing (the
+claim and every context/finalize fence carry that granted pair), so a
+parked-and-resumed node's `awaited` history survives beside the resumed
+claim's own terminal row. A row whose stamped name resolves to nothing (the
 definitions not imported anywhere — a deployment defect, or a hand-crafted
 row) parks at the snooze cadence budget-free, `released_reason=
 'workflow-body-unresolvable'`, the stranded-jobs detector the witness —
@@ -1325,7 +1326,7 @@ and `tests/test_wf_perf_bands.py` the cost bands' pins); no pin was dropped.
 | `tests/test_wf_emit_tx_pins.py` | the emit tx: the kill-storm at every statement window (zero re-emitted, zero lost), the between-pages kill, the zombie fence, the map_index discipline |
 | `tests/test_wf_source_terminal_fence.py` | the source-terminal fences: the 30-sweep premature-terminal probe (no worker — nothing terminalizes), the mutation probe's teeth, the source-terminal subject |
 | `tests/test_wf_router_pins.py` | the router: both totality doors + the flips, the route through the certified fork, the end-to-end author surface, the loud refusal's row |
-| `tests/test_wf_emit_backpressure_pins.py` | the backpressure law: the pager blocks at the declared bound (the unbounded variant's blow-out captured as a failing run), the throttle releases under a draining worker, the wide-page refusal, the workflow-level declare end to end (the stalls ride the ladder, the resume from the cursor) |
+| `tests/test_wf_emit_backpressure_pins.py` | the backpressure law: the declared bound admits whole pages and ordinary saturation parks the source without spending its attempt or ledger (zero duplicate pages, terminal-once, the resume from the committed cursor), the throttle releases under a draining worker, the wide-page refusal, the workflow-level declare end to end |
 | `tests/test_wf_crashed_terminal_wedge.py` | THE TERMINAL-CRASH SEMANTICS: the corpse derives the failed-class terminal (it derived `running` forever before the fix), the wedged root heals on ONE maintenance pass, the mutation pin (the assertion fails on a corpse the heal cannot land — the no-op-maintenance mutant), the reclaim-input asymmetry (the ledger's attempt-level crash stays live), the zombie-audit structural pin (the liveness spellings) |
 | `tests/test_wf_progress_gate_cures.py` | the progress gate's cures: the VALIDATED dump is the record (the lax-pydantic string hole), the buffer door is private + the public op validates, the pct domain CHECK is real at the storage domain, the auto class's drop record, the failure-class ROUTING per class (3 deterministic legs + the transient leg), the poison record kills ITSELF loudly — never its mates |
 
@@ -2330,6 +2331,90 @@ chain-shaped dispatch backlog costs the same ms-class as plain jobs at
 record. See `perf-evidence-workflows-streaming.md` and the captures it
 cites (the range is every
 captured run, never the friendliest).
+
+### Slot-free emit backpressure: saturation is a park, not a failure
+
+A source can outrun its children forever — a fast keyset read feeding
+slow, capacity-capped leaves is the normal operating point, not an
+error. `max_in_flight` (declared once on the workflow:
+`@app.workflow(..., max_in_flight=N)`; `None` is the explicit
+unbounded) bounds the run's outstanding non-terminal rows. Every WHOLE
+page passes the same admission before any write: the run's outstanding
+count plus the page's width must fit under the declared bound, checked
+once outside the transaction and re-checked inside it under the run's
+admission lock, so two concurrent emitters of one run can never both
+admit past the bound.
+
+Ordinary saturation is the typed capacity control
+`taskq.workflows.EmitBackpressure` — a control signal, deliberately
+outside `Snooze`/`RetryAfter` and outside the failure ladder. When it
+escapes `ctx.emit_batch`, no child, edge, or cursor row was written
+(the whole page is the unit; nothing partial exists). The owning
+source runner answers with one atomic **park**:
+
+- the source row leaves `running` with `status='scheduled'` and
+  `scheduled_at=NULL` — no timer, no lease, no lock, no heartbeat, and
+  therefore no worker slot and no dispatch slot held while it waits;
+- the physical `attempt` is refunded to zero (a park never consumes
+  `max_attempts` — not even the claim's own increment), every
+  lock/heartbeat/cancel field is cleared, and the current claim's
+  ledger row rests `awaited` — never `failed`;
+- the row's metadata carries the visible
+  `blocking_reason='backpressure'` marker plus the typed deferral
+  record: the page width, the bound, the outstanding count at the
+  park, a durable `deferrals` counter, a `wakes` counter, and the
+  deferral timestamp;
+- the source's LOGICAL attempt — what the body saw as `ctx.attempt`
+  and what the durable carrier records — does not move. The park's
+  physical refund/remint cycle (`1 → 0 → 1`) is internal mechanics:
+  the resumed claim's ledger row is a NEW per-claim row and the parked
+  attempt's `awaited` record survives beside the resumed claim's
+  terminal, so the ledger's history is exact per claim and zero
+  `failed` rows exist for healthy saturation.
+
+**Wake is event-driven and commit-anchored.** After the park commits,
+one fresh read re-checks the page immediately; after each relevant
+child terminal commits, one fresh wake read re-checks the exact whole
+page against current row state, and a fitted source is promoted
+`pending` with the marker removed in the same statement — the bound
+stays exact under concurrent wakes because promotion re-checks under
+the same admission lock. Wakeup cost is O(pages), never O(seconds):
+there is no polling loop behind saturation. A bounded estate-wide
+sweep over the live parked-marker index is the completeness authority
+for missed wake seats (a killed waker, a lost listener); it recovers
+latency, never correctness, and a parked row under a terminal root is
+never re-armed by anything.
+
+**Cancellation and failure while parked.** A parked source has NO
+running body — there is nothing to observe a cancellation event. An
+operator run cancel terminalizes the parked row `cancelled` and fences
+its `awaited` ledger claim by the exact claim identity; nothing
+re-enters. A run that terminalizes `failed` (a child's real failure)
+leaves the parked source resolved and inert: the marker stays live but
+wake refuses a terminal root, the dispatch fence makes the parked row
+unclaimable, and no later page is materialized. Real failures are
+untouched by any of this: a body error, a diverged cursor, or a
+genuinely impossible admission still rides the ordinary ladder, still
+burns its attempt, and still terminalizes at `max_attempts` —
+saturation and failure stay distinguishable on the record.
+
+**Observability.** The deferral counters live on the row's metadata
+(`deferrals` = parks so far, `wakes` = fitted promotions so far) and
+the admin surface shows a parked source as a scheduled row with
+`blocking_reason='backpressure'` — never as a failure, and never with
+a fabricated next-fire time (a parked row has no timer). The engine's
+own logs emit one `wf.emit_backpressured` event per park with the
+logical/physical attempt split and one `wf.emit_backpressure_wake_failed`
+warning when a wake seat fails (the sweep owns recovery). The legacy
+`backpressure_timeout_s` argument on `ctx.emit_batch` is accepted for
+compatibility and is diagnostic-age input only — it no longer converts
+healthy waiting into a failure at any value.
+
+**The loud refusals that remain.** A page whose width alone can never
+fit (`len(page) > max_in_flight`) is refused immediately with the
+plain `ValueError` (shrink the page or raise the bound). An oversized
+record identity, a diverged cursor, and a poisoned page keep their
+existing typed deaths — saturation never absorbs or reclassifies them.
 
 ## §4 — HITL: humans are rows
 

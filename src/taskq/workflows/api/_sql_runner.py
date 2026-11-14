@@ -65,12 +65,21 @@ SET status = 'running', locked_by_worker = $2, lock_expires_at = now() + interva
     -- THE DIRECT CLAIM IS A REAL CLAIM SEQUENCE (the fleet's own rule):
     -- the epoch increments atomically with the attempt, and the returned
     -- pair fences this claim's ledger row and every context/finalize
-    -- write.
+    -- write. A parked-and-woken direct node resumes at a NEW epoch and
+    -- mints its own ledger row — the previous 'awaited' row stays
+    -- untouched, and no shared zero distinguishes (or collides) claims.
     attempt = attempt + 1, claim_epoch = claim_epoch + 1
 WHERE id = $1
   AND (
     status = 'pending'
     OR (status = 'scheduled' AND scheduled_at <= now())
+  )
+  -- A parked source has no timer and no body. Even a malformed/stale status
+  -- transition cannot bypass the prompt wake's atomic marker removal here.
+  AND NOT (
+      metadata @> '{"blocking_reason":"backpressure"}'::jsonb
+      AND metadata @> '{"wf_deferral":{"signal":"EmitBackpressure"}}'::jsonb
+      AND metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
   )
   AND deps_pending = 0
   -- THE HOLD-STAMP LEG (the fence's last word — the two-driver race's
@@ -271,6 +280,14 @@ FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status IN ('pending', 'scheduled')
   AND (scheduled_at IS NULL OR scheduled_at <= now())
+  -- NULL means a live capacity park here, not generic ordinary due work.
+  AND NOT (
+      status = 'scheduled'
+      AND scheduled_at IS NULL
+      AND metadata @> '{"blocking_reason":"backpressure"}'::jsonb
+      AND metadata @> '{"wf_deferral":{"signal":"EmitBackpressure"}}'::jsonb
+      AND metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
+  )
   AND deps_pending = 0
   AND step_key <> '__flow__'
   AND NOT metadata ? 'hold'
@@ -388,6 +405,47 @@ WITH flipped AS (
       -- later run cancellation must not revoke that durable obligation.
       AND NOT metadata ? 'wf_after_terminal_effect'
     RETURNING id, (status::text) AS to_state
+), current_claim AS (
+    -- The operator-owned CURRENT-CLAIM resolution (under this statement's
+    -- root/node locks): each flipped row's current ledger row carries the
+    -- job's OWN id, its attempt, and its persisted claim_epoch in a
+    -- still-nonterminal status. The one refunded shape — the capacity
+    -- park (attempt 0, the epoch preserved, the park's own stamps) —
+    -- still resolves its prior positive claim: that epoch has exactly
+    -- one claim under the new-epoch regime, so the epoch leg alone is
+    -- exact for it. A never-claimed pending node has no current ledger
+    -- and needs none.
+    SELECT f.id AS job_id, l.id AS ledger_id, l.updated_at AS claimed_at
+    FROM flipped AS f
+    JOIN {schema}.jobs AS j ON j.id = f.id
+    JOIN {schema}.wf_step_ledger AS l
+      ON l.job_id = j.id
+      AND l.claim_epoch = j.claim_epoch
+      AND (
+        l.attempt = j.attempt
+        OR (
+          j.attempt = 0
+          AND j.metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
+        )
+      )
+     AND l.status IN ('running', 'awaited', 'crashed')
+    WHERE f.to_state = 'cancelled'
+), fenced_ledger AS (
+    -- A parked source has refunded jobs.attempt to zero; its current ledger
+    -- claim remains the prior physical attempt. Resolve the CURRENT claim
+    -- by its EXACT physical identity — the job's own id + attempt + the
+    -- job's PERSISTED claim_epoch — and fence it by its actual row id AND
+    -- its captured instant (the same id+instant law every terminal/fence
+    -- writer obeys). No flow-identity-only match (it would rest ALL
+    -- nonterminal epochs — the parked 'awaited' history included), no
+    -- epoch-less attempt match, no ORDER BY ... latest ambiguity.
+    UPDATE {schema}.wf_step_ledger AS l
+    SET status = 'fenced', error_class = '{wf_cancelled_class}',
+        updated_at = clock_timestamp()
+    FROM current_claim AS c
+    WHERE l.id = c.ledger_id
+      AND l.updated_at = c.claimed_at
+    RETURNING l.id
 ), evt AS (
     -- THE AUDIT LEG: only the rows THIS statement actually
     -- terminalised (a running row's cooperative phase-1 keeps it

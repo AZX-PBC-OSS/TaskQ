@@ -28,7 +28,7 @@ from taskq.worker.cron_loop import (
     cron_lock_sql,
 )
 from taskq.workflows._sql import TERMINAL_SQL_SET, WorkflowSql
-from taskq.workflows._sql_ledger import LEDGER_TERMINAL_SQL
+from taskq.workflows._sql_ledger import LEDGER_TERMINAL_BY_ID_SQL
 from taskq.workflows._sql_sweep import (
     EDGE_ROOTLESS_RETENTION_SQL,
     render_rootless_retention_sql,
@@ -94,20 +94,24 @@ def test_flush_render_is_the_direct_substitution() -> None:
 def test_bundle_render_is_the_direct_substitution() -> None:
     for schema in SCHEMAS:
         expected = (
-            LEDGER_TERMINAL_SQL.replace("{schema}", schema)
-            .replace("{terminal}", TERMINAL_SQL_SET)
+            LEDGER_TERMINAL_BY_ID_SQL.replace("{schema}", schema)
             .replace("{{", "{")
             .replace("}}", "}")
         )
-        assert WorkflowSql.build(schema).ledger_terminal == expected
+        assert WorkflowSql.build(schema).ledger_terminal_by_id == expected
 
 
 def test_same_inputs_render_the_same_sql() -> None:
     """Equal (template, schema) → equal SQL, every call — the shared
     render's behavior contract (the memoised render never drifts from
-    its own first answer for the same inputs)."""
-    first = render(LOOP_ADVANCE_SQL, "tq_render_pin", collapse_braces=True)
-    second = render(LOOP_ADVANCE_SQL, "tq_render_pin", collapse_braces=True)
+    its own first answer for the same inputs). The comparison rides the
+    PRODUCT renderer's exact substitutions (``{terminal}`` is the
+    terminal-status set the loop statements spell) — the canonical
+    renderer is ``render_loop_sql``; the shared render is its one
+    mechanism, called here with the same substitution map."""
+    subs: tuple[tuple[str, str], ...] = (("{terminal}", TERMINAL_SQL_SET),)
+    first = render(LOOP_ADVANCE_SQL, "tq_render_pin", subs=subs, collapse_braces=True)
+    second = render(LOOP_ADVANCE_SQL, "tq_render_pin", subs=subs, collapse_braces=True)
     assert first == second
     assert render_loop_sql(LOOP_ADVANCE_SQL, "tq_render_pin") == first
 

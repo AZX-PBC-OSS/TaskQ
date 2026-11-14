@@ -83,7 +83,9 @@ async def _claimed(
     claimed_attempt = int(claimed["attempt"])
     # The claim template returns the claim's own granted epoch (it
     # increments per claim): the fence epoch is the JOB ROW's truth on
-    # every schema that carries the column (01.00.18+).
+    # every schema that carries the column (01.00.18+), era-form or
+    # current — the era claim's own ledger bind drops the epoch, never
+    # the fence.
     granted_epoch = int(claimed["claim_epoch"])
     binds: list[object] = [
         new_uuid(),
@@ -92,7 +94,10 @@ async def _claimed(
         "source",
         None,
         claimed_attempt,
+        granted_epoch,
     ]
+    if claim_statement is not None:
+        binds = binds[:6]
     ledger = await conn.fetchrow(
         claim_statement if claim_statement is not None else wsql.ledger_claim,
         *binds,
@@ -137,6 +142,7 @@ async def _next_claim(
         claim.step_key,
         claim.map_index,
         claimed_attempt,
+        claimed_epoch,
     )
     assert ledger is not None and ledger["updated_at"] is not None
     return AttemptClaim(

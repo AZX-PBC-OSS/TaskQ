@@ -32,6 +32,7 @@ WITH locked AS (
     WHERE c.status = 'pending'
       AND c.deps_pending > 0
       AND c.metadata @> '{{"blocking_reason": "join"}}'::jsonb
+      AND NOT (c.metadata @> '{{"blocking_reason": "backpressure"}}'::jsonb)
       -- HELD-ROW EXCLUSIVITY (P3 rule 1, the invariant every sweep arm
       -- obeys): a held row's scheduled_at (the signal deadline) is the only
       -- live timer on it — a row scheduled into the future is invisible to
@@ -224,6 +225,7 @@ WITH locked AS (
       -- a row the cache says is still waiting cannot fire (the guard),
       -- and a row already fired cannot fire twice (the UNIQUE).
       AND c.metadata @> '{{"blocking_reason": "join"}}'::jsonb
+      AND NOT (c.metadata @> '{{"blocking_reason": "backpressure"}}'::jsonb)
       -- HELD-ROW EXCLUSIVITY (P3 rule 1): the held row's scheduled_at
       -- (the signal deadline) is the only live timer on it.
       AND c.scheduled_at <= statement_timestamp()
@@ -417,7 +419,7 @@ PHANTOM_REAP_SQL = """\
 UPDATE {schema}.wf_step_ledger l
 SET status = 'fenced',
     updated_at = clock_timestamp()
-WHERE l.status = 'running'
+WHERE l.status IN ('running', 'awaited', 'crashed')
   AND EXISTS (
       SELECT 1 FROM {schema}.jobs f
       WHERE f.id = l.flow_id

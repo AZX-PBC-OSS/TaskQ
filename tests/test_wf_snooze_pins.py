@@ -312,8 +312,9 @@ async def _ledger_rows(
     pool: asyncpg.Pool, schema: str, flow_id: str, step_key: str
 ) -> list[asyncpg.Record]:
     return await pool.fetch(
-        f'SELECT attempt, status, result, error_class FROM "{schema}".wf_step_ledger '
-        f"WHERE flow_id = $1 AND step_key = $2 ORDER BY attempt",
+        f'SELECT attempt, claim_epoch, status, result, error_class FROM "{schema}".wf_step_ledger '
+        f"WHERE flow_id = $1 AND step_key = $2 "
+        "ORDER BY attempt, claim_epoch, created_at, id",
         uuid.UUID(flow_id),
         step_key,
     )
@@ -394,11 +395,13 @@ async def test_snooze_defers_the_row_and_never_burns_the_budget(
         f"own law — the attempt never walked), got {row['attempt']}"
     )
     ledger_rows = await _ledger_rows(module_pg_pool, schema, flow_id, "solo")
-    assert len(ledger_rows) == 1, (
-        f"the snooze must never grow the ledger (the same arbiter row "
-        f"re-claimed), got {len(ledger_rows)} rows"
-    )
-    assert ledger_rows[0]["status"] == "succeeded"
+    # The epoch arbiter's own history law: the parked claim's 'awaited'
+    # row SURVIVES beside the resumed claim's terminal (the resumed
+    # re-claim is a new epoch — every dispatch claim records its own row).
+    assert [(r["status"], r["claim_epoch"]) for r in ledger_rows] == [
+        ("awaited", 1),
+        ("succeeded", 2),
+    ], f"the deferral history is (awaited, succeeded) in epoch order, got {ledger_rows}"
     assert not [r for r in ledger_rows if r["status"] == "failed"], (
         "a snooze must never land a 'failed' ledger row (the budget law)"
     )
@@ -551,7 +554,19 @@ async def test_snoozing_past_max_attempts_never_exhausts(
     assert row["snooze_count"] == 5, row["snooze_count"]
     assert row["attempt"] == 1, "the attempt never walked past the first claim"
     ledger_rows = await _ledger_rows(module_pg_pool, schema, flow_id, "solo")
-    assert len(ledger_rows) == 1, "the refunds re-claim the SAME arbiter row"
+    # Every deferral claim records its OWN ledger row (the epoch arbiter):
+    # five 'awaited' rows in epoch order, then the success's own row.
+    assert [r["status"] for r in ledger_rows] == [
+        "awaited",
+        "awaited",
+        "awaited",
+        "awaited",
+        "awaited",
+        "succeeded",
+    ], f"the snooze history is (awaited x5, succeeded) in epoch order, got {ledger_rows}"
+    assert [r["claim_epoch"] for r in ledger_rows] == [1, 2, 3, 4, 5, 6], (
+        "each deferral claim is its own epoch"
+    )
     assert not [r for r in ledger_rows if r["status"] == "failed"]
     assert await _root_status(module_pg_pool, schema, flow_id) == "succeeded"
 
@@ -726,6 +741,7 @@ async def test_defer_fences_a_cancel_marked_row(
         step_key="solo",
         map_index=None,
         attempt=int(attempt),
+        claim_epoch=0,
     )
     compiled = sys.modules[MODULE_NAME].app.get("snooze_cancel_fence_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(
@@ -803,6 +819,7 @@ async def test_defer_fences_a_zombie_attempt(
         step_key="solo",
         map_index=None,
         attempt=int(attempt),
+        claim_epoch=0,
     )
 
     compiled = sys.modules[MODULE_NAME].app.get("snooze_zombie_fence_flow")  # type: ignore[attr-defined]
@@ -894,6 +911,7 @@ async def test_defer_fences_a_vanilla_cancel_marked_row(
         step_key="solo",
         map_index=None,
         attempt=int(attempt),
+        claim_epoch=0,
     )
     # the cancel wins on either mark, nothing lands.
     verdict = await defer_row_law(
@@ -1028,6 +1046,7 @@ async def test_the_deferral_resets_the_cancel_columns_for_the_later_claim(
         step_key="solo",
         map_index=None,
         attempt=int(attempt),
+        claim_epoch=0,
     )
     compiled = sys.modules[MODULE_NAME].app.get("snooze_reset_face_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=worker_id)
@@ -1092,6 +1111,7 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
         step_key="solo",
         map_index=None,
         attempt=1,
+        claim_epoch=0,
     )
     assert zombie_claim.claimed_at is not None
     # a later claimant re-claims the same ordinal — the arbiter re-use hands it
@@ -1105,6 +1125,7 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
         step_key="solo",
         map_index=None,
         attempt=1,
+        claim_epoch=0,
     )
     assert winner_claim.ledger_id == zombie_claim.ledger_id, (
         "the re-mint re-uses the SAME arbiter row (the refund's own law) — "
@@ -1166,6 +1187,7 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
         step_key="solo",
         map_index=None,
         attempt=1,
+        claim_epoch=0,
     )
     label2 = await runner._defer_step(  # pyright: ignore[reportPrivateUsage]
         flow2,
@@ -1271,20 +1293,24 @@ async def test_loop_body_snooze_defers_the_iteration(
         f"the resume re-runs THE SAME iteration (iteration 0's body twice), "
         f"then the march continues: {_LOOP_CALLS}"
     )
-    # the iteration timeline reads three terminal iterations (the §13.3 trace)
-    # — one arbiter row per iteration (the re-mint re-used iteration 0's row,
-    # never grew it).
+    # the iteration timeline reads THREE terminal iterations plus the
+    # deferred iteration-0's own 'awaited' record (the §13.3 trace): the
+    # epoch arbiter gives every CLAIM its own row — the parked iteration-0
+    # claim's 'awaited' record survives beside the resumed claim's
+    # terminal, and iterations 1-2 carry one row each.
     timeline = await module_pg_pool.fetch(
-        f'SELECT step_key, status FROM "{schema}".wf_step_ledger '
-        f"WHERE flow_id = $1 AND step_key LIKE 'counter.iter%' ORDER BY id",
+        f'SELECT step_key, status, claim_epoch FROM "{schema}".wf_step_ledger '
+        f"WHERE flow_id = $1 AND step_key LIKE 'counter.iter%' "
+        "ORDER BY attempt, claim_epoch, created_at, id",
         uuid.UUID(flow_id),
     )
-    assert [r["step_key"] for r in timeline] == [
-        "counter.iter0",
-        "counter.iter1",
-        "counter.iter2",
-    ], [r["step_key"] for r in timeline]
-    assert all(r["status"] == "succeeded" for r in timeline)
+    assert [(r["step_key"], r["status"]) for r in timeline] == [
+        ("counter.iter0", "awaited"),
+        ("counter.iter0", "succeeded"),
+        ("counter.iter1", "succeeded"),
+        ("counter.iter2", "succeeded"),
+    ], [(r["step_key"], r["status"]) for r in timeline]
+    assert all(r["status"] == "succeeded" for r in timeline[1:])
 
 
 async def test_loop_body_retry_after_consuming_past_budget_takes_the_body_failure_face(
@@ -1391,6 +1417,7 @@ async def test_the_loops_zombie_fence_cannot_mark_a_reminted_live_row(
         step_key="counter",
         map_index=None,
         attempt=1,
+        claim_epoch=0,
     )
     assert zombie_claim.claimed_at is not None
     winner_claim = await claim_step_ledger(
@@ -1401,6 +1428,7 @@ async def test_the_loops_zombie_fence_cannot_mark_a_reminted_live_row(
         step_key="counter",
         map_index=None,
         attempt=1,
+        claim_epoch=0,
     )
     assert winner_claim.ledger_id == zombie_claim.ledger_id, (
         "the re-mint re-uses the SAME arbiter row — the winner is LIVE on the zombie's row"
@@ -1468,6 +1496,7 @@ async def test_the_loops_deferral_fences_a_cancel_marked_row(
         step_key="counter",
         map_index=None,
         attempt=int(attempt),
+        claim_epoch=0,
     )
     compiled = sys.modules[MODULE_NAME].app.get("loop_cancel_face_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=worker_id)

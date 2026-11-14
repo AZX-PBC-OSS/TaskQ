@@ -315,6 +315,8 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         # the lock-scope discipline itself stays proven below (the dead
         # probe index absent, the marker predicates named, both paths).
         "jobs_wf_flow_nodes_idx",
+        # 01.00.41_03 (pre): live slot-free emit-backpressure waiters only.
+        "jobs_wf_emit_backpressure_waiter_idx",
     }
 )
 _PINNED_JOBS_ARCHIVE_INDEXES: frozenset[str] = frozenset(

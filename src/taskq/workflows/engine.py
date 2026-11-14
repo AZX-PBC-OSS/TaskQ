@@ -369,30 +369,18 @@ async def _run_tx1(
         if rec is None:
             # Fenced out (a reclaimed row, a cancelled flow, a wrong
             # worker): the ledger says 'fenced', tx2 never runs. The fence
-            # targets the exact claim identity — the claim's own row id AND,
-            # when the caller holds it, its own RETURNING instant (the
-            # re-mint guard: a re-claimed row re-stamps updated_at, and the
-            # stale instant refuses the write). A stale fence whose instant
-            # no longer matches is the DESIGNED stale refusal (a re-minted
-            # row is the live winner's — its own terminal writes it).
+            # targets the exact claim identity — the claim's own row id AND
+            # its own RETURNING instant (the re-mint guard). There is no
+            # four-expression no-id fallback in current production: the
+            # epoch arbiter can carry several rows per (flow, step, attempt),
+            # and an update keyed on those four alone rewrote the parked
+            # attempt's 'awaited' history beside the current row. A stale
+            # fence whose instant no longer matches is the DESIGNED stale
+            # refusal (a re-minted row is the live winner's — its own
+            # terminal writes it; the phantom arms own a lapsed row).
             if ledger_id is not None:
                 await conn.execute(
                     wsql.ledger_fence_by_id, ledger_id, error_class, ledger_claimed_at
-                )
-            else:
-                # The no-ledger-id caller (the Exit path's finalize,
-                # ``api/_runner.py``'s `_finalize_exit` call site) still
-                # fences its ledger row — by the node's own arbiter tuple
-                # (flow, step, attempt, map_index), the status-only fence:
-                # a fenced-out finalize's 'fenced' record is never left to
-                # the phantom reap.
-                await conn.execute(
-                    wsql.ledger_fence_attempt,
-                    flow_id,
-                    step_key,
-                    attempt,
-                    error_class,
-                    map_index,
                 )
             return _Tx1Outcome(applied=False)
 
@@ -416,19 +404,6 @@ async def _run_tx1(
             # fence exists to prevent (raise; the tx rolls back).
             if written != "UPDATE 1":
                 await _classify_own_ledger_no_match(conn, wsql, ledger_id, flow_id, step_key)
-        else:
-            await conn.execute(
-                wsql.ledger_terminal,
-                flow_id,
-                step_key,
-                attempt,
-                outcome,
-                _jsonb(result),
-                error_class,
-                error_message,
-                _jsonb(capture) if capture is not None else None,
-                map_index,
-            )
 
         if fork is not None:
             await insert_fork(
@@ -803,6 +778,7 @@ async def finalize_node(
     map_index: int | None = None,
     ledger_id: JobId | None = None,
     ledger_claimed_at: datetime | None = None,
+    wake_backpressure: bool = False,
     terminal_effect: TerminalEffect | None = None,
     terminal_reason: TerminalEffectReason = "retry_exhausted",
 ) -> FinalizeResult:
@@ -877,6 +853,14 @@ async def finalize_node(
     applied = tx1.applied
     if not applied:
         return FinalizeResult(applied=False, attempt=None)
+
+    if wake_backpressure:
+        from taskq.workflows._emit import wake_emit_backpressure_safely
+
+        # _tx1's COMMIT is acknowledged and its pool acquisition has exited.
+        # The fresh helper therefore sees the exact terminal+same-tx fork. It is
+        # deliberately outside the successful child's subsequent tx2/ladder.
+        await wake_emit_backpressure_safely(pool, wsql, flow_id=flow_id)
 
     async def _tx2() -> tuple[tuple[DecrementHit, ...], tuple[FiredJoin, ...]]:
         async with pool.acquire() as conn:

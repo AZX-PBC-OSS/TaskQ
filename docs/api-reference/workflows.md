@@ -125,6 +125,41 @@ The complete precedence, retry, strict-reservation, capacity-owner, deadline,
 legacy default, and failure-boundary law is in
 [the workflows guide](../guides/workflows.md#chain-execution-policy-one-target-resolver).
 
+## Emit backpressure (`max_in_flight`, `EmitBackpressure`)
+
+`@app.workflow(name, ..., max_in_flight=N)` declares the run's whole-page
+materialization bound (`None` is the explicit unbounded; the unset default is
+1000). Every `ctx.emit_batch` call admits its WHOLE page — the run's
+outstanding non-terminal rows plus the page's width — before writing
+anything: once outside the transaction, then again inside it under the run's
+admission lock, so concurrent emitters of one run cannot both admit past the
+bound.
+
+When the page does not fit, `emit_batch` raises
+`taskq.workflows.EmitBackpressure` — a typed capacity control, not an error:
+no child, edge, or cursor row exists when it escapes. The source runner then
+PARKS the claimed source: `status='scheduled'` with `scheduled_at=NULL` (no
+timer, no lease, no worker slot), the physical attempt refunded so
+`max_attempts` is never consumed, the current ledger claim resting `awaited`
+(never `failed`), and `metadata.blocking_reason='backpressure'` carrying the
+typed record (page width, bound, outstanding count, `deferrals`/`wakes`
+counters, deferral timestamp). The body's `ctx.attempt` does not move.
+
+Wake is event-driven: a fresh post-commit re-check after the park and after
+each relevant child terminal promotes a fitted source `pending` and removes
+the marker in the same statement; a bounded estate-wide sweep over the live
+parked-marker index recovers missed wake seats. A parked source under a
+terminal root is never re-armed; an operator cancel terminalizes and fences
+it. Real failures (body errors, diverged cursors, poisoned pages) are
+unaffected and still consume the ladder. The admin surface renders a parked
+source as scheduled with the backpressure marker — never as a failure.
+
+`ctx.emit_batch(..., backpressure_timeout_s=...)` is accepted for
+compatibility and is diagnostic-age input only: no value of it turns healthy
+saturation into a failure. A page whose width alone can never fit under the
+declared bound raises the immediate `ValueError` (shrink the page or raise
+the bound).
+
 ## The loop (`wf.loop`, `Done`, `Refine`)
 
 `loop(name, body, ...)` wires a LOOP node: each iteration is FRESH jobs

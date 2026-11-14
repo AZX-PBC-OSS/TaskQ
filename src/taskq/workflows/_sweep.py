@@ -1093,4 +1093,11 @@ async def sweep_loop_budget(
             await conn.executemany(
                 render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, wsql.schema), outbox_rows
             )
+    if exhausted:
+        from taskq.workflows._emit import wake_emit_backpressure_safely
+
+        # Every winner committed before this fresh read. One bounded wake per
+        # affected flow, not one nested wake per row in the exhaust batch.
+        for terminal_flow in sorted({JobId(row["flow_id"]) for row in winners}):
+            await wake_emit_backpressure_safely(pool, wsql, flow_id=terminal_flow)
     return exhausted

@@ -572,6 +572,8 @@ async def test_populated_old_schema_upgrades_without_touching_existing_rows(
             "01.00.38_01:pre",
             "01.00.41_01:pre",
             "01.00.41_02:pre",
+            "01.00.41_03:pre",
+            "01.00.42_01:pre",
         ]
         row = await conn.fetchrow(
             f'SELECT payload, metadata, status, required_worker_schema, run_epoch FROM "{schema}".jobs WHERE id = $1',  # noqa: S608

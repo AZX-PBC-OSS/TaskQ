@@ -35,7 +35,12 @@ module exists to keep):
   through the wf terminal door as ``MaxAttemptsExceeded`` (the vanilla's
   own class + message).
 
-The next deferral DISPOSITION (a new signal, a new
+#718's ``EmitBackpressure`` is deliberately not another timer arm here:
+its ordinary-capacity control uses the separate EMIT_BACKPRESSURE_PARK_SQL
+and fresh post-commit wake helpers, with no delay, snooze_count, or provider
+retry counter. Generic timer/provider dispositions remain unchanged.
+
+The next timed deferral DISPOSITION (a new signal, a new
 non-terminal row law) adds exactly three things and touches nothing
 else —
 
@@ -88,8 +93,10 @@ from taskq.constants import (
 )
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
+from taskq.workflows._emit import EmitBackpressure
 from taskq.workflows._policy import TerminalEffect, TerminalEffectReason
 from taskq.workflows._progress import KIND_NODE_TERMINAL
+from taskq.workflows._sql_finalize import EMIT_BACKPRESSURE_PARK_SQL
 
 if TYPE_CHECKING:
     import asyncpg
@@ -114,10 +121,12 @@ WORKFLOW_CANCELLED_CLASS: Final[str] = "WorkflowCancelled"
 
 #: the named deferral dispositions (the extension seam's member set —
 #: see the module docstring for the law).
-DeferralDisposition = Literal["snooze", "retry_after_consuming", "retry_after_non_consuming"]
+DeferralDisposition = Literal[
+    "snooze", "retry_after_consuming", "retry_after_non_consuming", "emit_backpressure"
+]
 
 
-def deferral_disposition(exc: Snooze | RetryAfter) -> DeferralDisposition:
+def deferral_disposition(exc: EmitBackpressure | Snooze | RetryAfter) -> DeferralDisposition:
     """the SIGNAL → DISPOSITION RESOLUTION (the catch arm's whole
     mapping — one function, never a per-signal branch at the call site).
 
@@ -130,6 +139,8 @@ def deferral_disposition(exc: Snooze | RetryAfter) -> DeferralDisposition:
     The next
     deferral verdict adds ITS arm here, beside the two above.
     """
+    if isinstance(exc, EmitBackpressure):
+        return "emit_backpressure"
     if isinstance(exc, RetryAfter) and exc.consume_budget:
         return "retry_after_consuming"
     return "snooze"
@@ -183,6 +194,9 @@ async def defer_row_law(
     signal_name: str,
     ledger_id: JobId | None,
     ledger_claimed_at: Any,
+    backpressure: EmitBackpressure | None = None,
+    source_logical_attempt: int | None = None,
+    iteration_rest: tuple[JobId, Any] | None = None,
 ) -> str:
     """the ROW LAW + the LEDGER'S TRUTH, one transaction (the terminal-atomicity law's own
     shape — a split write leaves the row 'scheduled' with the ledger
@@ -206,32 +220,83 @@ async def defer_row_law(
     ``disposition``/``signal_name`` arrive pre-resolved
     (:func:`deferral_disposition` + the signal's class name) — this
     function is the ROW LAW only, never the signal's interpretation.
-    """
-    from taskq.workflows._policy import validate_retry_after_delay
 
-    validate_retry_after_delay(delay)
+    ``iteration_rest`` is the LOOP driver's deferred ITERATION claim's own
+    identity (id, instant): the epoch arbiter gives every claim its own
+    ledger row, so the deferred iteration's claim must rest 'awaited'
+    (or 'fenced' when the deferral was) in the SAME transaction — never a
+    running row left beside the resumed claim's own row.
+    """
+    if (backpressure is None) != (disposition != "emit_backpressure"):
+        raise ValueError("EmitBackpressure and its disposition must be supplied together")
+    if disposition != "emit_backpressure":
+        from taskq.workflows._policy import validate_retry_after_delay
+
+        validate_retry_after_delay(delay)
     async with pool.acquire() as conn, conn.transaction():
-        try:
+        if backpressure is not None:
+            from taskq.workflows.api._sql_runner import render_sql
+
+            if (
+                ledger_id is None
+                or ledger_claimed_at is None
+                or source_logical_attempt is None
+                or type(source_logical_attempt) is not int
+                or source_logical_attempt < 1
+            ):
+                raise ValueError(
+                    "emit backpressure requires the validated current source logical "
+                    "attempt and ledger id/claim instant"
+                )
+            # Every numeric fact came from actual admission/the P0 carrier.
+            # Validate exact integers again at this persistence seam; no JSON
+            # coercion or malformed descriptor can become durable park state.
+            numbers = (
+                backpressure.page_width,
+                backpressure.bound,
+                backpressure.outstanding,
+            )
+            if any(type(value) is not int or value < 0 for value in numbers):
+                raise ValueError("emit-backpressure admission facts must be non-negative ints")
+            if backpressure.bound < 1:
+                raise ValueError("emit-backpressure bound must be positive")
             verdict = await conn.fetchrow(
-                wsql.node_defer,
+                render_sql(EMIT_BACKPRESSURE_PARK_SQL, wsql.schema),
                 job_id,
                 worker_id,
-                delay,
                 attempt,
                 claim_epoch,
-                disposition,
-                signal_name,
+                backpressure.page_width,
+                backpressure.bound,
+                source_logical_attempt,
+                backpressure.outstanding,
+                ledger_id,
+                ledger_claimed_at,
             )
-        except Exception as exc:
-            import asyncpg
+        else:
+            try:
+                verdict = await conn.fetchrow(
+                    wsql.node_defer,
+                    job_id,
+                    worker_id,
+                    delay,
+                    attempt,
+                    claim_epoch,
+                    disposition,
+                    signal_name,
+                )
+            except Exception as exc:
+                import asyncpg
 
-            if disposition == "retry_after_non_consuming" and isinstance(exc, asyncpg.DataError):
-                raise ValueError(
-                    "metadata.wf_retry.non_consuming_count and non_consuming_limit "
-                    "must be valid signed-int32 integers; the deferral, counter, "
-                    "and ledger transition rolled back"
-                ) from exc
-            raise
+                if disposition == "retry_after_non_consuming" and isinstance(
+                    exc, asyncpg.DataError
+                ):
+                    raise ValueError(
+                        "metadata.wf_retry.non_consuming_count and non_consuming_limit "
+                        "must be valid signed-int32 integers; the deferral, counter, "
+                        "and ledger transition rolled back"
+                    ) from exc
+                raise
         if verdict is None:
             if ledger_id is not None:
                 await conn.execute(
@@ -240,8 +305,22 @@ async def defer_row_law(
                     signal_name,
                     ledger_claimed_at,
                 )
+            if iteration_rest is not None:
+                await conn.execute(
+                    wsql.ledger_fence_by_id,
+                    iteration_rest[0],
+                    signal_name,
+                    iteration_rest[1],
+                )
             return "fenced"
-        if verdict["verdict"] == "deferred":
+        if verdict["verdict"] in ("deferred", "parked"):
+            if backpressure is not None:
+                if int(verdict["ledger_count"]) != 1:
+                    raise RuntimeError(
+                        "the source park lost its exact current ledger claim; "
+                        "the job park and ledger transition rolled back"
+                    )
+                return "deferred"
             if ledger_id is not None:
                 # 'awaited' — the hold's own resume-not-retry status. Never
                 # 'failed': the ladder's budget read counts failures only, and
@@ -261,6 +340,21 @@ async def defer_row_law(
                     None,
                     None,
                     ledger_claimed_at,
+                )
+            if iteration_rest is not None:
+                # The deferred ITERATION claim rests 'awaited' too — its own
+                # id+instant identity, the same transaction (the epoch
+                # arbiter's rows are per-claim; the resumed claim mints its
+                # own row, so this one must never read 'running' beside it).
+                await conn.execute(
+                    wsql.ledger_terminal_by_id,
+                    iteration_rest[0],
+                    "awaited",
+                    None,
+                    None,
+                    None,
+                    None,
+                    iteration_rest[1],
                 )
             return "deferred"
         verdict_text = str(verdict["verdict"])
@@ -425,7 +519,7 @@ class DeferOps(_DeferHost):
         row: dict[str, Any],
         attempt: int,
         ledger_id: JobId | None,
-        exc: Snooze | RetryAfter,
+        exc: EmitBackpressure | Snooze | RetryAfter,
         *,
         claim_epoch: int = 0,
         ledger_claimed_at: Any = None,
@@ -450,22 +544,50 @@ class DeferOps(_DeferHost):
         ``"deferred"`` / ``"fenced"`` / ``"laddered"`` (the exhausted
         budget) / ``"cancelled"`` (the cancel won).
         """
+        source_logical_attempt: int | None = None
+        if isinstance(exc, EmitBackpressure):
+            from taskq.workflows.api._attempt import resolve_source_logical_attempt
+
+            # Existing birth carriers win over a refunded physical ordinal;
+            # genuinely legacy rows materialize the current validated physical
+            # claim in the same atomic park rather than inventing attempt zero.
+            source_logical_attempt = resolve_source_logical_attempt(row["metadata"], attempt)
         disposition = deferral_disposition(exc)
         verdict_text = await defer_row_law(
             self.pool,
             self.wsql,
             job_id=JobId(row["id"]),
             worker_id=self._worker_id,
-            delay=exc.delay,
+            # The park arm has no timer; the legacy positional signature is
+            # retained for ordinary Snooze/RetryAfter callers only.
+            delay=timedelta(0) if isinstance(exc, EmitBackpressure) else exc.delay,
             attempt=attempt,
             claim_epoch=claim_epoch,
             disposition=disposition,
             signal_name=type(exc).__name__,
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            backpressure=exc if isinstance(exc, EmitBackpressure) else None,
+            source_logical_attempt=source_logical_attempt,
         )
 
         if verdict_text == "deferred":
+            if isinstance(exc, EmitBackpressure):
+                from taskq.workflows._emit import wake_emit_backpressure_safely
+
+                # New transaction after the park's acknowledged COMMIT and
+                # released acquisition. Fail-soft; durable marker sweep owns
+                # recovery if this single complementary read cannot run.
+                woken = await wake_emit_backpressure_safely(self.pool, self.wsql, flow_id=flow_id)
+                logger.info(
+                    "wf.emit_backpressured",
+                    run_id=str(flow_id),
+                    node=row["step_key"],
+                    logical_attempt=source_logical_attempt,
+                    physical_attempt=0,
+                    wake_candidates=woken,
+                )
+                return "deferred"
             logger.info(
                 "node.deferred",
                 run_id=str(flow_id),

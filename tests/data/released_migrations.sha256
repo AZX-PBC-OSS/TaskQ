@@ -2,6 +2,8 @@
 965b4d480c8b46f7125cf8751f3567e76e7430f8812c09a888679e36c803f8d5  01.00.38_01_pre_wf_worker_capability.sql
 10a503221e743b554feafa72310cb76881dda23f47f51ad73eb65f9012951ba4  01.00.41_01_pre_wf_run_epoch.sql
 dbc2d8ff30d668fc4214d352c06a63a3af191d0d520c92a98acac46279ed2fce  01.00.41_02_pre_wf_terminal_effect_intents.sql
+2e2d0bb0f21dfff7927a3dbcec1257293f117a7984e57f80ed1e7db02b65d847  01.00.41_03_pre_wf_emit_backpressure_waiters.sql
+1955aa9ab893b1581ae541c7d1d75b3ba8cffd2ff8b2118e573b5dbf911a0c50  01.00.42_01_pre_wf_step_ledger_claim_epoch.sql
 # '<sha256>  <filename>' as sha256sum prints it (run from src/taskq/migrations).
 # tests/test_migrations_released_frozen.py fails when a listed file's bytes
 # change. A release adds its new migration files here; nothing is ever edited.

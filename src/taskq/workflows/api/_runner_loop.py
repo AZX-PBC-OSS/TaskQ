@@ -33,6 +33,7 @@ from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._runner_codec import encode_result, jsonable
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._runner_ladder import is_infra_fault
+from taskq.workflows.ledger import LedgerClaim
 
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
@@ -76,6 +77,8 @@ class _LoopHost(Protocol):
         emitter: ProgressEmitter | None = None,
         *,
         claim_epoch: int = 0,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
     ) -> FinalizeResult: ...
 
 
@@ -95,6 +98,7 @@ class LoopOps(_LoopHost):
         *,
         claim_epoch: int = 0,
         ledger_claimed_at: Any = None,
+        iteration_rest: tuple[JobId, Any] | None = None,
     ) -> str:
         """the LOOP'S DEFERRAL DISPOSITION (the loop body's signals route
         through the same disposition the step bodies share — the
@@ -153,6 +157,7 @@ class LoopOps(_LoopHost):
             signal_name=type(exc).__name__,
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            iteration_rest=iteration_rest,
         )
 
         if verdict_text == "deferred":
@@ -193,6 +198,7 @@ class LoopOps(_LoopHost):
                 attempt=attempt,
                 claim_epoch=claim_epoch,
                 ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
                 capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the ladder's own call shape (the declared capture policy rides the compile).
                 project_auto=self._project_auto,
                 outcome="cancelled",
@@ -419,6 +425,8 @@ class LoopOps(_LoopHost):
                     encode_result(carry),
                     emitter=emitter,
                     claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
                 )
                 return
 
@@ -462,6 +470,8 @@ class LoopOps(_LoopHost):
                         encode_result(payload),
                         emitter=emitter,
                         claim_epoch=claim_epoch,
+                        ledger_id=ledger_id,
+                        ledger_claimed_at=ledger_claimed_at,
                     )
                     return
                 carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
@@ -486,7 +496,7 @@ class LoopOps(_LoopHost):
                 return
             else:
                 async with self.pool.acquire() as conn:
-                    await claim_step_ledger(
+                    iteration_claim = await claim_step_ledger(
                         conn,
                         self.wsql,
                         flow_id=flow_id,
@@ -494,6 +504,7 @@ class LoopOps(_LoopHost):
                         step_key=iter_key,
                         map_index=None,
                         attempt=attempt,
+                        claim_epoch=claim_epoch,
                     )
                 loop_ctx = build_step_context(
                     flow_id=flow_id,
@@ -568,6 +579,12 @@ class LoopOps(_LoopHost):
                         exc,
                         claim_epoch=claim_epoch,
                         ledger_claimed_at=ledger_claimed_at,
+                        iteration_rest=(
+                            (iteration_claim.ledger_id, iteration_claim.claimed_at)
+                            if iteration_claim.ledger_id is not None
+                            and iteration_claim.claimed_at is not None
+                            else None
+                        ),
                     )
                     return
                 except Exception as exc:
@@ -589,7 +606,13 @@ class LoopOps(_LoopHost):
                         claim_epoch=claim_epoch,
                     )
                     return
-                await self._record_iteration_terminal(flow_id, iter_key, attempt, outcome)
+                await self._record_iteration_terminal(
+                    flow_id,
+                    iter_key,
+                    attempt,
+                    outcome,
+                    iteration_claim,
+                )
 
                 # consumed with the residual machinery.
                 if isinstance(outcome, Done):
@@ -660,7 +683,12 @@ class LoopOps(_LoopHost):
         )
 
     async def _record_iteration_terminal(
-        self, flow_id: JobId, iter_key: str, attempt: int, outcome: object
+        self,
+        flow_id: JobId,
+        iter_key: str,
+        attempt: int,
+        outcome: object,
+        iteration_claim: LedgerClaim | None = None,
     ) -> None:
         """The iteration's ledger terminal (the §13.3 trace shape: the
         iteration index + the Done/Refine kind per iteration).
@@ -671,7 +699,10 @@ class LoopOps(_LoopHost):
         whose feedback-shaped payload the memo replay would re-thread as
         a Refine (the 'other' kind must not be laundered into
         ``{"done": false, "feedback":
-        …}`` with its computed kind deleted)."""
+        …}`` with its computed kind deleted). The write keys the
+        iteration claim's EXACT identity (its own row id + instant) —
+        the epoch arbiter's rows are never keyed by the four-expression
+        fallback."""
         from taskq.workflows.api._loop import Done, Refine
         from taskq.workflows.api._sql_loop import LOOP_ERROR_SHAPE
 
@@ -692,18 +723,25 @@ class LoopOps(_LoopHost):
                 "is the shape error it is, never a replayable refine"
             )
             payload = {"shape": jsonable(outcome)}
+        if iteration_claim is None or iteration_claim.ledger_id is None:
+            # No actual claim in hand — this is a replay/legacy face with no
+            # ledger row of its own; there is no identity to write and no
+            # identity may be manufactured.
+            raise WorkflowRunError(
+                f"loop iteration {iter_key!r} has no ledger claim identity — the "
+                "iteration terminal requires the exact claim (id + instant) the "
+                "driver's own claim returned"
+            )
         async with self.pool.acquire() as conn:
             await conn.execute(
-                self.wsql.ledger_terminal,
-                flow_id,
-                iter_key,
-                attempt,
+                self.wsql.ledger_terminal_by_id,
+                iteration_claim.ledger_id,
                 status,
                 dumps_jsonb_str(payload),
                 error_class,
                 error_message,
                 None,
-                None,
+                iteration_claim.claimed_at,
             )
 
     async def _reclaim_loop(

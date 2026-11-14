@@ -10,7 +10,9 @@ map node (map_index 0 and 1, first attempt each) are DIFFERENT claims by
 that contract, but the ledger PK collapses them into one row.
 
 The dragon: child 1's claim returns child 0's row (the ON CONFLICT path),
-child 1's finalize (``LEDGER_TERMINAL_SQL``, keyed flow+step+attempt)
+child 1's finalize (the four-expression terminal write that
+``LEDGER_TERMINAL_BY_ID_SQL``'s exact id+instant keying replaced —
+keyed flow+step+attempt)
 OVERWRITES child 0's result on the shared row, and the memoized replay
 (``LEDGER_MEMOIZED_SQL``, filtered by map_index) then hands child 0's
 replay the WRONG child's result — or nothing. The record lies about the
@@ -51,6 +53,7 @@ async def test_attack_map_children_ledger_pk_collision(
         step_key="enrich",
         map_index=0,
         attempt=1,
+        claim_epoch=0,
     )
     assert claim_0.job_id == node_0  # child 0's own claim — fine.
 
@@ -64,6 +67,7 @@ async def test_attack_map_children_ledger_pk_collision(
         step_key="enrich",
         map_index=1,
         attempt=1,
+        claim_epoch=0,
     )
 
     # the arbiter must treat child 1's claim as its own row. The shipped PK

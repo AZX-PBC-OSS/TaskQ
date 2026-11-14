@@ -12,10 +12,14 @@ from __future__ import annotations
 # (verified 30 reps x 10 concurrent). A fresh claim inserts status='running'
 # (the attempt increments at claim, the only grant of work); a conflicting
 # claim returns the existing row — the claim arbiter
-# (wf_step_ledger_claim_uniq, 01.00.24_03: (flow_id, step_key,
-# COALESCE(map_index, -1), attempt)) physically blocks double-recording (P3
-# rule 2), and the ledger terminal write rides the finalize's own
-# transaction.
+# (wf_step_ledger_claim_uniq, 01.00.24_03 + 01.00.42_01: (flow_id, step_key,
+# COALESCE(map_index, -1), attempt, claim_epoch)) physically blocks
+# double-recording (P3 rule 2), and the ledger terminal write rides the
+# finalize's own transaction. claim_epoch joins the arbiter because the
+# physical attempt ordinal is refunded and reminted by the capacity park's
+# 1 -> 0 -> 1 cycle: every dispatch claim records its OWN ledger row, so the
+# parked attempt's 'awaited' record survives beside the resumed attempt's
+# terminal. The in-process driver's own claim stamps 0 (its CAS's epoch).
 #
 # map_index, -1. map children of one step key are different claims (the run-key
 # contract) — a conflict target omitting map_index collapses them onto one row
@@ -25,9 +29,9 @@ from __future__ import annotations
 # identical expression.
 LEDGER_CLAIM_SQL = """\
 INSERT INTO {schema}.wf_step_ledger
-    (id, flow_id, job_id, step_key, map_index, attempt, status)
-VALUES ($1, $2, $3, $4, $5, $6, 'running')
-ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt) DO UPDATE
+    (id, flow_id, job_id, step_key, map_index, attempt, claim_epoch, status)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'running')
+ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt, claim_epoch) DO UPDATE
     SET updated_at = clock_timestamp()
 RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
           result, error_class, error_message, updated_at
@@ -40,6 +44,11 @@ RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
 # this key: a retried map child claims a new attempt row, but the replay
 # consults any prior terminal outcome first (the retry's side effect is the
 # recorded result's, never a fresh execution).
+#
+# The ordering is the CLAIM HISTORY's own (attempt, claim_epoch, created_at,
+# id): equivalent physical attempts resolve by their actual claim epoch, so
+# the latest CURRENT claimant is deterministic — never buffer/UUID arrival
+# order.
 LEDGER_MEMOIZED_SQL = """\
 SELECT attempt, status, result, error_class, error_message, job_id
 FROM {schema}.wf_step_ledger
@@ -47,7 +56,7 @@ WHERE flow_id = $1
   AND step_key = $2
   AND ((map_index = $3::smallint) OR ($3::smallint IS NULL AND map_index IS NULL))
   AND status IN ('succeeded', 'failed')
-ORDER BY attempt DESC
+ORDER BY attempt DESC, claim_epoch DESC, created_at DESC, id DESC
 LIMIT 1
 """
 
@@ -56,31 +65,17 @@ LIMIT 1
 # (the ledger-terminal-atomic rule, the terminal-atomicity rule): a split write leaves
 # node=succeeded with ledger=running, the phantom the fence prevents.
 #
-# two keyings, one invariant — the write touches exactly the claimed row:
-#   * LEDGER_TERMINAL_SQL (the map-aware fallback) keys the full arbiter
-#     tuple, COALESCE(map_index, -1) included — the same expression the
-#     claim arbiter carries, so a map child's terminal can never overwrite
-#     its sibling's row.
-#   * LEDGER_TERMINAL_BY_ID_SQL keys the claim's OWN RETURNING id — the
-#     strongest form: the caller that holds the claim's ledger-row id
-#     (claim_step_ledger → LedgerClaim.ledger_id) pins the write to that
-#     row and nothing else.
-LEDGER_TERMINAL_SQL = """\
-UPDATE {schema}.wf_step_ledger
-SET status = $4,
-    result = $5::jsonb,
-    error_class = $6,
-    error_message = $7,
-    capture = $8::jsonb,
-    updated_at = clock_timestamp()
-WHERE flow_id = $1
-  AND step_key = $2
-  AND attempt = $3
-  AND COALESCE(map_index, -1) = COALESCE($9::smallint, -1)
-RETURNING id
-"""
-
-
+# ONE keying — the write touches exactly the claimed row:
+#   LEDGER_TERMINAL_BY_ID_SQL keys the claim's OWN RETURNING id AND its own
+#   claim instant: the caller that holds the claim (claim_step_ledger →
+#   LedgerClaim.ledger_id/claimed_at) pins the write to that row and that
+#   stamp and nothing else. There is no four-expression fallback and no
+#   instant-less bypass in current production claims: the epoch arbiter
+#   (flow, step, COALESCE(map,-1), attempt, claim_epoch) can carry several
+#   rows per (flow, step, attempt) — an update keyed only on those four
+#   expressions would rewrite the parked attempt's 'awaited' history beside
+#   the current row (the demonstrated UPDATE 2), and a status-only by-id
+#   write could re-stamp a row a later re-mint owns.
 LEDGER_TERMINAL_BY_ID_SQL = """\
 UPDATE {schema}.wf_step_ledger
 SET status = $2,
@@ -90,56 +85,41 @@ SET status = $2,
     capture = $6::jsonb,
     updated_at = clock_timestamp()
 WHERE id = $1
-  -- The re-mint guard: a caller presenting its OWN claim's
-  -- RETURNING instant (``claim_step_ledger``'s updated_at — the claim's
-  -- instance identity) writes ONLY the row that claim actually wrote.
-  -- The arbiter's re-use (the refund re-claims the SAME ordinal → the
-  -- SAME arbiter row) re-stamps updated_at, and the stale instant
-  -- REFUSES the write: a re-minted LIVE winner's ledger row can never
-  -- inherit a stale claimant's stamp (the deadline's 'failed' burn
-  -- included). A caller with no claim instant keeps the by-id-only
-  -- write (the pre-fix shape).
-  AND ($7::timestamptz IS NULL OR updated_at = $7::timestamptz)
+  AND status IN ('running', 'awaited', 'crashed')
+  -- The re-mint guard: the caller presents its OWN claim's RETURNING
+  -- instant (``claim_step_ledger``'s updated_at — the claim's instance
+  -- identity) and writes ONLY the row that claim actually wrote, at the
+  -- stamp that claim left. The arbiter's re-use (the refund re-claims the
+  -- SAME ordinal → the SAME arbiter row) re-stamps updated_at, and the
+  -- stale instant REFUSES the write: a re-minted LIVE winner's ledger row
+  -- can never inherit a stale claimant's stamp (the deadline's 'failed'
+  -- burn included).
+  AND updated_at = $7::timestamptz
 RETURNING id
 """
 
 
 # A fenced-out attempt is recorded outcome='fenced' — never a running ledger
 # row left forever on a terminal flow ("neither landed nor
-# refused" is the state the linearization doctrine forbids). The same two
-# keyings as the terminal write (the arbiter tuple / the claim's own id);
-# both guard status = 'running' so a terminal row is never re-fenced.
-LEDGER_FENCE_ATTEMPT_SQL = """\
-UPDATE {schema}.wf_step_ledger
-SET status = 'fenced',
-    error_class = $4,
-    updated_at = clock_timestamp()
-WHERE flow_id = $1
-  AND step_key = $2
-  AND attempt = $3
-  AND COALESCE(map_index, -1) = COALESCE($5::smallint, -1)
-  AND status = 'running'
-RETURNING id
-"""
-
-
+# refused" is the state the linearization doctrine forbids). The same exact
+# claim identity as the terminal write (the claim's own id + instant);
+# the guard covers the claim's nonterminal states; a terminal result is
+# never re-fenced.
 LEDGER_FENCE_BY_ID_SQL = """\
 UPDATE {schema}.wf_step_ledger
 SET status = 'fenced',
     error_class = $2,
     updated_at = clock_timestamp()
 WHERE id = $1
-  AND status = 'running'
+  AND status IN ('running', 'awaited', 'crashed')
   -- The re-mint guard: a caller presenting its OWN claim's
   -- RETURNING instant (``claim_step_ledger``'s updated_at — the claim's
   -- instance identity) fences ONLY the row that claim actually wrote.
   -- The refund re-mints the ordinal — the arbiter re-use hands a LIVE
   -- winner the SAME ledger row (the DO UPDATE re-stamps updated_at) —
   -- and the stale instant REFUSES the fence: the winner's own terminal
-  -- writes the row, the record never marks a live attempt 'fenced'. A
-  -- caller with no claim instant (the pre-fix shape — the engine's
-  -- fenced-out arm) keeps the status-only fence.
-  AND ($3::timestamptz IS NULL OR updated_at = $3::timestamptz)
+  -- writes the row, the record never marks a live attempt 'fenced'.
+  AND updated_at = $3::timestamptz
 RETURNING id
 """
 

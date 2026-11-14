@@ -458,6 +458,21 @@ async def test_non_consuming_counter_is_bounded_and_never_consumes_attempt_budge
         flow_id,
     )
     assert failed == 1  # the one terminal CAS; advertised waits had no failed ledger
+    # Each non-consuming deferral's own claim records its own 'awaited'
+    # row (the epoch arbiter's per-claim history); the terminal is the
+    # latest epoch's own row beside them — the EXACT history is
+    # (awaited, awaited, failed) in epoch order.
+    history = await wf_pool.fetch(
+        f'SELECT status, claim_epoch FROM "{wf_schema}".wf_step_ledger '  # noqa: S608
+        "WHERE flow_id = $1 AND step_key = 'work' "
+        "ORDER BY attempt, claim_epoch, created_at, id",
+        flow_id,
+    )
+    assert [(r["status"], r["claim_epoch"]) for r in history] == [
+        ("awaited", 1),
+        ("awaited", 2),
+        ("failed", 3),
+    ], [tuple(r) for r in history]
     print(
         "POLICY_NON_CONSUMING_ROWS",
         {

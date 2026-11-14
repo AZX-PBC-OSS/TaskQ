@@ -451,20 +451,19 @@ async def test_iteration_memo_is_the_one_tx_shape(
             step_key=iter_key,
             map_index=None,
             attempt=1,
+            claim_epoch=0,
         )
         assert claim.status == "running"
         # the recorded proposal.
         await conn.execute(
-            runner.wsql.ledger_terminal,
-            flow_id,
-            iter_key,
-            1,
+            runner.wsql.ledger_terminal_by_id,
+            claim.ledger_id,
             "succeeded",
             json.dumps({"done": False, "feedback": {"acc": 1}}),
             None,
             None,
             None,
-            None,
+            claim.claimed_at,
         )
         # the same outcome returns — the model is not re-consulted.
         memo = await memoized_step_result(

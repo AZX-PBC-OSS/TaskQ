@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import JobId
 from taskq.workflows._sql import WorkflowSql
+from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.ledger import (
     LedgerClaim,
     claim_step_ledger,
@@ -63,6 +64,7 @@ class WorkflowSteps:
         job_id: JobId,
         map_index: int | None = None,
         attempt: int = 1,
+        claim_epoch: int = 0,
     ) -> None:
         self._pool = pool
         self._wsql = wsql
@@ -70,6 +72,7 @@ class WorkflowSteps:
         self._job_id = job_id
         self._map_index = map_index
         self._attempt = attempt
+        self._claim_epoch = claim_epoch
 
     async def step(
         self,
@@ -98,7 +101,7 @@ class WorkflowSteps:
             if memo is not None and memo.status == "succeeded":
                 return memo.result
 
-            claim: LedgerClaim = await claim_step_ledger(
+            claim = await claim_step_ledger(
                 conn,
                 self._wsql,
                 flow_id=self._flow_id,
@@ -106,6 +109,7 @@ class WorkflowSteps:
                 step_key=name,
                 map_index=self._map_index,
                 attempt=self._attempt,
+                claim_epoch=self._claim_epoch,
             )
         if claim.status == "succeeded" and claim.result is not None:
             # The ON CONFLICT path: the recorded result returns rather than
@@ -146,33 +150,27 @@ class WorkflowSteps:
     ) -> None:
         """The step ledger's terminal write on ITS own acquisition (the
         the LedgerWatch F4 fix, leg 2: the terminal never rides a connection held from
-        the claim). Two keyings, the claim's own contract: the claim's
-        own row id (the strongest key) when the claim returned it; the
-        arbiter tuple otherwise (the pre-fix fallback, kept for a
-        claim shape that carries no id)."""
-        if claim.ledger_id is not None:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
-                    self._wsql.ledger_terminal_by_id,
-                    claim.ledger_id,
-                    status,
-                    self._encode_step_result(result),
-                    error_class,
-                    error_message,
-                    None,
-                    None,  # the ctx's callers hold no claim instant — the NULL form (the pre-fix shape)
-                )
-        else:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
-                    self._wsql.ledger_terminal,
-                    self._flow_id,
-                    name,
-                    self._attempt,
-                    status,
-                    self._encode_step_result(result),
-                    error_class,
-                    error_message,
-                    None,
-                    self._map_index,
-                )
+        the claim). The write keys the claim's OWN row id AND its own claim
+        instant — the strongest identity there is
+        (``claim_step_ledger`` returns a nonnull id and a nonnull
+        ``updated_at``; no four-expression fallback exists)."""
+        if claim.ledger_id is None or claim.claimed_at is None:
+            # A memo/read projection (no actual claim behind it) has no
+            # terminal of its own to record — manufacturing an identity
+            # would rewrite some other claim's row.
+            raise WorkflowRunError(
+                "the step ledger's terminal write requires the actual "
+                "claim's row id and claim instant; this LedgerClaim is a "
+                "read projection and records no terminal"
+            )
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                self._wsql.ledger_terminal_by_id,
+                claim.ledger_id,
+                status,
+                self._encode_step_result(result),
+                error_class,
+                error_message,
+                None,
+                claim.claimed_at,
+            )
