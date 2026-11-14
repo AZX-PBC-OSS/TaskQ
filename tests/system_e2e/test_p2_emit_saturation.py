@@ -424,9 +424,19 @@ async def _observe_and_release(
                       (SELECT count(*) FROM pg_stat_activity
                        WHERE datname = current_database() AND application_name LIKE $4
                          AND state='active'
-                         AND query ILIKE '%p2sat_%') AS active_provider,
+                         AND query ILIKE '%p2sat_%'
+                         -- The STUCK signature, derived: every fixture
+                         -- statement's service is sub-millisecond and the
+                         -- leaf gate's own poll period is 1s, so a fixture
+                         -- query still active after one full poll period is
+                         -- a leaked/hung session, never normal service. A
+                         -- µs poll caught mid-flight is service, not a leak.
+                         AND query_start < clock_timestamp() - interval '1 seconds'
+                      ) AS active_provider,
                       (SELECT count(*) FROM pg_stat_activity
                        WHERE datname = current_database() AND application_name LIKE $4
+                         -- Idle-in-transaction is itself the leak: no fixture
+                         -- statement leaves a transaction open.
                          AND state='idle in transaction'
                          AND query ILIKE '%p2sat_%') AS idle_provider
                 )
