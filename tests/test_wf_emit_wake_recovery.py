@@ -1738,7 +1738,8 @@ async def test_estate_wake_cursor_is_fair_under_continuous_arrivals(
 
     state = EstateWakeCursor()
     # Pass 1 examines A (blocked) and advances the cursor past it.
-    first = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=1, after=state.next_after())
+    after, batch = state.next_pass(1)
+    first = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=batch, after=after)
     state.observe(first)
     assert first.woken == 0, "A's page cannot fit while its child is live"
     # A's capacity frees: the blocker's row is deleted.
@@ -1754,9 +1755,8 @@ async def test_estate_wake_cursor_is_fair_under_continuous_arrivals(
         await _park_primitive_claim(
             wf_pool, wf_sql, claim_w, logical_attempt=1, page_width=1, bound=2, outstanding=0
         )
-        result = await wake_emit_backpressure(
-            wf_pool, wf_sql, batch_size=1, after=state.next_after()
-        )
+        after, batch = state.next_pass(1)
+        result = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=batch, after=after)
         state.observe(result)
         a_now = await _source_state(wf_conn, wf_schema, flow_a, claim_a.job_id, "source")
         if not _park_is_live(a_now):
@@ -2010,3 +2010,67 @@ async def test_pre_epoch_schema_refuses_the_normal_ledger_claim_fail_closed(
             await pool.close()
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
+
+
+async def test_estate_wake_cursor_wraps_a_blocked_prefix_to_wake_a_fitted_waiter(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
+) -> None:
+    """The completeness authority's own guarantee, at the reviewer's probe:
+    a BLOCKED PREFIX at least as wide as the batch (two blocked rows, then
+    a fitted waiter F, batch_size=1) must not starve F — the wrap pass
+    examines the WHOLE parked population (its limit is the population's
+    cap, never the stride batch), so F wakes within a bounded number of
+    estate passes. The rejected shape: a from-start pass bounded by the
+    batch re-fills its window with the blocked prefix every cycle and F is
+    never examined (the reviewer's 12-pass probe: F scheduled through every
+    pass while a flow-target wake promoted it immediately)."""
+    from taskq.workflows._emit import EstateWakeCursor
+    from taskq.workflows.engine import insert_node
+    from taskq.workflows._types import NodeSpec
+
+    blocked: list[tuple[JobId, AttemptClaim]] = []
+    for _ in range(2):
+        flow_b, claim_b = await _claimed(
+            wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
+        )
+        blocker = await insert_node(
+            wf_conn,
+            wf_sql,
+            NodeSpec(
+                step_key="screen", actor="wf-node", queue="default", payload={}, flow_id=flow_b
+            ),
+        )
+        await _park_primitive_claim(
+            wf_pool, wf_sql, claim_b, logical_attempt=1, page_width=2, bound=2, outstanding=2
+        )
+        blocked.append((blocker, claim_b))
+    # F: parked and FITTED (its page fits immediately — page 1 of 2, no
+    # outstanding rows).
+    flow_f, claim_f = await _claimed(
+        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
+    )
+    await _park_primitive_claim(
+        wf_pool, wf_sql, claim_f, logical_attempt=1, page_width=1, bound=2, outstanding=0
+    )
+
+    state = EstateWakeCursor()
+    f_woken_pass = None
+    for pass_number in range(1, 7):
+        after, batch = state.next_pass(1)
+        result = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=batch, after=after)
+        state.observe(result)
+        f_state = await _source_state(wf_conn, wf_schema, flow_f, claim_f.job_id, "source")
+        if not _park_is_live(f_state):
+            f_woken_pass = pass_number
+            assert f_state["status"] == "pending" and f_state["blocking_reason"] is None, f_state
+            break
+    assert f_woken_pass is not None, (
+        "a fitted parked waiter behind a blocked prefix as wide as the batch "
+        f"starved through 6 estate passes — the wrap never examined it"
+    )
+    assert f_woken_pass <= 4, f"F woke on pass {f_woken_pass} — beyond the wrap cycle's bound"
+    # The blocked rows stay parked (the wrap examined and correctly left them).
+    for _blocker, claim_b in blocked:
+        assert _park_is_live(
+            await _source_state(wf_conn, wf_schema, claim_b.flow_id, claim_b.job_id, "source")
+        ), "the blocked prefix's rows must stay parked until their capacity frees"

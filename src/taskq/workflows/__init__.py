@@ -53,6 +53,7 @@ from taskq.workflows._childflow import (
     ChildWorkflowUnknownError,
     SpawnDepthExceededError,
 )
+from taskq.workflows._emit import EmitBackpressure
 from taskq.workflows._policy import (
     CLEAR_POLICY,
     ExecutionPolicy,
@@ -135,6 +136,7 @@ __all__ = [
     "CompiledWorkflow",
     "DeliveryResult",
     "Done",
+    "EmitBackpressure",
     "ExecutionPolicy",
     "ExhaustionEvent",
     "Exit",
