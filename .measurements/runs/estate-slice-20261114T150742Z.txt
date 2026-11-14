@@ -1,0 +1,13 @@
+# the estate slice x3 at the re-stamp head (the estate's own pins: content-door, docs-exemption, door-contract, staging-hygiene, wf-evidence-chain) at the re-stamp head 7f2bd32caa969643b3568911fdd79ffe74a25cbd
+56 passed in 14.17s
+rc1=0
+=== run 2
+........................................................                 [100%]
+56 passed in 13.93s
+rc2=0
+=== run 3
+........................................................                 [100%]
+56 passed in 14.59s
+rc3=0
+rc=0
+head: 7f2bd32caa969643b3568911fdd79ffe74a25cbd

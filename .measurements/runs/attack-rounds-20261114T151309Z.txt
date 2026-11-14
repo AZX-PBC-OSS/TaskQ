@@ -1,0 +1,7 @@
+# the attack rounds' FILL (the attack corpus: tests/test_attack*.py + tests/test_wf_attack*.py + tests/probes_*.py, -n 4) at the re-stamp head 7f2bd32caa969643b3568911fdd79ffe74a25cbd
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_attack_insights_rec.py:244: uvloop is not installed
+SKIPPED [1] tests/probes_nothing_stuck_teeth.py:279: needs a restartable cluster (ATTACK4_PG_DATA + the port; the capture ran with the probe's own PG on :5711)
+661 passed, 2 skipped, 21 warnings in 108.05s (0:01:48)
+rc=0
+head: 7f2bd32caa969643b3568911fdd79ffe74a25cbd

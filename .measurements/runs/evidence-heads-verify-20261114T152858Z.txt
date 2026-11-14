@@ -1,0 +1,6 @@
+# evidence-heads-verify at the re-stamp head 7f2bd32caa969643b3568911fdd79ffe74a25cbd — the verifier's receipt at the re-stamp head 7f2bd32caa969643b3568911fdd79ffe74a25cbd
+THE HEAD-STAMP LAW REDS (head 7f2bd32caa96):
+  evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261109T223251Z.txt is stale — recorded on 4441dd642fbd, the head is 7f2bd32caa96. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+  rv2-13-green: the LIVE CLAIM evidence-heads-verify-20261109T223251Z.txt is stale — recorded on 4441dd642fbd, the head is 7f2bd32caa96. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+rc=0
+head: 7f2bd32caa969643b3568911fdd79ffe74a25cbd

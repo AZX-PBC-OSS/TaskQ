@@ -1,0 +1,7 @@
+# THE FAST TIER at -n 8 (pytest -n 8 -m 'not slow and not load_sensitive') at the re-stamp head 7f2bd32caa969643b3568911fdd79ffe74a25cbd
+SKIPPED [1] tests/test_scenario_grounds.py:87: the scenario grounds need a real Postgres/Redis: set TASKQ_SCENARIO_GROUNDS=1 to opt in
+SKIPPED [1] tests/test_scenario_grounds.py:187: the scenario grounds need a real Postgres/Redis: set TASKQ_SCENARIO_GROUNDS=1 to opt in
+SKIPPED [1] tests/test_idempotency_key_actor_mismatch.py:122: the caller-connection path is Postgres-only
+14138 passed, 15 skipped, 151 warnings in 780.71s (0:13:00)
+rc=0
+head: 7f2bd32caa969643b3568911fdd79ffe74a25cbd

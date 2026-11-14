@@ -1,0 +1,6 @@
+# mkdocs build --strict at the re-stamp head 7f2bd32caa969643b3568911fdd79ffe74a25cbd
+  - design/tors-adoption-map.md
+  - guides/agent-loops.md
+INFO    -  Documentation built in 15.30 seconds
+rc=0
+head: 7f2bd32caa969643b3568911fdd79ffe74a25cbd

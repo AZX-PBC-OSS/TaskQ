@@ -1,0 +1,5 @@
+# pyright FULL (pyright src/taskq tests) at the re-stamp head 7f2bd32caa969643b3568911fdd79ffe74a25cbd
+venv .venv subdirectory not found in venv path /tmp/opencode/evidence-restamp-7f2bd32.
+0 errors, 0 warnings, 0 informations
+rc=0
+head: 7f2bd32caa969643b3568911fdd79ffe74a25cbd

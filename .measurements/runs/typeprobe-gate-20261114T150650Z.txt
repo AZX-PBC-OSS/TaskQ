@@ -1,0 +1,4 @@
+# the type gate (tests/typeprobe/_gate.py: the MUST_ERROR corpus on pyright 1.1.414 + ty 0.0.85) at the re-stamp head 7f2bd32caa969643b3568911fdd79ffe74a25cbd
+the type gate holds: every MUST_ERROR marker (49) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+rc=0
+head: 7f2bd32caa969643b3568911fdd79ffe74a25cbd

@@ -1,0 +1,8 @@
+# the wf battery's FILL (test-wf-cov's selection: tests/test_wf_*.py + the 4 explicit files, -n 4, under --cov=src/taskq/workflows --cov-branch) at the re-stamp head 7f2bd32caa969643b3568911fdd79ffe74a25cbd
+src/taskq/workflows/engine.py                   151     11     50      6    91%
+src/taskq/workflows/ledger.py                    85      1     18      2    97%
+-------------------------------------------------------------------------------
+TOTAL                                          6588    387   2172    274    92%
+================= 1138 passed, 1 warning in 132.09s (0:02:12) ==================
+rc=0
+head: 7f2bd32caa969643b3568911fdd79ffe74a25cbd

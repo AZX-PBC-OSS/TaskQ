@@ -1,0 +1,6 @@
+# the docs examples (make test-docs-examples: pytest -m docs_examples, TASKQ_DOCS_EXAMPLES=1) at the re-stamp head 7f2bd32caa969643b3568911fdd79ffe74a25cbd
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+108 passed, 14348 deselected, 1 warning in 103.75s (0:01:43)
+rc=0
+head: 7f2bd32caa969643b3568911fdd79ffe74a25cbd
