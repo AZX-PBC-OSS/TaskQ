@@ -1267,8 +1267,9 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     assert waiter.get("Node Type") in {"Index Scan", "Index Only Scan"}
     assert str(waiter["Scan Direction"]) == "Forward"
     assert waiter.get("Actual Rows") == 1
-    condition = waiter.get("Index Cond") or ""
-    marker_filter = (waiter.get("Filter") or "") + condition
+    filter_text = str(waiter.get("Filter") or "")
+    condition = str(waiter.get("Index Cond") or "")
+    marker_filter = filter_text + condition
     normalized = "".join(marker_filter.split())
     assert "flow_id" in normalized, marker_filter
     assert "blocking_reason" in normalized, (
@@ -1708,8 +1709,8 @@ async def test_estate_wake_cursor_is_fair_under_continuous_arrivals(
     never resets, and the fitted row behind it starves forever — the
     steady-state saturated estate with a missed inline wake."""
     from taskq.workflows._emit import EstateWakeCursor
-    from taskq.workflows.engine import insert_node
     from taskq.workflows._types import NodeSpec
+    from taskq.workflows.engine import insert_node
 
     # A: parked, blocked by one ordinary pending child of its own run
     # (page 2 cannot fit while the child is live).
@@ -1742,9 +1743,7 @@ async def test_estate_wake_cursor_is_fair_under_continuous_arrivals(
     assert first.woken == 0, "A's page cannot fit while its child is live"
     # A's capacity frees: the blocker's row is deleted.
     await wf_conn.execute(f'DELETE FROM "{wf_schema}".jobs WHERE id = $1', blocker)
-    assert _park_is_live(
-        await _source_state(wf_conn, wf_schema, flow_a, claim_a.job_id, "source")
-    )
+    assert _park_is_live(await _source_state(wf_conn, wf_schema, flow_a, claim_a.job_id, "source"))
 
     woken_pass = None
     for _pass in range(1, 7):
@@ -1766,7 +1765,7 @@ async def test_estate_wake_cursor_is_fair_under_continuous_arrivals(
             break
     assert woken_pass is not None, (
         "A fitted parked source starved behind continuous arrivals — the "
-        f"estate cursor never revisited it (passes ran: 6)"
+        "estate cursor never revisited it (passes ran: 6)"
     )
     assert woken_pass <= 4, f"A woke on pass {woken_pass} — beyond the fair cursor's bound"
 
@@ -1806,9 +1805,9 @@ async def test_scheduled_null_requires_the_exact_park_marker(
     # The violation is THE PARK DOMAIN'S OWN constraint — the row is every
     # other way legitimate (a fairness cohort, a due-shape status, a real
     # node key), so the storage refusal can only be the scheduled-NULL law.
-    assert check_exc.value.__dict__.get("constraint_name") == "jobs_scheduled_null_park_chk", (
-        str(check_exc.value)[:300]
-    )
+    assert check_exc.value.__dict__.get("constraint_name") == "jobs_scheduled_null_park_chk", str(
+        check_exc.value
+    )[:300]
 
 
 async def test_claimable_listing_agrees_with_the_claim_cas(pg_dsn: str) -> None:
@@ -1838,7 +1837,10 @@ async def test_claimable_listing_agrees_with_the_claim_cas(pg_dsn: str) -> None:
             .replace(", attempt, claim_epoch) DO UPDATE", ", attempt) DO UPDATE")
         )
         flow_id, claim = await _claimed(
-            conn, schema, wsql, metadata={"wf_source_logical_attempt": 1},
+            conn,
+            schema,
+            wsql,
+            metadata={"wf_source_logical_attempt": 1},
             claim_statement=era_claim,
         )
         pool = await asyncpg.create_pool(pg_dsn)
@@ -1860,9 +1862,7 @@ async def test_claimable_listing_agrees_with_the_claim_cas(pg_dsn: str) -> None:
             json.dumps({"flow_id": str(flow_id)}),
             str(flow_id),
         )
-        listing = await pool.fetch(
-            render_sql(CLAIMABLE_NODES_SQL_TEMPLATE, schema), flow_id
-        )
+        listing = await pool.fetch(render_sql(CLAIMABLE_NODES_SQL_TEMPLATE, schema), flow_id)
         assert [row["id"] for row in listing] == [], (
             f"the claimable listing must offer neither the parked row nor the "
             f"ambiguous scheduled-NULL row (the claim CAS can take neither), "
@@ -1911,7 +1911,11 @@ async def test_malformed_waiter_marker_does_not_poison_the_estate_wake(
         json.dumps(
             {
                 "blocking_reason": "backpressure",
-                "wf_deferral": {"signal": "EmitBackpressure", "consume_budget": False, "attempt": 0},
+                "wf_deferral": {
+                    "signal": "EmitBackpressure",
+                    "consume_budget": False,
+                    "attempt": 0,
+                },
                 "wf_emit_backpressure": {"version": 1, "bound": 2, "deferrals": 1},
             }
         ),
@@ -1972,11 +1976,11 @@ async def test_pre_epoch_schema_refuses_the_normal_ledger_claim_fail_closed(
             ),
         )
         row = await conn.fetchrow(
-            f'SELECT status::text AS status, attempt::int AS attempt '
+            f"SELECT status::text AS status, attempt::int AS attempt "
             f'FROM "{schema}".jobs WHERE id = $1',
             claim.job_id,
         )
-        assert row is not None and row["status"] == "running", dict(row)
+        assert row is not None and row["status"] == "running", str(row)
         pool = await asyncpg.create_pool(pg_dsn)
         # The new binary's NORMAL ledger claim (the every-claim path, not a
         # park-specific arm) against the pre-epoch schema.
@@ -1993,7 +1997,7 @@ async def test_pre_epoch_schema_refuses_the_normal_ledger_claim_fail_closed(
                     claim_epoch=claim.claim_epoch,
                 )
         row_after = await conn.fetchrow(
-            f'SELECT status::text AS status, attempt::int AS attempt '
+            f"SELECT status::text AS status, attempt::int AS attempt "
             f'FROM "{schema}".jobs WHERE id = $1',
             claim.job_id,
         )

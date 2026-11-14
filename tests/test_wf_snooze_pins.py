@@ -1203,7 +1203,9 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
     assert [(r["claim_epoch"], r["status"]) for r in ledger_rows] == [
         (0, "fenced"),
         (1, "running"),
-    ], f"THE RE-MINT GUARD: the zombie's own history row fences; the winner's row stays live, got {ledger_rows}"
+    ], (
+        f"THE RE-MINT GUARD: the zombie's own history row fences; the winner's row stays live, got {ledger_rows}"
+    )
 
     # beside it. an un-re-minted zombie row still fences — the law, never a
     # running row left forever.

@@ -421,8 +421,7 @@ async def test_the_runs_list_renders_a_parked_source_without_a_fire_time(
         "the parked run must be visible from the runs list (the deferral badge)"
     )
     assert "parked · no timer" in deferring_row, (
-        "the parked-only run must render the timer-less park face, got: "
-        f"{deferring_row[:300]}"
+        f"the parked-only run must render the timer-less park face, got: {deferring_row[:300]}"
     )
     assert "next fire None" not in html, (
         "the page must never render a NULL next fire (the docs' law)"

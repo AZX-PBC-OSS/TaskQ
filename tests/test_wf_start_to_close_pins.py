@@ -252,7 +252,7 @@ async def _ledger_rows(
     pool: asyncpg.Pool, schema: str, flow_id: str, step_key: str
 ) -> list[asyncpg.Record]:
     return await pool.fetch(
-        f'SELECT attempt, claim_epoch, status, error_class, error_message '
+        f"SELECT attempt, claim_epoch, status, error_class, error_message "
         f'FROM "{schema}".wf_step_ledger '
         f"WHERE flow_id = $1 AND step_key = $2 "
         "ORDER BY attempt, claim_epoch, created_at, id",
@@ -1266,8 +1266,8 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
     w1 = JobId(seeded["locked_by_worker"])
     runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=w1)
     from taskq.workflows._emit import EmitBackpressure, wake_emit_backpressure
-    from taskq.workflows.api._sql_runner import NODE_CLAIM_SQL_TEMPLATE, render_sql
     from taskq.workflows.api._runner_defer import defer_row_law
+    from taskq.workflows.api._sql_runner import NODE_CLAIM_SQL_TEMPLATE, render_sql
     from taskq.workflows.ledger import claim_step_ledger
 
     # W1's ledger claim — the parked attempt's own row (epoch 0).
