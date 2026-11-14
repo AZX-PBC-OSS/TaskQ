@@ -13,11 +13,13 @@
 -- claim_epoch joins the arbiter so every dispatch claim records its own
 -- ledger row: the parked attempt's deferral record survives beside the
 -- resumed attempt's terminal. Existing rows carry DEFAULT 0 and stay valid
--- (persisted history, never a schema-version oracle). The post-phase
--- widening re-creates this arbiter without the epoch column
--- (01.00.42_02 is frozen); 01.00.43_01 re-creates the epoch form after
--- it in the same apply run, so every fully-migrated schema ends on the
--- epoch arbiter.
+-- (persisted history, never a schema-version oracle). Two further cutover
+-- files are PENDING A FUTURE PR — the identity POST 01.00.42_02 (frozen
+-- bytes; re-creates this arbiter WITHOUT the epoch column) and the arbiter
+-- restoration 01.00.43_01 (re-creates the epoch form after it, planned in
+-- the same apply run so every fully-migrated schema ends on the epoch
+-- arbiter). Until those files exist, THIS file is the cutover's whole
+-- surface: no operator step may wait on a file that is not in the tree.
 --
 -- LOCK SCOPE: the ADD COLUMN is a metadata-only catalog change (no table
 -- rewrite; NOT NULL with a constant default). DROP INDEX is a catalog
@@ -30,10 +32,11 @@
 --
 -- WORKFLOW-EXECUTOR CUTOVER (the binding release contract)
 -- --------------------------------------------------------
--- The cutover files are 01.00.42_01, 01.00.42_02 and 01.00.43_01 — the
--- operator exclusion below spans all three. It replaces the workflow-ledger's
--- conflict arbiter, so it requires a workflow-EXECUTOR cutover — there is NO
--- supported old/new mixed execution across the index replacement:
+-- The cutover AS THIS TREE SHIPS is 01.00.42_01 alone (the later cutover
+-- files, 01.00.42_02 and 01.00.43_01, are pending a future PR and no
+-- operator step may wait on them yet). It replaces the workflow-ledger's
+-- conflict arbiter, so it requires a workflow-EXECUTOR cutover — there is
+-- NO supported old/new mixed execution across the index replacement:
 --
 -- * Before the cutover files apply, stop accepting workflow body work and
 --   drain graceful in-flight executions in EVERY pre-correction workflow
@@ -55,7 +58,8 @@
 --   reported as a final success or a truthful body failure.
 -- * Producers may keep writing pending root/work rows: durable
 --   pending/scheduled/parked rows are storage, not executors.
--- * After 01.00.43_01:post has applied, restart only corrected binaries
+-- * After THIS file has applied (and, when they land in a later PR, after
+--   the train's last file has applied), restart ONLY corrected binaries
 --   (the ones that carry these statements). An old executor must never
 --   rejoin.
 
@@ -68,4 +72,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS wf_step_ledger_claim_uniq
     ON "{schema}".wf_step_ledger (flow_id, step_key, COALESCE(map_index, -1), attempt, claim_epoch);
 
 COMMENT ON COLUMN "{schema}".wf_step_ledger.claim_epoch IS
-    'The dispatch claim epoch of the execution this ledger row records. Joins the claim arbiter so a refunded-and-reminted physical attempt (the capacity park cycle) records one ledger row per claim: the parked attempt''s awaited record survives beside the resumed attempt''s terminal. Applying the cutover files (01.00.42_01, 01.00.42_02, 01.00.43_01) requires the workflow-executor cutover (see 01.00.42_01): an old binary''s four-expression claim/finalize is unsupported against this arbiter, and after 01.00.43_01:post has applied, restart only corrected binaries.';
+    'The dispatch claim epoch of the execution this ledger row records. Joins the claim arbiter so a refunded-and-reminted physical attempt (the capacity park cycle) records one ledger row per claim: the parked attempt''s awaited record survives beside the resumed attempt''s terminal. Applying 01.00.42_01 (the cutover as this tree ships it; the later cutover files are pending a future PR) requires the workflow-executor cutover (see 01.00.42_01): an old binary''s four-expression claim/finalize is unsupported against this arbiter, and after it has applied, restart only corrected binaries.';

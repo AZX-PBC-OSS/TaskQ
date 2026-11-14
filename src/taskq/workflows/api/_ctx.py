@@ -137,12 +137,13 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     # unwired pattern), never a crash.
     _progress: ProgressEmitter | None = None
     #: This attempt's claim epoch (the emit's cursor-fence's value — the
-    #: runner's claim wrote it; the emit's checkpoint fences on the pair).
-    #: The in-process driver's own claim stamps 0
-    #: (NODE_CLAIM_SQL_TEMPLATE); a fleet-claimed row carries its
-    #: dispatch claim's epoch — the emit's cursor checkpoint fences on
-    #: the epoch beside the worker and the attempt (the fence must match
-    #: the row, or the checkpoint updates nothing and the emit refuses).
+    #: claim CAS granted it; the emit's checkpoint fences on the pair).
+    #: The direct driver's own claim grants the NEXT epoch atomically with
+    #: its attempt (NODE_CLAIM_SQL_TEMPLATE's ``claim_epoch + 1``); a
+    #: fleet-claimed row carries its dispatch claim's granted epoch — the
+    #: emit's cursor checkpoint fences on the epoch beside the worker and
+    #: the attempt (the fence must match the row, or the checkpoint
+    #: updates nothing and the emit refuses).
     claim_epoch: int = 0
     #: The physical jobs.attempt this context's claim granted (the fence's
     #: ordinal), kept beside the public logical ``attempt``: a source's

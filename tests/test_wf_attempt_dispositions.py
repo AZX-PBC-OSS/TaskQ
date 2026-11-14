@@ -524,6 +524,25 @@ async def test_a_stale_claim_after_ledger_remint_is_a_safe_noop(
         (winner_epoch, "running"),
     ], [dict(r) for r in ledger_rows]
     assert ledger_rows[-1]["updated_at"] == latest.claimed_at
+    # THE STALE WRITER'S SAFETY (the retained poison/fence cases): the stale
+    # repend wrote NOTHING on the live row — the winner's claim stands, and
+    # no repend record was stamped on a verdict that wrote nothing.
+    job_row = await wf_conn.fetchrow(
+        f"SELECT status::text AS status, attempt::int AS attempt, "
+        f"claim_epoch::bigint AS claim_epoch, metadata FROM \"{wf_schema}\".jobs "
+        "WHERE id = $1",
+        node_id,
+    )
+    assert job_row is not None
+    assert job_row["status"] == "running", (
+        f"the stale repend must leave the live winner's row untouched, got {dict(job_row)}"
+    )
+    assert (job_row["attempt"], job_row["claim_epoch"]) == (claim.attempt, winner_epoch), dict(
+        job_row
+    )
+    assert "wf_repend" not in _metadata(job_row), (
+        "a stale verdict must never stamp a repend record on the live row"
+    )
 
 
 @pytest.mark.integration

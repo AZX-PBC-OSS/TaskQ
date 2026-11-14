@@ -112,16 +112,33 @@ async def _drive(
     # The deferral's own floor is 1s of DB clock; a bare tick budget races
     # it (1000 x 1ms is the floor itself — the run died at max_ticks before
     # the due instant's promotion sweep re-armed it). The wait is the
-    # TERMINAL FACT: drive repeatedly within a bounded wall-clock deadline
-    # — the deferral comes due, the sweep re-arms the run, the next drive
-    # finishes it — never a tick count that can lose the race to the clock.
-    deadline = time.monotonic() + 30.0
-    verdict = "max_ticks"
-    while time.monotonic() < deadline and verdict == "max_ticks":
-        verdict = await runner.drive(claim.flow_id, tick=0.001, max_ticks=1000)
-    assert verdict == "terminal", (
-        f"the policy run did not reach its terminal fact within the bounded "
-        f"deadline (the drive's verdict: {verdict})"
+    # TERMINAL FACT, short-polled on the row itself; the bound is a FAILURE
+    # TIMEOUT on that fact — grounded at five times the measured service
+    # (the 1s floor + the observed ~2s drive service), never the mechanism.
+    started = time.monotonic()
+    failure_timeout = started + 15.0
+
+    async def _root_status() -> str | None:
+        value = await pool.fetchval(
+            f'SELECT status::text FROM "{schema}".jobs WHERE id = $1',  # noqa: S608 — validated fixture schema
+            claim.flow_id,
+        )
+        return str(value) if value is not None else None
+
+    while time.monotonic() < failure_timeout:
+        if await _root_status() in ("succeeded", "failed", "cancelled"):
+            break
+        await runner.drive(claim.flow_id, tick=0.05, max_ticks=20)
+    assert await _root_status() in ("succeeded", "failed", "cancelled"), (
+        "the policy run's terminal fact never arrived within the bounded failure timeout"
+    )
+    # The deferral was actually HONOURED: the run's wall includes the floor
+    # (a run that finished before the 1s floor would have skipped the
+    # deferral's own wait — the floor is the fact this policy pins).
+    elapsed = time.monotonic() - started
+    assert elapsed >= 1.0, (
+        f"the deferral floor must be honoured (the run finished in {elapsed:.2f}s — "
+        "before the 1s floor)"
     )
     rows = await pool.fetch(
         f'SELECT id, step_key, status::text AS status, error_class, error_message FROM "{schema}".jobs '  # noqa: S608 — validated fixture schema
