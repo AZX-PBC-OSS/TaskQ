@@ -368,7 +368,17 @@ async def test_query_count_one_read_per_status_surface(
     counting = CountingConn(wf_conn)
     await reconstruct_workflow_status(counting, wf_sql, flow_id)
     small_run_statements = len(queries)
-    assert small_run_statements == 3, queries  # the nodes + the ledger + the never-granted
+    # TWO statements: the node read + the never-granted read. The step
+    # ledger is claim/attempt history and replay data — it is not a
+    # current-status source, so the reconstruction reads NO ledger table
+    # at all (a reintroduced ledger overlay — ordered or unordered —
+    # fails this inventory AND the live-node behavior controls).
+    assert small_run_statements == 2, queries
+    for sql in queries:
+        assert "wf_step_ledger" not in sql, (
+            f"the reconstruction read the ledger — the ledger is "
+            f"claim/attempt history, never a current-status source: {sql!r}"
+        )
 
     # more terminal nodes + the join's edges. the statement count must not.
     for i in range(30):
@@ -817,159 +827,132 @@ async def _seed_ledger_terminal(
     )
 
 
-@pytest.mark.integration
-async def test_reconstruction_map_sibling_never_inherits_a_siblings_terminal(
-    wf_conn: asyncpg.Connection,
-    wf_schema: str,
-    wf_sql: WorkflowSql,
-) -> None:
-    """The ledger terminal belongs to its OWN claim — the owning job row
-    (that child's step_key + map_index + attempt) — never to the step
-    key. The live-retry window's row set: the root running, three map
-    children pending at attempt 1, the fourth re-pended scheduled at
-    attempt 2 behind its two burned attempts' ledger terminals, the
-    fan-in and the tail steps pending. The rows derive ``blocked`` (live
-    blocked rows, no failed row) and the authoritative root writer
-    agrees — the root stays ``running``.
-    RED (the step-key collapse): the pending siblings inherited the
-    failed terminal keyed by step_key alone and these same rows derived
-    ``failed`` — a live run reported dead by its own status read."""
-    flow = new_uuid()
-    meta: dict[str, object] = {"workflow": "probe_march"}
-    await _seed_wf_row(
-        wf_conn,
-        wf_schema,
-        flow,
-        job_id=flow,
-        actor="flow",
-        status="running",
-        step_key="__flow__",
-        metadata=meta,
-    )
-    await _seed_wf_row(
-        wf_conn,
-        wf_schema,
-        flow,
-        status="succeeded",
-        step_key="sources",
-        attempt=1,
-        metadata=meta,
-        fairness_key=str(flow),
-    )
-    await _seed_wf_row(
-        wf_conn,
-        wf_schema,
-        flow,
-        status="succeeded",
-        step_key="review",
-        attempt=4,
-        metadata=meta,
-        fairness_key=str(flow),
-    )
-    for map_index in (0, 1, 2):
-        await _seed_wf_row(
-            wf_conn,
-            wf_schema,
-            flow,
-            status="pending",
-            step_key="sources.item",
-            map_index=map_index,
-            attempt=1,
-            metadata=meta,
-            fairness_key=str(flow),
-        )
-    permanent = new_uuid()
-    await _seed_wf_row(
-        wf_conn,
-        wf_schema,
-        flow,
-        job_id=permanent,
-        status="scheduled",
-        step_key="sources.item",
-        map_index=3,
-        attempt=2,
-        metadata=meta,
-        fairness_key=str(flow),
-    )
-    await _seed_wf_row(
-        wf_conn,
-        wf_schema,
-        flow,
-        status="pending",
-        step_key="sources.join",
-        deps_pending=4,
-        metadata={**meta, "blocking_reason": "join"},
-        fairness_key=str(flow),
-    )
-    await _seed_wf_row(
-        wf_conn,
-        wf_schema,
-        flow,
-        status="pending",
-        step_key="triage",
-        deps_pending=1,
-        metadata=meta,
-        fairness_key=str(flow),
-    )
-    await _seed_wf_row(
-        wf_conn,
-        wf_schema,
-        flow,
-        status="pending",
-        step_key="publish",
-        deps_pending=2,
-        metadata=meta,
-        fairness_key=str(flow),
-    )
-    for attempt in (1, 2):
-        await _seed_ledger_terminal(
-            wf_conn,
-            wf_schema,
-            flow,
-            job_id=permanent,
-            step_key="sources.item",
-            map_index=3,
-            attempt=attempt,
-            status="failed",
-        )
+# ── The reconstruction's live-node law (the ledger is history, not state) ──
+#
+# One control per demonstrated wrong direction. Discipline, every control:
+# (1) assert the EXACT seeded jobs + ledger tuples (a fixture accident can
+# never silently turn the test into another aggregate), (2) reconstruct and
+# assert the EXACT verdict, (3) run the REAL root-maintenance statement and
+# assert the root. `assert verdict in ("pending", "blocked")` is never
+# used: it would let a false-complete or false-failed bug hide.
 
-    verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
-    assert verdict == "blocked", (
-        f"the live map siblings reconstructed {verdict!r}: a sibling's failed "
-        "retry is THAT child's claim's outcome — the terminal is the ledger "
-        "row's own (job, attempt) identity, never the step key's; the "
-        "still-live pending siblings derive the blocked/live class and the "
-        "run stays live"
+
+async def _assert_jobs(
+    conn: asyncpg.Connection,
+    schema: str,
+    flow_id: uuid.UUID,
+    expected: set[tuple[str, int | None, str, int]],
+) -> None:
+    """The exact seeded node tuples: (step_key, map_index, status, attempt)."""
+    rows = await conn.fetch(
+        f'''SELECT step_key, map_index, status::text AS status, attempt
+            FROM "{schema}".jobs
+            WHERE (metadata->>'flow_id')::uuid = $1::uuid
+              AND metadata ? 'flow_id' AND step_key <> '__flow__'
+            ORDER BY step_key, COALESCE(map_index, -1)''',
+        flow_id,
     )
-    # The authoritative writer's agreement (G7's own mapping: blocked ↔
-    # running): the root maintenance leg leaves the live root untouched.
-    await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
-    root = await wf_conn.fetchval(
-        f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow
+    got = {(r["step_key"], r["map_index"], r["status"], r["attempt"]) for r in rows}
+    assert got == expected, f"the seeded jobs tuples drifted: {sorted(got)!r}"
+
+
+async def _assert_ledger(
+    conn: asyncpg.Connection,
+    schema: str,
+    flow_id: uuid.UUID,
+    expected: set[tuple[str, int | None, int, str]],
+) -> None:
+    """The exact seeded ledger tuples: (step_key, map_index, attempt, status)."""
+    rows = await conn.fetch(
+        f'''SELECT step_key, map_index, attempt, status::text AS status
+            FROM "{schema}".wf_step_ledger WHERE flow_id = $1::uuid''',
+        flow_id,
     )
+    got = {(r["step_key"], r["map_index"], r["attempt"], r["status"]) for r in rows}
+    assert got == expected, f"the seeded ledger tuples drifted: {sorted(got)!r}"
+
+
+async def _assert_root_running(
+    conn: asyncpg.Connection, schema: str, wf_sql: WorkflowSql, flow_id: uuid.UUID
+) -> None:
+    """The REAL root-maintenance statement runs, and the live root stands."""
+    await conn.execute(wf_sql.workflow_root_maintain, 100)
+    root = await conn.fetchval(f'SELECT status::text FROM "{schema}".jobs WHERE id = $1', flow_id)
     assert root == "running", (
-        f"the reconstruction said {verdict!r} while the root writer left the "
-        f"root {root!r} — the two derivations of one status vocabulary "
-        "disagreed on the same rows"
+        f"the root writer finalized a LIVE run ({root!r}) — reconstruction "
+        "and maintenance disagree on the same committed rows"
     )
 
 
+async def _seed_held_step(
+    conn: asyncpg.Connection,
+    schema: str,
+    flow_id: uuid.UUID,
+    *,
+    step_key: str = "publish",
+    substep_key: str = "before_publish",
+    substep_status: str = "succeeded",
+) -> uuid.UUID:
+    """The REAL hold shape: the outer row pending under the hold metadata
+    (`_HOLD_HOLD_NODE_SQL`'s write), its own claim ledger row 'awaited'
+    (`mark_awaited` — resume-not-retry), and an inner ``ctx.substep``
+    claim's terminal at the SAME attempt (substeps share the outer job id
+    and attempt; they are their own step keys)."""
+    outer = new_uuid()
+    await _seed_wf_row(
+        conn,
+        schema,
+        flow_id,
+        job_id=outer,
+        status="pending",
+        step_key=step_key,
+        attempt=1,
+        metadata={"hold": str(new_uuid()), "held_signal": "gate"},
+        fairness_key=str(flow_id),
+    )
+    await _seed_ledger_terminal(
+        conn,
+        schema,
+        flow_id,
+        job_id=outer,
+        step_key=step_key,
+        map_index=None,
+        attempt=1,
+        status="awaited",
+    )
+    await _seed_ledger_terminal(
+        conn,
+        schema,
+        flow_id,
+        job_id=outer,
+        step_key=substep_key,
+        map_index=None,
+        attempt=1,
+        status=substep_status,
+    )
+    return outer
+
+
 @pytest.mark.integration
-async def test_reconstruction_latest_terminal_is_order_deterministic(
+async def test_reconstruction_failed_map_sibling_leaves_the_live_node_pending(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_sql: WorkflowSql,
 ) -> None:
-    """The 'latest terminal' selection is the ledger's own attempt order —
-    never the heap's physical arrival order: identical logical rows
-    derive the identical verdict through a tuple move and ANALYZE. The
-    run's shape: one pending map sibling (its own claim, no terminal)
-    beside a re-pended child whose ledger carries its attempt-1 failure
-    and its attempt-2 success. The live run's verdict is ``pending``.
-    RED (the unordered overwrite): the verdict flipped with the rows'
-    physical arrival — the same logical rows, two verdicts."""
+    """FAILED map-sibling direction. Child A is pending at its own first
+    attempt; sibling B (same step key, DIFFERENT map index and job) is the
+    ladder's re-pend donor: scheduled at attempt 2 behind its own failed
+    attempt-2 ledger terminal — the one named live donor the ruling
+    admits. With no other node in the run the verdict is EXACTLY
+    ``pending``: a sibling's terminal is that sibling's claim's history
+    and can never answer for child A.
+    RED on the base (the step-key collapse keyed A to B's failed terminal
+    and derived ``failed`` — a live run reported dead by its own status
+    read). A second phase adds the fan-in join and asserts the aggregate
+    ``blocked`` — the join must never be needed to see the node truth."""
     flow = new_uuid()
-    retried = new_uuid()
+    child_a = new_uuid()
+    donor = new_uuid()
     meta: dict[str, object] = {"workflow": "probe_march"}
     await _seed_wf_row(
         wf_conn,
@@ -985,6 +968,7 @@ async def test_reconstruction_latest_terminal_is_order_deterministic(
         wf_conn,
         wf_schema,
         flow,
+        job_id=child_a,
         status="pending",
         step_key="sources.item",
         map_index=0,
@@ -996,7 +980,7 @@ async def test_reconstruction_latest_terminal_is_order_deterministic(
         wf_conn,
         wf_schema,
         flow,
-        job_id=retried,
+        job_id=donor,
         status="scheduled",
         step_key="sources.item",
         map_index=1,
@@ -1008,9 +992,181 @@ async def test_reconstruction_latest_terminal_is_order_deterministic(
         wf_conn,
         wf_schema,
         flow,
-        job_id=retried,
+        job_id=donor,
         step_key="sources.item",
         map_index=1,
+        attempt=2,
+        status="failed",
+    )
+    # (1) the exact seeded tuples.
+    await _assert_jobs(
+        wf_conn,
+        wf_schema,
+        flow,
+        {("sources.item", 0, "pending", 1), ("sources.item", 1, "scheduled", 2)},
+    )
+    await _assert_ledger(
+        wf_conn,
+        wf_schema,
+        flow,
+        {("sources.item", 1, 2, "failed")},
+    )
+    # (2) the reconstruction: EXACTLY pending.
+    verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+    assert verdict == "pending", (
+        f"a sibling's failed retry terminal reconstructed the live run "
+        f"{verdict!r} — the terminal is the donor claim's history; child A "
+        "is pending and the run is live"
+    )
+    # (3) the real root maintenance agrees: the live root stands.
+    await _assert_root_running(wf_conn, wf_schema, wf_sql, flow)
+
+    # Second phase — the join aggregate, seeded ONLY now: the map family's
+    # fan-in reads blocked while child A stays pending. The join may never
+    # be required to see A's own truth.
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        status="pending",
+        step_key="sources.join",
+        deps_pending=4,
+        metadata={**meta, "blocking_reason": "join"},
+        fairness_key=str(flow),
+    )
+    joined = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+    assert joined == "blocked", (
+        f"the fan-in phase derived {joined!r} — the join-wait row's own "
+        "blocked shape is the aggregate"
+    )
+    await _assert_root_running(wf_conn, wf_schema, wf_sql, flow)
+
+
+@pytest.mark.integration
+async def test_reconstruction_succeeded_map_sibling_leaves_the_live_node_pending(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """SUCCEEDED map-sibling direction (the false-complete killer the old
+    aggregate control missed): child A pending at its own first attempt;
+    sibling B genuinely terminal — its job row succeeded, its own ledger
+    terminal succeeded at B's attempt — and NO other node in the run. The
+    verdict is EXACTLY ``pending``, never ``complete``, and the root
+    stays running.
+    RED on the base (the step-key collapse keyed A to B's succeeded
+    terminal; the all-succeeded rows derived ``complete`` — a live run
+    reported finished). Also pins the NULL-map-index / map-index-0
+    distinction in the arbiter tuple: the COALESCE key can never
+    conflate the two."""
+    flow = new_uuid()
+    child_a = new_uuid()
+    sibling = new_uuid()
+    meta: dict[str, object] = {"workflow": "probe_march"}
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=flow,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata=meta,
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=child_a,
+        status="pending",
+        step_key="sources.item",
+        map_index=0,
+        attempt=1,
+        metadata=meta,
+        fairness_key=str(flow),
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=sibling,
+        status="succeeded",
+        step_key="sources.item",
+        map_index=1,
+        attempt=1,
+        metadata=meta,
+        fairness_key=str(flow),
+    )
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs SET finished_at = now() WHERE id = $1',
+        sibling,
+    )
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=sibling,
+        step_key="sources.item",
+        map_index=1,
+        attempt=1,
+        status="succeeded",
+    )
+    await _assert_jobs(
+        wf_conn,
+        wf_schema,
+        flow,
+        {("sources.item", 0, "pending", 1), ("sources.item", 1, "succeeded", 1)},
+    )
+    await _assert_ledger(
+        wf_conn,
+        wf_schema,
+        flow,
+        {("sources.item", 1, 1, "succeeded")},
+    )
+    verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+    assert verdict == "pending", (
+        f"the succeeded sibling reconstructed the live run {verdict!r} — "
+        "B's terminal is B's own claim's history; child A is pending and "
+        "the run is NOT complete"
+    )
+    await _assert_root_running(wf_conn, wf_schema, wf_sql, flow)
+
+    # The NULL-vs-0 poison: two rows sharing one step key whose map
+    # indices are NULL and 0 — the arbiter's COALESCE(map_index, -1) key
+    # must return exactly each claim's own row for its own tuple (the
+    # direct keyed check: no helper may conflate NULL with 0).
+    null_child, zero_child = new_uuid(), new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=null_child,
+        status="pending",
+        step_key="mi.poison",
+        map_index=None,
+        attempt=1,
+        metadata=meta,
+        fairness_key=str(flow),
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=zero_child,
+        status="pending",
+        step_key="mi.poison",
+        map_index=0,
+        attempt=1,
+        metadata=meta,
+        fairness_key=str(flow),
+    )
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=null_child,
+        step_key="mi.poison",
+        map_index=None,
         attempt=1,
         status="failed",
     )
@@ -1018,32 +1174,802 @@ async def test_reconstruction_latest_terminal_is_order_deterministic(
         wf_conn,
         wf_schema,
         flow,
-        job_id=retried,
-        step_key="sources.item",
-        map_index=1,
-        attempt=2,
+        job_id=zero_child,
+        step_key="mi.poison",
+        map_index=0,
+        attempt=1,
         status="succeeded",
     )
+    null_rows = await wf_conn.fetch(
+        f'''SELECT job_id::text FROM "{wf_schema}".wf_step_ledger
+            WHERE flow_id = $1::uuid AND step_key = 'mi.poison'
+              AND COALESCE(map_index, -1) = COALESCE($2::smallint, -1)
+              AND attempt = 1''',
+        flow,
+        None,
+    )
+    zero_rows = await wf_conn.fetch(
+        f'''SELECT job_id::text FROM "{wf_schema}".wf_step_ledger
+            WHERE flow_id = $1::uuid AND step_key = 'mi.poison'
+              AND COALESCE(map_index, -1) = COALESCE($2::smallint, -1)
+              AND attempt = 1''',
+        flow,
+        0,
+    )
+    assert [r["job_id"] for r in null_rows] == [str(null_child)], (
+        "the NULL map index's keyed lookup must return exactly its own row"
+    )
+    assert [r["job_id"] for r in zero_rows] == [str(zero_child)], (
+        "the 0 map index's keyed lookup must return exactly its own row — "
+        "NULL and 0 are distinct arbiter tuples, never conflated"
+    )
 
-    async def sample() -> WorkflowStatus:
-        return await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
 
-    first = await sample()
-    # The failed row's tuple moves (an UPDATE rewrites it at the heap's
-    # end): the logical rows are unchanged, the physical arrival order is
-    # reversed.
-    await wf_conn.execute(
-        f'''UPDATE "{wf_schema}".wf_step_ledger SET updated_at = clock_timestamp()
-            WHERE flow_id = $1 AND status = 'failed' ''',
+@pytest.mark.integration
+async def test_reconstruction_held_step_with_inner_substep_stays_pending(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """HELD STEP + an inner ``ctx.substep`` terminal at the same attempt.
+    The outer row is pending under the REAL hold metadata, its own claim's
+    ledger row reads ``awaited`` (resume-not-retry), and the substep — its
+    OWN step key sharing the outer job id and attempt — is terminal. With
+    the outer node the run's ONLY non-root node row, the verdict is
+    EXACTLY ``pending`` (a job-wide terminal map derives ``complete``
+    here: the substep's terminal would answer for the held claim), and
+    the root stays running. The failed-substep companion must likewise
+    stay ``pending``, never ``failed``.
+    RED on the job-keyed fix (both directions); the base's step-key
+    keying never matched the substep's own key, so this pins the
+    regression the job-key fix introduced."""
+    for substep_status, expect_note in (
+        ("succeeded", "the succeeded substep is the held claim's inner history"),
+        ("failed", "the failed substep is that claim's inner history too"),
+    ):
+        flow = new_uuid()
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow,
+            job_id=flow,
+            actor="flow",
+            status="running",
+            step_key="__flow__",
+            metadata={"workflow": "probe_march"},
+        )
+        await _seed_held_step(
+            wf_conn,
+            wf_schema,
+            flow,
+            substep_status=substep_status,
+        )
+        await _assert_jobs(
+            wf_conn,
+            wf_schema,
+            flow,
+            {("publish", None, "pending", 1)},
+        )
+        await _assert_ledger(
+            wf_conn,
+            wf_schema,
+            flow,
+            {("publish", None, 1, "awaited"), ("before_publish", None, 1, substep_status)},
+        )
+        verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+        assert verdict == "pending", (
+            f"the held step reconstructed {verdict!r} — {expect_note}; the "
+            "held claim is live (its own ledger row is 'awaited', excluded "
+            "from terminals) and the run is not terminal"
+        )
+        await _assert_root_running(wf_conn, wf_schema, wf_sql, flow)
+
+
+@pytest.mark.integration
+async def test_reconstruction_held_loop_with_inner_iteration_stays_pending(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """HELD LOOP + an earlier iteration terminal at the same attempt. The
+    loop row is pending under the loop hold's own shape (``kind: loop`` +
+    the hold metadata), its own claim reads ``awaited``, and
+    ``review.iter0`` — the iteration's OWN step key on the loop row's job
+    id — is terminal. Iteration claims are not the loop node's claim:
+    with the loop row the run's only non-root node, the verdict is
+    EXACTLY ``pending``, never ``complete``, and the root stays running.
+    The failed-iteration opposite direction must likewise stay ``pending``,
+    never ``failed``. RED on the job-keyed fix (both directions)."""
+    for iter_status in ("succeeded", "failed"):
+        flow = new_uuid()
+        loop_row = new_uuid()
+        meta: dict[str, object] = {"workflow": "probe_march"}
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow,
+            job_id=flow,
+            actor="flow",
+            status="running",
+            step_key="__flow__",
+            metadata=meta,
+        )
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow,
+            job_id=loop_row,
+            status="pending",
+            step_key="review",
+            attempt=1,
+            metadata={"kind": "loop", "hold": str(new_uuid()), "held_signal": "next"},
+            fairness_key=str(flow),
+        )
+        await _seed_ledger_terminal(
+            wf_conn,
+            wf_schema,
+            flow,
+            job_id=loop_row,
+            step_key="review",
+            map_index=None,
+            attempt=1,
+            status="awaited",
+        )
+        await _seed_ledger_terminal(
+            wf_conn,
+            wf_schema,
+            flow,
+            job_id=loop_row,
+            step_key="review.iter0",
+            map_index=None,
+            attempt=1,
+            status=iter_status,
+        )
+        await _assert_jobs(
+            wf_conn,
+            wf_schema,
+            flow,
+            {("review", None, "pending", 1)},
+        )
+        await _assert_ledger(
+            wf_conn,
+            wf_schema,
+            flow,
+            {("review", None, 1, "awaited"), ("review.iter0", None, 1, iter_status)},
+        )
+        verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+        assert verdict == "pending", (
+            f"the held loop reconstructed {verdict!r} — the iteration's "
+            "terminal belongs to the iteration claim (its own step key), "
+            "never to the loop node's own claim; the loop is held live and "
+            "the run is not terminal"
+        )
+        await _assert_root_running(wf_conn, wf_schema, wf_sql, flow)
+
+
+@pytest.mark.integration
+async def test_reconstruction_killed_child_with_substep_pending_then_blocked_with_join(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """KILLED/RECLAIMED child + an inner ``ctx.substep`` terminal. The
+    child is pending at attempt 1, its OWN claim's ledger row still reads
+    ``running`` (the holder died; the reclaim has not processed it), and
+    the substep — its own step key on the child's job id — is terminal.
+    ISOLATED (phase 1, the child the run's only non-root node): EXACTLY
+    ``pending`` — a job-wide terminal map derives ``complete``/
+    ``failed`` here. Then the genuine pending join-wait row is seeded
+    (phase 2) and the aggregate reads ``blocked`` — never ``complete``/
+    ``failed`` — with the root running throughout. RED on the job-keyed
+    fix, isolated phase first, in both terminal directions."""
+    for substep_status in ("succeeded", "failed"):
+        flow = new_uuid()
+        child = new_uuid()
+        meta: dict[str, object] = {"workflow": "probe_march"}
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow,
+            job_id=flow,
+            actor="flow",
+            status="running",
+            step_key="__flow__",
+            metadata=meta,
+        )
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow,
+            job_id=child,
+            status="pending",
+            step_key="fan.item",
+            map_index=0,
+            attempt=1,
+            metadata=meta,
+            fairness_key=str(flow),
+        )
+        await _seed_ledger_terminal(
+            wf_conn,
+            wf_schema,
+            flow,
+            job_id=child,
+            step_key="fan.item",
+            map_index=0,
+            attempt=1,
+            status="running",
+        )
+        await _seed_ledger_terminal(
+            wf_conn,
+            wf_schema,
+            flow,
+            job_id=child,
+            step_key="fan.item.sub",
+            map_index=0,
+            attempt=1,
+            status=substep_status,
+        )
+        await _assert_jobs(
+            wf_conn,
+            wf_schema,
+            flow,
+            {("fan.item", 0, "pending", 1)},
+        )
+        await _assert_ledger(
+            wf_conn,
+            wf_schema,
+            flow,
+            {("fan.item", 0, 1, "running"), ("fan.item.sub", 0, 1, substep_status)},
+        )
+        # Phase 1 — isolated: the killed child stays pending.
+        isolated = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+        assert isolated == "pending", (
+            f"the killed child reconstructed {isolated!r} — its claim's "
+            "ledger row is 'running' (the reclaim's pending input) and the "
+            "substep's terminal belongs to the SUBSTEP claim; the child is "
+            "live and the run is not terminal"
+        )
+        await _assert_root_running(wf_conn, wf_schema, wf_sql, flow)
+        # Phase 2 — the genuine fan-in join, seeded only now.
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow,
+            status="pending",
+            step_key="fan.join",
+            deps_pending=1,
+            metadata={**meta, "blocking_reason": "join"},
+            fairness_key=str(flow),
+        )
+        joined = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+        assert joined == "blocked", (
+            f"the fan-in phase derived {joined!r} — the join-wait row's own "
+            f"blocked shape with the substep {substep_status!r} inner history"
+        )
+        await _assert_root_running(wf_conn, wf_schema, wf_sql, flow)
+
+
+@pytest.mark.integration
+async def test_reconstruction_real_ladder_repend_promotion_stays_pending(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+) -> None:
+    """REAL ladder re-pend promotion: the run seeds the node's claim (the
+    real ``LEDGER_CLAIM_SQL``), invokes the real ``repend_attempt`` (the
+    row scheduled at the UNCHANGED attempt + that claim's ledger terminal
+    ``failed``), runs the real scheduled→pending sweep, and the promoted
+    row reconstructs EXACTLY ``pending`` with the root running after the
+    real maintenance. An older opposite-status terminal (the same job's
+    substep claim, succeeded) is seeded so no implementation can pass by
+    selecting a convenient historical row.
+    RED on the base (the step-key collapse derived ``failed``), on the
+    ``(job_id, attempt)`` fix, and on exact same-attempt tuple
+    projection: the pending row at attempt N beside its own failed
+    attempt-N terminal is a LIVE retry, not a terminal."""
+    from taskq.backend._sweeps import sweep_scheduled_to_pending
+    from taskq.workflows.api._attempt import AttemptClaim, repend_attempt
+
+    flow = new_uuid()
+    meta: dict[str, object] = {"workflow": "probe_march"}
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=flow,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata=meta,
+    )
+    node = await seed_running_node(wf_conn, wf_schema, flow, step_key="item")
+    worker, attempt, epoch = await claim_view(wf_conn, wf_schema, node)
+    claimed = await wf_conn.fetchrow(
+        wf_sql.ledger_claim, new_uuid(), flow, node, "item", None, attempt
+    )
+    assert claimed is not None
+    claim = AttemptClaim(
+        job_id=node,
+        flow_id=flow,
+        step_key="item",
+        worker_id=worker,
+        attempt=attempt,
+        claim_epoch=epoch,
+        ledger_id=claimed["id"],
+        ledger_claimed_at=claimed["updated_at"],
+        map_index=None,
+    )
+    disposition = await repend_attempt(
+        wf_conn,
+        wf_sql,
+        claim=claim,
+        error_class="ValueError",
+        error_message="the ladder's transient failure",
+        failures_before=0,
+        max_attempts=3,
+        retry_kind="transient",
+        backoff_s=0.05,
+    )
+    assert disposition == "repended", f"the repend must apply: {disposition}"
+    # The older opposite-status terminal: the same job's substep claim,
+    # succeeded — a 'succeeded-first' selector must not pass either.
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=node,
+        step_key="item.sub",
+        map_index=None,
+        attempt=1,
+        status="succeeded",
+    )
+    await _assert_jobs(
+        wf_conn,
+        wf_schema,
+        flow,
+        {("item", None, "scheduled", 1)},
+    )
+    await _assert_ledger(
+        wf_conn,
+        wf_schema,
+        flow,
+        {("item", None, 1, "failed"), ("item.sub", None, 1, "succeeded")},
+    )
+    # The real sweep at its real cadence: the row becomes due when its
+    # (real) backoff elapses, so the sweep is re-run — the production
+    # sweeper's own shape — until the promotion lands (bounded).
+    promoted = 0
+    async with asyncio.timeout(15):
+        while promoted == 0:
+            promoted = await sweep_scheduled_to_pending(wf_conn, schema=wf_schema)
+            if promoted == 0:
+                await asyncio.sleep(0.05)
+    assert promoted == 1, f"the real sweep must promote the scheduled row: {promoted}"
+    await _assert_jobs(
+        wf_conn,
+        wf_schema,
+        flow,
+        {("item", None, "pending", 1)},
+    )
+    verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+    assert verdict == "pending", (
+        f"the promoted retry reconstructed {verdict!r} — the ladder's "
+        "re-pend keeps the attempt ordinal, so the pending row at attempt "
+        "1 beside its own failed attempt-1 terminal is a LIVE retry (the "
+        "terminal and the re-pend commit atomically), never a terminal "
+        "verdict"
+    )
+    await _assert_root_running(wf_conn, wf_schema, wf_sql, flow)
+
+
+@pytest.mark.integration
+async def test_reconstruction_real_manual_retry_reopen_stays_pending(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+) -> None:
+    """REAL manual retry/reopen: the run finalizes the node failed (the
+    real ``finalize_node``), converges the root with the real maintenance
+    (the run IS terminal-failed at that instant), then invokes the
+    shipped ``retry_workflow_node`` (the node CAS + the root reopen —
+    ``failed → pending`` at the UNCHANGED attempt, the root's
+    ``run_epoch`` advanced). The re-armed row reconstructs EXACTLY
+    ``pending`` with the root running; the pre-retry failed ledger
+    terminal is attempt history that must never win. An older
+    opposite-status terminal (the same job's substep claim, succeeded) is
+    seeded so no convenient-historical-row selector can pass.
+    RED on the base, the ``(job_id, attempt)`` fix, and exact same-attempt
+    tuple projection."""
+    from taskq.workflows.api._runner_exit import retry_workflow_node
+
+    flow = new_uuid()
+    meta: dict[str, object] = {"workflow": "probe_march"}
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=flow,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata=meta,
+    )
+    node = await seed_running_node(wf_conn, wf_schema, flow, step_key="triage")
+    worker, attempt, epoch = await claim_view(wf_conn, wf_schema, node)
+    # The claim's own ledger row (the real claim write — the terminal's
+    # by-attempt arbiter row must exist for the finalize to record into).
+    claimed = await wf_conn.fetchrow(
+        wf_sql.ledger_claim, new_uuid(), flow, node, "triage", None, attempt
+    )
+    assert claimed is not None
+    await finalize_node(
+        module_pg_pool,
+        wf_sql,
+        flow_id=flow,
+        job_id=node,
+        step_key="triage",
+        worker_id=worker,
+        attempt=attempt,
+        claim_epoch=epoch,
+        outcome="failed",
+        error_class="ValueError",
+        error_message="the first attempt failed",
+    )
+    # The older opposite-status terminal: the same job's substep claim,
+    # succeeded — a 'succeeded-first' selector must not pass either.
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=node,
+        step_key="triage.sub",
+        map_index=None,
+        attempt=1,
+        status="succeeded",
+    )
+    await _assert_jobs(wf_conn, wf_schema, flow, {("triage", None, "failed", 1)})
+    await _assert_ledger(
+        wf_conn,
+        wf_schema,
+        flow,
+        {("triage", None, 1, "failed"), ("triage.sub", None, 1, "succeeded")},
+    )
+    await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
+    pre_root = await wf_conn.fetchrow(
+        f'''SELECT status::text AS status, run_epoch FROM "{wf_schema}".jobs
+            WHERE id = $1''',
         flow,
     )
-    second = await sample()
-    await wf_conn.execute(f'ANALYZE "{wf_schema}".wf_step_ledger')
-    third = await sample()
-
-    assert first == second == third == "pending", (
-        f"the same logical rows derived {first!r} → {second!r} → {third!r} "
-        "under a physical reorder + ANALYZE — the latest terminal must be "
-        "the ledger's own attempt order (deterministic), never the heap's "
-        "arrival order; the live run's verdict is 'pending'"
+    assert pre_root is not None and pre_root["status"] == "failed", (
+        f"the genuinely terminal run must converge first: {dict(pre_root) if pre_root else None}"
     )
+    pre_verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+    assert pre_verdict == "failed", (
+        f"the pre-retry rows reconstructed {pre_verdict!r} — the failed "
+        "node row IS the terminal fact at this instant"
+    )
+    reopened = await retry_workflow_node(
+        module_pg_pool,
+        schema=wf_schema,
+        flow_id=flow,
+        node_key="triage",
+        reason="the operator's manual resume",
+    )
+    assert reopened == 1, f"the node CAS must re-arm exactly the one row: {reopened}"
+    node_post = await wf_conn.fetchrow(
+        f'''SELECT status::text AS status, attempt FROM "{wf_schema}".jobs
+            WHERE id = $1''',
+        node,
+    )
+    assert node_post is not None and node_post["status"] == "pending" and (
+        node_post["attempt"] == attempt
+    ), (
+        "the re-armed row must be pending at the UNCHANGED attempt: "
+        f"{dict(node_post) if node_post else None}"
+    )
+    root_post = await wf_conn.fetchrow(
+        f'''SELECT status::text AS status, run_epoch FROM "{wf_schema}".jobs
+            WHERE id = $1''',
+        flow,
+    )
+    assert root_post is not None and root_post["status"] == "running", (
+        f"the root reopen must re-open the run: {dict(root_post) if root_post else None}"
+    )
+    assert root_post is not None and (root_post["run_epoch"] or 0) == 1, (
+        f"the root reopen must advance run_epoch: {dict(root_post) if root_post else None}"
+    )
+    await _assert_ledger(
+        wf_conn,
+        wf_schema,
+        flow,
+        {("triage", None, 1, "failed"), ("triage.sub", None, 1, "succeeded")},
+    )
+    verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+    assert verdict == "pending", (
+        f"the manually re-armed run reconstructed {verdict!r} — the "
+        "pre-retry failed terminal is attempt HISTORY (the retry keeps the "
+        "attempt ordinal; there is no ledger field distinguishing this "
+        "live shape from a fictitious split commit), never a terminal "
+        "verdict"
+    )
+    await _assert_root_running(wf_conn, wf_schema, wf_sql, flow)
+
+
+@pytest.mark.integration
+async def test_reconstruction_terminal_node_rows_win_over_ledger_history(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+) -> None:
+    """ALREADY-TERMINAL direct facts: every terminal node status
+    (failed, succeeded, cancelled, crashed, abandoned) reconstructs from
+    the NODE ROW — with the ledger MISSING, STALE (an older attempt's
+    opposite-status terminal), or CONTRADICTORY (a same-attempt terminal
+    of the opposite class) — and the real maintenance converges the root
+    the same way. Deleting the overlay must not discard the two-source
+    tests' intended terminal coverage: the current node row is the
+    record."""
+    shapes: dict[str, tuple[str, set[tuple[str, int | None, int, str]]]] = {
+        # status -> (the folded verdict, the ledger tuples to seed)
+        "failed": (
+            "failed",
+            {("t", None, 1, "succeeded")},  # contradictory same-attempt
+        ),
+        "succeeded": (
+            "complete",
+            {("t", None, 1, "failed")},  # contradictory same-attempt
+        ),
+        "cancelled": (
+            "cancelled",
+            {("t", None, 1, "succeeded")},  # contradictory
+        ),
+        "crashed": (
+            "failed",
+            {("t", None, 1, "succeeded")},  # contradictory (the fold)
+        ),
+        "abandoned": (
+            "failed",
+            {("t", None, 1, "failed")},  # contradictory (the fold agrees)
+        ),
+    }
+    for status, (expected, ledger) in shapes.items():
+        # MISSING ledger.
+        flow = new_uuid()
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow,
+            job_id=flow,
+            actor="flow",
+            status="running",
+            step_key="__flow__",
+            metadata={"workflow": "probe_march"},
+        )
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow,
+            status=status,
+            step_key="t",
+            attempt=1,
+            metadata={"workflow": "probe_march"},
+            fairness_key=str(flow),
+        )
+        await _assert_jobs(wf_conn, wf_schema, flow, {("t", None, status, 1)})
+        await _assert_ledger(wf_conn, wf_schema, flow, set())
+        verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+        assert verdict == expected, (
+            f"the terminal node row ({status}) with NO ledger must "
+            f"reconstruct {expected!r}, got {verdict!r}"
+        )
+        # CONTRADICTORY ledger (a same-attempt terminal of the opposite
+        # class — the corrupt shape the node row must survive).
+        flow2 = new_uuid()
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow2,
+            job_id=flow2,
+            actor="flow",
+            status="running",
+            step_key="__flow__",
+            metadata={"workflow": "probe_march"},
+        )
+        await _seed_wf_row(
+            wf_conn,
+            wf_schema,
+            flow2,
+            status=status,
+            step_key="t",
+            attempt=1,
+            metadata={"workflow": "probe_march"},
+            fairness_key=str(flow2),
+        )
+        for step_key, map_index, attempt_n, ledger_status in ledger:
+            await _seed_ledger_terminal(
+                wf_conn,
+                wf_schema,
+                flow2,
+                job_id=new_uuid(),
+                step_key=step_key,
+                map_index=map_index,
+                attempt=attempt_n,
+                status=ledger_status,
+            )
+        await _assert_jobs(wf_conn, wf_schema, flow2, {("t", None, status, 1)})
+        await _assert_ledger(wf_conn, wf_schema, flow2, ledger)
+        verdict2 = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow2)))
+        assert verdict2 == expected, (
+            f"the terminal node row ({status}) must WIN over the "
+            f"contradictory ledger history: expected {expected!r}, got {verdict2!r}"
+        )
+
+    # STALE ledger: a failed node at attempt 2 with an OLDER succeeded
+    # attempt-1 terminal (history) — the current row wins, maintenance
+    # converges.
+    flow3 = new_uuid()
+    stale_node = new_uuid()
+    meta: dict[str, object] = {"workflow": "probe_march"}
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow3,
+        job_id=flow3,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata=meta,
+    )
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        flow3,
+        job_id=stale_node,
+        status="failed",
+        step_key="t",
+        attempt=2,
+        metadata=meta,
+        fairness_key=str(flow3),
+    )
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow3,
+        job_id=stale_node,
+        step_key="t",
+        map_index=None,
+        attempt=1,
+        status="succeeded",
+    )
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow3,
+        job_id=stale_node,
+        step_key="t",
+        map_index=None,
+        attempt=2,
+        status="failed",
+    )
+    await _assert_jobs(wf_conn, wf_schema, flow3, {("t", None, "failed", 2)})
+    await _assert_ledger(
+        wf_conn,
+        wf_schema,
+        flow3,
+        {("t", None, 1, "succeeded"), ("t", None, 2, "failed")},
+    )
+    verdict3 = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow3)))
+    assert verdict3 == "failed", (
+        f"the failed node row at attempt 2 reconstructed {verdict3!r} — "
+        "the older succeeded terminal is history"
+    )
+    await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
+    root3 = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow3
+    )
+    assert root3 == "failed", f"the terminal run must converge: {root3!r}"
+
+
+@pytest.mark.integration
+async def test_reconstruction_is_byte_identical_under_ledger_heap_motion_and_analyze(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+) -> None:
+    """The ordering concept is GONE and harmless: reconstruction consults
+    no ledger row, so moving the ledger's heap tuples and re-analyzing
+    cannot move the verdict. Representative LIVE states (the held step
+    with an inner substep terminal; the real ladder's promoted retry) are
+    sampled before, after a physical tuple move, and after ``ANALYZE`` —
+    the three samples must be BYTE-IDENTICAL and exactly the pinned live
+    verdicts. (There is no terminal-fetch query and no ORDER BY left to
+    remove; a reintroduced overlay fails the query-count pin's inventory
+    and the live-node controls.)"""
+    from taskq.backend._sweeps import sweep_scheduled_to_pending
+    from taskq.workflows.api._attempt import AttemptClaim, repend_attempt
+
+    # Live shape 1: the held step with a succeeded inner substep.
+    held_flow = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        held_flow,
+        job_id=held_flow,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata={"workflow": "probe_march"},
+    )
+    await _seed_held_step(wf_conn, wf_schema, held_flow, substep_status="succeeded")
+
+    # Live shape 2: the real ladder's promoted retry (pending at the same
+    # attempt as its own failed terminal).
+    retry_flow = new_uuid()
+    await _seed_wf_row(
+        wf_conn,
+        wf_schema,
+        retry_flow,
+        job_id=retry_flow,
+        actor="flow",
+        status="running",
+        step_key="__flow__",
+        metadata={"workflow": "probe_march"},
+    )
+    node = await seed_running_node(wf_conn, wf_schema, retry_flow, step_key="item")
+    worker, attempt, epoch = await claim_view(wf_conn, wf_schema, node)
+    claimed = await wf_conn.fetchrow(
+        wf_sql.ledger_claim, new_uuid(), retry_flow, node, "item", None, attempt
+    )
+    assert claimed is not None
+    await repend_attempt(
+        wf_conn,
+        wf_sql,
+        claim=AttemptClaim(
+            job_id=node,
+            flow_id=retry_flow,
+            step_key="item",
+            worker_id=worker,
+            attempt=attempt,
+            claim_epoch=epoch,
+            ledger_id=claimed["id"],
+            ledger_claimed_at=claimed["updated_at"],
+            map_index=None,
+        ),
+        error_class="ValueError",
+        error_message="the ladder's transient failure",
+        failures_before=0,
+        max_attempts=3,
+        retry_kind="transient",
+        backoff_s=0.05,
+    )
+    promoted = 0
+    async with asyncio.timeout(15):
+        while promoted == 0:
+            promoted = await sweep_scheduled_to_pending(wf_conn, schema=wf_schema)
+            if promoted == 0:
+                await asyncio.sleep(0.05)
+    assert promoted == 1, promoted
+
+    async def sample(flow: uuid.UUID) -> WorkflowStatus:
+        return await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
+
+    for flow, expected in ((held_flow, "pending"), (retry_flow, "pending")):
+        first = await sample(flow)
+        # The ledger's tuples move to the heap's end (the physical
+        # arrival order reverses).
+        await wf_conn.execute(
+            f'''UPDATE "{wf_schema}".wf_step_ledger SET updated_at = clock_timestamp()
+                WHERE flow_id = $1::uuid''',
+            flow,
+        )
+        second = await sample(flow)
+        await wf_conn.execute(f'ANALYZE "{wf_schema}".wf_step_ledger')
+        third = await sample(flow)
+        assert first == second == third == expected, (
+            f"the verdict MOVED under ledger heap motion + ANALYZE "
+            f"({first!r} → {second!r} → {third!r}) — reconstruction must "
+            "not consult ledger history at all"
+        )
