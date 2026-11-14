@@ -187,7 +187,8 @@ async def test_reconstruction_two_sources_rows_only(
     await seed_edge(wf_conn, wf_schema, join_id, child_a, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, child_b, flow_id)
 
-    # a terminalizes (an attempted terminal — the ledger carries it).
+    # a terminalizes: the node row's own terminal fact (its ledger row
+    # is that claim's history — written in the same _run_tx1 transaction).
     await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -201,7 +202,8 @@ async def test_reconstruction_two_sources_rows_only(
         result={"ok": "a"},
     )
     # b is cancelled while pending-never-granted (the cancel's own write —
-    # no ledger row exists for it: the two-source rule's second source).
+    # no ledger row exists for it: the terminal class rides the node row
+    # itself, and the never-granted read re-draws it from the same jobs rows).
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled', "
         "finished_at = now(), error_class = 'CancelledBeforeStart' WHERE id = $1",
@@ -219,7 +221,7 @@ async def test_reconstruction_two_sources_rows_only(
         "the pinned never-again variant)",
         {"reconstructed": reconstructed},
     )
-    # a succeeded (the ledger's truth), b cancelled → the derivation's
+    # a succeeded (the node row's terminal fact), b cancelled → the derivation's
     # cancelled row: the run's semantic state is cancelled — the same
     # verdict a root flip would report.
     assert reconstructed == "cancelled"
@@ -763,7 +765,12 @@ async def test_rollup_cost_gate_index_driven(
     )
 
 
-# ── The reconstruction's ledger terminal identity ───────────────────────
+# ── The reconstruction's one-source law: the ledger is history, not state ──
+#
+# The header's old name ("the reconstruction's ledger terminal identity")
+# described the deleted pending-node ledger projection. Every control
+# below seeds ledger history and asserts the NODE ROW wins: the ledger
+# never relabels a live or terminal node.
 
 
 async def _seed_wf_row(

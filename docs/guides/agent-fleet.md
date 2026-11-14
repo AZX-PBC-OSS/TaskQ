@@ -396,9 +396,13 @@ behavior on kill is derived, not hoped:
 - **The mid-fork kill:** the fork's children + edges + counter were one
   transaction; a kill at any statement boundary rolls it back whole, and
   the reclaim re-forks. A half-forked map is unrepresentable.
-- **The run's status:** re-derived from rows ALONE — the step ledger's
-  attempted terminals plus the node rows. There is no status cache to go
-  stale and no orchestrator process to lose.
+- **The run's status:** re-derived from the committed node rows ALONE —
+  the current jobs rows are the current-node record. There is no status
+  cache to go stale, no orchestrator process to lose, and no ledger
+  read: wf_step_ledger is claim/attempt history and replay data, and a
+  node terminal commits with its own ledger terminal in one transaction
+  (a live row beside ledger history is a deliberate live shape — a
+  retry, a hold, an inner claim — never a partial commit).
 
 The operator faces the storm with one report: `taskq flows status
 <run_id>` names where every run stands and, for a stuck one, the remedy
