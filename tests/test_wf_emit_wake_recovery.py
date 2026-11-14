@@ -1695,3 +1695,245 @@ async def test_pre_waiter_schema_park_rolls_back_without_stranding_marker(pg_dsn
             await pool.close()
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
+
+
+async def test_estate_wake_cursor_is_fair_under_continuous_arrivals(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
+) -> None:
+    """The estate sweep's completeness law under CONTINUOUS arrivals (the
+    recovery arm's own fairness): a parked source whose fit arrives AFTER
+    the cursor passed it is re-examined by a wrap pass and wakes within a
+    bounded number of passes. The rejected shape: a pure keyset cursor at
+    batch_size=1 with a new waiter parked every pass keeps every pass full,
+    never resets, and the fitted row behind it starves forever — the
+    steady-state saturated estate with a missed inline wake."""
+    from taskq.workflows._emit import EstateWakeCursor
+    from taskq.workflows.engine import insert_node
+    from taskq.workflows._types import NodeSpec
+
+    # A: parked, blocked by one ordinary pending child of its own run
+    # (page 2 cannot fit while the child is live).
+    flow_a, claim_a = await _claimed(
+        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
+    )
+    blocker = await insert_node(
+        wf_conn,
+        wf_sql,
+        NodeSpec(step_key="screen", actor="wf-node", queue="default", payload={}, flow_id=flow_a),
+    )
+    await _park_primitive_claim(
+        wf_pool, wf_sql, claim_a, logical_attempt=1, page_width=2, bound=2, outstanding=2
+    )
+    a_state = await _source_state(wf_conn, wf_schema, flow_a, claim_a.job_id, "source")
+    assert a_state["status"] == "scheduled" and a_state["blocking_reason"] == "backpressure"
+
+    # B: parked, already fitted (its page fits immediately).
+    _flow_b, claim_b = await _claimed(
+        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
+    )
+    await _park_primitive_claim(
+        wf_pool, wf_sql, claim_b, logical_attempt=1, page_width=1, bound=2, outstanding=0
+    )
+
+    state = EstateWakeCursor()
+    # Pass 1 examines A (blocked) and advances the cursor past it.
+    first = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=1, after=state.next_after())
+    state.observe(first)
+    assert first.woken == 0, "A's page cannot fit while its child is live"
+    # A's capacity frees: the blocker's row is deleted.
+    await wf_conn.execute(f'DELETE FROM "{wf_schema}".jobs WHERE id = $1', blocker)
+    assert _park_is_live(
+        await _source_state(wf_conn, wf_schema, flow_a, claim_a.job_id, "source")
+    )
+
+    woken_pass = None
+    for _pass in range(1, 7):
+        # A new waiter parks before every pass (continuous arrivals).
+        _flow_w, claim_w = await _claimed(
+            wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
+        )
+        await _park_primitive_claim(
+            wf_pool, wf_sql, claim_w, logical_attempt=1, page_width=1, bound=2, outstanding=0
+        )
+        result = await wake_emit_backpressure(
+            wf_pool, wf_sql, batch_size=1, after=state.next_after()
+        )
+        state.observe(result)
+        a_now = await _source_state(wf_conn, wf_schema, flow_a, claim_a.job_id, "source")
+        if not _park_is_live(a_now):
+            woken_pass = _pass
+            assert a_now["status"] == "pending" and a_now["blocking_reason"] is None, a_now
+            break
+    assert woken_pass is not None, (
+        "A fitted parked source starved behind continuous arrivals — the "
+        f"estate cursor never revisited it (passes ran: 6)"
+    )
+    assert woken_pass <= 4, f"A woke on pass {woken_pass} — beyond the fair cursor's bound"
+
+
+async def test_scheduled_null_requires_the_exact_park_marker(
+    wf_conn: asyncpg.Connection, wf_schema: str
+) -> None:
+    """The STORAGE domain (01.00.41_04's law): a `scheduled` row with no due
+    time is the capacity park's exclusive representation. Any other writer —
+    an ordinary deferral losing its timer, a corrupted or hand-minted row —
+    is refused at the storage layer, because the dispatch claim's CAS can
+    never claim a scheduled NULL row and listing one is the busy-spin shape."""
+    flow_id = new_uuid()
+    ambiguous_rows: list[tuple[object, ...]] = [
+        (
+            new_uuid(),
+            "wf-node",
+            "default",
+            "{}",
+            "scheduled",
+            3,
+            "transient",
+            "work",
+            None,
+            json.dumps({"flow_id": str(flow_id)}),
+            str(flow_id),
+        )
+    ]
+    with pytest.raises(asyncpg.CheckViolationError) as check_exc:
+        await wf_conn.executemany(
+            f'INSERT INTO "{wf_schema}".jobs '
+            "(id, actor, queue, payload, status, max_attempts, retry_kind, step_key, "
+            "scheduled_at, metadata, fairness_key) "
+            "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11)",
+            ambiguous_rows,
+        )
+    # The violation is THE PARK DOMAIN'S OWN constraint — the row is every
+    # other way legitimate (a fairness cohort, a due-shape status, a real
+    # node key), so the storage refusal can only be the scheduled-NULL law.
+    assert check_exc.value.__dict__.get("constraint_name") == "jobs_scheduled_null_park_chk", (
+        str(check_exc.value)[:300]
+    )
+
+
+async def test_claimable_listing_agrees_with_the_claim_cas(pg_dsn: str) -> None:
+    """The direct driver's listing and its claim CAS must agree on every
+    row shape (the pre-41_04 schema keeps the ambiguous row writable, so
+    the agreement is observable there): a scheduled row with a NULL due
+    time — parked or ambiguous — is listed by NO probe and claimed by NO
+    CAS. The rejected shape listed the ambiguous NULL row while the CAS
+    refused it: the driver spun at max_ticks on a row no claim could
+    ever take."""
+    from taskq.migrate import apply_pending
+    from taskq.workflows.api._sql_runner import CLAIMABLE_NODES_SQL_TEMPLATE
+    from taskq.workflows.engine import render_workflow_sql
+
+    schema = f"bp_pre04_{new_uuid().hex}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        applied = await apply_pending(conn, schema=schema, target="01.00.41_03")
+        assert applied[-1].key == "01.00.41_03:pre"
+        wsql = render_workflow_sql(schema)
+        # The era's six-bind ledger claim (this schema predates the ledger's
+        # claim_epoch column).
+        era_claim = (
+            wsql.ledger_claim.replace(", claim_epoch, status)", ", status)")
+            .replace("$6, $7, 'running'", "$6, 'running'")
+            .replace(", attempt, claim_epoch) DO UPDATE", ", attempt) DO UPDATE")
+        )
+        flow_id, claim = await _claimed(
+            conn, schema, wsql, metadata={"wf_source_logical_attempt": 1},
+            claim_statement=era_claim,
+        )
+        pool = await asyncpg.create_pool(pg_dsn)
+        # The real park lands here (41_03 dropped the NOT NULL; the CHECK
+        # does not exist yet).
+        await _park_primitive_claim(pool, wsql, claim, logical_attempt=1)
+        # The AMBIGUOUS row is writable on this schema: scheduled, an
+        # EXPLICIT NULL due time (the column's DEFAULT now() would stamp a
+        # legitimate due row), NO marker — the state the CHECK refuses on
+        # the current schema.
+        ambiguous = new_uuid()
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, queue, payload, status, max_attempts, retry_kind, step_key, "
+            "metadata, scheduled_at, fairness_key) "
+            "VALUES ($1, 'wf-node', 'default', '{}', 'scheduled', 3, 'transient', 'work', "
+            "$2::jsonb, NULL, $3)",
+            ambiguous,
+            json.dumps({"flow_id": str(flow_id)}),
+            str(flow_id),
+        )
+        listing = await pool.fetch(
+            render_sql(CLAIMABLE_NODES_SQL_TEMPLATE, schema), flow_id
+        )
+        assert [row["id"] for row in listing] == [], (
+            f"the claimable listing must offer neither the parked row nor the "
+            f"ambiguous scheduled-NULL row (the claim CAS can take neither), "
+            f"got {[str(r['id']) for r in listing]}"
+        )
+        claimed = await conn.fetchrow(
+            render_sql(NODE_CLAIM_SQL_TEMPLATE, schema), ambiguous, JobId(new_uuid())
+        )
+        assert claimed is None, "the ambiguous row must be unclaimable (the CAS's own leg)"
+        row = await conn.fetchrow(
+            f"SELECT status::text AS status, scheduled_at, attempt::int AS attempt "
+            f'FROM "{schema}".jobs WHERE id = $1',
+            ambiguous,
+        )
+        assert row is not None
+        assert (row["status"], row["scheduled_at"], row["attempt"]) == ("scheduled", None, 0)
+    finally:
+        if pool is not None:
+            await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_malformed_waiter_marker_does_not_poison_the_estate_wake(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
+) -> None:
+    """One malformed parked record isolates to its OWN row: the estate pass
+    skips it with a bounded, named diagnostic and still wakes the valid
+    waiter in the same batch. The rejected shape: the descriptor's
+    ValueError aborted the whole pass — the estate recovery stayed
+    poisoned (every waiter parked, no cursor advance) behind one corrupt
+    row no product writer produces."""
+    import structlog.testing
+
+    flow_v, claim_v = await _claimed(
+        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
+    )
+    # The malformed row matches the candidate predicate (the exact marker
+    # legs) but its version-1 record is missing page_width.
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs SET metadata = metadata || $2::jsonb, '
+        "status = 'scheduled', scheduled_at = NULL, attempt = 0, "
+        "locked_by_worker = NULL, lock_expires_at = NULL, last_heartbeat_at = NULL "
+        "WHERE id = $1",
+        claim_v.job_id,
+        json.dumps(
+            {
+                "blocking_reason": "backpressure",
+                "wf_deferral": {"signal": "EmitBackpressure", "consume_budget": False, "attempt": 0},
+                "wf_emit_backpressure": {"version": 1, "bound": 2, "deferrals": 1},
+            }
+        ),
+    )
+    _flow_ok, claim_ok = await _claimed(
+        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
+    )
+    await _park_primitive_claim(
+        wf_pool, wf_sql, claim_ok, logical_attempt=1, page_width=1, bound=2, outstanding=0
+    )
+    with structlog.testing.capture_logs() as captured:
+        result = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=10)
+    assert result.woken == 1, "the valid waiter must wake despite the malformed batch mate"
+    ok_state = await _source_state(wf_conn, wf_schema, flow_v, claim_ok.job_id, "source")
+    assert ok_state["status"] == "pending" and ok_state["blocking_reason"] is None
+    bad_state = await _source_state(wf_conn, wf_schema, flow_v, claim_v.job_id, "source")
+    assert _park_is_live(bad_state), (
+        f"the malformed marker stays parked, visible and bounded: {bad_state}"
+    )
+    diagnostics = [e for e in captured if e.get("event") == "wf.emit_backpressure_waiter_invalid"]
+    assert diagnostics, (
+        f"the malformed row's skip must carry its bounded named diagnostic, got: {captured}"
+    )
+    assert diagnostics[0].get("job_id") == str(claim_v.job_id), diagnostics[0]
+    assert diagnostics[0].get("error_class") == "ValueError", diagnostics[0]
