@@ -133,6 +133,10 @@ async def _drive(
     assert await _root_status() in ("succeeded", "failed", "cancelled"), (
         "the policy run's terminal fact never arrived within the bounded failure timeout"
     )
+    # THE PUBLIC DRIVE'S OWN VERDICT (the restored pin): the drive's loop-top
+    # reads the same row — a run whose row is terminal must return
+    # ``"terminal"``, never a max_ticks label over a terminal fact.
+    assert await runner.drive(claim.flow_id, tick=0.05, max_ticks=20) == "terminal"
     if expect_deferral:
         # THE DEFERRING CALLER'S OWN PIN: the run's wall includes the 1s
         # floor (a run that finished before it skipped the deferral's own
