@@ -1,4 +1,4 @@
-# ruff: noqa: S608  # Why: the schema is the settings-validated identifier and every data value is $-bound.
+# ruff: noqa: S608,ASYNC109  # Why: the schema is the settings-validated identifier and every data value is $-bound; the transparent observer mirrors asyncpg's native fetchval(timeout=...) surface.
 """Private two-process worker entry for the P2 real-saturation proof.
 
 This module also OWNS the small synthetic source/leaf/probe declarations and
@@ -163,8 +163,7 @@ async def _fetch_page(
     page = [dict(row) for row in rows]
     last = int(page[-1]["ordinal"]) if page else after - 1
     remaining = await conn.fetchval(
-        f'SELECT count(*) FROM "{schema}".p2sat_records '
-        "WHERE scenario_id = $1 AND ordinal > $2",
+        f'SELECT count(*) FROM "{schema}".p2sat_records WHERE scenario_id = $1 AND ordinal > $2',
         scenario,
         last,
     )

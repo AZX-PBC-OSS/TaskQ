@@ -160,7 +160,7 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
         # iteration 0's terminal write commits, then the backend dies before the
 
     # advance. Once only.
-    from taskq.workflows.ledger import LedgerClaim  # noqa: F401  # Why: the double's annotation names the real claim type.
+    from taskq.workflows.ledger import LedgerClaim
 
     real_record = _runner_loop.LoopOps._record_iteration_terminal
     kills = {"n": 0}
@@ -830,7 +830,7 @@ async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly
     def _wf() -> Promise[object]:
         return build(loop("counter", counting_body, initial=Counter(acc=0), max_iterations=5))
 
-    from taskq.workflows.ledger import LedgerClaim  # noqa: F401  # Why: the double's annotation names the real claim type.
+    from taskq.workflows.ledger import LedgerClaim
 
     real_record = _runner_loop.LoopOps._record_iteration_terminal
     kills = {"n": 0}
