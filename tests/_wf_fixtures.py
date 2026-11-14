@@ -650,8 +650,10 @@ async def wf_g7_status_truth(
     """G7, the always-on metamorphic assertion — at test end, the
     REPORTED workflow status (the flow root row's own status, the
     linearization point the engine's maintenance leg writes) equals the
-    status RECONSTRUCTED FROM ROWS ALONE (the §17.5 derivation over the
-    node rows + the ledger — D4's two-source rule). Registered for every
+    status RECONSTRUCTED FROM THE COMMITTED NODE ROWS ALONE (the §17.5
+    derivation over the jobs rows; the reconstruction reads no ledger —
+    wf_step_ledger is claim/attempt history and replay data, never a
+    current-status source). Registered for every
     workflow integration test via the collection hook (tests/conftest.py
     adds it to the wf-family files); catches status-drift continuously,
     not just in the dedicated pin's scenarios. A deliberately-lying

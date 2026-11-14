@@ -160,7 +160,7 @@ def test_derivation_rows_precedence_matrix() -> None:
     assert derive_workflow_status(_nodes("pending", "pending")) == "pending"
 
 
-# ── The reconstruction: rows-only, the two-source rule (D4) ─────────────
+# ── The reconstruction: rows-only, one source (the committed node rows) ─
 
 
 @pytest.mark.integration
@@ -173,11 +173,13 @@ async def test_reconstruction_two_sources_rows_only(
 ) -> None:
     """Kill everything mid-run (the worker and the admin), re-derive, and
     the status matches the pre-kill semantic state — reconstructed from
-    ROWS ALONE: the ledger (the attempted terminals) + the node row's
-    error jsonb (the never-granted terminals — a cancelled pending node,
-    a skip: no ledger rows, the terminal CLASS rides the error row).
-    Pinned so no status cache is ever introduced: the reconstruction
-    consults no cached surface."""
+    THE COMMITTED NODE ROWS ALONE: the node row's own status (terminal or
+    live) plus the never-granted read (a cancelled pending node, a skip —
+    the terminal CLASS rides the row itself). wf_step_ledger is
+    claim/attempt history and replay data; the reconstruction reads no
+    ledger table at all. Pinned so no status cache and no ledger overlay
+    (the deleted pending-node terminal projection) is ever introduced:
+    the reconstruction consults no cached surface and no history."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=2)
     child_a = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="a")
@@ -860,15 +862,21 @@ async def _assert_ledger(
     conn: asyncpg.Connection,
     schema: str,
     flow_id: uuid.UUID,
-    expected: set[tuple[str, int | None, int, str]],
+    expected: set[tuple[uuid.UUID, str, int | None, int, str]],
 ) -> None:
-    """The exact seeded ledger tuples: (step_key, map_index, attempt, status)."""
+    """The exact seeded ledger tuples, INCLUDING the owning job id:
+    (job_id, step_key, map_index, attempt, status) — a row seeded on the
+    wrong job can never hide from the seeded-fact assertion."""
     rows = await conn.fetch(
-        f'''SELECT step_key, map_index, attempt, status::text AS status
+        f'''SELECT job_id::text AS job_id, step_key, map_index, attempt,
+                  status::text AS status
             FROM "{schema}".wf_step_ledger WHERE flow_id = $1::uuid''',
         flow_id,
     )
-    got = {(r["step_key"], r["map_index"], r["attempt"], r["status"]) for r in rows}
+    got = {
+        (uuid.UUID(r["job_id"]), r["step_key"], r["map_index"], r["attempt"], r["status"])
+        for r in rows
+    }
     assert got == expected, f"the seeded ledger tuples drifted: {sorted(got)!r}"
 
 
@@ -899,6 +907,7 @@ async def _seed_held_step(
     claim's terminal at the SAME attempt (substeps share the outer job id
     and attempt; they are their own step keys)."""
     outer = new_uuid()
+    hold_id = str(new_uuid())
     await _seed_wf_row(
         conn,
         schema,
@@ -907,8 +916,25 @@ async def _seed_held_step(
         status="pending",
         step_key=step_key,
         attempt=1,
-        metadata={"hold": str(new_uuid()), "held_signal": "gate"},
+        metadata={"hold": hold_id, "held_signal": "gate"},
         fairness_key=str(flow_id),
+    )
+    # The hold's own faces (_HOLD_HOLD_NODE_SQL's write): the wait's
+    # deadline on the row and the signal row in status 'held'.
+    await conn.execute(
+        "UPDATE " + f'"{schema}"' + ".jobs SET scheduled_at = "
+        "now() + interval '30 seconds' WHERE id = $1",
+        outer,
+    )
+    await conn.execute(
+        f'INSERT INTO "{schema}".wf_signals '
+        "(id, workflow_id, node_key, signal_name, hold_epoch, call_id, "
+        "payload, payload_schema, status, expires_at) "
+        "VALUES ($1, $2, $3, 'gate', 1, 'probe-call', NULL, NULL, 'held', "
+        "now() + interval '60 seconds')",
+        uuid.UUID(hold_id),
+        flow_id,
+        step_key,
     )
     await _seed_ledger_terminal(
         conn,
@@ -1009,7 +1035,7 @@ async def test_reconstruction_failed_map_sibling_leaves_the_live_node_pending(
         wf_conn,
         wf_schema,
         flow,
-        {("sources.item", 1, 2, "failed")},
+        {(donor, "sources.item", 1, 2, "failed")},
     )
     # (2) the reconstruction: EXACTLY pending.
     verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
@@ -1022,18 +1048,28 @@ async def test_reconstruction_failed_map_sibling_leaves_the_live_node_pending(
     await _assert_root_running(wf_conn, wf_schema, wf_sql, flow)
 
     # Second phase — the join aggregate, seeded ONLY now: the map family's
-    # fan-in reads blocked while child A stays pending. The join may never
-    # be required to see A's own truth.
+    # fan-in (deps_pending = the two children's real wf_edge rows) reads
+    # blocked while child A stays pending. The join may never be required
+    # to see A's own truth.
+    join_id = new_uuid()
     await _seed_wf_row(
         wf_conn,
         wf_schema,
         flow,
+        job_id=join_id,
         status="pending",
         step_key="sources.join",
-        deps_pending=4,
+        deps_pending=2,
         metadata={**meta, "blocking_reason": "join"},
         fairness_key=str(flow),
     )
+    for joined_child in (child_a, donor):
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id) VALUES ($1, $2, $3)',
+            joined_child,
+            join_id,
+            flow,
+        )
     joined = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
     assert joined == "blocked", (
         f"the fan-in phase derived {joined!r} — the join-wait row's own "
@@ -1121,7 +1157,7 @@ async def test_reconstruction_succeeded_map_sibling_leaves_the_live_node_pending
         wf_conn,
         wf_schema,
         flow,
-        {("sources.item", 1, 1, "succeeded")},
+        {(sibling, "sources.item", 1, 1, "succeeded")},
     )
     verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
     assert verdict == "pending", (
@@ -1238,7 +1274,7 @@ async def test_reconstruction_held_step_with_inner_substep_stays_pending(
             step_key="__flow__",
             metadata={"workflow": "probe_march"},
         )
-        await _seed_held_step(
+        outer = await _seed_held_step(
             wf_conn,
             wf_schema,
             flow,
@@ -1254,7 +1290,10 @@ async def test_reconstruction_held_step_with_inner_substep_stays_pending(
             wf_conn,
             wf_schema,
             flow,
-            {("publish", None, 1, "awaited"), ("before_publish", None, 1, substep_status)},
+            {
+                (outer, "publish", None, 1, "awaited"),
+                (outer, "before_publish", None, 1, substep_status),
+            },
         )
         verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
         assert verdict == "pending", (
@@ -1294,6 +1333,7 @@ async def test_reconstruction_held_loop_with_inner_iteration_stays_pending(
             step_key="__flow__",
             metadata=meta,
         )
+        loop_hold = str(new_uuid())
         await _seed_wf_row(
             wf_conn,
             wf_schema,
@@ -1302,8 +1342,23 @@ async def test_reconstruction_held_loop_with_inner_iteration_stays_pending(
             status="pending",
             step_key="review",
             attempt=1,
-            metadata={"kind": "loop", "hold": str(new_uuid()), "held_signal": "next"},
+            metadata={"kind": "loop", "hold": loop_hold, "held_signal": "next"},
             fairness_key=str(flow),
+        )
+        await wf_conn.execute(
+            "UPDATE "
+            + f'"{wf_schema}"'
+            + ".jobs SET scheduled_at = now() + interval '30 seconds' WHERE id = $1",
+            loop_row,
+        )
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".wf_signals '
+            "(id, workflow_id, node_key, signal_name, hold_epoch, call_id, "
+            "payload, payload_schema, status, expires_at) "
+            "VALUES ($1, $2, 'review', 'next', 1, 'probe-call', NULL, NULL, "
+            "'held', now() + interval '60 seconds')",
+            uuid.UUID(loop_hold),
+            flow,
         )
         await _seed_ledger_terminal(
             wf_conn,
@@ -1335,7 +1390,10 @@ async def test_reconstruction_held_loop_with_inner_iteration_stays_pending(
             wf_conn,
             wf_schema,
             flow,
-            {("review", None, 1, "awaited"), ("review.iter0", None, 1, iter_status)},
+            {
+                (loop_row, "review", None, 1, "awaited"),
+                (loop_row, "review.iter0", None, 1, iter_status),
+            },
         )
         verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
         assert verdict == "pending", (
@@ -1419,7 +1477,7 @@ async def test_reconstruction_killed_child_with_substep_pending_then_blocked_wit
             wf_conn,
             wf_schema,
             flow,
-            {("fan.item", 0, 1, "running"), ("fan.item.sub", 0, 1, substep_status)},
+            {(child, "fan.item", 0, 1, "running"), (child, "fan.item.sub", 0, 1, substep_status)},
         )
         # Phase 1 — isolated: the killed child stays pending.
         isolated = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
@@ -1534,7 +1592,7 @@ async def test_reconstruction_real_ladder_repend_promotion_stays_pending(
         wf_conn,
         wf_schema,
         flow,
-        {("item", None, 1, "failed"), ("item.sub", None, 1, "succeeded")},
+        {(node, "item", None, 1, "failed"), (node, "item.sub", None, 1, "succeeded")},
     )
     # The real sweep at its real cadence: the row becomes due when its
     # (real) backoff elapses, so the sweep is re-run — the production
@@ -1634,7 +1692,7 @@ async def test_reconstruction_real_manual_retry_reopen_stays_pending(
         wf_conn,
         wf_schema,
         flow,
-        {("triage", None, 1, "failed"), ("triage.sub", None, 1, "succeeded")},
+        {(node, "triage", None, 1, "failed"), (node, "triage.sub", None, 1, "succeeded")},
     )
     await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
     pre_root = await wf_conn.fetchrow(
@@ -1663,8 +1721,10 @@ async def test_reconstruction_real_manual_retry_reopen_stays_pending(
             WHERE id = $1''',
         node,
     )
-    assert node_post is not None and node_post["status"] == "pending" and (
-        node_post["attempt"] == attempt
+    assert (
+        node_post is not None
+        and node_post["status"] == "pending"
+        and (node_post["attempt"] == attempt)
     ), (
         "the re-armed row must be pending at the UNCHANGED attempt: "
         f"{dict(node_post) if node_post else None}"
@@ -1684,7 +1744,7 @@ async def test_reconstruction_real_manual_retry_reopen_stays_pending(
         wf_conn,
         wf_schema,
         flow,
-        {("triage", None, 1, "failed"), ("triage.sub", None, 1, "succeeded")},
+        {(node, "triage", None, 1, "failed"), (node, "triage.sub", None, 1, "succeeded")},
     )
     verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
     assert verdict == "pending", (
@@ -1703,40 +1763,53 @@ async def test_reconstruction_terminal_node_rows_win_over_ledger_history(
     wf_schema: str,
     wf_sql: WorkflowSql,
 ) -> None:
-    """ALREADY-TERMINAL direct facts: every terminal node status
-    (failed, succeeded, cancelled, crashed, abandoned) reconstructs from
-    the NODE ROW — with the ledger MISSING, STALE (an older attempt's
-    opposite-status terminal), or CONTRADICTORY (a same-attempt terminal
-    of the opposite class) — and the real maintenance converges the root
-    the same way. Deleting the overlay must not discard the two-source
-    tests' intended terminal coverage: the current node row is the
-    record."""
-    shapes: dict[str, tuple[str, set[tuple[str, int | None, int, str]]]] = {
-        # status -> (the folded verdict, the ledger tuples to seed)
-        "failed": (
-            "failed",
-            {("t", None, 1, "succeeded")},  # contradictory same-attempt
-        ),
-        "succeeded": (
-            "complete",
-            {("t", None, 1, "failed")},  # contradictory same-attempt
-        ),
-        "cancelled": (
-            "cancelled",
-            {("t", None, 1, "succeeded")},  # contradictory
-        ),
-        "crashed": (
-            "failed",
-            {("t", None, 1, "succeeded")},  # contradictory (the fold)
-        ),
-        "abandoned": (
-            "failed",
-            {("t", None, 1, "failed")},  # contradictory (the fold agrees)
-        ),
-    }
-    for status, (expected, ledger) in shapes.items():
-        # MISSING ledger.
+    """ALREADY-TERMINAL direct facts: a terminal NODE ROW reconstructs from
+    itself — with its OWN claim's ledger MISSING, STALE, or CONTRADICTORY —
+    in both directions: a failed node beside its OWN succeeded ledger
+    terminal at the same attempt, and a succeeded node beside its OWN
+    failed or crashed ledger terminal at the same attempt. The ledger
+    rows seeded on the NODE'S OWN job id (the arbiter tuple the deleted
+    overlay would have keyed): the node row must WIN, because a node
+    terminal and its own ledger terminal commit in one transaction — a
+    committed split is an externally corrupted shape the row resolves.
+    An UNRELATED job's contradictory history is kept as one explicitly
+    documented variant (history can never answer for another job's
+    node). The reconstruction also asserts the REMOVED OVERLAY'S
+    ABSENCE: it runs through a counting connection and may issue no
+    statement touching wf_step_ledger. The real maintenance converges
+    every shape's root (the family's own maintenance assertions; the
+    always-on G7 fixture runs it again at teardown)."""
+    queries: list[str] = []
+
+    class CountingConn:
+        """A passthrough that records the statements (the overlay's
+        absence is asserted on the record)."""
+
+        def __init__(self, inner: asyncpg.Connection) -> None:
+            self._inner = inner
+
+        async def fetch(self, sql: str, *args: object) -> list[Any]:
+            queries.append(sql)
+            return await self._inner.fetch(sql, *args)
+
+        async def fetchval(self, sql: str, *args: object) -> Any:
+            queries.append(sql)
+            return await self._inner.fetchval(sql, *args)
+
+    async def assert_no_overlay(flow: uuid.UUID) -> WorkflowStatus:
+        queries.clear()
+        verdict = await reconstruct_workflow_status(CountingConn(wf_conn), wf_sql, JobId(str(flow)))
+        assert queries and all("wf_step_ledger" not in q for q in queries), (
+            f"the reconstruction read the ledger — the pending-node "
+            f"overlay's absence is violated: {queries!r}"
+        )
+        return verdict
+
+    async def one_shape(status: str) -> tuple[uuid.UUID, uuid.UUID]:
+        """A fresh run whose single node row is `status` at attempt 1."""
         flow = new_uuid()
+        node = new_uuid()
+        meta: dict[str, object] = {"workflow": "probe_march"}
         await _seed_wf_row(
             wf_conn,
             wf_schema,
@@ -1745,78 +1818,188 @@ async def test_reconstruction_terminal_node_rows_win_over_ledger_history(
             actor="flow",
             status="running",
             step_key="__flow__",
-            metadata={"workflow": "probe_march"},
+            metadata=meta,
         )
         await _seed_wf_row(
             wf_conn,
             wf_schema,
             flow,
+            job_id=node,
             status=status,
             step_key="t",
             attempt=1,
-            metadata={"workflow": "probe_march"},
+            metadata=meta,
             fairness_key=str(flow),
         )
+        return flow, node
+
+    # ── Direction A: the FAILED node row wins over its own history. ──
+    # (a) the ledger MISSING.
+    flow, node = await one_shape("failed")
+    await _assert_jobs(wf_conn, wf_schema, flow, {("t", None, "failed", 1)})
+    await _assert_ledger(wf_conn, wf_schema, flow, set())
+    assert await assert_no_overlay(flow) == "failed"
+    await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
+    assert (
+        await wf_conn.fetchval(f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow)
+        == "failed"
+    ), "the maintenance converges the failed run"
+    # (b) the node's OWN claim ledger CONTRADICTORY at the same attempt
+    # (succeeded where the node row reads failed — the corrupt shape the
+    # row resolves).
+    flow, node = await one_shape("failed")
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=node,
+        step_key="t",
+        map_index=None,
+        attempt=1,
+        status="succeeded",
+    )
+    await _assert_jobs(wf_conn, wf_schema, flow, {("t", None, "failed", 1)})
+    await _assert_ledger(
+        wf_conn,
+        wf_schema,
+        flow,
+        {(node, "t", None, 1, "succeeded")},
+    )
+    assert await assert_no_overlay(flow) == "failed", (
+        "the failed NODE ROW must win over its own contradictory "
+        "succeeded ledger terminal — the ledger is history, never a "
+        "current-status source"
+    )
+    await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
+    assert (
+        await wf_conn.fetchval(f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow)
+        == "failed"
+    ), "the maintenance converges the failed run"
+    # (c) an UNRELATED job's contradictory history (explicitly documented:
+    # another job's claim history can never answer for this node either).
+    flow, node = await one_shape("failed")
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=new_uuid(),
+        step_key="t",
+        map_index=None,
+        attempt=1,
+        status="succeeded",
+    )
+    await _assert_jobs(wf_conn, wf_schema, flow, {("t", None, "failed", 1)})
+    assert await assert_no_overlay(flow) == "failed"
+    await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
+    assert (
+        await wf_conn.fetchval(f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow)
+        == "failed"
+    )
+
+    # ── Direction B: the SUCCEEDED node row wins over its own history. ──
+    # (a) the ledger MISSING.
+    flow, node = await one_shape("succeeded")
+    await _assert_jobs(wf_conn, wf_schema, flow, {("t", None, "succeeded", 1)})
+    await _assert_ledger(wf_conn, wf_schema, flow, set())
+    assert await assert_no_overlay(flow) == "complete"
+    await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
+    assert (
+        await wf_conn.fetchval(f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow)
+        == "succeeded"
+    ), "the maintenance converges the completed run"
+    # (b) the node's OWN claim ledger CONTRADICTORY: failed at the same
+    # attempt where the node row reads succeeded.
+    flow, node = await one_shape("succeeded")
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=node,
+        step_key="t",
+        map_index=None,
+        attempt=1,
+        status="failed",
+    )
+    await _assert_jobs(wf_conn, wf_schema, flow, {("t", None, "succeeded", 1)})
+    await _assert_ledger(
+        wf_conn,
+        wf_schema,
+        flow,
+        {(node, "t", None, 1, "failed")},
+    )
+    assert await assert_no_overlay(flow) == "complete", (
+        "the succeeded NODE ROW must win over its own contradictory "
+        "failed ledger terminal — the live-vs-terminal ambiguity resolves "
+        "in favor of the committed row"
+    )
+    await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
+    assert (
+        await wf_conn.fetchval(f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow)
+        == "succeeded"
+    ), "the maintenance converges the completed run"
+    # (c) the node's OWN claim ledger reading 'crashed' (the attempt-level
+    # reclaim receipt) at the same attempt — a receipt, never a terminal.
+    flow, node = await one_shape("succeeded")
+    await _seed_ledger_terminal(
+        wf_conn,
+        wf_schema,
+        flow,
+        job_id=node,
+        step_key="t",
+        map_index=None,
+        attempt=1,
+        status="crashed",
+    )
+    await _assert_jobs(wf_conn, wf_schema, flow, {("t", None, "succeeded", 1)})
+    await _assert_ledger(
+        wf_conn,
+        wf_schema,
+        flow,
+        {(node, "t", None, 1, "crashed")},
+    )
+    assert await assert_no_overlay(flow) == "complete", (
+        "the succeeded NODE ROW must win over its own 'crashed' ledger "
+        "receipt — the receipt is the reclaim's attempt history, never a "
+        "current-status fact"
+    )
+    await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
+    assert (
+        await wf_conn.fetchval(f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow)
+        == "succeeded"
+    )
+
+    # ── The cancelled/crashed/abandoned rows keep their direct coverage ──
+    # (the ledger missing — the folded verdicts).
+    for status, expected in (
+        ("cancelled", "cancelled"),
+        ("crashed", "failed"),
+        ("abandoned", "failed"),
+    ):
+        flow, node = await one_shape(status)
         await _assert_jobs(wf_conn, wf_schema, flow, {("t", None, status, 1)})
         await _assert_ledger(wf_conn, wf_schema, flow, set())
-        verdict = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow)))
-        assert verdict == expected, (
-            f"the terminal node row ({status}) with NO ledger must "
-            f"reconstruct {expected!r}, got {verdict!r}"
+        assert await assert_no_overlay(flow) == expected, (
+            f"the {status} node row must fold to {expected!r}"
         )
-        # CONTRADICTORY ledger (a same-attempt terminal of the opposite
-        # class — the corrupt shape the node row must survive).
-        flow2 = new_uuid()
-        await _seed_wf_row(
-            wf_conn,
-            wf_schema,
-            flow2,
-            job_id=flow2,
-            actor="flow",
-            status="running",
-            step_key="__flow__",
-            metadata={"workflow": "probe_march"},
-        )
-        await _seed_wf_row(
-            wf_conn,
-            wf_schema,
-            flow2,
-            status=status,
-            step_key="t",
-            attempt=1,
-            metadata={"workflow": "probe_march"},
-            fairness_key=str(flow2),
-        )
-        for step_key, map_index, attempt_n, ledger_status in ledger:
-            await _seed_ledger_terminal(
-                wf_conn,
-                wf_schema,
-                flow2,
-                job_id=new_uuid(),
-                step_key=step_key,
-                map_index=map_index,
-                attempt=attempt_n,
-                status=ledger_status,
+        await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
+        assert (
+            await wf_conn.fetchval(
+                f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow
             )
-        await _assert_jobs(wf_conn, wf_schema, flow2, {("t", None, status, 1)})
-        await _assert_ledger(wf_conn, wf_schema, flow2, ledger)
-        verdict2 = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow2)))
-        assert verdict2 == expected, (
-            f"the terminal node row ({status}) must WIN over the "
-            f"contradictory ledger history: expected {expected!r}, got {verdict2!r}"
-        )
+            == expected
+        ), f"the maintenance converges the {status} run"
 
-    # STALE ledger: a failed node at attempt 2 with an OLDER succeeded
-    # attempt-1 terminal (history) — the current row wins, maintenance
-    # converges.
-    flow3 = new_uuid()
-    stale_node = new_uuid()
+    # ── STALE own history: a failed node at attempt 2 with an older
+    # succeeded attempt-1 terminal — the current row wins, the
+    # maintenance converges.
+    flow = new_uuid()
+    node = new_uuid()
     meta: dict[str, object] = {"workflow": "probe_march"}
     await _seed_wf_row(
         wf_conn,
         wf_schema,
-        flow3,
-        job_id=flow3,
+        flow,
+        job_id=flow,
         actor="flow",
         status="running",
         step_key="__flow__",
@@ -1825,19 +2008,19 @@ async def test_reconstruction_terminal_node_rows_win_over_ledger_history(
     await _seed_wf_row(
         wf_conn,
         wf_schema,
-        flow3,
-        job_id=stale_node,
+        flow,
+        job_id=node,
         status="failed",
         step_key="t",
         attempt=2,
         metadata=meta,
-        fairness_key=str(flow3),
+        fairness_key=str(flow),
     )
     await _seed_ledger_terminal(
         wf_conn,
         wf_schema,
-        flow3,
-        job_id=stale_node,
+        flow,
+        job_id=node,
         step_key="t",
         map_index=None,
         attempt=1,
@@ -1846,30 +2029,32 @@ async def test_reconstruction_terminal_node_rows_win_over_ledger_history(
     await _seed_ledger_terminal(
         wf_conn,
         wf_schema,
-        flow3,
-        job_id=stale_node,
+        flow,
+        job_id=node,
         step_key="t",
         map_index=None,
         attempt=2,
         status="failed",
     )
-    await _assert_jobs(wf_conn, wf_schema, flow3, {("t", None, "failed", 2)})
+    await _assert_jobs(wf_conn, wf_schema, flow, {("t", None, "failed", 2)})
     await _assert_ledger(
         wf_conn,
         wf_schema,
-        flow3,
-        {("t", None, 1, "succeeded"), ("t", None, 2, "failed")},
+        flow,
+        {
+            (node, "t", None, 1, "succeeded"),
+            (node, "t", None, 2, "failed"),
+        },
     )
-    verdict3 = await reconstruct_workflow_status(wf_conn, wf_sql, JobId(str(flow3)))
-    assert verdict3 == "failed", (
-        f"the failed node row at attempt 2 reconstructed {verdict3!r} — "
-        "the older succeeded terminal is history"
+    assert await assert_no_overlay(flow) == "failed", (
+        "the failed node row at attempt 2 must win over the older "
+        "succeeded attempt-1 terminal — history"
     )
     await wf_conn.execute(wf_sql.workflow_root_maintain, 100)
-    root3 = await wf_conn.fetchval(
-        f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow3
-    )
-    assert root3 == "failed", f"the terminal run must converge: {root3!r}"
+    assert (
+        await wf_conn.fetchval(f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow)
+        == "failed"
+    ), "the terminal run must converge"
 
 
 @pytest.mark.integration
