@@ -1800,8 +1800,10 @@ async def test_estate_wake_cursor_is_fair_under_continuous_arrivals(
 
     state = EstateWakeCursor()
     # Pass 1 examines A (blocked) and advances the cursor past it.
-    after, batch = state.next_pass(1)
-    first = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=batch, after=after)
+    after, batch, exhaust = state.next_pass(1)
+    first = await wake_emit_backpressure(
+        wf_pool, wf_sql, batch_size=batch, after=after, exhaust=exhaust
+    )
     state.observe(first)
     assert first.woken == 0, "A's page cannot fit while its child is live"
     # A's capacity frees: the blocker's row is deleted.
@@ -1817,8 +1819,10 @@ async def test_estate_wake_cursor_is_fair_under_continuous_arrivals(
         await _park_primitive_claim(
             wf_pool, wf_sql, claim_w, logical_attempt=1, page_width=1, bound=2, outstanding=0
         )
-        after, batch = state.next_pass(1)
-        result = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=batch, after=after)
+        after, batch, exhaust = state.next_pass(1)
+        result = await wake_emit_backpressure(
+            wf_pool, wf_sql, batch_size=batch, after=after, exhaust=exhaust
+        )
         state.observe(result)
         a_now = await _source_state(wf_conn, wf_schema, flow_a, claim_a.job_id, "source")
         if not _park_is_live(a_now):
@@ -2118,8 +2122,10 @@ async def test_estate_wake_cursor_wraps_a_blocked_prefix_to_wake_a_fitted_waiter
     state = EstateWakeCursor()
     f_woken_pass = None
     for pass_number in range(1, 7):
-        after, batch = state.next_pass(1)
-        result = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=batch, after=after)
+        after, batch, exhaust = state.next_pass(1)
+        result = await wake_emit_backpressure(
+            wf_pool, wf_sql, batch_size=batch, after=after, exhaust=exhaust
+        )
         state.observe(result)
         f_state = await _source_state(wf_conn, wf_schema, flow_f, claim_f.job_id, "source")
         if not _park_is_live(f_state):
@@ -2136,3 +2142,140 @@ async def test_estate_wake_cursor_wraps_a_blocked_prefix_to_wake_a_fitted_waiter
         assert _park_is_live(
             await _source_state(wf_conn, wf_schema, claim_b.flow_id, claim_b.job_id, "source")
         ), "the blocked prefix's rows must stay parked until their capacity frees"
+
+
+async def test_the_wake_pass_pages_the_whole_population_under_the_lock_budget(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    pg_dsn: str,
+) -> None:
+    """THE LOCK BUDGET AT POPULATION (the reviewer's 10k probe as a control):
+    a parked population of 10,000 (far above the per-transaction chunk
+    ceiling of 200) is woken by ONE wrap pass whose transactions each hold
+    at most the chunk's own locks — the pass can never exhaust the shared
+    lock table (``max_locks_per_transaction`` x connections) regardless of
+    population, and the coverage is complete: the whole population wakes in
+    that one pass. The rejected shape: the whole population processed in
+    ONE transaction (measured by the reviewer: ~9,855 transaction-scoped
+    advisory locks — over a 100-connection deployment's entire lock table
+    at the default 64/transaction)."""
+    population = 10_000
+    rows: list[tuple[object, ...]] = []
+    for index in range(population):
+        flow_id = new_uuid()
+        rows.append(
+            (
+                flow_id,
+                f'{{"flow_id": "{flow_id}", "workflow": "wake-budget-probe"}}',
+                str(flow_id),
+            )
+        )
+    await wf_conn.executemany(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key, "
+        "fairness_key) "
+        "VALUES ($1, 'flow', 'default', '{}', 3, 'transient', 'running', '__flow__', "
+        "$2::jsonb, 'workflow-run', 'probe:' || $3, $3)",
+        rows,
+    )
+    parked_rows: list[tuple[object, ...]] = []
+    for index, (flow_id, _meta, _fair) in enumerate(rows):
+        parked_rows.append(
+            (
+                new_uuid(),
+                json.dumps(
+                    {
+                        "flow_id": str(flow_id),
+                        "blocking_reason": "backpressure",
+                        "wf_deferral": {
+                            "signal": "EmitBackpressure",
+                            "consume_budget": False,
+                            "attempt": 0,
+                        },
+                        "wf_emit_backpressure": {
+                            "version": 1,
+                            "page_width": 1,
+                            "bound": 2,
+                            "outstanding": 0,
+                            "deferrals": 1,
+                            "wakes": 0,
+                            "deferred_at": "2026-01-01T00:00:00.000000Z",
+                        },
+                    }
+                ),
+                str(flow_id),
+            )
+        )
+    await wf_conn.executemany(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, status, max_attempts, '
+        "retry_kind, step_key, metadata, scheduled_at, fairness_key, attempt) "
+        "VALUES ($1, 'wf-node', 'default', '{}', 'scheduled', 3, 'transient', 'source', "
+        "$2::jsonb, NULL, $3, 0)",
+        parked_rows,
+    )
+    await wf_conn.execute(f'ANALYZE "{wf_schema}".jobs')
+    max_locks = int(await wf_conn.fetchval("SHOW max_locks_per_transaction"))
+    chunk_size = 200
+
+    # THE LOCK SAMPLER: a dedicated connection polling the instance's
+    # advisory locks while the wrap pass runs.
+    stop = asyncio.Event()
+    sampled_max = 0
+
+    async def sampler() -> None:
+        nonlocal sampled_max
+        sconn = await asyncpg.connect(pg_dsn)
+        try:
+            while not stop.is_set() or not sampled_max:
+                counts = await sconn.fetchval(
+                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'"
+                )
+                sampled_max = max(sampled_max, int(counts or 0))
+                if stop.is_set():
+                    return
+                await asyncio.sleep(0.02)
+        finally:
+            await sconn.close()
+
+    sampler_task = asyncio.create_task(sampler())
+    try:
+        result = await wake_emit_backpressure(
+            wf_pool, wf_sql, batch_size=population, after=None, exhaust=True, chunk_size=chunk_size
+        )
+    finally:
+        stop.set()
+        await asyncio.sleep(0.05)
+        sampler_task.cancel()
+        await asyncio.gather(sampler_task, return_exceptions=True)
+    print(
+        "WAKE PASS FACTS: "
+        + json.dumps(
+            {
+                "population": population,
+                "woken": result.woken,
+                "chunk_size": chunk_size,
+                "sampled_max_advisory_locks": sampled_max,
+                "max_locks_per_transaction": max_locks,
+                "lock_slots_at_100_connections": max_locks * 100,
+            }
+        )
+    )
+    assert result.woken == population, (
+        f"the wrap pass must cover the WHOLE population in one pass, got {result.woken}"
+    )
+    assert result.next_cursor is None
+    # THE LOCK BUDGET: the sampled in-flight advisory locks never approach
+    # the shared lock table's ceiling — each chunk holds at most its own
+    # chunk's locks (the x2 slack is the sampler's own 20ms skew against a
+    # chunk's commit boundary; the 100-connection arithmetic is the
+    # reviewer's deployment shape).
+    assert sampled_max <= chunk_size * 2, (
+        f"the wrap's transactions held {sampled_max} advisory locks — beyond "
+        f"the chunk budget's own ceiling ({chunk_size} x2)"
+    )
+    assert sampled_max < max_locks * 100, (
+        f"the wrap's transactions would exhaust a 100-connection deployment's "
+        f"lock table ({sampled_max} vs {max_locks * 100})"
+    )

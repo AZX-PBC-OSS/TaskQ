@@ -691,7 +691,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         from taskq.workflows._emit import wake_emit_backpressure
         from taskq.workflows.engine import render_workflow_sql
 
-        after, batch = wf_emit_backpressure_state.next_pass(
+        after, batch, exhaust = wf_emit_backpressure_state.next_pass(
             ctx.deps.settings.event_writer_batch_size
         )
         result = await wake_emit_backpressure(
@@ -699,6 +699,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             render_workflow_sql(ctx.deps.settings.schema_name),
             batch_size=batch,
             after=after,
+            exhaust=exhaust,
         )
         wf_emit_backpressure_state.observe(result)
         return result.woken
