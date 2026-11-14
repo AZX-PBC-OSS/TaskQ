@@ -129,19 +129,25 @@ WITH loop_row AS (
     RETURNING id, (metadata->>'flow_id')::uuid AS flow_id
 ),
 -- THE LEDGER-TRUTH LAW at the loop's own exhaustion: the winning CAS's
--- terminal record rides THIS statement — the loop node's own ledger row
--- (its current claim: job, attempt, epoch) takes the 'failed' terminal
--- with the exhaust's own named class. Never a running row left for the
--- phantom reaper to fence into a lie, and never the parked history's row
--- (the epoch leg keys the CURRENT claim only).
+-- terminal record rides THIS statement — the LOOP'S OWN ledger row takes
+-- the 'failed' terminal with the exhaust's own named class, keyed on the
+-- LEDGER ARBITER (flow, step_key, COALESCE(map_index,-1), attempt,
+-- claim_epoch — the unique claim identity). job_id/attempt/epoch alone are
+-- NOT claim-exact: a ctx.substep claim shares the outer job's attempt and
+-- epoch and differs only by its own step key — a job-wide match would
+-- rewrite the substep's own claim history (the demonstrated corruption).
+-- Never a running row left for the phantom reaper to fence into a lie,
+-- and never a sibling claim's row.
 loop_ledger AS (
     UPDATE {schema}.wf_step_ledger l
     SET status = 'failed',
         error_class = $2,
         error_message = $4,
         updated_at = clock_timestamp()
-    WHERE (SELECT id FROM loop_row) IS NOT NULL
-      AND l.job_id = (SELECT id FROM loop_row)
+    WHERE (SELECT flow_id FROM loop_row) IS NOT NULL
+      AND l.flow_id = (SELECT flow_id FROM loop_row)
+      AND l.step_key = $8::text
+      AND COALESCE(l.map_index, -1) IS NOT DISTINCT FROM COALESCE($9::int, -1)
       AND l.attempt IS NOT DISTINCT FROM $6::int
       AND l.claim_epoch IS NOT DISTINCT FROM $7::bigint
       AND l.status IN ('running', 'awaited', 'crashed')
@@ -202,10 +208,14 @@ loop_row AS (
       AND j.claim_epoch IS NOT DISTINCT FROM b.claim_epoch
     RETURNING j.id, (j.metadata->>'flow_id')::uuid AS flow_id, b.error_class, b.ord
 ),
--- THE LEDGER-TRUTH LAW at the batched exhaustion: each winner's own ledger
--- row (its current claim: job, attempt, epoch) takes the 'failed' terminal
--- with the exhaust's own class, in this statement's transaction — never a
--- running row left for the phantom reaper to fence into a lie.
+-- THE LEDGER-TRUTH LAW at the batched exhaustion: each winner's OWN ledger
+-- row takes the 'failed' terminal with the exhaust's own class, keyed on
+-- the LEDGER ARBITER (flow, step_key, COALESCE(map_index,-1), attempt,
+-- claim_epoch — the unique claim identity). job_id/attempt/epoch alone are
+-- NOT claim-exact: a ctx.substep claim shares the outer job's attempt and
+-- epoch and differs only by its own step key — a job-wide match would
+-- rewrite the substep's own claim history. Never a running row left for
+-- the phantom reaper to fence into a lie, and never a sibling claim's row.
 loop_ledger AS (
     UPDATE {schema}.wf_step_ledger l
     SET status = 'failed',
@@ -213,11 +223,13 @@ loop_ledger AS (
         error_message = b.message,
         updated_at = clock_timestamp()
     FROM batch b
-    WHERE l.job_id = b.loop_id
+    JOIN loop_row lr ON lr.id = b.loop_id
+    WHERE l.flow_id = lr.flow_id
+      AND l.step_key = b.step_key
+      AND COALESCE(l.map_index, -1) IS NOT DISTINCT FROM COALESCE(b.map_index, -1)
       AND l.attempt IS NOT DISTINCT FROM b.attempt
       AND l.claim_epoch IS NOT DISTINCT FROM b.claim_epoch
       AND l.status IN ('running', 'awaited', 'crashed')
-      AND EXISTS (SELECT 1 FROM loop_row WHERE loop_row.id = b.loop_id)
 ),
 flow_terminal AS (
     UPDATE {schema}.jobs f

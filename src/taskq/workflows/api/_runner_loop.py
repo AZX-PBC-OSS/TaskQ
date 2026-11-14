@@ -858,6 +858,12 @@ class LoopOps(_LoopHost):
                 worker_id,
                 attempt,
                 claim_epoch,
+                # The LEDGER ARBITER's own legs: the exhaust's ledger terminal
+                # keys the loop's OWN claim (flow, step, map, attempt, epoch) —
+                # never a job-wide identity that would rewrite a sibling
+                # ctx.substep claim's row.
+                row["step_key"],
+                row["map_index"],
             )
             if result is None or not result["loop_exhausted"]:
                 return  # another writer got there first — the CAS held

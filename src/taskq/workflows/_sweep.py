@@ -1011,6 +1011,8 @@ async def sweep_loop_budget(
         workers: list[object] = []
         attempts: list[int] = []
         epochs: list[int] = []
+        step_keys: list[str] = []
+        map_indexes: list[int | None] = []
         error_class_of: dict[object, str] = {}
         for loop_row in loops:
             cap_hit = (
@@ -1034,6 +1036,11 @@ async def sweep_loop_budget(
             workers.append(loop_row["locked_by_worker"])
             attempts.append(loop_row["attempt"])
             epochs.append(loop_row["claim_epoch"])
+            # The LEDGER ARBITER's own legs (the exhaust's ledger terminal
+            # keys the loop's OWN claim — never a job-wide identity that
+            # would rewrite a sibling ctx.substep claim's row).
+            step_keys.append(loop_row["step_key"])
+            map_indexes.append(loop_row["map_index"])
             # the identity was read under THIS arm's own row lock (FOR UPDATE —
         # stable to statement end), so the exhaust lands exactly on the row the
         # lock admitted — a stale identity is unrepresentable here by
@@ -1049,6 +1056,8 @@ async def sweep_loop_budget(
             workers,
             attempts,
             epochs,
+            step_keys,
+            map_indexes,
         )
         won_ids = {row["id"] for row in winners}
         exhausted = len(won_ids)
