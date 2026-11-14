@@ -128,6 +128,24 @@ WITH loop_row AS (
       AND claim_epoch IS NOT DISTINCT FROM $7::bigint
     RETURNING id, (metadata->>'flow_id')::uuid AS flow_id
 ),
+-- THE LEDGER-TRUTH LAW at the loop's own exhaustion: the winning CAS's
+-- terminal record rides THIS statement — the loop node's own ledger row
+-- (its current claim: job, attempt, epoch) takes the 'failed' terminal
+-- with the exhaust's own named class. Never a running row left for the
+-- phantom reaper to fence into a lie, and never the parked history's row
+-- (the epoch leg keys the CURRENT claim only).
+loop_ledger AS (
+    UPDATE {schema}.wf_step_ledger l
+    SET status = 'failed',
+        error_class = $2,
+        error_message = $4,
+        updated_at = clock_timestamp()
+    WHERE (SELECT id FROM loop_row) IS NOT NULL
+      AND l.job_id = (SELECT id FROM loop_row)
+      AND l.attempt IS NOT DISTINCT FROM $6::int
+      AND l.claim_epoch IS NOT DISTINCT FROM $7::bigint
+      AND l.status IN ('running', 'awaited', 'crashed')
+),
 flow_terminal AS (
     UPDATE {schema}.jobs f
     SET status = 'failed',
@@ -183,6 +201,23 @@ loop_row AS (
       AND j.attempt IS NOT DISTINCT FROM b.attempt
       AND j.claim_epoch IS NOT DISTINCT FROM b.claim_epoch
     RETURNING j.id, (j.metadata->>'flow_id')::uuid AS flow_id, b.error_class, b.ord
+),
+-- THE LEDGER-TRUTH LAW at the batched exhaustion: each winner's own ledger
+-- row (its current claim: job, attempt, epoch) takes the 'failed' terminal
+-- with the exhaust's own class, in this statement's transaction — never a
+-- running row left for the phantom reaper to fence into a lie.
+loop_ledger AS (
+    UPDATE {schema}.wf_step_ledger l
+    SET status = 'failed',
+        error_class = b.error_class,
+        error_message = b.message,
+        updated_at = clock_timestamp()
+    FROM batch b
+    WHERE l.job_id = b.loop_id
+      AND l.attempt IS NOT DISTINCT FROM b.attempt
+      AND l.claim_epoch IS NOT DISTINCT FROM b.claim_epoch
+      AND l.status IN ('running', 'awaited', 'crashed')
+      AND EXISTS (SELECT 1 FROM loop_row WHERE loop_row.id = b.loop_id)
 ),
 flow_terminal AS (
     UPDATE {schema}.jobs f

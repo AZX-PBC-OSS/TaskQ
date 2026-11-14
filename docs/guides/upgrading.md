@@ -181,13 +181,17 @@ Apply the three PRE files in this order, each before the binary that needs it:
    execution across this file**: an old executor's four-expression ledger
    claim fails with PostgreSQL `42P10` after the job row is already
    `running` (the old body never runs), and the old binary's terminal/fence
-   writes are equally unsupported. The operator exclusion spans the whole
-   cutover train (`01.00.42_01`, the identity POST `01.00.42_02`, and the
-   arbiter restoration `01.00.43_01`): stop accepting workflow body work,
-   drain every pre-correction workflow process (fleet workers with workflow
-   execution, direct `FlowRunner` processes, custom drivers using the old
-   ledger claim/finalize statements), apply the files, and **after
-   `01.00.43_01:post` has applied, restart only corrected binaries**. The
+   writes are equally unsupported. The cutover as it ships is THIS ONE
+   FILE: stop accepting workflow body work, drain every pre-correction
+   workflow process (fleet workers with workflow execution, direct
+   `FlowRunner` processes, custom drivers using the old ledger
+   claim/finalize statements), apply `01.00.42_01`, and restart only
+   corrected binaries. Two further cutover files are PENDING A FUTURE PR
+   (the identity POST `01.00.42_02` and the arbiter restoration
+   `01.00.43_01`, planned as one same-apply run with it) — until those
+   files exist, no operator instruction may wait on them; when they land,
+   the restart gate moves to `01.00.43_01:post` and this runbook is
+   updated in the same PR. The
    ledger's arbiter rebuild is a stop-accepting-work window on a populated
    ledger: the index build takes `SHARE` (it blocks writes, not reads)
    while it scans existing rows.

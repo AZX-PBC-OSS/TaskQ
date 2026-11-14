@@ -1085,3 +1085,56 @@ async def test_loop_done_success_writes_its_own_succeeded_ledger(
         ledger[0]["id"],
     )
     assert after == "succeeded", after
+
+
+async def test_cap_exhausted_loop_writes_its_own_failed_ledger_terminal(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The ledger-truth law at the loop's own exhaustion (the same class the
+    Done fix closed on the success path): the cap wall's winning CAS commits
+    the loop node's OWN ledger terminal 'failed' with the exhaust's named
+    class IN THE SAME STATEMENT — never a 'running' row the phantom reaper
+    later fences into a lie. The reaper must leave the recorded terminal."""
+    async def refining_body(ctx: StepContext, carry: Counter) -> object:
+        return Refine(feedback=Counter(acc=carry.acc + 1))
+
+    app, name = _loop_app(refining_body, max_iterations=2, initial=Counter(acc=0))
+    runner = await _runner_of(app, name, wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id) == "terminal"
+
+    loop_row = await wf_conn.fetchrow(
+        f"SELECT status::text AS status, error_class, attempt::int AS attempt, "
+        f"claim_epoch::bigint AS claim_epoch FROM \"{wf_schema}\".jobs "
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'counter'",
+        flow_id,
+    )
+    assert loop_row is not None
+    assert loop_row["status"] == "failed", dict(loop_row)
+    # THE LOOP'S OWN LEDGER ROW: 'failed' with the exhaust's own named class,
+    # at the loop's exact claim identity — in the same commit as the job row.
+    ledger = await wf_conn.fetch(
+        f"SELECT id, attempt::int AS attempt, claim_epoch::bigint AS claim_epoch, "
+        f"status::text AS status, error_class FROM \"{wf_schema}\".wf_step_ledger "
+        "WHERE flow_id = $1 AND step_key = $2 "
+        "ORDER BY attempt, claim_epoch, created_at, id",
+        flow_id,
+        "counter",
+    )
+    assert len(ledger) == 1, [dict(r) for r in ledger]
+    assert ledger[0]["status"] == "failed", dict(ledger[0])
+    assert ledger[0]["error_class"] == loop_row["error_class"], dict(ledger[0])
+    assert (ledger[0]["attempt"], ledger[0]["claim_epoch"]) == (
+        loop_row["attempt"],
+        loop_row["claim_epoch"],
+    )
+    # The reaper leaves the recorded terminal (the opposite direction: the
+    # fenced-into-a-lie shape is the defect this pin exists to refuse).
+    from taskq.workflows._sweep import reap_phantom_ledger
+
+    await reap_phantom_ledger(wf_pool, runner.wsql)
+    after = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".wf_step_ledger WHERE id = $1',
+        ledger[0]["id"],
+    )
+    assert after == "failed", after

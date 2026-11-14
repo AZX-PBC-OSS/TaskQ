@@ -1208,10 +1208,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
         both land here — one execution semantics, the machinery never
         forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
-        is the fence epoch the finalize/emit fences carry: the runner's
-        own claim stamps 0; a fleet-claimed row carries its dispatch
-        claim's epoch. Returns the attempt's outcome label (the caller's
-        log line — the ROW is the truth, this is the record's echo).
+        is the fence epoch the finalize/emit fences carry: the direct
+        driver's own claim grants the NEXT epoch atomically with its
+        attempt (the CAS's ``claim_epoch + 1``); a fleet-claimed row
+        carries its dispatch claim's granted epoch. Returns the attempt's
+        outcome label (the caller's log line — the ROW is the truth, this
+        is the record's echo).
 
         ``ledger_claimed_at`` is the ledger claim's own RETURNING instant
         (the re-mint guard's discriminator) — threaded to the

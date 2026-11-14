@@ -2403,9 +2403,12 @@ saturation and failure stay distinguishable on the record.
 
 **Observability.** The deferral counters live on the row's metadata
 (`deferrals` = parks so far, `wakes` = fitted promotions so far) and
-the admin surface shows a parked source as a scheduled row with
-`blocking_reason='backpressure'` — never as a failure, and never with
-a fabricated next-fire time (a parked row has no timer). The engine's
+the admin surface shows a parked source as a scheduled row whose
+deferral line reads the SIGNAL and `parked · no timer` (the run list's
+badge and the node panel's label — the parked shape is the timer-less
+one) — never as a failure, and never with a fabricated next-fire time
+(a parked row has no timer; the page never renders a NULL fire time).
+The engine's
 own logs emit one `wf.emit_backpressured` event per park with the
 logical/physical attempt split and one `wf.emit_backpressure_wake_failed`
 warning when a wake seat fails (the sweep owns recovery). The legacy
