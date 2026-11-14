@@ -1,5 +1,7 @@
 """The status-rollup statement constants: the grouped rollup (the
-ledger IS the status store — no status cache to corrupt), the per-node
+current jobs rows are the current-node record — no status cache to
+corrupt; wf_step_ledger is claim/attempt history and replay data, never
+a current-status source), the per-node
 variant (the admin page's read, by run id — bounded), and the per-map
 done/total (the counter's complement, computed IN the query — not a
 second instrument, one fewer series to keep consistent).

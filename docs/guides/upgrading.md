@@ -2188,8 +2188,12 @@ nothing was lost, the move is documented here).
   curve pinned across the boundary (the refit + the 100k-edge plan assert).
 * **Workflows:** the status + progress rollup — the status derivation
   table (the absorbed-failure clause stated first), the rows-only
-  reconstruction (the two-source rule: the ledger for the attempted
-  terminals, the node row's error jsonb for the never-granted ones), the
+  reconstruction (the current jobs rows are the current-node record; the
+  reconstruction reads the node rows and the never-granted terminal rows
+  and consults NO ledger — wf_step_ledger is claim/attempt history and
+  replay data, never a status source; a node terminal and its own ledger
+  terminal commit in one transaction, so a live row beside ledger
+  history is a deliberate live shape, never a partial commit), the
   G7 always-on reported==reconstructed assertion in every workflow
   integration test, the `taskq.wf_progress_nodes_total{workflow, state}`
   gauge (the declared-workflow dimension, the `_other_` collapse, sampled

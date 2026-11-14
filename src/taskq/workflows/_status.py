@@ -2,10 +2,10 @@
 
 the DERIVATION TABLE — the workflow-level status derived from the
 NODE statuses, precedence applied IN ORDER. No status cache exists to
-corrupt: the ledger is the status store, and the derivation is a PURE
-function over the grouped rollup's rows (the crash-safety proof is the
-derivation's corollary — the status can be RECONSTRUCTED from rows alone;
-there is no cache, only rows to re-read).
+corrupt: the current ``jobs`` rows are the current-node record, and the
+derivation is a PURE function over them (the crash-safety proof is the
+derivation's corollary — the status can be RECONSTRUCTED from the
+committed node rows alone; there is no cache, only rows to re-read).
 
 the ABSORBED-FAILURE CLAUSE COMES first (the clause that
 makes the fail-closed gate and the maybe policy hold): a ``failed`` node whose
@@ -42,9 +42,9 @@ touches a crashed row and the derivation refused to terminalize it).
 The asymmetry doctrine: a wedge (the flow never terminal) is the state
 an operator must notice FOREVER; an honest failed terminal is the
 runbook's resumable-by-rerun. The LEDGER's ``crashed`` rows are a
-DIFFERENT class: the attempt-level reclaim receipt (the row re-pends —
-see ``reconstruct_workflow_status``), and they stay out of the terminal
-read.
+DIFFERENT class: the attempt-level reclaim receipt (the row re-pends),
+never read by the status reconstruction at all — the ledger is
+claim/attempt history and replay data, not a current-status source.
 
 the no-zombie promise holds BY this fold: every node status maps to
 exactly one workflow status, and the terminal classes cannot derive
@@ -195,22 +195,27 @@ def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
     return "pending"
 
 
-# ── the reconstruction (D4's two-source rule) ───────────────────────────
+# ── the reconstruction (rows-only, one source: the committed node rows) ──
 #
-# Reconstruction from rows alone covers two terminal classes:
-#   * attempted terminals via the ledger (the wf_step_ledger's terminal
-#     rows — the attempt ran, the outcome is the ledger's);
-#   * never-granted terminals (a budget-killed pending iteration, a
-#     cancelled pending node, a skip) via the node row's error jsonb —
-#     they have no ledger rows; the terminal class rides the error row.
-# The two-source rule is what makes the G7 always-on assertion lawful in
-# every workflow integration test (the reconstruction helper the fixture
-# calls; the docs state the rule).
-
-_LEDGER_TERMINALS_SQL = """\
-SELECT step_key, status FROM {schema}.wf_step_ledger
-WHERE flow_id = $1::uuid AND status IN ('succeeded', 'failed')
-"""
+# The current ``jobs`` rows ARE the current-node record: a row that is
+# ``pending``, ``scheduled``, or ``running`` is live current state, and a
+# terminal node row supplies its terminal fact directly. ``wf_step_ledger``
+# is claim/attempt history and replay data — it is NEVER a second
+# current-status source, and no ledger terminal (however exactly keyed)
+# may relabel a live node: the node terminal and its own ledger terminal
+# commit in ONE transaction (``_run_tx1``), so a live row beside a ledger
+# terminal is a deliberate live shape (a ladder re-pend, a manual retry, a
+# held/awaited claim, an inner substep/iteration claim) — attempt history,
+# not a recoverable partial commit and never a terminal verdict.
+# Reconstruction therefore runs exactly two statements (the node read and
+# the never-granted read) and reads no ledger table:
+#   * the node rows supply every current status, terminal or live;
+#   * the never-granted read re-draws the terminal CLASS for the
+#     cancelled/crashed/abandoned rows (their terminal fact rides the
+#     row itself; the append keeps the existing behavior).
+# This is what makes the G7 always-on assertion lawful in every workflow
+# integration test (the reconstruction helper the fixture calls; the docs
+# state the rule).
 
 _NEVER_GRANTED_SQL = """\
 SELECT step_key, status
@@ -226,11 +231,13 @@ async def reconstruct_workflow_status(
     conn: ConnLike, wsql: WorkflowSql, flow_id: JobId
 ) -> WorkflowStatus:
     """The rows-only reconstruction (G7's always-on assertion's read): the
-    reported workflow status must equal THIS — derived from the rows
-    alone, no cache consulted. Two sources (D4): the ledger's attempted
-    terminals + the node rows' error jsonb for the never-granted ones."""
+    reported workflow status must equal THIS — derived from the committed
+    node rows alone, no cache consulted, and NO ledger read: current jobs
+    rows are the current-node record, and the ledger is claim/attempt
+    history and replay data, never a competing current-status source. A
+    live row (pending/scheduled/running — a retry, a hold, an inner
+    claim) is never relabelled by any ledger terminal."""
     node_rows = await conn.fetch(wsql.workflow_nodes, flow_id)
-    ledger_rows = await conn.fetch(_LEDGER_TERMINALS_SQL.format(schema=wsql.schema), flow_id)
     never_granted = await conn.fetch(_NEVER_GRANTED_SQL.format(schema=wsql.schema), flow_id)
 
     # The absorption record: which nodes' failures the edge ledger
@@ -242,38 +249,30 @@ async def reconstruct_workflow_status(
     # absorbed_exists predicate is status-blind on the parent for
     # exactly this reason).
     absorbed_keys = {r["step_key"] for r in node_rows if r["absorbed"] and r["status"] in _TERMINAL}
-    ledger_by_key: dict[str, str] = {}
-    for r in ledger_rows:
-        # The ledger's latest terminal row for the step (attempt-ordered
-        # arrival — the dict overwrite is the latest-write truth).
-        ledger_by_key[r["step_key"]] = r["status"]
 
     nodes: list[NodeView] = []
     for r in node_rows:
-        status = r["status"]
-        if status == "pending" and r["step_key"] in ledger_by_key:
-            # The ledger is the status store: a pending row whose ledger
-            # terminal exists (the crash window) reconstructs through the
-            # ledger's outcome.
-            status = ledger_by_key[r["step_key"]]
+        # The CURRENT NODE ROW IS THE RECORD: the row's own status —
+        # terminal or live — is the node's status, verbatim. A live row
+        # (pending/scheduled/running) is never relabelled from any ledger
+        # terminal: a terminal and its own ledger row commit in one
+        # transaction, so a live row beside ledger history is a deliberate
+        # live shape (a retry, a hold, an inner claim), not a partial
+        # commit to recover.
         nodes.append(
             NodeView(
-                status=status,
+                status=r["status"],
                 deps_pending=r["deps_pending"],
                 blocking_reason=r["blocking_reason"],
                 absorbed=r["step_key"] in absorbed_keys,
             )
         )
-    # The never-granted terminals (no ledger rows — the terminal class
-    # rides the node row's error jsonb / error columns): a cancelled
-    # pending node, a budget-killed iteration, a skip. The
+    # The never-granted terminals (a cancelled pending node, a
+    # budget-killed iteration, a skip — no ledger rows; the terminal class
+    # rides the node row's error jsonb / error columns). The
     # terminal-crash class rides here too — the row's own status is the
     # record (the reclaim's crashed branch: the budget exhausted) — and
-    # the derivation folds it into the failed-class terminal. the
-    # ledger's 'crashed' rows stay out of the terminal read above
-    # (succeeded/failed only): a ledger crash is the attempt-level
-    # reclaim receipt — the row re-pends and re-claims (the real crash
-    # recovery), never a terminal the reconstruction would read through.
+    # the derivation folds it into the failed-class terminal.
     for r in never_granted:
         nodes.append(NodeView(status=r["status"]))
     return derive_workflow_status(tuple(nodes))

@@ -741,8 +741,9 @@ async def fan_in_skip(
     FailureInfo item with an EMPTY attempt history — **a skip is not an
     attempt** (the measured invariant): ZERO ledger rows are
     written, zero terminal rows, zero attempts — the child's only trace is
-    the item on the join row (the ledger stays the attempted-terminals'
-    record; the two-source rule reads never-granted terminals elsewhere).
+    the item on the join row (wf_step_ledger stays claim/attempt history
+    and replay data; the status reconstruction reads the committed node
+    rows — current jobs rows are the current-node record).
 
     Returns the number of absorbing joins the skip fanned into."""
     fanin_rows = await conn.fetch(
