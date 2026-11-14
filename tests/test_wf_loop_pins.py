@@ -926,6 +926,8 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
         zombie,
         5,
         3,
+        "counter",
+        None,
     )
     assert zombie_exhaust is not None and not zombie_exhaust["loop_exhausted"], (
         "the zombie driver's exhaust LANDED — it killed a healthy "
@@ -965,6 +967,8 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
         fresh,
         6,
         4,
+        "counter",
+        None,
     )
     assert exhausted is not None and exhausted["loop_exhausted"] == 1
     status = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', loop_id)
