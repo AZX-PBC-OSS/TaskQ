@@ -321,13 +321,23 @@ WHERE id = $1
   AND locked_by_worker = $3
   AND attempt = $4
   AND claim_epoch = $5
+  AND cancel_phase = 0
+  AND NOT metadata ? 'cancel_phase'
+  AND NOT EXISTS (
+      SELECT 1 FROM {schema}.jobs AS root
+      WHERE root.id = ({schema}.jobs.metadata->>'flow_id')::uuid
+        AND root.status IN ('succeeded','failed','cancelled','crashed','abandoned')
+  )
 RETURNING id
 """
 
 
 # the run's non-terminal row count (the ledger's truth), excluding the source's
 # own claim row — the admission's arithmetic input, read inside the tx under
-# the lock.
+# the lock. Only the exact committed park representation is not executable
+# work (the accepted in-flight law: real timers, holds, retries, running rows
+# AND resolved-blocked join waiters each occupy their unit of materialization
+# capacity).
 EMIT_IN_FLIGHT_SQL = """\
 SELECT count(*) FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
@@ -335,6 +345,15 @@ WHERE (metadata->>'flow_id')::uuid = $1
   AND step_key <> '__flow__'
   AND id <> $2::uuid
   AND status IN ('pending', 'scheduled', 'running')
+  -- Only the exact committed park representation is not executable work.
+  -- Ordinary NULL holds, retries, deadlines, and live/running sources count.
+  AND NOT (
+      status = 'scheduled'
+      AND scheduled_at IS NULL
+      AND metadata @> '{{"blocking_reason":"backpressure"}}'::jsonb
+      AND metadata @> '{{"wf_deferral":{{"signal":"EmitBackpressure"}}}}'::jsonb
+      AND metadata @> '{{"wf_emit_backpressure":{{"version":1}}}}'::jsonb
+  )
 """
 
 
@@ -342,6 +361,171 @@ WHERE (metadata->>'flow_id')::uuid = $1
 # concurrent emitters' count+insert is atomic per run.
 EMIT_ADMISSION_LOCK_SQL = """\
 SELECT pg_advisory_xact_lock(hashtext($1::text))
+"""
+
+
+# A dedicated ordinary-capacity park, intentionally separate from
+# NODE_DEFER_SQL's delay/GREATEST/snooze/provider-retry machinery. The job and
+# current ledger update commit or roll back together. The caller validates the
+# descriptor before entry and fails the transaction if the exact current
+# ledger id+claim instant does not take the single awaited transition.
+EMIT_BACKPRESSURE_PARK_SQL = """\
+WITH params AS (
+    SELECT $1::uuid AS job_id, $2::uuid AS worker_id,
+           $3::int AS physical_attempt, $4::bigint AS claim_epoch,
+           $5::int AS page_width, $6::int AS bound,
+           $7::int AS logical_attempt, $8::int AS outstanding,
+           $9::uuid AS ledger_id, $10::timestamptz AS ledger_claimed_at
+), parked AS (
+    UPDATE {schema}.jobs AS j
+    SET status = 'scheduled',
+        scheduled_at = NULL,
+        finished_at = NULL,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        cancel_phase = 0,
+        cancel_requested_at = NULL,
+        attempt = 0,
+        assignment_routed = true,
+        metadata = j.metadata || jsonb_build_object(
+            'blocking_reason', 'backpressure',
+            'wf_source_logical_attempt', (SELECT logical_attempt FROM params),
+            'wf_deferral', jsonb_build_object(
+                'signal', 'EmitBackpressure',
+                'consume_budget', false,
+                'attempt', 0
+            ),
+            'wf_emit_backpressure',
+                COALESCE(j.metadata->'wf_emit_backpressure', '{}'::jsonb)
+                || jsonb_build_object(
+                    'version', 1,
+                    'page_width', (SELECT page_width FROM params),
+                    'bound', (SELECT bound FROM params),
+                    'outstanding', (SELECT outstanding FROM params),
+                    'deferrals', COALESCE(NULLIF(
+                        j.metadata #>> '{wf_emit_backpressure,deferrals}', ''
+                    )::int, 0) + 1,
+                    'wakes', COALESCE(NULLIF(
+                        j.metadata #>> '{wf_emit_backpressure,wakes}', ''
+                    )::int, 0),
+                    'deferred_at', to_char(
+                        clock_timestamp() AT TIME ZONE 'UTC',
+                        'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                    )
+                )
+        )
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT physical_attempt FROM params)
+      AND j.claim_epoch = (SELECT claim_epoch FROM params)
+      AND j.cancel_phase = 0
+      AND NOT j.metadata ? 'cancel_phase'
+    RETURNING j.id
+), current_ledger AS (
+    UPDATE {schema}.wf_step_ledger AS l
+    SET status = 'awaited'
+    WHERE l.id = (SELECT ledger_id FROM params)
+      AND l.job_id = (SELECT id FROM parked)
+      AND l.updated_at = (SELECT ledger_claimed_at FROM params)
+      AND l.status IN ('running', 'awaited', 'crashed')
+    RETURNING l.id
+)
+SELECT 'parked'::text AS verdict, p.id,
+       (SELECT count(*) FROM current_ledger)::int AS ledger_count
+FROM parked AS p
+UNION ALL
+SELECT 'cancel_fenced'::text, j.id, 0
+FROM {schema}.jobs AS j
+WHERE j.id = (SELECT job_id FROM params)
+  AND j.status = 'running'
+  AND j.locked_by_worker = (SELECT worker_id FROM params)
+  AND j.attempt = (SELECT physical_attempt FROM params)
+  AND j.claim_epoch = (SELECT claim_epoch FROM params)
+  AND (j.metadata ? 'cancel_phase' OR j.cancel_phase <> 0)
+  AND NOT EXISTS (SELECT 1 FROM parked)
+"""
+
+
+_EMIT_WAITER_PREDICATE = """\
+j.status = 'scheduled'
+  AND j.scheduled_at IS NULL
+  AND j.metadata @> '{"blocking_reason":"backpressure"}'::jsonb
+  AND j.metadata @> '{"wf_deferral":{"signal":"EmitBackpressure"}}'::jsonb
+  AND j.metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
+  AND j.step_key IS NOT NULL
+  AND j.step_key <> '__flow__'
+  AND j.metadata ? 'flow_id'
+"""
+
+EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL = (
+    "SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.metadata "
+    "FROM {schema}.jobs AS j WHERE "
+    + _EMIT_WAITER_PREDICATE
+    + " AND (j.metadata->>'flow_id')::uuid = $1 ORDER BY j.id LIMIT $2"
+)
+
+EMIT_BACKPRESSURE_CANDIDATES_SQL = (
+    "SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.metadata "
+    "FROM {schema}.jobs AS j WHERE "
+    + _EMIT_WAITER_PREDICATE
+    + " ORDER BY (j.metadata->>'flow_id')::uuid, j.id LIMIT $1"
+)
+
+EMIT_BACKPRESSURE_CURSOR_CANDIDATES_SQL = (
+    "SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.metadata "
+    "FROM {schema}.jobs AS j WHERE "
+    + _EMIT_WAITER_PREDICATE
+    + " AND ((j.metadata->>'flow_id')::uuid, j.id) > ($1::uuid, $2::uuid)"
+    + " ORDER BY (j.metadata->>'flow_id')::uuid, j.id LIMIT $3"
+)
+
+EMIT_BACKPRESSURE_ROOT_LOCK_SQL = """\
+SELECT status FROM {schema}.jobs WHERE id = $1 AND step_key = '__flow__' FOR UPDATE NOWAIT
+"""
+
+EMIT_BACKPRESSURE_CANDIDATE_LOCK_SQL = (
+    "SELECT j.id, j.status, j.scheduled_at, j.actor, j.queue, j.metadata "
+    "FROM {schema}.jobs AS j WHERE j.id = $1 AND " + _EMIT_WAITER_PREDICATE + " FOR UPDATE"
+)
+
+EMIT_BACKPRESSURE_WAKE_SQL = """\
+UPDATE {schema}.jobs AS j
+SET status = 'pending',
+    scheduled_at = clock_timestamp(),
+    assignment_routed = true,
+    metadata = (j.metadata - 'blocking_reason') || jsonb_build_object(
+        'wf_emit_backpressure',
+        (j.metadata->'wf_emit_backpressure') || jsonb_build_object(
+            'wakes', COALESCE(NULLIF(
+                j.metadata #>> '{wf_emit_backpressure,wakes}', ''
+            )::int, 0) + 1,
+            'last_wake_at', to_char(
+                clock_timestamp() AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+            )
+        )
+    )
+WHERE j.id = $1
+  AND EXISTS (
+      SELECT 1 FROM {schema}.jobs AS root
+      WHERE root.id = (j.metadata->>'flow_id')::uuid
+        AND root.step_key = '__flow__'
+        AND root.status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
+  )
+  AND j.status = 'scheduled'
+  AND j.scheduled_at IS NULL
+  AND j.metadata @> '{"blocking_reason":"backpressure"}'::jsonb
+  AND j.metadata @> '{"wf_deferral":{"signal":"EmitBackpressure"}}'::jsonb
+  AND j.metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
+  AND j.step_key IS NOT NULL
+  AND j.step_key <> '__flow__'
+  AND j.metadata ? 'flow_id'
+RETURNING COALESCE(
+    (SELECT ac.queue FROM {schema}.actor_config AS ac WHERE ac.actor = j.actor),
+    j.queue
+) AS effective_queue
 """
 
 
@@ -500,7 +684,7 @@ WITH history AS (
                    'attempt', l.attempt,
                    'error_class', l.error_class,
                    'error_message', l.error_message
-               ) ORDER BY l.attempt
+               ) ORDER BY l.attempt, l.claim_epoch, l.created_at, l.id
            ) AS attempts
     FROM {schema}.wf_step_ledger l
     WHERE l.flow_id = $2::uuid

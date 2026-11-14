@@ -234,6 +234,32 @@ async def audit_rows(conn: asyncpg.Connection, schema: str, target_id: str) -> l
     return [dict(r) for r in rows]
 
 
+async def row_lock_waiters(conn: asyncpg.Connection, schema: str, node_id: str) -> set[int]:
+    """Return only backends waiting for this exact row's current tuple lock.
+
+    The one scoped probe the saturation suite needs: it reads the row's
+    current lock eligibilty (ctid + xmax) and reports the ungranted
+    tuple/transactionid waiters. It writes nothing and holds no lock."""
+    location = await conn.fetchval(f'SELECT ctid::text FROM "{schema}".jobs WHERE id=$1', node_id)
+    assert isinstance(location, str)
+    page, ordinal = location.strip("()").split(",")
+    xmax_value = await conn.fetchval(f'SELECT xmax::text FROM "{schema}".jobs WHERE id=$1', node_id)
+    target_transaction: int | None = None
+    if isinstance(xmax_value, str) and xmax_value.isdigit() and int(xmax_value) != 0:
+        target_transaction = int(xmax_value)
+    records = await conn.fetch(
+        "SELECT pid FROM pg_locks WHERE NOT granted AND ("
+        "(locktype='tuple' AND relation=$1::regclass AND page=$2::int "
+        "AND tuple=$3::int AND mode='RowExclusiveLock') OR "
+        "(locktype='transactionid' AND transactionid::text::bigint=$4::bigint))",
+        f'"{schema}".jobs',
+        int(page),
+        int(ordinal),
+        target_transaction,
+    )
+    return {int(record["pid"]) for record in records}
+
+
 @pytest_asyncio.fixture
 async def wf_pool(pg_dsn: str, module_pg_schema: Any) -> AsyncIterator[asyncpg.Pool]:
     """A plain pool on the module's DSN: the march process's own client."""

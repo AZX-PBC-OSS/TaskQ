@@ -21,7 +21,7 @@ import asyncpg
 import croniter as cr
 import structlog
 
-from taskq.backend._protocol import ConnLike
+from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend._sweeps import SweepBatchSizer
 from taskq.backend.clock import SystemClock
 from taskq.backend.statemachine import ACTIVE_STATUSES
@@ -678,6 +678,25 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             batch_size=ctx.deps.settings.event_writer_batch_size,
         )
 
+    # Estate-wide parked-source recovery cursor. A full prefix that cannot fit
+    # does not starve later flow/PK-ordered waiters; a short pass resets so new
+    # parks behind the old cursor are visited on the next leader cycle.
+    wf_emit_backpressure_cursor: tuple[JobId, JobId] | None = None
+
+    async def wf_emit_backpressure_wake_call() -> int:
+        nonlocal wf_emit_backpressure_cursor
+        from taskq.workflows._emit import wake_emit_backpressure
+        from taskq.workflows.engine import render_workflow_sql
+
+        result = await wake_emit_backpressure(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            batch_size=ctx.deps.settings.event_writer_batch_size,
+            after=wf_emit_backpressure_cursor,
+        )
+        wf_emit_backpressure_cursor = result.next_cursor
+        return result.woken
+
     async def wf_outbox_retention_call() -> int:
         # delivered outbox rows retained forever — measured at 5.9k and
         # growing, monotone, no pruner. . The retention policy's own row: the
@@ -1164,6 +1183,18 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             drain=False,
             dbg_tick=_dbg_tick("wf_hold_stamp_reconcile_tick"),
+        ),
+        _SweepSpec(
+            # One index-backed estate pass owns crash/missed-seat recovery.
+            # Its closure cursor drains fairly across calls, so a still-full
+            # prefix cannot pin every future pass to the same blocked rows.
+            name="wf_emit_backpressure_wake",
+            call=wf_emit_backpressure_wake_call,
+            warn_event="sweep-wf-emit-backpressure-wake-failed",
+            warn_kind="sweep_wf_emit_backpressure_wake_failed",
+            gated_on=("workflow_sweeps_capable",),
+            drain=False,
+            dbg_tick=_dbg_tick("wf_emit_backpressure_wake_tick"),
         ),
         _SweepSpec(
             # wf_outbox_retention — the delivered outbox's TTL: delivered rows are narration; past the period

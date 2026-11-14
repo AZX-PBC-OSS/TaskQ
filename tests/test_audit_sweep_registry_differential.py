@@ -658,6 +658,10 @@ _WF_ARMS = (
     # TTL (delivered rows are narration, never forever). Pure appends,
     # same as the arms before them.
     "wf_hold_stamp_reconcile",
+    # the #718 wake arm: the parked sources' post-commit fine-wake
+    # promotion (the wake-critical section's own sweep arm). Pure append,
+    # same as every arm before it.
+    "wf_emit_backpressure_wake",
     "wf_outbox_retention",
     "wf_loop_budget",
     "wf_phantom_reap",

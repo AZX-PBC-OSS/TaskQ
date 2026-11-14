@@ -360,26 +360,22 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "loudness fix rides the fire's own transaction)",
     ),
     "LEDGER_CLAIM_SQL": (
-        "ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt)",
+        "ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt, claim_epoch)",
         "INSERT ... ON CONFLICT DO UPDATE: the write set is the ONE arbiter "
-        "row the conflict target keys (the full ledger arbiter + attempt) — "
-        "keyed, one row per claim",
-    ),
-    "LEDGER_TERMINAL_SQL": (
-        "COALESCE(map_index, -1) = COALESCE($9::smallint, -1)",
-        "keyed single ledger row (the full arbiter tuple: flow + step + attempt + map_index)",
+        "row the conflict target keys (the full ledger arbiter + attempt + "
+        "claim epoch) — keyed, one row per claim",
     ),
     "LEDGER_TERMINAL_BY_ID_SQL": (
         "WHERE id = $1",
-        "keyed single ledger row (the claim's own RETURNING id)",
-    ),
-    "LEDGER_FENCE_ATTEMPT_SQL": (
-        "COALESCE(map_index, -1) = COALESCE($5::smallint, -1)",
-        "keyed single ledger row (the full arbiter tuple), status-guarded 'running'",
+        "keyed single ledger row (the claim's own RETURNING id + its own "
+        "claim instant — the exact claim identity; no four-expression "
+        "fallback statement exists)",
     ),
     "LEDGER_FENCE_BY_ID_SQL": (
         "WHERE id = $1",
-        "keyed single ledger row (the claim's own RETURNING id), status-guarded 'running'",
+        "keyed single ledger row (the claim's own RETURNING id + its own "
+        "claim instant — the exact claim identity), status-guarded "
+        "nonterminal",
     ),
     "OUTBOX_DRAIN_FLIP_SQL": (
         "WHERE id = ANY($1::uuid[])",
@@ -389,13 +385,12 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "exactly-once drain is pin 20's)",
     ),
     "PHANTOM_REAP_SQL": (
-        "WHERE l.status = 'running'",
-        "the phantom reaper: its write set is 'running' ledger rows whose "
-        "FLOW is terminal — by definition rows whose worker died mid-attempt "
-        "(the crash window), a population bounded by crash traffic between "
-        "passes, not by the backlog; each reaped row leaves the predicate, "
-        "so a second pass returns zero (the same self-draining shape "
-        "_RECONCILE_LOST_CLAIMS_SQL_TEMPLATE registers for)",
+        "WHERE l.status IN ('running', 'awaited', 'crashed')",
+        "the phantom reaper: its write set is live-current ledger rows whose "
+        "FLOW is terminal — a worker crash, cancellation, or parked-source "
+        "terminal transition. Every fenced row leaves the predicate, so the "
+        "statement is self-draining; a later pass returns zero. Live-root "
+        "awaited rows and previously terminal ledger outcomes are untouched.",
     ),
     # ── The workflow engine's per-run writes (the failed-parent propagation..the progress reporting, the phase work):
     # every write set below is one run's own rows — the compiled graph's
@@ -463,7 +458,8 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "NODE_REPEND_SQL_TEMPLATE": (
         "WHERE j.id = params.job_id",
-        "keyed single node row (the ladder's repend CAS)",
+        "keyed single node row guarded by worker, attempt and claim epoch; "
+        "ledger identity is claim-owned and cancellation/exhaustion are explicit verdicts",
     ),
     "NODE_DEADLINE_REPEND_SQL": (
         "WHERE j.id = (SELECT job_id FROM params)",
@@ -582,6 +578,24 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "claim_epoch = $5",
         "keyed single source row (the emit's cursor checkpoint — the "
         "full claim fence: worker, attempt, epoch)",
+    ),
+    # #718: capacity control and recovery are one PK row at a time; only the
+    # separate candidate-selection statements are estate-wide and batched.
+    "EMIT_BACKPRESSURE_PARK_SQL": (
+        "AND j.attempt = (SELECT physical_attempt FROM params)",
+        "one current claimed job and its exact ledger id/claim instant",
+    ),
+    "EMIT_BACKPRESSURE_WAKE_SQL": (
+        "WHERE j.id = $1",
+        "one live parked job PK, refenced by a nonterminal root",
+    ),
+    "EMIT_BACKPRESSURE_CANDIDATE_LOCK_SQL": (
+        "WHERE j.id = $1",
+        "one parked-row PK lock before validating/interpreting its descriptor",
+    ),
+    "EMIT_BACKPRESSURE_ROOT_LOCK_SQL": (
+        "WHERE id = $1",
+        "one nonterminal-root PK lock per ordered flow before admission",
     ),
 }
 

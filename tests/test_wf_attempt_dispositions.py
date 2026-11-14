@@ -58,6 +58,7 @@ async def _claimed(
         "work",
         None,
         claimed_attempt,
+        claimed_epoch,
     )
     assert ledger is not None and ledger["updated_at"] is not None
     claim = AttemptClaim(
@@ -131,6 +132,7 @@ class _DispositionInterposedConn:
                 step_key=claim.step_key,
                 map_index=claim.map_index,
                 attempt=claim.attempt,
+                claim_epoch=claim.claim_epoch,
             )
             self.reminted_at = latest.claimed_at
         return record
@@ -227,7 +229,7 @@ async def test_body_retry_atomically_updates_row_and_current_ledger(
 
     # An actual second claim re-mints this worker's attempt. A different
     # logical attempt cannot accidentally overwrite the first ledger row.
-    next_attempt, _next_epoch = await _claim_second_attempt(wf_conn, wf_schema, claim)
+    next_attempt, next_epoch = await _claim_second_attempt(wf_conn, wf_schema, claim)
     assert next_attempt == 2
     new_ledger = await wf_conn.fetchrow(
         wf_sql.ledger_claim,
@@ -237,6 +239,7 @@ async def test_body_retry_atomically_updates_row_and_current_ledger(
         "work",
         None,
         next_attempt,
+        next_epoch,
     )
     assert new_ledger is not None and new_ledger["id"] != claim.ledger_id
     assert new_ledger["status"] == "running"
@@ -446,6 +449,7 @@ async def test_a_stale_claim_after_ledger_remint_is_a_safe_noop(
         step_key=claim.step_key,
         map_index=claim.map_index,
         attempt=claim.attempt,
+        claim_epoch=claim.claim_epoch,
     )
     assert latest.ledger_id == claim.ledger_id
     assert latest.claimed_at is not None
@@ -686,3 +690,27 @@ async def test_disposition_requires_a_real_claim_identity(
         )
     row, ledger = await _row_and_ledger(wf_conn, wf_schema, claim)
     assert (row["status"], ledger["status"]) == ("running", "running")
+
+
+@pytest.mark.integration
+async def test_fenced_awaited_ledger_has_no_running_terminal_residue(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
+) -> None:
+    _flow_id, _node_id, claim = await _claimed(wf_conn, wf_schema, wf_sql)
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".wf_step_ledger SET status = $2 WHERE id = $1',
+        claim.ledger_id,
+        "awaited",
+    )
+    fenced = await wf_conn.fetchval(
+        wf_sql.ledger_fence_by_id,
+        claim.ledger_id,
+        "OldParkedClaim",
+        claim.ledger_claimed_at,
+    )
+    assert fenced == claim.ledger_id
+    status = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".wf_step_ledger WHERE id = $1',
+        claim.ledger_id,
+    )
+    assert status == "fenced"

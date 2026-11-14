@@ -1085,6 +1085,7 @@ async def test_current_awaited_claim_keeps_deadline_row_and_ledger_atomic(
         step_key="solo",
         map_index=None,
         attempt=int(seeded["attempt"]),
+        claim_epoch=int(seeded["claim_epoch"]),
     )
     await mark_awaited(clean_pg_conn, schema, claim.ledger_id)
     node = compiled.nodes.get("solo")
@@ -1158,6 +1159,7 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
         step_key="solo",
         map_index=None,
         attempt=int(seeded["attempt"]),
+        claim_epoch=int(seeded["claim_epoch"]),
     )
     assert w1_claim.claimed_at is not None
     # the row re-pends (the reclaim's shape).
@@ -1172,7 +1174,12 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
         render_sql(NODE_CLAIM_SQL_TEMPLATE, schema), node_id, w2
     )
     assert w2_attempt is not None, "W2's re-claim must grant the work"
-    # W2's ledger claim (the live claimant's own row).
+    # W2's ledger claim (the live claimant's own row, the re-claim's
+    # own granted epoch — the node row's current epoch).
+    w2_seeded = await clean_pg_conn.fetchrow(
+        f'SELECT claim_epoch FROM "{schema}".jobs WHERE id = $1', node_id
+    )
+    assert w2_seeded is not None
     await claim_step_ledger(
         clean_pg_conn,
         runner.wsql,
@@ -1181,6 +1188,7 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
         step_key="solo",
         map_index=None,
         attempt=int(w2_attempt),
+        claim_epoch=int(w2_seeded["claim_epoch"]),
     )
 
     # W1'S timer fires (the zombie's deadline disposition, its own binds).
@@ -1267,6 +1275,7 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
         step_key="solo",
         map_index=None,
         attempt=int(seeded["attempt"]),
+        claim_epoch=int(seeded["claim_epoch"]),
     )
     assert w1_claim.claimed_at is not None
     winner_claim = await claim_step_ledger(
@@ -1277,6 +1286,7 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
         step_key="solo",
         map_index=None,
         attempt=int(seeded["attempt"]),
+        claim_epoch=int(seeded["claim_epoch"]),
     )
     assert winner_claim.ledger_id == w1_claim.ledger_id, (
         "the re-mint re-uses the SAME arbiter row — the winner is LIVE on the zombie's row"

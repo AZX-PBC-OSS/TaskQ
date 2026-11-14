@@ -279,6 +279,7 @@ async def _routed_node(
             step_key=step_key,
             map_index=None,
             attempt=attempt,
+            claim_epoch=int(_epoch),
         )
     runner = FlowRunner.__new__(FlowRunner)
     runner.pool = wf_pool  # type: ignore[attr-defined]  # Why: the pin drives the ladder's own route (the mixin's host fields), not the driver loop.

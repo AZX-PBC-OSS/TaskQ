@@ -536,6 +536,7 @@ async def test_emit_map_index_discriminates_siblings(
             step_key="screen",
             map_index=7,
             attempt=1,
+            claim_epoch=0,
         )
         c8 = await claim_step_ledger(
             conn,
@@ -545,6 +546,7 @@ async def test_emit_map_index_discriminates_siblings(
             step_key="screen",
             map_index=8,
             attempt=1,
+            claim_epoch=0,
         )
     assert c7.ledger_id != c8.ledger_id, "the siblings share a ledger claim — the collision"
 

@@ -213,6 +213,7 @@ async def claim_step_ledger(
     step_key: str,
     map_index: int | None,
     attempt: int,
+    claim_epoch: int,
 ) -> LedgerClaim:
     """The step-ledger claim: one round trip (P1 FINAL's idempotent-claim
     shape — ``INSERT … ON CONFLICT DO UPDATE … RETURNING``, never
@@ -222,7 +223,12 @@ async def claim_step_ledger(
     ``running`` ledger row are one statement — a two-transaction variant
     leaves a cancel in the window fencing NOTHING (the attempt isn't on the
     record yet), the row appears POST-CANCEL as a phantom ``running``.
-    """
+
+    ``claim_epoch`` is the executing claim's fence epoch: it joins the
+    arbiter so a refunded-and-reminted physical attempt (the capacity
+    park's 1 -> 0 -> 1 cycle) records its own ledger row instead of
+    overwriting the parked attempt's 'awaited' record. The in-process
+    driver's own claim stamps 0."""
     row_id = new_uuid()
     rec = await conn.fetchrow(
         wsql.ledger_claim,
@@ -232,6 +238,7 @@ async def claim_step_ledger(
         step_key,
         map_index,
         attempt,
+        claim_epoch,
     )
     assert rec is not None  # ON CONFLICT DO UPDATE always returns the row
     return LedgerClaim(

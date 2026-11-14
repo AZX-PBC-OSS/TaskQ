@@ -69,6 +69,7 @@ from taskq.workflows._capability import (
     postgres_capability_error,
     validate_required_worker_schema,
 )
+from taskq.workflows._emit import EmitBackpressure
 from taskq.workflows._obs import (
     finish_step_span,
     record_step_deferred,
@@ -327,6 +328,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # it from the row; this echo only spares the dev loop a per-node read.
         # ``None`` = no override declared.
         self._run_priority: int | None = None
+        # Existing compiled declarations gate every inline capacity wake. A
+        # source-free or explicitly unbounded workflow performs no per-terminal
+        # waiter SQL; the durable partial-index sweep remains authoritative.
+        self._wake_backpressure = getattr(compiled, "max_in_flight", None) is not None and any(
+            getattr(node, "kind", None) == "chain_source" for node in compiled.nodes.values()
+        )
         # the worker settings' value the fleet door threads
         # (``_worker_execution.execute_flow_job`` ←
         # ``run._dispatch_flow_job``'s deps.settings). The row's own stamp
@@ -808,6 +815,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # the dev loop's timer arm mirrors the leader's — the due set empties
         # per tick.
         await sweep_due_timers(self.pool, schema=self.schema, drain=True)
+        if self._wake_backpressure:
+            from taskq.workflows._emit import wake_emit_backpressure_safely
+
+            # Direct tick mirrors the bounded leader arm through the one
+            # primitive. It self-consumes only exact live parked markers.
+            await wake_emit_backpressure_safely(self.pool, self.wsql, flow_id=flow_id)
         return ran
 
     async def _drive_descendants(self, flow_id: JobId, *, execute: bool) -> bool:
@@ -932,6 +945,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     step_key=row["step_key"],
                     map_index=row["map_index"],
                     attempt=int(claimed_row["attempt"]),
+                    claim_epoch=int(claimed_row["claim_epoch"]),
                 )
                 ledger_id = claim.ledger_id
                 ledger_claimed_at = claim.claimed_at
@@ -1001,6 +1015,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     step_key=row["step_key"],
                     map_index=row["map_index"],
                     attempt=int(claimed_row["attempt"]),
+                    claim_epoch=int(claimed_row["claim_epoch"]),
                 )
                 ledger_id = claim.ledger_id
                 ledger_claimed_at = claim.claimed_at
@@ -1069,6 +1084,35 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         assert isinstance(queue, str)  # TerminalEffect declaration validated
         return queue
 
+    async def _exhaust_loop(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        error_class: str | None,
+        message: str | None,
+        *,
+        worker_id: JobId,
+        attempt: int,
+        claim_epoch: int,
+    ) -> None:
+        """P2 post-commit seat around the reviewed P0 loop terminal kernel."""
+        await LoopOps._exhaust_loop(
+            self,
+            flow_id,
+            row,
+            error_class,
+            message,
+            worker_id=worker_id,
+            attempt=attempt,
+            claim_epoch=claim_epoch,
+        )
+        if self._wake_backpressure:
+            from taskq.workflows._emit import wake_emit_backpressure_safely
+
+            # The delegated function's transaction/pool scope has exited. A
+            # failed/stale loop CAS leaves the exact marker authoritative.
+            await wake_emit_backpressure_safely(self.pool, self.wsql, flow_id=flow_id)
+
     async def run_fleet_claimed_step(
         self,
         flow_id: JobId,
@@ -1132,6 +1176,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 step_key=node_key,
                 map_index=row["map_index"],
                 attempt=attempt,
+                claim_epoch=claim_epoch,
             )
         return await self._execute_claimed(
             flow_id,
@@ -1215,6 +1260,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     run_priority=run_priority,
                     ledger_claimed_at=ledger_claimed_at,
                 )
+                if self._wake_backpressure and outcome in {
+                    "succeeded",
+                    "skipped",
+                    "loop",
+                    "laddered",
+                    "cancelled",
+                }:
+                    from taskq.workflows._emit import wake_emit_backpressure_safely
+
+                    # Common direct/fleet completion seat, including chain
+                    # terminals. Wake only removes fitted live parked rows;
+                    # durable markers remain when a nonterminal retry is full.
+                    await wake_emit_backpressure_safely(self.pool, self.wsql, flow_id=flow_id)
             except Exception:
                 # safe_start_span's fallback recorded the scrubbed error on its
                 # way out; the outcome attribute names the ledger's own
@@ -1482,7 +1540,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # skipped-with-the-record.
                     exit_value = cast("Exit[object]", outcome_value)  # pyright: ignore[reportUnknownArgumentType]  # Why: the body's object-typed return — the isinstance guard is the runtime shape check; the sentinel's payload is the walk's boundary.
                     await self._finalize_exit(
-                        flow_id, row, attempt, node, exit_value, claim_epoch=claim_epoch
+                        flow_id,
+                        row,
+                        attempt,
+                        node,
+                        exit_value,
+                        claim_epoch=claim_epoch,
+                        ledger_id=ledger_id,
+                        ledger_claimed_at=ledger_claimed_at,
                     )
                     return "succeeded"
                 if node is not None and node.map_arms is not None:
@@ -1519,6 +1584,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                             map_index=row["map_index"],
                             ledger_id=ledger_id,
                             ledger_claimed_at=ledger_claimed_at,
+                            wake_backpressure=self._wake_backpressure,
                         )
                         return "succeeded"
                 result = encode_result(outcome_value)
@@ -1538,6 +1604,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             )
             record_step_held(trace.get_current_span(), held.hold_id, held.signal_names)
             return "held"
+        except EmitBackpressure as exc:
+            # Ordinary whole-page capacity is control flow, never an error
+            # ladder. The dedicated park commits before the one fresh recheck;
+            # cancellation still uses the existing claim-fenced terminal door.
+            await emitter.aclose()
+            return await self._defer_step(
+                flow_id,
+                row,
+                attempt,
+                ledger_id,
+                exc,
+                claim_epoch=claim_epoch,
+                ledger_claimed_at=ledger_claimed_at,
+            )
         except (Snooze, RetryAfter) as exc:
             # the body's typed control-flow signals re-schedule the node at the
             # delay — the attempt refunded (never burned: a deferral did not
@@ -2072,6 +2152,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             map_index=row["map_index"],
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            wake_backpressure=self._wake_backpressure,
         )
         # the finalize seam's additive write, after the two-tx finalize
         # returned (the projection is never inside the finalize's transactions
@@ -2687,6 +2768,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             map_index=row["map_index"],
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            wake_backpressure=self._wake_backpressure,
         )
         await self._project_auto(
             flow_id,
