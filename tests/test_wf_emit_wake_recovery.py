@@ -1240,6 +1240,51 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     total_jobs = sum(counts.values())
     assert total_jobs >= active + history + coexisting, counts
 
+    # A legal parked population across the coexisting flows (the exact park
+    # representation, storage-legal per 01.00.41_04): the generic
+    # scheduled-NULL partial index's matching set IS the parked population,
+    # so at this shape the dedicated waiter index — whose leading key is the
+    # flow id — is strictly the best access path for the flow-target probe,
+    # and the planner's choice is forced by cost, never by a hint.
+    parked_population = 200
+    parked_rows: list[tuple[object, ...]] = []
+    for index in range(parked_population):
+        other_flow = other_roots[index % len(other_roots)]
+        parked_rows.append(
+            (
+                new_uuid(),
+                json.dumps(
+                    {
+                        "flow_id": str(other_flow),
+                        "blocking_reason": "backpressure",
+                        "wf_deferral": {
+                            "signal": "EmitBackpressure",
+                            "consume_budget": False,
+                            "attempt": 0,
+                        },
+                        "wf_emit_backpressure": {
+                            "version": 1,
+                            "page_width": 2,
+                            "bound": 2,
+                            "outstanding": 2,
+                            "deferrals": 1,
+                            "wakes": 0,
+                        },
+                    }
+                ),
+                str(other_flow),
+            )
+        )
+    await wf_conn.executemany(
+        f'INSERT INTO "{wf_schema}".jobs '
+        "(id, actor, queue, payload, status, max_attempts, retry_kind, step_key, "
+        "metadata, scheduled_at, fairness_key, attempt) "
+        "VALUES ($1, 'wf-node', 'default', '{}', 'scheduled', 3, 'transient', 'source', "
+        "$2::jsonb, NULL, $3, 0)",
+        parked_rows,
+    )
+    await wf_conn.execute(f'ANALYZE "{wf_schema}".jobs')
+
     query = render_sql(EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL, wf_schema)
     candidate_rows = await wf_conn.fetch(query, cap_flow, 1000)
     assert [row["id"] for row in candidate_rows] == [cap_claim.job_id]
@@ -1248,36 +1293,58 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     )
     document = _plan_document(raw_plan)
     nodes = _plan_nodes(document)
-    # THE POPULATED LAW: the estate probe is INDEX-BACKED at population —
-    # never a Seq Scan, exactly one matching row, and the waiter predicate's
-    # own legs (the flow-id index condition + the marker/schedule filters)
-    # all evaluated by the scan. Which partial index the planner selects is
-    # not the contract: 01.00.41_04's storage domain makes `scheduled` with
-    # a NULL due time and the exact park marker the SAME row set, so the
-    # initial `jobs_scheduled_wake_idx` and the dedicated waiter index are
-    # equally selective matching sets and either is a correct access path.
-    # The failure modes this pin guards — a table scan over the full jobs
-    # estate, a wrong row count, or an unevaluated marker leg — still fail.
-    scan_nodes = [node for node in nodes if str(node.get("Node Type", "")).startswith("Index")]
-    seq_nodes = [node for node in nodes if node.get("Node Type") == "Seq Scan"]
-    assert seq_nodes == [], document
-    assert len(scan_nodes) == 1, document
-    waiter = scan_nodes[0]
+    # THE POPULATED LAW: the estate probe runs on the DEDICATED waiter
+    # partial index — its leading key is the flow id, so the flow-target
+    # probe reads ONLY its own flow's waiters out of a populated parked
+    # estate (200 parked rows across the coexisting flows + the target's
+    # one). A plan that falls back to the generic scheduled-NULL index
+    # scans the whole parked population per probe — the degradation this
+    # pin exists to red.
+    waiter_nodes = [
+        node for node in nodes if node.get("Index Name") == "jobs_wf_emit_backpressure_waiter_idx"
+    ]
+    print(
+        "EXPLAIN ANALYZE populated waiter before index assertion: "
+        + json.dumps(document, default=str, sort_keys=True)
+    )
+    assert len(waiter_nodes) == 1, document
+    waiter = waiter_nodes[0]
     assert waiter.get("Relation Name") == "jobs" and waiter.get("Alias") == "j"
     assert waiter.get("Node Type") in {"Index Scan", "Index Only Scan"}
     assert str(waiter["Scan Direction"]) == "Forward"
     assert waiter.get("Actual Rows") == 1
-    filter_text = str(waiter.get("Filter") or "")
-    condition = str(waiter.get("Index Cond") or "")
-    marker_filter = filter_text + condition
-    normalized = "".join(marker_filter.split())
-    assert "flow_id" in normalized, marker_filter
-    assert "blocking_reason" in normalized, (
-        f"the marker legs must be evaluated by the probe's scan, got: {marker_filter}"
-    )
+    condition = waiter.get("Index Cond")
+    assert isinstance(condition, str), waiter
+    normalized_condition = "".join(condition.split())
+    assert "metadata->>'flow_id'::text" in normalized_condition, condition
+    assert f"'{cap_flow}'::uuid" in normalized_condition, condition
+    seq_nodes = [node for node in nodes if node.get("Node Type") == "Seq Scan"]
+    assert seq_nodes == [], document
     print(
         "EXPLAIN ANALYZE populated waiter before index assertion: "
         + json.dumps(document, default=str, sort_keys=True)
+    )
+    # THE ASSERTION IS LOAD-BEARING (the red-when-absent direction): with the
+    # dedicated waiter index dropped, the same probe's plan no longer shows
+    # it — this exact pin would red.
+    await wf_conn.execute(f'DROP INDEX "{wf_schema}".jobs_wf_emit_backpressure_waiter_idx')
+    degraded = _plan_document(
+        await wf_conn.fetchval(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", cap_flow, 1000
+        )
+    )
+    degraded_nodes = _plan_nodes(degraded)
+    assert (
+        [
+            node
+            for node in degraded_nodes
+            if node.get("Index Name") == "jobs_wf_emit_backpressure_waiter_idx"
+        ]
+        == []
+    ), degraded_nodes
+    print(
+        "EXPLAIN ANALYZE populated waiter WITHOUT the index (the red direction): "
+        + json.dumps(degraded, default=str, sort_keys=True)
     )
     execution_ms = _nonnegative_metric(document[0], "Execution Time")
     planning_ms = _nonnegative_metric(document[0], "Planning Time")
