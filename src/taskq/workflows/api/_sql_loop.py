@@ -267,7 +267,7 @@ SELECT id, flow_id FROM loop_row
 LOOP_BUDGET_SWEEP_SQL = """\
 WITH loops AS (
     SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.step_key,
-           j.locked_by_worker, j.attempt, j.claim_epoch,
+           j.locked_by_worker, j.attempt, j.claim_epoch, j.map_index,
            (j.metadata->>'iteration')::int AS iteration,
            (j.metadata->>'max_iterations')::int AS max_iterations,
            root.metadata->>'workflow' AS workflow_name
@@ -290,7 +290,7 @@ WITH loops AS (
     FOR UPDATE OF j SKIP LOCKED
 )
 SELECT l.id, l.flow_id, l.step_key, l.locked_by_worker, l.attempt, l.claim_epoch,
-       l.iteration, l.max_iterations, l.workflow_name
+       l.map_index, l.iteration, l.max_iterations, l.workflow_name
 FROM loops l
 """
 
