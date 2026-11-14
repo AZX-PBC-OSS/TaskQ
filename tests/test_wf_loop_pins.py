@@ -1095,6 +1095,7 @@ async def test_cap_exhausted_loop_writes_its_own_failed_ledger_terminal(
     the loop node's OWN ledger terminal 'failed' with the exhaust's named
     class IN THE SAME STATEMENT — never a 'running' row the phantom reaper
     later fences into a lie. The reaper must leave the recorded terminal."""
+
     async def refining_body(ctx: StepContext, carry: Counter) -> object:
         return Refine(feedback=Counter(acc=carry.acc + 1))
 
@@ -1105,7 +1106,7 @@ async def test_cap_exhausted_loop_writes_its_own_failed_ledger_terminal(
 
     loop_row = await wf_conn.fetchrow(
         f"SELECT status::text AS status, error_class, attempt::int AS attempt, "
-        f"claim_epoch::bigint AS claim_epoch FROM \"{wf_schema}\".jobs "
+        f'claim_epoch::bigint AS claim_epoch FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'counter'",
         flow_id,
     )
@@ -1115,7 +1116,7 @@ async def test_cap_exhausted_loop_writes_its_own_failed_ledger_terminal(
     # at the loop's exact claim identity — in the same commit as the job row.
     ledger = await wf_conn.fetch(
         f"SELECT id, attempt::int AS attempt, claim_epoch::bigint AS claim_epoch, "
-        f"status::text AS status, error_class FROM \"{wf_schema}\".wf_step_ledger "
+        f'status::text AS status, error_class FROM "{wf_schema}".wf_step_ledger '
         "WHERE flow_id = $1 AND step_key = $2 "
         "ORDER BY attempt, claim_epoch, created_at, id",
         flow_id,

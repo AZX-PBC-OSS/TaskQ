@@ -289,7 +289,6 @@ def test_the_documented_backpressure_control_is_importable_at_its_documented_pat
     documented root path, present in the package's own ``__all__`` (a
     documented type cannot vanish from the surface without a red pin)."""
     import taskq.workflows as workflows_surface
-
     from taskq.workflows import EmitBackpressure
 
     assert workflows_surface.EmitBackpressure is EmitBackpressure
