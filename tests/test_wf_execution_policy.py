@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
+import time
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Literal, cast
@@ -108,7 +109,20 @@ async def _drive(
 
     runner = FlowRunner(app.get(name), pool, schema)
     claim = await runner.create_flow()
-    assert await runner.drive(claim.flow_id, tick=0.001, max_ticks=1000) == "terminal"
+    # The deferral's own floor is 1s of DB clock; a bare tick budget races
+    # it (1000 × 1ms ≈ the floor itself — the run died at max_ticks before
+    # the due instant's promotion sweep re-armed it). The wait is the
+    # TERMINAL FACT: drive repeatedly within a bounded wall-clock deadline
+    # — the deferral comes due, the sweep re-arms the run, the next drive
+    # finishes it — never a tick count that can lose the race to the clock.
+    deadline = time.monotonic() + 30.0
+    verdict = "max_ticks"
+    while time.monotonic() < deadline and verdict == "max_ticks":
+        verdict = await runner.drive(claim.flow_id, tick=0.001, max_ticks=1000)
+    assert verdict == "terminal", (
+        f"the policy run did not reach its terminal fact within the bounded "
+        f"deadline (the drive's verdict: {verdict})"
+    )
     rows = await pool.fetch(
         f'SELECT id, step_key, status::text AS status, error_class, error_message FROM "{schema}".jobs '  # noqa: S608 — validated fixture schema
         "WHERE id = $1 OR (metadata->>'flow_id')::uuid = $1",
