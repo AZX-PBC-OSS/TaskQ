@@ -1951,6 +1951,7 @@ async def test_pre_epoch_schema_refuses_the_normal_ledger_claim_fail_closed(
     only protection."""
     from taskq.migrate import apply_pending
     from taskq.workflows.engine import render_workflow_sql
+    from taskq.workflows.ledger import claim_step_ledger
 
     schema = f"bp_pre42_{new_uuid().hex}".lower()
     conn = await asyncpg.connect(pg_dsn)
