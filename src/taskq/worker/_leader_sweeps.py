@@ -679,9 +679,10 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     # Estate-wide parked-source recovery state: the FAIR cursor (the wrap law)
-    # alternates forward keyset strides with from-start revisits, so a parked
-    # row whose fit arrives after the cursor passed it is re-examined at
-    # least every other pass — a short pass still resets by itself.
+    # alternates a bounded forward keyset stride with a from-start WRAP pass
+    # that examines the whole parked population, so no blocked prefix — however
+    # long — can starve a fitted waiter behind it; a short stride pass still
+    # resets by itself.
     from taskq.workflows._emit import EstateWakeCursor
 
     wf_emit_backpressure_state = EstateWakeCursor()
@@ -690,11 +691,13 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         from taskq.workflows._emit import wake_emit_backpressure
         from taskq.workflows.engine import render_workflow_sql
 
-        after = wf_emit_backpressure_state.next_after()
+        after, batch = wf_emit_backpressure_state.next_pass(
+            ctx.deps.settings.event_writer_batch_size
+        )
         result = await wake_emit_backpressure(
             ctx.deps.dispatcher_pool,
             render_workflow_sql(ctx.deps.settings.schema_name),
-            batch_size=ctx.deps.settings.event_writer_batch_size,
+            batch_size=batch,
             after=after,
         )
         wf_emit_backpressure_state.observe(result)

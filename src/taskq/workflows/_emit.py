@@ -234,33 +234,50 @@ class EstateWakeCursor:
     A pure keyset cursor advances monotonically and never revisits a
     row it passed over: under continuous arrivals every pass is full,
     the cursor never resets on its own, and a parked row whose fit
-    arrives AFTER the cursor passed it starves forever. The fair
-    cursor alternates each estate pass between a forward keyset stride
-    (progress through a blocked prefix) and a from-start revisit (the
-    wrap), so every parked row is re-examined at least every other
-    pass and a row whose fit arrives at any time wakes within a
-    bounded number of passes. The leader's recovery arm owns one of
-    these; a short/empty pass resets by itself (the primitive's own
-    next_cursor is None) and needs no wrap."""
+    arrives AFTER the cursor passed it starves forever. Merely
+    alternating the pass START between the cursor and the beginning is
+    not fair either: a blocked prefix at least as wide as the batch
+    re-fills every from-start pass's window, and a fitted waiter
+    behind it is never examined.
+
+    The fair cursor alternates each pass between a FORWARD STRIDE (a
+    keyset batch from the cursor — bounded progress through a blocked
+    prefix) and a WRAP (a from-start pass whose limit is the WHOLE
+    parked population, capped by ``wrap_limit``): every parked row is
+    examined at least once per two-pass cycle REGARDLESS of how long
+    the blocked prefix is, so a row whose fit arrives at any time wakes
+    within two estate passes. The wrap never advances the stride
+    cursor (it re-examines everything next cycle); a short stride pass
+    (the estate's tail) resets the stride to the beginning by itself.
+    The leader's recovery arm owns one of these."""
 
     cursor: tuple[JobId, JobId] | None = None
-    _revisit_next: bool = False
+    #: The wrap pass's own bound: the parked population's cap (the
+    #: settings' own documented event-writer batch ceiling).
+    wrap_limit: int = 10_000
+    _next_is_wrap: bool = False
+    _issued_wrap: bool = False
 
-    def next_after(self) -> tuple[JobId, JobId] | None:
-        """The next pass's ``after`` argument: advance or wrap."""
-        if self.cursor is None:
-            return None
-        if self._revisit_next:
-            self._revisit_next = False
-            return None
-        self._revisit_next = True
-        return self.cursor
+    def next_pass(self, batch_size: int) -> tuple[tuple[JobId, JobId] | None, int]:
+        """The next pass's ``(after, batch_size)``: a forward keyset stride
+        at the caller's batch, then a from-start wrap at the full
+        population bound."""
+        if self._next_is_wrap:
+            self._next_is_wrap = False
+            self._issued_wrap = True
+            return None, max(batch_size, self.wrap_limit)
+        self._issued_wrap = False
+        self._next_is_wrap = True
+        return self.cursor, batch_size
 
     def observe(self, result: EmitWakeResult) -> None:
-        """Fold one pass's result; a short/empty pass resets by itself."""
+        """Fold one pass's result. Only a STRIDE pass moves the cursor (a
+        wrap re-examines everything next cycle and must not skip the tail
+        it wrapped over); a short stride pass (next_cursor None — the
+        estate's tail) restarts the stride from the beginning by itself."""
+        if self._issued_wrap:
+            return
         self.cursor = result.next_cursor
-        if result.next_cursor is None:
-            self._revisit_next = False
 
 
 class _AdmissionLostError(Exception):
