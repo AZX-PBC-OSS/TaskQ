@@ -91,6 +91,7 @@ async def _drive(
     schema: str,
     *,
     source_policy: ExecutionPolicy | None = None,
+    expect_deferral: bool = False,
 ) -> tuple[JobId, JobId, JobId]:
     suffix = new_uuid().hex
     app = WorkflowApp()
@@ -132,14 +133,16 @@ async def _drive(
     assert await _root_status() in ("succeeded", "failed", "cancelled"), (
         "the policy run's terminal fact never arrived within the bounded failure timeout"
     )
-    # The deferral was actually HONOURED: the run's wall includes the floor
-    # (a run that finished before the 1s floor would have skipped the
-    # deferral's own wait — the floor is the fact this policy pins).
-    elapsed = time.monotonic() - started
-    assert elapsed >= 1.0, (
-        f"the deferral floor must be honoured (the run finished in {elapsed:.2f}s — "
-        "before the 1s floor)"
-    )
+    if expect_deferral:
+        # THE DEFERRING CALLER'S OWN PIN: the run's wall includes the 1s
+        # floor (a run that finished before it skipped the deferral's own
+        # wait — the floor is the fact that test pins). Non-deferring
+        # flows finish in sub-second service and assert nothing here.
+        elapsed = time.monotonic() - started
+        assert elapsed >= 1.0, (
+            f"the deferral floor must be honoured (the run finished in {elapsed:.2f}s — "
+            "before the 1s floor)"
+        )
     rows = await pool.fetch(
         f'SELECT id, step_key, status::text AS status, error_class, error_message FROM "{schema}".jobs '  # noqa: S608 — validated fixture schema
         "WHERE id = $1 OR (metadata->>'flow_id')::uuid = $1",
@@ -465,6 +468,7 @@ async def test_non_consuming_counter_is_bounded_and_never_consumes_attempt_budge
             ),
             wf_pool,
             wf_schema,
+            expect_deferral=True,
         )
     except Exception as exc:
         raise AssertionError(
