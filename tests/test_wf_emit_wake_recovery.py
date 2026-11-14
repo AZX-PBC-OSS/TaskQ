@@ -2163,7 +2163,7 @@ async def test_the_wake_pass_pages_the_whole_population_under_the_lock_budget(
     at the default 64/transaction)."""
     population = 10_000
     rows: list[tuple[object, ...]] = []
-    for index in range(population):
+    for _index in range(population):
         flow_id = new_uuid()
         rows.append(
             (
@@ -2181,7 +2181,7 @@ async def test_the_wake_pass_pages_the_whole_population_under_the_lock_budget(
         rows,
     )
     parked_rows: list[tuple[object, ...]] = []
-    for index, (flow_id, _meta, _fair) in enumerate(rows):
+    for _index, (flow_id, _meta, _fair) in enumerate(rows):
         parked_rows.append(
             (
                 new_uuid(),

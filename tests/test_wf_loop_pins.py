@@ -1263,7 +1263,7 @@ async def test_sweep_batch_exhaustion_ledger_is_claim_exact_too(
             node_id,
             json.dumps({"kind": "loop", "iteration": 5, "max_iterations": 5}),
         )
-        worker, attempt, epoch = await claim_view(wf_conn, wf_schema, node_id)
+        _worker, attempt, epoch = await claim_view(wf_conn, wf_schema, node_id)
         await claim_step_ledger(
             wf_conn,
             runner_wsql(wf_schema),
