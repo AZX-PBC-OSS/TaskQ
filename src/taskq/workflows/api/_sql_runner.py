@@ -278,13 +278,26 @@ SELECT id, step_key, map_index, attempt, trace_id, payload, start_to_close, meta
        retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter
 FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
-  AND status IN ('pending', 'scheduled')
-  AND (scheduled_at IS NULL OR scheduled_at <= now())
-  -- NULL means a live capacity park here, not generic ordinary due work.
-  AND NOT (
+  AND (
+    status = 'pending'
+    OR (
       status = 'scheduled'
-      AND scheduled_at IS NULL
-      AND metadata @> '{"blocking_reason":"backpressure"}'::jsonb
+      -- THE CLAIM CAS'S OWN SCHEDULED SHAPE: a scheduled row is claimable
+      -- only at a real non-NULL due time that has passed — the same leg the
+      -- claim CAS evaluates (NULL fails scheduled_at <= now() and can never
+      -- be claimed). A scheduled NULL row is the capacity park's exclusive
+      -- storage domain (01.00.41_04's constraint enforces the exact marker);
+      -- it is never listed here and never spins the driver.
+      AND scheduled_at IS NOT NULL
+      AND scheduled_at <= now()
+    )
+  )
+  -- The park's marker leg mirrors the claim CAS's own exclusion: a row
+  -- still carrying the live backpressure marker is the wake's to promote,
+  -- never a claim's to take — even a stale due stamp cannot bypass the
+  -- marker's removal by the promoting wake.
+  AND NOT (
+      metadata @> '{"blocking_reason":"backpressure"}'::jsonb
       AND metadata @> '{"wf_deferral":{"signal":"EmitBackpressure"}}'::jsonb
       AND metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
   )

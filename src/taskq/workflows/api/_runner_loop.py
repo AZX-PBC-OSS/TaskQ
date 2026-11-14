@@ -526,6 +526,7 @@ class LoopOps(_LoopHost):
                     queue=node.queue,
                     claimed_at=datetime.now(UTC),
                     budget_remaining_ms=remaining,
+                    claim_epoch=claim_epoch,
                 )
                 # the carry's typed contract, at the one point a carry reaches
                 # a body: re-hydrated through the declared type's validator —
@@ -625,6 +626,8 @@ class LoopOps(_LoopHost):
                         encode_result(done_payload),
                         emitter=emitter,
                         claim_epoch=claim_epoch,
+                        ledger_id=ledger_id,
+                        ledger_claimed_at=ledger_claimed_at,
                     )
                     return
                 if not isinstance(outcome, Refine):

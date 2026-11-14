@@ -227,8 +227,9 @@ async def claim_step_ledger(
     ``claim_epoch`` is the executing claim's fence epoch: it joins the
     arbiter so a refunded-and-reminted physical attempt (the capacity
     park's 1 -> 0 -> 1 cycle) records its own ledger row instead of
-    overwriting the parked attempt's 'awaited' record. The in-process
-    driver's own claim stamps 0."""
+    overwriting the parked attempt's 'awaited' record. The dispatch
+    claim's granted epoch binds here; a synthetic caller with no
+    dispatch claim behind it stamps 0."""
     row_id = new_uuid()
     rec = await conn.fetchrow(
         wsql.ledger_claim,

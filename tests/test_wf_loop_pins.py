@@ -1021,3 +1021,69 @@ async def test_wrong_shape_body_is_named_loop_body_shape_error_never_fabricated(
     # re-threads the raw return.
     assert await runner.drive(flow_id) == "terminal"
     assert calls["n"] == 1, calls["n"]
+
+
+async def test_loop_done_success_writes_its_own_succeeded_ledger(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A normal loop completion (the body's ``Done``) writes the LOOP NODE'S
+    OWN ledger terminal ``succeeded`` at the loop's EXACT claim identity —
+    the per-claim history law's loop face. The rejected regression: the
+    Done path finalized without the claim's ledger identity, the loop's own
+    row stayed ``running`` (no four-expression fallback exists to write it),
+    and the phantom reaper later fenced it — a succeeded loop whose ledger
+    said ``fenced``. The body's ``ctx.claim_epoch`` is the loop job's own
+    granted epoch (the same pair every fence carries), never a stamped
+    zero."""
+    seen_epochs: list[int] = []
+
+    async def counting_body(ctx: StepContext, carry: Counter) -> object:
+        seen_epochs.append(ctx.claim_epoch)
+        if carry.acc >= 2:
+            return Done(payload={"acc": carry.acc})
+        return Refine(feedback=Counter(acc=carry.acc + 1))
+
+    app, name = _loop_app(counting_body, initial=Counter(acc=0))
+    runner = await _runner_of(app, name, wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id) == "terminal"
+    assert await runner.result(flow_id) == {"acc": 2}
+
+    loop_row = await wf_conn.fetchrow(
+        f"SELECT attempt::int AS attempt, claim_epoch::bigint AS claim_epoch "
+        f'FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'counter'",
+        flow_id,
+    )
+    assert loop_row is not None
+    assert loop_row["attempt"] == 1 and loop_row["claim_epoch"] == 1, dict(loop_row)
+    # the loop body's ctx carries the loop job's OWN granted epoch.
+    assert seen_epochs and seen_epochs == [1, 1, 1], seen_epochs
+
+    # THE LOOP'S OWN LEDGER ROW: exactly one, 'succeeded', at the loop's own
+    # claim identity — never 'running', never reaped into 'fenced'.
+    ledger = await wf_conn.fetch(
+        f"SELECT id, attempt::int AS attempt, claim_epoch::bigint AS claim_epoch, "
+        f"status::text AS status, error_class FROM \"{wf_schema}\".wf_step_ledger "
+        "WHERE flow_id = $1 AND step_key = $2 "
+        "ORDER BY attempt, claim_epoch, created_at, id",
+        flow_id,
+        "counter",
+    )
+    assert len(ledger) == 1, [dict(r) for r in ledger]
+    assert (ledger[0]["status"], ledger[0]["error_class"]) == ("succeeded", None), dict(
+        ledger[0]
+    )
+    assert ledger[0]["attempt"] == loop_row["attempt"]
+    assert ledger[0]["claim_epoch"] == loop_row["claim_epoch"]
+
+    # The opposite direction: the reaper must NOT fence the loop's own
+    # succeeded row (it fences only running/awaited/crashed residue).
+    from taskq.workflows._sweep import reap_phantom_ledger
+
+    await reap_phantom_ledger(wf_pool, runner.wsql)
+    after = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".wf_step_ledger WHERE id = $1',
+        ledger[0]["id"],
+    )
+    assert after == "succeeded", after
