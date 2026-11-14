@@ -1093,7 +1093,7 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
     from taskq.workflows.api._runner_defer import defer_row_law
     from taskq.workflows.engine import render_workflow_sql
     from taskq.workflows.ledger import claim_step_ledger
-    from tests._wf_fixtures import seed_flow, seed_running_node
+    from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
 
     schema = module_pg_schema.schema_name
     flow_id = await seed_flow(clean_pg_conn, schema, status="running")
@@ -1101,8 +1101,8 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
     wsql = render_workflow_sql(schema)
 
     zombie_worker = new_uuid()
-    # the zombie's claim (the row's own stamp: the claim's RETURNING
-    # instant — the discriminator the fence binds).
+    # the zombie's claim: the parked attempt's own ledger row (epoch 0 —
+    # the row's claim epoch before the park's refund).
     zombie_claim = await claim_step_ledger(
         clean_pg_conn,
         wsql,
@@ -1114,9 +1114,40 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
         claim_epoch=0,
     )
     assert zombie_claim.claimed_at is not None
-    # a later claimant re-claims the same ordinal — the arbiter re-use hands it
-    # the same ledger row, and the re-mint re-stamps the row's updated_at (the
-    # claim's own instance identity moves to the winner).
+    # THE REAL REFUND/REMINT SHAPE (the capacity park's own cycle): the park
+    # refunds the physical ordinal and preserves the epoch; the wake's
+    # promotion and the re-claim CAS grant the NEXT epoch on the job row;
+    # the winner's ledger claim records its OWN row beside the parked
+    # attempt's history. A same-epoch duplicate claim is not a remint — it
+    # is one claim, and the arbiter's DO UPDATE is its own idempotent face.
+    from taskq.workflows._emit import EmitBackpressure, wake_emit_backpressure
+    from taskq.workflows.api._sql_runner import NODE_CLAIM_SQL_TEMPLATE, render_sql
+
+    row_worker, row_attempt, row_epoch = await claim_view(clean_pg_conn, schema, node_id)
+    assert (int(row_attempt), int(row_epoch)) == (1, 0)
+    park_verdict = await defer_row_law(
+        module_pg_pool,
+        wsql,
+        job_id=node_id,
+        worker_id=row_worker,
+        attempt=1,
+        claim_epoch=0,
+        disposition="emit_backpressure",
+        delay=timedelta(0),
+        signal_name="EmitBackpressure",
+        ledger_id=zombie_claim.ledger_id,
+        ledger_claimed_at=zombie_claim.claimed_at,
+        backpressure=EmitBackpressure(page_width=1, bound=2, outstanding=1),
+        source_logical_attempt=1,
+    )
+    assert park_verdict == "deferred", park_verdict
+    woken = await wake_emit_backpressure(module_pg_pool, wsql, flow_id=flow_id)
+    assert woken.woken == 1, "the parked source must promote for the re-claim"
+    reclaimed = await clean_pg_conn.fetchrow(
+        render_sql(NODE_CLAIM_SQL_TEMPLATE, schema), node_id, new_uuid()
+    )
+    assert reclaimed is not None, "the promoted row is due for the winner's re-claim"
+    assert (int(reclaimed["attempt"]), int(reclaimed["claim_epoch"])) == (1, 1), dict(reclaimed)
     winner_claim = await claim_step_ledger(
         clean_pg_conn,
         wsql,
@@ -1125,27 +1156,25 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
         step_key="solo",
         map_index=None,
         attempt=1,
-        claim_epoch=0,
+        claim_epoch=1,
     )
-    assert winner_claim.ledger_id == zombie_claim.ledger_id, (
-        "the re-mint re-uses the SAME arbiter row (the refund's own law) — "
-        "the winner is LIVE on the zombie's row"
+    assert winner_claim.ledger_id != zombie_claim.ledger_id, (
+        "the re-mint records its OWN ledger row (the epoch arbiter's "
+        "per-claim history) — the parked attempt's 'awaited' record is "
+        "never overwritten by the resumed claim"
     )
     assert winner_claim.claimed_at is not None
-    assert winner_claim.claimed_at > zombie_claim.claimed_at, (
-        "the re-mint re-stamped the claim instant (the discriminator moved to the winner)"
-    )
 
-    # the stale epoch matches nothing on the row (the row law's own mapping of
-    # the empty fence: 'fenced', nothing written — the ledger leg below drives
-    # the real claim's id).
+    # the zombie's OWN epoch matches nothing on the moved-on row (the row
+    # law's own mapping of the empty fence: 'fenced', nothing written — the
+    # ledger leg below drives the zombie's own claim id).
     verdict = await defer_row_law(
         module_pg_pool,
         wsql,
         job_id=node_id,
         worker_id=zombie_worker,
         attempt=1,
-        claim_epoch=999,  # stale — the row's claim moved on
+        claim_epoch=0,
         disposition="snooze",
         delay=timedelta(seconds=FLOOR_S),
         signal_name="Snooze",
@@ -1162,18 +1191,19 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
         1,
         zombie_claim.ledger_id,
         Snooze(timedelta(seconds=FLOOR_S)),
-        claim_epoch=999,
+        claim_epoch=0,
         ledger_claimed_at=zombie_claim.claimed_at,
     )
     assert label == "fenced"
-    # the winner's row stays live (never 'fenced' — its own terminal
-    # writes it; the record never lies about the live attempt).
+    # THE PER-CLAIM HISTORY: exactly two rows — the ZOMBIE'S OWN row (its
+    # parked attempt's 'awaited' history, fenced by its own id+instant) and
+    # the WINNER'S row ('running', never touched by the zombie's fence —
+    # its own terminal writes it). The record never lies about either.
     ledger_rows = await _ledger_rows(module_pg_pool, schema, str(flow_id), "solo")
-    assert ledger_rows[0]["status"] == "running", (
-        f"THE RE-MINT GUARD: the zombie's fence must refuse a re-minted "
-        f"row (the winner's LIVE claim — the record stays the claim's), "
-        f"got {ledger_rows[0]['status']!r}"
-    )
+    assert [(r["claim_epoch"], r["status"]) for r in ledger_rows] == [
+        (0, "fenced"),
+        (1, "running"),
+    ], f"THE RE-MINT GUARD: the zombie's own history row fences; the winner's row stays live, got {ledger_rows}"
 
     # beside it. an un-re-minted zombie row still fences — the law, never a
     # running row left forever.
