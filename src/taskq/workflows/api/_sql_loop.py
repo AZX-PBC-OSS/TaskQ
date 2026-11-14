@@ -188,10 +188,10 @@ VALUES ($1, $2, $3, $4, $5::jsonb)
 LOOP_EXHAUST_BATCH_SQL = """\
 WITH batch AS (
     SELECT b.loop_id, b.error_class, b.exhaust_meta, b.message,
-           b.worker, b.attempt, b.claim_epoch, b.ord
+           b.worker, b.attempt, b.claim_epoch, b.step_key, b.map_index, b.ord
     FROM unnest($1::uuid[], $2::text[], $3::jsonb[], $4::text[],
-                $5::uuid[], $6::int[], $7::bigint[])
-        WITH ORDINALITY AS b(loop_id, error_class, exhaust_meta, message, worker, attempt, claim_epoch, ord)
+                $5::uuid[], $6::int[], $7::bigint[], $8::text[], $9::int[])
+        WITH ORDINALITY AS b(loop_id, error_class, exhaust_meta, message, worker, attempt, claim_epoch, step_key, map_index, ord)
 ),
 loop_row AS (
     UPDATE {schema}.jobs j
