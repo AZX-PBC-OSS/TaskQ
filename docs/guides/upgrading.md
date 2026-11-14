@@ -158,6 +158,47 @@ queues before creating such runs; an insufficient/missing actual boot capability
 physical entry-to-running trigger before body execution. Do not manufacture
 worker metadata or use queue membership as an upgrade assertion.
 
+## Slot-free emit backpressure and the per-claim ledger (01.00.41_03 + 01.00.41_04 + 01.00.42_01)
+
+Apply the three PRE files in this order, each before the binary that needs it:
+
+1. `01.00.41_03_pre_wf_emit_backpressure_waiters.sql` — drops
+   `jobs.scheduled_at`'s `NOT NULL` (a `DROP NOT NULL` is a catalog-only
+   change) and builds the partial waiter index. **Apply before deploying the
+   binary that parks** `EmitBackpressure` sources: without the index the
+   park works but the estate recovery scans `jobs` (the PRE ordering is
+   mandatory, not a performance hint).
+2. `01.00.41_04_pre_wf_scheduled_null_park_check.sql` — the storage-domain
+   constraint: a `scheduled` row may carry a NULL due time only as the exact
+   park representation. `NOT VALID` is catalog-only; the `VALIDATE` pass
+   scans existing rows under `SHARE UPDATE EXCLUSIVE` (writes continue).
+   Existing rows cannot violate it (`scheduled_at` was `NOT NULL` before
+   `01.00.41_03`); apply it in the same window as `01.00.41_03`.
+3. `01.00.42_01_pre_wf_step_ledger_claim_epoch.sql` — **the hard
+   workflow-executor cutover.** `claim_epoch` joins the step ledger's claim
+   arbiter so a refunded-and-reminted attempt (the park's `1 → 0 → 1`
+   cycle) records its own ledger row. There is **NO supported old/new mixed
+   execution across this file**: an old executor's four-expression ledger
+   claim fails with PostgreSQL `42P10` after the job row is already
+   `running` (the old body never runs), and the old binary's terminal/fence
+   writes are equally unsupported. The operator exclusion spans the whole
+   cutover train (`01.00.42_01`, the identity POST `01.00.42_02`, and the
+   arbiter restoration `01.00.43_01`): stop accepting workflow body work,
+   drain every pre-correction workflow process (fleet workers with workflow
+   execution, direct `FlowRunner` processes, custom drivers using the old
+   ledger claim/finalize statements), apply the files, and **after
+   `01.00.43_01:post` has applied, restart only corrected binaries**. The
+   ledger's arbiter rebuild is a stop-accepting-work window on a populated
+   ledger: the index build takes `SHARE` (it blocks writes, not reads)
+   while it scans existing rows.
+
+A new binary against a pre-`01.00.42_01` schema fails closed at the normal
+ledger claim (`column "claim_epoch" ... does not exist`, `42703`) — after the
+job row is already `running`. That transient running row is recovered by a
+corrected worker after process termination/lease reclaim; it is never a final
+success or a truthful body failure. The PRE gate is the only protection:
+apply the file before deploying the epoch-scoped binary.
+
 ## If a migration goes wrong
 
 `taskq migrate up` diagnoses its own failures: it tells you which migration
