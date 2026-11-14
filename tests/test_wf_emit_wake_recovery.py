@@ -1329,19 +1329,14 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     # it — this exact pin would red.
     await wf_conn.execute(f'DROP INDEX "{wf_schema}".jobs_wf_emit_backpressure_waiter_idx')
     degraded = _plan_document(
-        await wf_conn.fetchval(
-            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", cap_flow, 1000
-        )
+        await wf_conn.fetchval(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", cap_flow, 1000)
     )
     degraded_nodes = _plan_nodes(degraded)
-    assert (
-        [
-            node
-            for node in degraded_nodes
-            if node.get("Index Name") == "jobs_wf_emit_backpressure_waiter_idx"
-        ]
-        == []
-    ), degraded_nodes
+    assert [
+        node
+        for node in degraded_nodes
+        if node.get("Index Name") == "jobs_wf_emit_backpressure_waiter_idx"
+    ] == [], degraded_nodes
     print(
         "EXPLAIN ANALYZE populated waiter WITHOUT the index (the red direction): "
         + json.dumps(degraded, default=str, sort_keys=True)
@@ -2092,8 +2087,8 @@ async def test_estate_wake_cursor_wraps_a_blocked_prefix_to_wake_a_fitted_waiter
     never examined (the reviewer's 12-pass probe: F scheduled through every
     pass while a flow-target wake promoted it immediately)."""
     from taskq.workflows._emit import EstateWakeCursor
-    from taskq.workflows.engine import insert_node
     from taskq.workflows._types import NodeSpec
+    from taskq.workflows.engine import insert_node
 
     blocked: list[tuple[JobId, AttemptClaim]] = []
     for _ in range(2):
@@ -2133,7 +2128,7 @@ async def test_estate_wake_cursor_wraps_a_blocked_prefix_to_wake_a_fitted_waiter
             break
     assert f_woken_pass is not None, (
         "a fitted parked waiter behind a blocked prefix as wide as the batch "
-        f"starved through 6 estate passes — the wrap never examined it"
+        "starved through 6 estate passes — the wrap never examined it"
     )
     assert f_woken_pass <= 4, f"F woke on pass {f_woken_pass} — beyond the wrap cycle's bound"
     # The blocked rows stay parked (the wrap examined and correctly left them).

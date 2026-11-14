@@ -529,7 +529,7 @@ async def test_a_stale_claim_after_ledger_remint_is_a_safe_noop(
     # no repend record was stamped on a verdict that wrote nothing.
     job_row = await wf_conn.fetchrow(
         f"SELECT status::text AS status, attempt::int AS attempt, "
-        f"claim_epoch::bigint AS claim_epoch, metadata FROM \"{wf_schema}\".jobs "
+        f'claim_epoch::bigint AS claim_epoch, metadata FROM "{wf_schema}".jobs '
         "WHERE id = $1",
         node_id,
     )
