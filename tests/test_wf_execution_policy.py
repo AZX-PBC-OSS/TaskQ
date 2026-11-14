@@ -110,7 +110,7 @@ async def _drive(
     runner = FlowRunner(app.get(name), pool, schema)
     claim = await runner.create_flow()
     # The deferral's own floor is 1s of DB clock; a bare tick budget races
-    # it (1000 × 1ms ≈ the floor itself — the run died at max_ticks before
+    # it (1000 x 1ms is the floor itself — the run died at max_ticks before
     # the due instant's promotion sweep re-armed it). The wait is the
     # TERMINAL FACT: drive repeatedly within a bounded wall-clock deadline
     # — the deferral comes due, the sweep re-arms the run, the next drive

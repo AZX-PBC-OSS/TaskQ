@@ -1064,16 +1064,14 @@ async def test_loop_done_success_writes_its_own_succeeded_ledger(
     # claim identity — never 'running', never reaped into 'fenced'.
     ledger = await wf_conn.fetch(
         f"SELECT id, attempt::int AS attempt, claim_epoch::bigint AS claim_epoch, "
-        f"status::text AS status, error_class FROM \"{wf_schema}\".wf_step_ledger "
+        f'status::text AS status, error_class FROM "{wf_schema}".wf_step_ledger '
         "WHERE flow_id = $1 AND step_key = $2 "
         "ORDER BY attempt, claim_epoch, created_at, id",
         flow_id,
         "counter",
     )
     assert len(ledger) == 1, [dict(r) for r in ledger]
-    assert (ledger[0]["status"], ledger[0]["error_class"]) == ("succeeded", None), dict(
-        ledger[0]
-    )
+    assert (ledger[0]["status"], ledger[0]["error_class"]) == ("succeeded", None), dict(ledger[0])
     assert ledger[0]["attempt"] == loop_row["attempt"]
     assert ledger[0]["claim_epoch"] == loop_row["claim_epoch"]
 

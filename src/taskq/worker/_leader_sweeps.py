@@ -21,7 +21,7 @@ import asyncpg
 import croniter as cr
 import structlog
 
-from taskq.backend._protocol import ConnLike, JobId
+from taskq.backend._protocol import ConnLike
 from taskq.backend._sweeps import SweepBatchSizer
 from taskq.backend.clock import SystemClock
 from taskq.backend.statemachine import ACTIVE_STATUSES
@@ -689,6 +689,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     async def wf_emit_backpressure_wake_call() -> int:
         from taskq.workflows._emit import wake_emit_backpressure
         from taskq.workflows.engine import render_workflow_sql
+
         after = wf_emit_backpressure_state.next_after()
         result = await wake_emit_backpressure(
             ctx.deps.dispatcher_pool,

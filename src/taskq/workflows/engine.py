@@ -384,6 +384,13 @@ async def _run_tx1(
                 )
             return _Tx1Outcome(applied=False)
 
+        # THE LEDGER-TRUTH LAW: the won terminal CAS's ledger record keys the
+        # claim's own identity (the ledger claim's RETURNING id + instant).
+        # Every production claim threads it (the runner's step/loop/exit/
+        # chain/ladder/defer routes; the loop's iteration terminal raises on
+        # a missing claim) — the per-claim history has no by-attempt
+        # fallback to recover a caller that lost its own identity, and none
+        # may be manufactured here.
         if ledger_id is not None:
             written = await conn.execute(
                 wsql.ledger_terminal_by_id,
