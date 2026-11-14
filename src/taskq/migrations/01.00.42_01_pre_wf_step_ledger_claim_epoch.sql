@@ -20,10 +20,13 @@
 -- epoch arbiter.
 --
 -- LOCK SCOPE: the ADD COLUMN is a metadata-only catalog change (no table
--- rewrite; NOT NULL with a constant default). DROP INDEX + CREATE UNIQUE
--- INDEX are catalog writes; the whole file runs in the migration runner's
--- single transaction. No backfill, validation scan, or destructive statement
--- exists beyond the replaced arbiter index it substitutes.
+-- rewrite; NOT NULL with a constant default). DROP INDEX is a catalog
+-- write; the CREATE UNIQUE INDEX takes SHARE — it blocks writes (not
+-- reads) while it scans existing rows to build the replacement arbiter,
+-- so a populated ledger's rebuild is a STOP-ACCEPTING-WORK window (the
+-- operator exclusion above owns the drain). The whole file runs in the
+-- migration runner's single transaction. No backfill or destructive
+-- statement exists beyond the replaced arbiter index it substitutes.
 --
 -- WORKFLOW-EXECUTOR CUTOVER (the binding release contract)
 -- --------------------------------------------------------

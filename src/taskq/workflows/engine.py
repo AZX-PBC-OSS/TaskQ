@@ -323,10 +323,10 @@ async def _run_tx1(
 
     The claim's own RETURNING id when the caller
     holds it (*ledger_id* — ``LEDGER_TERMINAL_BY_ID_SQL``, the write pins
-    exactly the claimed row), otherwise the full arbiter tuple with the
-    COALESCE(map_index, -1) expression (``LEDGER_TERMINAL_SQL``) — a map
-    child's terminal can never overwrite its sibling's row (the ledger-PK
-    attack's overwrite arm)."""
+    exactly the claimed row): the epoch arbiter can carry several rows per
+    (flow, step, attempt) — the parked attempt's 'awaited' history beside
+    the resumed claim's terminal — so there is no by-attempt fallback and
+    no caller may write history without its own claim identity."""
     async with conn.transaction():
         # Cancel takes the canonical root lock before its node cascade. Taking
         # the same root lock here arbitrates its commit against every fork and

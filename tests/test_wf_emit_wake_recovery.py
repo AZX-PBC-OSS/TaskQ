@@ -1937,3 +1937,71 @@ async def test_malformed_waiter_marker_does_not_poison_the_estate_wake(
     )
     assert diagnostics[0].get("job_id") == str(claim_v.job_id), diagnostics[0]
     assert diagnostics[0].get("error_class") == "ValueError", diagnostics[0]
+
+
+async def test_pre_epoch_schema_refuses_the_normal_ledger_claim_fail_closed(
+    pg_dsn: str,
+) -> None:
+    """The PRE gate's envelope at the NORMAL claim (not just the park): the
+    new binary's epoch-scoped ledger claim against a pre-`01.00.42_01`
+    schema fails CLOSED with the typed driver error (42703 — the column
+    does not exist), AFTER the job row is already 'running' — the old body
+    never runs, the transient running row is the documented recovery
+    envelope, and applying the PRE file before deploying the binary is the
+    only protection."""
+    from taskq.migrate import apply_pending
+    from taskq.workflows.engine import render_workflow_sql
+
+    schema = f"bp_pre42_{new_uuid().hex}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        applied = await apply_pending(conn, schema=schema, target="01.00.41_04")
+        assert applied[-1].key == "01.00.41_04:pre"
+        wsql = render_workflow_sql(schema)
+        flow_id, claim = await _claimed(
+            conn,
+            schema,
+            wsql,
+            metadata={"wf_source_logical_attempt": 1},
+            claim_statement=(
+                wsql.ledger_claim.replace(", claim_epoch, status)", ", status)")
+                .replace("$6, $7, 'running'", "$6, 'running'")
+                .replace(", attempt, claim_epoch) DO UPDATE", ", attempt) DO UPDATE")
+            ),
+        )
+        row = await conn.fetchrow(
+            f'SELECT status::text AS status, attempt::int AS attempt '
+            f'FROM "{schema}".jobs WHERE id = $1',
+            claim.job_id,
+        )
+        assert row is not None and row["status"] == "running", dict(row)
+        pool = await asyncpg.create_pool(pg_dsn)
+        # The new binary's NORMAL ledger claim (the every-claim path, not a
+        # park-specific arm) against the pre-epoch schema.
+        with pytest.raises(asyncpg.UndefinedColumnError):
+            async with pool.acquire() as claim_conn:
+                await claim_step_ledger(
+                    claim_conn,
+                    wsql,
+                    flow_id=flow_id,
+                    job_id=claim.job_id,
+                    step_key=claim.step_key,
+                    map_index=claim.map_index,
+                    attempt=claim.attempt,
+                    claim_epoch=claim.claim_epoch,
+                )
+        row_after = await conn.fetchrow(
+            f'SELECT status::text AS status, attempt::int AS attempt '
+            f'FROM "{schema}".jobs WHERE id = $1',
+            claim.job_id,
+        )
+        assert row_after is not None and row_after["status"] == "running", (
+            "the claim refused after the job row was already running — the "
+            "documented transient-running envelope"
+        )
+    finally:
+        if pool is not None:
+            await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
