@@ -369,5 +369,6 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
             job_id=self.job_id,
             map_index=self._map_index,
             attempt=self._claim_attempt,
+            claim_epoch=self.claim_epoch,
         )
         return await steps.step(name, fn, *args, idempotent=idempotent)

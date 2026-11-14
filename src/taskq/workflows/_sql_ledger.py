@@ -19,7 +19,9 @@ from __future__ import annotations
 # physical attempt ordinal is refunded and reminted by the capacity park's
 # 1 -> 0 -> 1 cycle: every dispatch claim records its OWN ledger row, so the
 # parked attempt's 'awaited' record survives beside the resumed attempt's
-# terminal. The in-process driver's own claim stamps 0 (its CAS's epoch).
+# terminal. The in-process driver's own claim binds the CAS-granted epoch
+# (the same pair every context/finalize fence carries); a synthetic
+# caller with no dispatch claim behind it stamps 0.
 #
 # map_index, -1. map children of one step key are different claims (the run-key
 # contract) — a conflict target omitting map_index collapses them onto one row

@@ -89,7 +89,6 @@ __all__ = [
     "EMIT_CURSOR_KEY",
     "EMIT_MAX_IN_FLIGHT_DEFAULT",
     "EmitBackpressure",
-    "EmitBackpressureTimeoutError",
     "EmitCancelledError",
     "EmitFencedError",
     "EmitStaleClaimError",
@@ -190,16 +189,6 @@ class MapIndexExhaustedError(RuntimeError):
     column's own domain)."""
 
 
-class EmitBackpressureTimeoutError(RuntimeError):
-    """The run's outstanding
-    non-terminal rows plus the page's width did not fit under the
-    declared bound for the whole wait's term — the LOUD refusal, never a
-    silent unbounded emit, never an infinite block. the LADDER OWNS IT:
-    the source re-pends with backoff, the re-claim resumes FROM the
-    CURSOR, and the blocked page emits fresh (it never ran — the block
-    is before the tx, nothing was written)."""
-
-
 EMIT_REFUSAL_STATUS_SQL_TEMPLATE = """\
 SELECT j.status, j.metadata, j.cancel_phase, root.status AS root_status
 FROM {schema}.jobs AS j
@@ -236,6 +225,42 @@ class EmitWakeResult:
 
     woken: int
     next_cursor: tuple[JobId, JobId] | None = None
+
+
+@dataclass
+class EstateWakeCursor:
+    """The estate wake pass's FAIR cursor (the wrap/round-robin law).
+
+    A pure keyset cursor advances monotonically and never revisits a
+    row it passed over: under continuous arrivals every pass is full,
+    the cursor never resets on its own, and a parked row whose fit
+    arrives AFTER the cursor passed it starves forever. The fair
+    cursor alternates each estate pass between a forward keyset stride
+    (progress through a blocked prefix) and a from-start revisit (the
+    wrap), so every parked row is re-examined at least every other
+    pass and a row whose fit arrives at any time wakes within a
+    bounded number of passes. The leader's recovery arm owns one of
+    these; a short/empty pass resets by itself (the primitive's own
+    next_cursor is None) and needs no wrap."""
+
+    cursor: tuple[JobId, JobId] | None = None
+    _revisit_next: bool = False
+
+    def next_after(self) -> tuple[JobId, JobId] | None:
+        """The next pass's ``after`` argument: advance or wrap."""
+        if self.cursor is None:
+            return None
+        if self._revisit_next:
+            self._revisit_next = False
+            return None
+        self._revisit_next = True
+        return self.cursor
+
+    def observe(self, result: EmitWakeResult) -> None:
+        """Fold one pass's result; a short/empty pass resets by itself."""
+        self.cursor = result.next_cursor
+        if result.next_cursor is None:
+            self._revisit_next = False
 
 
 class _AdmissionLostError(Exception):
@@ -638,9 +663,13 @@ async def wake_emit_backpressure(
     """Promote fitted, exactly parked sources in one fresh transaction.
 
     ``flow_id`` is the post-commit accelerator. With no flow this is the
-    bounded estate recovery pass: its ordered cursor prevents a permanently
-    full prefix from starving later waiters. The caller resumes at the returned
-    cursor and resets it after a short/empty pass.
+    bounded estate recovery pass. The caller's cursor must be FAIR: a
+    pure keyset cursor never revisits a row it passed over, so under
+    continuous arrivals a parked row whose fit arrives late starves —
+    :class:`EstateWakeCursor` alternates forward strides with
+    from-start revisits, and a short/empty pass resets by itself. One
+    malformed parked record isolates to its own row (a bounded warning,
+    the pass advances past it); the valid waiters still wake.
     """
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError("emit-backpressure wake batch_size must be positive")
@@ -692,7 +721,25 @@ async def wake_emit_backpressure(
             source = await conn.fetchrow(candidate_lock_sql, source_id)
             if source is None:
                 continue
-            descriptor = _wait_descriptor(source["metadata"])
+            try:
+                descriptor = _wait_descriptor(source["metadata"])
+            except ValueError as exc:
+                # PER-ROW ISOLATION: one malformed/corrupt parked record is
+                # that row's own fault, never the estate's — the pass skips
+                # it (the cursor already advanced past it) and the valid
+                # waiters still wake. The durable marker stays: the row is
+                # visible, named, and bounded — the operator's alert, never
+                # a poisoned recovery loop. An infrastructure fault is NOT
+                # isolated: it aborts the transaction and the sweep's own
+                # failure arm owns the retry.
+                logger.warning(
+                    "wf.emit_backpressure_waiter_invalid",
+                    flow_id=str(candidate_flow),
+                    job_id=str(source_id),
+                    error_class=type(exc).__name__,
+                    error=str(exc)[:500],
+                )
+                continue
             await conn.execute(wsql.emit_admission_lock, str(candidate_flow))
             outstanding = await _outstanding(conn, wsql, candidate_flow, source_id)
             if outstanding + descriptor.page_width > descriptor.bound:

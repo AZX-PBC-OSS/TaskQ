@@ -573,6 +573,7 @@ async def test_populated_old_schema_upgrades_without_touching_existing_rows(
             "01.00.41_01:pre",
             "01.00.41_02:pre",
             "01.00.41_03:pre",
+            "01.00.41_04:pre",
             "01.00.42_01:pre",
         ]
         row = await conn.fetchrow(

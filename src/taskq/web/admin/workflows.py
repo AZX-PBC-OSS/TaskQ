@@ -87,10 +87,11 @@ _RUNS_SQL = (
     # never equals the row's attempt, the row drops out of the sitting count
     # (the badge's law keeps its discriminator; the page renders). The doubled
     # braces are the .format convention (the JSONB-landmine rule's own face).
-    "d.deferring, d.next_fire, d.snooze_count "
+    "d.deferring, d.next_fire, d.parked, d.snooze_count "
     'FROM "{schema}".jobs r '
     "LEFT JOIN LATERAL ("
     "    SELECT count(*) AS deferring, min(j.scheduled_at) AS next_fire, "
+    "           count(*) FILTER (WHERE j.scheduled_at IS NULL) AS parked, "
     "           max(j.snooze_count) AS snooze_count "
     '    FROM "{schema}".jobs j '
     "    WHERE (j.metadata->>'flow_id')::uuid = r.id AND j.metadata ? 'flow_id' "
@@ -253,9 +254,12 @@ def register(router: APIRouter) -> None:
                 "root_status": r["status"],
                 "created_at": _iso(r["created_at"]),
                 # the badge's inputs — a run with no sitting deferral reads
-                # all-None/0 (the defined absent face).
+                # all-None/0 (the defined absent face). A parked-only run's
+                # next_fire is None (a park has no timer): the badge names
+                # the parked marker instead of rendering a NULL fire time.
                 "deferring": int(r["deferring"] or 0),
                 "next_fire": _iso(r["next_fire"]),
+                "parked": int(r["parked"] or 0),
                 "snooze_count": int(r["snooze_count"] or 0),
             }
             for r in rows
