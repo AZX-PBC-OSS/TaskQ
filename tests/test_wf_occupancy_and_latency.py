@@ -212,29 +212,62 @@ async def test_bounded_wake_latency_measured_on_the_new_claim(
     except asyncio.CancelledError:
         pass
     new_claim: Any = "measured-in-sql"
-    # The MEASUREMENT (the DB's own instants, one domain): the last page-0
-    # terminal's commit (its ledger row's updated_at) → the source's new
-    # ledger claim's created_at.
-    latency_row = await wf_conn.fetchrow(
+    # THE MEASUREMENT — the pair the machinery can PROVE, causally ordered
+    # in one clock domain:
+    #
+    #   promotion instant  = the source's own wf_emit_backpressure
+    #                        .last_wake_at — the promotion CAS's
+    #                        clock_timestamp(), written by the winning drain
+    #                        transaction (the wake's linearization);
+    #   new claim          = the FIRST source ledger claim at or after it
+    #                        (the resumed claim that follows the promotion).
+    #
+    # The delta is asserted NON-NEGATIVE and under the < 1 s §5.5 bound: an
+    # inverted pairing (a claim before the promotion that caused it) is RED,
+    # never vacuously green. The page-0 screens' own ledger instants are
+    # NOT the wake's cause — a screen can still be running when the source
+    # resumes — so they are deliberately not in this pairing.
+    pair = await wf_conn.fetchrow(
         f"""
+        WITH promoted AS (
+            SELECT (j.metadata->'wf_emit_backpressure'->>'last_wake_at') AS wake_at_text
+            FROM "{wf_schema}".jobs j
+            WHERE j.id = $1
+        ), wake_at AS (
+            SELECT (wake_at_text)::timestamptz AS instant FROM promoted
+        )
         SELECT
-          (SELECT max(l2.updated_at) FROM "{wf_schema}".wf_step_ledger l2
-           WHERE l2.flow_id = $1 AND l2.step_key = 'screen' AND l2.status = 'succeeded')
-            AS terminal_commit,
-          (SELECT l3.created_at FROM "{wf_schema}".wf_step_ledger l3
-           WHERE l3.flow_id = $1 AND l3.step_key = 'source'
-           ORDER BY l3.created_at DESC, l3.id DESC LIMIT 1)
-            AS new_claim
+          (SELECT instant FROM wake_at) AS promotion_instant,
+          (SELECT l3.id FROM "{wf_schema}".wf_step_ledger l3, wake_at
+           WHERE l3.flow_id = $2 AND l3.step_key = 'source'
+             AND l3.created_at >= wake_at.instant
+           ORDER BY l3.created_at, l3.id LIMIT 1) AS new_claim_id,
+          (SELECT l3.created_at FROM "{wf_schema}".wf_step_ledger l3, wake_at
+           WHERE l3.flow_id = $2 AND l3.step_key = 'source'
+             AND l3.created_at >= wake_at.instant
+           ORDER BY l3.created_at, l3.id LIMIT 1) AS new_claim_at
         """,
+        source_id,
         flow_id,
     )
-    assert latency_row is not None
-    terminal_commit = latency_row["terminal_commit"]
-    new_claim_at = latency_row["new_claim"]
-    assert terminal_commit is not None and new_claim_at is not None, latency_row
-    measured_s = (new_claim_at - terminal_commit).total_seconds()
-    print(f"WAKE-LATENCY measured={measured_s:.3f}s bound=<1s (terminal commit → new ledger claim)")
-    assert -1.0 <= measured_s < 1.0, (
-        f"the bounded wake latency: {measured_s:.3f}s exceeds the < 1 s "
-        "controlled-host bound (the contract's §5.5 target)"
+    assert pair is not None
+    promotion_instant = pair["promotion_instant"]
+    new_claim_id = pair["new_claim_id"]
+    new_claim_at = pair["new_claim_at"]
+    assert promotion_instant is not None, (
+        "the promotion's own instant is on the source's record (last_wake_at)"
+    )
+    assert new_claim_id is not None and new_claim_at is not None, (
+        f"the first source claim AFTER the promotion is the wake's outcome: {pair}"
+    )
+    measured_s = (new_claim_at - promotion_instant).total_seconds()
+    print(
+        f"WAKE-LATENCY promotion_instant={promotion_instant.isoformat()} "
+        f"claim_id={new_claim_id} claim_instant={new_claim_at.isoformat()} "
+        f"delta={measured_s:.3f}s bound=<1s (promotion commit → new claim)"
+    )
+    assert 0.0 <= measured_s < 1.0, (
+        f"the bounded wake latency: {measured_s:.3f}s — a negative delta is "
+        "an inverted (non-causal) pairing and a delta at or past the < 1 s "
+        "controlled-host bound exceeds the contract's §5.5 target"
     )
