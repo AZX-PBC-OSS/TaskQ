@@ -9,6 +9,7 @@ Real PostgreSQL; the drain path is the production one."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 from typing import Any
 
@@ -96,6 +97,7 @@ async def test_cap_one_child_cap_one_never_occupancy_deadlocks(
             flow_id,
         )
     )
+
     async def _pump() -> None:
         for _ in range(120):
             await runner.tick(flow_id)
@@ -108,10 +110,12 @@ async def test_cap_one_child_cap_one_never_occupancy_deadlocks(
             await asyncio.sleep(0.05)
 
     await asyncio.wait_for(_pump(), timeout=90)
-    root = await wf_conn.fetchval(f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
+    root = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+    )
     assert root == "succeeded", root
     children = await wf_conn.fetch(
-        f"SELECT map_index::int AS m, status::text AS status FROM \"{wf_schema}\".jobs "
+        f'SELECT map_index::int AS m, status::text AS status FROM "{wf_schema}".jobs '
         "WHERE parent_id = $1 ORDER BY map_index",
         source_id,
     )
@@ -206,10 +210,8 @@ async def test_bounded_wake_latency_measured_on_the_new_claim(
             break
         await asyncio.sleep(0.05)
     source_task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await source_task
-    except asyncio.CancelledError:
-        pass
     # THE MEASUREMENT — the pair the machinery can PROVE, causally ordered
     # in one clock domain:
     #

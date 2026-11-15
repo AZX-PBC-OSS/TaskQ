@@ -87,7 +87,11 @@ async def test_cancel_before_park_and_after_park_never_reenters_and_spares_sibli
             {
                 "blocking_reason": "backpressure",
                 "emit_cursor": {"page": 0},
-                "wf_deferral": {"signal": "EmitBackpressure", "consume_budget": False, "attempt": 0},
+                "wf_deferral": {
+                    "signal": "EmitBackpressure",
+                    "consume_budget": False,
+                    "attempt": 0,
+                },
                 "wf_emit_backpressure": {"version": 1, "page_width": 2, "bound": 2},
                 "wf_source_logical_attempt": 1,
             }
@@ -98,12 +102,24 @@ async def test_cancel_before_park_and_after_park_never_reenters_and_spares_sibli
 
     async with wf_pool.acquire() as conn:
         sibling_claim = await claim_step_ledger(
-            conn, wf_sql, flow_id=flow, job_id=sub_job, step_key="sibling", map_index=None,
-            attempt=1, claim_epoch=1,
+            conn,
+            wf_sql,
+            flow_id=flow,
+            job_id=sub_job,
+            step_key="sibling",
+            map_index=None,
+            attempt=1,
+            claim_epoch=1,
         )
         sub_claim = await claim_step_ledger(
-            conn, wf_sql, flow_id=flow, job_id=sub_job, step_key="sibling.sub", map_index=None,
-            attempt=1, claim_epoch=1,
+            conn,
+            wf_sql,
+            flow_id=flow,
+            job_id=sub_job,
+            step_key="sibling.sub",
+            map_index=None,
+            attempt=1,
+            claim_epoch=1,
         )
     assert sibling_claim.ledger_id is not None and sub_claim.ledger_id is not None
 
@@ -113,7 +129,9 @@ async def test_cancel_before_park_and_after_park_never_reenters_and_spares_sibli
     await wf_conn.execute(render_sql(CANCEL_NODES_SQL_TEMPLATE, wf_schema), flow)
     root = await wf_conn.fetchrow(
         f"SELECT status::text AS status, metadata->>'cancel_phase' AS phase "
-        f'FROM "{wf_schema}".jobs WHERE id = $1', flow)
+        f'FROM "{wf_schema}".jobs WHERE id = $1',
+        flow,
+    )
     assert root is not None and root["status"] in ("running", "cancelled"), root
     assert root["phase"] == "cooperative", root
 
@@ -139,7 +157,9 @@ async def test_cancel_before_park_and_after_park_never_reenters_and_spares_sibli
     )
     assert source_row is not None
     assert source_row["status"] == "cancelled", source_row
-    claim = await wf_conn.fetchrow(render_sql(NODE_CLAIM_SQL_TEMPLATE, wf_schema), source, JobId(new_uuid_str()))
+    claim = await wf_conn.fetchrow(
+        render_sql(NODE_CLAIM_SQL_TEMPLATE, wf_schema), source, JobId(new_uuid_str())
+    )
     assert claim is None, "a cancelled parked row is unclaimable"
     # The failed/cancelled root never wakes its parked work: the drain
     # sees real rows — the source's own row is terminal cancelled (no park
@@ -186,18 +206,25 @@ async def test_park_and_cancel_race_resolves_by_row_state(
     the park's fenced arm answers cancel_fenced and the runner terminalizes;
     the cancel's flip on a parked row fences its exact awaited claim and
     the row disappears from every derived predicate."""
+    from datetime import timedelta
+
+    from taskq.workflows._emit import EmitBackpressure, observe_emit_capacity
     from taskq.workflows.api._runner_defer import defer_row_law
     from taskq.workflows.api._sql_runner import render_sql
-    from taskq.workflows._emit import EmitBackpressure, observe_emit_capacity
     from taskq.workflows.ledger import claim_step_ledger
-    from datetime import timedelta
 
     flow = await _seed_flow_root(wf_conn, wf_schema)
     source = await _seed_node(wf_conn, wf_schema, flow, "source")
     async with wf_pool.acquire() as conn:
         claim = await claim_step_ledger(
-            conn, wf_sql, flow_id=flow, job_id=source, step_key="source", map_index=None,
-            attempt=1, claim_epoch=1,
+            conn,
+            wf_sql,
+            flow_id=flow,
+            job_id=source,
+            step_key="source",
+            map_index=None,
+            attempt=1,
+            claim_epoch=1,
         )
     assert claim.ledger_id is not None
 
@@ -219,7 +246,9 @@ async def test_park_and_cancel_race_resolves_by_row_state(
     )
     assert outcome.verdict == "deferred", outcome
 
-    observation = await observe_emit_capacity(wf_pool.acquire() if False else _Conn(wf_pool), wf_sql, flow_id=flow)
+    observation = await observe_emit_capacity(
+        wf_pool.acquire() if False else _Conn(wf_pool), wf_sql, flow_id=flow
+    )
     assert observation.min_waiting_width == 2, observation
 
     # The cancel lands on the parked row: the exact awaited claim fences.

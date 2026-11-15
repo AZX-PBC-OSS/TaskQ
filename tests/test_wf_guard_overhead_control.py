@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json as _json
 import statistics
+
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -59,10 +60,7 @@ async def _seed_vanilla_scheduled(pg_dsn: str, schema: str, count: int) -> None:
 
     conn = await asyncpg.connect(pg_dsn)
     try:
-        rows = [
-            (new_uuid_str(), f"c15-{index}")
-            for index in range(count)
-        ]
+        rows = [(new_uuid_str(), f"c15-{index}") for index in range(count)]
         await conn.executemany(
             f'INSERT INTO "{schema}".jobs '
             "(id, actor, queue, payload, status, max_attempts, retry_kind, "
@@ -105,8 +103,7 @@ async def _reset_rows(pg_dsn: str, schema: str, batch_size: int) -> None:
     conn = await asyncpg.connect(pg_dsn)
     try:
         await conn.execute(
-            f'UPDATE "{schema}".jobs SET status = \'scheduled\' '
-            "WHERE status = 'pending'"
+            f"UPDATE \"{schema}\".jobs SET status = 'scheduled' WHERE status = 'pending'"
         )
     finally:
         await conn.close()
@@ -148,7 +145,7 @@ async def test_shipped_guard_overhead_through_the_real_sweep(pg_dsn: str) -> Non
                 guard_samples.append(await _run_sweep_once(pg_dsn, guard_schema, shape))
                 await _reset_rows(pg_dsn, guard_schema, shape)
 
-            def summarize(samples: list[float]) -> dict[str, float]:
+            def summarize(samples: list[float], shape: int = shape) -> dict[str, float]:
                 ordered = sorted(samples)
                 p95_index = min(len(ordered) - 1, int(0.95 * len(ordered)))
                 return {
@@ -211,7 +208,7 @@ async def test_shipped_guard_overhead_through_the_real_sweep(pg_dsn: str) -> Non
         )
         with pytest.raises(Exception) as excinfo:
             await conn.execute(
-                f'UPDATE "{guard_schema}".jobs SET status = \'pending\' WHERE id = $1',
+                f"UPDATE \"{guard_schema}\".jobs SET status = 'pending' WHERE id = $1",
                 park_id,
             )
         assert "parked" in str(excinfo.value) or "WF002" in str(excinfo.value), excinfo.value
@@ -222,7 +219,7 @@ async def test_shipped_guard_overhead_through_the_real_sweep(pg_dsn: str) -> Non
         # The winning reserved promotion (the same UPDATE carrying the
         # reservation) succeeds.
         await conn.execute(
-            f'UPDATE "{guard_schema}".jobs SET status = \'pending\', '
+            f"UPDATE \"{guard_schema}\".jobs SET status = 'pending', "
             "metadata = (metadata - 'blocking_reason') "
             "|| $2::jsonb WHERE id = $1",
             park_id,

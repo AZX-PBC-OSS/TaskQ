@@ -61,8 +61,7 @@ def _buffers(document: list[dict[str, Any]]) -> tuple[int, int]:
     plan = document[0]["Plan"]
     nodes = _walk(plan, [])
     execution = sum(
-        int(n.get("Shared Hit Blocks", 0)) + int(n.get("Shared Read Blocks", 0))
-        for n in nodes
+        int(n.get("Shared Hit Blocks", 0)) + int(n.get("Shared Read Blocks", 0)) for n in nodes
     )
     planning_block = document[0].get("Planning", {})
     planning = int(planning_block.get("Shared Hit Blocks", 0)) + int(
@@ -75,9 +74,7 @@ class _ParkArm:
     """One ladder arm's fixture: the truncated relation, the pinned seed
     order, ANALYZE, and the observed plan."""
 
-    def __init__(
-        self, conn: Any, wsql: WorkflowSql, schema: str, flow_id: str
-    ) -> None:
+    def __init__(self, conn: Any, wsql: WorkflowSql, schema: str, flow_id: str) -> None:
         self._conn = conn
         self._wsql = wsql
         self._schema = schema
@@ -138,9 +135,9 @@ class _ParkArm:
         await self._conn.execute(f'ANALYZE "{self._schema}".jobs')
 
     async def run_candidate(self, charge: int, bound: int) -> dict[str, Any]:
-        candidate = self._wsql.emit_candidate.replace(
-            "$2::bigint", f"{charge}::bigint"
-        ).replace("$3::bigint", f"{bound}::bigint")
+        candidate = self._wsql.emit_candidate.replace("$2::bigint", f"{charge}::bigint").replace(
+            "$3::bigint", f"{bound}::bigint"
+        )
         rows = await self._conn.fetch(candidate, uuid7_of(self._flow_id))
         raw = await self._conn.fetchval(
             f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {candidate}",
@@ -223,9 +220,7 @@ async def test_newest_fit_and_oldest_fit_envelopes_and_declaration_mapping(
     _ = wf_schema
 
     # The derivation record binds the fixture (checked in BEFORE first run).
-    record = json.loads(
-        (Path(__file__).parent / "data" / "wf_emit_park_envelope.json").read_text()
-    )
+    record = json.loads((Path(__file__).parent / "data" / "wf_emit_park_envelope.json").read_text())
     assert record["derivation_facts"]["park_heap_pages"] == 91
     assert record["derivation_facts"]["derived_ceiling"] == 224
 
@@ -238,7 +233,9 @@ async def test_newest_fit_and_oldest_fit_envelopes_and_declaration_mapping(
     await arm.seed([(jid, 100) for jid in arm.ids[:999]] + [(arm.ids[999], 1)])
     result = await arm.run_candidate(charge=60, bound=100)
     assert len(result["rows"]) == 1
-    assert str(result["rows"][0]["id"]) == arm.ids[999], "the newest W=1 park is the oldest FITTING waiter's answer"
+    assert str(result["rows"][0]["id"]) == arm.ids[999], (
+        "the newest W=1 park is the oldest FITTING waiter's answer"
+    )
     execution, planning = _buffers(result["document"])
     assert planning >= 0
     nodes = _walk(result["document"][0]["Plan"], [])
@@ -309,9 +306,7 @@ async def test_hoisted_observation_at_the_control2_shape(
     # 1. the 50,000 terminal rows first (one contiguous category insert).
     terminal_rows = []
     for _ in range(50_000):
-        terminal_rows.append(
-            (str(new_uuid()), json.dumps({"flow_id": flow_id}))
-        )
+        terminal_rows.append((str(new_uuid()), json.dumps({"flow_id": flow_id})))
     await wf_conn.executemany(
         f'INSERT INTO "{schema}".jobs '
         "(id, actor, queue, payload, status, max_attempts, retry_kind, "
@@ -348,7 +343,11 @@ async def test_hoisted_observation_at_the_control2_shape(
 
     observation = await wf_conn.fetchrow(wf_sql.emit_capacity_observation, uuid7_of(flow_id), None)
     assert observation is not None
-    facts = (int(observation["live_rows"]), int(observation["reservations"]), observation["min_waiting_width"])
+    facts = (
+        int(observation["live_rows"]),
+        int(observation["reservations"]),
+        observation["min_waiting_width"],
+    )
     assert facts == (200, 0, 17), facts
 
     raw = await wf_conn.fetchval(
@@ -366,9 +365,7 @@ async def test_hoisted_observation_at_the_control2_shape(
     jobs_nodes = [n for n in nodes if n.get("Relation Name") == "jobs"]
     assert len(jobs_nodes) == 1, document
     jobs_node = jobs_nodes[0]
-    scan_nodes = [
-        n for n in nodes if n.get("Index Name") == "jobs_wf_flow_nodes_idx"
-    ]
+    scan_nodes = [n for n in nodes if n.get("Index Name") == "jobs_wf_flow_nodes_idx"]
     assert len(scan_nodes) == 1, document
     legal = (
         jobs_node["Node Type"] == "Index Scan"
@@ -381,7 +378,12 @@ async def test_hoisted_observation_at_the_control2_shape(
     assert legal, document
     cond = str(scan_nodes[0].get("Index Cond", ""))
     normalized = "".join(cond.split())
-    assert "flow_id" in normalized and "pending" in normalized and "scheduled" in normalized and "running" in normalized, cond
+    assert (
+        "flow_id" in normalized
+        and "pending" in normalized
+        and "scheduled" in normalized
+        and "running" in normalized
+    ), cond
     actual_rows = int(scan_nodes[0].get("Actual Rows", 0))
     assert actual_rows == 201, (
         f"the feeding scan examines exactly 201 rows (200 live + 1 park, no "
@@ -399,9 +401,9 @@ async def test_hoisted_observation_at_the_control2_shape(
     # reference over the same rows examines 50,201 rows and exceeds the
     # envelope.
     unhoisted = (
-        f'SELECT count(*) FILTER (WHERE NOT (j.status = \'scheduled\' AND j.metadata @> '
+        f"SELECT count(*) FILTER (WHERE NOT (j.status = 'scheduled' AND j.metadata @> "
         f'\'{{"blocking_reason":"backpressure"}}\'::jsonb)) AS live_rows '
-        f'FROM "{schema}".jobs AS j WHERE (j.metadata->>\'flow_id\')::uuid = $1::uuid '
+        f"FROM \"{schema}\".jobs AS j WHERE (j.metadata->>'flow_id')::uuid = $1::uuid "
         "AND j.metadata ? 'flow_id' "
         "AND j.step_key IS NOT NULL AND j.step_key <> '__flow__'"
     )

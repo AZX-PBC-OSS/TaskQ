@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
-
-import asyncpg
 from typing import Any
 
+import asyncpg
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -198,9 +197,7 @@ async def test_migration_deadlock_handshake_is_victim_agnostic(pg_dsn: str) -> N
         handshake_formed = False
         polls = 0
         while polls < int(_DEADLOCK_TIMEOUT_S / 0.02):
-            ungranted = await locks_conn.fetchval(
-                "SELECT count(*) FROM pg_locks WHERE NOT granted"
-            )
+            ungranted = await locks_conn.fetchval("SELECT count(*) FROM pg_locks WHERE NOT granted")
             if ungranted and int(ungranted) >= 2:
                 handshake_formed = True
                 break
@@ -212,7 +209,11 @@ async def test_migration_deadlock_handshake_is_victim_agnostic(pg_dsn: str) -> N
         )
         await sides
 
-        deadlocks = [side for side in ("migration", "writer") if isinstance(outcome.get(side), asyncpg.PostgresError)]
+        deadlocks = [
+            side
+            for side in ("migration", "writer")
+            if isinstance(outcome.get(side), asyncpg.PostgresError)
+        ]
         committed = [side for side in ("migration", "writer") if outcome.get(side) == "committed"]
         assert len(deadlocks) == 1 and len(committed) == 1, outcome
         victim = deadlocks[0]

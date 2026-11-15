@@ -6,7 +6,7 @@ shortened environment switch, test-duration relabelling, or parent-memory event
 participates.  Real production bootstraps claim every source/leaf/probe row.
 """
 
-# ruff: noqa: S608  # Why: the schema is the harness's validated module schema identifier and every data value is $N-bound.
+# Why S608-safe: the schema is the harness's validated module schema identifier and every data value is $N-bound.
 
 from __future__ import annotations
 
@@ -1133,7 +1133,8 @@ async def test_notify_and_inline_wake_failure_use_real_bounded_sweep(
         # terminated mid-wait, and the terminals + the durable convergence
         # stand beside them.
         facts["fine_wake_failure_workers"] = [
-            label for label, content in worker_logs.items()
+            label
+            for label, content in worker_logs.items()
             if any(cls in content for cls in failure_classes)
         ]
         _save(f"{scenario}-facts", facts)
