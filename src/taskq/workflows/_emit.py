@@ -73,7 +73,7 @@ from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
 from taskq.constants import wake_channel, wf_emit_capacity_channel
-from taskq.obs import get_logger
+from taskq.obs import get_logger, get_meter
 from taskq.workflows._fork import FORK_CHUNK
 from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._types import MAP_INDEX_CEILING, EmitChild, _jsonb, _row_metadata
@@ -101,6 +101,16 @@ __all__ = [
 ]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+#: The §5.4 non-drainage refusal's own counter: the operator's alert keys on
+#: this, never on raw saturation counts (a healthy parked source never moves
+#: it).
+_not_draining_counter = get_meter().create_counter(
+    name="taskq.workflows.wf_not_draining",
+    unit="{refusal}",
+    description="The proven non-drainage refusals (the committed terminal-root "
+    "proof behind an exhausted child failure, with an un-emitted parked cursor).",
+)
 
 #: The cursor checkpoint's metadata key on the source row itself (the
 #: checkpoint rides the row's jsonb — no new table, no new column, no
@@ -1050,3 +1060,54 @@ async def sweep_emit_markers(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
             repaired=repaired,
         )
     return repaired
+
+
+async def fence_not_draining_parked_sources(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    child_id: JobId | None,
+    child_step_key: str | None = None,
+) -> int:
+    """The §5.4 loud refusal, run in the CALLER's failure-cascade
+    transaction.
+
+    The proof condition is precise and durable: the root terminal
+    ``failed`` has just been committed behind a genuine child failure that
+    exhausted its declared retry policy (the caller owns that proof — the
+    cascade and the root-maintain failure arms are its two seats), while an
+    exact parked source of the flow still holds an un-emitted committed
+    cursor. The fence terminalizes every such parked source with
+    ``WORKFLOW_NOT_DRAINING_CLASS``, the named reason, and the causal
+    child/root ids; it spends no source logical attempt, creates no ladder
+    retry, and never overwrites the child's genuine error. Returns the
+    fenced count for the caller's log/metric."""
+    from taskq.constants import WORKFLOW_NOT_DRAINING_CLASS
+
+    row = await conn.fetchrow(
+        wsql.wf_not_draining_fence,
+        flow_id,
+        WORKFLOW_NOT_DRAINING_CLASS,
+        (
+            f"the run is provably not draining: the root terminal 'failed' "
+            f"committed after the causal child failure exhausted its retry "
+            f"policy, while this source still parks on an un-emitted "
+            f"committed cursor (reason: "
+            f"terminal_root_after_child_failure_exhaustion)"
+        ),
+        child_id,
+    )
+    fenced = int(row["fenced_count"]) if row is not None else 0
+    if fenced:
+        _not_draining_counter.add(fenced, {"error_class": WORKFLOW_NOT_DRAINING_CLASS})
+        logger.warning(
+            "wf.not_draining_refusal",
+            flow_id=str(flow_id),
+            child_id=str(child_id) if child_id else None,
+            child_step_key=child_step_key,
+            error_class=WORKFLOW_NOT_DRAINING_CLASS,
+            reason="terminal_root_after_child_failure_exhaustion",
+            fenced=fenced,
+        )
+    return fenced

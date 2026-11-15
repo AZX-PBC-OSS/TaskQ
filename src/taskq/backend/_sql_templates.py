@@ -358,6 +358,8 @@ def render(schema: str) -> SqlTemplates:
 WITH upd AS (
     UPDATE "{s}".jobs
     SET status = 'succeeded',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -406,6 +408,8 @@ SELECT upd.attempt FROM upd""",
 WITH upd AS (
     UPDATE "{s}".jobs
     SET status = 'failed',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -560,6 +564,8 @@ retried AS (
 deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
         error_message = '{DEADLINE_RETRY_EXCEEDED_MESSAGE}',
@@ -671,6 +677,8 @@ SELECT * FROM retried UNION ALL SELECT * FROM deadline_failed""",
 WITH upd AS (
     UPDATE "{s}".jobs
     SET status = 'cancelled',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -715,6 +723,8 @@ SELECT upd.attempt FROM upd""",
 WITH upd AS (
     UPDATE "{s}".jobs
     SET status = 'abandoned',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         error_class = '{CANCEL_ORIGIN_ABANDONED}',
         progress_seq = GREATEST(progress_seq, $2),
@@ -964,6 +974,8 @@ deadline_cancelled AS (
     -- deadline arm below: the row's claim is released either way.
     UPDATE "{s}".jobs j
     SET status = 'cancelled',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         error_class = CASE WHEN j.cancel_phase = 2 THEN '{CANCEL_ORIGIN_FORCED}'
                            ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
@@ -980,6 +992,8 @@ deadline_cancelled AS (
 deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
         error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
@@ -1155,6 +1169,8 @@ deadline_cancelled AS (
     -- terminal arms: the row's claim is released either way.
     UPDATE "{s}".jobs j
     SET status = 'cancelled',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         error_class = CASE WHEN j.cancel_phase = 2 THEN '{CANCEL_ORIGIN_FORCED}'
                            ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
@@ -1171,6 +1187,8 @@ deadline_cancelled AS (
 max_attempts_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED}',
         error_message = '{BUDGET_EXHAUSTED_MESSAGE}',
@@ -1199,6 +1217,8 @@ max_attempts_failed AS (
 deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
         error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
@@ -1409,6 +1429,8 @@ deadline_cancelled AS (
     -- is released either way.
     UPDATE "{s}".jobs j
     SET status = 'cancelled',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         error_class = CASE WHEN j.cancel_phase = 2 THEN '{CANCEL_ORIGIN_FORCED}'
                            ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
@@ -1425,6 +1447,8 @@ deadline_cancelled AS (
 deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
         error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
@@ -1604,6 +1628,8 @@ released AS (
 deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+        metadata = metadata - 'wf_emit_reservation',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
         error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
@@ -1691,6 +1717,8 @@ UPDATE "{s}".jobs
 -- a from_state of pending/scheduled already says the job never ran, and
 -- the differential suite pins that detail exactly.
 SET status = 'cancelled', finished_at = clock_timestamp(),
+    -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY: no key survives a terminal row for re-arm (a row without one is unchanged).
+    metadata = metadata - 'wf_emit_reservation',
     error_class = '{CANCEL_ORIGIN_PENDING}'
 FROM prev
 WHERE "{s}".jobs.id = $1 AND "{s}".jobs.status IN ('pending', 'scheduled')

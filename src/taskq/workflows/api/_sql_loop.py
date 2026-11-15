@@ -120,7 +120,8 @@ WITH loop_row AS (
         error_class = $2,
         error_message = $4,
         finished_at = clock_timestamp(),
-        metadata = metadata || $3::jsonb
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY.
+        metadata = (metadata - 'wf_emit_reservation') || $3::jsonb
     WHERE id = $1
       AND status = 'running'
       AND locked_by_worker IS NOT DISTINCT FROM $5::uuid
@@ -199,7 +200,8 @@ loop_row AS (
         error_class = b.error_class,
         error_message = b.message,
         finished_at = clock_timestamp(),
-        metadata = j.metadata || b.exhaust_meta
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY.
+        metadata = (j.metadata - 'wf_emit_reservation') || b.exhaust_meta
     FROM batch b
     WHERE j.id = b.loop_id
       AND j.status = 'running'

@@ -304,7 +304,8 @@ maintained AS (
           -- THE COMPLETED/CANCELLED ROOT: every row terminal (rows 4-5).
           OR NOT COALESCE(pf.has_live, true)
       )
-    RETURNING f.id, f.status::text AS to_state
+    RETURNING f.id, f.status::text AS to_state,
+          CASE WHEN pf.has_failed THEN 1 ELSE 0 END AS failed_root
 ),
 -- THE AUDIT ROW RIDES THE DERIVATION (the deploy matrix's audit fix):
 -- the root's terminal is a mutation like any other — the events reader
@@ -318,7 +319,19 @@ evt AS (
                               'to_state', m.to_state,
                               'reason', 'workflow-maintained')
     FROM maintained m
+),
+-- THE §5.4 NON-DRAINAGE FENCE (the derivation's failure arm's second
+-- seat): a root this maintenance leg just terminal-failed, while an exact
+-- parked source still holds an un-emitted committed cursor, is the proven
+-- non-drainage shape — the same transaction fences every such parked
+-- source (the refusal's causal proof is the root's own failed terminal
+-- behind the exhausted child failure the derivation saw).
+not_draining AS (
+    SELECT {schema}.fence_not_draining_parked(maintained.id) AS fenced
+    FROM maintained
+    WHERE maintained.failed_root = 1
 )
-SELECT count(*)::int AS roots_updated FROM maintained
+SELECT (SELECT count(*)::int FROM maintained) AS roots_updated,
+       COALESCE((SELECT sum(fenced)::int FROM not_draining), 0) AS not_draining_fenced
 """
 )

@@ -704,6 +704,15 @@ SET status = CASE
     -- taskq/backend/_dispatch_sql.py). Set on every arm: a row that
     -- terminalises instead is not dispatchable, and the flag is inert.
     assignment_routed = true,
+    -- THE §2.4 KEY FATE AT THE RECLAIM: the re-pend arm (a nonterminal
+    -- re-pend patches named fields only) RETAINS the page-width
+    -- reservation; the terminal cancelled/crashed arms remove it — no key
+    -- survives a terminal row for re-arm.
+    metadata = CASE
+        WHEN j.cancel_phase = 0 AND ({has_budget})
+            THEN j.metadata
+            ELSE j.metadata - 'wf_emit_reservation'
+    END,
     -- The re-pend arm alone reschedules: its membership after the
     -- reorder is exactly `cancel_phase = 0 AND {has_budget}`: the
     -- cancelled and crashed arms keep the row's own scheduled_at.

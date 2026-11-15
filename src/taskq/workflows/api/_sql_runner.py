@@ -414,7 +414,11 @@ WITH flipped AS (
     SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
         finished_at = CASE WHEN status = 'running' THEN finished_at ELSE clock_timestamp() END,
         error_class = CASE WHEN status = 'running' THEN error_class ELSE '{wf_cancelled_class}' END,
-        metadata = metadata || '{"cancel_phase": "cooperative"}'::jsonb
+        -- THE §2.4 KEY FATE: the COOPERATIVE row (still running) retains
+        -- its key; a row this statement actually TERMINALIZES removes it.
+        metadata = CASE WHEN status = 'running'
+                        THEN metadata || '{"cancel_phase": "cooperative"}'::jsonb
+                        ELSE (metadata - 'wf_emit_reservation') || '{"cancel_phase": "cooperative"}'::jsonb END
     WHERE (metadata->>'flow_id')::uuid = $1
       AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
       -- A materialized terminal effect owns an independent ordinary policy.

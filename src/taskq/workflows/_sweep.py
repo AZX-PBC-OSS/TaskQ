@@ -41,7 +41,7 @@ import structlog
 from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
-from taskq.obs import get_logger
+from taskq.obs import get_logger, get_meter
 from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._progress import PROGRESS_RING_BOUND
 from taskq.workflows._reducers import forget_flow_reducers, resolve_flow_reducer
@@ -275,7 +275,27 @@ async def sweep_join_rederive(
         # by the root batch; the per-root node scan rides the flow-nodes
         # expression index (01.00.26_02 — the uuid-cast expression, the
         # workflow-rows-only partial) — never a seq scan.
-        await conn.execute(wsql.workflow_root_maintain, batch_size)
+        maintain = await conn.fetchrow(wsql.workflow_root_maintain, batch_size)
+        # THE §5.4 REFUSAL'S LOG FACE (the fence itself rode the maintain
+        # statement's own not_draining CTE — same transaction, the proof
+        # conditions named there): the operator's alert reads the metric
+        # counter and this bounded diagnostic, never a raw saturation
+        # count.
+        if maintain is not None and int(maintain["not_draining_fenced"] or 0):
+            from taskq.obs import get_meter
+
+            _not_draining = get_meter().create_counter(
+                name="taskq.workflows.wf_not_draining",
+                unit="{refusal}",
+                description="The proven non-drainage refusals (the committed terminal-root "
+                "proof behind an exhausted child failure, with an un-emitted parked cursor).",
+            )
+            _not_draining.add(int(maintain["not_draining_fenced"]))
+            logger.warning(
+                "wf.not_draining_refusal",
+                reason="terminal_root_after_child_failure_exhaustion",
+                fenced=int(maintain["not_draining_fenced"]),
+            )
     return SweepResult(
         blocked=summary["blocked"],
         blocked_required=summary["blocked_required"],

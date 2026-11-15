@@ -186,6 +186,93 @@ CREATE INDEX IF NOT EXISTS wf_emit_capacity_pending_idx
 COMMENT ON INDEX "{schema}".wf_emit_capacity_pending_idx IS
     'The global pending-intent selection''s ordered 100-flow read: at most 100 distinct flow ids in one short indexed read under the persistent rotating after_flow_id cursor, holding no row lock past the read.';
 
+-- THE §5.4 NON-DRAINAGE REFUSAL FUNCTION (the root-maintenance failure
+-- arm's server-side seat): on the committed terminal-root proof (the root
+-- terminal 'failed' behind a genuine child failure that exhausted its
+-- declared retry policy, while an exact parked source still holds an
+-- un-emitted committed cursor), the same transaction fences every such
+-- parked source with WORKFLOW_NOT_DRAINING_ERROR_CLASS, the named reason,
+-- and the causal child/root ids. No logical attempt is spent, no ladder
+-- retry is created, and the causal child's genuine error is never
+-- overwritten. The cascade seat (the engine's fail-closed path) calls the
+-- statement form directly with the child it knows; this function derives
+-- the causal child from the rows (the most recently failed exhausted
+-- child).
+CREATE OR REPLACE FUNCTION {schema}.fence_not_draining_parked(p_root uuid)
+RETURNS integer
+LANGUAGE plpgsql
+AS $fence$
+DECLARE
+    v_child uuid;
+    v_fenced integer;
+BEGIN
+    SELECT l.job_id INTO v_child
+    FROM {schema}.wf_step_ledger l
+    WHERE l.flow_id = p_root
+      AND l.status = 'failed'
+      AND l.job_id IS NOT NULL
+    ORDER BY l.updated_at DESC, l.id DESC
+    LIMIT 1;
+
+    WITH parks AS (
+        SELECT j.id
+        FROM {schema}.jobs AS j
+        WHERE (j.metadata->>'flow_id')::uuid = p_root
+          AND j.status = 'scheduled'
+          AND j.metadata @> '{{"blocking_reason":"backpressure"}}'::jsonb
+          AND j.metadata @> '{{"wf_deferral":{{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}}}'::jsonb
+          AND j.metadata @> '{{"wf_emit_backpressure":{{"version":1}}}}'::jsonb
+          AND j.step_key IS NOT NULL
+          AND j.step_key <> '__flow__'
+          AND j.metadata ? 'flow_id'
+          AND j.metadata ? 'emit_cursor'
+    ), fenced AS (
+        UPDATE {schema}.jobs AS j
+        SET status = 'failed',
+            finished_at = clock_timestamp(),
+            error_class = 'WorkflowNotDrainingError',
+            error_message = 'the run is provably not draining: the root terminal ''failed'' '
+                            'committed after the causal child failure exhausted its retry '
+                            'policy, while this source still parks on an un-emitted '
+                            'committed cursor (reason: '
+                            'terminal_root_after_child_failure_exhaustion)',
+            metadata = (j.metadata - 'blocking_reason' - 'wf_emit_reservation')
+                || jsonb_build_object(
+                    'wf_not_draining', jsonb_build_object(
+                        'reason', 'terminal_root_after_child_failure_exhaustion',
+                        'root_id', p_root,
+                        'child_id', v_child,
+                        'at', to_char(clock_timestamp() AT TIME ZONE 'UTC',
+                                      'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+                    )
+                )
+        FROM parks
+        WHERE j.id = parks.id
+        RETURNING j.id
+    ), ledger AS (
+        UPDATE {schema}.wf_step_ledger AS l
+        SET status = 'fenced',
+            error_class = 'WorkflowNotDrainingError',
+            updated_at = clock_timestamp()
+        FROM fenced
+        WHERE l.job_id = fenced.id
+          AND l.status = 'awaited'
+        RETURNING l.id
+    ), evt AS (
+        INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
+        SELECT fenced.id, clock_timestamp(), 'state_change',
+               jsonb_build_object('from_state', 'scheduled',
+                                  'to_state', 'failed',
+                                  'error_class', 'WorkflowNotDrainingError',
+                                  'reason',
+                                  'terminal_root_after_child_failure_exhaustion')
+        FROM fenced
+    )
+    SELECT count(*) INTO v_fenced FROM fenced;
+    RETURN v_fenced;
+END;
+$fence$;
+
 CREATE INDEX IF NOT EXISTS jobs_wf_emit_park_idx
     ON "{schema}".jobs (((metadata->>'flow_id')::uuid), created_at, id)
     WHERE status = 'scheduled'

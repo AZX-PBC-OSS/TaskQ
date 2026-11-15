@@ -670,6 +670,21 @@ async def _resolve_failed_parent(
         _jsonb(peer_record),
         flow_id,
     )
+    # THE §5.4 NON-DRAINAGE REFUSAL — in this same failure-cascade
+    # transaction: the cascade just committed the flow root's terminal
+    # `failed` behind this child's exhausted failure. An exact parked source
+    # still holding an un-emitted committed cursor is the one durable proof
+    # that the run is provably not draining; the fence ends it (no logical
+    # attempt spent, no ladder retry, the child's genuine error untouched).
+    from taskq.workflows._emit import fence_not_draining_parked_sources
+
+    await fence_not_draining_parked_sources(
+        conn,
+        wsql,
+        flow_id=flow_id,
+        child_id=parent_id,
+        child_step_key=step_key,
+    )
 
     # the absorbed fan-in (collect | maybe) — the typed partial result's
     # failure items. The ledger's attempt rows for this child are the
