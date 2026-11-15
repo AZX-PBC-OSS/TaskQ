@@ -131,7 +131,8 @@ async def _park_primitive_claim(
     page_width: int = 2,
     bound: int = 2,
     outstanding: int | None = None,
-) -> None:
+    flow_id: JobId | None = None,
+):
     verdict = await defer_row_law(
         wf_pool,
         wf_sql,
@@ -150,8 +151,10 @@ async def _park_primitive_claim(
             outstanding=bound if outstanding is None else outstanding,
         ),
         source_logical_attempt=logical_attempt,
+        flow_id=flow_id,
     )
-    assert verdict == "deferred"
+    assert verdict.verdict == "deferred"
+    return verdict.intent_created
 
 
 @pytest.mark.integration
@@ -433,6 +436,15 @@ async def test_uncommitted_terminal_cannot_hide_from_both_commit_acknowledged_re
         assert final_child_status == "running"
         delayed_pool.allow_commit.set()
         await asyncio.gather(*child_tasks)
+        # The two events raced: the second child's terminal event may have
+        # probed BEFORE the park committed (its one-shot probe honestly saw
+        # no marker) — the omitted seat is the drive's own reconciliation
+        # backfill's to heal (§5.3). Either ordering is contract-legal; a
+        # premature promotion while the second child was uncommitted is not,
+        # and the assertions above already pinned that.
+        state_now = await _source_state(wf_conn, wf_schema, flow_id, source_id, "source")
+        if state_now["status"] != "pending":
+            assert await runner.drive(flow_id) in ("terminal", "held", "max_ticks")
         woken = await _await_source_status(
             wf_conn,
             wf_schema,
@@ -515,32 +527,32 @@ async def test_divergent_physical_composition_park_and_diagnostic_fold_stability
     assert claim.attempt == 4
 
     control = EmitBackpressure(page_width=2, bound=2, outstanding=2)
-    assert (
-        await defer_row_law(
-            wf_pool,
-            wf_sql,
-            job_id=claim.job_id,
-            worker_id=claim.worker_id,
-            delay=timedelta(0),
-            attempt=claim.attempt,
-            claim_epoch=claim.claim_epoch,
-            disposition="emit_backpressure",
-            signal_name="EmitBackpressure",
-            ledger_id=claim.ledger_id,
-            ledger_claimed_at=claim.ledger_claimed_at,
-            backpressure=control,
-            source_logical_attempt=2,
-        )
-        == "deferred"
+    _park_outcome = await defer_row_law(
+        wf_pool,
+        wf_sql,
+        job_id=claim.job_id,
+        worker_id=claim.worker_id,
+        delay=timedelta(0),
+        attempt=claim.attempt,
+        claim_epoch=claim.claim_epoch,
+        disposition="emit_backpressure",
+        signal_name="EmitBackpressure",
+        ledger_id=claim.ledger_id,
+        ledger_claimed_at=claim.ledger_claimed_at,
+        backpressure=control,
+        source_logical_attempt=2,
+        flow_id=flow_id,
     )
+    assert _park_outcome.verdict == "deferred"
     parked = await wf_conn.fetchrow(
         f'SELECT status, scheduled_at, attempt, metadata FROM "{wf_schema}".jobs WHERE id = $1',
         claim.job_id,
     )
     assert parked is not None
-    assert (parked["status"], parked["scheduled_at"], parked["attempt"]) == ("scheduled", None, 0)
+    assert parked["status"] == "scheduled" and parked["scheduled_at"] is not None
+    assert parked["attempt"] == 0
     wake = await wake_emit_backpressure(wf_pool, wf_sql, flow_id=flow_id)
-    assert wake.woken == 1
+    assert wake.promoted == 1
     physical_claim = await wf_conn.fetchrow(
         render_sql(NODE_CLAIM_SQL_TEMPLATE, wf_schema), claim.job_id, claim.worker_id
     )
@@ -725,170 +737,6 @@ async def test_two_sources_park_without_cross_cursor_or_sibling_deadlock(
 
 
 @pytest.mark.integration
-async def test_inline_wake_failure_is_soft_and_estate_marker_recovers(
-    wf_conn: asyncpg.Connection,
-    wf_schema: str,
-    wf_pool: asyncpg.Pool,
-    wf_sql: WorkflowSql,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    suffix = new_uuid().hex
-    gate = asyncio.Event()
-    started = [asyncio.Event(), asyncio.Event()]
-    page_zero = asyncio.Event()
-    source_attempts: list[tuple[int, int]] = []
-
-    async def screen(ctx: StepContext, item: object) -> enum.Enum:
-        index = ctx.map_index
-        assert index in (0, 1)
-        started[index].set()
-        await gate.wait()
-        return _Outcome.OK
-
-    class _Outcome(enum.Enum):
-        OK = "ok"
-
-    chain = _chain(f"wake-fail-soft-{suffix}", screen)
-    app = WorkflowApp()
-
-    @app.workflow(f"wake_fail_soft_{suffix}", max_in_flight=2)
-    def flow() -> Promise[object]:
-        source = _source_body(chain, ((0, 1), (2, 3)), source_attempts, page_zero_emitted=page_zero)
-        return build(chain_source(chain, source, key="source", max_attempts=2))
-
-    compiled = app.get(f"wake_fail_soft_{suffix}")
-    runner = FlowRunner(compiled, wf_pool, wf_schema)
-    flow_id = (await runner.create_flow()).flow_id
-    source_id = await _source_id(wf_conn, wf_schema, flow_id)
-    source_task = asyncio.create_task(runner.tick(flow_id))
-    child_tasks: list[asyncio.Task[bool]] = []
-    from taskq.workflows import _emit as emit_module
-
-    original_wake = wake_emit_backpressure
-
-    async def refused_inline_read(
-        pool: asyncpg.Pool,
-        statement_sql: WorkflowSql,
-        *,
-        flow_id: JobId | None = None,
-        batch_size: int = 100,
-        after: tuple[JobId, JobId] | None = None,
-        chunk_size: int = 200,
-        exhaust: bool = False,
-    ) -> Never:
-        raise asyncpg.ConnectionDoesNotExistError("synthetic inline wake connection loss")
-
-    try:
-        await asyncio.wait_for(page_zero.wait(), _WAIT_S)
-        source_parked = False
-        for index in range(2):
-            child_tasks.append(asyncio.create_task(runner.tick(flow_id)))
-            await asyncio.wait_for(started[index].wait(), _WAIT_S)
-            if index == 1:
-                parked = await _await_source_status(
-                    wf_conn,
-                    wf_schema,
-                    flow_id,
-                    source_id,
-                    "source",
-                    _park_is_live,
-                    deadline_s=_WAIT_S,
-                )
-                assert _park_is_live(parked), parked
-                await asyncio.wait_for(source_task, _WAIT_S)
-                source_parked = True
-        assert source_parked
-        monkeypatch.setattr(emit_module, "wake_emit_backpressure", refused_inline_read)
-        gate.set()
-        await asyncio.wait_for(asyncio.gather(*child_tasks), _WAIT_S)
-        still_parked = await _source_state(wf_conn, wf_schema, flow_id, source_id, "source")
-        assert _park_is_live(still_parked), still_parked
-        assert still_parked["failed_ledger"] == 0
-        # Restore DurableTruth, then the ordinary estate pass proves that the
-        # successful children's terminals did not depend on wake infra health.
-        monkeypatch.setattr(emit_module, "wake_emit_backpressure", original_wake)
-        recovery = await original_wake(wf_pool, wf_sql, batch_size=1)
-        assert recovery.woken == 1
-        recovered = await _source_state(wf_conn, wf_schema, flow_id, source_id, "source")
-        assert recovered["status"] == "pending"
-        assert recovered["blocking_reason"] is None
-        assert await runner.drive(flow_id, max_ticks=250) == "terminal"
-    finally:
-        monkeypatch.setattr(emit_module, "wake_emit_backpressure", original_wake)
-        gate.set()
-        tasks = [source_task, *child_tasks]
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-
-@pytest.mark.integration
-async def test_bounded_estate_cursor_passes_blocked_prefix(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
-) -> None:
-    first_flow, first = await _claimed(
-        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
-    )
-    second_flow, second = await _claimed(
-        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
-    )
-    pairs = sorted(((first_flow, first), (second_flow, second)), key=lambda pair: pair[0])
-    blocked_flow, blocked = pairs[0]
-    _fitted_flow, fitted = pairs[1]
-    await _park_primitive_claim(wf_pool, wf_sql, first, logical_attempt=1)
-    await _park_primitive_claim(wf_pool, wf_sql, second, logical_attempt=1)
-    # One ordinary pending child is enough to block the first ordered waiter's
-    # width-two page under bound two (1 + 2 > 2).
-    from taskq.workflows._types import NodeSpec
-    from taskq.workflows.engine import insert_node
-
-    blocker_id = await insert_node(
-        wf_conn,
-        wf_sql,
-        NodeSpec(
-            flow_id=blocked_flow,
-            step_key="ordinary_pending",
-            actor="wf-node",
-            queue="default",
-            payload={},
-            parent_id=blocked.job_id,
-        ),
-    )
-    probe_one = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=1)
-    assert probe_one.woken == 0
-    assert probe_one.next_cursor == (blocked_flow, blocked.job_id)
-    probe_two = await wake_emit_backpressure(
-        wf_pool, wf_sql, batch_size=1, after=probe_one.next_cursor
-    )
-    assert probe_two.woken == 1
-    fitted_row = await wf_conn.fetchrow(
-        f'SELECT status, scheduled_at, metadata FROM "{wf_schema}".jobs WHERE id = $1',
-        fitted.job_id,
-    )
-    blocked_row = await wf_conn.fetchrow(
-        f'SELECT status, scheduled_at, metadata FROM "{wf_schema}".jobs WHERE id = $1',
-        blocked.job_id,
-    )
-    assert fitted_row is not None and fitted_row["status"] == "pending"
-    assert _metadata(fitted_row["metadata"]).get("blocking_reason") is None
-    assert blocked_row is not None and blocked_row["status"] == "scheduled"
-    assert blocked_row["scheduled_at"] is None
-    assert _metadata(blocked_row["metadata"])["blocking_reason"] == "backpressure"
-    # Once capacity genuinely frees, a reset pass returns to and wakes the
-    # original prefix. No per-source tick or wait registry is involved.
-    await wf_conn.execute(f'DELETE FROM "{wf_schema}".jobs WHERE id = $1', blocker_id)
-    drained = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=1)
-    assert drained.woken == 1
-    assert (
-        await wf_conn.fetchval(
-            f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', blocked.job_id
-        )
-        == "pending"
-    )
-
-
-@pytest.mark.integration
 async def test_phantom_reap_covers_awaited_and_crashed_but_retains_live_root(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -897,8 +745,8 @@ async def test_phantom_reap_covers_awaited_and_crashed_but_retains_live_root(
         entries.append(
             await _claimed(wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1})
         )
-    for _flow_id, claim in entries:
-        await _park_primitive_claim(wf_pool, wf_sql, claim, logical_attempt=1)
+    for entry_flow, claim in entries:
+        await _park_primitive_claim(wf_pool, wf_sql, claim, logical_attempt=1, flow_id=entry_flow)
     awaited_flow, awaited_claim = entries[0]
     crashed_flow, crashed_claim = entries[1]
     _live_flow, live_claim = entries[2]
@@ -1070,29 +918,49 @@ async def test_two_registered_fleet_claimants_release_source_and_wake(
 
 
 def test_waiter_migration_checksum_registration_and_shape() -> None:
+    """The folded 42_01 is the WHOLE object set's sole DDL owner: exactly one
+    file, its frozen bytes registered, no 41_03/41_04 identity anywhere, and
+    every folded object present in its split statements (the park index's
+    predicate carries the marker, never a NULL timestamp leg)."""
     import hashlib
     from pathlib import Path
 
     from taskq.migrate import discover, split_statements
 
-    matches = [item for item in discover() if item.key == "01.00.41_03:pre"]
+    keys = [item.key for item in discover()]
+    assert "01.00.41_03:pre" not in keys and "01.00.41_04:pre" not in keys
+    matches = [item for item in discover() if item.key == "01.00.42_01:pre"]
     assert len(matches) == 1
     migration = matches[0]
-    assert migration.filename == "01.00.41_03_pre_wf_emit_backpressure_waiters.sql"
-    assert migration.key == "01.00.41_03:pre"
+    assert migration.filename == "01.00.42_01_pre_wf_step_ledger_claim_epoch.sql"
     assert migration.use_transaction
     manifest_entry = (
         f"{hashlib.sha256(migration.sql_template.encode()).hexdigest()}  {migration.filename}"
     )
     assert manifest_entry in Path("tests/data/released_migrations.sha256").read_text().splitlines()
     statements = split_statements(migration.sql_template)
-    assert any("ALTER COLUMN scheduled_at DROP NOT NULL" in statement for statement in statements)
-    indexes = [statement for statement in statements if "CREATE INDEX" in statement]
-    assert len(indexes) == 1
-    assert "jobs_wf_emit_backpressure_waiter_idx" in indexes[0]
-    assert "scheduled_at IS NULL" in indexes[0]
-    assert "blocking_reason" in indexes[0]
-    assert "CONCURRENTLY" not in indexes[0]
+    joined = "\n".join(statements)
+    # the folded object set, one DDL owner
+    for object_sql in (
+        "ADD COLUMN IF NOT EXISTS claim_epoch",
+        "wf_step_ledger_claim_uniq",
+        "CREATE TABLE IF NOT EXISTS",
+        "wf_emit_capacity",
+        "wf_emit_intent_rotation",
+        "wf_emit_capacity_pending_idx",
+        "wake_generation > handled_generation",
+        "wf_emit_park_guard",
+        "CREATE TRIGGER",
+        "jobs_wf_emit_park_idx",
+    ):
+        assert object_sql in joined, object_sql
+    park_index = [s for s in statements if "jobs_wf_emit_park_idx" in s and "CREATE INDEX" in s][0]
+    assert "blocking_reason" in park_index
+    assert "consume_budget" in park_index
+    # REPRESENTATION INVERSION: no NULL/due timestamp leg exists in the
+    # park identity; scheduled_at is never touched by the park index.
+    assert "NULL" not in park_index.replace("IS NOT NULL", "")
+    assert "CONCURRENTLY" not in joined
 
 
 @pytest.mark.integration
@@ -1100,22 +968,20 @@ async def test_waiter_probe_tiny_plans_and_wake_semantics(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """Tiny-table plans are factual micro controls, not a scale/index mandate."""
-    from taskq.workflows._sql_finalize import EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL
-
-    query = render_sql(EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL, wf_schema)
+    query = wf_sql.emit_park_exists
     flow_id, claim = await _claimed(
         wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
     )
 
     async def plan() -> list[dict[str, object]]:
         raw = await wf_conn.fetchval(
-            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", flow_id, 100
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", flow_id
         )
         return _plan_document(raw)
 
     empty_plan = await plan()
     assert _actual_root_rows(empty_plan) == 0
-    await _park_primitive_claim(wf_pool, wf_sql, claim, logical_attempt=1)
+    await _park_primitive_claim(wf_pool, wf_sql, claim, logical_attempt=1, flow_id=flow_id)
     parked_plan = await plan()
     assert _actual_root_rows(parked_plan) == 1
     print(f"EXPLAIN ANALYZE tiny empty: {json.dumps(empty_plan, default=str)}")
@@ -1131,18 +997,23 @@ async def test_waiter_probe_tiny_plans_and_wake_semantics(
         page_width=1000,
         bound=1000,
         outstanding=1000,
+        flow_id=cap_flow,
     )
-    cap_query = render_sql(EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL, wf_schema)
+    cap_query = (
+        wf_sql.emit_candidate.replace("$2::bigint", "0::bigint").replace(
+            "$3::bigint", "1000::bigint"
+        )
+    )
     cap_plan = _plan_document(
         await wf_conn.fetchval(
-            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {cap_query}", cap_flow, 1000
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {cap_query}", cap_flow
         )
     )
     assert _actual_root_rows(cap_plan) == 1
     print(f"EXPLAIN ANALYZE tiny shipped-cap: {json.dumps(cap_plan, default=str)}")
     # The uncensored tiny documents may legitimately select Seq Scan and are the
     # explanatory record of that cheap choice. Populated index proof is separate.
-    assert (await wake_emit_backpressure(wf_pool, wf_sql, flow_id=flow_id)).woken == 1
+    assert (await wake_emit_backpressure(wf_pool, wf_sql, flow_id=flow_id)).promoted == 1
 
 
 @pytest.mark.integration
@@ -1154,7 +1025,7 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     wf_sql: WorkflowSql,
 ) -> None:
     """1000-active + real history/coexisting rows prove the shared index walk."""
-    from taskq.workflows._sql_finalize import EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL
+    from taskq.workflows._sql_finalize import WF_EMIT_PARK_EXISTS_SQL
     from tests._wf_fixtures import seed_flow
 
     cap_flow, cap_claim = await _claimed(
@@ -1228,6 +1099,7 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
         page_width=1000,
         bound=1000,
         outstanding=1000,
+        flow_id=cap_flow,
     )
     population = await wf_conn.fetch(
         f'SELECT status::text AS status, count(*)::int AS count FROM "{wf_schema}".jobs '
@@ -1288,16 +1160,16 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
         "(id, actor, queue, payload, status, max_attempts, retry_kind, step_key, "
         "metadata, scheduled_at, fairness_key, attempt) "
         "VALUES ($1, 'wf-node', 'default', '{}', 'scheduled', 3, 'transient', 'source', "
-        "$2::jsonb, NULL, $3, 0)",
+        "$2::jsonb, clock_timestamp(), $3, 0)",
         parked_rows,
     )
     await wf_conn.execute(f'ANALYZE "{wf_schema}".jobs')
 
-    query = render_sql(EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL, wf_schema)
-    candidate_rows = await wf_conn.fetch(query, cap_flow, 1000)
+    query = wf_sql.emit_park_exists.replace("SELECT 1", "SELECT j.id").replace("LIMIT 1", "")
+    candidate_rows = await wf_conn.fetch(query, cap_flow)
     assert [row["id"] for row in candidate_rows] == [cap_claim.job_id]
     raw_plan = await wf_conn.fetchval(
-        f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", cap_flow, 1000
+        f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", cap_flow
     )
     document = _plan_document(raw_plan)
     nodes = _plan_nodes(document)
@@ -1309,7 +1181,7 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     # scans the whole parked population per probe — the degradation this
     # pin exists to red.
     waiter_nodes = [
-        node for node in nodes if node.get("Index Name") == "jobs_wf_emit_backpressure_waiter_idx"
+        node for node in nodes if node.get("Index Name") == "jobs_wf_emit_park_idx"
     ]
     print(
         "EXPLAIN ANALYZE populated waiter before index assertion: "
@@ -1335,15 +1207,15 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     # THE ASSERTION IS LOAD-BEARING (the red-when-absent direction): with the
     # dedicated waiter index dropped, the same probe's plan no longer shows
     # it — this exact pin would red.
-    await wf_conn.execute(f'DROP INDEX "{wf_schema}".jobs_wf_emit_backpressure_waiter_idx')
+    await wf_conn.execute(f'DROP INDEX "{wf_schema}".jobs_wf_emit_park_idx')
     degraded = _plan_document(
-        await wf_conn.fetchval(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", cap_flow, 1000)
+        await wf_conn.fetchval(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", cap_flow)
     )
     degraded_nodes = _plan_nodes(degraded)
     assert [
         node
         for node in degraded_nodes
-        if node.get("Index Name") == "jobs_wf_emit_backpressure_waiter_idx"
+        if node.get("Index Name") == "jobs_wf_emit_park_idx"
     ] == [], degraded_nodes
     print(
         "EXPLAIN ANALYZE populated waiter WITHOUT the index (the red direction): "
@@ -1386,14 +1258,15 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     before_statuses = await wf_conn.fetch(
         f'SELECT id, status::text AS status FROM "{wf_schema}".jobs ORDER BY id',
     )
-    wake = await wake_emit_backpressure(wf_pool, wf_sql, flow_id=cap_flow, batch_size=1000)
-    assert wake.woken == 0
+    wake = await wake_emit_backpressure(wf_pool, wf_sql, flow_id=cap_flow)
+    assert wake.promoted == 0
     after = await wf_conn.fetchrow(
         f'SELECT status, scheduled_at, attempt, metadata FROM "{wf_schema}".jobs WHERE id = $1',
         cap_claim.job_id,
     )
     assert after is not None
-    assert (after["status"], after["scheduled_at"], after["attempt"]) == ("scheduled", None, 0)
+    assert after["status"] == "scheduled" and after["scheduled_at"] is not None
+    assert after["attempt"] == 0
     assert _metadata(after["metadata"])["blocking_reason"] == "backpressure"
     after_statuses = await wf_conn.fetch(
         f'SELECT id, status::text AS status FROM "{wf_schema}".jobs ORDER BY id',
@@ -1606,6 +1479,24 @@ async def test_pending_same_tx_fork_counts_before_parent_wake(
     flow_id, source = await _claimed(
         wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
     )
+    worker = JobId(new_uuid())
+    peer_id = await insert_node(
+        wf_conn,
+        wf_sql,
+        NodeSpec(
+            flow_id=flow_id,
+            step_key="peer",
+            actor="wf-node",
+            queue="default",
+            payload={},
+        ),
+    )
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs SET status = \'running\', locked_by_worker = $2, '
+        "lock_expires_at = now() + interval '90 seconds' WHERE id = $1",
+        peer_id,
+        worker,
+    )
     await _park_primitive_claim(
         wf_pool,
         wf_sql,
@@ -1613,9 +1504,9 @@ async def test_pending_same_tx_fork_counts_before_parent_wake(
         logical_attempt=1,
         page_width=1,
         bound=1,
+        flow_id=flow_id,
         outstanding=1,
     )
-    worker = JobId(new_uuid())
     parent_id = await insert_node(
         wf_conn,
         wf_sql,
@@ -1660,14 +1551,22 @@ async def test_pending_same_tx_fork_counts_before_parent_wake(
         ),
         ledger_id=JobId(parent_ledger["id"]),
         ledger_claimed_at=parent_ledger["updated_at"],
-        wake_backpressure=True,
+        emit_capacity=True,
     )
     assert finalized.applied
+    assert not finalized.intent_created, (
+        "the fork parent's own terminal counts its same-tx fork rows in the "
+        "derived charge only after they commit; the parent's event observes "
+        "the real rows as they are"
+    )
     source_after_fork = await wf_conn.fetchrow(
         f'SELECT status, metadata FROM "{wf_schema}".jobs WHERE id = $1', source.job_id
     )
     assert source_after_fork is not None and source_after_fork["status"] == "scheduled"
     assert _metadata(source_after_fork["metadata"])["blocking_reason"] == "backpressure"
+    # The fixture's peer (the park-shape's live capacity consumer) leaves:
+    # the child terminal below is then the seat that can cross.
+    await wf_conn.execute(f'DELETE FROM "{wf_schema}".jobs WHERE id = $1', peer_id)
     child_id = await wf_conn.fetchval(
         f"SELECT id FROM \"{wf_schema}\".jobs WHERE parent_id = $1 AND step_key = 'forked'",
         parent_id,
@@ -1703,9 +1602,13 @@ async def test_pending_same_tx_fork_counts_before_parent_wake(
         outcome="succeeded",
         ledger_id=JobId(child_ledger["id"]),
         ledger_claimed_at=child_ledger["updated_at"],
-        wake_backpressure=True,
+        emit_capacity=True,
     )
     assert child_final.applied
+    if child_final.intent_created:
+        from taskq.workflows._emit import wake_emit_backpressure
+
+        await wake_emit_backpressure(wf_pool, wf_sql, flow_id=flow_id)
     source_after_child = await wf_conn.fetchrow(
         f'SELECT status, metadata FROM "{wf_schema}".jobs WHERE id = $1', source.job_id
     )
@@ -1741,8 +1644,17 @@ async def test_pre_waiter_schema_park_rolls_back_without_stranding_marker(pg_dsn
             claim_statement=era_claim,
         )
         pool = await asyncpg.create_pool(pg_dsn)
-        with pytest.raises(asyncpg.NotNullViolationError):
-            await _park_primitive_claim(pool, old_sql, claim, logical_attempt=1)
+        # The pre-fold schema lacks the 42_01 object set: the §2.1 whole
+        # -object-set preflight refuses before ANY body, child, cursor, or
+        # park write (the old-era park cannot even run — and the folded
+        # schema's scheduled_at stays NOT NULL, so the deleted NULL
+        # representation is unreachable in every era).
+        from taskq.workflows._capability import verify_emit_capacity_objects
+
+        with pytest.raises(Exception, match="01.00.42_01"):
+            await verify_emit_capacity_objects(pool, schema)
+        with pytest.raises(Exception, match="01.00.42_01"):
+            await _park_primitive_claim(pool, old_sql, claim, logical_attempt=1, flow_id=_flow_id)
         row = await conn.fetchrow(
             f"SELECT status, scheduled_at, attempt, locked_by_worker, metadata "
             f'FROM "{schema}".jobs WHERE id = $1',
@@ -1767,222 +1679,104 @@ async def test_pre_waiter_schema_park_rolls_back_without_stranding_marker(pg_dsn
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
 
-
-async def test_estate_wake_cursor_is_fair_under_continuous_arrivals(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
-) -> None:
-    """The estate sweep's completeness law under CONTINUOUS arrivals (the
-    recovery arm's own fairness): a parked source whose fit arrives AFTER
-    the cursor passed it is re-examined by a wrap pass and wakes within a
-    bounded number of passes. The rejected shape: a pure keyset cursor at
-    batch_size=1 with a new waiter parked every pass keeps every pass full,
-    never resets, and the fitted row behind it starves forever — the
-    steady-state saturated estate with a missed inline wake."""
-    from taskq.workflows._emit import EstateWakeCursor
-    from taskq.workflows._types import NodeSpec
-    from taskq.workflows.engine import insert_node
-
-    # A: parked, blocked by one ordinary pending child of its own run
-    # (page 2 cannot fit while the child is live).
-    flow_a, claim_a = await _claimed(
-        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
-    )
-    blocker = await insert_node(
-        wf_conn,
-        wf_sql,
-        NodeSpec(step_key="screen", actor="wf-node", queue="default", payload={}, flow_id=flow_a),
-    )
-    await _park_primitive_claim(
-        wf_pool, wf_sql, claim_a, logical_attempt=1, page_width=2, bound=2, outstanding=2
-    )
-    a_state = await _source_state(wf_conn, wf_schema, flow_a, claim_a.job_id, "source")
-    assert a_state["status"] == "scheduled" and a_state["blocking_reason"] == "backpressure"
-
-    # B: parked, already fitted (its page fits immediately).
-    _flow_b, claim_b = await _claimed(
-        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
-    )
-    await _park_primitive_claim(
-        wf_pool, wf_sql, claim_b, logical_attempt=1, page_width=1, bound=2, outstanding=0
-    )
-
-    state = EstateWakeCursor()
-    # Pass 1 examines A (blocked) and advances the cursor past it.
-    after, batch, exhaust = state.next_pass(1)
-    first = await wake_emit_backpressure(
-        wf_pool, wf_sql, batch_size=batch, after=after, exhaust=exhaust
-    )
-    state.observe(first)
-    assert first.woken == 0, "A's page cannot fit while its child is live"
-    # A's capacity frees: the blocker's row is deleted.
-    await wf_conn.execute(f'DELETE FROM "{wf_schema}".jobs WHERE id = $1', blocker)
-    assert _park_is_live(await _source_state(wf_conn, wf_schema, flow_a, claim_a.job_id, "source"))
-
-    woken_pass = None
-    for _pass in range(1, 7):
-        # A new waiter parks before every pass (continuous arrivals).
-        _flow_w, claim_w = await _claimed(
-            wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
-        )
-        await _park_primitive_claim(
-            wf_pool, wf_sql, claim_w, logical_attempt=1, page_width=1, bound=2, outstanding=0
-        )
-        after, batch, exhaust = state.next_pass(1)
-        result = await wake_emit_backpressure(
-            wf_pool, wf_sql, batch_size=batch, after=after, exhaust=exhaust
-        )
-        state.observe(result)
-        a_now = await _source_state(wf_conn, wf_schema, flow_a, claim_a.job_id, "source")
-        if not _park_is_live(a_now):
-            woken_pass = _pass
-            assert a_now["status"] == "pending" and a_now["blocking_reason"] is None, a_now
-            break
-    assert woken_pass is not None, (
-        "A fitted parked source starved behind continuous arrivals — the "
-        "estate cursor never revisited it (passes ran: 6)"
-    )
-    assert woken_pass <= 4, f"A woke on pass {woken_pass} — beyond the fair cursor's bound"
-
-
-async def test_scheduled_null_requires_the_exact_park_marker(
-    wf_conn: asyncpg.Connection, wf_schema: str
-) -> None:
-    """The STORAGE domain (01.00.41_04's law): a `scheduled` row with no due
-    time is the capacity park's exclusive representation. Any other writer —
-    an ordinary deferral losing its timer, a corrupted or hand-minted row —
-    is refused at the storage layer, because the dispatch claim's CAS can
-    never claim a scheduled NULL row and listing one is the busy-spin shape."""
-    flow_id = new_uuid()
-    ambiguous_rows: list[tuple[object, ...]] = [
-        (
-            new_uuid(),
-            "wf-node",
-            "default",
-            "{}",
-            "scheduled",
-            3,
-            "transient",
-            "work",
-            None,
-            json.dumps({"flow_id": str(flow_id)}),
-            str(flow_id),
-        )
-    ]
-    with pytest.raises(asyncpg.CheckViolationError) as check_exc:
-        await wf_conn.executemany(
-            f'INSERT INTO "{wf_schema}".jobs '
-            "(id, actor, queue, payload, status, max_attempts, retry_kind, step_key, "
-            "scheduled_at, metadata, fairness_key) "
-            "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11)",
-            ambiguous_rows,
-        )
-    # The violation is THE PARK DOMAIN'S OWN constraint — the row is every
-    # other way legitimate (a fairness cohort, a due-shape status, a real
-    # node key), so the storage refusal can only be the scheduled-NULL law.
-    assert check_exc.value.__dict__.get("constraint_name") == "jobs_scheduled_null_park_chk", str(
-        check_exc.value
-    )[:300]
-
-
 async def test_claimable_listing_agrees_with_the_claim_cas(pg_dsn: str) -> None:
-    """The direct driver's listing and its claim CAS must agree on every
-    row shape (the pre-41_04 schema keeps the ambiguous row writable, so
-    the agreement is observable there): a scheduled row with a NULL due
-    time — parked or ambiguous — is listed by NO probe and claimed by NO
-    CAS. The rejected shape listed the ambiguous NULL row while the CAS
-    refused it: the driver spun at max_ticks on a row no claim could
-    ever take."""
+    """The direct driver's listing and its claim CAS must agree on every row
+    shape. REPRESENTATION INVERSION: the scheduled-NULL storage state is
+    UNWRITABLE on the folded schema (scheduled_at is NOT NULL — the deleted
+    representation), so the agreement control asserts the un-writability
+    itself plus the exact park's unclaimability through both the listing
+    and the CAS."""
+    import json as _json
+
     from taskq.migrate import apply_pending
-    from taskq.workflows.api._sql_runner import CLAIMABLE_NODES_SQL_TEMPLATE
+    from taskq.workflows.api._sql_runner import CLAIMABLE_NODES_SQL_TEMPLATE, NODE_CLAIM_SQL_TEMPLATE
     from taskq.workflows.engine import render_workflow_sql
 
-    schema = f"bp_pre04_{new_uuid().hex}".lower()
+    schema = f"bp_agree_{new_uuid().hex}".lower()
     conn = await asyncpg.connect(pg_dsn)
     pool: asyncpg.Pool | None = None
     try:
-        applied = await apply_pending(conn, schema=schema, target="01.00.41_03")
-        assert applied[-1].key == "01.00.41_03:pre"
+        await apply_pending(conn, schema=schema)
         wsql = render_workflow_sql(schema)
-        # The era's six-bind ledger claim (this schema predates the ledger's
-        # claim_epoch column).
-        era_claim = (
-            wsql.ledger_claim.replace(", claim_epoch, status)", ", status)")
-            .replace("$6, $7, 'running'", "$6, 'running'")
-            .replace(", attempt, claim_epoch) DO UPDATE", ", attempt) DO UPDATE")
-        )
         flow_id, claim = await _claimed(
-            conn,
-            schema,
-            wsql,
-            metadata={"wf_source_logical_attempt": 1},
-            claim_statement=era_claim,
+            conn, schema, wsql, metadata={"wf_source_logical_attempt": 1}
         )
         pool = await asyncpg.create_pool(pg_dsn)
-        # The real park lands here (41_03 dropped the NOT NULL; the CHECK
-        # does not exist yet).
-        await _park_primitive_claim(pool, wsql, claim, logical_attempt=1)
-        # The AMBIGUOUS row is writable on this schema: scheduled, an
-        # EXPLICIT NULL due time (the column's DEFAULT now() would stamp a
-        # legitimate due row), NO marker — the state the CHECK refuses on
-        # the current schema.
+        await _park_primitive_claim(pool, wsql, claim, logical_attempt=1, flow_id=flow_id)
+
+        # The park instant is stored; the marker — never the timestamp —
+        # discriminates. The parked row is offered by no probe and taken by
+        # no claim CAS.
+        listing = await pool.fetch(render_sql(CLAIMABLE_NODES_SQL_TEMPLATE, schema), flow_id)
+        assert [row["id"] for row in listing] == [], (
+            f"the claimable listing must not offer the parked row, "
+            f"got {[str(r['id']) for r in listing]}"
+        )
+        claimed = await pool.fetchrow(
+            render_sql(NODE_CLAIM_SQL_TEMPLATE, schema), claim.job_id, JobId(new_uuid())
+        )
+        assert claimed is None, "the parked row must be unclaimable (the CAS's own marker leg)"
+
+        # The deleted representation's storage state is unwritable: a
+        # scheduled row with a NULL due time violates the column's NOT NULL.
         ambiguous = new_uuid()
+        with pytest.raises(asyncpg.NotNullViolationError):
+            await conn.execute(
+                f'INSERT INTO "{schema}".jobs '
+                "(id, actor, queue, payload, status, max_attempts, retry_kind, step_key, "
+                "metadata, scheduled_at, fairness_key) "
+                "VALUES ($1, 'wf-node', 'default', '{}', 'scheduled', 3, 'transient', 'work', "
+                "$2::jsonb, NULL, $3)",
+                ambiguous,
+                _json.dumps({"flow_id": str(flow_id)}),
+                str(flow_id),
+            )
+
+        # An ordinary due scheduled row (a real timer) is listed AND claimed
+        # by the same fences — the agreement's positive direction.
+        due = new_uuid()
         await conn.execute(
             f'INSERT INTO "{schema}".jobs '
             "(id, actor, queue, payload, status, max_attempts, retry_kind, step_key, "
             "metadata, scheduled_at, fairness_key) "
             "VALUES ($1, 'wf-node', 'default', '{}', 'scheduled', 3, 'transient', 'work', "
-            "$2::jsonb, NULL, $3)",
-            ambiguous,
-            json.dumps({"flow_id": str(flow_id)}),
+            "$2::jsonb, clock_timestamp() - interval '1 second', $3)",
+            due,
+            _json.dumps({"flow_id": str(flow_id)}),
             str(flow_id),
         )
         listing = await pool.fetch(render_sql(CLAIMABLE_NODES_SQL_TEMPLATE, schema), flow_id)
-        assert [row["id"] for row in listing] == [], (
-            f"the claimable listing must offer neither the parked row nor the "
-            f"ambiguous scheduled-NULL row (the claim CAS can take neither), "
-            f"got {[str(r['id']) for r in listing]}"
+        assert [row["id"] for row in listing] == [due], (
+            f"the due ordinary row must be listed (and only it), got {[str(r['id']) for r in listing]}"
         )
-        claimed = await conn.fetchrow(
-            render_sql(NODE_CLAIM_SQL_TEMPLATE, schema), ambiguous, JobId(new_uuid())
-        )
-        assert claimed is None, "the ambiguous row must be unclaimable (the CAS's own leg)"
-        row = await conn.fetchrow(
-            f"SELECT status::text AS status, scheduled_at, attempt::int AS attempt "
-            f'FROM "{schema}".jobs WHERE id = $1',
-            ambiguous,
-        )
-        assert row is not None
-        assert (row["status"], row["scheduled_at"], row["attempt"]) == ("scheduled", None, 0)
+        worker = JobId(new_uuid())
+        claimed = await pool.fetchrow(render_sql(NODE_CLAIM_SQL_TEMPLATE, schema), due, worker)
+        assert claimed is not None, "the due ordinary row must be claimable (the listing agrees)"
     finally:
         if pool is not None:
             await pool.close()
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
 
-
-async def test_malformed_waiter_marker_does_not_poison_the_estate_wake(
+async def test_malformed_waiter_marker_fails_closed_not_skip(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """One malformed parked record isolates to its OWN row: the estate pass
-    skips it with a bounded, named diagnostic and still wakes the valid
-    waiter in the same batch. The rejected shape: the descriptor's
-    ValueError aborted the whole pass — the estate recovery stayed
-    poisoned (every waiter parked, no cursor advance) behind one corrupt
-    row no product writer produces."""
-    import structlog.testing
+    """REPRESENTATION INVERSION: the estate pass's per-row skip is deleted —
+    a malformed parked marker is genuine corruption, and the drain fails
+    closed (roll back, bounded diagnostic, no promotion, the generation
+    stays pending) instead of laundering the bad row past a wake."""
+    import json as _json
 
     flow_v, claim_v = await _claimed(
         wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
     )
-    # The malformed row matches the candidate predicate (the exact marker
-    # legs) but its version-1 record is missing page_width.
+    # The malformed live marker: version 1 present, page_width absent (the
+    # width validator's fail-closed arm).
     await wf_conn.execute(
-        f'UPDATE "{wf_schema}".jobs SET metadata = metadata || $2::jsonb, '
-        "status = 'scheduled', scheduled_at = NULL, attempt = 0, "
-        "locked_by_worker = NULL, lock_expires_at = NULL, last_heartbeat_at = NULL "
-        "WHERE id = $1",
+        f'UPDATE "{wf_schema}".jobs SET status = \'scheduled\', '
+        "metadata = metadata || $2::jsonb WHERE id = $1",
         claim_v.job_id,
-        json.dumps(
+        _json.dumps(
             {
                 "blocking_reason": "backpressure",
                 "wf_deferral": {
@@ -1994,27 +1788,17 @@ async def test_malformed_waiter_marker_does_not_poison_the_estate_wake(
             }
         ),
     )
-    _flow_ok, claim_ok = await _claimed(
-        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
-    )
-    await _park_primitive_claim(
-        wf_pool, wf_sql, claim_ok, logical_attempt=1, page_width=1, bound=2, outstanding=0
-    )
-    with structlog.testing.capture_logs() as captured:
-        result = await wake_emit_backpressure(wf_pool, wf_sql, batch_size=10)
-    assert result.woken == 1, "the valid waiter must wake despite the malformed batch mate"
-    ok_state = await _source_state(wf_conn, wf_schema, flow_v, claim_ok.job_id, "source")
-    assert ok_state["status"] == "pending" and ok_state["blocking_reason"] is None
+    from taskq.workflows._emit import ensure_emit_capacity
+
+    async with wf_pool.acquire() as cap_conn:
+        await ensure_emit_capacity(cap_conn, wf_sql, flow_id=flow_v, bound=2)
+    with pytest.raises(Exception, match="integer"):
+        await wake_emit_backpressure(wf_pool, wf_sql, flow_id=flow_v)
     bad_state = await _source_state(wf_conn, wf_schema, flow_v, claim_v.job_id, "source")
     assert _park_is_live(bad_state), (
         f"the malformed marker stays parked, visible and bounded: {bad_state}"
     )
-    diagnostics = [e for e in captured if e.get("event") == "wf.emit_backpressure_waiter_invalid"]
-    assert diagnostics, (
-        f"the malformed row's skip must carry its bounded named diagnostic, got: {captured}"
-    )
-    assert diagnostics[0].get("job_id") == str(claim_v.job_id), diagnostics[0]
-    assert diagnostics[0].get("error_class") == "ValueError", diagnostics[0]
+    assert bad_state["status"] == "scheduled", bad_state
 
 
 async def test_pre_epoch_schema_refuses_the_normal_ledger_claim_fail_closed(
@@ -2035,8 +1819,8 @@ async def test_pre_epoch_schema_refuses_the_normal_ledger_claim_fail_closed(
     conn = await asyncpg.connect(pg_dsn)
     pool: asyncpg.Pool | None = None
     try:
-        applied = await apply_pending(conn, schema=schema, target="01.00.41_04")
-        assert applied[-1].key == "01.00.41_04:pre"
+        applied = await apply_pending(conn, schema=schema, target="01.00.41_02")
+        assert applied[-1].key == "01.00.41_02:pre"
         wsql = render_workflow_sql(schema)
         flow_id, claim = await _claimed(
             conn,
@@ -2084,210 +1868,6 @@ async def test_pre_epoch_schema_refuses_the_normal_ledger_claim_fail_closed(
             await pool.close()
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
-
-
-async def test_estate_wake_cursor_wraps_a_blocked_prefix_to_wake_a_fitted_waiter(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
-) -> None:
-    """The completeness authority's own guarantee, at the reviewer's probe:
-    a BLOCKED PREFIX at least as wide as the batch (two blocked rows, then
-    a fitted waiter F, batch_size=1) must not starve F — the wrap pass
-    examines the WHOLE parked population (its limit is the population's
-    cap, never the stride batch), so F wakes within a bounded number of
-    estate passes. The rejected shape: a from-start pass bounded by the
-    batch re-fills its window with the blocked prefix every cycle and F is
-    never examined (the reviewer's 12-pass probe: F scheduled through every
-    pass while a flow-target wake promoted it immediately)."""
-    from taskq.workflows._emit import EstateWakeCursor
-    from taskq.workflows._types import NodeSpec
-    from taskq.workflows.engine import insert_node
-
-    blocked: list[tuple[JobId, AttemptClaim]] = []
-    for _ in range(2):
-        flow_b, claim_b = await _claimed(
-            wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
-        )
-        blocker = await insert_node(
-            wf_conn,
-            wf_sql,
-            NodeSpec(
-                step_key="screen", actor="wf-node", queue="default", payload={}, flow_id=flow_b
-            ),
-        )
-        await _park_primitive_claim(
-            wf_pool, wf_sql, claim_b, logical_attempt=1, page_width=2, bound=2, outstanding=2
-        )
-        blocked.append((blocker, claim_b))
-    # F: parked and FITTED (its page fits immediately — page 1 of 2, no
-    # outstanding rows).
-    flow_f, claim_f = await _claimed(
-        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
-    )
-    await _park_primitive_claim(
-        wf_pool, wf_sql, claim_f, logical_attempt=1, page_width=1, bound=2, outstanding=0
-    )
-
-    state = EstateWakeCursor()
-    f_woken_pass = None
-    for pass_number in range(1, 7):
-        after, batch, exhaust = state.next_pass(1)
-        result = await wake_emit_backpressure(
-            wf_pool, wf_sql, batch_size=batch, after=after, exhaust=exhaust
-        )
-        state.observe(result)
-        f_state = await _source_state(wf_conn, wf_schema, flow_f, claim_f.job_id, "source")
-        if not _park_is_live(f_state):
-            f_woken_pass = pass_number
-            assert f_state["status"] == "pending" and f_state["blocking_reason"] is None, f_state
-            break
-    assert f_woken_pass is not None, (
-        "a fitted parked waiter behind a blocked prefix as wide as the batch "
-        "starved through 6 estate passes — the wrap never examined it"
-    )
-    assert f_woken_pass <= 4, f"F woke on pass {f_woken_pass} — beyond the wrap cycle's bound"
-    # The blocked rows stay parked (the wrap examined and correctly left them).
-    for _blocker, claim_b in blocked:
-        assert _park_is_live(
-            await _source_state(wf_conn, wf_schema, claim_b.flow_id, claim_b.job_id, "source")
-        ), "the blocked prefix's rows must stay parked until their capacity frees"
-
-
-async def test_the_wake_pass_pages_the_whole_population_under_the_lock_budget(
-    wf_conn: asyncpg.Connection,
-    wf_schema: str,
-    wf_pool: asyncpg.Pool,
-    wf_sql: WorkflowSql,
-    pg_dsn: str,
-) -> None:
-    """THE LOCK BUDGET AT POPULATION (the reviewer's 10k probe as a control):
-    a parked population of 10,000 (far above the per-transaction chunk
-    ceiling of 200) is woken by ONE wrap pass whose transactions each hold
-    at most the chunk's own locks — the pass can never exhaust the shared
-    lock table (``max_locks_per_transaction`` x connections) regardless of
-    population, and the coverage is complete: the whole population wakes in
-    that one pass. The rejected shape: the whole population processed in
-    ONE transaction (measured by the reviewer: ~9,855 transaction-scoped
-    advisory locks — over a 100-connection deployment's entire lock table
-    at the default 64/transaction)."""
-    population = 10_000
-    rows: list[tuple[object, ...]] = []
-    for _index in range(population):
-        flow_id = new_uuid()
-        rows.append(
-            (
-                flow_id,
-                f'{{"flow_id": "{flow_id}", "workflow": "wake-budget-probe"}}',
-                str(flow_id),
-            )
-        )
-    await wf_conn.executemany(
-        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key, "
-        "fairness_key) "
-        "VALUES ($1, 'flow', 'default', '{}', 3, 'transient', 'running', '__flow__', "
-        "$2::jsonb, 'workflow-run', 'probe:' || $3, $3)",
-        rows,
-    )
-    parked_rows: list[tuple[object, ...]] = []
-    for _index, (flow_id, _meta, _fair) in enumerate(rows):
-        parked_rows.append(
-            (
-                new_uuid(),
-                json.dumps(
-                    {
-                        "flow_id": str(flow_id),
-                        "blocking_reason": "backpressure",
-                        "wf_deferral": {
-                            "signal": "EmitBackpressure",
-                            "consume_budget": False,
-                            "attempt": 0,
-                        },
-                        "wf_emit_backpressure": {
-                            "version": 1,
-                            "page_width": 1,
-                            "bound": 2,
-                            "outstanding": 0,
-                            "deferrals": 1,
-                            "wakes": 0,
-                            "deferred_at": "2026-01-01T00:00:00.000000Z",
-                        },
-                    }
-                ),
-                str(flow_id),
-            )
-        )
-    await wf_conn.executemany(
-        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, status, max_attempts, '
-        "retry_kind, step_key, metadata, scheduled_at, fairness_key, attempt) "
-        "VALUES ($1, 'wf-node', 'default', '{}', 'scheduled', 3, 'transient', 'source', "
-        "$2::jsonb, NULL, $3, 0)",
-        parked_rows,
-    )
-    await wf_conn.execute(f'ANALYZE "{wf_schema}".jobs')
-    max_locks = int(await wf_conn.fetchval("SHOW max_locks_per_transaction"))
-    chunk_size = 200
-
-    # THE LOCK SAMPLER: a dedicated connection polling the instance's
-    # advisory locks while the wrap pass runs.
-    stop = asyncio.Event()
-    sampled_max = 0
-
-    async def sampler() -> None:
-        nonlocal sampled_max
-        sconn = await asyncpg.connect(pg_dsn)
-        try:
-            while not stop.is_set() or not sampled_max:
-                counts = await sconn.fetchval(
-                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'"
-                )
-                sampled_max = max(sampled_max, int(counts or 0))
-                if stop.is_set():
-                    return
-                await asyncio.sleep(0.02)
-        finally:
-            await sconn.close()
-
-    sampler_task = asyncio.create_task(sampler())
-    try:
-        result = await wake_emit_backpressure(
-            wf_pool, wf_sql, batch_size=population, after=None, exhaust=True, chunk_size=chunk_size
-        )
-    finally:
-        stop.set()
-        await asyncio.sleep(0.05)
-        sampler_task.cancel()
-        await asyncio.gather(sampler_task, return_exceptions=True)
-    print(
-        "WAKE PASS FACTS: "
-        + json.dumps(
-            {
-                "population": population,
-                "woken": result.woken,
-                "chunk_size": chunk_size,
-                "sampled_max_advisory_locks": sampled_max,
-                "max_locks_per_transaction": max_locks,
-                "lock_slots_at_100_connections": max_locks * 100,
-            }
-        )
-    )
-    assert result.woken == population, (
-        f"the wrap pass must cover the WHOLE population in one pass, got {result.woken}"
-    )
-    assert result.next_cursor is None
-    # THE LOCK BUDGET: the sampled in-flight advisory locks never approach
-    # the shared lock table's ceiling — each chunk holds at most its own
-    # chunk's locks (the x2 slack is the sampler's own 20ms skew against a
-    # chunk's commit boundary; the 100-connection arithmetic is the
-    # reviewer's deployment shape).
-    assert sampled_max <= chunk_size * 2, (
-        f"the wrap's transactions held {sampled_max} advisory locks — beyond "
-        f"the chunk budget's own ceiling ({chunk_size} x2)"
-    )
-    assert sampled_max < max_locks * 100, (
-        f"the wrap's transactions would exhaust a 100-connection deployment's "
-        f"lock table ({sampled_max} vs {max_locks * 100})"
-    )
-
 
 async def test_the_reaper_never_fences_a_live_claimed_attempt(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql

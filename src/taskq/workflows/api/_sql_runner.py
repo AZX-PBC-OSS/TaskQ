@@ -624,5 +624,8 @@ _SQL_TOKEN_SUBS: Final[tuple[tuple[str, str], ...]] = (
 def render_sql(template: str, schema: str) -> str:
     """One runner statement's render (the shared render's substitution:
     the validated schema, then the token table above — the schema
-    identifier is checked before anything renders)."""
+    identifier is checked before anything renders). The runner templates'
+    jsonb literals are single-braced (a doubled `}}` sequence inside a
+    nested jsonb literal is REAL SQL text here, never an escape — the
+    un-doubling pass would truncate it)."""
     return shared_render(template, schema, subs=_SQL_TOKEN_SUBS)
