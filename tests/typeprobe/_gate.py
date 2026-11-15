@@ -72,6 +72,14 @@ _CORPUS: tuple[str, ...] = (
     # signatures (the F1-2 residual slot's door still reds on both checkers
     # with the declared rules).
     "wf_gather_negative_types.py",
+    # the transactional execution's public context subtype: the positive
+    # face (a body dereferencing the non-optional connection with no
+    # narrowing must stay clean on both checkers) and the negative
+    # optional-dereference face live with the other transactional doors.
+    "wf_transactional_context_types.py",
+    # the transactional execution doors (the joined page connection union +
+    # the transactional_step wiring's no-cache face).
+    "wf_transactional_negative_types.py",
     # a -> object decl is a static error at the decoration site, both checkers;
     # these hold that line in the corpus.
     "wf_workflow_decl_negative_types.py",
@@ -100,6 +108,8 @@ _CORPUS: tuple[str, ...] = (
     # body's list[E] and the promise's list[E] must agree on E); the
     # matching-element green face stays clean.
     "wf_list_element_negative_types.py",
+    "wf_deps_factory_negative_types.py",
+    "wf_execution_policy_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

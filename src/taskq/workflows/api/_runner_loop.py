@@ -12,6 +12,7 @@ driver here.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -22,19 +23,21 @@ from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import JobId
 from taskq.constants import ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED
+from taskq.context import CancelOrigin
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
 from taskq.workflows._progress import ProgressEmitter
 from taskq.workflows._types import FinalizeResult
+from taskq.workflows.api._attempt import AttemptClaim, repend_attempt
 from taskq.workflows.api._ctx import build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
-from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._runner_codec import encode_result, jsonable
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._runner_ladder import is_infra_fault
-from taskq.workflows.api._sql_runner import NODE_REPEND_SQL_TEMPLATE, render_sql
+from taskq.workflows.ledger import LedgerClaim
 
 if TYPE_CHECKING:
+    from taskq.workflows._cancellation import CancellationFace, WorkflowCancelDetail
     from taskq.workflows._sql import WorkflowSql
 
 __all__ = ["LoopOps"]
@@ -54,6 +57,11 @@ class _LoopHost(Protocol):
     #: bodies that declare the deps shape receive it, the same instance every
     #: other body invocation sees.
     _deps: object | None
+
+    async def _deps_tail(
+        self, body: Callable[..., object], wired_count: int
+    ) -> tuple[object, ...]: ...
+
     #: the id the node claim stamped on the row — the loop's advance/exhaust
     #: bind it (a zombie driver's write is refused by its own legs).
     _worker_id: JobId
@@ -76,6 +84,8 @@ class _LoopHost(Protocol):
         emitter: ProgressEmitter | None = None,
         *,
         claim_epoch: int = 0,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
     ) -> FinalizeResult: ...
 
 
@@ -95,6 +105,7 @@ class LoopOps(_LoopHost):
         *,
         claim_epoch: int = 0,
         ledger_claimed_at: Any = None,
+        iteration_rest: tuple[JobId, Any] | None = None,
     ) -> str:
         """the LOOP'S DEFERRAL DISPOSITION (the loop body's signals route
         through the same disposition the step bodies share — the
@@ -153,6 +164,7 @@ class LoopOps(_LoopHost):
             signal_name=type(exc).__name__,
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            iteration_rest=iteration_rest,
         )
 
         if verdict_text == "deferred":
@@ -193,6 +205,7 @@ class LoopOps(_LoopHost):
                 attempt=attempt,
                 claim_epoch=claim_epoch,
                 ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
                 capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the ladder's own call shape (the declared capture policy rides the compile).
                 project_auto=self._project_auto,
                 outcome="cancelled",
@@ -225,7 +238,10 @@ class LoopOps(_LoopHost):
                     ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
                     BUDGET_EXHAUSTED_MESSAGE,
                     None,
-                    None,  # the loop's route holds no claim instant here — the NULL form
+                    # The loop's exhaustion writes its OWN claim's row — the
+                    # exact id+instant identity (the re-mint guard), never a
+                    # status-only form.
+                    ledger_claimed_at,
                 )
         await self._exhaust_loop(
             flow_id,
@@ -257,6 +273,8 @@ class LoopOps(_LoopHost):
         *,
         claim_epoch: int = 0,
         ledger_claimed_at: Any = None,
+        cancel_face: CancellationFace | None = None,
+        cancel_detail: WorkflowCancelDetail | None = None,
     ) -> None:
         """Fresh jobs per iteration
         (``<loop>.iter<i>`` — the ledger's per-iteration identity); the
@@ -299,10 +317,20 @@ class LoopOps(_LoopHost):
                 emitter,
                 claim_epoch=claim_epoch,
                 ledger_claimed_at=ledger_claimed_at,
+                cancel_face=cancel_face,
+                cancel_detail=cancel_detail,
             )
         except Exception as exc:  # Why: the machinery boundary — the classifier reads WHERE the error escaped, never its type (the escape-point contract). BLE001 is the boundary's shape: any machinery exception is classified, then re-raised or reclaimed.
             if is_infra_fault(exc):
-                return await self._reclaim_loop(flow_id, row, attempt, exc)
+                return await self._reclaim_loop(
+                    flow_id,
+                    row,
+                    attempt,
+                    exc,
+                    claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
+                )
             raise
 
     async def _drive_loop(
@@ -317,6 +345,8 @@ class LoopOps(_LoopHost):
         *,
         claim_epoch: int = 0,
         ledger_claimed_at: Any = None,
+        cancel_face: CancellationFace | None = None,
+        cancel_detail: WorkflowCancelDetail | None = None,
     ) -> None:
         """The loop driver's own drive (the machinery side of the
         escape-point contract — the escape-point contract): every exception
@@ -408,6 +438,8 @@ class LoopOps(_LoopHost):
                     encode_result(carry),
                     emitter=emitter,
                     claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
                 )
                 return
 
@@ -451,6 +483,8 @@ class LoopOps(_LoopHost):
                         encode_result(payload),
                         emitter=emitter,
                         claim_epoch=claim_epoch,
+                        ledger_id=ledger_id,
+                        ledger_claimed_at=ledger_claimed_at,
                     )
                     return
                 carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
@@ -475,7 +509,7 @@ class LoopOps(_LoopHost):
                 return
             else:
                 async with self.pool.acquire() as conn:
-                    await claim_step_ledger(
+                    iteration_claim = await claim_step_ledger(
                         conn,
                         self.wsql,
                         flow_id=flow_id,
@@ -483,6 +517,7 @@ class LoopOps(_LoopHost):
                         step_key=iter_key,
                         map_index=None,
                         attempt=attempt,
+                        claim_epoch=claim_epoch,
                     )
                 loop_ctx = build_step_context(
                     flow_id=flow_id,
@@ -504,6 +539,9 @@ class LoopOps(_LoopHost):
                     queue=node.queue,
                     claimed_at=datetime.now(UTC),
                     budget_remaining_ms=remaining,
+                    worker_id=self._worker_id,
+                    cancel_face=cancel_face,
+                    cancel_detail=cancel_detail,
                 )
                 # the carry's typed contract, at the one point a carry reaches
                 # a body: re-hydrated through the declared type's validator —
@@ -520,11 +558,7 @@ class LoopOps(_LoopHost):
                     # every other body invocation sees (the shape's validator
                     # face is E12's; this read is the signature's positional
                     # truth).
-                    deps_tail = (
-                        (self._deps,)
-                        if self._deps is not None and deps_param_declared(node.loop_body, 1)
-                        else ()
-                    )
+                    deps_tail = await self._deps_tail(node.loop_body, 1)
                     outcome = await node.loop_body(loop_ctx, carry, *deps_tail)
                 except NodeHeldError:
                     # the loop node rests in the held representation (the
@@ -557,9 +591,50 @@ class LoopOps(_LoopHost):
                         exc,
                         claim_epoch=claim_epoch,
                         ledger_claimed_at=ledger_claimed_at,
+                        iteration_rest=(
+                            (iteration_claim.ledger_id, iteration_claim.claimed_at)
+                            if iteration_claim.ledger_id is not None
+                            and iteration_claim.claimed_at is not None
+                            else None
+                        ),
                     )
                     return
                 except Exception as exc:
+                    if loop_ctx.cancellation_requested:
+                        if loop_ctx.cancel_origin is CancelOrigin.SHUTDOWN:
+                            await self._reclaim_loop(
+                                flow_id,
+                                row,
+                                attempt,
+                                exc,
+                                claim_epoch=claim_epoch,
+                                ledger_id=ledger_id,
+                                ledger_claimed_at=ledger_claimed_at,
+                            )
+                            return
+                        if loop_ctx.cancel_origin is CancelOrigin.OPERATOR:
+                            from taskq.workflows.api._runner_defer import (
+                                WORKFLOW_CANCELLED_CLASS,
+                                route_defer_terminal,
+                            )
+
+                            await route_defer_terminal(
+                                self.pool,
+                                self.wsql,
+                                flow_id=flow_id,
+                                row=row,
+                                worker_id=self._worker_id,
+                                attempt=attempt,
+                                claim_epoch=claim_epoch,
+                                ledger_id=ledger_id,
+                                ledger_claimed_at=ledger_claimed_at,
+                                capture_policy=self.compiled.capture,
+                                project_auto=self._project_auto,
+                                outcome="cancelled",
+                                error_class=WORKFLOW_CANCELLED_CLASS,
+                                error_message="cancelled by the workflow run operator",
+                            )
+                            return
                     # every exception crossing it is a body failure — the
                     # loop's typed failure (the named class, the flow
                     # terminalized in the same tx). The escape-point contract:
@@ -578,7 +653,13 @@ class LoopOps(_LoopHost):
                         claim_epoch=claim_epoch,
                     )
                     return
-                await self._record_iteration_terminal(flow_id, iter_key, attempt, outcome)
+                await self._record_iteration_terminal(
+                    flow_id,
+                    iter_key,
+                    attempt,
+                    outcome,
+                    iteration_claim,
+                )
 
                 # consumed with the residual machinery.
                 if isinstance(outcome, Done):
@@ -591,6 +672,8 @@ class LoopOps(_LoopHost):
                         encode_result(done_payload),
                         emitter=emitter,
                         claim_epoch=claim_epoch,
+                        ledger_id=ledger_id,
+                        ledger_claimed_at=ledger_claimed_at,
                     )
                     return
                 if not isinstance(outcome, Refine):
@@ -649,7 +732,12 @@ class LoopOps(_LoopHost):
         )
 
     async def _record_iteration_terminal(
-        self, flow_id: JobId, iter_key: str, attempt: int, outcome: object
+        self,
+        flow_id: JobId,
+        iter_key: str,
+        attempt: int,
+        outcome: object,
+        iteration_claim: LedgerClaim | None = None,
     ) -> None:
         """The iteration's ledger terminal (the §13.3 trace shape: the
         iteration index + the Done/Refine kind per iteration).
@@ -660,7 +748,10 @@ class LoopOps(_LoopHost):
         whose feedback-shaped payload the memo replay would re-thread as
         a Refine (the 'other' kind must not be laundered into
         ``{"done": false, "feedback":
-        …}`` with its computed kind deleted)."""
+        …}`` with its computed kind deleted). The write keys the
+        iteration claim's EXACT identity (its own row id + instant) —
+        the epoch arbiter's rows are never keyed by the four-expression
+        fallback."""
         from taskq.workflows.api._loop import Done, Refine
         from taskq.workflows.api._sql_loop import LOOP_ERROR_SHAPE
 
@@ -681,22 +772,37 @@ class LoopOps(_LoopHost):
                 "is the shape error it is, never a replayable refine"
             )
             payload = {"shape": jsonable(outcome)}
+        if iteration_claim is None or iteration_claim.ledger_id is None:
+            # No actual claim in hand — this is a replay/legacy face with no
+            # ledger row of its own; there is no identity to write and no
+            # identity may be manufactured.
+            raise WorkflowRunError(
+                f"loop iteration {iter_key!r} has no ledger claim identity — the "
+                "iteration terminal requires the exact claim (id + instant) the "
+                "driver's own claim returned"
+            )
         async with self.pool.acquire() as conn:
             await conn.execute(
-                self.wsql.ledger_terminal,
-                flow_id,
-                iter_key,
-                attempt,
+                self.wsql.ledger_terminal_by_id,
+                iteration_claim.ledger_id,
                 status,
                 dumps_jsonb_str(payload),
                 error_class,
                 error_message,
                 None,
-                None,
+                iteration_claim.claimed_at,
             )
 
     async def _reclaim_loop(
-        self, flow_id: JobId, row: dict[str, Any], attempt: int, exc: Exception
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        exc: Exception,
+        *,
+        claim_epoch: int = 0,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
     ) -> None:
         """The MACHINERY reclaim (the smuggle contract's other half): an infra
         fault raised by the DRIVER'S own statements — never by the body
@@ -706,24 +812,28 @@ class LoopOps(_LoopHost):
         arm (its exceptions exhaust the loop as the body failure they
         are), so reclaim stays UNBOUNDED-BY-the-BODY — a poison body
         cannot wedge the flow through the classifier."""
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                self.wsql.ledger_terminal,
-                flow_id,
-                row["step_key"],
-                attempt,
-                "crashed",
-                None,
-                type(exc).__name__,
-                str(exc)[:500],
-                None,
-                None,
-            )
-            await conn.execute(
-                render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
-                row["id"],
-                0.05,
-                attempt,
+        async with self.pool.acquire() as conn, conn.transaction():
+            await repend_attempt(
+                conn,
+                self.wsql,
+                claim=AttemptClaim(
+                    job_id=JobId(row["id"]),
+                    flow_id=flow_id,
+                    step_key=row["step_key"],
+                    worker_id=self._worker_id,
+                    attempt=attempt,
+                    claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
+                    map_index=row["map_index"],
+                ),
+                error_class=type(exc).__name__,
+                error_message=str(exc)[:500],
+                failures_before=0,
+                max_attempts=1,
+                retry_kind="transient",
+                backoff_s=0.05,
+                machinery_crashed=True,
             )
 
     async def _exhaust_loop(

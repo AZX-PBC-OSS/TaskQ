@@ -66,10 +66,33 @@ from taskq.worker.shutdown import ShutdownPhase
 
 if TYPE_CHECKING:
     from taskq.worker.deps import WorkerDeps
+    from taskq.workflows._cancellation import WorkflowJobRegistration
 
 __all__ = ["ActiveJobRegistry", "CancelController", "_ActiveJob", "make_cancel_controller"]
 
 _log: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+_WORKFLOW_CANCEL_ROWS_SQL = """\
+SELECT j.id, root.error_message AS reason, audit.principal_subject
+FROM "{schema}".jobs AS j
+JOIN "{schema}".jobs AS root
+  ON root.id = (j.metadata->>'flow_id')::uuid
+ AND root.step_key = '__flow__'
+ AND root.status = 'cancelled'
+LEFT JOIN LATERAL (
+    SELECT a.principal_subject
+    FROM "{schema}".admin_audit AS a
+    WHERE a.target_type = 'workflow_run'
+      AND a.target_id = root.id::text
+      AND a.action = 'workflow.cancel'
+    ORDER BY a.id DESC LIMIT 1
+) AS audit ON true
+WHERE j.locked_by_worker = $1
+  AND j.status = 'running'
+  AND j.step_key IS NOT NULL
+  AND j.step_key <> '__flow__'
+  AND j.metadata ? 'cancel_phase'
+"""
 
 _phase_transitions = get_meter().create_counter(
     "taskq.cancellation.phase_transitions",
@@ -214,6 +237,9 @@ class _CancelController:
         # parked, terminalised, reclaimed) drops its stamp, so a
         # reappearance re-observes with fresh graces.
         self._unheld_observed_at: dict[JobId, float] = {}
+        # Workflow run cancellation is a separate read, deliberately outside
+        # the vanilla cancel_phase ladder. Both metadata and root must prove it.
+        self._workflow_poll_sql = _WORKFLOW_CANCEL_ROWS_SQL.replace("{schema}", schema)
 
     def _tick_liveness(self) -> None:
         """Renew the heartbeat loop's detector-2 stamp between round trips.
@@ -245,6 +271,17 @@ class _CancelController:
         """
         loop = asyncio.get_running_loop()
         worker_id = self._worker_id
+
+        workflow_rows = await conn.fetch(self._workflow_poll_sql, worker_id)
+        for cancelled in workflow_rows:
+            self._deps.active_jobs.publish_workflow_operator(
+                JobId(cancelled["id"]),
+                reason=cancelled["reason"],
+                principal=cancelled["principal_subject"],
+            )
+        self._deps.active_jobs.prune_workflow_operator_proofs(
+            {JobId(row["id"]) for row in workflow_rows}
+        )
 
         rows = await conn.fetch(self._poll_sql, worker_id)
         # The PG check constraint guarantees rows carry phase 0/1/2; we
@@ -825,6 +862,7 @@ class _ActiveJob:
     cancel_phase: CancelPhase = CancelPhase.NONE
     cancel_observed_at: float | None = field(default=None)  # loop.time(), not wall clock
     cancel_origin: CancelOrigin = CancelOrigin.NONE
+    workflow: WorkflowJobRegistration | None = None
 
 
 @dataclass(frozen=True)
@@ -890,6 +928,9 @@ class ActiveJobRegistry:
         # map to the intent map at the take, so every window of the
         # claim-to-register chain is fenced by exactly one map.
         self._queued: set[JobId] = set()
+        # A prior durable read whose exact entry was not registered yet. The
+        # proof stays eligible; unheld observation is never memoized as delivery.
+        self._workflow_cancel_pending: dict[JobId, tuple[str | None, str | None]] = {}
 
     def mark_enqueued(self, job_id: JobId) -> None:
         """Record a claim the producer handed to the local queue.
@@ -953,6 +994,7 @@ class ActiveJobRegistry:
         job_id: JobId,
         task: asyncio.Task[object],
         ctx: JobContext[BaseModel],
+        workflow: WorkflowJobRegistration | None = None,
     ) -> _ActiveJob:
         """Register a job as in-flight.
 
@@ -965,7 +1007,7 @@ class ActiveJobRegistry:
         worker), and the return value is the only identity that tells the
         caller's own registration from the live attempt's.
         """
-        entry = _ActiveJob(job_id=job_id, task=task, ctx=ctx)
+        entry = _ActiveJob(job_id=job_id, task=task, ctx=ctx, workflow=workflow)
         async with self._lock:
             # The absorb is deliberately key-scoped, not token-scoped: the
             # registering attempt's chain created the intent at its own
@@ -975,7 +1017,30 @@ class ActiveJobRegistry:
             # makes a stale claim's intent moot the same way).
             self._claim_intents.pop(job_id, None)
             self._by_id[job_id] = entry
+        pending = self._workflow_cancel_pending.pop(job_id, None)
+        if pending is not None:
+            from taskq.workflows._cancellation import publish_operator_cancellation
+
+            publish_operator_cancellation(entry, reason=pending[0], principal=pending[1])
         return entry
+
+    def publish_workflow_operator(
+        self, job_id: JobId, *, reason: str | None, principal: str | None
+    ) -> None:
+        """Install only row-proved details, then wake the exact current entry."""
+        entry = self._by_id.get(job_id)
+        if entry is not None:
+            from taskq.workflows._cancellation import publish_operator_cancellation
+
+            publish_operator_cancellation(entry, reason=reason, principal=principal)
+        else:
+            self._workflow_cancel_pending[job_id] = (reason, principal)
+
+    def prune_workflow_operator_proofs(self, retained: set[JobId]) -> None:
+        """Bound absent-entry proofs; a current registration owns its details."""
+        for job_id in set(self._workflow_cancel_pending):
+            if job_id not in retained and job_id not in self._by_id:
+                del self._workflow_cancel_pending[job_id]
 
     async def deregister(self, job_id: JobId, entry: _ActiveJob) -> None:
         """Remove a job from the registry (idempotent, ignores missing keys).

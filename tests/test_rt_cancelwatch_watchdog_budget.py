@@ -44,6 +44,7 @@ from taskq.testing.actor import FakeBackend
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
+from taskq.workflows._cancellation import WorkflowJobRegistration
 from tests.conftest import _FakePool
 
 _FAKE_DSN = "postgresql://fake:fake@fake:5432/fake"
@@ -200,44 +201,69 @@ async def test_long_cancel_drain_does_not_read_as_stale_heartbeat_loop() -> None
     worker_id = new_uuid()
 
     # 12 jobs all past the (zero) cancel grace - a bulk cancel's worth of
-    # due escalations in one tick.
+    # due escalations in one tick. The rows carry the workflow poll's own
+    # named detail fields (the worker contract's strict indexed reads);
+    # each entry registers its workflow facts so the publish lands on the
+    # observable detail object.
     poll_rows: list[dict[str, object]] = []
     tasks: list[asyncio.Task[object]] = []
-    for _ in range(12):
-        job_id = new_job_id()
-        task = asyncio.get_running_loop().create_task(asyncio.sleep(3600))
-        tasks.append(task)
-        await deps.active_jobs.register(job_id, task, _make_ctx())
-        entry = deps.active_jobs.get(job_id)
-        assert entry is not None
-        entry.cancel_phase = CancelPhase.COOPERATIVE
-        entry.cancel_observed_at = asyncio.get_running_loop().time() - 1.0
-        poll_rows.append({"id": job_id, "cancel_phase": 1})
+    registrations: list[WorkflowJobRegistration] = []
+    try:
+        for _ in range(12):
+            job_id = new_job_id()
+            task = asyncio.get_running_loop().create_task(asyncio.sleep(3600))
+            tasks.append(task)
+            registration = WorkflowJobRegistration(flow_id=job_id)
+            registrations.append(registration)
+            await deps.active_jobs.register(job_id, task, _make_ctx(), workflow=registration)
+            entry = deps.active_jobs.get(job_id)
+            assert entry is not None
+            entry.cancel_phase = CancelPhase.COOPERATIVE
+            entry.cancel_observed_at = asyncio.get_running_loop().time() - 1.0
+            poll_rows.append(
+                {
+                    "id": job_id,
+                    "cancel_phase": 1,
+                    "reason": "operator asked",
+                    "principal_subject": "ops-principal",
+                }
+            )
 
-    # The heartbeat loop's own registration, as heartbeat_loop issues it.
-    liveness.tick("heartbeat", period=10.0)
+        # The heartbeat loop's own registration, as heartbeat_loop issues it.
+        liveness.tick("heartbeat", period=10.0)
 
-    controller = make_cancel_controller(deps, worker_id, FakeBackend())  # type: ignore[arg-type]
-    conn: Any = _SlowRecorderConn(clock, poll_rows)
-    await controller.run_in_tx(conn)
+        controller = make_cancel_controller(deps, worker_id, FakeBackend())  # type: ignore[arg-type]
+        conn: Any = _SlowRecorderConn(clock, poll_rows)
+        await controller.run_in_tx(conn)
 
-    escalated = sum(
-        1 for active in deps.active_jobs.all() if active.cancel_phase >= CancelPhase.FORCED
-    )
-    assert escalated == 12, "fixture broken: every due escalation must have fired"
+        escalated = sum(
+            1 for active in deps.active_jobs.all() if active.cancel_phase >= CancelPhase.FORCED
+        )
+        assert escalated == 12, "fixture broken: every due escalation must have fired"
 
-    assert liveness.stale() == [], (
-        "Contract: a heartbeat tick that is healthily draining its cancel queue "
-        "must not read as a stale loop - detector 2's terminal trip would "
-        "force-exit the worker mid-drain (and the mid-tick lease renewals that "
-        "already happened mean the sweep cannot yet reclaim, so the exit throws "
-        "away a drain that was succeeding). The leader sweep's own drain carries "
-        "the pattern this requires (_drain_bounded ticks liveness between calls); "
-        f"the cancel drain does not: after {escalated} escalations the "
-        f"'heartbeat' registration is {clock.t - 1000.0:.0f}s old against a "
-        "50s budget."
-    )
+        # The workflow poll's publish carried exactly the rows' named
+        # fields (the registry's own detail objects are the published
+        # surface).
+        for registration in registrations:
+            assert registration.detail.reason == "operator asked", registration.detail
+            assert registration.detail.principal == "ops-principal", registration.detail
 
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+        assert liveness.stale() == [], (
+            "Contract: a heartbeat tick that is healthily draining its cancel queue "
+            "must not read as a stale loop - detector 2's terminal trip would "
+            "force-exit the worker mid-drain (and the mid-tick lease renewals that "
+            "already happened mean the sweep cannot yet reclaim, so the exit throws "
+            "away a drain that was succeeding). The leader sweep's own drain carries "
+            "the pattern this requires (_drain_bounded ticks liveness between calls); "
+            f"the cancel drain does not: after {escalated} escalations the "
+            f"'heartbeat' registration is {clock.t - 1000.0:.0f}s old against a "
+            "50s budget."
+        )
+    finally:
+        # Every created task is reaped on EVERY exit — an assertion
+        # failure included — or the test's own teardown reports the
+        # leaked 3600s sleeps (the errors this finally exists to
+        # eliminate).
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

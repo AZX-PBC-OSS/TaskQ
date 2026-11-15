@@ -358,14 +358,18 @@ def test_call_sites_pass_module_constants_not_composed_templates() -> None:
         and isinstance(node.func, ast.Name)
         and node.func.id == "_render_sweep_sql"
     ]
-    # 10 direct call sites: the collapse of the two single-statement
+    # 11 direct call sites: the collapse of the two single-statement
     # sweeps into _run_single_statement_sweep folded their two calls
     # into the helper's one (fed by its ``sql_template`` parameter,
-    # pinned to module constants by the scan below).
-    assert len(calls) == 10, (
-        f"expected the 10 direct call sites (INSERT_EVENTS_DETAIL_BATCH_SQL "
+    # pinned to module constants by the scan below), and the workflow
+    # cancel-ledger audit renders its own module constant inside the
+    # sweep's isolation transaction (the 11th — each new call site
+    # requires exactly this inventory update).
+    assert len(calls) == 11, (
+        f"expected the 11 direct call sites (INSERT_EVENTS_DETAIL_BATCH_SQL "
         f"renders at two sweeps; the two single-statement sweeps render via "
-        f"_run_single_statement_sweep), found {len(calls)}"
+        f"_run_single_statement_sweep; _WORKFLOW_CANCEL_LEDGER_AUDIT_SQL "
+        f"renders at the reclaim drain's cancel audit), found {len(calls)}"
     )
     for call in calls:
         arg = call.args[0]
@@ -388,6 +392,7 @@ def test_call_sites_pass_module_constants_not_composed_templates() -> None:
             "_SWEEP_IDLE_KEYED_BUCKETS_SQL",
             "_SWEEP_IDLE_KEYED_SLOTS_SQL",
             "INSERT_EVENTS_DETAIL_BATCH_SQL",
+            "_WORKFLOW_CANCEL_LEDGER_AUDIT_SQL",
         }
 
     # The indirection must not become a bypass: every

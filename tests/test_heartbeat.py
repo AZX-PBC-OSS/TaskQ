@@ -48,10 +48,12 @@ class FakeConn:
     async def execute(self, sql: str, *args: object) -> str:
         self.execute_calls.append((sql, args))
         normalized = " ".join(sql.split()).upper()
-        named = (
-            normalized.startswith("UPDATE")
-            or ("WITH DUE AS" in normalized and "UPDATE" in normalized)
-        ) and (
+        # The renewal statements' two shapes: the plain UPDATE and the due
+        # shortlist CTE (the unconditional statement's ``WITH due AS`` and
+        # the threshold-gated statement's ``WITH expiring AS`` arms, both
+        # SKIP LOCKED shortlists over the same three tables).
+        renewal_cte = "WITH DUE AS" in normalized or "WITH EXPIRING AS" in normalized
+        named = (normalized.startswith("UPDATE") or renewal_cte) and (
             ".WORKERS" in normalized or ".JOBS" in normalized or ".RESERVATION_SLOTS" in normalized
         )
         if named:

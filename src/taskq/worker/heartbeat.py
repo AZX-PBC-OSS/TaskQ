@@ -356,6 +356,7 @@ _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE = (
     f"attempt = {ATTEMPT_REFUND_SQL}, started_at = NULL "
     "WHERE j.locked_by_worker = $1 AND j.status = 'running' "
     "AND j.cancel_phase = 0 "
+    "AND NOT j.metadata ? 'cancel_phase' "
     "AND NOT (j.id = ANY($2::uuid[])) "
     "AND j.started_at < clock_timestamp() - $3::interval "
     "AND NOT EXISTS ("
@@ -1073,7 +1074,7 @@ SET status = CASE
         -- operator's request cannot be laundered away by this
         -- worker's own departure. The re-pend arm therefore reads
         -- cancel_phase = 0 by construction.
-        WHEN j.cancel_phase != 0
+        WHEN j.cancel_phase != 0 OR j.metadata ? 'cancel_phase'
             THEN 'cancelled'::"{schema}".job_status
         WHEN {has_budget}
             THEN 'pending'::"{schema}".job_status
@@ -1096,12 +1097,12 @@ SET status = CASE
     -- CASE reorder the re-pend arm alone reschedules.
     assignment_routed = true,
     scheduled_at = CASE
-        WHEN j.cancel_phase = 0 AND {has_budget}
+        WHEN j.cancel_phase = 0 AND NOT j.metadata ? 'cancel_phase' AND {has_budget}
             THEN clock_timestamp() + {reclaim_delay}
         ELSE j.scheduled_at
     END,
     finished_at = CASE
-        WHEN j.cancel_phase != 0 OR NOT ({has_budget})
+        WHEN j.cancel_phase != 0 OR j.metadata ? 'cancel_phase' OR NOT ({has_budget})
             THEN clock_timestamp()
         ELSE j.finished_at
     END,
@@ -1115,17 +1116,22 @@ SET status = CASE
     -- describe, and a cancel-honouring row's record is the in-flight
     -- request the row preserves above.
     error_class = CASE
+        WHEN j.cancel_phase = 0 AND j.metadata ? 'cancel_phase'
+            THEN 'WorkflowCancelled'
         WHEN j.cancel_phase = 0 AND NOT ({has_budget})
             THEN '{heartbeat_lost_class}'
         ELSE j.error_class
     END,
     error_message = CASE
+        WHEN j.cancel_phase = 0 AND j.metadata ? 'cancel_phase'
+            THEN 'workflow run was cancelled'
         WHEN j.cancel_phase = 0 AND NOT ({has_budget})
             THEN '{isolate_crashed_message}'
         ELSE j.error_message
     END
 WHERE j.id = $1 AND j.status = 'running' AND j.locked_by_worker = $2
-RETURNING j.attempt, j.started_at, j.status""".replace("{has_budget}", _RECLAIM_HAS_BUDGET_SQL)
+RETURNING j.attempt, j.started_at, j.status, j.error_class AS settled_error_class,
+          j.metadata AS job_metadata""".replace("{has_budget}", _RECLAIM_HAS_BUDGET_SQL)
     .replace("{reclaim_delay}", _RECLAIM_DELAY_SQL)
     .replace("{max_backoff_seconds}", "$3")
     .replace("{isolate_crashed_message}", _ISOLATE_CRASHED_MESSAGE)
@@ -1416,13 +1422,35 @@ async def isolate_self(
                         # isolation transaction and strand every sibling row
                         # with it).
                         if updated["started_at"] is not None:
+                            from taskq._json import loads as _json_loads
+                            from taskq.backend._sweeps import (
+                                _audit_cancelled_workflow_ledgers,
+                            )
+
+                            raw_metadata: object = updated.get(
+                                "job_metadata", row.get("metadata", {})
+                            )
+                            metadata = (
+                                _json_loads(raw_metadata)
+                                if isinstance(raw_metadata, str)
+                                else raw_metadata
+                            )
+                            workflow_cancelled = (
+                                new_status == "cancelled"
+                                and isinstance(metadata, dict)
+                                and "cancel_phase" in metadata
+                            )
                             await conn.execute(
                                 insert_attempt_sql,
                                 row["id"],
                                 updated["attempt"],
                                 updated["started_at"],
-                                "crashed",
-                                ERROR_CLASS_HEARTBEAT_LOST,
+                                "cancelled" if workflow_cancelled else "crashed",
+                                (
+                                    "WorkflowCancelled"
+                                    if workflow_cancelled
+                                    else ERROR_CLASS_HEARTBEAT_LOST
+                                ),
                                 None,
                                 None,
                                 None,
@@ -1437,6 +1465,10 @@ async def isolate_self(
                                 # is the claim-time due time).
                                 row["scheduled_at"],
                             )
+                            if workflow_cancelled:
+                                await _audit_cancelled_workflow_ledgers(
+                                    conn, schema, [JobId(row["id"])]
+                                )
                     if event_job_ids:
                         await conn.execute(
                             INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema),

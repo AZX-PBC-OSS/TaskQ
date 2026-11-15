@@ -198,7 +198,9 @@ async def test_reload_swaps_factory_backed_pools() -> None:
     )
     async with open_worker_deps(settings, connections=conns) as deps:
         assert deps.dispatcher_pool is old_dispatcher
+        assert deps.workflow_deps_generation == 0
         await reload_credentials(deps, drain_timeout=0.5)
+        assert deps.workflow_deps_generation == 1
         # New pools are in place
         assert deps.dispatcher_pool is new_dispatcher
         assert deps.heartbeat_pool is new_heartbeat
@@ -497,7 +499,8 @@ async def test_reload_noop_when_no_factories() -> None:
     async with open_worker_deps(settings, connections=conns) as deps:
         # No factories stored - reload is a no-op
         await reload_credentials(deps, drain_timeout=0.5)
-        # Nothing changed
+        # Nothing changed, including workflow-factory owner identity.
+        assert deps.workflow_deps_generation == 0
         assert deps.dispatcher_pool is conns.dispatcher_pool
         assert deps.notify_conn is conns.notify_conn
 
@@ -562,9 +565,11 @@ async def test_reload_returns_reloaded_and_failed_lists() -> None:
     )
     async with open_worker_deps(settings, connections=conns) as deps:
         deps.heartbeat_pool_factory = failing_factory  # type: ignore[assignment]
+        before_generation = deps.workflow_deps_generation
         reloaded, failed = await reload_credentials(deps, drain_timeout=0.5)
         assert "worker" in reloaded
         assert "heartbeat" in failed
+        assert deps.workflow_deps_generation == before_generation + 1
         assert "heartbeat" not in reloaded
         # Let the worker swap's background drain finish before teardown,
         # event-driven and bounded rather than a fixed sleep.
@@ -672,6 +677,7 @@ async def test_reload_records_redis_factory_failure() -> None:
     async with open_worker_deps(settings, connections=conns) as deps:
         deps.redis_client_factory = failing_redis_factory  # type: ignore[assignment]
         reloaded, failed = await reload_credentials(deps, drain_timeout=0.5)
+        assert deps.workflow_deps_generation == 0
 
         assert "redis_client" in failed
         assert "redis_client" not in reloaded

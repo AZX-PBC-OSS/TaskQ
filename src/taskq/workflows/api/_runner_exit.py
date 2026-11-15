@@ -72,6 +72,8 @@ class ExitOps(_ExitHost):
         exit_value: Exit[object],
         *,
         claim_epoch: int = 0,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
     ) -> None:
         """TYPED EARLY-EXIT (§17.1, attack-audit's Missing #1): the
         body returned ``Exit(payload)`` — the node TERMINAL-SUCCEEDS
@@ -82,7 +84,9 @@ class ExitOps(_ExitHost):
         attempt; the join-firing machinery never runs for rows the exit
         resolved). All rows terminal → the derivation reports the
         workflow COMPLETE. The LEDGER records the exit on the exited
-        node's own terminal row (the result carries the marker)."""
+        node's own terminal row (the result carries the marker) — keyed
+        on the EXACT claim identity (the claim's own row id + instant),
+        never a four-expression fallback."""
         step_key: str = row["step_key"]
         await finalize_node(
             self.pool,
@@ -96,6 +100,8 @@ class ExitOps(_ExitHost):
             outcome="succeeded",
             result={"value": jsonable(exit_value.payload), "exit": True},
             map_index=row["map_index"],
+            ledger_id=ledger_id,
+            ledger_claimed_at=ledger_claimed_at,
         )
         # the compiled graph's descendants (the wiring's own edges — never a
         # runtime guess), skipped with the record. Bounded by the graph's size;
@@ -182,7 +188,9 @@ async def _cancel_one_run(
     resolves in the same snapshot; terminal rows untouched; IDEMPOTENT.
     Returns the held signals cancelled (0 when the run was already
     terminal — the idempotent no-op)."""
+    from taskq._json import dumps_str
     from taskq.audit import bound_reason
+    from taskq.constants import worker_channel
     from taskq.workflows.api._hitl import cancel_run_signals
 
     bounded_reason = bound_reason(reason or "cancel_workflow", 500)
@@ -199,7 +207,9 @@ async def _cancel_one_run(
         # only the rows this statement terminalised (the running row's
         # cooperative phase-1 keeps it running — its own terminal write carries
         # its event).
-        await conn.execute(render_sql(CANCEL_NODES_SQL_TEMPLATE, schema), flow_id)
+        cancelled = await conn.fetchrow(render_sql(CANCEL_NODES_SQL_TEMPLATE, schema), flow_id)
+        assert cancelled is not None
+        holders: tuple[JobId, ...] = tuple(JobId(value) for value in cancelled["holders"])
         held = await cancel_run_signals(conn, schema=schema, workflow_id=flow_id)
         # the audit row (the caller owns the tx — the same-tx
         # guarantee; the lazy import keeps the layering).
@@ -215,7 +225,90 @@ async def _cancel_one_run(
             reason=reason,
             detail={"held_signals_cancelled": held},
         )
-    return int(held) + 1
+        # A pointer-only transactional wake. The worker re-reads the root,
+        # marked rows, and normalized audit record before publishing anything.
+        payload = dumps_str({"type": "workflow_cancel", "flow_id": str(flow_id)})
+        for holder in holders:
+            await conn.execute(
+                "SELECT pg_notify($1, $2)", worker_channel(schema, str(holder)), payload
+            )
+    # The flipped root is one run; cancelled_count counts only actual node
+    # terminal flips (running cooperative rows deliberately do not count).
+    return 1 + int(held) + int(cancelled["cancelled_count"])
+
+
+async def finalize_cancelled_workflow_claim(
+    pool: asyncpg.Pool,
+    *,
+    schema: str,
+    flow_id: JobId,
+    job_id: JobId,
+    worker_id: JobId,
+    attempt: int,
+    claim_epoch: int,
+) -> bool:
+    """Terminalize one marked workflow claim without the vanilla unrequested path.
+
+    The claim's LEDGER row is resolved by its EXACT physical identity —
+    the job's own id + attempt + claim_epoch — and the terminal keys that
+    row's id + captured instant (the re-mint guard's law). No
+    four-expression or latest-row ambiguity exists here: a cancelled
+    run's ledger audit must never rest a parked attempt's 'awaited'
+    history instead of the current claim's row."""
+    from taskq.workflows._sql import WorkflowSql
+
+    wsql = WorkflowSql.build(schema)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            render_sql(
+                "SELECT j.step_key, j.map_index FROM {schema}.jobs AS j "
+                "JOIN {schema}.jobs AS root ON root.id = $2 "
+                "WHERE j.id = $1 AND j.status = 'running' "
+                "AND j.locked_by_worker = $3 AND j.attempt = $4 "
+                "AND j.claim_epoch = $5 AND j.metadata ? 'cancel_phase' "
+                "AND root.status = 'cancelled'",
+                schema,
+            ),
+            job_id,
+            flow_id,
+            worker_id,
+            attempt,
+            claim_epoch,
+        )
+        if row is None:
+            return False
+        ledger = await conn.fetchrow(
+            render_sql(
+                "SELECT id, updated_at FROM {schema}.wf_step_ledger "
+                "WHERE job_id = $1 AND attempt = $2 AND claim_epoch = $3 "
+                "AND status IN ('running', 'awaited', 'crashed') "
+                "ORDER BY created_at DESC, id DESC "
+                "LIMIT 1",
+                schema,
+            ),
+            job_id,
+            attempt,
+            claim_epoch,
+        )
+    ledger_id: JobId | None = None if ledger is None else JobId(ledger["id"])
+    ledger_claimed_at = None if ledger is None else ledger["updated_at"]
+    final = await finalize_node(
+        pool,
+        wsql,
+        flow_id=flow_id,
+        job_id=job_id,
+        step_key=row["step_key"],
+        worker_id=worker_id,
+        attempt=attempt,
+        claim_epoch=claim_epoch,
+        outcome="cancelled",
+        error_class="WorkflowCancelled",
+        error_message="workflow run was cancelled",
+        map_index=row["map_index"],
+        ledger_id=ledger_id,
+        ledger_claimed_at=ledger_claimed_at,
+    )
+    return final.applied
 
 
 async def cancel_cascade(

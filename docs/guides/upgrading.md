@@ -129,6 +129,96 @@ adds that column when recording the next migration, so deployments upgraded
 from older TaskQ versions need no manual step; rows applied before the column
 existed read `true`.
 
+## Workflow terminal effects / run incarnation (01.00.41)
+
+Apply both PRE files `01.00.41_01_pre_wf_run_epoch.sql` and
+`01.00.41_02_pre_wf_terminal_effect_intents.sql` before deploying authors/workers
+that declare `RetrySpec.on_exhaustion`. The first adds nullable legacy-compatible
+root `run_epoch` storage (new roots begin at 1; only explicit locked reopen
+advances it). The second supplies the stable physical intent arbiter. Existing
+rows retain NULL epochs and existing outbox rows remain unchanged.
+
+Guarded effect-producing workflows stamp the actual worker schema requirement and
+refuse direct in-process execution. Upgrade all fleet workers serving their
+queues before creating such runs; an insufficient/missing actual boot capability
+fails at the physical entry-to-running trigger before body execution. Do not
+manufacture worker metadata or use queue membership as an upgrade assertion.
+The later five-column bigint identity migration (01.00.40) is a separate POST
+contract and does not authorize this feature by itself.
+
+## Transactional execution (01.00.42) — capability level 3
+
+Apply `01.00.42_01_pre_wf_step_ledger_claim_epoch.sql` (PRE) and
+`01.00.42_02_post_wf_step_ledger_claim_epoch_index.sql` (POST, after the
+identity widening's own arbiter re-creation) before deploying workers that
+implement level 3. The PRE file adds `wf_step_ledger.claim_epoch` and re-creates
+the ledger's claim arbiter with the epoch joined
+(`flow_id, step_key, COALESCE(map_index, -1), attempt, claim_epoch`); the POST
+file re-creates that same epoch arbiter after the frozen map-index widening
+(01.00.40) re-created the four-expression form. Fully-migrated schemas end on
+the epoch arbiter in both phases.
+
+The epoch arbiter gives every dispatch claim its own ledger row: a deferred
+attempt whose physical ordinal is refunded and reminted (the capacity park's
+1 → 0 → 1 cycle) no longer overwrites the parked attempt's `awaited` record
+with the resumed attempt's terminal.
+
+**The 01.00.42 workflow-executor cutover (required — read before applying).**
+01.00.42 replaces the workflow ledger's conflict arbiter, so it requires a
+workflow-EXECUTOR cutover; there is **no supported old/new mixed execution**
+across the index replacement:
+
+1. **Stop and drain every pre-correction workflow executor** before either
+   01.00.42 phase: fleet workers with workflow execution, all direct
+   `FlowRunner` processes, and any custom driver using the old ledger
+   claim/finalize statements. Stop/kill the processes after their bounded
+   graceful period — a stopped queue mark or a live `workers` row is not a
+   drain.
+2. From that point no old workflow executor may claim, body-run,
+   terminalize, cancel-finalize, or recover a ledger row. Producers may
+   keep writing pending root/work rows: durable pending/scheduled/parked
+   rows are storage, not executors.
+3. Hold the exclusion while applying `01.00.42_01` (PRE), the identity
+   widening's own 01.00.40 POST gate, and `01.00.42_02` (POST). All
+   migrations stay forward-only; no dual arbiter exists at any point.
+4. Restart **only corrected binaries** (the ones carrying these
+   statements). Ordinary NULL-requirement fleet rows execute unchanged;
+   corrected direct drivers work without new metadata; pre-existing
+   pending rows, graceful deferrals, and crashed-but-process-dead rows
+   become claimable/recoverable under the new worker/attempt/epoch
+   ownership.
+
+If an operator violates the cutoff, the observed failure is honest and
+unsupported: an old executor's four-expression `ON CONFLICT` claim has no
+matching unique index on the migrated schema and fails with PostgreSQL
+`42P10` (`InvalidColumnReferenceError`) after the job row was already set
+`running` — the old body never runs. The same old binary's
+four-expression terminal/fence writes are equally unsupported. The raw
+`42P10`/no-body state is the documented envelope (never rewritten as a
+clean compatibility claim); recovery needs a corrected worker after
+process termination/lease reclaim, and the transient running row is never
+reported as ordinary final success or a truthful body failure from a body
+that never ran.
+
+A new binary against a schema still missing either 01.00.42 file fails
+closed at the ledger claim (the column/index is absent) — apply both
+phases before rolling workers.
+
+Workflow capability level 3 is the TRANSACTIONAL EXECUTION door: the
+caller-joined `emit_batch`/checkpoint on a supplied same-database connection
+and the `transactional_step` all-emitted settlement (its managed-transaction
+unit, the root→node CAS→COMMIT critical section, the same-connection post-commit
+tx2, and the fenced recovery). Worker boot stamps the level this build actually
+implements; level 2 rows (guarded terminal effects) behave exactly as before,
+and ordinary NULL-requirement rows and direct runs are untouched. A run whose
+graph declares a `transactional_step` stamps level 3 on every row it
+materializes; upgrade every worker serving the run's queues (and keep the
+direct driver off it) before the rows can claim. The heartbeat's renewal
+statements now select their rows `FOR UPDATE SKIP LOCKED`, so one settlement's
+brief terminal CAS→COMMIT round trip skips a beat on that one row instead of
+stalling the worker's whole renewal — a live claimed row is never permanently
+abandoned.
+
 ## If a migration goes wrong
 
 `taskq migrate up` diagnoses its own failures: it tells you which migration

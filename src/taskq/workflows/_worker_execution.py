@@ -46,8 +46,10 @@ workflows package, and a worker that never opens this seam pays nothing.
 
 from __future__ import annotations
 
+import asyncio
 import weakref
 from collections.abc import Iterator
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 from uuid import UUID
@@ -59,12 +61,28 @@ from taskq.obs import get_logger
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.workflows._policy import FiniteReservationCohort
 from taskq.workflows.api._app import CompiledWorkflow
+from taskq.workflows.api._deps import (
+    deps_contract_annotations,
+    workflow_has_runtime_deps,
+)
+from taskq.workflows.api._deps_factory import (
+    WorkflowDepsContext,
+    WorkflowDepsLifecycleError,
+    WorkflowDepsOwner,
+    WorkflowProviderBridge,
+)
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._sql_runner import render_sql
 
 if TYPE_CHECKING:
     import asyncpg
+    from pydantic import BaseModel
+
+    from taskq.context import JobContext
+    from taskq.workflows._cancellation import WorkflowJobRegistration
+    from taskq.workflows.api._runner import FlowRunner
 
     class WorkflowAppFace:
         """The projection's contract with a registered app (the two
@@ -82,7 +100,9 @@ __all__ = [
     "WorkflowActorQueueConflictError",
     "WorkflowBodyUnresolvableError",
     "WorkflowQueueUnconsumedError",
+    "aclose_workflow_runners_for_tests",
     "any_app_declares_strict_queues",
+    "close_workflow_runners_bounded",
     "collect_workflow_rate_limits",
     "collect_workflow_reservations",
     "execute_flow_job",
@@ -287,6 +307,7 @@ def reset_app_registry_for_tests() -> None:
     global _projection_cache
     _projection_cache = None
     _apps.clear()
+    _drop_all_runner_cells_sync()
 
 
 def iter_imported_apps() -> list[object]:
@@ -408,8 +429,48 @@ def _workflow_cohorts(
                         )
                     caps.setdefault(arm_actor, arm_terms)
     for chain in getattr(compiled, "chains", ()):
-        for _step_key in chain.steps:
-            cohorts.add((chain.actor, chain.queue))
+        for step_key in chain.steps:
+            target = chain.resolved_policy(step_key, resolve_names=False)
+            cohorts.add((target.actor, target.queue))
+            chain_terms = _CapacityTerms(
+                target.max_concurrent,
+                target.result_ttl,
+                target.capacity_owner,
+            )
+            if chain_terms != _UNSET_CAPACITY_TERMS:
+                existing = caps.get(target.actor)
+                if existing is not None and existing != chain_terms:
+                    differing = _capacity_conflict_fields(existing, chain_terms)
+                    raise WorkflowActorCapacityConflictError(
+                        f"workflow actor {target.actor!r} is declared with two "
+                        f"different capacity terms ({'; '.join(differing)}) — "
+                        "actor_config is keyed by actor (one capacity per actor); "
+                        "give the differing chain step its own actor name."
+                    )
+                caps.setdefault(target.actor, chain_terms)
+    from taskq.workflows._effects import collect_terminal_effects
+
+    for registered in collect_terminal_effects(compiled).values():
+        policy = registered.effect.policy
+        actor = policy.actor
+        queue = policy.queue
+        assert isinstance(actor, str) and isinstance(queue, str)
+        cohorts.add((actor, queue))
+        terms = _CapacityTerms(
+            policy.max_concurrent if type(policy.max_concurrent) is int else None,
+            float(policy.result_ttl)  # pyright: ignore[reportArgumentType]  # ExecutionPolicy normalizes a declared TTL to finite seconds
+            if type(policy.result_ttl) in (int, float)
+            else None,
+            policy.capacity_owner if isinstance(policy.capacity_owner, str) else "operator",
+        )
+        if terms != _UNSET_CAPACITY_TERMS:
+            existing = caps.get(actor)
+            if existing is not None and existing != terms:
+                raise WorkflowActorCapacityConflictError(
+                    f"terminal effect actor {actor!r} conflicts with an existing cohort: "
+                    + "; ".join(_capacity_conflict_fields(existing, terms))
+                )
+            caps.setdefault(actor, terms)
         # an ``on_exhausted="escalate"`` loop enqueues its escalation through the
     # outbox, addressed to the registered definition's own (actor, queue) — the
     # WorkflowDef's placement fields ("workflow"/"default"). The projection
@@ -759,6 +820,23 @@ def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str]
             if node.map_arms is not None:
                 for arm in node.map_arms.values():
                     decls.extend(arm.rate_limits)
+        for chain in compiled.chains:
+            for step_key in chain.steps:
+                decls.extend(chain.resolved_policy(step_key, resolve_names=False).rate_limit_decls)
+        from taskq.workflows._effects import collect_terminal_effects
+        from taskq.workflows._policy import resolve_execution_policy
+
+        for effect_registration in collect_terminal_effects(compiled).values():
+            actor = effect_registration.effect.policy.actor
+            queue = effect_registration.effect.policy.queue
+            assert isinstance(actor, str) and isinstance(queue, str)
+            target = resolve_execution_policy(
+                step_policy=effect_registration.effect.policy,
+                compatibility_actor=actor,
+                compatibility_queue=queue,
+                resolve_names=False,
+            )
+            decls.extend(target.rate_limit_decls)
         for entry in decls:
             if isinstance(entry, TokenBucket | SlidingWindow):
                 try:
@@ -851,7 +929,11 @@ def collect_workflow_reservations(
         arms' own declarations (the passthrough) feed the same
         name-keyed law; a plain ``str`` name is GATHERED, never
         silently dropped)."""
-        if isinstance(entry, ConcurrencyReservation):
+        if isinstance(entry, FiniteReservationCohort):
+            _take(entry.ref)
+            for reservation in entry.reservations():
+                _take(reservation)
+        elif isinstance(entry, ConcurrencyReservation):
             existing = by_name.get(entry.name)
             if existing is None:
                 by_name[entry.name] = entry
@@ -918,55 +1000,495 @@ def collect_workflow_reservations(
                     # the arm's reservations collect beside the nodes'.
                     for entry in getattr(arm, "reservations", ()) or ():
                         _take(entry)
+        for chain in compiled.chains:
+            for step_key in chain.steps:
+                target = chain.resolved_policy(step_key, resolve_names=False)
+                for entry in target.reservation_decls:
+                    _take(entry)
+        from taskq.workflows._effects import collect_terminal_effects
+        from taskq.workflows._policy import resolve_execution_policy
+
+        for registered in collect_terminal_effects(compiled).values():
+            actor = registered.effect.policy.actor
+            queue = registered.effect.policy.queue
+            assert isinstance(actor, str) and isinstance(queue, str)
+            effect_target = resolve_execution_policy(
+                step_policy=registered.effect.policy,
+                compatibility_actor=actor,
+                compatibility_queue=queue,
+                resolve_names=False,
+            )
+            for entry in effect_target.reservation_decls:
+                _take(entry)
     return [by_name[res_name] for res_name in sorted(by_name)], sorted(set(unknown))
 
 
 # ── the execution door ───────────────────────────────────────────────────
 
-_runners: dict[tuple[str, str, str, str], tuple[Any, Any]] = {}
-"""The worker-hosted runners, keyed (schema, workflow name, worker id,
-worker default) — the worker's pool + identity are process-stable, so
-the cache holds ONE runner per workflow per process (the construction
-validates the graph once). The pool rides the value so a swapped pool
-rebuilds the runner; the worker default rides the KEY — two callers
-naming different defaults (a test's 300s, another's ``None``, a fleet's
-per-tenant settings) must never share a runner (the second would
-inherit the first's deadline)."""
+type _RunnerKey = tuple[str, str, JobId, str, asyncio.AbstractEventLoop]
+
+_MAX_DRAINING_RETIREES = 16
+_MAX_REPLACEMENTS_PER_ACQUIRE = 16
+"""A caller may hand off from an obsolete construction at most this many times.
+A reload storm beyond the bound fails generation acquisition before body effects;
+the worker treats that infrastructure refusal as claim recovery, not body failure.
+"""
 
 
-def _runner_for(
+@dataclass(slots=True)
+class _ManagedRunner:
+    pool: asyncpg.Pool
+    generation: int
+    runner: FlowRunner
+    owner: WorkflowDepsOwner | None
+
+
+@dataclass(slots=True)
+class _AcquiredRunner:
+    """One claimed attempt's runner plus its product pin."""
+
+    runner: FlowRunner
+    cell: _RunnerCell
+    owner: WorkflowDepsOwner | None
+    released: bool = False
+
+    def release(self) -> None:
+        if self.released:
+            raise WorkflowDepsLifecycleError("workflow runner lease released twice")
+        self.released = True
+        if self.owner is None:
+            return
+        self.owner.release()
+        if self.owner.retired and self.owner.pins == 0:
+            self.cell.ensure_retired_close(self.owner)
+
+    def release_after_body(self, body_task: asyncio.Task[object] | None) -> None:
+        """The typed idempotent handoff (the deadline/unwind law): a
+        quiescent tail releases synchronously; a live detached body task
+        transfers the already-entered lease to that task's done callback,
+        which performs the ordinary release exactly once. The callback
+        holds the lease and the task strongly enough for completion — a
+        never-finishing body keeps its dependency pinned until the
+        bounded process shutdown instead of a false pin-zero state."""
+        if self.released:
+            return
+        if body_task is None or body_task.done():
+            self.release()
+            return
+
+        def _release_on_done(_task: asyncio.Task[object]) -> None:
+            # Idempotent: a synchronous release that raced this callback
+            # already flipped the flag; the callback never double-releases.
+            if not self.released:
+                self.release()
+
+        body_task.add_done_callback(_release_on_done)
+
+
+@dataclass(slots=True)
+class _Retiree:
+    owner: WorkflowDepsOwner
+    close_task: asyncio.Task[None]
+
+
+class _RunnerCell:
+    """Current generation + explicitly bounded draining owners for one key."""
+
+    def __init__(self, key: _RunnerKey) -> None:
+        self.key = key
+        self.current: _ManagedRunner | None = None
+        self.flight: asyncio.Task[_ManagedRunner] | None = None
+        self.retirees: list[_Retiree] = []
+        self.close_tasks: dict[int, asyncio.Task[None]] = {}
+        self.closing = False
+        self.timeout: float | None = None
+
+    def matches(self, managed: _ManagedRunner, pool: asyncpg.Pool, generation: int) -> bool:
+        return (
+            managed.pool is pool
+            and managed.generation == generation
+            and (managed.owner is None or not managed.owner.retired)
+        )
+
+    @staticmethod
+    def _owner_close_complete(owner: WorkflowDepsOwner) -> bool:
+        # ``closed`` records the owner's close decision; requiring its shielded
+        # close flight to have finished as well means an externally cancelled
+        # ``wait task or a scheduled-but-unrun done callback cannot present a live
+        # close operation as completed history.
+        close_flight = owner._close_flight  # pyright: ignore[reportPrivateUsage]  # the cell is the close-flight's retirement owner
+        return owner.closed and close_flight is not None and close_flight.done()
+
+    async def acquire(
+        self,
+        *,
+        pool: asyncpg.Pool,
+        generation: int,
+        default_start_to_close: timedelta | None,
+        provider_bridge: WorkflowProviderBridge | None,
+        open_timeout: float | None,
+    ) -> _AcquiredRunner:
+        self.timeout = open_timeout
+        replacements = 0
+        while True:
+            if self.closing:
+                raise WorkflowDepsLifecycleError(
+                    f"workflow runner cell {self.key[:4]!r} is closed on this loop"
+                )
+            current = self.current
+            if current is not None and self.matches(current, pool, generation):
+                return self._pin(current)
+
+            flight = self.flight
+            if flight is None:
+                if self.current is not None and self.current.owner is not None:
+                    # Product closure is the authority. A done callback may be
+                    # scheduled one loop turn after close returns; must not keep
+                    # a closed resource consuming the admission bound.
+                    self.retirees = [
+                        entry
+                        for entry in self.retirees
+                        if not self._owner_close_complete(entry.owner)
+                    ]
+                    live = len(self.retirees)
+                    if live >= _MAX_DRAINING_RETIREES:
+                        # Refuse BEFORE retiring the current owner. This leaves
+                        # every live old claim pinned and its eventual release able
+                        # to schedule exactly-once cleanup; no new work uses it.
+                        raise WorkflowDepsLifecycleError(
+                            f"workflow {self.key[1]!r} has {live} live retired "
+                            "dependency generations; new generation admission is "
+                            "refused until claims drain"
+                        )
+                self._retire_current()
+                flight = asyncio.create_task(
+                    self._construct(
+                        pool=pool,
+                        generation=generation,
+                        default_start_to_close=default_start_to_close,
+                        provider_bridge=provider_bridge,
+                    ),
+                    name=f"workflow-runner:{self.key[1]}",
+                )
+                self.flight = flight
+            managed = await asyncio.shield(flight)
+            if self.current is managed and self.matches(managed, pool, generation):
+                return self._pin(managed)
+
+            # A reload may have advanced while this flight was being built. The
+            # completed generation belongs to earlier callers; THIS caller must
+            # re-evaluate its own identity and never pin that stale owner/pool.
+            replacements += 1
+            if replacements > _MAX_REPLACEMENTS_PER_ACQUIRE:
+                raise WorkflowDepsLifecycleError(
+                    f"workflow {self.key[1]!r} did not converge after "
+                    f"{_MAX_REPLACEMENTS_PER_ACQUIRE} replacement handoffs; "
+                    "the requested pool/generation kept changing. No dependency "
+                    "was pinned and no body executed for this acquisition"
+                )
+
+    def _pin(self, managed: _ManagedRunner) -> _AcquiredRunner:
+        if self.closing or self.current is not managed:
+            raise WorkflowDepsLifecycleError("workflow runner retired before claim pin")
+        if managed.owner is not None:
+            managed.owner.pin()
+        return _AcquiredRunner(managed.runner, self, managed.owner)
+
+    async def _construct(
+        self,
+        *,
+        pool: asyncpg.Pool,
+        generation: int,
+        default_start_to_close: timedelta | None,
+        provider_bridge: WorkflowProviderBridge | None,
+    ) -> _ManagedRunner:
+        from taskq.workflows.api._runner import FlowRunner
+
+        owner: WorkflowDepsOwner | None = None
+        try:
+            declared = get_compiled_workflow(self.key[1])
+            if not isinstance(declared, CompiledWorkflow):
+                raise TypeError(
+                    f"compiled workflow {self.key[1]!r} is {type(declared).__qualname__}, "
+                    "not CompiledWorkflow"
+                )
+            compiled = declared
+            factory = compiled.deps_factory
+            if factory is not None and workflow_has_runtime_deps(compiled):
+                shared: set[int] = set()
+                context = WorkflowDepsContext(
+                    pool=pool,
+                    schema=self.key[0],
+                    worker_id=self.key[2],
+                    generation=generation,
+                    loop=self.key[4],
+                    providers=(
+                        provider_bridge.bind(shared) if provider_bridge is not None else None
+                    ),
+                    _shared_identities=shared,
+                )
+                owner = WorkflowDepsOwner(
+                    factory,
+                    context=context,
+                    expected=deps_contract_annotations(compiled),
+                    timeout=self.timeout,
+                )
+                product = await owner.acquire()
+                # The current P6A fleet adapter enters once per owner and hands
+                # P2's existing injection seats an ordinary static value. P2's
+                # direct-door integration will consume the same owner instead.
+                compiled = replace(compiled, deps=product, deps_factory=None)
+            elif factory is not None:
+                # A factory on a graph with no deps-taking body is inert.
+                compiled = replace(compiled, deps=None, deps_factory=None)
+            runner = FlowRunner(
+                compiled,
+                pool,
+                self.key[0],
+                worker_id=self.key[2],
+                default_start_to_close=default_start_to_close,
+            )
+            managed = _ManagedRunner(pool, generation, runner, owner)
+            if self.closing:
+                # Reset/shutdown may have dropped this cell while construction
+                # continued under shield. The flight still owns the late product.
+                if owner is not None:
+                    owner.retire()
+                    await owner.aclose()
+                raise WorkflowDepsLifecycleError(
+                    "workflow deps construction completed after its loop cell closed"
+                )
+            self.current = managed
+            self.flight = None
+            return managed
+        except BaseException:
+            if self.flight is asyncio.current_task():
+                self.flight = None
+            if owner is not None and not owner.closed:
+                owner.retire()
+                try:
+                    await owner.aclose()
+                except BaseException as close_error:
+                    logger.error(
+                        "workflow-deps-abort-close-failed",
+                        workflow=self.key[1],
+                        error_class=type(close_error).__name__,
+                        error=str(close_error),
+                        exc_info=True,
+                    )
+                    if isinstance(close_error, KeyboardInterrupt):
+                        raise
+            raise
+
+    def _retire_current(self) -> None:
+        current = self.current
+        self.current = None
+        if current is None or current.owner is None:
+            return
+        owner = current.owner
+        owner.retire()
+        self.ensure_retired_close(owner)
+
+    def ensure_retired_close(self, owner: WorkflowDepsOwner) -> None:
+        identity = id(owner)
+        existing = self.close_tasks.get(identity)
+        if existing is not None and not existing.done():
+            return
+        if self._owner_close_complete(owner):
+            self.close_tasks.pop(identity, None)
+            return
+        # acquire() refuses at 16 BEFORE retirement and prunes actually closed
+        # owners. This scheduler also runs during shutdown: do not assertion-fail
+        # there instead of closing the one current owner alongside its retirees.
+        task = asyncio.create_task(
+            self._close_when_idle(owner), name=f"workflow-deps-retire:{self.key[1]}"
+        )
+        self.close_tasks[identity] = task
+        # Replace only THIS owner's stale completed wait. Other owners'
+        # timed-out/cancelled waits remain countable until actual close.
+        self.retirees = [
+            entry
+            for entry in self.retirees
+            if entry.owner is not owner and not self._owner_close_complete(entry.owner)
+        ]
+        self.retirees.append(_Retiree(owner, task))
+
+        def completed(done: asyncio.Task[None]) -> None:
+            if self._owner_close_complete(owner):
+                # Only a genuine completed owner close removes cap membership.
+                # A timeout/cancelled wait retains its real retired owner.
+                self.retirees = [entry for entry in self.retirees if entry.close_task is not done]
+                # A stale callback from a timed-out wait must not erase a newer
+                # retry task for this same owner. Closed history leaves no task.
+                if self.close_tasks.get(identity) is done:
+                    self.close_tasks.pop(identity, None)
+            if done.cancelled():
+                logger.warning(
+                    "workflow-deps-retirement-wait-cancelled",
+                    workflow=self.key[1],
+                    generation=owner.context.generation,
+                    owner_closed=self._owner_close_complete(owner),
+                )
+                return
+            error = done.exception()
+            if error is not None:
+                logger.error(
+                    "workflow-deps-retirement-failed",
+                    workflow=self.key[1],
+                    error_class=type(error).__name__,
+                    error=str(error),
+                )
+
+        task.add_done_callback(completed)
+
+    async def _close_when_idle(self, owner: WorkflowDepsOwner) -> None:
+        if owner.pins:
+            try:
+                async with asyncio.timeout(self.timeout):
+                    await owner._idle.wait()  # pyright: ignore[reportPrivateUsage]  # the cell is the owner's claim-drain coordinator
+            except TimeoutError:
+                logger.error(
+                    "workflow-deps-retirement-drain-timeout",
+                    workflow=self.key[1],
+                    generation=owner.context.generation,
+                    pins=owner.pins,
+                    timeout=self.timeout,
+                )
+                # A later release may schedule the close again. Never close a
+                # resource underneath an old claimed body merely to meet a bound.
+                self.close_tasks.pop(id(owner), None)
+                return
+        await owner.aclose()
+
+    async def aclose(self) -> None:
+        self.closing = True
+        flight = self.flight
+        if flight is not None:
+            try:
+                await asyncio.shield(flight)
+            except BaseException as exc:
+                if isinstance(exc, KeyboardInterrupt):
+                    raise
+                logger.error(
+                    "workflow-deps-shutdown-flight-failed",
+                    workflow=self.key[1],
+                    error_class=type(exc).__name__,
+                    error=str(exc),
+                )
+        self._retire_current()
+        # A bounded wait may have ended earlier without closing its retained
+        # owner. Re-arm those exact retained owners; a shielded owner close
+        # already in flight is shared, never raced by a second product close.
+        for retiree in tuple(self.retirees):
+            self.ensure_retired_close(retiree.owner)
+        while self.close_tasks:
+            tasks = tuple(dict.fromkeys(self.close_tasks.values()))
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, KeyboardInterrupt):
+                    raise result
+                if isinstance(result, BaseException):
+                    logger.error(
+                        "workflow-deps-shutdown-close-failed",
+                        workflow=self.key[1],
+                        error_class=type(result).__name__,
+                        error=str(result),
+                    )
+            if not self.close_tasks:
+                break
+            if all(task.done() for task in self.close_tasks.values()):
+                self.close_tasks.clear()
+
+
+_runners: dict[_RunnerKey, _RunnerCell] = {}
+"""Bounded per-loop cells. Pool and generation are values; loop is identity."""
+
+
+async def _acquire_runner(
     name: str,
     pool: asyncpg.Pool,
     schema: str,
     worker_id: JobId,
     default_start_to_close: timedelta | None = None,
-) -> Any:
-    from taskq.workflows.api._runner import FlowRunner
-
+    *,
+    generation: int = 0,
+    provider_bridge: WorkflowProviderBridge | None = None,
+    factory_timeout: float | None = None,
+) -> _AcquiredRunner:
+    """Acquire and pin one exact runner/product generation for a claimed body."""
     default_key = "" if default_start_to_close is None else repr(default_start_to_close)
-    key = (schema, name, str(worker_id), default_key)
-    cached = _runners.get(key)
-    if cached is not None and cached[0] is pool:
-        return cached[1]
-    compiled = get_compiled_workflow(name)
-    # the compiled carries the app's bound instance (bound once at
-    # WorkflowApp(deps=…)) — the worker-hosted runner hands the same instance
-    # to every body invocation the vanilla door does (the E12 contract checked
-    # the bodies' declarations against this binding at the projection's
-    # compile).
-    runner = FlowRunner(
-        compiled,
-        pool,
-        schema,
-        worker_id=worker_id,
-        deps=compiled.deps if isinstance(compiled, CompiledWorkflow) else None,
-        # the worker settings' value, threaded from the dispatch loop's deps.
-        # Process-stable (the settings load once at boot), and part of the
-        # cache key — a changed default builds its own runner, never inherits.
+    loop = asyncio.get_running_loop()
+    key = (schema, name, worker_id, default_key, loop)
+    cell = _runners.get(key)
+    if cell is None:
+        cell = _RunnerCell(key)
+        _runners[key] = cell
+    return await cell.acquire(
+        pool=pool,
+        generation=generation,
         default_start_to_close=default_start_to_close,
+        provider_bridge=provider_bridge,
+        open_timeout=factory_timeout,
     )
-    _runners[key] = (pool, runner)
-    return runner
+
+
+def _drop_all_runner_cells_sync() -> None:
+    """Drop test-global cells without pretending synchronous code can close."""
+    cells = tuple(_runners.values())
+    _runners.clear()
+    for cell in cells:
+        cell.closing = True
+        owners = [managed.owner for managed in (cell.current,) if managed is not None]
+        owners.extend(retiree.owner for retiree in cell.retirees)
+        for owner in owners:
+            if owner is not None:
+                owner.retire()
+                if owner.resolved and not owner.closed:
+                    logger.error(
+                        "workflow-deps-test-reset-leak",
+                        workflow=cell.key[1],
+                        generation=owner.context.generation,
+                        pins=owner.pins,
+                        remedy="await aclose_workflow_runners_for_tests() on the owning loop",
+                    )
+
+
+async def _close_current_loop_cells() -> None:
+    loop = asyncio.get_running_loop()
+    selected = [(key, cell) for key, cell in _runners.items() if key[4] is loop]
+    for key, _cell in selected:
+        _runners.pop(key, None)
+    for _key, cell in selected:
+        cell.closing = True
+        close_task = asyncio.create_task(cell.aclose(), name=f"workflow-cell-close:{cell.key[1]}")
+        await asyncio.shield(close_task)
+
+
+async def aclose_workflow_runners_for_tests() -> None:
+    """Explicit async fixture cleanup for only the caller's actual loop."""
+    await _close_current_loop_cells()
+
+
+async def close_workflow_runners_bounded() -> None:
+    """Worker shutdown callback: close this loop before providers/role pools."""
+    if factory_timeout := _current_loop_close_timeout():
+        # ``aclose`` bounds each owned close; this outer shield preserves the
+        # ordering even when the shutdown orchestration's waiter is cancelled.
+        await asyncio.shield(_close_current_loop_cells_with_timeout(factory_timeout))
+    else:
+        await asyncio.shield(_close_current_loop_cells())
+
+
+def _current_loop_close_timeout() -> float | None:
+    # The per-cell timeout is captured from each claim. An unused cell needs no
+    # wait at all, so no module-global timeout or worker identity bridge exists.
+    loop = asyncio.get_running_loop()
+    return next((cell.timeout for key, cell in _runners.items() if key[4] is loop), None)
+
+
+async def _close_current_loop_cells_with_timeout(bound: float) -> None:
+    async with asyncio.timeout(bound):
+        await _close_current_loop_cells()
 
 
 async def execute_flow_job(
@@ -976,6 +1498,11 @@ async def execute_flow_job(
     worker_id: JobId,
     job: JobRow,
     default_start_to_close: timedelta | None = None,
+    generation: int = 0,
+    provider_bridge: WorkflowProviderBridge | None = None,
+    factory_timeout: float | None = None,
+    cancellation: JobContext[BaseModel] | None = None,
+    workflow_registration: WorkflowJobRegistration | None = None,
 ) -> FlowExecution:
     """Execute one claimed workflow row on THIS worker.
 
@@ -1036,9 +1563,6 @@ async def execute_flow_job(
             "a deployment defect"
         ) from None
 
-    runner = _runner_for(
-        workflow_name, pool, schema, worker_id, default_start_to_close=default_start_to_close
-    )
     # the root's stamped override through the shared parse → domain-clamp →
     # degrade cascade (``resolve_priority_stamp`` — a stamp a hand-crafted row
     # rendered unparseable or out-of-domain degrades to no override, never a
@@ -1055,13 +1579,32 @@ async def execute_flow_job(
         # JobRow's field — the row is the truth); the runner's enforcement
         # resolves it over the worker's default.
         "start_to_close": job.start_to_close,
+        "max_attempts": job.max_attempts,
+        "retry_kind": job.retry_kind,
+        "retry_base_seconds": job.retry_base.total_seconds(),
+        "retry_cap_seconds": job.retry_cap.total_seconds(),
+        "retry_backoff": job.retry_backoff,
+        "retry_jitter": job.retry_jitter,
         # the fork's builders read the source row's already-resolved
         # reservation names off it — the children ride the source row's cohort
         # (never a per-item re-derivation).
         "metadata": job.metadata,
     }
     from taskq.workflows.api._runner_errors import WorkflowRunError
+    from taskq.workflows.api._runner_transactional import BodyTaskRef
 
+    lease = await _acquire_runner(
+        workflow_name,
+        pool,
+        schema,
+        worker_id,
+        default_start_to_close=default_start_to_close,
+        generation=generation,
+        provider_bridge=provider_bridge,
+        factory_timeout=factory_timeout,
+    )
+    runner = lease.runner
+    body_task_ref = BodyTaskRef()
     try:
         outcome = await runner.run_fleet_claimed_step(
             JobId(cast(UUID, flow_raw)),
@@ -1069,6 +1612,11 @@ async def execute_flow_job(
             attempt=job.attempt,
             claim_epoch=job.claim_epoch,
             run_priority=run_priority,
+            cancel_face=cancellation,
+            cancel_detail=(
+                workflow_registration.detail if workflow_registration is not None else None
+            ),
+            body_task_ref=body_task_ref,
         )
     except WorkflowRunError as exc:
         # the unresolvable step's parking shape: a step key this process's
@@ -1083,6 +1631,13 @@ async def execute_flow_job(
         raise WorkflowBodyUnresolvableError(
             f"row {job.id}'s step {read['step_key']!r} is unresolvable in this process: {exc}"
         ) from exc
+    finally:
+        # Includes runner body finalization: the old product may close only
+        # after this claim's execution tail has returned/unwound — and when
+        # the deadline-enforced body task is still unwinding detached, the
+        # lease rides that task's done callback (never released while the
+        # body can still touch its product).
+        lease.release_after_body(body_task_ref.task)
     return FlowExecution(
         outcome=outcome,
         step_key=str(read["step_key"]),

@@ -306,6 +306,16 @@ def _rule_annotations(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
                     "the wiring (the promise's data type comes from it)",
                 )
             )
+    for chain in compiled.chains:
+        for step_key, chain_step in chain.steps.items():
+            if "return" not in getattr(chain_step.body, "__annotations__", {}):
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E4-unannotated-step",
+                        "error",
+                        f"chain step {step_key!r}'s body has no return annotation",
+                    )
+                )
     return diagnostics
 
 
@@ -554,8 +564,25 @@ def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationE
     stand-in that CLAIMS the type it does not have) is the wiring-site
     erasure: the checker verifies the body's ``ctx.*`` reads against the
     LIE, every face reports clean. The conformance is verified at BUILD
-    — the annotation is verification, not documentation."""
-    from taskq.workflows.api._ctx import StepContext
+    — the annotation is verification, not documentation.
+
+    The TRANSACTIONAL subtype's direction is checked too: the runner
+    hands a plain :class:`StepContext` to every ordinary body, so a body
+    that DEMANDS :class:`TransactionalStepContext` is refused on a
+    non-transactional node (and on a chain step) BEFORE execution — the
+    demand could never be satisfied there, and an unsatisfied demand
+    would surface as a mid-body attribute error instead of this
+    wiring-time refusal. A transactional node may declare either the
+    subtype (the documented ``ctx.connection`` face) or the ordinary
+    base."""
+    from taskq.workflows.api._ctx import StepContext, TransactionalStepContext
+
+    def _ctx_error(node_key: str, ctx_ann: object, why: str) -> WorkflowValidationError:
+        return WorkflowValidationError(
+            "E9-ctx-annotation",
+            "error",
+            f"{node_key!r}'s body declares its context as {ctx_ann!r} — {why}",
+        )
 
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
@@ -568,21 +595,92 @@ def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationE
         if ctx_ann is Any or ctx_ann is object:
             continue  # the declared-unchecked: Any/object honestly declare
             # the absence of verification — never a lie.
-        if ctx_ann is StepContext or (
+        if ctx_ann is not StepContext and not (
             isinstance(ctx_ann, type) and issubclass(ctx_ann, StepContext)
         ):
-            continue
-        diagnostics.append(
-            WorkflowValidationError(
-                "E9-ctx-annotation",
-                "error",
-                f"{node.key!r}'s body declares its context as {ctx_ann!r} — "
-                "the ctx annotation must BE StepContext (or a subclass), "
-                "or the declared-unchecked Any/object: the checker "
-                "verifies the body's ctx.* reads against the REAL "
-                "surface; a fabricated stand-in verifies a lie",
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E9-ctx-annotation",
+                    "error",
+                    f"{node.key!r}'s body declares its context as {ctx_ann!r} — "
+                    "the ctx annotation must BE StepContext (or a subclass), "
+                    "or the declared-unchecked Any/object: the checker "
+                    "verifies the body's ctx.* reads against the REAL "
+                    "surface; a fabricated stand-in verifies a lie",
+                )
             )
-        )
+            continue
+        if (
+            ctx_ann is not StepContext
+            and issubclass(ctx_ann, TransactionalStepContext)
+            and not node.transactional
+        ):
+            diagnostics.append(
+                _ctx_error(
+                    node.key,
+                    ctx_ann,
+                    "the TransactionalStepContext subtype is the "
+                    "transactional execution's own body face — this node "
+                    "is not transactional, so the runner hands a plain "
+                    "StepContext and the demand could never be satisfied. "
+                    "Annotate StepContext, or wire the node with "
+                    "transactional_step",
+                )
+            )
+    from taskq.workflows._effects import collect_terminal_effects
+
+    for step_key, registered in collect_terminal_effects(compiled).items():
+        hints = body_hints(registered.effect.body)
+        ctx_ann = hints.get("ctx")
+        if ctx_ann not in (None, Any, object, StepContext):
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E9-ctx-annotation",
+                    "error",
+                    f"terminal effect {step_key!r} has a non-StepContext ctx: {ctx_ann!r}",
+                )
+            )
+        event_params = [key for key in hints if key not in ("return", "ctx")]
+        if event_params:
+            event_ann = hints[event_params[0]]
+            from taskq.workflows._policy import ExhaustionEvent
+
+            if event_ann is not ExhaustionEvent:
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E4-unannotated-step",
+                        "error",
+                        f"terminal effect {step_key!r} must accept ExhaustionEvent; "
+                        f"got {event_ann!r}",
+                    )
+                )
+    for chain in compiled.chains:
+        for step_key, chain_step in chain.steps.items():
+            ctx_ann = body_hints(chain_step.body).get("ctx")
+            if ctx_ann in (None, Any, object) or ctx_ann is StepContext:
+                continue
+            if isinstance(ctx_ann, type) and issubclass(ctx_ann, StepContext):
+                if issubclass(ctx_ann, TransactionalStepContext):
+                    diagnostics.append(
+                        WorkflowValidationError(
+                            "E9-ctx-annotation",
+                            "error",
+                            f"chain step {step_key!r} declares its context as "
+                            f"{ctx_ann!r} — the TransactionalStepContext "
+                            "subtype is the transactional execution's own "
+                            "body face, and a chain step is never "
+                            "transactional (the runner hands a plain "
+                            "StepContext). Annotate StepContext",
+                        )
+                    )
+                continue
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E9-ctx-annotation",
+                    "error",
+                    f"chain step {step_key!r} declares a non-StepContext ctx: {ctx_ann!r}",
+                )
+            )
     return diagnostics
 
 
@@ -653,6 +751,57 @@ def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
                         "discovery of a wiring-time lie)",
                     )
                 )
+    diagnostics.extend(_chain_arity_diagnostics(compiled))
+    return diagnostics
+
+
+def _chain_arity_diagnostics(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """Chain leaf bodies wire one record, plus an optional dependency tail."""
+    diagnostics: list[WorkflowValidationError] = []
+    for chain in compiled.chains:
+        for step_key, chain_step in chain.steps.items():
+            body = chain_step.body
+            if not callable(body) or not body_hints(body):
+                continue
+            params = [
+                name
+                for name, parameter in inspect.signature(body).parameters.items()
+                if name != "ctx"
+                and parameter.kind
+                not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            ]
+            if len(params) not in (1, 2):
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E10-arity",
+                        "error",
+                        f"{step_key!r}'s chain body takes {len(params)} parameter(s) "
+                        "but a chain leaf wires exactly one record (plus an optional "
+                        f"deps tail); params={params!r}",
+                    )
+                )
+    from taskq.workflows._effects import collect_terminal_effects
+
+    for step_key, registered in collect_terminal_effects(compiled).items():
+        body = registered.effect.body
+        if not callable(body) or not body_hints(body):
+            continue
+        effect_params = [
+            name
+            for name, parameter in inspect.signature(body).parameters.items()
+            if name != "ctx"
+            and parameter.kind
+            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        ]
+        if len(effect_params) not in (1, 2):
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E10-arity",
+                    "error",
+                    f"{step_key!r}'s terminal effect takes {len(effect_params)} parameter(s); "
+                    "it wires exactly one ExhaustionEvent plus an optional deps tail",
+                )
+            )
     return diagnostics
 
 
@@ -676,31 +825,13 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
     the zero-false-positive doctrine (a guess is never rejected); the
     runner's positional read is the shape's runtime face, and E10's own
     arithmetic owns the true mismatches."""
-    from taskq.workflows.api._deps import deps_satisfied
+    from taskq.workflows.api._deps import deps_bodies, deps_satisfied, factory_product_type
 
     diagnostics: list[WorkflowValidationError] = []
     deps = compiled.deps
-    checks: list[tuple[str, Callable[..., object], int]] = []
-    for node in compiled.nodes.values():
-        if node.body is not None:
-            checks.append((node.key, node.body, len(node.args)))
-        if node.map_arms is not None:
-            # each arm runs as its own fork-spawned child, wired one arg — the
-            # deps shape reads one param beyond it, the same contract the step
-            # bodies own. (The pre-fix walk skipped the arms — E15's comment
-            # claimed this walk covered them.)
-            for tag, arm in node.map_arms.items():
-                checks.append((route_child_key(node.key, tag), arm.body, 1))
-        if node.map_item is not None:
-            checks.append((f"{node.key}.item", node.map_item, 1))
-        if node.loop_body is not None:
-            checks.append((node.key, node.loop_body, 1))
-        if node.loop_spec is not None and node.loop_spec.escalation_body is not None:
-            escalation: Callable[..., object] = cast(
-                "Callable[..., object]", node.loop_spec.escalation_body
-            )  # Why: the escalation body's declared shape is the StepBody contract (the same cast the registration walk keeps).
-            checks.append((f"{node.key}.escalation", escalation, 1))
-    for owner, body, wired in checks:
+    factory = compiled.deps_factory
+    factory_product = factory_product_type(factory) if factory is not None else None
+    for owner, body, wired in deps_bodies(compiled):
         hints = body_hints(body)
         if not hints:
             continue  # the unresolvable annotations: a guess is never rejected
@@ -709,7 +840,7 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
             continue  # not the deps shape — E10 owns the arity
         deps_param = params[-1]
         declared = hints[deps_param]
-        if deps is None:
+        if deps is None and factory is None:
             diagnostics.append(
                 WorkflowValidationError(
                     "E12-deps-contract",
@@ -717,14 +848,50 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
                     f"{owner!r}'s body declares a deps parameter "
                     f"({deps_param!r}) but this workflow's app binds no "
                     "deps — bind ONE instance at the door "
-                    "(WorkflowApp(deps=…), or FlowRunner(…, deps=…) / "
-                    "run(…, deps=…) for the direct doors), or drop the "
-                    "parameter: one param beyond ctx + the wired sources "
-                    "IS the deps contract, never a fourth data source",
+                    "(WorkflowApp(deps=… / deps_factory=…), or "
+                    "FlowRunner(…, deps=…) / run(…, deps=…) for the direct "
+                    "doors), or drop the parameter: one param beyond ctx + "
+                    "the wired sources IS the deps contract, never a fourth "
+                    "data source",
                 )
             )
             continue
-        verdict = deps_satisfied(deps, declared)
+        if deps is not None:
+            # The legacy instance face is unchanged, including its inspection
+            # policy. Static precedence also fences a hand-built CompiledWorkflow
+            # carrying both declarations.
+            verdict = deps_satisfied(deps, declared)
+            if verdict is False:
+                diagnostics.append(
+                    WorkflowValidationError(
+                        "E12-deps-contract",
+                        "error",
+                        f"{owner!r}'s body declares its deps as "
+                        f"{getattr(declared, '__name__', declared)!r} but the "
+                        "app's bound instance is "
+                        f"{type(deps).__name__!r} — the bound instance must "
+                        "SATISFY the body's declared deps type: bind the "
+                        "declared type (or a subtype) on the app's deps=, or "
+                        "fix the body's annotation",
+                    )
+                )
+            continue
+
+        assert factory_product is not None
+        product = factory_product.type_
+        verdict: bool | None = None
+        if (
+            product is not Any
+            and product is not object
+            and declared is not Any
+            and declared is not object
+            and isinstance(product, type)
+            and isinstance(declared, type)
+        ):
+            try:
+                verdict = issubclass(product, declared)
+            except TypeError:  # a data/non-runtime-checkable protocol
+                verdict = None
         if verdict is False:
             diagnostics.append(
                 WorkflowValidationError(
@@ -732,11 +899,24 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
                     "error",
                     f"{owner!r}'s body declares its deps as "
                     f"{getattr(declared, '__name__', declared)!r} but the "
-                    "app's bound instance is "
-                    f"{type(deps).__name__!r} — the bound instance must "
-                    "SATISFY the body's declared deps type: bind the "
-                    "declared type (or a subtype) on the app's deps=, or "
-                    "fix the body's annotation",
+                    "app's deps_factory declares product "
+                    f"{getattr(product, '__name__', product)!r} — the declared "
+                    "product must be the body's declared type (or a subtype); "
+                    "fix the factory return annotation or the body annotation",
+                )
+            )
+        elif verdict is None:
+            reason = factory_product.reason or (
+                f"factory/body annotations {product!r} and {declared!r} are not "
+                "jointly decidable without a runtime product"
+            )
+            diagnostics.append(
+                WorkflowValidationError(
+                    "E12-deps-contract-unverifiable",
+                    "warning",
+                    f"{owner!r}'s factory product cannot be proven without "
+                    f"construction: {reason}; runtime concrete-type mismatches "
+                    "still fail the body loudly",
                 )
             )
     return diagnostics

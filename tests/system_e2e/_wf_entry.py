@@ -21,6 +21,7 @@ import sys
 
 from taskq.settings import WorkerSettings
 from taskq.worker.run import _main
+from tests.system_e2e import _p5_cancel_app
 from tests.system_e2e import (
     _wf_app as _wf_app_module,  # Why: the import is the capability — the app registry observes it, the boot's projection compiles the flows.
 )
@@ -33,6 +34,7 @@ REGISTRY.update(_wf_app_module.MARCH_ACTORS)
 #: same module object the import above bound (the capability's witness,
 #: referenced so the import can never be dropped as unused).
 MARCH_APP_MODULE = _wf_app_module
+P5_APP_MODULE = _p5_cancel_app  # the import registers these real fleet handlers
 
 if __name__ == "__main__":
     faulthandler.register(signal.SIGUSR2, all_threads=True)

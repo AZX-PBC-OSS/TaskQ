@@ -51,6 +51,7 @@ async def test_attack_map_children_ledger_pk_collision(
         step_key="enrich",
         map_index=0,
         attempt=1,
+        claim_epoch=0,
     )
     assert claim_0.job_id == node_0  # child 0's own claim — fine.
 
@@ -64,6 +65,7 @@ async def test_attack_map_children_ledger_pk_collision(
         step_key="enrich",
         map_index=1,
         attempt=1,
+        claim_epoch=0,
     )
 
     # the arbiter must treat child 1's claim as its own row. The shipped PK

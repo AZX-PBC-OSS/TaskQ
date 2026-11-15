@@ -13,6 +13,7 @@ from typing import Final
 from uuid import UUID
 
 __all__ = [
+    "BIGINT_MAX",
     "BTREE_MAX_ITEM_BYTES",
     "BUDGET_EXHAUSTED_MESSAGE",
     "CANCEL_ORIGIN_ABANDONED",
@@ -639,6 +640,16 @@ result that slips past the consumer check is still rejected at the storage
 boundary. Nothing else depends on the value: there is no CHECK constraint
 on ``jobs.result_size_bytes`` and the result is never carried in a Redis
 event payload.
+"""
+
+BIGINT_MAX: Final[int] = 2**63 - 1
+"""Upper bound of the Postgres ``bigint`` domain.
+
+The five record-identity carriers may eventually widen to ``bigint``
+(``jobs``, ``jobs_archive``, ``wf_step_ledger``, ``wf_outbox``,
+``wf_signals``). Until the schema says so, the identity resolver reports
+the minimum supported domain across all five; this constant is only the
+bigint column's own bound, never an assumption about a deployed schema.
 """
 
 SMALLINT_MIN: Final[int] = -32768

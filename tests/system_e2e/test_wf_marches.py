@@ -189,7 +189,7 @@ async def test_the_deep_research_march_kick_to_explorer(
         while time.monotonic() - start < _KICKOFF_BOUND_S:
             row = await conn.fetchrow(
                 f"""SELECT id::text FROM "{schema}".jobs
-                    WHERE metadata->>'workflow' = 'deep_research'
+                    WHERE metadata->>'workflow' = 'march_deep_research'
                       AND idempotency_key = $1
                       AND step_key = '__flow__'""",
                 f"deep-research:{slot}",

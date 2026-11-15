@@ -6,7 +6,12 @@ refused loudly; never a silent wedge."""
 
 from __future__ import annotations
 
-__all__ = ["VanishedNodeError", "WorkflowRunCancelledError", "WorkflowRunError"]
+__all__ = [
+    "TransactionalStepUnsupportedError",
+    "VanishedNodeError",
+    "WorkflowRunCancelledError",
+    "WorkflowRunError",
+]
 
 
 class WorkflowRunError(RuntimeError):
@@ -57,3 +62,24 @@ class VanishedNodeError(WorkflowRunError):
     truth — never an eternal zombie (a ``running`` root over a
     forever-pending node, parked budget-free, surfaced only in a
     detector's log)."""
+
+
+class TransactionalStepUnsupportedError(WorkflowRunError):
+    """The one typed refusal for operations a TRANSACTIONAL step does not
+    support (the narrowed class the deterministic authoring classifier
+    registers — never the whole ``WorkflowRunError`` family):
+
+    * the body returned the ``Exit`` sentinel (the settlement owns its
+      one terminal; there is no exit finalizer after the managed
+      rollback, no second commit, no unbounded running row);
+    * the body's result cannot be encoded (a deterministic
+      output/configuration defect, never a provider/IO failure);
+    * a wait/spawn helper (``ctx.spawn_flow`` / ``ctx.wait_signal`` /
+      ``ctx.wait_until``) was invoked inside a transactional body —
+      refused at the helper's entry, before any pool acquisition, data
+      statement, signal write, or nested callback;
+    * a helper was handed a different database session than the held
+      claim connection (refused before any data statement).
+
+    Every raise names the remedy. A retry budget is never spent on it:
+    the class is deterministic by construction (re-running re-raises)."""

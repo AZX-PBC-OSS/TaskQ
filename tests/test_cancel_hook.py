@@ -60,6 +60,8 @@ class _Recorder:
 
     async def fetch(self, sql: str, *args: object) -> list[_MockRow]:
         self.fetch_calls.append((sql, args))
+        if "admin_audit" in sql and "root.status = 'cancelled'" in sql:
+            return []
         return list(self._fetch_return)
 
     async def execute(self, sql: str, *args: object) -> str:
@@ -483,8 +485,10 @@ async def test_controller_has_run_in_tx_and_run_post_tx() -> None:
 
     await controller.run_in_tx(recorder)  # type: ignore[arg-type]
 
-    assert len(recorder.fetch_calls) == 1
-    sql, args = recorder.fetch_calls[0]
+    workflow_poll, vanilla_poll = recorder.fetch_calls
+    assert "admin_audit" in workflow_poll[0] and "root.status = 'cancelled'" in workflow_poll[0]
+    assert vanilla_poll[0] == POLL_CANCEL_FLAGS_SQL.format(schema=ws.schema_name)
+    sql, args = vanilla_poll
     assert POLL_CANCEL_FLAGS_SQL.format(schema=ws.schema_name) in sql
     assert args == (worker_id,)
 

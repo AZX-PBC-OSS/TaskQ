@@ -87,7 +87,7 @@ WORKFLOW_NODES_SQL = (
     """\
 SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
        j.metadata->>'blocking_reason' AS blocking_reason,
-       j.attempt, j.max_attempts,
+       j.attempt, j.claim_epoch, j.max_attempts,
        j.started_at,
        -- THE DEFERRAL FACES (the run page's "why is this step sitting
        -- here" answer — the snoozed step's own columns): the next fire

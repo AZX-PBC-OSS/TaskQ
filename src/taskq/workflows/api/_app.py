@@ -36,10 +36,11 @@ from taskq.actor_config import (
     CapacityOwner,
     validate_capacity_owner,
 )
-from taskq.constants import check_priority_domain
+from taskq.constants import check_max_attempts_domain, check_priority_domain
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.workflows._emit import EMIT_MAX_IN_FLIGHT_DEFAULT
 from taskq.workflows._types import duration_seconds
+from taskq.workflows.api._deps_factory import WorkflowDepsFactory
 from taskq.workflows.api._graph import (
     BuildGraph,
     NodeDecl,
@@ -52,6 +53,7 @@ from taskq.workflows.definitions import DuplicateWorkflowError
 
 if TYPE_CHECKING:
     from taskq.workflows.api._validate import WorkflowValidationError
+    from taskq.workflows.chain import Chain
 
 __all__ = [
     "CompiledWorkflow",
@@ -98,7 +100,13 @@ class WorkflowActor:
         self._fn = fn
         self.name = name
         self.queue = queue
+        from taskq.workflows._policy import canonical_retry_kind
+
+        check_max_attempts_domain(max_attempts)
         self.max_attempts = max_attempts
+        canonical_retry_kind(
+            retry_kind, what="actor retry_kind"
+        )  # validate only; preserve the public authoring alias
         self.retry_kind = retry_kind
         self.capture_policy = capture_policy
         self.redact = redact
@@ -225,7 +233,7 @@ class CompiledWorkflow:
     input_type: object = None
     #: The workflow's declared chains — the chain source node owns
     #: its Chain; the runner resolves chain-step routes from here.
-    chains: tuple[object, ...] = ()
+    chains: tuple[Chain, ...] = ()
     #: the run's admission control, declared at the workflow level; the runner
     #: hands it to every ``ctx.emit_batch``. ``None`` = the explicit unbounded.
     max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT
@@ -248,6 +256,11 @@ class CompiledWorkflow:
     #: — no behavior change.
     def_actor: str = "workflow"
     def_queue: str = "default"
+    #: The lazy product factory. Kept trailing and additive so every existing
+    #: constructed/replaced compile retains its default. ``deps`` is the one
+    #: legacy instance face; the worker owner clears this field when it replaces
+    #: an entered product into a runner-compatible static projection.
+    deps_factory: WorkflowDepsFactory[object] | None = None
 
     def node_keys(self) -> list[str]:
         """The compiled node keys (the wiring's census)."""
@@ -300,10 +313,17 @@ class WorkflowApp:
         *,
         actor: str = "wf",
         deps: object | None = None,
+        deps_factory: WorkflowDepsFactory[object] | None = None,
         queues_strict: bool = False,
     ) -> None:
+        if deps is not None and deps_factory is not None:
+            raise ValueError(
+                "WorkflowApp deps= and deps_factory= are mutually exclusive; "
+                "bind a static instance or declare a worker/loop-scoped factory"
+            )
         self._actor = actor
         self._deps: object | None = deps
+        self._deps_factory = deps_factory
         # the app's own definition carries the strict contract in code — the
         # fleet that needs this face cannot coordinate a fleet-wide env var
         # (its workers each subscribe to a queue subset), but every worker
@@ -596,6 +616,11 @@ class WorkflowApp:
         body invocation receives this object, never a copy."""
         return self._deps
 
+    @property
+    def deps_factory(self) -> WorkflowDepsFactory[object] | None:
+        """The inert declared factory, or ``None`` for static/no deps."""
+        return self._deps_factory
+
     def has(self, name: str) -> bool:
         return name in self._workflows
 
@@ -678,6 +703,7 @@ class WorkflowApp:
             # non-adopter.
             def_actor=graph.declared_actor or "workflow",
             def_queue=graph.declared_queue or "default",
+            deps_factory=self._deps_factory,
         )
 
     def _known_queues(self) -> frozenset[str]:
@@ -771,13 +797,21 @@ def _register_bodies(
         # registered under their own step keys (D1 — the emitted + fork-spawned
     # chain rows resolve their bodies from the registry; the chain's steps have
     # no compiled NodeDecl).
-    from taskq.workflows.chain import Chain
 
     for chain_decl in compiled.chains:
-        chain = cast("Chain", chain_decl)
+        chain = chain_decl
         for step_key, chain_step in chain.steps.items():
             if chain_step.body is not None:
-                bodies.setdefault(step_key, chain_step.body)
+                bodies.setdefault(step_key, cast("StepBody", chain_step.body))
+    from taskq.workflows._effects import collect_terminal_effects
+
+    for step_key, registered in collect_terminal_effects(compiled).items():
+        if step_key in bodies and bodies[step_key] is not registered.effect.body:
+            raise DuplicateStepBodyError(
+                f"workflow {compiled.name!r} terminal-effect handler {step_key!r} collides "
+                "with a different registered body"
+            )
+        bodies[step_key] = cast("StepBody", registered.effect.body)
     if bodies or aggregates or loop_policies:
         get_registry().register(
             WorkflowDef(

@@ -512,7 +512,8 @@ async def test_cron_slot_fires_twice_one_run(
     try:
         fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["c1"])
         slot = f"deep-research:{datetime.now(UTC).strftime('%Y%m%dT%H%M')}"
-        scope = run_idempotency_scope("deep_research")
+        # The scope derives from the march app's own registered name.
+        scope = run_idempotency_scope("march_deep_research")
         print(f"[cell-7] slot={slot} scope={scope}")
 
         # two concurrent creations, same slot key.

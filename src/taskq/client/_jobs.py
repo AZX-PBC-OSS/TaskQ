@@ -1875,6 +1875,16 @@ class JobsClient:
         if row is None:
             raise KeyError(job_id)
 
+        from taskq.exceptions import WorkflowRunCancellationRequiredError
+
+        flow_id = row.metadata.get("flow_id")
+        if isinstance(flow_id, str) and flow_id:
+            raise WorkflowRunCancellationRequiredError(
+                f"job {job_id} belongs to workflow run {flow_id}; direct per-row "
+                "cancellation is deliberately refused because a cooperative node "
+                "success cannot mean run cancellation. Call taskq.workflows."
+                f"cancel_workflow_run(..., flow_id=UUID({flow_id!r})) instead"
+            )
         previous_status = row.status
         with self._translate_schema_errors():
             initiated = await self._backend.write_cancel_request(job_id, reason)

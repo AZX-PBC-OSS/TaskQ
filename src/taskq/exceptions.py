@@ -996,6 +996,10 @@ class SchemaNotMigratedError(TaskQError):
         )
 
 
+class WorkflowRunCancellationRequiredError(TaskQError):
+    """A workflow node must be cancelled through its owning run, not per row."""
+
+
 class EmptyFilterError(TaskQError):
     """Raised when cancel_where is called with a filter that has no predicates.
 

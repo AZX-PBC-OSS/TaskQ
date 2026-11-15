@@ -34,18 +34,23 @@ reaches outside the database (the tier's hermeticity).
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import json
+from datetime import timedelta
 from typing import Any, Final
 
 from pydantic import BaseModel
 
-from taskq import JobContext, actor
+from taskq import JobContext, RetryPolicy, actor
+from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.workflows import (
     Done,
+    ExecutionPolicy,
     Expired,
     Promise,
     Refine,
+    RetrySpec,
     StepContext,
     WorkflowApp,
     build,
@@ -253,7 +258,7 @@ async def publish_body(
 research_app = WorkflowApp()
 
 
-@research_app.workflow("deep_research")
+@research_app.workflow("march_deep_research")
 def deep_research() -> Promise[object]:
     sources = step(kickoff_body, Kickoff(query="the march's query"), key="sources")
     fetched = map_source(sources, fetch_source_body, on_failure="collect")
@@ -537,10 +542,127 @@ def drift_target() -> Promise[object]:
     return build(gone)
 
 
+# ── execution-policy fleet controls (generic records only) ──────────────
+
+
+class PolicyOutcome(enum.Enum):
+    DONE = "done"
+
+
+async def policy_reserved_body(ctx: Any, item: dict[str, object]) -> PolicyOutcome:
+    async def body_window() -> dict[str, object]:
+        await asyncio.sleep(0.2)
+        return {"record_id": item["record_id"]}
+
+    await ctx.substep("policy-reserved-window", body_window)
+    return PolicyOutcome.DONE
+
+
+policy_app = WorkflowApp()
+
+
+@policy_app.actor(name="wf-policy-capped-handle", max_concurrent=1)
+async def policy_capped_body(ctx: Any, item: dict[str, object]) -> PolicyOutcome:
+    return await policy_reserved_body(ctx, item)
+
+
+POLICY_RESERVED_CHAIN = Chain(
+    name="execution-policy-reserved-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_capped_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(
+                actor="wf-policy-reserved",
+                reservations=(
+                    ConcurrencyReservation(
+                        "wf-policy-reservation",
+                        slots=1,
+                        lease=timedelta(seconds=30),
+                    ),
+                ),
+                priority=4,
+                start_to_close=timedelta(seconds=5),
+                retry=RetrySpec(policy=RetryPolicy(max_attempts=1)),
+            ),
+        )
+    },
+)
+
+
+async def policy_reserved_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_RESERVED_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"policy-reserved-{index}",
+            )
+            for index in range(8)
+        ],
+        cursor={"page": 0},
+    )
+
+
+POLICY_PRIORITY_CHAIN = Chain(
+    name="execution-policy-priority-chain",
+    start="work",
+    steps={
+        "work": Step(
+            body=policy_reserved_body,
+            outcomes=PolicyOutcome,
+            policy=ExecutionPolicy(actor="wf-policy-priority", priority=9),
+        )
+    },
+)
+
+
+async def policy_priority_source(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(
+                POLICY_PRIORITY_CHAIN,
+                {"record_id": index},
+                map_index=index,
+                trace_id=f"policy-priority-{index}",
+            )
+            for index in range(1)
+        ],
+        cursor={"page": 0},
+    )
+
+
+@policy_app.workflow("policy_reserved_fleet")
+def policy_reserved_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_RESERVED_CHAIN, policy_reserved_source, key="source"))
+
+
+@policy_app.workflow("policy_priority_fleet")
+def policy_priority_fleet() -> Promise[object]:
+    return build(chain_source(POLICY_PRIORITY_CHAIN, policy_priority_source, key="source"))
+
+
+class PolicyBacklogPayload(BaseModel):
+    record_id: str = "backlog"
+
+
+@actor(name="wf_policy_backlog", queue="default")
+async def wf_policy_backlog(payload: PolicyBacklogPayload, ctx: Any) -> dict[str, object]:
+    return {"accepted": True}
+
+
 #: The march flows' compiled definitions, by name (the test side's
 #: create-run surface resolves here — one registry, one compile).
 MARCH_FLOWS: dict[str, Any] = {
-    "deep_research": research_app.get("deep_research"),
+    "policy_reserved_fleet": policy_app.get("policy_reserved_fleet"),
+    "policy_priority_fleet": policy_app.get("policy_priority_fleet"),
+    # the MARCH-SCOPED registered name (the dict key stays the marches'
+    # own surface): the docs' deep_research EXAMPLE registers its own
+    # workflow name — two apps may not register one name (the registry
+    # refuses the shadow).
+    "deep_research": research_app.get("march_deep_research"),
     "deep_research_cron": research_app.get("deep_research_cron"),
     "triage_chain": march_app.get("triage_chain"),
     "doc_ingest_march": ingest_app.get("doc_ingest_march"),
@@ -577,7 +699,7 @@ async def wf_research_cron(payload: CronKick, ctx: JobContext[CronKick]) -> dict
     settings = WorkerSettings.load()
     pool = await asyncpg.create_pool(str(settings.pg_dsn), min_size=1, max_size=1)
     try:
-        compiled = get_compiled_workflow("deep_research")
+        compiled = get_compiled_workflow("march_deep_research")
         runner = FlowRunner(compiled, pool, settings.schema_name)
         flow_id = (await runner.create_flow(run_key=f"deep-research:{payload.slot}")).flow_id
         return {"flow_id": str(flow_id)}
@@ -587,4 +709,7 @@ async def wf_research_cron(payload: CronKick, ctx: JobContext[CronKick]) -> dict
 
 #: The bridge actor's registry face (the _wf_entry's import merges it):
 #: the cron fire resolves the actor by name from the boot's registry.
-MARCH_ACTORS: dict[str, object] = {"wf_research_cron": wf_research_cron}
+MARCH_ACTORS: dict[str, object] = {
+    "wf_research_cron": wf_research_cron,
+    "wf_policy_backlog": wf_policy_backlog,
+}

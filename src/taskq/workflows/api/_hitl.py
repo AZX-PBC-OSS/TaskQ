@@ -308,7 +308,7 @@ _HOLD_INSERT_SQL = """\
 INSERT INTO {schema}.wf_signals
     (id, workflow_id, node_key, signal_name, hold_epoch, map_index, call_id,
      payload, payload_schema, status, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, 'held', $10)
+VALUES ($1, $2, $3, $4, $5, $6::bigint, $7, $8::jsonb, $9::jsonb, 'held', $10)
 RETURNING created_at
 """
 
@@ -378,8 +378,9 @@ WHERE id = $1
 
 _HOLD_AWAITED_LEDGER_SQL = """\
 UPDATE {schema}.wf_step_ledger
-SET status = 'awaited', updated_at = clock_timestamp()
+SET status = 'awaited'
 WHERE id = $1
+  AND status = 'running'
 RETURNING id
 """
 
@@ -498,7 +499,11 @@ async def mark_awaited(conn: ConnLike, schema: str, ledger_id: JobId) -> None:
     records ``awaited`` — the hold's resume consumes no ladder attempts
     (the ladder counts ``failed`` only). The claim's own row is the
     record (an INSERT here would collide with the claim's arbiter key —
-    the UniqueViolation the pins reject)."""
+    the UniqueViolation the pins reject). The genuine running→awaited
+    transition preserves ``updated_at``: that instant is the claim's
+    ownership token, and only a real ledger re-claim may re-stamp it.
+    Replaying the wait against an already-awaited row is consequently a
+    no-op, not a new claim."""
     await conn.execute(_render(_HOLD_AWAITED_LEDGER_SQL, schema), ledger_id)
 
 

@@ -11,12 +11,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
-from taskq.backend._protocol import ErrorInfo, JobId
+from taskq.backend._protocol import ErrorInfo, JobId, RetryKind
+from taskq.constants import BIGINT_MAX, SMALLINT_MAX
+from taskq.retry import RetryPolicy
+from taskq.workflows._capability import validate_required_worker_schema
 from taskq.workflows._sql import BLOCKING_REASON_JOIN
+
+if TYPE_CHECKING:
+    from taskq.backend._protocol import ConnLike
+    from taskq.workflows._policy import RetrySpec
 
 
 def duration_seconds(value: timedelta | float | int | None) -> float | None:
@@ -47,6 +54,7 @@ __all__ = [
     "FiredJoin",
     "ForkSpec",
     "JoinSpec",
+    "MapIndexSchemaError",
     "NodeSpec",
     "_consumer_binding",
     "_consumer_bindings",
@@ -57,21 +65,182 @@ __all__ = [
     "_row_metadata",
     "_seconds_or_none",
     "duration_seconds",
+    "resolve_map_index_ceiling",
+    "resolve_map_index_domain",
+    "validate_map_index_identity",
 ]
 
-#: The map_index ceiling — the wire-format fact the ceiling error
-#: documents: ``jobs.map_index`` is a smallint (the ledger's claim
-#: arbiter column, 01.00.23_05), so a record's per-run identity tops out
-#: at 32767. Without the door, record #32768 is the raw DataError the
-#: smallint cast raises mid-transaction, taking the valid page-mates down
-#: with it (an accidental untyped ceiling — the whole page rolls back
-#: and the raw error ladders as transient). The engine refuses the
-#: poison record at the door (:class:`taskq.workflows._emit.
-#: MapIndexExhaustedError` — named, loud, the record named): the valid
-#: page-mates COMMIT (the batch semantics — a poison record kills
-#: itself loudly, never its mates), and the deterministic death
-#: terminalizes the source with the ceiling documented here.
-MAP_INDEX_CEILING: Final[int] = 32767
+#: Conservative pre-migration ``map_index`` ceiling. It is deliberately not
+#: a guess that every schema is smallint forever: only a high candidate pays
+#: for the all-five catalog read, which activates BIGINT_MAX after the atomic
+#: POST and refuses mixed/corrupt schemas before the whole authoring unit.
+MAP_INDEX_CEILING: Final[int] = SMALLINT_MAX
+
+#: The five columns that jointly carry a non-null record identity. The
+#: effective ceiling is the minimum supported column domain over ALL of
+#: them: archive mirrors a job, the outbox carries a fire's identity to the
+#: consumer insert, and signals key their hold arbiter on the same value, so
+#: a widened ``jobs`` alone is not permission to write a high identity.
+_MAP_INDEX_IDENTITY_TABLES: Final[tuple[str, ...]] = (
+    "jobs",
+    "jobs_archive",
+    "wf_step_ledger",
+    "wf_outbox",
+    "wf_signals",
+)
+
+#: Exactly the two supported ``map_index`` column domains. Anything else
+#: (``integer``, a domain, an absent column) is a deployment/schema error —
+#: never interpreted as permission to write the bigint domain.
+_MAP_INDEX_COLUMN_BOUNDS: Final[dict[str, int]] = {
+    "smallint": SMALLINT_MAX,
+    "bigint": BIGINT_MAX,
+}
+
+#: One parameter-bound catalog read for all five carriers. The schema is
+#: the caller's validated identifier (``$1``); the table set is ``$2``.
+_MAP_INDEX_SCHEMA_SQL: Final[str] = (
+    "SELECT c.table_name, c.data_type, c.is_nullable "
+    "FROM information_schema.columns AS c "
+    "JOIN pg_catalog.pg_namespace AS n ON n.nspname = c.table_schema "
+    "JOIN pg_catalog.pg_class AS t "
+    "ON t.relnamespace = n.oid AND t.relname = c.table_name "
+    "JOIN pg_catalog.pg_attribute AS a "
+    "ON a.attrelid = t.oid AND a.attname = c.column_name "
+    "AND a.attnum > 0 AND NOT a.attisdropped "
+    "JOIN pg_catalog.pg_type AS ty ON ty.oid = a.atttypid "
+    "WHERE c.table_schema = $1 AND c.table_name = ANY($2::text[]) "
+    "AND c.column_name = 'map_index' "
+    "AND t.relkind = 'r' AND ty.typtype = 'b' AND ty.typbasetype = 0"
+)
+
+
+class MapIndexSchemaError(RuntimeError):
+    """The schema cannot safely carry a non-null record identity.
+
+    Raised by :func:`resolve_map_index_ceiling` when any of the five
+    identity carriers is missing its ``map_index`` column, the carriers
+    disagree, or a column has an unsupported type. The resolver never
+    guesses bigint permission from a partial or hand-edited schema.
+    """
+
+
+def validate_map_index_identity(value: object, *, what: str = "map_index") -> int:
+    """Refuse a non-null identity before any key render or SQL bind.
+
+    The identity is an exact Python ``int`` (``bool`` is not an int here),
+    non-negative, and the caller later resolves the destination schema's
+    upper bound at its async DB door. No value coercion: a float or string
+    that merely looks numeric would otherwise format a different
+    idempotency key or reach the SQL codec mid-transaction.
+    """
+    if type(value) is not int:
+        raise ValueError(
+            f"{what} must be an exact int (bool, float and string are refused; "
+            f"no value coercion), got {type(value).__name__}"
+        )
+    if value < 0:
+        raise ValueError(f"{what} must be non-negative, got {value}")
+    return value
+
+
+async def _map_index_columns(conn: ConnLike, schema: str) -> dict[str, str]:
+    """Read and validate the five real base-table columns in one statement.
+
+    The catalog joins deliberately exclude views, dropped columns and domains:
+    their spelling in ``information_schema`` alone is not proof that the five
+    physical application carriers have the supported shape. Nullability is part
+    of that shape because the migration must preserve NULL ordinary identities.
+    """
+    try:
+        rows = await conn.fetch(
+            _MAP_INDEX_SCHEMA_SQL,
+            schema,
+            list(_MAP_INDEX_IDENTITY_TABLES),
+        )
+    except Exception as exc:
+        raise MapIndexSchemaError(
+            f"could not read the map_index identity carriers in schema "
+            f"{schema!r}: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    found: dict[str, str] = {}
+    for row in rows:
+        table = row["table_name"]
+        data_type = row["data_type"]
+        nullable = row["is_nullable"]
+        if (
+            not isinstance(table, str)
+            or not isinstance(data_type, str)
+            or not isinstance(nullable, str)
+        ):
+            raise MapIndexSchemaError(
+                f"the map_index catalog answer for schema {schema!r} is malformed: {row!r}"
+            )
+        if table in found:
+            raise MapIndexSchemaError(
+                f"the map_index catalog answer for schema {schema!r} is "
+                f"ambiguous on {table!r}: duplicate physical column answers"
+            )
+        if nullable != "YES":
+            raise MapIndexSchemaError(
+                f"schema {schema!r} has unsupported NOT NULL map_index identity "
+                f"carrier {table!r}; the five carriers must remain nullable"
+            )
+        found[table] = data_type
+
+    missing = [table for table in _MAP_INDEX_IDENTITY_TABLES if table not in found]
+    if missing:
+        raise MapIndexSchemaError(
+            f"schema {schema!r} is missing the map_index identity column on "
+            f"{missing!r}; all five real base-table carriers are required before "
+            "a non-null record identity can be written"
+        )
+    unsupported = {
+        table: data_type
+        for table, data_type in found.items()
+        if data_type not in _MAP_INDEX_COLUMN_BOUNDS
+    }
+    if unsupported:
+        raise MapIndexSchemaError(
+            f"schema {schema!r} has an unsupported map_index type on "
+            f"{unsupported!r}; only smallint and bigint base types are valid "
+            "identity carriers (integer, domains, views and other shapes are "
+            "refused rather than guessed)"
+        )
+    return found
+
+
+async def resolve_map_index_ceiling(conn: ConnLike, schema: str) -> int:
+    """Return the minimum upper bound over all five identity carriers.
+
+    This diagnostic deliberately retains the minimum on a mixed-width schema
+    (the independent O1 contract). Authoring doors must instead use
+    :func:`resolve_map_index_domain`, which rejects that mixed state rather
+    than treating it as the supported all-smallint schema.
+    """
+    found = await _map_index_columns(conn, schema)
+    return min(_MAP_INDEX_COLUMN_BOUNDS[found[table]] for table in _MAP_INDEX_IDENTITY_TABLES)
+
+
+async def resolve_map_index_domain(conn: ConnLike, schema: str) -> int:
+    """Resolve the activated authoring domain from one five-carrier read.
+
+    Exactly all-smallint and exactly all-bigint are supported. Mixed widths are
+    a typed deployment/schema error even though the diagnostic minimum helper
+    above returns 32767 for them. Both functions share the same one statement;
+    neither caches an answer or infers permission from a subset of carriers.
+    """
+    found = await _map_index_columns(conn, schema)
+    widths = {found[table] for table in _MAP_INDEX_IDENTITY_TABLES}
+    if len(widths) != 1:
+        raise MapIndexSchemaError(
+            f"schema {schema!r} has partially widened/mixed map_index identity "
+            f"carriers: {found!r}; apply the atomic five-carrier POST migration "
+            "or restore a consistent schema before authoring a high identity"
+        )
+    return _MAP_INDEX_COLUMN_BOUNDS[next(iter(widths))]
+
 
 #: A join edge's declared failure policy (the two semantics):
 #:
@@ -133,6 +302,20 @@ class ConsumerBinding:
     #: consumer declares none — the row's column NULL (the pre-fix row;
     #: the binding omits the key, the shape byte-identical).
     start_to_close: timedelta | None = None
+    rate_limits: tuple[str, ...] = ()
+    reservations: tuple[str, ...] = ()
+    priority: int | None = None
+    retry: RetrySpec | None = None
+    #: Internal, stable terminal-effect key. Ordinary consumers never carry it.
+    effect_key: str | None = None
+
+    @property
+    def retry_policy(self) -> RetryPolicy | None:
+        return self.retry.policy if self.retry is not None else None
+
+    def __post_init__(self) -> None:
+        if self.map_index is not None:
+            validate_map_index_identity(self.map_index)
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +355,24 @@ class ChildSpec:
     #: ``default_start_to_close`` at claim time, the resolution chain's
     #: own tail).
     start_to_close: timedelta | None = None
+    #: Per-child retry lowering; None preserves the ForkSpec compatibility terms.
+    retry: RetrySpec | None = None
+
+    @property
+    def retry_policy(self) -> RetryPolicy | None:
+        return self.retry.policy if self.retry is not None else None
+
+    @property
+    def resolved_max_attempts(self) -> int | None:
+        return self.retry.policy.max_attempts if self.retry is not None else None
+
+    @property
+    def resolved_retry_kind(self) -> RetryKind | None:
+        return self.retry.policy.kind if self.retry is not None else None
+
+    def __post_init__(self) -> None:
+        if self.map_index is not None:
+            validate_map_index_identity(self.map_index)
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +399,26 @@ class EmitChild:
     #: both ride it — two records' children of one step are two rows, two keys,
     #: two claims, only when it is stamped per record at emit.
     map_index: int
+    rate_limits: tuple[str, ...] = ()
+    reservations: tuple[str, ...] = ()
+    priority: int | None = None
+    start_to_close: timedelta | None = None
+    retry: RetrySpec | None = None
+
+    @property
+    def max_attempts(self) -> int | None:
+        return self.retry.policy.max_attempts if self.retry is not None else None
+
+    @property
+    def retry_kind(self) -> RetryKind | None:
+        return self.retry.policy.kind if self.retry is not None else None
+
+    @property
+    def retry_policy(self) -> RetryPolicy | None:
+        return self.retry.policy if self.retry is not None else None
+
+    def __post_init__(self) -> None:
+        validate_map_index_identity(self.map_index)
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,7 +460,7 @@ class ForkSpec:
     join: JoinSpec | None = None
     trace_id: str | None = None
     max_attempts: int = 3
-    retry_kind: str = "transient"
+    retry_kind: RetryKind | Literal["permanent"] = "transient"
     #: the fork's JOIN is the source's own cohort (the placement fields say
     #: so), so its row lands at the source's resolution of the precedence law —
     #: the arms' overrides apply to the arm children, never the join. ``None``
@@ -279,7 +500,7 @@ class NodeSpec:
     consumers: tuple[ConsumerBinding, ...] = ()
     trace_id: str | None = None
     max_attempts: int = 3
-    retry_kind: str = "transient"
+    retry_kind: RetryKind | Literal["permanent"] = "transient"
     idempotency_scope: str = ""
     idempotency_key: str | None = None
     #: the ``jobs.priority`` column value the insert stamps — the resolved
@@ -293,6 +514,36 @@ class NodeSpec:
     #: default — migrations/01.00.00_01:85), so a spec built without it stores
     #: exactly the pre-fix row.
     start_to_close: timedelta | None = None
+    #: Internal guarded-run inheritance. Existing callers default to NULL and
+    #: never stamp a capability accidentally; future feature fronts enter via
+    #: the validated helper, while this model revalidates direct construction.
+    required_worker_schema: int | None = None
+    retry: RetrySpec | None = None
+
+    @property
+    def retry_policy(self) -> RetryPolicy | None:
+        return self.retry.policy if self.retry is not None else None
+
+    def __post_init__(self) -> None:
+        from taskq.workflows._policy import canonical_retry_kind
+
+        if self.map_index is not None:
+            validate_map_index_identity(self.map_index)
+        if self.required_worker_schema is not None:
+            validate_required_worker_schema(self.required_worker_schema)
+        if self.retry is not None:
+            policy = self.retry.policy
+            if self.max_attempts != 3 and self.max_attempts != policy.max_attempts:
+                raise ValueError("NodeSpec max_attempts contradicts its resolved retry policy")
+            if (
+                self.retry_kind != "transient"
+                and canonical_retry_kind(self.retry_kind) != policy.kind
+            ):
+                raise ValueError("NodeSpec retry_kind contradicts its resolved retry policy")
+            object.__setattr__(self, "max_attempts", policy.max_attempts)
+            object.__setattr__(self, "retry_kind", policy.kind)
+        else:
+            object.__setattr__(self, "retry_kind", canonical_retry_kind(self.retry_kind))
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,6 +652,8 @@ class FinalizeResult:
     attempt: int | None
     decremented: tuple[DecrementHit, ...] = ()
     fired: tuple[FiredJoin, ...] = ()
+    #: A cancelled/otherwise terminal root permits only this owned result receipt.
+    continuation_fenced: bool = False
 
 
 # ── The wire-shape helpers (one home; engine, fork and sweep import) ────
@@ -453,6 +706,30 @@ def _consumer_binding_doc(c: ConsumerBinding) -> dict[str, object]:
     }
     if c.start_to_close is not None:
         doc["start_to_close_s"] = c.start_to_close.total_seconds()
+    if c.rate_limits:
+        doc["rate_limits"] = list(c.rate_limits)
+    if c.reservations:
+        doc["reservations"] = list(c.reservations)
+    if c.priority is not None:
+        doc["priority"] = c.priority
+    if c.effect_key is not None:
+        doc["wf_effect_key"] = c.effect_key
+        doc["after_terminal"] = True
+    if c.retry is not None:
+        policy = c.retry.policy
+        doc["retry"] = {
+            "max_attempts": policy.max_attempts,
+            "kind": policy.kind,
+            "base_s": policy.base.total_seconds(),
+            "cap_s": policy.cap.total_seconds(),
+            "backoff": policy.backoff,
+            "jitter": policy.jitter,
+            **(
+                {"non_consuming_limit": c.retry.non_consuming_limit}
+                if c.retry.non_consuming_limit is not None
+                else {}
+            ),
+        }
     return doc
 
 
@@ -461,6 +738,7 @@ def _row_metadata(
     *,
     rate_limits: tuple[str, ...] = (),
     reservations: tuple[str, ...] = (),
+    retry: RetrySpec | None = None,
 ) -> dict[str, object]:
     """The node row's metadata WITH admission terms (the admission terms): the base
     flow link plus the ``rate_limits`` names and the STRICT reservation
@@ -473,6 +751,8 @@ def _row_metadata(
         meta["rate_limits"] = list(rate_limits)
     if reservations:
         meta["reservations"] = list(reservations)
+    if retry is not None and retry.non_consuming_limit is not None:
+        meta["wf_retry"] = {"non_consuming_limit": retry.non_consuming_limit}
     return meta
 
 
@@ -520,6 +800,53 @@ def _seconds_or_none(raw: object) -> timedelta | None:
     return timedelta(seconds=float(raw)) if isinstance(raw, (int, float)) and raw >= 0 else None
 
 
+def _string_tuple(raw: object) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError("workflow consumer admission names must be a list of strings")
+    values = cast("list[object]", raw)
+    if not all(isinstance(value, str) for value in values):
+        raise ValueError("workflow consumer admission names must be a list of strings")
+    return tuple(cast("list[str]", values))
+
+
+def _retry_from_doc(raw: object) -> RetrySpec | None:
+    """Validate a persisted consumer's execution terms before interpreting them."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("workflow consumer retry must be an object")
+    document = cast("dict[str, object]", raw)
+    from taskq.workflows._policy import RetrySpec, canonical_retry_kind
+
+    kind = document.get("kind", "transient")
+    backoff = document.get("backoff", "exponential")
+    if not isinstance(kind, str) or backoff not in ("exponential", "linear", "fixed"):
+        raise ValueError("workflow consumer retry has an invalid kind/backoff")
+    numeric: dict[str, float] = {}
+    for key in ("base_s", "cap_s", "jitter"):
+        value = document.get(key)
+        if type(value) not in (int, float):
+            raise ValueError(f"workflow consumer retry {key} must be numeric")
+        numeric[key] = float(cast("int | float", value))
+    max_attempts = document.get("max_attempts", 3)
+    if type(max_attempts) is not int:
+        raise ValueError("workflow consumer retry max_attempts must be an integer")
+    limit = document.get("non_consuming_limit")
+    return RetrySpec(
+        policy=RetryPolicy(
+            max_attempts=max_attempts,
+            kind=canonical_retry_kind(kind, what="consumer retry kind"),
+            base=timedelta(seconds=numeric["base_s"]),
+            cap=timedelta(seconds=numeric["cap_s"]),
+            backoff=backoff,
+            jitter=numeric["jitter"],
+        ),
+        non_consuming_limit=limit if type(limit) is int else None,
+    )
+
+
 def _consumer_binding(raw: dict[str, Any]) -> ConsumerBinding:
     """one metadata ``consumers`` entry → the typed binding (the walk's
     own arm): the declared deadline parses back from the binding's
@@ -533,4 +860,15 @@ def _consumer_binding(raw: dict[str, Any]) -> ConsumerBinding:
         payload=raw.get("payload"),
         map_index=raw.get("map_index"),
         start_to_close=_seconds_or_none(raw.get("start_to_close_s")),
+        rate_limits=_string_tuple(raw.get("rate_limits")),
+        reservations=_string_tuple(raw.get("reservations")),
+        priority=raw.get("priority") if type(raw.get("priority")) is int else None,
+        retry=_retry_from_doc(raw.get("retry")),
+        effect_key=(
+            raw.get("wf_effect_key")
+            if raw.get("after_terminal") is True
+            and isinstance(raw.get("wf_effect_key"), str)
+            and raw.get("wf_effect_key")
+            else None
+        ),
     )

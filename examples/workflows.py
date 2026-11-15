@@ -175,13 +175,13 @@ async def _screen_source_body(ctx: Any) -> None:
     """The chain source's paged generator: one yield = one page's emit
     tx (the children + the edges + the cursor checkpoint). The demo's
     page: every doc id, one record each (the corpus is the module's own
-    constant — the source body reads the CLOSURE, not a params arg)."""
-    for doc_id in DEMO_DOCS:
+    constant — the source body reads the CLOSURE, not a params arg).
+    The child identity is the doc's own ordinal — stable across
+    processes (a process-hashed map_index would not replay)."""
+    for ordinal, doc_id in enumerate(DEMO_DOCS):
         from taskq.workflows.chain import chain_start
 
-        child = chain_start(
-            SCREEN_CHAIN, doc_id, map_index=abs(hash(doc_id)) % 32000, trace_id=doc_id
-        )
+        child = chain_start(SCREEN_CHAIN, doc_id, map_index=ordinal, trace_id=doc_id)
         # the emit's tx checkpoints it (the resume continues from the last
         # committed page — the crash-recovery contract).
         await ctx.emit_batch([child], cursor={"page": 0, "doc": doc_id})

@@ -549,8 +549,9 @@ async def test_edge_join_scale_curve_across_the_bound(
 
     # the ≥ 100k-edge JOIN: the plan must stay INDEX-DRIVEN (no seq scan
     # of jobs or wf_edge — the unscoped monster). Seeded
-    # directly (parallel-array chunks): the fork's map_index is smallint —
-    # a fan-in past 32k cannot ride it, and the recount reads the edges.
+    # directly (parallel-array chunks): map_index is bigint after POST, but
+    # deps_pending and MAX_FAN_IN_PER_JOIN still forbid one giant authored map;
+    # this is an edge-ledger counterexample, not a claimed giant-map feature.
     big_n = 100_000
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id = new_uuid()

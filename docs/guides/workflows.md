@@ -377,6 +377,43 @@ legs, all shipped, any two insufficient:
 3. the finalize fence (the terminal-mark CAS: worker + attempt +
    claim-epoch — the attempt is the fencing token).
 
+### Cooperative body cancellation and origin
+
+Fleet workflow bodies receive the attempt's existing vanilla carrier through
+`StepContext`: `cancellation_requested`, awaitable `cancel_event`,
+`cancel_origin` (`NONE`/`OPERATOR`/`SHUTDOWN`), and the workflow-specific bounded
+`cancel_reason`/`cancel_principal`. Static, map, chain-source, chain-step, and
+loop-iteration bodies share that carrier; iterations of one claim do not replace
+it. A reclaimed claim receives a fresh carrier/details. Direct/dev contexts return
+`False`/`NONE`/`None` and own an unset event; the direct driver has no worker
+NOTIFY/heartbeat observation guarantee.
+
+Run cancellation takes the canonical root lock, resolves/marks the graph, audits
+the normalized principal, and only then uses a targeted pointer NOTIFY as a
+latency accelerator. The worker re-reads the cancelled root and audit row before
+publishing details/events; malformed, duplicate, spoofed, delayed, or lost NOTIFY
+payloads cannot author cancellation. A heartbeat read is the convergence path.
+There is no fixed wall-clock observation bound for non-yielding CPU code,
+blocking external calls, a wedged event loop, or database failure; awaiting
+`ctx.cancel_event.wait()` and periodically yielding/polling are the valid body
+patterns. Workflow cancellation does not force-cancel the body task.
+
+| situation | durable attempt outcome |
+| --- | --- |
+| OPERATOR + cooperative return | the current owned node may retain its own `succeeded` receipt; root remains cancelled; no route/fork/page/downstream fire, and no cross-run cache fill |
+| OPERATOR + ordinary body failure | current owned node gets `cancelled`/`WorkflowCancelled`, with attempt/event/ledger; no retry, re-pend, failure cascade, or loop escalation |
+| SHUTDOWN + body unwind/ordinary raise | started attempt is requeued for replay, with cursor/ledger/loop replay state intact; no operator terminal is authored |
+| claimed but never started during drain | existing claimed-unstarted refund rule, a separate case |
+| parked backpressure source | no source body is running to observe; cancel terminalizes/fences it, forbids wake/re-entry, and no future page exists |
+
+The started SHUTDOWN attempt is **not refunded**. A body may checkpoint only via
+the engine's actual committed replay surfaces; arbitrary external writes replay
+at-least-once. Root terminal is not Python-body/application quiescence. A body
+that ignores observation is bounded by emit/finalize/fork/disposition fences at
+its next outcome, not promised host termination. Direct per-row cancellation of a
+workflow node is refused with run-cancel guidance; use `cancel_workflow_run` for
+the run scope.
+
 ## The step ledger + the run-key arbiter
 
 The step ledger's claim is ONE round trip
@@ -892,9 +929,11 @@ name, the same durable leg the leader's fire arm uses) and runs via the
 runner's ledger-claim + finalize machinery — the same two-transaction
 finalize, the same fences, the same ladder. NOT a second execution
 semantics: the in-process driver and the worker's door differ only in WHO
-CLAIMED (the runner's own claim stamps `claim_epoch` 0; the fleet's
-dispatch claim carries the row's epoch — every fence reads the epoch it
-fences against). A row whose stamped name resolves to nothing (the
+CLAIMED — both are a real claim sequence (each door's own claim grants
+the row's next `claim_epoch` atomically with its attempt; the ledger
+claim and every context/finalize fence carry that granted pair), so a
+parked-and-resumed node's `awaited` history survives beside the resumed
+claim's own terminal row. A row whose stamped name resolves to nothing (the
 definitions not imported anywhere — a deployment defect, or a hand-crafted
 row) parks at the snooze cadence budget-free, `released_reason=
 'workflow-body-unresolvable'`, the stranded-jobs detector the witness —
@@ -1123,6 +1162,104 @@ workflows/apps alike). `actor_config` is keyed by actor — one capacity
 per actor, the estate's own law — so the capacity is the ACTOR's, not
 the node's: give the differing node its own actor name (the error's
 message names the fix).
+
+### CHAIN EXECUTION POLICY — one target resolver
+
+`Step(body=..., policy=ExecutionPolicy(...))`, `Chain(default_policy=...)`, and
+`chain_source(..., policy=...)` share the converted target terms; they are not a
+second reservation, retry, or actor-capacity implementation. Every source/leaf
+field supports omission/`None` = inherit. Use the explicit `CLEAR_POLICY`
+sentinel to clear one inherited option. Frozen `ExecutionPolicy` carries
+`actor`, `queue`, existing rate-limit/reservation declarations,
+`max_concurrent`, `result_ttl`, `capacity_owner`, `priority`, `start_to_close`,
+and an optional workflow `RetrySpec`.
+
+Precedence is **target policy → target actor-handle defaults → chain default →
+compatibility placement/defaults**. A run's explicit `priority=` still outranks
+all of those, including rows emitted or forked later. Compatibility
+`actor`/`queue`/`max_attempts` lower into this same representation;
+contradictory co-declarations fail early with `E21-execution-policy`, while an
+equivalent redeclaration is accepted. Handle names/queues do not replace the
+chain target's placement. Two different cohort capacities/owners require
+different actor names, exactly as above.
+
+**The source is not a record leaf.** `chain_source`'s policy comes from its own
+arguments and handle, never silently from `Chain.default_policy`. The same
+resolved target governs chain starts, routed forks, row stamps, boot cohort
+projection and ladder lookup. Bounded strict slots, actor capacity, result TTL,
+priority, and per-attempt `start_to_close` therefore ride the ordinary jobs
+rows/actor registry instead of needing an application-side scheduler.
+
+`RetrySpec` wraps the existing validated `RetryPolicy`; its `exceptions` map
+accepts exception classes mapped to canonical kinds, `RetryOverride`, or the
+workflow-specific `WorkflowRetryOverride`. The most specific exception class
+wins. A mapped `None` explicitly selects the default policy instead of falling
+through. A custom `classifier` uses the existing safe-hook fallback if it raises
+or returns a malformed value. Only body-raised ordinary exceptions enter it:
+engine authoring faults, `Snooze`/`RetryAfter`, deadline enforcement,
+cancellation/shutdown and infrastructure persistence faults stay in their own
+domains.
+
+Declared `exponential`, `linear`, and `fixed` curves share `compute_backoff`'s
+base/cap/jitter arithmetic with the live ladder and durable row curve. New
+workflow declarations reject `time_budget` (use per-attempt `start_to_close`)
+and reject `indefinite` as a budget bypass; already-persisted legacy rows retain
+their existing vocabulary. Legacy `retry_kind="permanent"` normalizes to the
+persistent `non_retryable`, which also outranks consuming `RetryAfter`.
+
+An explicitly advertised workflow-only
+`WorkflowRetryOverride(delay=..., consume_budget=False)` does not consume
+`max_attempts`, advance a source's logical failure ordinal, or increment the
+legacy `snooze_count`. Such a spec must declare positive finite
+`non_consuming_limit`. The existing `NODE_DEFER_SQL` transaction increments and
+reads the durable `jobs.metadata.wf_retry.non_consuming_count` under the same
+claim fence as the deferral. At the exact bound it terminates as
+`RetryDeferralBudgetExceeded`; an advertised wait itself has no failed-ledger
+outcome and interruption does not consume an ordinary failure. A malformed
+counter/bound fails closed with no counter reset or ledger mutation.
+
+This new bound is deliberately **not** applied retroactively to generic
+body-raised `Snooze` or `RetryAfter(consume_budget=False)` without such a retry
+declaration; that pre-existing public unbounded seam is a named compatibility
+limitation, not a newly bounded guarantee. Ordinary backpressure also never
+moves this provider counter.
+
+A chain keyed reservation whose concrete name depends on a record must use
+`FiniteReservationCohort(ref=existing_keyed_ref, keys=(...))`. Boot materializes
+exactly those concrete slots; emit/fork verifies the payload-derived name is in
+that finite set. Arbitrary new per-record slots are refused rather than
+silently created. This restriction does not turn per-attempt reservations into
+run-scoped exclusion.
+
+#### Authored terminal effects — durable intent, not external exactly-once
+
+`RetrySpec(on_exhaustion=TerminalEffect(body=..., policy=...))` declares one typed
+terminal effect for that resolved target. Its independent `ExecutionPolicy` must
+name non-empty `actor` and `queue`; its own bounded retry, priority,
+`start_to_close`, reservations and dependencies execute through the ordinary
+worker path. The body receives `(ctx, event: ExhaustionEvent)` with the flow,
+node/record identity, attempt, durable `run_epoch`, current record,
+`ErrorInfo`, and the exact terminal reason.
+
+On a winning ordinary retry/non-retryable/deadline/non-consuming-limit terminal,
+the node terminal, claim-owned failed ledger, and **one** stable `wf_outbox`
+intent commit atomically. The physical key contains flow + run incarnation +
+node/record + effect identity. Outbox replay/idempotency materializes exactly one
+ordinary effect job; a later operator cancel cannot erase an already committed
+intent. Cancel before the winning disposition writes no intent. A failed parent
+still suppresses ordinary children; only this explicit marked effect runs after
+the terminal flow. A missing registered body remains visibly unclaimed, never a
+successful no-op.
+
+The body can be invoked again after a worker/process crash. External calls and
+arbitrary Python side effects are therefore **at-least-once**, not
+exactly-once. Same-database domain closure completes once only when the effect
+writes its idempotency marker (derived from the event key) and domain effects in
+one application DB transaction. There is no generic `exactly_once=True` flag.
+Direct in-process execution refuses this guarded feature; apply the PRE epoch and
+intent-migration support and run the declaring cohorts with capable fleet workers.
+Unfinished intents and nonterminal effect rows are available to the shared
+quiescence predicate; a terminal root alone is not proof that an effect exited.
 
 ### THE QUEUE-DEFAULT TRAP — declare the queue your workers run
 
@@ -2329,6 +2466,144 @@ chain-shaped dispatch backlog costs the same ms-class as plain jobs at
 record. See `perf-evidence-workflows-streaming.md` and the captures it
 cites (the range is every
 captured run, never the friendliest).
+
+### The caller's transaction: joined pages and the all-emitted settlement
+
+Two opt-in shapes let an application own the durability boundary with the
+engine. Both are same-database, PostgreSQL-and-asyncpg contracts — the
+product's only supported transaction protocol — and neither ever claims an
+external exactly-once effect.
+
+**Joined pages — the caller owns the commit.** A source body that already
+holds a transaction (the durable importer's staging unit, the importer's own
+session) passes it to the page door:
+`ctx.emit_batch(children, cursor=…, connection=conn, schema=schema)` inside
+`async with conn.transaction():`. The connection must be an actual stable
+asyncpg session (a `Connection` or the pool's connection proxy) on the SAME
+database that hosts the run; the door validates this — session facades that
+may switch physical connections, missing open transaction, an already-aborted
+transaction, a foreign schema name, and a session that cannot see the run's
+own source row each raise the typed `WorkflowRunError` BEFORE any statement,
+with zero effects. The page's children, edges and cursor checkpoint then ride
+the caller's connection with no pool acquisition, no second database session,
+no nested transaction, and no engine-owned commit — the caller's unit is the
+atomicity boundary, and every engine refusal propagates out of the caller's
+`async with conn.transaction()` so the WHOLE unit (application writes
+included) rolls back physically before any source park. The engine never
+commits or rolls back the caller's transaction; a caller that catches a
+refusal and commits anyway is outside the supported contract, and earlier
+writes of its unit can then commit — there is no catch-and-commit "poisoned
+transaction" fiction. An inner savepoint would guarantee only
+operation-local rollback and is never a substitute for the unit rollback.
+Same-session reads see the uncommitted checkpoints:
+`ctx.cursor(connection=…, schema=…)` reads through the supplied session; a
+plain `ctx.cursor()` while that transaction is still open raises the typed
+stale-read refusal instead of silently returning the committed (pre-unit)
+cursor. The joined admission reads the same in-flight count through the
+supplied connection and refuses a page that cannot fit; it does not take the
+run's transaction-scoped admission lock (that lock would be held until the
+CALLER commits), so concurrent joined emitters of one run are the caller's
+own serialization. PgBouncer-style transaction-mode pooling in front of a
+multi-statement unit is not a supported caller shape, and one asyncpg
+connection is never safe for two concurrent tasks.
+
+**The all-emitted settlement — `transactional_step` owns one commit.**
+`transactional_step(body, parent, key=…)` wires the same edges as `step` and
+changes three things. The run's rows all stamp the literal capability level
+`required_worker_schema = 3` (the root, the static nodes, the settlement
+node, and every emitted/forked child inheriting them): only workers whose
+boot stamps that implemented level can claim them — the physical claim-entry
+trigger refuses an old or below-level worker BEFORE any body runs, and the
+in-process driver refuses the run outright, so a mixed fleet must finish its
+rolling upgrade before the guarded run's rows become claimable. The
+settlement node is born in join-wait (`metadata.blocking_reason='join'`): the
+existing rederive/fire arms own its release when a parent's tx1/tx2 window is
+lost, and the parent's result is TTL-protected while the marked un-fired
+successor still needs it. And the body executes on the claim-owned
+connection inside ONE engine-managed transaction: the body's application
+writes and staged publication, the fenced node terminal and the claim-instant
+ledger record commit as one unit — with no all-record guarantee beyond that
+same-database unit. The body's context is the public
+`TransactionalStepContext` subtype: `ctx.connection` is the held claim
+session, never `None`; `ctx.cursor`/`ctx.emit_batch`/`ctx.substep` join that
+session by default (a different session is refused before any statement);
+`ctx.progress` buffers only; and `ctx.spawn_flow`/`ctx.wait_signal`/
+`ctx.wait_until` refuse at the helper's entry with
+`TransactionalStepUnsupportedError` — a child flow, a human hold, or a
+durable timer is an independent durable lifecycle the one open transaction
+cannot survive.
+
+The ordering law, stated exactly. The parents' results are resolved and the
+dependency product pinned before the managed unit's critical section. No
+root lock is held across the body. The final critical section locks the run
+root (live status) then the node — the same root→node order operator cancel
+uses — so the two serializations are defined: a cancel committed first makes
+the settlement raise and the managed unit roll back (the cooperative-cancel
+terminal owns the node), and a settlement that wins the root lock commits
+before a later cancel proceeds. Nothing — no helper, application call, or
+progress flush — runs between the terminal CAS and the COMMIT itself; only
+that bounded critical section can hold a row lock against a sibling's
+heartbeat, whose renewal selects its rows `FOR UPDATE SKIP LOCKED`, so one
+settlement's CAS→COMMIT round trip can never lapse another body's lease (and
+a live claimed row is never permanently abandoned — the next beat renews it).
+The successor decrement (tx2) runs after that COMMIT in a fresh transaction
+on the SAME still-held connection — pool-of-one safe, no nested pool
+acquisition, no generic deadlock retry. The connection's release/reset
+(bounded by the pool's own 5-second reset budget) completes BEFORE the
+attempt's progress emitter closes exactly once and before dependency pins
+release; a release/reset failure is a logged resource fact — the session is
+terminated by the driver and never reused, and the attempt's own truthful
+outcome (a successful committed settlement included) stands.
+
+**The deadline's exact meaning on a transactional body.** A declared
+`start_to_close` shares the vanilla consumer's ONE enforcement: the expiry
+cancels the body task exactly once, then bound-waits the body's cooperative
+unwind for the enforcement's own 2.0-second transactional budget — a
+legitimate `finally` issuing statements on the shared connection finishes
+inside it, and the managed ROLLBACK runs on a quiesced connection. A body
+still unwinding past that budget is the hostile case: its shared connection
+is `terminate()`d OUT-OF-POOL (never handed back to the general pool —
+PostgreSQL's disconnect supplies the rollback), the task stays tracked with
+its outcome retrieved, and the dependency pin rides that task's done
+callback. The job's durable disposition is the truthful `TimeoutError` — an
+`InterfaceError` arriving under the one-shot rollback-collision window is
+re-labelled to it, and nothing else is. This budget bounds COOPERATIVE
+Python unwinds only: it is never a forced-termination guarantee for
+non-yielding C code, and after a SIGKILL'd process there is no
+Python-cleanup guarantee at all beyond the worker's tracked-handle reap and
+its armed process watchdog. A never-finishing body keeps its node's
+durable disposition (the reclaim's) while its dependency stays pinned until
+the bounded process shutdown — the pinned-but-never-quiescent state is
+reported, never pretended away.
+
+Recovery is by the durable rows, never by re-application. A fence no-match
+(the claim was superseded mid-unit) raises and rolls the whole unit back —
+the application prefix included — records the attempt 'fenced' outside the
+rolled-back unit, and never re-applies a settled effect. Every failure or
+ambiguous commit (a backend kill before the terminal, a lost COMMIT
+acknowledgement) converges the same way: the durable terminal is the
+settlement's record, a replay re-reads it, and the callback's invocation is
+at-least-once if it may repeat at all.
+
+**Four distinct facts, never conflated:** ALL-EMITTED (the source sealed its
+stream — the settlement's own precondition) is not all-children-completed and
+not all-children-succeeded: a later emitted child can still fail the run
+after the application settlement committed. GRAPH-TERMINAL is the run root's
+derived verdict. APPLICATION-SETTLED is the committed same-database unit. And
+EXCLUSION-RELEASED (the run's keyed exclusion ending) is a later, separate
+fact owned by the run lifecycle. External callbacks and notifications are
+at-least-once in every case; no external exactly-once claim is made or
+implied.
+
+**The dispatcher pool's occupancy bound.** A worker-hosted transactional
+settlement holds ONE dispatcher-pool connection for the whole managed unit
+(claim → body → terminal CAS → COMMIT → tx2 → release); the shipped
+dispatcher pool defaults to 4 connections while the worker's ordinary max
+concurrency is 8 — at most 4 settlements can be inside their units at once,
+and a body that nests another pool acquisition deadlocks itself against the
+held session (the engine never does; the docs say so for application code).
+This is a documented occupancy constraint, not a hidden second pool or an
+automatic resize.
 
 ## §4 — HITL: humans are rows
 

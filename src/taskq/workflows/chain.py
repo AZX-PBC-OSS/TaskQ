@@ -44,12 +44,23 @@ from __future__ import annotations
 
 import enum
 import types
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from pydantic import BaseModel
 
+from taskq.workflows._policy import (
+    ExecutionPolicy,
+    ResolvedExecutionPolicy,
+    WorkflowPolicyError,
+    resolve_execution_policy,
+)
 from taskq.workflows._types import ChildSpec, EmitChild, ForkSpec
+
+if TYPE_CHECKING:
+    from taskq.workflows.api._app import WorkflowActor
+    from taskq.workflows.api._ctx import StepContext
 
 __all__ = [
     "DONE",
@@ -181,7 +192,7 @@ class Route:
 
 
 @dataclass(frozen=True, slots=True)
-class Step:
+class Step[RecordT, OutcomeT]:
     """One chain step: the body, the body's typed outcome vocabulary, the
     route over it. The body signature: ``body(ctx, item) -> Outcome`` —
     the item is the record riding the row (the chain's steps share the
@@ -194,9 +205,10 @@ class Step:
     TYPES key the type-tagged route (the body returns the union ELEMENT
     itself; on a type-tagged arm the element IS the record)."""
 
-    body: Any
+    body: Callable[[StepContext, RecordT], Awaitable[OutcomeT]] | WorkflowActor
     outcomes: type[enum.Enum] | types.UnionType | type[object]
     route: Route | None = None  # None = the chain's terminal step
+    policy: ExecutionPolicy | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,13 +219,41 @@ class Chain:
 
     name: str
     start: str
-    steps: dict[str, Step]
+    # A chain is heterogeneous by design. Individual Step values retain their
+    # record/outcome types; only this routing container erases those parameters.
+    steps: dict[str, Step[Any, Any]]
     #: The chain steps' placement (every row of the chain — the fork's
     #: children and the emit's starts alike — lands here).
     actor: str = "wf"
     queue: str = "default"
+    default_policy: ExecutionPolicy | None = None
 
     def __post_init__(self) -> None:
+        if self.default_policy is not None:
+            default_actor = self.default_policy.actor
+            default_queue = self.default_policy.queue
+            from taskq.workflows._policy import CLEAR_POLICY
+
+            if (
+                self.actor != "wf"
+                and default_actor is not CLEAR_POLICY
+                and default_actor is not None
+                and default_actor != self.actor
+            ):
+                raise WorkflowPolicyError(
+                    f"chain {self.name!r} actor={self.actor!r} contradicts "
+                    f"default_policy.actor={default_actor!r}"
+                )
+            if (
+                self.queue != "default"
+                and default_queue is not CLEAR_POLICY
+                and default_queue is not None
+                and default_queue != self.queue
+            ):
+                raise WorkflowPolicyError(
+                    f"chain {self.name!r} queue={self.queue!r} contradicts "
+                    f"default_policy.queue={default_queue!r}"
+                )
         if self.start not in self.steps:
             raise ValueError(f"chain {self.name!r}: start {self.start!r} is not a step")
         for key, step in self.steps.items():
@@ -226,6 +266,30 @@ class Chain:
                             f"{nxt!r}, which is not a step"
                         )
 
+    def resolved_policy(
+        self,
+        step_key: str,
+        *,
+        payload_values: Sequence[object] = (),
+        run_priority: int | None = None,
+        resolve_names: bool = True,
+    ) -> ResolvedExecutionPolicy:
+        """The sole target resolver used by starts, forks, boot and the ladder."""
+        try:
+            step = self.steps[step_key]
+        except KeyError:
+            raise KeyError(f"chain {self.name!r} has no step {step_key!r}") from None
+        return resolve_execution_policy(
+            step_policy=step.policy,
+            default_policy=self.default_policy,
+            body=step.body,
+            compatibility_actor=self.actor,
+            compatibility_queue=self.queue,
+            payload_values=payload_values,
+            run_priority=run_priority,
+            resolve_names=resolve_names,
+        )
+
     def next_child(
         self,
         step_key: str,
@@ -233,6 +297,7 @@ class Chain:
         *,
         payload: dict[str, object] | None,
         map_index: int | None,
+        run_priority: int | None = None,
     ) -> ChildSpec | None:
         """The router's decision for one step's outcome — the fork's child
         spec (or ``None`` = the chain ends here). Raises
@@ -281,12 +346,25 @@ class Chain:
                 outcome.model_dump(mode="json") if isinstance(outcome, BaseModel) else outcome
             )
             payload = {"wf_item": element}
+        record_value: object = (
+            outcome if not isinstance(outcome, (enum.Enum, str)) else (payload or {}).get("wf_item")
+        )
+        target = self.resolved_policy(
+            nxt,
+            payload_values=(record_value,),
+            run_priority=run_priority,
+        )
         return ChildSpec(
             step_key=nxt,
-            actor=self.actor,
-            queue=self.queue,
+            actor=target.actor,
+            queue=target.queue,
             payload=payload,
             map_index=map_index,
+            rate_limits=target.rate_limits,
+            reservations=target.reservations,
+            priority=target.priority,
+            start_to_close=target.start_to_close,
+            retry=target.retry,
         )
 
 
@@ -296,19 +374,30 @@ def chain_start(
     *,
     map_index: int,
     trace_id: str,
+    run_priority: int | None = None,
 ) -> EmitChild:
     """One record's chain START (the emit's child spec): the chain's entry
     step, the record riding the row's payload under the item key (every
     chain step's body receives it — the fork carries the payload
     verbatim), the record's identity stamped at emit (the refuted-claim
     discipline — map_index + trace_id are REQUIRED here)."""
+    target = chain.resolved_policy(
+        chain.start,
+        payload_values=(item,),
+        run_priority=run_priority,
+    )
     return EmitChild(
         step_key=chain.start,
-        actor=chain.actor,
-        queue=chain.queue,
+        actor=target.actor,
+        queue=target.queue,
         payload={"wf_item": item},
         trace_id=trace_id,
         map_index=map_index,
+        rate_limits=target.rate_limits,
+        reservations=target.reservations,
+        priority=target.priority,
+        start_to_close=target.start_to_close,
+        retry=target.retry,
     )
 
 
@@ -317,7 +406,7 @@ def chain_fork(
     *,
     trace_id: str | None,
     max_attempts: int = 3,
-    retry_kind: str = "transient",
+    retry_kind: Literal["transient", "indefinite", "non_retryable", "permanent"] = "transient",
 ) -> ForkSpec | None:
     """The fork a chain step's finalize carries: AT MOST one child (no
     fan-in, no join — the route rides the certified fork-at-finalize
@@ -329,6 +418,6 @@ def chain_fork(
         children=(child,),
         join=None,
         trace_id=trace_id,
-        max_attempts=max_attempts,
-        retry_kind=retry_kind,
+        max_attempts=child.resolved_max_attempts or max_attempts,
+        retry_kind=child.resolved_retry_kind or retry_kind,
     )

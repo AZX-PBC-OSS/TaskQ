@@ -71,14 +71,142 @@ module → same compile, byte-stable).
 
 | verb | signature | notes |
 | --- | --- | --- |
-| `step(body, *args, key=None, actor="wf", queue="default", on_failure="fail_closed", max_attempts=None, retry_kind=None, skip=None, gates=(), progress_schema=None, rate_limits=(), max_concurrent=None, reservations=(), result_ttl=None, priority=None, cache=False, cache_ttl=None)` | `→ Promise[R]` where `R` is the body's declared return | promise args become the node's incoming edges (several = the fan-in); plain args are the node's data (in signature order). `max_attempts=None` is the UNSET sentinel: the wired actor handle's DECLARED `max_attempts` applies (the decorator's own default is not a declaration), else the three-attempt default — omitting and explicitly passing 3 are different declarations, and the step's explicit count overrides the handle's. `skip` is the DISPATCH-TIME predicate. `progress_schema=` is the node's DECLARED progress payload schema (the body's `ctx.progress` emissions are validated against it). `priority=` is the node rows' claim ORDER (the value stamped into the `jobs.priority` column, which the dispatch claim's `priority DESC` orders by; `None` = the actor's declaration applies, or the column default `0` — the precedence law: the per-call run/create_flow override > the step's declaration > the actor's declaration > the default). THE CAPACITY TERMS (the same surface `@app.actor` declares — the explicit step param overrides the handle's, never the reverse): `rate_limits=` stamps the node's bucket names onto the row's metadata (honored at the fleet's dispatch claim; a denial snoozes the row budget-free); `max_concurrent=` is the per-round admission DAMPER seeded on the cohort's `actor_config` — NOT a strict cap (declare `reservations=` when the bound must hold); `reservations=` is the STRICT slots (a list of `ConcurrencyReservation` — the boot materializes their slot rows in the ensure-slots pass; an unnamed/malformed entry parks the row fail-closed, LOUD); `result_ttl=` is the node result's in-DB TTL in seconds (stamped on the SUCCEEDED terminal row from the cohort's stored term). `max_pending` is deliberately absent — the engine's inserts bypass the enqueue admission and a claim-side gate would wedge the backlog, so the knob stays vanilla-actor-only (never a dead knob). `cache=True` is the CROSS-RUN CACHE opt-in (see the guide's cache section): the result serves a later run over the same body + input; `cache_ttl` is the in-DB expiry's seconds (default 24h). THE CACHE HAZARDS (each refused at the wiring — E17/E18/E19/E20): the address covers the body's OWN source + the WIRED args — a changed HELPER is invisible to it (bump the body's own source when the closure changes); the FLOW input (`ctx.input`) never enters it (a body reading `ctx.input` is refused — the cross-tenant leak); a typed-route SOURCE carrying `cache=True` is refused (the hit path cannot rebuild the route fork — the wedged-forever run); an Exit-returning body is refused (the silent no-op); an unverifiable body source is refused (the silently-uncached step). |
+| `step(body, *args, key=None, actor="wf", queue="default", on_failure="fail_closed", max_attempts=None, retry_kind=None, skip=None, gates=(), progress_schema=None, rate_limits=(), max_concurrent=None, reservations=(), result_ttl=None, priority=None, cache=False, cache_ttl=None)` | `→ Promise[R]` where `R` is the body's declared return | promise args become the node's incoming edges (several = the fan-in); plain args are the node's data (in signature order). The body contract's typed face: the body's first parameter accepts a `StepContext` (or wider) — a body DEMANDING the `TransactionalStepContext` subtype on an ordinary step is refused at the wiring (the demand is unsatisfiable there; E9 refuses it too), while a `transactional_step` node's body may declare the subtype or the base. `max_attempts=None` is the UNSET sentinel: the wired actor handle's DECLARED `max_attempts` applies (the decorator's own default is not a declaration), else the three-attempt default — omitting and explicitly passing 3 are different declarations, and the step's explicit count overrides the handle's. `skip` is the DISPATCH-TIME predicate. `progress_schema=` is the node's DECLARED progress payload schema (the body's `ctx.progress` emissions are validated against it). `priority=` is the node rows' claim ORDER (the value stamped into the `jobs.priority` column, which the dispatch claim's `priority DESC` orders by; `None` = the actor's declaration applies, or the column default `0` — the precedence law: the per-call run/create_flow override > the step's declaration > the actor's declaration > the default). THE CAPACITY TERMS (the same surface `@app.actor` declares — the explicit step param overrides the handle's, never the reverse): `rate_limits=` stamps the node's bucket names onto the row's metadata (honored at the fleet's dispatch claim; a denial snoozes the row budget-free); `max_concurrent=` is the per-round admission DAMPER seeded on the cohort's `actor_config` — NOT a strict cap (declare `reservations=` when the bound must hold); `reservations=` is the STRICT slots (a list of `ConcurrencyReservation` — the boot materializes their slot rows in the ensure-slots pass; an unnamed/malformed entry parks the row fail-closed, LOUD); `result_ttl=` is the node result's in-DB TTL in seconds (stamped on the SUCCEEDED terminal row from the cohort's stored term). `max_pending` is deliberately absent — the engine's inserts bypass the enqueue admission and a claim-side gate would wedge the backlog, so the knob stays vanilla-actor-only (never a dead knob). `cache=True` is the CROSS-RUN CACHE opt-in (see the guide's cache section): the result serves a later run over the same body + input; `cache_ttl` is the in-DB expiry's seconds (default 24h). THE CACHE HAZARDS (each refused at the wiring — E17/E18/E19/E20): the address covers the body's OWN source + the WIRED args — a changed HELPER is invisible to it (bump the body's own source when the closure changes); the FLOW input (`ctx.input`) never enters it (a body reading `ctx.input` is refused — the cross-tenant leak); a typed-route SOURCE carrying `cache=True` is refused (the hit path cannot rebuild the route fork — the wedged-forever run); an Exit-returning body is refused (the silent no-op); an unverifiable body source is refused (the silently-uncached step). |
 | `gather(promises, *, on_failure="fail_closed")` | `list[Promise[A]] → Promise[list[A]]` | the ALL-upstream join, the FLAT shape — the ELEMENT TYPE PRESERVED (a homogeneous join over `Promise[Report]`s is a `Promise[list[Report]]`; a heterogeneous join upcasts to `Promise[list[object]]` honestly). `gather([])` is refused at the verb (the stranded invisible join). |
 | `route(source, arms, *, queue="default", on_failure="fail_closed", max_attempts=3, aggregate=None, child_driven=False)` | `Promise[list[S]] × Mapping[type, RouteArm[R] \| Callable] → Promise[list[R]]` | the TYPED ROUTE: the source's body returns the elements' list (`list[Image \| Audio]`), and *arms* keys the union MEMBERS' types to the arm bodies — each element runs ITS type's arm as a FRESH job (`<source>.item:<module.qualname>`), the arm's placement stamps its children's queue/actor, and the derived `<source>.join` packs the arms' returns VERBATIM (the typed sum — an arm returning `list[X]` packs that list as ONE element; see the guide's nesting note). Totality is fenced at three doors: the verb refuses a non-total route (`RouterNotTotal` at runtime for a body that lied), `E15-route-totality` re-proves it from the compiled graph, and the runtime door raises. Takes a LIST source — a single-value `Promise[A\|B]` is refused at build ("the route is a MAP face"; the chain step's in-body `Route` is the single-value routing face). `aggregate=` is the user's DECLARED read-side fn over the children's decoded results (progress aggregation — evaluated AT READ TIME, writes nothing; `taskq.workflows.read_map_aggregate` evaluates it). `child_driven=True` is the fan-in bound's escape (the join counts its terminal children from the edge ledger). Per-arm placement/admission: `RouteArm(body=fn, actor=None, queue=None, rate_limits=(), max_concurrent=None, reservations=(), result_ttl=None, priority=None, capacity_owner="operator")` — `queue=None` inherits the route's `queue=`, `actor=None` the source's actor; a bare `Callable` arm normalizes to `RouteArm(body=fn)`; the capacity fields are the arm's OWN declaration (a capped handle wired under this arm's actor override has its terms re-declared here, and an override that would silently drop a capped handle's terms is refused at the wiring); `priority=None` = the arm does not override (the SOURCE node's resolution applies — the arm overrides DOWN from the source, graph-DIRECTION, not a value ceiling: the arm's value may raise or lower freely, and the JOIN keeps the source's resolution); `capacity_owner` is the arm's own owner declaration — an overriding arm whose body handle carries `capacity_owner="code"` must re-declare it HERE (per-arm: the other arms and the join never inherit it). |
-| `chain_source(chain, source_body, *args, key=None, actor="wf", queue="default", max_attempts=3)` | `Chain × BodyFn → Promise[Any]` | the streaming chain's source: *source_body* is the paged generator (each `ctx.emit_batch` yield = one page's emit tx); the chain's step rows exist only from the emit onward (never graph nodes — the runner routes them from the compiled chain). |
+| `chain_source(chain, source_body, *args, key=None, actor="wf", queue="default", max_attempts=3, policy=None)` | `Chain × BodyFn → Promise[None]` | the streaming chain's source: *source_body* is the paged generator (each `ctx.emit_batch` yield = one page's emit tx); the chain's step rows exist only from the emit onward (never graph nodes — the runner routes them from the compiled chain). Its own `policy=` is independent of the leaves' `Chain.default_policy`. |
+| `transactional_step(body, *args, key=None, actor="wf", queue="default", on_failure="fail_closed", max_attempts=None, retry_kind=None, skip=None, gates=(), progress_schema=None, rate_limits=(), max_concurrent=None, reservations=(), result_ttl=None, priority=None, start_to_close=None)` | `→ Promise[R]` where `R` is the body's declared return | the TRANSACTIONAL STEP — the all-emitted settlement barrier. The same wiring as `step` (promise args become the node's incoming edges; `cache`/`cache_ttl` are deliberately absent — the settlement's terminal is its own boundary, never a cacheable address), plus the transactional execution contract: every row of its run (the root, the static nodes, and every emitted/forked child inheriting them) stamps the literal capability level `required_worker_schema = 3`, so only workers whose boot stamps that level can claim them (the physical claim-entry trigger refuses the rest; the in-process driver refuses the run outright); the node's row is born in join-wait (`metadata.blocking_reason='join'`) so the existing rederive/fire arms own its release when a parent's tx1/tx2 window is lost and the parents' results are TTL-protected while this marked successor needs them; and the body executes on the claim-owned connection inside ONE engine-managed transaction — its application writes, the fenced node terminal and the claim-instant ledger record commit as one unit (see the caller-joined transaction section in the guide). ALL-EMITTED names "the source sealed its stream" — never all-children-completed or all-children-succeeded: a later emitted child can still fail the run after the settlement committed. External callbacks remain at-least-once; the engine claims exactly-once only for the same-database unit. |
 | `map_source(source, body, *, queue="default", on_failure="fail_closed", max_attempts=3, aggregate=None, rate_limits=(), child_driven=False)` | `Promise[list[T]] × body → Promise[list[R]]` | the map: the source's finalize forks N children (fresh jobs, per-item ledger identity); the join collects. One map per source (a node finalizes once). The join key is DERIVED (`<source>.join`) — the engine's fork addresses the map join by the source's own key; a custom join key is refused, never silently ignored. `aggregate=` is the user's DECLARED read-side fn over the children's decoded results (progress aggregation — evaluated AT READ TIME, writes nothing; `taskq.workflows.read_map_aggregate` evaluates it). `rate_limits=` stamps the CHILDREN's admission terms (the buckets' names ride each child row's metadata — honored at the FLEET's dispatch claim, see the rate-limiting guide's doors note). `child_driven=True` is the fan-in bound's escape (the join counts its terminal children from the edge ledger). The DICT form (`{Type: arm}`) is the typed route — the same lowering as `route`. |
 | `sink(*promises)` | `→ None` | explicit fire-and-forget — RECORDED in the compiled metadata, never silent. |
 | `build(result, *residuals)` | `Promise[R] × Promise[Never] → Promise[R]` | the terminal completeness point: names the result and accounts for every residual. The residual slot is `Promise[Never]` — a produces-nothing body's handle (`-> NoReturn`); because `Promise` is covariant, every REAL data handle in the slot is the checker's error (the static half of `E2-produced-never-consumed`). |
 | `loop(name, body, *, initial=None, carry_type=None, until=None, max_iterations=None, budget_s=None, on_exhausted="escalate", escalates_to=None, gates=())` | `→ Promise[Any]` | the LOOP node (see the section below — the carry contract, the two walls, the named exhaustion). `initial=` is the initial carry VALUE, `carry_type=` the DECLARED carrier-type (derived from the instance when `initial=` is a model); `until` is AWAITED per iteration (`Callable[[], Awaitable[bool]]`); `gates=` declares the body's HOLD gates for the admin's resolve/deliver doors. |
+
+## Typed chain execution policy
+
+`Step[Record, Outcome]` preserves its body's record and outcome types and accepts
+`policy=ExecutionPolicy(...)`. `Chain(default_policy=...)` supplies record-leaf
+defaults; a source's `chain_source(policy=...)` remains its own declaration. None
+means inherit at every layer; `CLEAR_POLICY` is the explicit clearing sentinel.
+Equivalent compatibility/policy redeclarations are accepted, contradictory ones
+raise `WorkflowPolicyError` (`E21-execution-policy`) before a row exists.
+
+`ExecutionPolicy` is frozen and typed: placement uses strings; reservations/rate
+limits reuse their existing declarations; capacity ownership is the existing
+`CapacityOwner`; priority and start_to_close use their existing domains; retry
+is `RetrySpec`, which wraps the shared validated `RetryPolicy`. Its typed
+exception map supports specific subclass precedence and `None` as an explicit
+default-policy result. `RetrySpec` also accepts an isolated classifier. The
+workflow-only `WorkflowRetryOverride` may advertise
+`delay=..., consume_budget=False` without changing vanilla `Retry`,
+`RetryDecision`, or `RetryOverride`. Such classifications require positive
+finite `RetrySpec.non_consuming_limit` and increment the durable
+`metadata.wf_retry.non_consuming_count` under the existing claim-fenced row law;
+the limit has its own terminal `RetryDeferralBudgetExceeded` and never advances
+a source's logical failure ordinal or consumes `max_attempts`. New workflow
+policies reject `time_budget` and `indefinite` with actionable validation; saved
+legacy rows are not reinterpreted. Generic legacy `Snooze`/non-consuming
+`RetryAfter` remain compatibility behavior, not a newly claimed bounded path.
+
+Dynamic chain reservations whose keys vary per record must declare
+`FiniteReservationCohort(ref=..., keys=(...))`. The existing key function decides
+each concrete name deterministically, emit/fork refuses names outside the finite
+set, and worker boot registers/materializes exactly those existing reservation
+slots. No process-hash/modulo identity or arbitrary-cardinality per-record slot
+creation is a supported policy path.
+
+`Step.outcomes` still accepts the enum or type-union route vocabulary. The
+`Chain.steps` container is heterogeneous by design; each individual Step carries
+its own record/outcome typing. No terminal-effect callback field exists on
+`ExecutionPolicy`; the shared G-EFFECT-SEMANTICS implementation owns that future
+boundary separately, and retry configuration must never silently imply one.
+
+The complete precedence, retry, strict-reservation, capacity-owner, deadline,
+legacy default, and failure-boundary law is in
+[the workflows guide](../guides/workflows.md#chain-execution-policy-one-target-resolver).
+
+## Caller-joined pages and the claim-owned connection
+
+`ctx.emit_batch(children, cursor=…, connection=…, schema=…)` is the JOINED
+page door beside the ordinary pool-owned one. The supplied connection must be
+an actual stable asyncpg session — a real `Connection` or the pool's
+connection proxy — inside the caller's already-open
+`async with connection.transaction():` scope, connected to the same database
+that hosts the run. The door validates all of that BEFORE any statement: a
+session/ORM facade that may switch physical connections, a connection with no
+open transaction, an already-aborted transaction, a schema name that is not
+this run's engine schema, and a session that cannot see this run's source row
+(a same-named schema on a foreign database) each raise the typed
+`WorkflowRunError` with zero effects.
+
+On that door the page's children, edges and cursor checkpoint are written on
+the caller's connection inside the caller's transaction — no pool
+acquisition, no second database session, no engine-owned commit. The caller's
+unit is the atomicity boundary: every refusal (admission, stale claim,
+cancellation, divergence, poison) propagates out of the caller's
+`async with conn.transaction()` so the WHOLE unit — application writes
+included — rolls back physically before any source park. The engine never
+commits or rolls back the caller's transaction; a caller that catches a
+refusal and commits anyway is outside the supported contract and earlier
+writes of the unit can then commit (documented, deliberately not
+synthetic-poisoned). A child transaction/savepoint would guarantee only
+operation-local rollback — its semantics are the caller's to state, never a
+substitute for the unit rollback. Same-connection reads see the door's own
+uncommitted checkpoints: `ctx.cursor(connection=…, schema=…)` reads through
+the supplied session, while a plain `ctx.cursor()` while that caller
+transaction is still open raises the typed stale-read refusal (the committed
+read through a different session is the re-emit-collision bug). The joined
+form's admission reads the same in-flight count through the supplied
+connection and refuses a page that cannot fit; it does not take the run's
+transaction-scoped admission lock (that lock would be held until the CALLER's
+commit), so concurrent joined emitters of one run are the caller's own
+serialization.
+
+For a `transactional_step` node the runner itself supplies the claim-owned
+connection through the public `TransactionalStepContext` subtype (the body
+declares `ctx: TransactionalStepContext`; a compatible body may still
+declare the ordinary `StepContext` base). The subtype's `connection` is the
+non-optional `ConnLike` — a body dereferences it with no narrowing, and a
+manually constructed context without one fails closed at the property. Its
+helpers join the held session: `ctx.cursor()` and `ctx.emit_batch(...)`
+default to the claim connection (this unit's own uncommitted checkpoint is
+read/written there; an explicitly supplied different session is refused
+before any statement), `ctx.substep(...)` runs the memo read, the exact
+ledger claim, the callback and the exact ledger terminal on the held
+connection (no nested transaction, no second acquisition), and
+`ctx.progress(...)` buffers only — the attempt's one ordered close after
+the connection's release flushes it. The wait/spawn helpers
+(`ctx.spawn_flow`, `ctx.wait_signal`, `ctx.wait_until`) refuse at the
+helper's entry — before any pool acquisition, data statement, signal write,
+or nested callback — with `TransactionalStepUnsupportedError`. The writes
+join the execution's own managed transaction — the application writes, the
+fenced node terminal and the claim-instant ledger record commit as ONE
+unit. The final critical section locks the run root (live status) then the
+node — the same root→node order operator cancel uses — so the two
+serializations are defined: a cancel committed first makes the settlement
+refuse and roll back (the cooperative-cancel terminal owns the node), and a
+settlement that wins the root lock commits before a later cancel proceeds.
+Nothing (no helper, application call, or progress flush) runs between the
+terminal CAS and the COMMIT. The successor decrement runs after that COMMIT
+in a fresh transaction on the SAME still-held connection, so a pool of one
+cannot deadlock. The connection's release/reset (bounded by the pool's own
+5-second reset budget) completes before the attempt's progress emitter
+closes exactly once and before dependency pins release. A body's declared
+deadline shares the vanilla consumer's start-to-close enforcement and its
+2.0-second unwind budget: the expiry cancels the body task, bound-waits its
+cooperative `finally` on the shared connection, and only a body still
+unwinding past that budget has its connection terminated out-of-pool (the
+session is never reused; the deadline's own `TimeoutError` disposition
+stands — a SIGKILL'd process has no Python-cleanup guarantee beyond the
+worker's tracked-handle reap). A fence no-match raises and rolls the whole
+unit back, records the attempt 'fenced' outside the rolled-back unit, and
+never re-applies a settled application effect; a backend death or a lost
+commit acknowledgement converges through the durable rows (the settlement
+is at-least-once visible to external callbacks only — no external
+exactly-once claim). A transactional body that returns the `Exit` sentinel
+(or whose result cannot be encoded) is the deterministic
+`TransactionalStepUnsupportedError` refusal: the unit rolls back once and
+the node terminal-fails once through the registered deterministic
+authoring owner — never a stranded running row, never a second commit.
 
 ## The loop (`wf.loop`, `Done`, `Refine`)
 
@@ -178,10 +306,11 @@ refuses two different declarations for one actor name.
 Runs in pytest, CI, and at worker boot; RETURNS the diagnostics — the
 one-pass report as a tuple of validation errors, EMPTY when clean (the
 zero-warning budget a doc example claims is assertable against the
-return); the ERROR-class diagnostics also raise. The TWENTY-SEVEN rules
+return); the ERROR-class diagnostics also raise. The TWENTY-EIGHT rules
 shipped (read
-from `taskq/workflows/api/_validate.py`'s `_run_rules` — E1–E20, W1, the
-two W2 faces, W3, W4, W5, and W6), each classified —
+from `taskq/workflows/api/_validate.py`'s `_run_rules` — E1–E20 plus the
+non-constructing E12 warning face, W1, the two W2 faces, W3, W4, W5, and W6),
+each classified —
 **the zero-false-positive doctrine: over-refusing valid graphs is the
 compile's version of over-rejection.**
 
@@ -195,10 +324,11 @@ compile's version of over-rejection.**
 | `E6-fan-in-bound` | error | a join over `MAX_FAN_IN_PER_JOIN` (1000) parents |
 | `E7-cross-graph-promise` | error | a promise wired from ANOTHER app's recorder — two apps' graphs spliced invisibly |
 | `E8-carrier-type` | error | the loop's declared `carry_type=` model (or the model instance passed as `initial=`) vs the body's `Refine[...]` feedback type — unrelated carrier models: the thread promises data the next iteration cannot receive |
-| `E9-ctx-annotation` | error | a body whose `ctx` annotation is not `StepContext` (or a subclass) — the annotation is verification, not documentation; the fabricated stand-in is refused at compile |
+| `E9-ctx-annotation` | error | a body whose `ctx` annotation is not `StepContext` (or a subclass) — the annotation is verification, not documentation; the fabricated stand-in is refused at compile. The direction is checked too: the `TransactionalStepContext` subtype is the transactional execution's own body face, refused on any non-transactional node (and on chain steps) before execution |
 | `E10-arity` | error | a body's params (beyond `ctx`) not matching the wired sources' count — the wiring's own promise, refused at compile, never a mid-flow ladder discovery |
 | `E11-loop-promise-carry` | error | a promise handle wired as the loop's `initial=` — the initial carry is a VALUE, never a handle (the handle cannot ride the row; wire the parent's result through a first step's return, or read it in the body) |
-| `E12-deps-contract` | error | a body declaring the deps shape (one param beyond `ctx` + the wired sources — the DI capability's opt-in) where the app binds NO deps (`WorkflowApp(deps=…)` never ran), or whose declared deps type the bound instance does not satisfy — the message names the fix: bind ONE instance at the door, or drop the parameter (it is never a fourth data source) |
+| `E12-deps-contract` | error | a body declaring the deps shape (one param beyond `ctx` + the wired sources — the DI capability's opt-in) where the app binds neither `deps` nor `deps_factory`, or whose declared deps type neither the static instance nor the factory's non-constructing declared product type satisfies. An explicit `FlowRunner(..., deps=value)` replaces the compiled binding and clears its factory before this validation |
+| `E12-deps-contract-unverifiable` | warning | the factory is valid enough to retain for runtime resolution, but its function/partial/callable/constructor annotation cannot prove a concrete product without constructing it (including a wrapped async-generator return), or its annotations cannot be resolved. No factory runs at build time; the first actual deps-taking body resolves it and a concrete runtime mismatch raises `WorkflowDepsProductTypeError` after closing only the entered factory-owned value |
 | `E13-gate-door` | error | a node's `gates=` carrying the channel's BOUND-DOOR object (`app.channel().gate(Model)`'s `TypedGate` — the runtime delivery handle) where the DECLARATION (`GateDecl(name=…, payload_models=…, timeout_s=…)`) belongs — the declaration is what the compile's hold nodes, the timeout warning and the delivery runtime read |
 | `E14-gate-wiring` | error | the gate seat and the bodies' waits, walked against each other (E2's analog for the hold wiring), BOTH provable directions: a DECLARED gate whose body carries no `wait_signal` reference at all (the hold seat with no waiter), and a body's `wait_signal` with NO declared gate (the hold the compile's surfaces cannot see — the Mermaid hold nodes, W1's read, the admin's resolve/deliver doors). The conditional-interior wait is not statically provable — the loop-kind mis-index face is W5's |
 | `E15-route-totality` | error | THE TOTALITY FENCE AT THE GRAPH LEVEL: the typed route's arms walked against the source's declared union, BOTH provable directions — the arms' keys must cover the union's members EXACTLY (a MISSING member would route NOTHING — the silent drop the route exists to refuse: the skipped-both-arms run that terminalized succeeded-having-routed-nothing; an UNKNOWN member would never fire), and every arm body declares its arm's MODEL on the item param (the decode's target — a duck-typed arm (`dict`/unannotated/`Any`) consumes the element UNVALIDATED; the declared model must be the EXACT union member — a superclass passes the old issubclass fence and the runtime decode drops the subclass's own fields (`extra='ignore'`, the silent data loss); an unrelated model is the wiring promising data the arm cannot accept). The wiring verbs refuse the same breaches at the wiring site; this rule re-proves the fence from the compiled graph itself (public, mutable data — E3's precedent). The runtime door for the body that LIED about its union is `RouterNotTotal` |
@@ -229,6 +359,71 @@ with their gate name + timeout policy — the hold gate consumes the same
 declaration). Edge labels = the promise types. The diagram-lies property
 is pinned: every compiled node/edge appears in the emission, nothing
 else does.
+
+## `StepContext` cancellation observation
+
+Every actual fleet body kind receives the same per-claim vanilla carrier:
+
+- `cancellation_requested: bool` and `cancel_event: asyncio.Event` (`await
+  ctx.cancel_event.wait()` is the cooperative wait);
+- `cancel_origin: CancelOrigin` — `NONE`, `OPERATOR`, or `SHUTDOWN`;
+- `cancel_reason: str | None` and `cancel_principal: str | None` for the
+  durably cancelled workflow run, populated before publication.
+
+Unwired direct/dev contexts return `False`, `NONE`, and `None`, with an own unset
+event. They do not imply direct NOTIFY/heartbeat bounds. Cancellation delivery is
+cooperative and scheduler-dependent; no bound exists for non-yielding/blocking
+body code. Observing it does not bypass a claim/root/epoch fence. An operator
+return may preserve the current node's `succeeded` receipt without any graph
+continuation/cache fill; an ordinary raise follows the cancelled terminal route.
+A started shutdown attempt retains its physical charge and replays from durable
+cursor/ledger/loop state. An unclaimed parked source has no body observation.
+Per-row workflow-node `JobsClient.cancel` is refused with run-cancel guidance.
+
+## `TransactionalStepContext` — the settlement body's context
+
+`transactional_step` bodies declare `ctx: TransactionalStepContext` (a frozen
+dataclass subclass of `StepContext`, exported from `taskq.workflows`). Its
+non-optional `connection: ConnLike` is the attempt's actual claim-owned
+session: the runner's transactional factory binds it at the claim seam, a
+body dereferences it with no narrowing, and a context constructed without
+one fails closed at the property. The helper contract on the subtype:
+
+| Member | Behavior on the settlement unit |
+| --- | --- |
+| `ctx.connection` SQL | the held claim connection, inside the managed transaction; the engine owns the one COMMIT |
+| `ctx.cursor()` | defaults to the held connection (reads this unit's own uncommitted checkpoint); an explicitly different session is refused before any statement |
+| `ctx.emit_batch(...)` | defaults to the held connection (the page joins the settlement's one commit); a different session is refused before any statement |
+| `ctx.substep(...)` | memo read, exact ledger claim, callback and exact ledger terminal all on the held connection; no nested transaction, no second acquisition; a terminal failure escapes into the enclosing unit |
+| `ctx.progress(...)` | buffers only — no pool acquisition, no DB operation during the body; the one ordered close after the connection's release flushes it |
+| `ctx.spawn_flow`, `ctx.wait_signal`, `ctx.wait_until` | refused at the helper's entry — before any pool acquisition, data statement, signal write, or nested callback — with `TransactionalStepUnsupportedError` |
+
+`TransactionalStepUnsupportedError` (a `WorkflowRunError` subclass) is also
+the transactional body's own deterministic refusal class: a body that
+returns the `Exit` sentinel, or whose result cannot be encoded, rolls the
+unit back once and terminal-fails the node once through the registered
+deterministic authoring owner — the ladder is never burned on it.
+
+## Authored terminal effects
+
+`RetrySpec(on_exhaustion=TerminalEffect(body, policy=ExecutionPolicy(...)))` is the
+typed terminal-effect declaration. The independent policy explicitly names its
+handler actor/queue and may carry ordinary bounded retry, admission, deadline and
+priority terms. Its invocation is `(ctx, event: ExhaustionEvent)` plus the
+standard optional dependency tail. `ExhaustionEvent` is a validated Pydantic model
+containing flow/workflow/node keys, `map_index`, claim attempt, positive durable
+`run_epoch`, trace, current record, `ErrorInfo`, and the reason.
+
+A policy-owned terminal commits the failed node, current attempt ledger, and one
+stable effect intent atomically; exactly one ordinary effect job materializes
+through the physical idempotency keys. Effects execute with ordinary bounded
+retry after a terminal root. Cancellation before the winning terminal prevents
+intent; an already committed intent survives later cancellation. Missing handlers
+stay visibly unclaimed. Callback execution and external effects are at-least-once;
+same-DB completed-once domain settlement requires the application's marker and
+effects in one transaction. The engine never claims arbitrary/external
+exactly-once execution. These guarded flows require the PRE run-epoch/effect
+migrations and capable fleet workers; direct execution refuses them.
 
 ## The runner (create / drive / result)
 
@@ -269,6 +464,24 @@ the test/demo driver:
   #14/#19: never a raw jsonb string). A FAILED run's read raises the
   typed `WorkflowRunError` carrying the failing node's error class +
   message — the failure face is AT the read.
+- `aclose()` — closes dependency products constructed by the compiled
+  `deps_factory`, including actual child-flow products, exactly once on their
+  creating event loop. Resolution is lazy on the first body that declares deps;
+  runner construction, cache-only replay, and spawned-only children construct
+  none. Steps, map items, chain sources/steps, and loop iterations reuse their
+  runner-family product at generation `0`. Setup/body/finalization pins keep it
+  open; close is bounded and multi-caller/idempotent, logs ordinary factory close
+  failures while closing the remaining owners, and late uses raise
+  `WorkflowDepsLifecycleError`. A runner cannot operate or close on a peer loop.
+  Static `deps=` remains caller-owned and is not inspected or closed. SIGKILL can
+  skip cleanup; no such guarantee is claimed.
+
+A direct factory receives `WorkflowDepsContext(pool, schema, worker_id,
+generation, loop, providers=None)`. Direct calls to `require_providers()` (and
+therefore `provider(T)`) raise `WorkflowDepsLifecycleError` explaining that the
+worker `ProviderRegistry` bridge is required; direct execution does not fabricate
+registry ownership. The packaged `run()` calls `aclose()` in `finally` after
+normal, error, and cancellation unwinds.
 
 The packaged verbs (re-exported at `taskq.workflows`' top level — the
 ID-ADDRESSED doors that need no `FlowRunner` in hand):

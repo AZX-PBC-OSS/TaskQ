@@ -279,6 +279,9 @@ class ProgressEmitter:
         self._pending_n = 0
         self._flush_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        #: Set once by :meth:`aclose`: after it, emission is a named drop and
+        #: no cadence task is created (the close is idempotent and terminal).
+        self._closed = False
 
     @property
     def schema_decl(self) -> type[Any] | None:
@@ -301,6 +304,21 @@ class ProgressEmitter:
         pct_v, message_v, data_v = validate_emission(pct, message, data, self._schema_decl)
         self._submit(pct_v, message_v, data_v)
 
+    async def emit_buffered(
+        self,
+        pct: int | None,
+        message: str | None,
+        data: dict[str, Any] | None,
+    ) -> None:
+        """Validate + buffer WITHOUT arming the cadence flush — the
+        transactional body's progress face (§2.2: buffering only, no DB
+        operation during the body): no pool acquisition, no statement
+        while the caller's managed transaction is open. The attempt's one
+        ordered close (:meth:`aclose`, after the connection's release)
+        flushes the buffer best-effort."""
+        pct_v, message_v, data_v = validate_emission(pct, message, data, self._schema_decl)
+        self._buffer(pct_v, message_v, data_v)
+
     def _submit(
         self,
         pct: int | None,
@@ -317,13 +335,30 @@ class ProgressEmitter:
         buffer). The private name is the seam's own enforcement: an
         engine caller who needs the validated write path goes through the
         gate."""
+        self._buffer(pct, message, data)
+        if self._closed:
+            # The close has run (the transactional tail's ordered teardown):
+            # a late emission updates the buffer latest-wins but never
+            # creates ANOTHER cadence task — the named best-effort drop is
+            # the freshness loss, never a task resurrection and never an
+            # outcome change. A caller that runs its own next close (the
+            # ordinary straggler's aclose race) still flushes the buffer.
+            return
+        if self._flush_task is None or self._flush_task.done():
+            self._flush_task = asyncio.create_task(self._flush_at_cadence())
+
+    def _buffer(
+        self,
+        pct: int | None,
+        message: str | None,
+        data: dict[str, Any] | None,
+    ) -> None:
+        """The buffer's own latest-wins write (no task arming)."""
         self.emitted += 1
         if not self._enabled:
             return  # counted, written nowhere (the best-effort asymmetry)
         self._pending = {"pct": pct, "message": message, "data": data}
         self._pending_n += 1
-        if self._flush_task is None or self._flush_task.done():
-            self._flush_task = asyncio.create_task(self._flush_at_cadence())
 
     async def _flush_at_cadence(self) -> None:
         """Hold the cadence, write the latest, let the
@@ -443,7 +478,13 @@ class ProgressEmitter:
         are logged and suppressed before finalization. Each wait allows
         1.0s, and the cancellation's completion may add unwind time past
         that bound. The caller's cancellation propagates. The caller
-        runs this before the finalize tx1, never inside it."""
+        runs this before the finalize tx1, never inside it.
+
+        The close is the cadence-task boundary: after it, late emissions
+        update the buffer latest-wins but never create another cadence
+        task (the transactional tail's ordering law); a caller that runs
+        its own next close still flushes the buffer (the ordinary
+        straggler's aclose race renders its last emission)."""
         if self._flush_task is not None and not self._flush_task.done():
             try:
                 # No shield: the wait's timeout and the caller's

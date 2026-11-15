@@ -43,7 +43,12 @@ import structlog
 from pydantic import BaseModel
 
 from taskq._di import ProviderRegistry
-from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope
+from taskq._di.scopes import (
+    LoopScope,
+    ProcessScope,
+    ThreadScope,
+    _unwrap_provider_system_exit,  # pyright: ignore[reportPrivateUsage]  # same carrier/audit boundary as worker.dispatch
+)
 from taskq._forkguard import take_parent_fork_event
 from taskq._ids import new_uuid
 from taskq._shield import shield_with_retrieval
@@ -124,6 +129,7 @@ if TYPE_CHECKING:
     from taskq.workflows._worker_execution import (
         FlowExecution as FlowExecution,
     )
+    from taskq.workflows.api._deps_factory import WorkflowProviderBridge
 
 
 def __getattr__(name: str) -> object:
@@ -1022,6 +1028,7 @@ async def _dispatch_flow_job(
     enqueuer: SubJobEnqueuer,
     flow_seam: ModuleType,
     flow_slot: "tuple[list[AcquiredResource], RateLimitRegistry] | None" = None,
+    provider_bridge: "WorkflowProviderBridge | None" = None,
 ) -> str:
     """one claimed workflow row's execution through the workflow
     machinery (the intercept's engine room).
@@ -1040,7 +1047,13 @@ async def _dispatch_flow_job(
     releases too (the wait is not occupancy), and a cancelled/laddered
     attempt never leaks the slot.
     """
+    from taskq.workflows._cancellation import WorkflowJobRegistration
+
     flow_execute = flow_seam.execute_flow_job
+    raw_flow_id = job.metadata.get("flow_id")
+    if not isinstance(raw_flow_id, str):
+        raise ValueError("a workflow dispatch row must carry its durable flow_id")
+    workflow_registration = WorkflowJobRegistration(flow_id=JobId(UUID(raw_flow_id)))
     ctx: JobContext[BaseModel] = JobContext(
         job_id=job.id,
         actor=job.actor,
@@ -1065,10 +1078,15 @@ async def _dispatch_flow_job(
             # outranks it (the vanilla _effective_start_to_close chain's own
             # order).
             default_start_to_close=deps.settings.default_start_to_close,
+            generation=int(getattr(deps, "workflow_deps_generation", 0)),
+            provider_bridge=provider_bridge,
+            factory_timeout=deps.settings.reload_factory_timeout,
+            cancellation=ctx,
+            workflow_registration=workflow_registration,
         )
 
     task = asyncio.create_task(_run(), name=f"flow-attempt:{job.id}")
-    entry = await deps.active_jobs.register(job.id, task, ctx)
+    entry = await deps.active_jobs.register(job.id, task, ctx, workflow=workflow_registration)
     try:
         execution = await task
     except asyncio.CancelledError:
@@ -1450,6 +1468,8 @@ async def di_consumer_loop(
         if job.metadata.get("flow_id") is not None:
             _flow_seam = _workflow_execution_seam()
             if _flow_seam is not None:
+                from taskq.workflows.api._deps_factory import WorkflowProviderBridge
+
                 # the same queue-cap reservation the vanilla path prepends for
                 # its jobs, acquired from the same registry through the same
                 # denial-retry helper. A denial holds the step's claim — the
@@ -1538,6 +1558,12 @@ async def di_consumer_loop(
                         worker_id=worker_id,
                         enqueuer=enqueuer,
                         flow_seam=_flow_seam,
+                        provider_bridge=WorkflowProviderBridge(
+                            registry,
+                            loop_scope=loop_scope,
+                            process_scope=process_scope,
+                            thread_scope=thread_scope,
+                        ),
                         # the acquired queue-cap reservation rides the door —
                         # released in the door's own finally (the hold's slot
                         # law: a held outcome releases too, the wait is not
@@ -1597,7 +1623,21 @@ async def di_consumer_loop(
                     _disown_job(deps.disowned_jobs, job)
                     deps.active_jobs.resolve_claim(job.id, _claim)
                     continue
-                except Exception:
+                except _flow_seam.WorkflowDepsLifecycleError as exc:
+                    # Bounds/convergence/closing happen before any body effect
+                    # or logical/source-attempt carrier write. Use the existing
+                    # infrastructure-claim recovery, never a user-body failure.
+                    _consumer_log.warning(
+                        "dispatch-flow-deps-acquisition-refused",
+                        job_id=str(job.id),
+                        actor=job.actor,
+                        error_class=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    _disown_job(deps.disowned_jobs, job)
+                    deps.active_jobs.resolve_claim(job.id, _claim)
+                    continue
+                except Exception as exc:
                     # The door's other failures (the ledger claim's
                     # transient, a finalize write's connection loss): the
                     # vanilla leg's own generic arm, mirrored — counted,
@@ -1606,10 +1646,17 @@ async def di_consumer_loop(
                     # interrupted attempt (the reconcile's refund, the
                     # reclaim sweep's re-claim; the ledger's arbiter
                     # dedupes the completed side effects).
-                    _consumer_log.exception(
+                    recorded_exc = _unwrap_provider_system_exit(exc)
+                    _consumer_log.error(
                         "dispatch-flow-failed",
                         job_id=str(job.id),
                         actor=job.actor,
+                        error_class=type(recorded_exc).__name__,
+                        exc_info=(
+                            type(recorded_exc),
+                            recorded_exc,
+                            recorded_exc.__traceback__,
+                        ),
                     )
                     deps.drain_failures += 1
                     deps.active_jobs.resolve_claim(job.id, _claim)
@@ -1850,10 +1897,23 @@ async def register_worker(
     # ``max_concurrency`` sizes ``local_queue`` and bounds every dispatch,
     # so a fleet's effective parallelism stays queryable from the database
     # for monitoring and coordination.
+    # Schema level 1 is implemented by this build's physical claim trigger and
+    # direct-driver refusal; level 2 by the guarded terminal effects; level 3
+    # by the transactional execution door. The stamp is what this build
+    # actually implements, not an operator override or a claim that future
+    # guarded application features are complete. Vanilla workers stamp
+    # zero: they still cannot execute workflow bodies under the existing
+    # workflow_execution fence, and every pre-existing metadata key survives.
+    workflow_execution_schema = 0
+    if workflow_execution:
+        from taskq.workflows._capability import WORKER_BOOT_WORKFLOW_SCHEMA
+
+        workflow_execution_schema = WORKER_BOOT_WORKFLOW_SCHEMA
     metadata: dict[str, object] = {
         "notify_enabled": notify_enabled,
         "max_concurrency": settings.max_concurrency,
         "workflow_execution": workflow_execution,
+        "workflow_execution_schema": workflow_execution_schema,
     }
 
     sql = (

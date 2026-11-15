@@ -24,13 +24,15 @@ duplicate one. the FENCE IS the CLAIM: a zombie source (its attempt
 superseded) updates nothing in step 3 → :class:`EmitFencedError` → the
 children and edges roll back with the tx — a zombie cannot emit.
 
-The ledger's
-claim-arbiter column is a SMALLINT — the ceiling is 32767. A page whose
-record's map_index crosses it raises :class:`MapIndexExhaustedError` at
-the emit door (typed, named, the ceiling's number on the record); the
-valid page-mates' tx commits first (the poison record kills itself,
-never its mates), and the deterministic route terminalizes the source.
-The ceiling is per-map-index, not per-run.
+The five identity carriers determine the active upper bound: 32767 before
+their atomic POST widening, BIGINT_MAX (9223372036854775807) when all five are
+bigint. A high
+candidate pays for one all-five catalog statement; ordinary low pages pay for
+none. A page whose record crosses the resolved bound raises
+:class:`MapIndexExhaustedError` at the emit door; valid page-mates commit first
+(the poison record kills itself, never its mates). Missing, unknown and mixed
+carrier shapes instead refuse the whole batch as :class:`MapIndexSchemaError`.
+The bound is per-map-index, not per-run and not a fan-in counter bound.
 
 ``emit_batch`` accepts ``_window_hook``
 (the attack suite's seam), fired
@@ -38,37 +40,52 @@ after EACH statement with ``emit:{1|2|3}``; the pins terminate the
 backend there (a real server-side kill) and prove zero re-emitted, zero
 lost children.
 
-The
-MAX-IN-FLIGHT bound is DECLARED at the workflow level (the runner
-supplies the workflow's declaration; ``None`` = the explicit
-unbounded). The emit admits its WHOLE page: the run's outstanding
-non-terminal rows (the ledger's truth — pending/scheduled/running,
-excluding the source's own claim) + the page's width must fit under the
-bound, or the pager BLOCKS — the generator's laziness IS the pause (a
-bounded poll OUTSIDE any tx: no connection, no transaction held while
-waiting). The admission's second gate sits inside the tx under the
-flow's ADMISSION LOCK (``pg_advisory_xact_lock`` — the admission-lock pattern: the
-count and the insert serialize on the same lock, so two concurrent
-emitters of one run cannot both admit past the bound; a lost admission
-rolls the tx back WHOLE and the wait retries — a guard, never a timing
-argument). A stall past the wait's deadline is the LOUD refusal
-(:class:`EmitBackpressureTimeoutError`) — and the certified ladder owns it:
-the source re-pends with backoff, the re-claim resumes FROM the CURSOR,
-the blocked page emits fresh (it never ran — nothing was written). The
-degradation is the dispatch band's latency, never unbounded
-materialization.
+The MAX-IN-FLIGHT bound is DECLARED at the workflow level (the runner
+supplies the workflow's declaration; ``None`` = explicit unbounded). Every
+whole page passes the same admission lock and count immediately before its
+write. Ordinary saturation raises :class:`EmitBackpressure`: it writes no
+page and the runner parks the claimed source without a timer, lease, worker
+slot, failed ledger outcome, or retry-budget charge. Truly parked sources
+do not count as their siblings' outstanding work.
+
+Wake is a fresh post-commit read, never a jobs trigger or deferred in-tx
+lookup. The engine, direct tick, post-park completion, and the bounded leader
+recovery all call :func:`wake_emit_backpressure`. Its row+root locks,
+whole-page recheck, admission lock, and atomic live-marker removal preserve
+the bound under concurrent wakes. Durable rows, not NOTIFY, are authority.
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, Final
+from dataclasses import dataclass
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Final, cast
+
+import structlog
 
 from taskq._ids import new_uuid
+from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
+from taskq.constants import wake_channel
+from taskq.obs import get_logger
 from taskq.workflows._fork import FORK_CHUNK
-from taskq.workflows._types import MAP_INDEX_CEILING, EmitChild, _jsonb, _metadata
+from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
+from taskq.workflows._sql_finalize import (
+    EMIT_BACKPRESSURE_CANDIDATE_LOCK_SQL,
+    EMIT_BACKPRESSURE_CANDIDATES_SQL,
+    EMIT_BACKPRESSURE_CURSOR_CANDIDATES_SQL,
+    EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL,
+    EMIT_BACKPRESSURE_ROOT_LOCK_SQL,
+    EMIT_BACKPRESSURE_WAKE_SQL,
+)
+from taskq.workflows._types import (
+    MAP_INDEX_CEILING,
+    EmitChild,
+    _jsonb,
+    _row_metadata,
+    resolve_map_index_domain,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -79,12 +96,21 @@ if TYPE_CHECKING:
 __all__ = [
     "EMIT_CURSOR_KEY",
     "EMIT_MAX_IN_FLIGHT_DEFAULT",
+    "EmitBackpressure",
     "EmitBackpressureTimeoutError",
+    "EmitCancelledError",
     "EmitFencedError",
+    "EmitStaleClaimError",
+    "EmitWakeResult",
     "MapIndexExhaustedError",
     "PageDivergedError",
     "emit_batch",
+    "validate_joined_connection",
+    "wake_emit_backpressure",
+    "wake_emit_backpressure_safely",
 ]
+
+logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 #: The cursor checkpoint's metadata key on the source row itself (the
 #: checkpoint rides the row's jsonb — no new table, no new column, no
@@ -97,14 +123,6 @@ EMIT_CURSOR_KEY: Final[str] = "emit_cursor"
 #: unbounded, never a silent default).
 EMIT_MAX_IN_FLIGHT_DEFAULT: Final[int] = 1000
 
-#: The backpressure wait's default term: the pager blocks at most this
-#: long before the loud refusal. The body may tighten it (the pager
-#: knows its own pace); nothing waits forever.
-_EMIT_BACKPRESSURE_DEFAULT_S: Final[float] = 30.0
-
-#: The backpressure poll's tick.
-_EMIT_BACKPRESSURE_POLL_S: Final[float] = 0.05
-
 #: The window-hook type: fired after each in-tx statement with the
 #: window's name (``emit:1`` children, ``emit:2`` edges, ``emit:3``
 #: cursor) and the connection — the statement-window kill pins' seam.
@@ -115,19 +133,20 @@ WindowHook = Callable[[str, Any], Awaitable[None]]
 
 
 class EmitFencedError(RuntimeError):
-    """The emit's cursor checkpoint updated nothing — the claim was
-    superseded (the source row was reclaimed and re-claimed under us).
-    The tx aborts: the children and edges roll back with it. the LOUD
-    REFUSAL — a zombie source cannot emit, silently or otherwise."""
+    """The emit lost its exact claim or the run's durable terminal fence."""
 
 
-#: ``jobs.map_index`` is a smallint — the ceiling is 32767. A page whose
-#: record's map_index crosses it raises :class:`MapIndexExhaustedError` at the
-#: emit door (typed, named, the ceiling's number on the record); the valid
-#: page-mates' tx commits first (the poison record kills itself, never its
-#: mates), and the deterministic route terminalizes the source. The ceiling is
-#: per-map-index, not per-run: a map's children count against the same smallint
-#: the ledger's claim-arbiter keys on.
+class EmitCancelledError(EmitFencedError):
+    """Cancellation won before this page's cursor CAS; rollback is whole-page."""
+
+
+class EmitStaleClaimError(EmitFencedError):
+    """The attempt's claim identity no longer owns the source row."""
+
+
+#: The active bound comes from all five carriers (32767 all-smallint;
+#: BIGINT_MAX all-bigint), never from a widened subset. This is independent of
+#: jobs.deps_pending's unchanged smallint child-count bound.
 
 
 class PageDivergedError(RuntimeError):
@@ -162,18 +181,20 @@ class PageDivergedError(RuntimeError):
 
 
 class MapIndexExhaustedError(RuntimeError):
-    """A page carried a record whose ``map_index`` is past the smallint
-    ceiling (:data:`taskq.workflows._types.MAP_INDEX_CEILING` — 32767;
-    the ledger's claim-arbiter column is a smallint). the BATCH
-    SEMANTICS: a poison record kills ITSELF loudly, never ITS MATES —
-    the emit emits the VALID page-mates first (their tx commits; the
-    valid work survives), then raises THIS naming the offending record.
-    The smallint cast's raw DataError escaped
-    MID-TX and rolled the whole page back — the valid page-mates died
-    with the poison record, an accidental untyped ceiling. The
-    deterministic route terminalizes the source with the ceiling on the
-    record (re-running cannot grow a record's identity past the
-    column's own domain)."""
+    """A page carried a record whose non-null identity is invalid.
+
+    The identity must be an exact non-negative ``int`` within the
+    schema-derived upper bound (32767 on the all-smallint schema;
+    BIGINT_MAX = 2**63-1 = 9223372036854775807 after all five carriers widen;
+    a high candidate checks the actual schema once).
+    Bool, float and string are refused without coercion: coercing one
+    would format a different idempotency key or reach the SQL codec
+    mid-transaction. the BATCH SEMANTICS: a poison record kills ITSELF
+    loudly, never ITS MATES — the emit emits the VALID page-mates first
+    (their tx commits; the valid work survives), then raises THIS naming
+    the offending identity. An all-poison page writes nothing. The
+    deterministic route terminalizes the source with the bound on the
+    record."""
 
 
 class EmitBackpressureTimeoutError(RuntimeError):
@@ -186,10 +207,46 @@ class EmitBackpressureTimeoutError(RuntimeError):
     is before the tx, nothing was written)."""
 
 
+EMIT_REFUSAL_STATUS_SQL_TEMPLATE = """\
+SELECT j.status, j.metadata, j.cancel_phase, root.status AS root_status
+FROM {schema}.jobs AS j
+LEFT JOIN {schema}.jobs AS root
+  ON root.id = (j.metadata->>'flow_id')::uuid
+WHERE j.id = $1
+"""
+
+
+class EmitBackpressure(Exception):  # noqa: N818  # Why: mandated typed control-signal vocabulary, not an error ladder.
+    """Ordinary capacity control: this whole page did not fit.
+
+    No child, edge, or cursor write has occurred when this escapes. Only the
+    owning source runner may translate it into the dedicated park law; it is
+    deliberately outside ``Snooze``/``RetryAfter`` and the failure ladder.
+    ``backpressure_timeout_s`` at the public emit boundary is diagnostic-only
+    compatibility input, never a failure deadline for this control.
+    """
+
+    def __init__(self, *, page_width: int, bound: int, outstanding: int) -> None:
+        self.page_width = page_width
+        self.bound = bound
+        self.outstanding = outstanding
+        super().__init__(
+            f"emit page width {page_width} plus {outstanding} outstanding rows "
+            f"exceeds max_in_flight={bound}; the source parks without spending "
+            "a retry until a committed terminal makes the whole page fit"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EmitWakeResult:
+    """One bounded marker pass: committed promotions and its resume cursor."""
+
+    woken: int
+    next_cursor: tuple[JobId, JobId] | None = None
+
+
 class _AdmissionLostError(Exception):
-    """The admission re-check inside the tx (under the flow's admission
-    lock) found the bound taken by a concurrent emitter — the tx aborts
-    (nothing partial) and the wait loop retries. Never escapes."""
+    """The locked recheck lost capacity; roll back before typed parking."""
 
 
 async def _outstanding(conn: ConnLike, wsql: WorkflowSql, flow_id: JobId, source_id: JobId) -> int:
@@ -214,6 +271,7 @@ async def _emit_tx(
     max_attempts: int,
     retry_kind: str,
     _window_hook: WindowHook | None,
+    run_priority: int | None = None,
 ) -> None:
     """The emit tx's body (the caller owns the transaction): the children
     INSERT, the edge rows, the cursor checkpoint — the certified fork
@@ -242,13 +300,23 @@ async def _emit_tx(
                 [c.actor for c in chunk],
                 [c.queue for c in chunk],
                 [_jsonb(c.payload) for c in chunk],
-                [max_attempts] * len(chunk),
-                [retry_kind] * len(chunk),
+                [c.max_attempts or max_attempts for c in chunk],
+                [c.retry_kind or canonical_retry_kind(retry_kind) for c in chunk],
                 [source_id] * len(chunk),
                 [c.map_index for c in chunk],
                 [c.step_key for c in chunk],
                 [c.trace_id for c in chunk],
-                [_jsonb(_metadata(flow_id, blocking_reason=None))] * len(chunk),
+                [
+                    _jsonb(
+                        _row_metadata(
+                            flow_id,
+                            rate_limits=c.rate_limits,
+                            reservations=c.reservations,
+                            retry=c.retry,
+                        )
+                    )
+                    for c in chunk
+                ],
                 # The scope is the fork's own (one scope per flow) — the
                 # uniqueness pair is (scope, key), the key carries the
                 # emit scope + the per-record index.
@@ -257,6 +325,9 @@ async def _emit_tx(
                 # one cohort per run (the flow_id), the fork's own law at the
                 # page inserts.
                 [str(flow_id)] * len(chunk),
+                [run_priority if run_priority is not None else (c.priority or 0) for c in chunk],
+                [c.start_to_close for c in chunk],
+                *[[row_retry_curve(c.retry_policy)[column] for c in chunk] for column in range(4)],
             )
         except asyncpg.UniqueViolationError as exc:
             raise PageDivergedError(
@@ -297,27 +368,160 @@ async def _emit_tx(
     if _window_hook is not None:
         await _window_hook("emit:3", conn)
     if fenced is None:
-        raise EmitFencedError(
-            f"the emit's cursor checkpoint updated nothing — the source "
-            f"{source_id}'s claim was superseded (reclaimed and "
-            "re-claimed under this emit); the tx rolled back, nothing "
-            "was written"
+        # Read the durable discriminator only after the atomic fence refused;
+        # the reader performs no writes and cannot turn stale into cancelled.
+        from taskq.workflows.api._sql_runner import render_sql
+
+        observed = await conn.fetchrow(
+            render_sql(EMIT_REFUSAL_STATUS_SQL_TEMPLATE, wsql.schema),
+            source_id,
+        )
+        terminal = {"succeeded", "failed", "cancelled", "crashed", "abandoned"}
+        raw_metadata: object = observed["metadata"] if observed is not None else {}
+        metadata = _json_loads(raw_metadata) if isinstance(raw_metadata, str) else raw_metadata
+        cancelled = observed is not None and (
+            observed["root_status"] in terminal
+            or observed["cancel_phase"] != 0
+            or (isinstance(metadata, dict) and "cancel_phase" in metadata)
+        )
+        if cancelled:
+            raise EmitCancelledError(
+                f"workflow cancellation fenced source {source_id}'s page; "
+                "the children, edges and cursor rolled back atomically"
+            )
+        raise EmitStaleClaimError(
+            f"the emit's cursor checkpoint lost this exact source claim "
+            f"({source_id}, worker, attempt, claim_epoch); rollback wrote nothing"
         )
 
 
-def _raise_poison(flow_id: JobId, source_id: JobId, poison: list[EmitChild]) -> None:
+def _poison_detail(poison: Sequence[EmitChild], bound: int) -> str:
+    """Name each invalid-identity class once (the direct values, never
+    dataclass/payload equality)."""
+    bad_types = [c.map_index for c in poison if type(c.map_index) is not int]
+    negative = [c.map_index for c in poison if type(c.map_index) is int and c.map_index < 0]
+    over = [c.map_index for c in poison if type(c.map_index) is int and c.map_index > bound]
+    parts: list[str] = []
+    if bad_types:
+        parts.append(
+            f"non-integer identities {bad_types!r} (the door requires an "
+            "exact int; bool, float and string are refused, never coerced)"
+        )
+    if negative:
+        parts.append(f"negative identities {negative!r}")
+    if over:
+        parts.append(f"identities past the supported upper bound ({bound}) {over!r}")
+    return "; ".join(parts)
+
+
+def _raise_poison(flow_id: JobId, source_id: JobId, poison: list[EmitChild], *, bound: int) -> None:
     """Name the page's poison records and raise (the ceiling's loud
     terminal — after the valid page-mates' tx committed, so the valid
     work survives on the record; the batch semantics, the error's
     docstring)."""
     raise MapIndexExhaustedError(
-        f"the page's records past the map_index smallint ceiling "
-        f"({MAP_INDEX_CEILING}): flow {flow_id}, source {source_id}, the "
-        f"offending records' step keys {sorted({c.step_key for c in poison})}, "
-        f"map_indexes {[c.map_index for c in poison]} — the VALID "
-        "page-mates COMMITTED above (a poison record kills itself loudly, "
-        "never its mates); the ceiling is documented on MAP_INDEX_CEILING"
+        f"the page carries invalid map_index identity: flow {flow_id}, "
+        f"source {source_id}, the offending records' step keys "
+        f"{sorted({c.step_key for c in poison})}, "
+        f"{_poison_detail(poison, bound)} — the VALID page-mates COMMITTED "
+        "above (a poison record kills itself loudly, never its mates); the "
+        f"resolved five-carrier upper bound is {bound}. On an all-smallint "
+        "schema an explicit retry is valid only after the operator-gated POST; "
+        "above BIGINT_MAX the exhaustion remains deterministic"
     )
+
+
+def _raise_poison_joined(
+    flow_id: JobId, source_id: JobId, poison: list[EmitChild], *, bound: int
+) -> None:
+    """The JOINED form's poison raise: the valid page-mates were written
+    into the CALLER'S open transaction and are NOT committed — the
+    engine never commits it. The message states that truth (the caller
+    decides the unit's fate; the supported contract rolls the unit
+    back)."""
+    raise MapIndexExhaustedError(
+        f"the page carries invalid map_index identity: flow {flow_id}, "
+        f"source {source_id}, the offending records' step keys "
+        f"{sorted({c.step_key for c in poison})}, "
+        f"{_poison_detail(poison, bound)} — the VALID page-mates were "
+        "written into YOUR transaction and are NOT committed (the joined "
+        "emit never commits; roll your transaction back so the uncommitted "
+        "mates and every earlier application write of the unit are "
+        f"reverted). The resolved five-carrier upper bound is {bound}"
+    )
+
+
+async def validate_joined_connection(
+    conn: object,
+    wsql: WorkflowSql,
+    *,
+    connection_schema: str | None,
+    source_id: JobId,
+) -> None:
+    """The joined door's typed refusals — every one BEFORE any engine data
+    write, so an unsupported session has zero effects (the reads below are
+    the door's own same-database probes; they write nothing).
+
+    A supplied connection must be an actual stable asyncpg session (a real
+    ``Connection`` or the pool's connection proxy) inside the caller's
+    already-open transaction, on the same database that hosts the engine
+    schema. ``is_in_transaction()`` is server-derived and cannot by itself
+    distinguish an open transaction from an already-aborted one, so the
+    one-row visibility probe doubles as the abort probe: its
+    ``InFailedSqlTransactionError`` is the aborted state's refusal. The
+    joined emit door and the joined cursor read share this one validation
+    (one mechanism, two thin surfaces)."""
+    import asyncpg
+
+    from taskq.workflows.api._runner_errors import WorkflowRunError
+
+    if not isinstance(conn, (asyncpg.Connection, asyncpg.pool.PoolConnectionProxy)):
+        raise WorkflowRunError(
+            "emit_batch(connection=…) requires an actual stable asyncpg session — "
+            f"an asyncpg.Connection or the pool's connection proxy (got "
+            f"{type(conn).__name__}). Session/ORM facades that may switch physical "
+            "connections are unsupported; no page was written."
+        )
+    if not conn.is_in_transaction():
+        raise WorkflowRunError(
+            "emit_batch(connection=…) requires the caller's already-open transaction "
+            "on the supplied connection — a joined page joins that managed unit and "
+            "the caller owns its commit/rollback; open one with "
+            "`async with connection.transaction():`. No page was written."
+        )
+    if connection_schema is not None and connection_schema != wsql.schema:
+        raise WorkflowRunError(
+            f"emit_batch refused: the supplied schema {connection_schema!r} is not "
+            f"this run's engine schema {wsql.schema!r} — joined pages require the "
+            "same engine schema on the same connection; no page was written."
+        )
+    try:
+        visible = await conn.fetchval(
+            # S608: the schema identifier is the validated WorkflowSql build
+            # input; the row id is $-bound.
+            f"SELECT EXISTS (SELECT 1 FROM {wsql.schema}.jobs WHERE id = $1)",  # noqa: S608
+            source_id,
+        )
+    except asyncpg.exceptions.InFailedSQLTransactionError:
+        raise WorkflowRunError(
+            "emit_batch(connection=…) refused: the supplied session's transaction "
+            "is already aborted (failed) — the engine will not run inside a failed "
+            "transaction; roll it back and retry in a fresh one. No page was written."
+        ) from None
+    except asyncpg.exceptions.UndefinedTableError:
+        raise WorkflowRunError(
+            f"emit_batch(connection=…) refused: the supplied session cannot see the "
+            f"engine schema {wsql.schema!r} — it is not connected to the same "
+            "database that hosts this run (a foreign database is unsupported). "
+            "No page was written."
+        ) from None
+    if visible is not True:
+        raise WorkflowRunError(
+            "emit_batch(connection=…) refused: this run's source row is not visible "
+            "through the supplied session — it is not connected to the same database "
+            "that owns the run (a same-named schema on a foreign database is "
+            "unsupported). No page was written."
+        )
 
 
 async def emit_batch(
@@ -334,8 +538,12 @@ async def emit_batch(
     max_attempts: int = 3,
     retry_kind: str = "transient",
     max_in_flight: int | None = None,
-    backpressure_timeout_s: float = _EMIT_BACKPRESSURE_DEFAULT_S,
+    backpressure_timeout_s: float = 30.0,
     _window_hook: WindowHook | None = None,
+    _schema_conn: ConnLike | None = None,
+    run_priority: int | None = None,
+    connection: ConnLike | None = None,
+    connection_schema: str | None = None,
 ) -> tuple[JobId, ...]:
     """Emit one page of chain starts: the children + the edges + the
     cursor checkpoint, one transaction, while the source stays
@@ -352,28 +560,45 @@ async def emit_batch(
     source that also forks at its finalize can never key-collide with its
     own emitted chains.
 
-    *max_in_flight* is the DECLARED bound
-    (the workflow-level declare — the runner supplies the workflow's;
-    ``None`` = the explicit unbounded). The emit admits its WHOLE page:
-    the run's outstanding non-terminal rows + the page's width must fit
-    under the bound, or the pager BLOCKS (the generator's laziness is
-    the pause — a bounded poll outside any tx, no connection held while
-    waiting). The admission's second gate sits inside the tx under the
-    flow's admission lock — the concurrent emitters' count+insert
-    serialize (a lost admission aborts the tx and retries the wait; a
-    guard, never a timing argument). A stall past the wait's term is the
-    LOUD refusal — the certified ladder's subject.
+    *max_in_flight* is the workflow's declared whole-page bound (``None`` is
+    explicit unbounded). Saturation raises :class:`EmitBackpressure` before
+    any write; the source runner then releases its physical claim and parks
+    without a timer. The locked second gate remains the actual bound defense
+    against concurrent emitters. The legacy timeout argument is retained only
+    as diagnostic-age input and never turns healthy capacity into failure.
+
+    ``_schema_conn`` is the internal seam for a caller-held connection: a
+    page carrying an above-ceiling candidate uses it for the one five-carrier
+    catalog probe instead of acquiring a pool connection. It deliberately
+    does not change the emit transaction's pool ownership (joined emits go
+    through ``connection=`` below).
+
+    ``connection=`` (+ ``connection_schema=``) is the JOINED door: the page's
+    children, edges and cursor checkpoint are written on THAT connection
+    inside the caller's already-open transaction — no pool acquisition, no
+    engine-owned transaction, no commit or rollback of ours. The caller's
+    unit is the atomicity boundary: every engine refusal (stale claim,
+    cancellation, admission, divergence, poison) propagates out of the
+    caller's ``async with conn.transaction()`` and physically rolls the
+    WHOLE unit back — application writes included — before any source
+    park. Admission on this door reads the same in-flight count through
+    the supplied connection and refuses a page that cannot fit; it does
+    not take the run's transaction-scoped admission lock (that lock would
+    be held until the CALLER's commit), so two concurrent joined emitters
+    of one run are the caller's own serialization, stated in the guide.
+    Same-connection reads see this door's own uncommitted checkpoints; a
+    second pool connection would not.
 
     Returns the minted child ids (uuid7 via the seam). Raises
     :class:`EmitFencedError` when the claim was superseded (nothing
-    written). Raises :class:`EmitBackpressureTimeoutError` when the declared
-    bound stalled the whole wait's term (nothing written). Raises
+    written). Raises :class:`EmitBackpressure` when the whole page cannot fit
+    (nothing written and no elapsed-time failure). Raises
     :class:`PageDivergedError` when the page's rows already exist (the
     cursor diverged from the row history — the tx rolled back, nothing
     written). Raises :class:`MapIndexExhaustedError` when a record's
-    ``map_index`` is past the smallint ceiling — after emitting the
-    valid page-mates (the batch semantics: a poison record kills ITSELF
-    loudly, never its mates — the valid work SURVIVES on the record)."""
+    ``map_index`` is past the resolved five-carrier bound — after emitting
+    valid page-mates. A missing, unrecognized or mixed schema instead raises
+    :class:`taskq.workflows._types.MapIndexSchemaError` before the whole batch."""
     for child in children:
         if child.map_index is None:  # pyright: ignore[reportUnnecessaryComparison]  # Why: the runtime guard behind the typed door — EmitChild.map_index's int type is the declaration; a hand-built child carrying None must be refused here (the refuted-claim discipline), never trusted to the checker.
             raise ValueError(
@@ -390,35 +615,66 @@ async def emit_batch(
                 "the per-record trace (the one-query lineage)"
             )
 
-    # jobs.map_index is a smallint — a record past :data:`MAP_INDEX_CEILING`
-    # used to die as the raw DataError mid-tx, taking the valid page-mates down
-    # with the rollback (an accidental untyped ceiling). the batch semantics:
-    # the poison record kills itself loudly, never its mates — the valid
-    # page-mates emit (their tx commits below), then the poison is named and
-    # raised (the deterministic route terminalizes the source). An all-poison
-    # page is refused before any work.
-    poison = [c for c in children if not 0 <= int(c.map_index) <= MAP_INDEX_CEILING]
-    if not poison:
-        valid = list(children)
-    else:
-        valid = [c for c in children if c not in poison]
-        if not valid:
-            raise MapIndexExhaustedError(
-                f"the emit's page is entirely past the map_index smallint "
-                f"ceiling ({MAP_INDEX_CEILING}): flow {flow_id}, source "
-                f"{source_id}, the offending records' step keys "
-                f"{sorted({c.step_key for c in poison})}, map_indexes "
-                f"{[c.map_index for c in poison]} — nothing was written "
-                "(the record's identity cannot ride the ledger's smallint "
-                "arbiter; the ceiling is documented on MAP_INDEX_CEILING)"
-            )
+    if connection is not None:
+        return await _emit_batch_joined(
+            connection,
+            wsql,
+            flow_id=flow_id,
+            source_id=source_id,
+            worker_id=worker_id,
+            attempt=attempt,
+            claim_epoch=claim_epoch,
+            children=children,
+            cursor=cursor,
+            connection_schema=connection_schema,
+            max_attempts=max_attempts,
+            retry_kind=retry_kind,
+            max_in_flight=max_in_flight,
+            run_priority=run_priority,
+            _window_hook=_window_hook,
+        )
+
+    # The identity is an exact, non-negative int. A high candidate probes the
+    # ACTUAL five-carrier schema once (not once per row, and never for an
+    # ordinary in-range page). All-smallint preserves the old poison/mate rule;
+    # all-bigint activates immediately, with no restart or cached permission.
+    # Missing, unknown or mixed carriers refuse the whole batch before writing.
+    # The partition compares direct values — never payload equality.
+    needs_schema_probe = any(
+        type(c.map_index) is int and c.map_index > MAP_INDEX_CEILING for c in children
+    )
+    bound = MAP_INDEX_CEILING
+    if needs_schema_probe:
+        if _schema_conn is not None:
+            bound = await resolve_map_index_domain(_schema_conn, wsql.schema)
+        else:
+            async with pool.acquire() as probe_conn:
+                bound = await resolve_map_index_domain(probe_conn, wsql.schema)
+
+    valid: list[EmitChild] = []
+    poison: list[EmitChild] = []
+    for child in children:
+        value = child.map_index
+        if type(value) is not int or value < 0 or value > bound:
+            poison.append(child)
+        else:
+            valid.append(child)
+    if not valid and poison:
+        raise MapIndexExhaustedError(
+            f"the emit's page carries invalid map_index identity: flow "
+            f"{flow_id}, source {source_id}, the offending records' step keys "
+            f"{sorted({c.step_key for c in poison})}, "
+            f"{_poison_detail(poison, bound)} — nothing was written (the "
+            f"record's identity cannot ride the ledger's arbiter; the resolved "
+            f"five-carrier upper bound is {bound})"
+        )
 
     child_ids = [JobId(new_uuid()) for _ in valid]
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + backpressure_timeout_s
+    # Compatibility only: wait age belongs to observability, not a provider or
+    # source retry deadline. Deliberately no clock/poll loop survives here.
+    _ = backpressure_timeout_s
 
     if max_in_flight is not None:
-        # an admission that can never succeed is refused at the door.
         if len(valid) > max_in_flight:
             raise ValueError(
                 f"the emit's page ({len(valid)} children) can never fit "
@@ -427,71 +683,40 @@ async def emit_batch(
                 "bound; the loud config refusal, never a silent starve)"
             )
 
-        while True:
-            # the wait (outside any tx — the pager blocks here; no
-            # connection held while waiting).
-            async with pool.acquire() as conn:
-                count = await _outstanding(conn, wsql, flow_id, source_id)
-            if count + len(valid) > max_in_flight:
-                if loop.time() > deadline:
-                    raise EmitBackpressureTimeoutError(
-                        f"the emit backpressure bound (max_in_flight="
-                        f"{max_in_flight}) stalled the run for "
-                        f"{backpressure_timeout_s}s: {count} non-terminal "
-                        f"rows + a page of {len(valid)} never fit — the "
-                        "workers are not draining (the loud refusal; the "
-                        "ladder re-pends the source and the resume "
-                        "continues from the cursor)"
-                    )
-                await asyncio.sleep(_EMIT_BACKPRESSURE_POLL_S)
-                continue
-            # the tx — the admission's second gate inside (the flow's
-            # admission lock serializes the concurrent emitters'
-            # count+insert; a lost admission rolls back whole and
-            # retries the wait).
-            try:
-                async with pool.acquire() as conn, conn.transaction():
-                    await conn.execute(wsql.emit_admission_lock, str(flow_id))
-                    inside = await _outstanding(conn, wsql, flow_id, source_id)
-                    if inside + len(valid) > max_in_flight:
-                        raise _AdmissionLostError(
-                            f"the admission was taken between the wait and "
-                            f"the tx (outstanding {inside} + "
-                            f"{len(valid)} > {max_in_flight})"
-                        )
-                    await _emit_tx(
-                        conn,
-                        wsql,
-                        flow_id=flow_id,
-                        source_id=source_id,
-                        worker_id=worker_id,
-                        attempt=attempt,
-                        claim_epoch=claim_epoch,
-                        children=valid,
-                        cursor=cursor,
-                        child_ids=child_ids,
-                        max_attempts=max_attempts,
-                        retry_kind=retry_kind,
-                        _window_hook=_window_hook,
-                    )
-                    # the valid page-mates' tx committed above (the batch
-                    # semantics — a poison record kills itself loudly, never
-                    # its mates); a raise inside the with would roll the valid
-                    # work back (the raw DataError's own crime).
-                if poison:
-                    _raise_poison(flow_id, source_id, poison)
-                return tuple(child_ids)
-            except _AdmissionLostError:
-                if loop.time() > deadline:
-                    raise EmitBackpressureTimeoutError(
-                        f"the emit backpressure bound (max_in_flight="
-                        f"{max_in_flight}) stalled the run for "
-                        f"{backpressure_timeout_s}s (the admission kept "
-                        "being taken by a concurrent emitter) — the loud "
-                        "refusal; the ladder re-pends the source and the "
-                        "resume continues from the cursor"
-                    ) from None
-                await asyncio.sleep(_EMIT_BACKPRESSURE_POLL_S)
+        async with pool.acquire() as conn:
+            count = await _outstanding(conn, wsql, flow_id, source_id)
+        if count + len(valid) > max_in_flight:
+            raise EmitBackpressure(page_width=len(valid), bound=max_in_flight, outstanding=count)
+        inside = count
+        try:
+            async with pool.acquire() as conn, conn.transaction():
+                await conn.execute(wsql.emit_admission_lock, str(flow_id))
+                inside = await _outstanding(conn, wsql, flow_id, source_id)
+                if inside + len(valid) > max_in_flight:
+                    raise _AdmissionLostError
+                await _emit_tx(
+                    conn,
+                    wsql,
+                    flow_id=flow_id,
+                    source_id=source_id,
+                    worker_id=worker_id,
+                    attempt=attempt,
+                    claim_epoch=claim_epoch,
+                    children=valid,
+                    cursor=cursor,
+                    child_ids=child_ids,
+                    max_attempts=max_attempts,
+                    retry_kind=retry_kind,
+                    _window_hook=_window_hook,
+                    run_priority=run_priority,
+                )
+            if poison:
+                _raise_poison(flow_id, source_id, poison, bound=bound)
+            return tuple(child_ids)
+        except _AdmissionLostError:
+            raise EmitBackpressure(
+                page_width=len(valid), bound=max_in_flight, outstanding=inside
+            ) from None
 
     async with pool.acquire() as conn, conn.transaction():
         await _emit_tx(
@@ -508,8 +733,280 @@ async def emit_batch(
             max_attempts=max_attempts,
             retry_kind=retry_kind,
             _window_hook=_window_hook,
+            run_priority=run_priority,
         )
     # the poison's loud death is outside the tx (the valid work committed).
     if poison:
-        _raise_poison(flow_id, source_id, poison)
+        _raise_poison(flow_id, source_id, poison, bound=bound)
     return tuple(child_ids)
+
+
+async def _emit_batch_joined(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    source_id: JobId,
+    worker_id: JobId,
+    attempt: int,
+    claim_epoch: int | None,
+    children: Sequence[EmitChild],
+    cursor: dict[str, object],
+    connection_schema: str | None,
+    max_attempts: int,
+    retry_kind: str,
+    max_in_flight: int | None,
+    run_priority: int | None,
+    _window_hook: WindowHook | None,
+) -> tuple[JobId, ...]:
+    """The JOINED page door: every statement group of the pool path — the
+    refuted-claim discipline, the identity partition, the admission count,
+    the children/edges/cursor writes — runs on the caller's connection
+    inside the caller's already-open transaction. No ``conn.transaction()``
+    of ours, no pool acquisition, no timeout polling: the caller owns the
+    unit's commit/rollback and every refusal below propagates out of the
+    caller's ``async with conn.transaction()`` scope so the WHOLE unit
+    (application writes included) rolls back physically."""
+    await validate_joined_connection(
+        conn,
+        wsql,
+        connection_schema=connection_schema,
+        source_id=source_id,
+    )
+    # The five-carrier bound: a high candidate probes the catalog through the
+    # SAME supplied connection — never a nested pool acquisition.
+    needs_schema_probe = any(
+        type(c.map_index) is int and c.map_index > MAP_INDEX_CEILING for c in children
+    )
+    bound = MAP_INDEX_CEILING
+    if needs_schema_probe:
+        bound = await resolve_map_index_domain(conn, wsql.schema)
+
+    valid: list[EmitChild] = []
+    poison: list[EmitChild] = []
+    for child in children:
+        value = child.map_index
+        if type(value) is not int or value < 0 or value > bound:
+            poison.append(child)
+        else:
+            valid.append(child)
+    if not valid and poison:
+        raise MapIndexExhaustedError(
+            f"the emit's page carries invalid map_index identity: flow "
+            f"{flow_id}, source {source_id}, the offending records' step keys "
+            f"{sorted({c.step_key for c in poison})}, "
+            f"{_poison_detail(poison, bound)} — nothing was written (the "
+            f"record's identity cannot ride the ledger's arbiter; the resolved "
+            f"five-carrier upper bound is {bound})"
+        )
+
+    child_ids = [JobId(new_uuid()) for _ in valid]
+
+    if max_in_flight is not None:
+        if len(valid) > max_in_flight:
+            raise ValueError(
+                f"the emit's page ({len(valid)} children) can never fit "
+                f"under the declared max_in_flight={max_in_flight} — the "
+                "admission is impossible (shrink the page or raise the "
+                "bound; the loud config refusal, never a silent starve)"
+            )
+        # The joined admission reads the same in-flight count through the
+        # supplied connection and refuses a page that cannot fit. The run's
+        # transaction-scoped admission lock is deliberately NOT taken: on a
+        # caller-owned connection it would be held until the CALLER commits.
+        # Concurrent joined emitters of one run are the caller's own
+        # serialization (the joined door's stated trade).
+        count = await _outstanding(conn, wsql, flow_id, source_id)
+        if count + len(valid) > max_in_flight:
+            raise EmitBackpressure(page_width=len(valid), bound=max_in_flight, outstanding=count)
+
+    await _emit_tx(
+        conn,
+        wsql,
+        flow_id=flow_id,
+        source_id=source_id,
+        worker_id=worker_id,
+        attempt=attempt,
+        claim_epoch=claim_epoch,
+        children=valid,
+        cursor=cursor,
+        child_ids=child_ids,
+        max_attempts=max_attempts,
+        retry_kind=retry_kind,
+        _window_hook=_window_hook,
+        run_priority=run_priority,
+    )
+    # the joined poison's loud death is outside OUR transaction (we own
+    # none) — the valid mates are uncommitted in the caller's unit; the
+    # message states that truth, never a commit claim.
+    if poison:
+        _raise_poison_joined(flow_id, source_id, poison, bound=bound)
+    return tuple(child_ids)
+
+
+@dataclass(frozen=True, slots=True)
+class _WaitDescriptor:
+    page_width: int
+    bound: int
+
+
+def _metadata_document(raw: object) -> dict[str, object]:
+    decoded: object = _json_loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(decoded, dict):
+        raise ValueError("a live emit-backpressure row must have object metadata")
+    return cast("dict[str, object]", decoded)
+
+
+def _counter(record: dict[str, object], key: str, *, minimum: int = 0) -> int:
+    value = record.get(key)
+    if type(value) is not int or value < minimum:
+        raise ValueError(
+            f"wf_emit_backpressure.{key} must be an integer >= {minimum}; "
+            f"got {type(value).__name__} {value!r}"
+        )
+    return value
+
+
+def _timestamp(record: dict[str, object], key: str, *, optional: bool = False) -> None:
+    value = record.get(key)
+    if optional and value is None:
+        return
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"wf_emit_backpressure.{key} must be a UTC timestamp string")
+    try:
+        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise ValueError(f"wf_emit_backpressure.{key} is not a timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"wf_emit_backpressure.{key} must carry a timezone")
+
+
+def _wait_descriptor(metadata: object) -> _WaitDescriptor:
+    """Validate every live field before wake interprets its admission facts."""
+    document = _metadata_document(metadata)
+    if (
+        document.get("blocking_reason") != "backpressure"
+        or not isinstance(document.get("wf_deferral"), dict)
+        or cast("dict[str, object]", document["wf_deferral"]).get("signal") != "EmitBackpressure"
+    ):
+        raise ValueError("the selected row has no coherent EmitBackpressure marker")
+    raw_record = document.get("wf_emit_backpressure")
+    if not isinstance(raw_record, dict):
+        raise ValueError("metadata.wf_emit_backpressure must be an object")
+    record = cast("dict[str, object]", raw_record)
+    if _counter(record, "version", minimum=1) != 1:
+        raise ValueError("unsupported wf_emit_backpressure version")
+    page_width = _counter(record, "page_width")
+    bound = _counter(record, "bound", minimum=1)
+    _counter(record, "deferrals", minimum=1)
+    _counter(record, "wakes")
+    _counter(record, "outstanding")
+    _timestamp(record, "deferred_at")
+    _timestamp(record, "last_wake_at", optional=True)
+    return _WaitDescriptor(page_width=page_width, bound=bound)
+
+
+async def wake_emit_backpressure(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId | None = None,
+    batch_size: int = 100,
+    after: tuple[JobId, JobId] | None = None,
+) -> EmitWakeResult:
+    """Promote fitted, exactly parked sources in one fresh transaction.
+
+    ``flow_id`` is the post-commit accelerator. With no flow this is the
+    bounded estate recovery pass: its ordered cursor prevents a permanently
+    full prefix from starving later waiters. The caller resumes at the returned
+    cursor and resets it after a short/empty pass.
+    """
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError("emit-backpressure wake batch_size must be positive")
+    if after is not None and flow_id is not None:
+        raise ValueError("an estate cursor cannot be combined with one flow target")
+
+    from taskq.workflows.api._sql_runner import render_sql
+
+    if flow_id is not None:
+        candidate_sql = render_sql(EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL, wsql.schema)
+        candidate_args: tuple[object, ...] = (flow_id, batch_size)
+    elif after is not None:
+        candidate_sql = render_sql(EMIT_BACKPRESSURE_CURSOR_CANDIDATES_SQL, wsql.schema)
+        candidate_args = (*after, batch_size)
+    else:
+        candidate_sql = render_sql(EMIT_BACKPRESSURE_CANDIDATES_SQL, wsql.schema)
+        candidate_args = (batch_size,)
+
+    root_lock_sql = render_sql(EMIT_BACKPRESSURE_ROOT_LOCK_SQL, wsql.schema)
+    candidate_lock_sql = render_sql(EMIT_BACKPRESSURE_CANDIDATE_LOCK_SQL, wsql.schema)
+    wake_sql = render_sql(EMIT_BACKPRESSURE_WAKE_SQL, wsql.schema)
+    woken = 0
+    last: tuple[JobId, JobId] | None = None
+    count = 0
+    async with pool.acquire() as conn, conn.transaction():
+        candidates = await conn.fetch(candidate_sql, *candidate_args)
+        count = len(candidates)
+        locked_roots: dict[JobId, bool] = {}
+        for candidate in candidates:
+            source_id = JobId(candidate["id"])
+            candidate_flow = JobId(candidate["flow_id"])
+            last = (candidate_flow, source_id)
+            live_root = locked_roots.get(candidate_flow)
+            if live_root is None:
+                root = await conn.fetchrow(root_lock_sql, candidate_flow)
+                live_root = root is not None and root["status"] not in {
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                    "crashed",
+                    "abandoned",
+                }
+                locked_roots[candidate_flow] = live_root
+            if not live_root:
+                continue
+
+            # Canonical root -> waiter -> admission order. This fresh locked
+            # row read refutes the initial index probe before descriptor use.
+            source = await conn.fetchrow(candidate_lock_sql, source_id)
+            if source is None:
+                continue
+            descriptor = _wait_descriptor(source["metadata"])
+            await conn.execute(wsql.emit_admission_lock, str(candidate_flow))
+            outstanding = await _outstanding(conn, wsql, candidate_flow, source_id)
+            if outstanding + descriptor.page_width > descriptor.bound:
+                continue
+            promoted = await conn.fetchrow(wake_sql, source_id)
+            if promoted is None:
+                continue
+            woken += 1
+            # NOTIFY accelerates an already durable pending transition. The
+            # effective actor assignment, not a stale original label, is named.
+            await conn.execute(
+                "SELECT pg_notify($1, $2)",
+                wake_channel(wsql.schema),
+                str(promoted["effective_queue"]),
+            )
+    next_cursor = None if flow_id is not None or count < batch_size else last
+    return EmitWakeResult(woken=woken, next_cursor=next_cursor)
+
+
+async def wake_emit_backpressure_safely(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    batch_size: int = 100,
+) -> int:
+    """Fail-soft inline wake seat; committed rows and bounded sweep remain truth."""
+    try:
+        result = await wake_emit_backpressure(pool, wsql, flow_id=flow_id, batch_size=batch_size)
+    except Exception as exc:  # Why: an accelerator must not fail the successful child.
+        logger.warning(
+            "wf.emit_backpressure_wake_failed",
+            flow_id=str(flow_id),
+            error_class=type(exc).__name__,
+            error=str(exc)[:500],
+        )
+        return 0
+    return result.woken

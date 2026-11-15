@@ -52,6 +52,7 @@ from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.workflows._capability import validate_required_worker_schema
 from taskq.workflows._sql import WorkflowSql
 
 if TYPE_CHECKING:
@@ -188,6 +189,9 @@ class RunClaim:
     flow_id: JobId
     created: bool
     status: str
+    #: The root's immutable internal guard, read back at the run-key arbiter so
+    #: initial node creation inherits the stored value rather than a Python echo.
+    required_worker_schema: int | None = None
 
     @property
     def kind(self) -> RunClaimKind:
@@ -209,6 +213,7 @@ async def claim_step_ledger(
     step_key: str,
     map_index: int | None,
     attempt: int,
+    claim_epoch: int,
 ) -> LedgerClaim:
     """The step-ledger claim: one round trip (P1 FINAL's idempotent-claim
     shape — ``INSERT … ON CONFLICT DO UPDATE … RETURNING``, never
@@ -218,7 +223,12 @@ async def claim_step_ledger(
     ``running`` ledger row are one statement — a two-transaction variant
     leaves a cancel in the window fencing NOTHING (the attempt isn't on the
     record yet), the row appears POST-CANCEL as a phantom ``running``.
-    """
+
+    ``claim_epoch`` is the executing claim's fence epoch: it joins the
+    arbiter so a refunded-and-reminted physical attempt (the capacity
+    park's 1 -> 0 -> 1 cycle) records its own ledger row instead of
+    overwriting the parked attempt's 'awaited' record. The in-process
+    driver's own claim stamps 0."""
     row_id = new_uuid()
     rec = await conn.fetchrow(
         wsql.ledger_claim,
@@ -228,6 +238,7 @@ async def claim_step_ledger(
         step_key,
         map_index,
         attempt,
+        claim_epoch,
     )
     assert rec is not None  # ON CONFLICT DO UPDATE always returns the row
     return LedgerClaim(
@@ -279,6 +290,7 @@ async def insert_flow_run(
     entry: FlowEntry,
     run_key: str,
     extra_metadata: dict[str, object] | None = None,
+    required_worker_schema: int | None = None,
 ) -> RunClaim:
     """The RUN-KEY claim: the flow's root row inserted under the
     ``workflow-run:<flow name>`` scope with the caller's key — the composite
@@ -291,6 +303,8 @@ async def insert_flow_run(
     stamps — the child root's parent pointers land in the create's one
     transaction; ``None`` = the shipped shape byte-identical).
     """
+    if required_worker_schema is not None:
+        validate_required_worker_schema(required_worker_schema)
     flow_id = new_uuid()
     # the root's metadata names the workflow whose registered definition
     # carries the run's step bodies — the sweep's fire arm resolves a healed
@@ -314,9 +328,15 @@ async def insert_flow_run(
         dumps_jsonb_str(root_metadata),
         run_idempotency_scope(entry.name),
         run_key,
+        required_worker_schema,
     )
     if inserted is not None:
-        return RunClaim(flow_id=JobId(inserted["id"]), created=True, status=inserted["status"])
+        return RunClaim(
+            flow_id=JobId(inserted["id"]),
+            created=True,
+            status=inserted["status"],
+            required_worker_schema=inserted["required_worker_schema"],
+        )
 
     # The arbiter's conflict path: the existing run's id + status, never a
     # second silent run (the founding-incident shape — "202 + a new run" —
@@ -327,4 +347,5 @@ async def insert_flow_run(
         flow_id=JobId(existing["id"]),
         created=False,
         status=existing["status"],
+        required_worker_schema=existing["required_worker_schema"],
     )

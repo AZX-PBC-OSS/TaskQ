@@ -106,12 +106,13 @@ from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import NamedTuple
+from typing import Final, NamedTuple, cast
 from uuid import UUID
 
 import structlog
 
 from taskq import _advisory
+from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend._records import compute_duration_ms, jsonb_param, parse_rowcount
 from taskq.backend._retention_floor import retention_policy_floor
@@ -676,7 +677,7 @@ SET status = CASE
         -- the cancel arm), so the columns it resets were already
         -- clean. The exhausted-with-cancel shape this arm always
         -- owned keeps its exact old outcome.
-        WHEN j.cancel_phase != 0
+        WHEN j.cancel_phase != 0 OR j.metadata ? 'cancel_phase'
             THEN 'cancelled'::"{schema}".job_status
         WHEN {has_budget}
             THEN 'pending'::"{schema}".job_status
@@ -708,7 +709,7 @@ SET status = CASE
     -- reorder is exactly `cancel_phase = 0 AND {has_budget}`: the
     -- cancelled and crashed arms keep the row's own scheduled_at.
     scheduled_at = CASE
-        WHEN j.cancel_phase = 0 AND {has_budget}
+        WHEN j.cancel_phase = 0 AND NOT j.metadata ? 'cancel_phase' AND {has_budget}
             THEN clock_timestamp() + {reclaim_delay}
         ELSE j.scheduled_at
     END,
@@ -717,7 +718,7 @@ SET status = CASE
     -- the budget alone, which after the reorder would leave a
     -- budget-carrying cancelled row with a NULL finished_at.
     finished_at = CASE
-        WHEN j.cancel_phase != 0 OR NOT ({has_budget})
+        WHEN j.cancel_phase != 0 OR j.metadata ? 'cancel_phase' OR NOT ({has_budget})
             THEN clock_timestamp()
         ELSE j.finished_at
     END,
@@ -736,11 +737,15 @@ SET status = CASE
     -- so the arm stamps nothing and the attempt row's WorkerCrashed
     -- plus the event's cause carry the explanation.
     error_class = CASE
+        WHEN j.cancel_phase = 0 AND j.metadata ? 'cancel_phase'
+            THEN 'WorkflowCancelled'
         WHEN NOT ({has_budget}) AND j.cancel_phase = 0
             THEN '{worker_crashed_class}'
         ELSE j.error_class
     END,
     error_message = CASE
+        WHEN j.cancel_phase = 0 AND j.metadata ? 'cancel_phase'
+            THEN 'workflow run was cancelled'
         WHEN NOT ({has_budget}) AND j.cancel_phase = 0
             THEN CASE snap.reason
                      WHEN 'lock_expired' THEN '{lock_expired_message}'
@@ -764,7 +769,8 @@ RETURNING j.id, j.status, j.attempt, j.started_at, j.actor,
           -- The pre-UPDATE scheduled_at (see the lease_arm comment): the
           -- claim-time due time the batched attempt INSERT stamps.
           snap.scheduled_at AS due_at,
-          snap.reason AS reclaim_reason, clock_timestamp() AS now_ts"""
+          snap.reason AS reclaim_reason, clock_timestamp() AS now_ts,
+          j.metadata AS job_metadata"""
 
 #: The sweep with its shared fragments bound, still carrying ``{schema}``
 #: for the caller. The fragments are substituted by name rather than
@@ -1213,15 +1219,17 @@ SELECT a.job_id, a.attempt,
        -- always the claim's own dispatch stamp.
        a.started_at,
        clock_timestamp() + (a.ord - 1) * interval '1 microsecond',
-       'crashed', '{worker_crashed_class}',
+       a.outcome, a.error_class,
        a.error_message, NULL,
        a.duration_ms, holder.id, '{{}}'::jsonb,
        -- The claim-time due time: the candidate SELECT reads
        -- scheduled_at before the reclaim's re-pend arm reschedules the
        -- row (see 01.00.20_04_pre_attempt_due_at.sql).
        a.due_at
-FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::uuid[], $5::int[], $6::text[], $7::timestamptz[])
-    WITH ORDINALITY AS a(job_id, attempt, started_at, worker_id, duration_ms, error_message, due_at, ord)
+FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::uuid[], $5::int[], $6::text[],
+            $7::timestamptz[], $8::text[], $9::text[])
+    WITH ORDINALITY AS a(job_id, attempt, started_at, worker_id, duration_ms, error_message,
+                         due_at, outcome, error_class, ord)
 LEFT JOIN holder ON holder.id = a.worker_id
 -- The standing-claim fence: a reclaimed row whose started_at the
 -- reconcile's refund un-stamped carries NO standing claim, so it
@@ -1236,8 +1244,67 @@ ON CONFLICT (job_id, attempt) DO NOTHING""".replace(
     "{worker_crashed_class}", ERROR_CLASS_WORKER_CRASHED
 )
 
+
+def _is_workflow_cancel_metadata(raw: object) -> bool:
+    decoded = cast("object", _json_loads(raw)) if isinstance(raw, str) else raw
+    return isinstance(decoded, dict) and "cancel_phase" in decoded
+
+
+_WORKFLOW_CANCEL_LEDGER_AUDIT_SQL = """\
+WITH candidates AS (
+    -- The CURRENT-CLAIM resolution, one id+instant pair per candidate:
+    -- the ledger row carrying the job's OWN id, attempt and persisted
+    -- claim_epoch in a still-nonterminal status. Older epochs' rows
+    -- (the parked 'awaited' history) never enter the candidate set, and
+    -- the ordered LIMIT keeps the write set inside the existing bounded
+    -- reclaim batch — repeated bounded batches are the existing
+    -- maintenance drain's own discipline.
+    SELECT l.id AS ledger_id, l.updated_at AS claimed_at
+    FROM "{schema}".wf_step_ledger AS l
+    JOIN "{schema}".jobs AS j
+      ON j.id = l.job_id
+     AND l.claim_epoch = j.claim_epoch
+     AND (l.attempt = j.attempt
+          OR (j.attempt = 0
+              AND j.metadata @> '{{"wf_emit_backpressure":{{"version":1}}}}'::jsonb))
+    WHERE j.id = ANY($1::uuid[])
+      AND j.status = 'cancelled'
+      AND l.status IN ('running','awaited','crashed')
+    ORDER BY l.id
+    LIMIT $2
+), audited AS (
+    UPDATE "{schema}".wf_step_ledger AS l
+    SET status = 'cancelled', error_class = 'WorkflowCancelled',
+        error_message = 'workflow run was cancelled', updated_at = clock_timestamp()
+    FROM candidates AS c
+    WHERE l.id = c.ledger_id
+      AND l.updated_at = c.claimed_at
+    RETURNING l.id
+)
+SELECT count(*) FROM audited
+"""
+
+
+# The audit candidate batch's own bound (the ordered LIMIT): the
+# heartbeat's reclaim drain repeats per tick, so a bounded candidate
+# window per call drains the population without one unbounded UPDATE.
+_WORKFLOW_CANCEL_AUDIT_BATCH: Final[int] = 64
+
+
 # The attempt insert's message is the same shared constant substituted
 # by name.
+async def _audit_cancelled_workflow_ledgers(  # pyright: ignore[reportUnusedFunction]  # worker.heartbeat imports this shared audit arm beside sweep_expired_locks
+    conn: ConnLike, schema: str, job_ids: list[JobId]
+) -> None:
+    """One shared current-attempt ledger terminal for generic recovery writers."""
+    if job_ids:
+        await conn.execute(
+            _WORKFLOW_CANCEL_LEDGER_AUDIT_SQL.format(schema=schema),
+            job_ids,
+            _WORKFLOW_CANCEL_AUDIT_BATCH,
+        )
+
+
 _SWEEP_2_ATTEMPTS_BATCH_SQL = """\
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome, error_class, error_message,
@@ -1691,6 +1758,8 @@ async def sweep_expired_locks(
             duration_mss: list[int | None] = []
             error_messages: list[str] = []
             details: list[str | None] = []
+            outcomes: list[str] = []
+            attempt_error_classes: list[str] = []
             # The claim-time due time of each reclaimed row's attempt,
             # read pre-reschedule by the snap's RETURNING (see
             # _SWEEP_1_ATTEMPTS_BATCH_SQL).
@@ -1741,9 +1810,22 @@ async def sweep_expired_locks(
                 started_ats.append(started_at)
                 worker_ids.append(original_worker)
                 duration_mss.append(duration_ms)
+                workflow_cancelled = new_status == "cancelled" and _is_workflow_cancel_metadata(
+                    rec["job_metadata"]
+                )
+                outcome = "cancelled" if workflow_cancelled else "crashed"
+                error_class = (
+                    "WorkflowCancelled" if workflow_cancelled else ERROR_CLASS_WORKER_CRASHED
+                )
+                outcomes.append(outcome)
+                attempt_error_classes.append(error_class)
                 # The attempt row names the deadline that fired, not the
                 # sibling arm's, see _SWEEP_1_ATTEMPTS_BATCH_SQL's comment.
-                error_messages.append(_ATTEMPT_MESSAGES[reclaim_reason])
+                error_messages.append(
+                    "workflow run was cancelled"
+                    if error_class == "WorkflowCancelled"
+                    else _ATTEMPT_MESSAGES[reclaim_reason]
+                )
                 details.append(jsonb_param(detail))
                 due_ats.append(rec["due_at"])
                 reclaimed.append(_ReclaimedRow(job_id, attempt, new_status, reclaim_reason))
@@ -1757,7 +1839,18 @@ async def sweep_expired_locks(
                 duration_mss,
                 error_messages,
                 due_ats,
+                outcomes,
+                attempt_error_classes,
             )
+            if "cancelled" in outcomes:
+                await conn.execute(
+                    _render_sweep_sql(
+                        _WORKFLOW_CANCEL_LEDGER_AUDIT_SQL, schema
+                    ),  # same one statement; the audit's own ordered LIMIT
+                    # bounds its candidate window per call
+                    job_ids,
+                    _WORKFLOW_CANCEL_AUDIT_BATCH,
+                )
             await conn.execute(event_sql, job_ids, details, "state_change")
             await conn.execute(
                 WAKE_NOTIFY_SQL,

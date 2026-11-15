@@ -204,9 +204,12 @@ class ScriptConn:
         return _PoolCtx(self)
 
     async def fetchrow(self, sql: str, *args: object) -> dict[str, object] | None:
-        """The workflow rederive arm's summary read. The ZERO summary: no
-        join-wait rows in the double's world — the fire arm never engages,
-        the pass is one benign read per tick. No legacy sweep calls
+        """The workflow arms' summary reads. The ZERO summaries: the
+        rederive arm's summary (no join-wait rows in the double's world —
+        the fire arm never engages), merged with the retention family's
+        own ``deleted``/``null_observed`` pair (the flows-side prune
+        passes' summary; 0 deleted, nothing null-stamped — the arms run
+        benign on the double's world). No legacy sweep calls
         ``fetchrow`` — this cannot disturb the legacy scenarios."""
         return {
             "blocked": 0,
@@ -214,6 +217,9 @@ class ScriptConn:
             "flow_fenced": 0,
             "reconciled": 0,
             "firable": 0,
+            "deleted": 0,
+            "null_observed": 0,
+            "stream_deleted": 0,
         }
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
@@ -658,6 +664,10 @@ _WF_ARMS = (
     # TTL (delivered rows are narration, never forever). Pure appends,
     # same as the arms before them.
     "wf_hold_stamp_reconcile",
+    # the #718 wake arm: the parked sources' post-commit fine-wake
+    # promotion (the wake-critical section's own sweep arm). Pure append,
+    # same as every arm before it.
+    "wf_emit_backpressure_wake",
     "wf_outbox_retention",
     "wf_loop_budget",
     "wf_phantom_reap",
@@ -666,6 +676,21 @@ _WF_ARMS = (
     # the cross-run cache's step-cache expiry arm: pure append, same as every arm before.
     "wf_step_cache_retention",
 )
+
+#: The five carriers' retention arms: registered, capability-gated — and
+#: PERIOD-DISABLED by default (``timedelta(0)``, the operator's opt-in):
+#: a disabled sweep acquires no connection and logs nothing, so the
+#: default-settings tick's inventory is the 12 above. Enabling the five
+#: periods puts them at the table's tail, same pure-append discipline.
+_WF_PERIOD_DISABLED_ARMS = (
+    "wf_edge_retention",
+    "wf_join_fire_retention",
+    "wf_step_ledger_retention",
+    "wf_signals_retention",
+    "wf_node_progress_retention",
+)
+
+_WF_ALL_ARMS = _WF_ARMS + _WF_PERIOD_DISABLED_ARMS
 
 
 def _is_wf_event(entry: Any) -> bool:
@@ -677,12 +702,20 @@ def _is_wf_event(entry: Any) -> bool:
     )
 
 
-def _until_wf_arms_sampled(legacy_calls: int) -> Callable[[list[Any]], bool]:
-    """The legacy block's calls are in and all three arms have sampled
-    their duration (the tick reached the table's tail)."""
+def _until_wf_arms_sampled(
+    legacy_calls: int, arm_count: int | None = None
+) -> Callable[[list[Any]], bool]:
+    """The legacy block's calls are in and every EXPECTED wf arm has
+    sampled its duration (the tick reached the table's tail): the
+    default-enabled inventory by default, the full 17-arm table when the
+    retention periods are enabled."""
+    expected = len(_WF_ARMS) if arm_count is None else arm_count
     return lambda events: (
         len(_calls(events)) >= legacy_calls
-        and (len([e for e in events if e[0] == "metric_duration" and e[1].startswith("wf_")]) >= 3)
+        and (
+            len([e for e in events if e[0] == "metric_duration" and e[1].startswith("wf_")])
+            >= expected
+        )
     )
 
 
@@ -735,10 +768,52 @@ async def test_audit_wf_arms_are_pure_appends_after_the_legacy_block(
     # The arms really ran, in table order, under the same sample
     # discipline as every legacy sweep (duration always; rows + success
     # when the call returned — 0 rows here, the double's world is empty).
+    # The period-disabled retention arms log NOTHING under the defaults
+    # (a disabled sweep acquires no connection — the gate's own
+    # direction).
     wf_names = [
         e[1] for e in capable_events if e[0] == "metric_duration" and e[1].startswith("wf_")
     ]
     assert wf_names == list(_WF_ARMS), wf_names
+    assert not [name for name in wf_names if name in _WF_PERIOD_DISABLED_ARMS], (
+        "a period-disabled retention arm logged under the default settings — "
+        "the timedelta(0) sentinel must disable the arm's whole body"
+    )
     for name in _WF_ARMS:
+        assert ("metric_rows", name, 0) in capable_events
+        assert ("success", name) in capable_events
+
+
+async def test_audit_wf_period_disabled_arms_run_in_table_order_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The enabled direction of the period gate: with the five carriers'
+    retention periods configured (the operator's opt-in), the full
+    17-arm table runs in registration order after the legacy block — the
+    same pure-append discipline every arm before them keeps."""
+    # The settings names are the arms' own registration period_settings,
+    # verbatim.
+    enabled = {
+        "wf_edge_retention": "WORKFLOW_EDGE_RETENTION_PERIOD",
+        "wf_join_fire_retention": "WORKFLOW_JOIN_FIRE_RETENTION_PERIOD",
+        "wf_step_ledger_retention": "WORKFLOW_STEP_LEDGER_RETENTION_PERIOD",
+        "wf_signals_retention": "WORKFLOW_SIGNALS_RETENTION_PERIOD",
+        "wf_node_progress_retention": "WORKFLOW_NODE_PROGRESS_RETENTION_PERIOD",
+    }
+    capable_backend = ScriptedBackend(_success_scripts())
+    capable_backend.workflow_sweeps_capable = True  # type: ignore[reportAttributeAccessIssue]  # Why: the capability probe is a plain hasattr — the double declares the marker the real backend's class carries.
+    capable_events = await _run_one_tick(
+        new_sweeps,
+        monkeypatch,
+        backend=capable_backend,
+        conn=_success_conn(),
+        until=_until_wf_arms_sampled(_all_success_calls(), arm_count=len(_WF_ALL_ARMS)),
+        **dict.fromkeys(enabled.values(), "3600"),
+    )
+    wf_names = [
+        e[1] for e in capable_events if e[0] == "metric_duration" and e[1].startswith("wf_")
+    ]
+    assert wf_names == list(_WF_ALL_ARMS), wf_names
+    for name in _WF_ALL_ARMS:
         assert ("metric_rows", name, 0) in capable_events
         assert ("success", name) in capable_events

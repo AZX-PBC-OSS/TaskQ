@@ -276,8 +276,11 @@ def _make_worker_events_callback(
             _notify_payload_parse_failed_counter.add(1)
             logger.debug("notify-payload-parse-failed", channel=channel, payload=payload[:200])
             return
-        if msg.get("type") != "cancel":
+        if msg.get("type") not in ("cancel", "workflow_cancel"):
             return
+        # A workflow pointer only wakes the same durable polling seat. It never
+        # sets an event or details directly; malformed/duplicate/lost pointers
+        # therefore cannot author cancellation and heartbeat remains complete.
         _cancel_notify_received_counter.add(1)
         for event in list(backend._cancel_subscribers):  # pyright: ignore[reportPrivateUsage]  # Why: snapshot iteration; event.set() is idempotent
             event.set()

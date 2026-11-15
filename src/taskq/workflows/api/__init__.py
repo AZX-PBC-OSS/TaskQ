@@ -35,6 +35,14 @@ from taskq.workflows.api._app import (
     WorkflowActor,
     WorkflowApp,
 )
+from taskq.workflows.api._deps_factory import (
+    WorkflowDepsContext,
+    WorkflowDepsFactory,
+    WorkflowDepsFactoryResult,
+    WorkflowDepsLifecycleError,
+    WorkflowDepsProductTypeError,
+    WorkflowProviderBridge,
+)
 from taskq.workflows.api._graph import (
     Exit,
     GateDecl,
@@ -49,6 +57,7 @@ from taskq.workflows.api._graph import (
     route,
     sink,
     step,
+    transactional_step,
 )
 from taskq.workflows.api._loop import Done, Refine, loop
 
@@ -66,6 +75,12 @@ __all__ = [
     "WorkflowActor",
     "WorkflowApp",
     "WorkflowBuildError",
+    "WorkflowDepsContext",
+    "WorkflowDepsFactory",
+    "WorkflowDepsFactoryResult",
+    "WorkflowDepsLifecycleError",
+    "WorkflowDepsProductTypeError",
+    "WorkflowProviderBridge",
     "build",
     "chain_source",
     "gather",
@@ -74,4 +89,5 @@ __all__ = [
     "route",
     "sink",
     "step",
+    "transactional_step",
 ]

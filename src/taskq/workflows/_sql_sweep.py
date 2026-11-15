@@ -32,6 +32,7 @@ WITH locked AS (
     WHERE c.status = 'pending'
       AND c.deps_pending > 0
       AND c.metadata @> '{{"blocking_reason": "join"}}'::jsonb
+      AND NOT (c.metadata @> '{{"blocking_reason": "backpressure"}}'::jsonb)
       -- HELD-ROW EXCLUSIVITY (P3 rule 1, the invariant every sweep arm
       -- obeys): a held row's scheduled_at (the signal deadline) is the only
       -- live timer on it — a row scheduled into the future is invisible to
@@ -224,6 +225,7 @@ WITH locked AS (
       -- a row the cache says is still waiting cannot fire (the guard),
       -- and a row already fired cannot fire twice (the UNIQUE).
       AND c.metadata @> '{{"blocking_reason": "join"}}'::jsonb
+      AND NOT (c.metadata @> '{{"blocking_reason": "backpressure"}}'::jsonb)
       -- HELD-ROW EXCLUSIVITY (P3 rule 1): the held row's scheduled_at
       -- (the signal deadline) is the only live timer on it.
       AND c.scheduled_at <= statement_timestamp()
@@ -324,7 +326,8 @@ SELECT o.id, o.join_job_id, o.flow_id, o.consumer_step_key, o.map_index, o.bindi
              THEN (root.metadata->>'wf_priority')::int
            END,
            0
-       ) AS priority
+       ) AS priority,
+        root.metadata->>'wf_priority' AS run_priority
 FROM {schema}.wf_outbox o
 LEFT JOIN {schema}.jobs root ON root.id = o.flow_id
 WHERE NOT o.delivered
@@ -356,13 +359,24 @@ OUTBOX_DRAIN_CONSUMERS_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority, start_to_close, fairness_key)
-SELECT * FROM unnest(
+     idempotency_scope, idempotency_key, priority, start_to_close, fairness_key,
+     retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter,
+     required_worker_schema)
+SELECT delivery.*, root.required_worker_schema
+FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
-    $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
+    $6::text[], $7::uuid[], $8::bigint[], $9::text[], $10::text[],
     $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[],
-    $16::text[]
+    $16::text[], $17::double precision[], $18::double precision[],
+    $19::text[], $20::double precision[]
+) AS delivery(
+    id, actor, queue, payload, max_attempts, retry_kind,
+    parent_id, map_index, step_key, trace_id, metadata,
+    idempotency_scope, idempotency_key, priority, start_to_close, fairness_key,
+    retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter
 )
+JOIN {schema}.jobs AS root
+  ON root.id = (delivery.metadata->>'flow_id')::uuid
 ON CONFLICT (idempotency_scope, idempotency_key)
     WHERE idempotency_key IS NOT NULL
 DO NOTHING
@@ -405,7 +419,7 @@ PHANTOM_REAP_SQL = """\
 UPDATE {schema}.wf_step_ledger l
 SET status = 'fenced',
     updated_at = clock_timestamp()
-WHERE l.status = 'running'
+WHERE l.status IN ('running', 'awaited', 'crashed')
   AND EXISTS (
       SELECT 1 FROM {schema}.jobs f
       WHERE f.id = l.flow_id

@@ -2,8 +2,8 @@
 
 Structural (the lock-scope family's form): the three-file single-lock-class
 split, the seam-only id generation in the DDL, the phase-obligations
-header, the additive-only rule (every file is a ``pre_`` file — no
-workflow ``post_`` ever ships for v1), and the dispatch-claim exclusion
+header, the original workflow round's PRE-only inventory, and the
+dispatch-claim exclusion
 clause's presence at every claimable-row site. The IMPORT pin (§16.1's
 law) runs on the AST harness (``tests/_import_discipline.py``) + a fresh
 interpreter, with the mutated-``__init__`` red scenario.
@@ -70,8 +70,11 @@ def test_round_is_split_into_single_lock_class_files() -> None:
 
 
 def test_every_workflow_file_is_a_pre_file() -> None:
-    """ALL workflow DDL is additive — no ``post_`` ever ships for v1 (the
-    forever rule): a pre-workflow worker reads the row shape unchanged."""
+    """The original 01.00.24 round remains PRE-only.
+
+    This historical inventory check says nothing about later human-gated POST
+    migrations (01.00.37 and the five-carrier identity widening).
+    """
     for path in _round_files():
         assert "_pre_" in path.name, path
 
@@ -344,7 +347,7 @@ async def width_schemas(pg_dsn: str) -> AsyncIterator[dict[str, str]]:
         column_types = {
             "parent_id": "uuid",
             "deps_pending": "smallint NOT NULL DEFAULT 0",
-            "map_index": "smallint",
+            "map_index": "bigint",
             "step_key": "text",
             "code_version": "text",
         }

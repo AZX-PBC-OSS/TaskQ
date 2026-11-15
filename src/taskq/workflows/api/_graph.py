@@ -22,18 +22,25 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Final, cast, get_args, get_origin, overload
+from typing import TYPE_CHECKING, Any, Concatenate, Final, cast, get_args, get_origin, overload
 
 from pydantic import BaseModel
 
 from taskq.actor_config import validate_capacity_owner
+from taskq.backend._protocol import RetryKind
 from taskq.constants import check_priority_domain
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
+from taskq.workflows._policy import (
+    ExecutionPolicy,
+    ResolvedExecutionPolicy,
+    canonical_retry_kind,
+    resolve_source_execution_policy,
+)
 from taskq.workflows._types import EdgeFailurePolicy, duration_seconds
 from taskq.workflows.api._hints import body_hints, ctx_input_reads, inner_fn, own_source
 from taskq.workflows.chain import Chain
@@ -49,6 +56,7 @@ if TYPE_CHECKING:
     # _loop imports _graph's wiring verbs at runtime, so the import rides
     # TYPE_CHECKING here; the annotation is lazy (``from __future__ import
     # annotations``) and pyright binds it.
+    from taskq.workflows.api._ctx import StepContext
     from taskq.workflows.api._loop import LoopSpec
 
 __all__ = [
@@ -647,7 +655,7 @@ class NodeDecl:
     #: default; the timeout arm resolves per the same policy.
     on_failure: str = "fail_closed"
     max_attempts: int = 3
-    retry_kind: str | None = None
+    retry_kind: RetryKind | None = None
     skip: SkipPredicate | None = None
     gates: tuple[GateDecl, ...] = ()
     #: the claim path acquires these buckets before the body runs — the vanilla
@@ -747,6 +755,8 @@ class NodeDecl:
     # from the compiled workflow's chains. ``chain is not None`` is the source
     # marker.
     chain: object | None = None
+    #: The fully resolved source policy. Chain steps use Chain.resolved_policy.
+    execution_policy: ResolvedExecutionPolicy | None = None
     # the node's result may serve a later run over the same body + the same
     # input (the temporal dedup — the arbiter owns the concurrent one). Default
     # off: the cache is a decision, never a surprise. ``cache_ttl`` is the
@@ -754,6 +764,14 @@ class NodeDecl:
     # wiring face refuses a TTL without the opt-in and a non-positive TTL.
     cache: bool = False
     cache_ttl: float | None = None
+    #: The TRANSACTIONAL STEP subtype (the public ``transactional_step``
+    #: wiring's marker — the only writer). A transactional node's row is born
+    #: in join-wait (``metadata.blocking_reason='join'``), stamps the literal
+    #: transactional capability level on every row of its run, and its body
+    #: executes inside one engine-managed transaction on the claim-owned
+    #: connection (the settlement's application writes + terminal commit as
+    #: one unit). Ordinary wiring never sets it.
+    transactional: bool = False
 
 
 class Promise[T_co]:
@@ -811,7 +829,7 @@ class BuildGraph:
         self.nodes: dict[str, NodeDecl] = {}
         self.sunk: tuple[str, ...] = ()
         self.terminal: str | None = None
-        self.chains: list[object] = []
+        self.chains: list[Chain] = []
         self._auto_counter: dict[str, int] = {}
         #: The cross-graph smuggles recorded by the wiring verbs
         #: (the smuggle class): ``(consumer_key, parent_key)`` pairs
@@ -917,7 +935,7 @@ def declared_exit_return(body: object) -> bool:
 
 
 def step[R](
-    body: Callable[..., Awaitable[R]],
+    body: Callable[Concatenate[StepContext, ...], Awaitable[R]],
     *args: object,
     key: str | None = None,
     actor: str = "wf",
@@ -1239,6 +1257,8 @@ def step[R](
             "step (the run input) or on a map/route fan-out (each child's "
             "own payload resolves the key)."
         )
+    if retry_kind is not None:
+        retry_kind = canonical_retry_kind(retry_kind, what=f"step {node_key!r}'s retry_kind")
     graph.add(
         NodeDecl(
             key=node_key,
@@ -1269,6 +1289,90 @@ def step[R](
         "Promise[R]",
         Promise(node_key, getattr(body, "__annotations__", {}).get("return", object), graph),
     )  # Why: the promise's static type is the generic R (the body's declared return — the checker's face); the runtime data_type stays the annotation's declaration (string under future-annotations), read back by validate()'s compat rule. The constructor does not bind R — the cast is the seam.
+
+
+def transactional_step[R](
+    body: Callable[..., Awaitable[R]],
+    *args: object,
+    key: str | None = None,
+    actor: str = "wf",
+    queue: str = "default",
+    on_failure: EdgeFailurePolicy = "fail_closed",
+    max_attempts: int | None = None,
+    retry_kind: str | None = None,
+    skip: SkipPredicate | None = None,
+    gates: tuple[GateDecl, ...] = (),
+    progress_schema: type[BaseModel] | None = None,
+    rate_limits: tuple[RateLimitDecl, ...] | list[RateLimitDecl] = (),
+    max_concurrent: int | None = None,
+    reservations: tuple[object, ...] | list[object] | None = (),
+    result_ttl: timedelta | float | None = None,
+    priority: int | None = None,
+    start_to_close: timedelta | None = None,
+) -> Promise[R]:
+    """Wire one node as a TRANSACTIONAL STEP — the all-emitted settlement
+    barrier: the same wiring as :func:`step` (promise args become the node's
+    incoming edges), plus the transactional execution contract:
+
+    * the run's rows stamp the literal transactional capability level
+      (``required_worker_schema = 3``) — the root, the static nodes, this
+      node, and every emitted/forked child inherit it; only workers whose
+      boot stamps that level can claim them (the physical claim-entry
+      trigger refuses the rest, and the in-process driver refuses the run
+      outright);
+    * the node's row is born in join-wait (``metadata.blocking_reason
+      ='join'``) — the existing rederive/fire arms own its release when a
+      parent's tx1/tx2 window is lost, and the parent's result is
+      TTL-protected while this successor still needs it;
+    * the body executes on the claim-owned connection inside one
+      engine-managed transaction: its application writes, the fenced node
+      terminal and the claim-instant ledger record commit as ONE unit. The
+      body's ``ctx.connection`` is that actual connection (non-optional for
+      this subtype); a fence no-match raises and rolls the whole unit back.
+
+    ALL-EMITTED is the successor's own name for "the source sealed its
+    stream" — never all-children-completed or all-children-succeeded: a
+    later emitted child can still fail the run after this settlement
+    committed. External callbacks remain at-least-once; no exactly-once
+    claim is made beyond the same-database unit. ``cache``/``cache_ttl``
+    are deliberately absent — a settlement's terminal is the unit's own
+    boundary, not a cacheable address."""
+    if declared_exit_return(body):
+        raise WorkflowBuildError(
+            "transactional_step refuses a body whose declared return is (or "
+            "includes) the Exit sentinel — the settlement owns its one "
+            "terminal: a dynamic Exit return would strand the node "
+            "terminal-less after the managed rollback. Return the data "
+            "result, or wire an Exit through an ordinary step"
+        )
+    promise = step(
+        body,
+        *args,
+        key=key,
+        actor=actor,
+        queue=queue,
+        on_failure=on_failure,
+        max_attempts=max_attempts,
+        retry_kind=retry_kind,
+        skip=skip,
+        gates=gates,
+        progress_schema=progress_schema,
+        rate_limits=rate_limits,
+        max_concurrent=max_concurrent,
+        reservations=reservations,
+        result_ttl=result_ttl,
+        priority=priority,
+        start_to_close=start_to_close,
+    )
+    graph = promise.graph
+    decl = graph.nodes.get(promise.key)
+    if decl is None:
+        raise WorkflowBuildError(
+            f"transactional_step {promise.key!r} lost its recorded node — the "
+            "wiring recorder no longer holds the declaration it just added"
+        )
+    graph.nodes[promise.key] = replace(decl, transactional=True)
+    return promise
 
 
 @overload
@@ -1897,40 +2001,18 @@ def chain_source(
     actor: str = "wf",
     queue: str = "default",
     max_attempts: int = 3,
-) -> Promise[Any]:
-    """Wire a CHAIN SOURCE node: *source_body* is the paged
-    generator (each ``ctx.emit_batch`` yield = one page's emit tx — the
-    children + edges + the cursor checkpoint while the source stays
-    running); *chain* is the declared :class:`taskq.workflows.chain.Chain`
-    the source instantiates per record; *max_attempts* is the source's
-    own ladder budget (a backpressured source's stalls ride the ladder —
-    budget it for the pages a resume must re-drive). The chain's step
-    rows exist only
-    from the emit onward — they are not graph nodes; the runner resolves
-    their bodies (registry, D1) and routes (the compiled chain). A chain
-    step key that collides with a wired node or another chain's step is
-    refused at declaration (a coding error)."""
+    policy: ExecutionPolicy | None = None,
+) -> Promise[None]:
+    """Wire a chain source with its own execution policy.
+
+    Source terms resolve only from this call, the source handle, and the
+    compatibility kwargs; ``Chain.default_policy`` belongs to record leaves
+    and is deliberately not inherited by the source.
+    """
     graph = active_graph()
-    # the chain's rows ride the chain's own actor (its own placement override)
-    # and the chain surface has no capacity passthrough — a capped handle wired
-    # as a chain step body would have its terms dropped silently. The wiring
-    # refuses.
-    for step_key, chain_step in chain.steps.items():
-        chain_handle = _capped_handle_of(chain_step.body)
-        if chain_handle is not None:
-            raise WorkflowBuildError(
-                f"chain {chain.name!r}'s step {step_key!r} wires a capped "
-                "actor handle — the chain's rows ride the CHAIN's own "
-                f"actor (actor={chain.actor!r}) and the chain surface has "
-                "no capacity passthrough: the handle's capacity terms "
-                "would be dropped by the placement override (the guard "
-                "failing open by rename), the handle's capacity_owner "
-                "declaration included. Wire the capped body as a graph "
-                "step (its own cohort), or strip its terms."
-            )
     step_keys = set(chain.steps)
     clashes = (step_keys & set(graph.nodes)) | (
-        step_keys & {k for c in graph.chains for k in c.steps}  # type: ignore[attr-defined]
+        step_keys & {k for c in graph.chains for k in c.steps}
     )
     if clashes:
         raise WorkflowBuildError(
@@ -1943,20 +2025,57 @@ def chain_source(
     sources: list[tuple[str, object]] = []
     for arg in args:
         sources.append(("p", arg.key) if isinstance(arg, Promise) else ("d", arg))
+    if any(kind == "p" for kind, _value in sources):
+        declarations = (
+            *(
+                policy.rate_limits
+                if policy is not None and isinstance(policy.rate_limits, Sequence)
+                else ()
+            ),
+            *(
+                policy.reservations
+                if policy is not None and isinstance(policy.reservations, Sequence)
+                else ()
+            ),
+        )
+        if any(
+            isinstance(value, KeyedRateLimitRef | KeyedReservationRef) for value in declarations
+        ):
+            raise WorkflowBuildError(
+                "chain_source with parent-derived payloads cannot resolve keyed admission; "
+                "declare admission on the emitted record steps instead"
+            )
+    resolved = resolve_source_execution_policy(
+        source_body=source_body,
+        policy=policy,
+        actor=actor,
+        queue=queue,
+        max_attempts=max_attempts,
+        payload_values=tuple(value for kind, value in sources if kind == "d"),
+    )
     graph.add(
         NodeDecl(
             key=node_key,
-            actor=actor,
-            queue=queue,
+            actor=resolved.actor,
+            queue=resolved.queue,
             body=source_body,
-            parents=tuple(k for k, _ in sources if k == "p"),
+            parents=tuple(str(value) for kind, value in sources if kind == "p"),
             args=tuple(sources),
-            max_attempts=max_attempts,
+            max_attempts=resolved.max_attempts,
+            retry_kind=resolved.retry_kind,
+            rate_limits=resolved.rate_limit_decls,
+            max_concurrent=resolved.max_concurrent,
+            reservations=resolved.reservation_decls,
+            result_ttl=resolved.result_ttl,
+            priority=resolved.priority,
+            start_to_close=resolved.start_to_close,
+            capacity_owner=resolved.capacity_owner,
             kind="chain_source",
             chain=chain,
+            execution_policy=resolved,
         )
     )
-    return Promise(node_key, object, graph)
+    return Promise(node_key, None, graph)
 
 
 def sink(*dropped: Promise[object]) -> None:

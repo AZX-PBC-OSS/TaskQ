@@ -81,7 +81,11 @@ class _ParkOnRegisterRegistry(ActiveJobRegistry):
     """
 
     async def register(
-        self, job_id: UUID, task: asyncio.Task[object], ctx: JobContext[BaseModel]
+        self,
+        job_id: UUID,
+        task: asyncio.Task[object],
+        ctx: JobContext[BaseModel],
+        workflow: object | None = None,
     ) -> "_ActiveJob":
         await asyncio.Event().wait()
         raise AssertionError("unreachable: the park is cancelled, never set")

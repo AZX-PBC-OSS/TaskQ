@@ -18,14 +18,34 @@ from typing import TYPE_CHECKING
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, JobId
+from taskq.constants import SMALLINT_MAX
+from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._sql import WorkflowSql
-from taskq.workflows._types import ForkSpec, _join_metadata, _jsonb, _metadata, _row_metadata
-from taskq.workflows.definitions import validate_fork
+from taskq.workflows._types import (
+    MAP_INDEX_CEILING,
+    ForkSpec,
+    _join_metadata,
+    _jsonb,
+    _row_metadata,
+    resolve_map_index_domain,
+    validate_map_index_identity,
+)
+from taskq.workflows.definitions import FanInBoundExceededError, validate_fork
 
 if TYPE_CHECKING:
     pass
 
-__all__ = ["FORK_CHUNK", "insert_fork"]
+__all__ = ["FORK_CHUNK", "ForkCounterExhaustedError", "insert_fork"]
+
+
+class ForkCounterExhaustedError(FanInBoundExceededError):
+    """The fork's child count exceeds ``jobs.deps_pending``'s domain.
+
+    This is deliberately distinct from record-identity width: even an all-
+    bigint identity schema cannot store a join over 32768 children in the
+    unchanged smallint counter. The ordinary 1000-fan-in validator remains the
+    earlier, separate contract for non-child-driven joins.
+    """
 
 
 #: Fan-out chunk size: rows per parallel-array INSERT statement.
@@ -47,6 +67,47 @@ async def insert_fork(
     terminal mark, the children, and the join share one tx, one now()."""
     validate_fork(fork)  # the empty fork is a build-time refusal, never a runtime dragon
     children = fork.children
+    if fork.join is not None and len(children) > SMALLINT_MAX:
+        # Both _map_fork and _route_fork converge here before minting ids or
+        # writing the parent's terminal/fork/edge/join rows. In particular the
+        # old map guard admitted exactly 32768 and route had no counter guard.
+        raise ForkCounterExhaustedError(
+            f"join {fork.join.step_key!r} has {len(children)} children, above "
+            f"jobs.deps_pending SMALLINT_MAX={SMALLINT_MAX}; the whole fork "
+            "refuses before any row writes. Split the source into smaller forks. "
+            "Widening record map_index does not widen this counter"
+        )
+    for child in children:
+        if child.map_index is not None:
+            validate_map_index_identity(child.map_index)
+    consumers = fork.join.consumers if fork.join is not None else ()
+    for consumer in consumers:
+        if consumer.map_index is not None:
+            validate_map_index_identity(consumer.map_index)
+    high = [
+        child.map_index
+        for child in children
+        if child.map_index is not None and child.map_index > MAP_INDEX_CEILING
+    ] + [
+        consumer.map_index
+        for consumer in consumers
+        if consumer.map_index is not None and consumer.map_index > MAP_INDEX_CEILING
+    ]
+    if high:
+        # One caller-connection/all-five read per fork. A consistent bigint
+        # schema admits high identities (including BIGINT_MAX); all-smallint
+        # keeps the old refusal, while missing/unknown/mixed schemas fail closed
+        # before any child, edge, join or consumer write.
+        from taskq.workflows._emit import MapIndexExhaustedError
+
+        bound = await resolve_map_index_domain(conn, wsql.schema)
+        poison = [value for value in high if value > bound]
+        if poison:
+            raise MapIndexExhaustedError(
+                f"the fork's children/consumers carry map_index {poison!r} past "
+                f"the schema's resolved five-carrier upper bound ({bound}) — "
+                "the fork refuses BEFORE writing children, edges or a join"
+            )
     child_ids = [JobId(new_uuid()) for _ in children]
 
     for start in range(0, len(children), FORK_CHUNK):
@@ -58,8 +119,8 @@ async def insert_fork(
             [c.actor for c in chunk],
             [c.queue for c in chunk],
             [_jsonb(c.payload) for c in chunk],
-            [fork.max_attempts] * len(chunk),
-            [fork.retry_kind] * len(chunk),
+            [c.resolved_max_attempts or fork.max_attempts for c in chunk],
+            [c.resolved_retry_kind or canonical_retry_kind(fork.retry_kind) for c in chunk],
             [parent_id] * len(chunk),
             [c.map_index for c in chunk],
             [c.step_key for c in chunk],
@@ -71,9 +132,12 @@ async def insert_fork(
             # byte-identical.
             [
                 _jsonb(
-                    _row_metadata(flow_id, rate_limits=c.rate_limits, reservations=c.reservations)
-                    if c.rate_limits or c.reservations
-                    else _metadata(flow_id, blocking_reason=None)
+                    _row_metadata(
+                        flow_id,
+                        rate_limits=c.rate_limits,
+                        reservations=c.reservations,
+                        retry=c.retry,
+                    )
                 )
                 for c in chunk
             ],
@@ -101,6 +165,7 @@ async def insert_fork(
             # interleaves runs instead of draining them as one FIFO
             # stream.
             [str(flow_id)] * len(chunk),
+            *[[row_retry_curve(c.retry_policy)[column] for c in chunk] for column in range(4)],
         )
         await conn.execute(
             wsql.fork_edges,
@@ -164,7 +229,7 @@ async def insert_fork(
                 fork.join.queue,
                 _jsonb(fork.join.payload),
                 fork.max_attempts,
-                fork.retry_kind,
+                canonical_retry_kind(fork.retry_kind),
                 parent_id,
                 fork.join.step_key,
                 len(children),

@@ -53,6 +53,7 @@ from taskq.worker.cancel import (
     make_cancel_controller,
 )
 from taskq.worker.deps import WorkerDeps
+from taskq.workflows._cancellation import WorkflowJobRegistration
 from tests.conftest import _FakePool
 
 _FAKE_DSN = "postgresql://fake:fake@fake:5432/fake"
@@ -71,7 +72,10 @@ def _make_settings(cancel_grace: float, cleanup_grace: float) -> WorkerSettings:
 
 
 class _MockRow(dict[str, object]):
-    """Dict subclass so ``row["id"]`` and ``row["cancel_phase"]`` work."""
+    """Dict subclass so the poll rows' indexed reads work: the vanilla
+    poll's ``id``/``cancel_phase`` and the workflow poll's named
+    ``reason``/``principal_subject`` fields (the worker contract reads
+    them by index, never a .get default)."""
 
 
 class _Recorder:
@@ -204,12 +208,47 @@ async def test_cancel_phase_ordering_property(
     task = _make_task()
 
     registry = ActiveJobRegistry()
-    await registry.register(job_id, task, ctx)
+    workflow_registration = WorkflowJobRegistration(flow_id=job_id)
+    await registry.register(job_id, task, ctx, workflow=workflow_registration)
 
     prev_phase: CancelPhase = CancelPhase.NONE
     observed_at_set_count: int = 0
     cancellations_delivered: int = 0
 
+    try:
+        await _drive_cancel_steps(
+            job_id,
+            task,
+            registry,
+            workflow_registration,
+            steps,
+            prev_phase,
+            observed_at_set_count,
+            cancellations_delivered,
+        )
+    finally:
+        # The created task is reaped on EVERY exit — a Hypothesis
+        # counterexample's assertion failure included — or the test's own
+        # teardown reports the leaked 3600s sleep (the errors this
+        # finally exists to eliminate).
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+async def _drive_cancel_steps(
+    job_id: object,
+    task: asyncio.Task[object],
+    registry: ActiveJobRegistry,
+    workflow_registration: WorkflowJobRegistration,
+    steps: list[tuple[int, int, int, int]],
+    prev_phase: CancelPhase,
+    observed_at_set_count: int,
+    cancellations_delivered: int,
+) -> None:
+    """The property's own step walk (the task's try/finally lives in the
+    test above — every exit reaps the task, Hypothesis failures
+    included); the phase-order/liveness assertions are unchanged."""
     for step_idx, (advance, db_phase, cancel_grace, cleanup_grace) in enumerate(steps):
         active = registry.get(job_id)
         if active is None:
@@ -230,7 +269,16 @@ async def test_cancel_phase_ordering_property(
         )
 
         recorder = _Recorder()
-        recorder.set_fetch_return([_MockRow(id=job_id, cancel_phase=db_phase)])
+        recorder.set_fetch_return(
+            [
+                _MockRow(
+                    id=job_id,
+                    cancel_phase=db_phase,
+                    reason="operator asked",
+                    principal_subject="ops-principal",
+                )
+            ]
+        )
         recorder.set_execute_return("UPDATE 1")
 
         backend = _FakeBackend()
@@ -304,6 +352,14 @@ async def test_cancel_phase_ordering_property(
             )
             break
 
+        # The workflow poll's publish carried exactly the row's named
+        # fields (the registry's own detail object is the published
+        # surface).
+        assert workflow_registration.detail.reason == "operator asked", workflow_registration.detail
+        assert workflow_registration.detail.principal == "ops-principal", (
+            workflow_registration.detail
+        )
+
         current_phase = active.cancel_phase
 
         assert current_phase >= prev_phase, (
@@ -318,7 +374,3 @@ async def test_cancel_phase_ordering_property(
     assert observed_at_set_count <= 1, (
         f"cancel_observed_at set {observed_at_set_count} times; must be at most 1"
     )
-
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task

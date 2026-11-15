@@ -164,9 +164,14 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
     kills = {"n": 0}
 
     async def killing_record(
-        self: object, flow_id: object, iter_key: str, attempt: int, outcome: object
+        self: object,
+        flow_id: object,
+        iter_key: str,
+        attempt: int,
+        outcome: object,
+        iteration_claim: object = None,
     ) -> None:
-        await real_record(self, flow_id, iter_key, attempt, outcome)
+        await real_record(self, flow_id, iter_key, attempt, outcome, iteration_claim)
         kills["n"] += 1
         if kills["n"] == 1:
             raise asyncpg.exceptions.ConnectionDoesNotExistError(
@@ -827,9 +832,14 @@ async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly
     kills = {"n": 0}
 
     async def killing_record(
-        self: object, flow_id: object, iter_key: str, attempt: int, outcome: object
+        self: object,
+        flow_id: object,
+        iter_key: str,
+        attempt: int,
+        outcome: object,
+        iteration_claim: object = None,
     ) -> None:
-        await real_record(self, flow_id, iter_key, attempt, outcome)
+        await real_record(self, flow_id, iter_key, attempt, outcome, iteration_claim)
         kills["n"] += 1
         if kills["n"] == 1:
             raise asyncpg.exceptions.ConnectionDoesNotExistError(

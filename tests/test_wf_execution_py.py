@@ -532,6 +532,7 @@ def _seam_stub(execute: Any) -> types.ModuleType:
     stub = types.ModuleType("wf-exec-seam-stub")
     stub.execute_flow_job = execute  # type: ignore[attr-defined]
     stub.WorkflowBodyUnresolvableError = real.WorkflowBodyUnresolvableError  # type: ignore[attr-defined]
+    stub.WorkflowDepsLifecycleError = real.WorkflowDepsLifecycleError  # type: ignore[attr-defined]
     return stub
 
 
@@ -716,6 +717,49 @@ def test_the_loop_survives_and_parks_the_unresolvable_row() -> None:
     assert len(snoozed) == 1, f"the unresolvable row parks exactly once; snoozed={snoozed}"
     assert snoozed[0][1] == {"released_reason": "workflow-body-unresolvable"}, snoozed[0]
     assert deps.drain_failures == 0, "the parking is budget-free (a defect row, not a failure)"
+
+
+def test_flow_system_exit_carrier_is_recorded_as_system_exit_without_loop_death() -> None:
+    from structlog.testing import capture_logs
+
+    from taskq._di.scopes import _ProviderSystemExitError
+
+    original = SystemExit(29)
+
+    async def _exit_door(**kwargs: object) -> FlowExecution:
+        raise _ProviderSystemExitError(original)
+
+    flow_job, plain_job = _flow_then_plain()
+    with capture_logs() as logs:
+        deps, dispatch_calls, _snoozed = asyncio.run(
+            _run_loop_over([flow_job, plain_job], door=_exit_door)
+        )
+    failures = [event for event in logs if event.get("event") == "dispatch-flow-failed"]
+    assert len(failures) == 1, failures
+    failure = failures[0]
+    assert failure.get("error_class") == "SystemExit", failure
+    exc_info = failure.get("exc_info")
+    assert isinstance(exc_info, tuple) and exc_info[1] is original, failure
+    assert len(dispatch_calls) == 1, "the process/worker loop survived to the next plain job"
+    assert deps.active_jobs.count() == 0, "the failed attempt releases its in-process claim"
+    assert deps.drain_failures == 1
+
+
+def test_flow_lifecycle_refusal_recovers_claim_without_consuming_failure_attempt() -> None:
+    async def _lifecycle_refusal(**kwargs: object) -> FlowExecution:
+        from taskq.workflows.api._deps_factory import WorkflowDepsLifecycleError
+
+        raise WorkflowDepsLifecycleError("16 dependency generations remain pinned")
+
+    flow_job, plain_job = _flow_then_plain()
+    deps, dispatch_calls, snoozed = asyncio.run(
+        _run_loop_over([flow_job, plain_job], door=_lifecycle_refusal)
+    )
+    assert len(dispatch_calls) == 1, "the worker remains available for unrelated work"
+    assert flow_job.id in deps.disowned_jobs, "the untouched row returns to lease recovery"
+    assert deps.active_jobs.count() == 0, "no in-process claim remains registered"
+    assert deps.drain_failures == 0, "infrastructure acquisition is not a body failure"
+    assert snoozed == [], "no failed/deferred user attempt outcome is recorded"
 
 
 def test_the_loop_survives_and_disowns_the_slot_acquire_failure() -> None:

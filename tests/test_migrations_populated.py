@@ -193,6 +193,9 @@ def _job_row(
         "budget_deadline": None,
         "budget_paused": False,
         "budget_remaining_ms": None,
+        # 01.00.38's vanilla populated shape: the new nullable field exists
+        # in the canonical superset and survives COPY/archive as NULL.
+        "required_worker_schema": None,
         "identity_key": f"ident-{i % 50}" if i % 4 == 0 else None,
         "fairness_key": f"fair-{i % 10}" if i % 7 == 0 else None,
         "payload": _payload(i),
@@ -605,7 +608,8 @@ async def _seed_slice(
         jsonb = _JSONB_COLUMNS[table]
         records = [
             tuple(
-                dumps_str(row[c]) if c in jsonb and row[c] is not None else row[c] for c in columns
+                dumps_str(row[c]) if c in jsonb and row.get(c) is not None else row.get(c)
+                for c in columns
             )
             for row in rows
         ]

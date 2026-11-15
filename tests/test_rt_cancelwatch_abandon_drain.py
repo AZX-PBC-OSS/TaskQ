@@ -76,6 +76,8 @@ class _Recorder:
         self.execute_calls: list[str] = []
 
     async def fetch(self, sql: str, *args: object) -> list[_MockRow]:
+        if "admin_audit" in sql and "root.status = 'cancelled'" in sql:
+            return []
         return list(self.poll_rows)
 
     async def execute(self, sql: str, *args: object) -> str:

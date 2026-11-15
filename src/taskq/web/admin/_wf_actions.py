@@ -59,6 +59,7 @@ from taskq._json import dumps_str as _json_dumps_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
 from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.constants import BIGINT_MAX
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
 from taskq.web._sse_limit import acquire_sse_slot, release_after, session_gate
@@ -181,7 +182,7 @@ _NODE_PANEL_CHILD_SQL = (
     "payload, result, "
     "created_at, started_at, finished_at "
     'FROM "{schema}".jobs WHERE step_key = $1 '
-    "AND (metadata->>'flow_id')::uuid = $2 AND map_index = $3 "
+    "AND (metadata->>'flow_id')::uuid = $2 AND map_index = $3::bigint "
     "AND step_key <> '__flow__'"
 )
 
@@ -208,13 +209,13 @@ _NODE_LEDGER_SQL = (
 _NODE_IO_CAPTURE_FAILED_SQL = (
     'SELECT attempt, status, capture FROM "{schema}".wf_step_ledger '
     "WHERE job_id = $1 AND status = 'failed' AND capture IS NOT NULL "
-    "ORDER BY attempt DESC LIMIT 1"
+    "ORDER BY attempt DESC, claim_epoch DESC, created_at DESC, id DESC LIMIT 1"
 )
 
 _NODE_IO_CAPTURE_SQL = (
     'SELECT attempt, status, capture FROM "{schema}".wf_step_ledger '
     "WHERE job_id = $1 AND status IN ('succeeded','failed') "
-    "ORDER BY attempt DESC LIMIT 1"
+    "ORDER BY attempt DESC, claim_epoch DESC, created_at DESC, id DESC LIMIT 1"
 )
 
 #: The panel's children render cap (bounded render): a 10k
@@ -976,11 +977,10 @@ def register_actions(router: APIRouter) -> None:
         ``children`` census, so the operator can click through to the
         child whose story they are watching (the demo README's
         observation: ``watch doc-doomed's attempt go 1 → 2``)."""
-        if map_index is not None and (map_index < 0 or map_index > 32767):
-            # The column is a smallint: a value beyond its range can
-            # never name a real map sibling — the typed 400, not the
-            # int2 codec's overflow 500.
-            raise HTTPException(status_code=400, detail="map_index must be 0..32767")
+        if map_index is not None and (map_index < 0 or map_index > BIGINT_MAX):
+            # The read binds bigint against either schema generation. An int8
+            # successor can never name a row; refuse before the driver's codec.
+            raise HTTPException(status_code=400, detail=f"map_index must be 0..{BIGINT_MAX}")
         if "\x00" in node_key:
             # A NUL byte can never name a declared node (the keys are
             # identifiers); the read binds it raw — refuse before the

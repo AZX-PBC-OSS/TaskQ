@@ -476,6 +476,10 @@ class WorkerDeps:
     """Serializes :func:`reload_credentials`, a second invocation while one
     is in flight returns immediately instead of double-draining pools and
     leaking the loser's replacements."""
+    workflow_deps_generation: int = 0
+    """Current workflow-factory owner generation. Applied credential reloads
+    advance it once under ``reload_lock``; applications may explicitly advance
+    it when an unobservable factory input changes."""
     notify_reconnect_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Serializes notify_conn reconnects, the health-check loop and
     :func:`reload_credentials` (via ``notify_reconnect_fn``) can both trigger
@@ -495,6 +499,15 @@ class WorkerDeps:
     Read by the drain monitor to determine the exit code. The counter is
     incremented unconditionally in all modes, but is only read in
     until-idle mode, in non-idle mode it is never consulted."""
+
+    def advance_workflow_deps_generation(self) -> int:
+        """Advance the explicit workflow-factory generation on the worker loop.
+
+        Existing claimed attempts keep their pinned old product; the next
+        acquisition creates the new generation and drains/retires the old one.
+        """
+        self.workflow_deps_generation += 1
+        return self.workflow_deps_generation
 
     def lead(self, term: LeaderTerm) -> None:
         """Take the leader role for *term*.
@@ -1442,6 +1455,11 @@ async def reload_credentials(
                 )
                 failed.append("redis_client")
 
+        if reloaded:
+            # Pool identity already participates in the managed value. One
+            # generation advance covers a combined pool+credential change;
+            # no-op, locked and failed-only rounds never churn dependency products.
+            deps.advance_workflow_deps_generation()
         logger.info(
             "credentials-reloaded",
             kind="credentials_reloaded",

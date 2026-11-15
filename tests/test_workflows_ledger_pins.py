@@ -69,7 +69,14 @@ async def test_pin_1_double_run_red_and_memoized_green(
         return "ran"
 
     claim = await claim_step_ledger(
-        wf_conn, wf_sql, flow_id=flow_id, job_id=node_id, step_key="s", map_index=None, attempt=1
+        wf_conn,
+        wf_sql,
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="s",
+        map_index=None,
+        attempt=1,
+        claim_epoch=0,
     )
     assert claim.status == "running" and claim.result is None
     first = await claimed_body()
@@ -142,6 +149,7 @@ async def test_pin_2_lost_completion_window(
         step_key="effect",
         map_index=None,
         attempt=1,
+        claim_epoch=0,
     )
     assert claim.status == "running"
     # the side effect landed; the finalize (and its ledger terminal write) did
@@ -156,6 +164,7 @@ async def test_pin_2_lost_completion_window(
                 step_key="effect",
                 map_index=None,
                 attempt=1,
+                claim_epoch=0,
             )
             for _ in range(30)
         ]
@@ -194,6 +203,7 @@ async def test_pin_3_concurrent_step_claims_one_winner(
                     step_key="raced",
                     map_index=None,
                     attempt=attempt,
+                    claim_epoch=0,
                 )
                 for _ in range(10)
             ]
@@ -321,6 +331,7 @@ async def test_pin_5_ledger_claim_atomic(
         step_key="too-late",
         map_index=None,
         attempt=1,
+        claim_epoch=0,
     )
     assert phantom.status == "running"
     flow_status = await wf_conn.fetchval(
@@ -384,6 +395,7 @@ async def test_pin_6_ledger_terminal_atomic(
         step_key="split",
         map_index=None,
         attempt=1,
+        claim_epoch=0,
     )
     assert claim.status == "running"
     worker_id = new_uuid()
@@ -404,6 +416,8 @@ async def test_pin_6_ledger_terminal_atomic(
         claim_epoch=0,
         outcome="succeeded",
         result={"done": True},
+        ledger_id=claim.ledger_id,
+        ledger_claimed_at=claim.claimed_at,
     )
     assert result.applied
     ledger_status = await wf_conn.fetchval(
@@ -418,19 +432,22 @@ async def test_pin_6_ledger_terminal_atomic(
     )
 
     # ...the split variant is a real engine mutation: the ledger's
-    # terminal statement mutated to update NOTHING (the write lost — the
-    # cancel ate the window); the node terminalized, the ledger did not.
-    # The shipped statement greens it (the tx1 co-location above). The
-    # mutated statement rides a copy of the rendered bundle (the
-    # dataclass replace), the render seam unpatched.
+    # terminal statement mutated to match NOTHING. The shipped engine can
+    # no longer produce the silent split (node terminal, ledger running —
+    # the old fallback's phantom): the admitted terminal write's one-row
+    # law classifies the no-match on the row's own state, and a row still
+    # nonterminal is the phantom — the finalize RAISES and tx1 (the node
+    # terminal included) ROLLS BACK. The mutated statement rides a copy of
+    # the rendered bundle (the dataclass replace), the render seam
+    # unpatched.
     #
     # The mutation lands BEFORE the RETURNING (a suffix would corrupt the
     # statement's tail): the terminal matches nothing — the write is lost.
-    mutated_terminal = wf_sql.ledger_terminal.replace(
+    mutated_terminal = wf_sql.ledger_terminal_by_id.replace(
         "RETURNING id", "  AND status = 'no-such-status'\nRETURNING id"
     )
-    assert mutated_terminal != wf_sql.ledger_terminal, "the mutation test did not arm"
-    mutated_sql = dataclasses.replace(wf_sql, ledger_terminal=mutated_terminal)
+    assert mutated_terminal != wf_sql.ledger_terminal_by_id, "the mutation test did not arm"
+    mutated_sql = dataclasses.replace(wf_sql, ledger_terminal_by_id=mutated_terminal)
     split_node = new_uuid()
     split_worker = new_uuid()
     await wf_conn.execute(
@@ -444,7 +461,7 @@ async def test_pin_6_ledger_terminal_atomic(
         json.dumps({"flow_id": str(flow_id)}),
         str(flow_id),
     )
-    await claim_step_ledger(
+    split_claim = await claim_step_ledger(
         wf_conn,
         mutated_sql,
         flow_id=flow_id,
@@ -452,20 +469,23 @@ async def test_pin_6_ledger_terminal_atomic(
         step_key="split2",
         map_index=None,
         attempt=1,
-    )
-    split_result = await finalize_node(
-        module_pg_pool,
-        mutated_sql,
-        flow_id=flow_id,
-        job_id=split_node,
-        step_key="split2",
-        worker_id=split_worker,
-        attempt=1,
         claim_epoch=0,
-        outcome="succeeded",
-        result={"done": True},
     )
-    assert split_result.applied
+    with pytest.raises(RuntimeError, match="matched no current claim row"):
+        await finalize_node(
+            module_pg_pool,
+            mutated_sql,
+            flow_id=flow_id,
+            job_id=split_node,
+            step_key="split2",
+            worker_id=split_worker,
+            attempt=1,
+            claim_epoch=0,
+            outcome="succeeded",
+            result={"done": True},
+            ledger_id=split_claim.ledger_id,
+            ledger_claimed_at=split_claim.claimed_at,
+        )
     split_status = await wf_conn.fetchval(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', split_node
     )
@@ -476,12 +496,15 @@ async def test_pin_6_ledger_terminal_atomic(
     )
     ledger_redlog.red(
         "pin6-ledger-terminal-atomic",
-        "the ledger's terminal statement mutated to update nothing (the write lost in the cancel window)",
+        "the ledger's terminal statement mutated to match nothing — the shipped "
+        "one-row law raises and the whole tx1 (the node terminal included) rolls "
+        "back; the silent node/ledger split is unconstructible",
         {"node": split_status, "ledger": split_ledger},
     )
-    assert split_status == "succeeded" and split_ledger == "running", (
-        "the mutated terminal must drift from the node — the red comparator "
-        "is broken (the tx1 co-location is load-bearing)"
+    assert split_status == "running" and split_ledger == "running", (
+        "the mutated terminal must roll the whole tx1 back (the node terminal "
+        "included) — the silent split the old fallback produced is the phantom "
+        "the one-row law exists to prevent"
     )
 
 
@@ -501,16 +524,31 @@ async def test_pin_7_map_children_own_ledger_rows(
     node_0, node_1 = new_uuid(), new_uuid()
 
     claim_0 = await claim_step_ledger(
-        wf_conn, wf_sql, flow_id=flow_id, job_id=node_0, step_key="enrich", map_index=0, attempt=1
+        wf_conn,
+        wf_sql,
+        flow_id=flow_id,
+        job_id=node_0,
+        step_key="enrich",
+        map_index=0,
+        attempt=1,
+        claim_epoch=0,
     )
     claim_1 = await claim_step_ledger(
-        wf_conn, wf_sql, flow_id=flow_id, job_id=node_1, step_key="enrich", map_index=1, attempt=1
+        wf_conn,
+        wf_sql,
+        flow_id=flow_id,
+        job_id=node_1,
+        step_key="enrich",
+        map_index=1,
+        attempt=1,
+        claim_epoch=0,
     )
     assert claim_0.ledger_id is not None and claim_1.ledger_id is not None
     assert claim_0.ledger_id != claim_1.ledger_id, "one claim row per map child"
 
     # Each child's finalize keys the terminal write by its own claim's
-    # RETURNING id (the strongest form) — the outcomes cannot cross.
+    # RETURNING id AND its own claim instant (the exact claim identity —
+    # the strongest form) — the outcomes cannot cross.
     for claim, node, res in (
         (claim_0, node_0, {"child": 0}),
         (claim_1, node_1, {"child": 1}),
@@ -539,6 +577,7 @@ async def test_pin_7_map_children_own_ledger_rows(
             outcome="succeeded",
             result=res,
             ledger_id=claim.ledger_id,
+            ledger_claimed_at=claim.claimed_at,
         )
         assert result.applied
 
@@ -551,11 +590,19 @@ async def test_pin_7_map_children_own_ledger_rows(
     assert replay_0 is not None and replay_0.result == {"child": 0}
     assert replay_1 is not None and replay_1.result == {"child": 1}
 
-    # a finalize without the claim id still keys COALESCE(map_index, -1) — the
-    # fallback write hits its own map child's row, never the sibling's.
+    # the third child's finalize keys its OWN claim's exact identity — the
+    # by-id+instant write hits its own map child's row, never the sibling's
+    # (no four-expression fallback exists; the identity is the claim's own).
     node_2 = new_uuid()
     claim_2 = await claim_step_ledger(
-        wf_conn, wf_sql, flow_id=flow_id, job_id=node_2, step_key="enrich", map_index=2, attempt=1
+        wf_conn,
+        wf_sql,
+        flow_id=flow_id,
+        job_id=node_2,
+        step_key="enrich",
+        map_index=2,
+        attempt=1,
+        claim_epoch=0,
     )
     assert claim_2.status == "running"
     worker_id = new_uuid()
@@ -582,13 +629,15 @@ async def test_pin_7_map_children_own_ledger_rows(
         outcome="succeeded",
         result={"child": 2},
         map_index=2,
+        ledger_id=claim_2.ledger_id,
+        ledger_claimed_at=claim_2.claimed_at,
     )
     assert result.applied
     replay_2 = await memoized_step_result(
         wf_conn, wf_sql, flow_id=flow_id, step_key="enrich", map_index=2
     )
     assert replay_2 is not None and replay_2.result == {"child": 2}
-    # ...and the earlier replays are untouched by the fallback write.
+    # ...and the earlier replays are untouched by the third child's write.
     replay_0_again = await memoized_step_result(
         wf_conn, wf_sql, flow_id=flow_id, step_key="enrich", map_index=0
     )

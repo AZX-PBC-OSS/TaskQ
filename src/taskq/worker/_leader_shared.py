@@ -684,7 +684,15 @@ _DB_NOW_SQL = "SELECT clock_timestamp()"
 #: 01.00.31 the archive mirror): the columns the pre-budget schemas (the
 #: rolling-deploy tolerance's own target, 01.00.24_01) do not carry.
 _BUDGET_ERA_JOBS_COLUMNS = frozenset({"budget_deadline", "budget_paused", "budget_remaining_ms"})
-_JOBS_PRE_BUDGET_COLUMNS = tuple(c for c in COPY_FROM_COLUMNS if c not in _BUDGET_ERA_JOBS_COLUMNS)
+# This compatibility list is read by the pre-budget fallback against even
+# older rolling-deploy shapes. 01.00.38's nullable capability column is also
+# absent there; legacy rows have no guard to archive, so the old-shape write
+# omits it and lets both sides retain their identical historical column set.
+_JOBS_PRE_BUDGET_COLUMNS = tuple(
+    c
+    for c in COPY_FROM_COLUMNS
+    if c not in _BUDGET_ERA_JOBS_COLUMNS and c not in {"required_worker_schema", "run_epoch"}
+)
 
 #: The archive write's pre-budget variant (the rolling-deploy tolerance's
 #: write half): identical statement, the column lists minus the budget

@@ -208,6 +208,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
         # re-pend class as _SWEEP_1_SQL and the isolate template.
         f"lock_expires_at=NULL, assignment_routed=true, attempt = {ATTEMPT_REFUND_SQL} "
         f"WHERE locked_by_worker=$1 AND status='running' AND j.cancel_phase = 0 "
+        "AND NOT j.metadata ? 'cancel_phase' "
         "AND NOT EXISTS ("
         f'    SELECT 1 FROM "{schema}".job_attempts a'
         "    WHERE a.job_id = j.id AND a.attempt = j.attempt"
@@ -628,7 +629,24 @@ async def orchestrate_shutdown(
             # mark_cancelled writes commits, the other's fence no-ops,
             # and the row reads `cancelled` at every timing.
             if active.cancel_origin is CancelOrigin.OPERATOR:
-                if await _shielded_mark_cancelled(
+                if active.workflow is not None:
+                    from taskq.workflows.api._runner_exit import (
+                        finalize_cancelled_workflow_claim,
+                    )
+
+                    if await shield_with_retrieval(
+                        finalize_cancelled_workflow_claim(
+                            deps.dispatcher_pool,
+                            schema=deps.settings.schema_name,
+                            flow_id=active.workflow.flow_id,
+                            job_id=active.job_id,
+                            worker_id=JobId(worker_id),
+                            attempt=active.ctx.attempt,
+                            claim_epoch=active.ctx.claim_epoch,
+                        )
+                    ):
+                        cancelled_count += 1
+                elif await _shielded_mark_cancelled(
                     backend,
                     active.job_id,
                     worker_id,
@@ -706,7 +724,24 @@ async def orchestrate_shutdown(
                     worker_id=str(worker_id),
                     cancel_origin=int(active.cancel_origin),
                 )
-                if await _shielded_mark_cancelled(
+                if active.workflow is not None:
+                    from taskq.workflows.api._runner_exit import (
+                        finalize_cancelled_workflow_claim,
+                    )
+
+                    if await shield_with_retrieval(
+                        finalize_cancelled_workflow_claim(
+                            deps.dispatcher_pool,
+                            schema=deps.settings.schema_name,
+                            flow_id=active.workflow.flow_id,
+                            job_id=active.job_id,
+                            worker_id=JobId(worker_id),
+                            attempt=active.ctx.attempt,
+                            claim_epoch=active.ctx.claim_epoch,
+                        )
+                    ):
+                        cancelled_count += 1
+                elif await _shielded_mark_cancelled(
                     backend,
                     active.job_id,
                     worker_id,

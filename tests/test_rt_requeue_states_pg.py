@@ -530,10 +530,14 @@ class _GatedRegisterRegistry(ActiveJobRegistry):
         self.gate = asyncio.Event()
 
     async def register(
-        self, job_id: JobId, task: asyncio.Task[object], ctx: JobContext[BaseModel]
+        self,
+        job_id: JobId,
+        task: asyncio.Task[object],
+        ctx: JobContext[BaseModel],
+        workflow: object | None = None,
     ) -> _ActiveJob:
         await self.gate.wait()
-        return await super().register(job_id, task, ctx)
+        return await super().register(job_id, task, ctx, workflow=cast("Any", workflow))
 
 
 async def test_state2_late_registration_torn_down_by_the_shutdown_requeues(

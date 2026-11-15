@@ -53,6 +53,17 @@ from taskq.workflows._childflow import (
     ChildWorkflowUnknownError,
     SpawnDepthExceededError,
 )
+from taskq.workflows._policy import (
+    CLEAR_POLICY,
+    ExecutionPolicy,
+    ExhaustionEvent,
+    FiniteReservationCohort,
+    RetryDeferralBudgetExceeded,
+    RetrySpec,
+    TerminalEffect,
+    WorkflowPolicyError,
+    WorkflowRetryOverride,
+)
 from taskq.workflows._progress_read import keyed_display, run_display
 from taskq.workflows.api import (
     CompiledWorkflow,
@@ -62,6 +73,12 @@ from taskq.workflows.api import (
     RouteArm,
     WorkflowApp,
     WorkflowBuildError,
+    WorkflowDepsContext,
+    WorkflowDepsFactory,
+    WorkflowDepsFactoryResult,
+    WorkflowDepsLifecycleError,
+    WorkflowDepsProductTypeError,
+    WorkflowProviderBridge,
     build,
     chain_source,
     gather,
@@ -69,7 +86,9 @@ from taskq.workflows.api import (
     route,
     sink,
     step,
+    transactional_step,
 )
+from taskq.workflows.api._ctx import TransactionalStepContext
 from taskq.workflows.api._ctx_timer import TimerWake
 from taskq.workflows.api._ctx_wait import Expired, LoopWaitShapeError
 from taskq.workflows.api._hitl import DeliveryResult, HitlClient
@@ -89,11 +108,10 @@ from taskq.workflows.api._progress_listen import (
     ProgressUpdated,
 )
 from taskq.workflows.api._run import WorkflowRunResult, run
-from taskq.workflows.api._runner import (
-    FlowRunner,
-    StepContext,
+from taskq.workflows.api._runner import FlowRunner, StepContext, WorkflowRunError
+from taskq.workflows.api._runner_errors import (
+    TransactionalStepUnsupportedError,
     WorkflowRunCancelledError,
-    WorkflowRunError,
 )
 from taskq.workflows.api._runner_exit import cancel_workflow_run, retry_workflow_node
 from taskq.workflows.chain import (
@@ -109,6 +127,7 @@ from taskq.workflows.definitions import FanInBoundExceededError
 from taskq.workflows.ledger import RunClaim
 
 __all__ = [
+    "CLEAR_POLICY",
     "DEFAULT_SPAWN_MAX_DEPTH",
     "DONE",
     "Backfilled",
@@ -123,9 +142,12 @@ __all__ = [
     "CompiledWorkflow",
     "DeliveryResult",
     "Done",
+    "ExecutionPolicy",
+    "ExhaustionEvent",
     "Exit",
     "Expired",
     "FanInBoundExceededError",
+    "FiniteReservationCohort",
     "FlowRunner",
     "GateDecl",
     "HitlClient",
@@ -141,6 +163,8 @@ __all__ = [
     "ProgressUpdated",
     "Promise",
     "Refine",
+    "RetryDeferralBudgetExceeded",
+    "RetrySpec",
     "Route",
     "RouteArm",
     "RouterNotTotal",
@@ -148,9 +172,20 @@ __all__ = [
     "SpawnDepthExceededError",
     "Step",
     "StepContext",
+    "TerminalEffect",
     "TimerWake",
+    "TransactionalStepContext",
+    "TransactionalStepUnsupportedError",
     "WorkflowApp",
     "WorkflowBuildError",
+    "WorkflowDepsContext",
+    "WorkflowDepsFactory",
+    "WorkflowDepsFactoryResult",
+    "WorkflowDepsLifecycleError",
+    "WorkflowDepsProductTypeError",
+    "WorkflowPolicyError",
+    "WorkflowProviderBridge",
+    "WorkflowRetryOverride",
     "WorkflowRunCancelledError",
     "WorkflowRunError",
     "WorkflowRunResult",
@@ -169,4 +204,5 @@ __all__ = [
     "run_display",
     "sink",
     "step",
+    "transactional_step",
 ]

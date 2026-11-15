@@ -946,24 +946,48 @@ async def test_hostile_inputs_on_every_door_are_typed_refusals(
     clean_pg_conn: asyncpg.Connection,
     cure_app_module: Any,
 ) -> None:
-    """The doors' last hostile shapes, walked: a map_index beyond the
-    smallint is the typed 400 (never the int2 codec's overflow 500); a
+    """The doors' last hostile shapes, walked: an in-bigint 40000 child is
+    readable; BIGINT_MAX+1 stays a typed 400 rather than a codec 500; a
     NUL node key on the READ door is a 404; the deliver door's audited
     refusal with a NUL node key in its detail lands ITS OWN ROW (the
     leaf's NUL law covers the detail's strings — the audited refusal
     cannot be the 500 it exists to prevent)."""
     schema = module_pg_schema.schema_name
     run_id = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
+    from taskq.backend._protocol import JobId
+    from taskq.workflows._types import NodeSpec
+    from taskq.workflows.engine import insert_node, render_workflow_sql
+
+    high_node = await insert_node(
+        clean_pg_conn,
+        render_workflow_sql(schema),
+        NodeSpec(
+            flow_id=JobId(__import__("uuid").UUID(run_id)),
+            step_key="review",
+            actor="wf",
+            queue="default",
+            map_index=40000,
+            idempotency_scope=f"workflow:{run_id}",
+            idempotency_key="admin-read-40000",
+        ),
+    )
+    assert (
+        await clean_pg_conn.fetchval(
+            f'SELECT map_index FROM "{schema}".jobs WHERE id = $1', high_node
+        )
+        == 40000
+    )
     app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as http:
         await http.get("/queues")  # the CSRF cookie's set
         csrf = _csrf_of(http)
-        overflow = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 40000})
-        assert overflow.status_code == 400, (
-            f"the smallint overflow is a typed 400: {overflow.status_code}"
+        in_domain = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 40000})
+        assert in_domain.status_code == 200, (
+            f"the bigint in-domain child is readable: {in_domain.status_code} {in_domain.text}"
         )
+        assert in_domain.json()["map_index"] == 40000
         huge = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 10**20})
         assert huge.status_code == 400
         read_nul = await http.get(f"/api/runs/{run_id}/nodes/abc%00def")

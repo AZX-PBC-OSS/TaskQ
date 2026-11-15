@@ -208,8 +208,10 @@ def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
 # calls; the docs state the rule).
 
 _LEDGER_TERMINALS_SQL = """\
-SELECT step_key, status FROM {schema}.wf_step_ledger
+SELECT job_id, step_key, status, attempt, claim_epoch, created_at, id
+FROM {schema}.wf_step_ledger
 WHERE flow_id = $1::uuid AND status IN ('succeeded', 'failed')
+ORDER BY attempt, claim_epoch, created_at, id
 """
 
 _NEVER_GRANTED_SQL = """\
@@ -242,20 +244,37 @@ async def reconstruct_workflow_status(
     # absorbed_exists predicate is status-blind on the parent for
     # exactly this reason).
     absorbed_keys = {r["step_key"] for r in node_rows if r["absorbed"] and r["status"] in _TERMINAL}
-    ledger_by_key: dict[str, str] = {}
+    # The ledger's terminal per NODE ROW (the current claim's own job id +
+    # its current epoch) — never a dictionary keyed by step_key: ordinary
+    # map siblings share one step key, and a step-key collapse would let
+    # one sibling's terminal answer for another. The deterministic
+    # (attempt, claim_epoch, created_at, id) order makes the LAST row per
+    # job the latest current claim's terminal; a historical epoch's
+    # terminal cannot override a node row whose current claim epoch has
+    # moved (the pending/running row's own status stands).
+    ledger_by_job: dict[object, object] = {}
+    ledger_epoch_by_job: dict[object, object] = {}
     for r in ledger_rows:
-        # The ledger's latest terminal row for the step (attempt-ordered
-        # arrival — the dict overwrite is the latest-write truth).
-        ledger_by_key[r["step_key"]] = r["status"]
+        ledger_by_job[r["job_id"]] = r["status"]
+        ledger_epoch_by_job[r["job_id"]] = r["claim_epoch"]
 
     nodes: list[NodeView] = []
     for r in node_rows:
         status = r["status"]
-        if status == "pending" and r["step_key"] in ledger_by_key:
-            # The ledger is the status store: a pending row whose ledger
-            # terminal exists (the crash window) reconstructs through the
-            # ledger's outcome.
-            status = ledger_by_key[r["step_key"]]
+        if (
+            status == "pending"
+            and r["id"] in ledger_by_job
+            and ledger_epoch_by_job.get(r["id"]) == r["claim_epoch"]
+        ):
+            # The ledger is the status store: a pending row whose CURRENT
+            # claim's ledger terminal exists (the crash window) reconstructs
+            # through the ledger's outcome — keyed on the row's own id and
+            # its CURRENT claim epoch only; a historical failed/awaited
+            # epoch cannot collapse or override a pending/running current
+            # claim.
+            terminal_status = ledger_by_job[r["id"]]
+            assert isinstance(terminal_status, str)  # the ledger's status text
+            status = terminal_status
         nodes.append(
             NodeView(
                 status=status,

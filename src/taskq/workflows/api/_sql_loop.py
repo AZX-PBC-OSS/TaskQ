@@ -96,6 +96,13 @@ WHERE id = $1
   AND locked_by_worker IS NOT DISTINCT FROM $4::uuid
   AND attempt IS NOT DISTINCT FROM $5::int
   AND claim_epoch IS NOT DISTINCT FROM $6::bigint
+  AND cancel_phase = 0
+  AND NOT metadata ? 'cancel_phase'
+  AND NOT EXISTS (
+      SELECT 1 FROM {schema}.jobs AS root
+      WHERE root.id = ({schema}.jobs.metadata->>'flow_id')::uuid
+        AND root.status IN {terminal}
+  )
 RETURNING (metadata->>'iteration')::int AS iteration
 """
 
@@ -126,6 +133,13 @@ WITH loop_row AS (
       AND locked_by_worker IS NOT DISTINCT FROM $5::uuid
       AND attempt IS NOT DISTINCT FROM $6::int
       AND claim_epoch IS NOT DISTINCT FROM $7::bigint
+      AND cancel_phase = 0
+      AND NOT metadata ? 'cancel_phase'
+      AND EXISTS (
+          SELECT 1 FROM {schema}.jobs AS root
+          WHERE root.id = ({schema}.jobs.metadata->>'flow_id')::uuid
+            AND root.status NOT IN {terminal}
+      )
     RETURNING id, (metadata->>'flow_id')::uuid AS flow_id
 ),
 flow_terminal AS (
@@ -182,6 +196,13 @@ loop_row AS (
       AND j.locked_by_worker IS NOT DISTINCT FROM b.worker
       AND j.attempt IS NOT DISTINCT FROM b.attempt
       AND j.claim_epoch IS NOT DISTINCT FROM b.claim_epoch
+      AND j.cancel_phase = 0
+      AND NOT j.metadata ? 'cancel_phase'
+      AND EXISTS (
+          SELECT 1 FROM {schema}.jobs AS root
+          WHERE root.id = (j.metadata->>'flow_id')::uuid
+            AND root.status NOT IN {terminal}
+      )
     RETURNING j.id, (j.metadata->>'flow_id')::uuid AS flow_id, b.error_class, b.ord
 ),
 flow_terminal AS (

@@ -54,6 +54,9 @@ class ChainOps(_ChainHost):
         payload_doc: dict[str, object],
         *,
         claim_epoch: int = 0,
+        run_priority: int | None = None,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
     ) -> None:
         """The body's typed
         outcome is the router's decision —
@@ -77,6 +80,7 @@ class ChainOps(_ChainHost):
                 outcome,
                 payload=payload_doc,
                 map_index=row["map_index"],
+                run_priority=run_priority,
             )
         except RouterNotTotal as exc:
             logger.warning(
@@ -98,6 +102,8 @@ class ChainOps(_ChainHost):
                 error_class="RouterNotTotal",
                 error_message=str(exc)[:500],
                 map_index=row["map_index"],
+                ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
             )
             return
         fork = chain_fork(child, trace_id=row.get("trace_id"))
@@ -114,4 +120,6 @@ class ChainOps(_ChainHost):
             result=encode_result(outcome),
             fork=fork,
             map_index=row["map_index"],
+            ledger_id=ledger_id,
+            ledger_claimed_at=ledger_claimed_at,
         )

@@ -145,24 +145,31 @@ UPDATE_WORKER_LIVENESS_SQL_TEMPLATE = (
     "SET last_seen_at = clock_timestamp(), metadata = metadata || $2::jsonb "
     "WHERE id = $1"
 )
-# The WHERE core shared by both jobs-lock statements (the unconditional
-# renewal below and the threshold-gated renewal after it): the disowned
-# exclusion must never drift between the two. $3 is the worker's
-# disowned set (WorkerDeps.disowned_jobs): rows this worker holds but
-# could not record an outcome for, whose leases must lapse so the
-# reclaim sweep can hand them back. The exclusion lives in this shared
-# core so every renewal, the heartbeat loop's gated statement and the
-# backend's own heartbeat_jobs, carries it; a renewal without it would
-# keep a disowned row's lease alive for as long as the process lived.
-# An empty array excludes nothing.
-_UPDATE_JOBS_LOCK_WHERE_CORE = (
-    "WHERE locked_by_worker = $1 AND status = 'running' AND NOT (id = ANY($3::uuid[]))"
+# The disowned exclusion below is shared law, restated in both renewal
+# statements and the reservation statement: $3 is the worker's disowned
+# set (WorkerDeps.disowned_jobs) — rows this worker holds but could not
+# record an outcome for, whose leases must lapse so the reclaim sweep can
+# hand them back. No renewal here may keep a disowned row's lease alive
+# for as long as the process lived. An empty array excludes nothing.
+#
+# The unconditional statement's candidate ids are locked FOR UPDATE SKIP
+# LOCKED inside the ``due`` shortlist, so a row whose tuple lock is held
+# by another transaction — the atomic settlement's brief terminal
+# CAS -> COMMIT round trip — is skipped for this beat instead of blocking
+# the write past the command budget; the next beat re-selects it normally
+# (a live claimed row is never permanently abandoned).
+UPDATE_JOBS_LOCK_SQL_TEMPLATE = """\
+WITH due AS (
+    SELECT id FROM "{schema}".jobs
+    WHERE locked_by_worker = $1 AND status = 'running' AND NOT (id = ANY($3::uuid[]))
+    FOR UPDATE SKIP LOCKED
 )
-UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
-    'UPDATE "{schema}".jobs '
-    "SET last_heartbeat_at = clock_timestamp(), lock_expires_at = clock_timestamp() + $2 "
-    + _UPDATE_JOBS_LOCK_WHERE_CORE
-)
+UPDATE "{schema}".jobs
+SET last_heartbeat_at = clock_timestamp(), lock_expires_at = clock_timestamp() + $2
+FROM due
+WHERE locked_by_worker = $1 AND status = 'running'
+  AND NOT (jobs.id = ANY($3::uuid[]))
+  AND jobs.id = due.id"""
 # The heartbeat loop's renewal: the same write, threshold-gated by the
 # caller.
 #
@@ -244,22 +251,42 @@ UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
 # shortlist) into PK lookups; an ``id in (SELECT ...)`` semi-join could
 # instead probe from the worker's fleet side, which reintroduces the
 # O(held rows) visit the CTE exists to remove.
+#
+# PostgreSQL does not accept a locking clause on a UNION's result (or on
+# its arms spelled inline), so each arm is its own CTE carrying
+# FOR UPDATE SKIP LOCKED, and ``due`` unions the three locked id sets.
+# The lock is taken inside the arms (not at the outer UPDATE), so a row
+# whose tuple lock is held elsewhere — the atomic settlement's brief
+# terminal CAS -> COMMIT round trip — is skipped for this beat instead of
+# blocking the write past the command budget; the next beat's arms
+# re-select it normally (a live claimed row is never permanently
+# abandoned). The index shapes, the Append over the arms and the renewed
+# row set are unchanged otherwise.
 UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE = """\
-WITH due AS (
+WITH expiring AS (
     SELECT id FROM "{schema}".jobs
     WHERE status = 'running' AND locked_by_worker = $1
       AND NOT (id = ANY($3::uuid[]))
       AND heartbeat_timeout IS NOT NULL
-    UNION
+    FOR UPDATE SKIP LOCKED
+), null_lease AS (
     SELECT id FROM "{schema}".jobs
     WHERE status = 'running'
       AND NOT (id = ANY($3::uuid[]))
       AND lock_expires_at IS NULL
-    UNION
+    FOR UPDATE SKIP LOCKED
+), near_expiry AS (
     SELECT id FROM "{schema}".jobs
     WHERE status = 'running'
       AND NOT (id = ANY($3::uuid[]))
       AND lock_expires_at <= statement_timestamp() + $4::interval
+    FOR UPDATE SKIP LOCKED
+), due AS (
+    SELECT id FROM expiring
+    UNION
+    SELECT id FROM null_lease
+    UNION
+    SELECT id FROM near_expiry
 )
 UPDATE "{schema}".jobs
 SET last_heartbeat_at = clock_timestamp(), lock_expires_at = clock_timestamp() + $2
@@ -267,11 +294,15 @@ FROM due
 WHERE locked_by_worker = $1 AND status = 'running'
   AND NOT (jobs.id = ANY($3::uuid[]))
   AND jobs.id = due.id"""
+# The capacity leases ride the same skip rule: a settlement row's tuple
+# lock must not block the worker's whole reservation renewal (the
+# selection is the shortlist; the skipped row's slot renews next beat).
 UPDATE_RESERVATION_LEASES_SQL_TEMPLATE = (
     'UPDATE "{schema}".reservation_slots '
     "SET lease_expires_at = clock_timestamp() + $2 "
     "WHERE job_id IN ("
     "SELECT id FROM \"{schema}\".jobs WHERE locked_by_worker = $1 AND status = 'running'"
+    " FOR UPDATE SKIP LOCKED"
     ")"
     " AND NOT (job_id = ANY($3::uuid[]))"
 )

@@ -270,6 +270,7 @@ async def test_chain_routes_through_the_certified_fork(
                 step_key=step_key,
                 map_index=int(rec["map_index"]),
                 attempt=attempt_n,
+                claim_epoch=0,
             )
         item_raw = rec["payload"]
         import json
@@ -413,6 +414,7 @@ async def test_router_not_total_fails_the_row_loudly(
             step_key="screen",
             map_index=int(rec["map_index"]),
             attempt=int(rec["attempt"]),
+            claim_epoch=0,
         )
 
     async def _run() -> None:

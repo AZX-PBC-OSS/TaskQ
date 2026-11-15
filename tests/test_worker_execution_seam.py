@@ -137,7 +137,7 @@ def test_the_compiled_cache_round_trips_and_misses_loud() -> None:
 # ── the boot projection (F3's call site) ─────────────────────────────────
 
 
-def test_the_runner_door_carries_the_apps_deps_binding(wf_pool: asyncpg.Pool) -> None:
+async def test_the_runner_door_carries_the_apps_deps_binding(wf_pool: asyncpg.Pool) -> None:
     """The deps seam's worker door (the DI capability): the compile
     carries the app's bound instance (``WorkflowApp(deps=…)``) and
     ``_runner_for`` — the worker-hosted execution door's runner factory —
@@ -158,13 +158,19 @@ def test_the_runner_door_carries_the_apps_deps_binding(wf_pool: asyncpg.Pool) ->
 
         app.get("seam_deps_flow")  # the door's compile + registration
         worker_id = JobId(new_uuid())
-        runner = seam._runner_for("seam_deps_flow", wf_pool, "deps_probe_schema", worker_id)
-        assert runner._deps is deps
+        lease = await seam._acquire_runner(
+            "seam_deps_flow", wf_pool, "deps_probe_schema", worker_id
+        )
+        try:
+            assert lease.runner._deps is deps
+        finally:
+            lease.release()
     finally:
+        await seam.aclose_workflow_runners_for_tests()
         seam.reset_app_registry_for_tests()
 
 
-def test_the_runner_door_hands_each_worker_its_own_runner(wf_pool: asyncpg.Pool) -> None:
+async def test_the_runner_door_hands_each_worker_its_own_runner(wf_pool: asyncpg.Pool) -> None:
     """The runner cache's behavior, from the caller's side: the same
     (schema, workflow, worker) against the same pool hands back the same
     runner (one deps binding, one validation per worker process), a
@@ -186,23 +192,29 @@ def test_the_runner_door_hands_each_worker_its_own_runner(wf_pool: asyncpg.Pool)
 
         app.get("seam_runner_cache_flow")  # the door's compile + registration
         worker_id = JobId(new_uuid())
-        first = seam._runner_for("seam_runner_cache_flow", wf_pool, "cache_probe_schema", worker_id)
-        second = seam._runner_for(
-            "seam_runner_cache_flow", wf_pool, "cache_probe_schema", worker_id
-        )
+        leases: list[object] = []
+
+        async def acquire(pool: asyncpg.Pool, worker: JobId) -> object:
+            lease = await seam._acquire_runner(
+                "seam_runner_cache_flow", pool, "cache_probe_schema", worker
+            )
+            leases.append(lease)
+            return lease.runner
+
+        first = await acquire(wf_pool, worker_id)
+        second = await acquire(wf_pool, worker_id)
         assert second is first, "identical callers share one runner"
-        other_worker = seam._runner_for(
-            "seam_runner_cache_flow", wf_pool, "cache_probe_schema", JobId(new_uuid())
-        )
+        other_worker = await acquire(wf_pool, JobId(new_uuid()))
         assert other_worker is not first, "a different worker's runner is distinct"
         swapped_pool = cast(
-            Any, object()
+            asyncpg.Pool, object()
         )  # a different pool object; the constructor only stores it
-        re_minted = seam._runner_for(
-            "seam_runner_cache_flow", swapped_pool, "cache_probe_schema", worker_id
-        )
+        re_minted = await acquire(swapped_pool, worker_id)
         assert re_minted is not first, "a swapped pool re-mints the runner"
+        for lease in leases:
+            lease.release()  # type: ignore[attr-defined]  # test holds the seam's lease objects
     finally:
+        await seam.aclose_workflow_runners_for_tests()
         seam.reset_app_registry_for_tests()
 
 

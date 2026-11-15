@@ -56,6 +56,27 @@ class _LoopDep:
     pass
 
 
+class _MainProvider:
+    def __init__(self) -> None:
+        self.open = True
+        self.closes = 0
+
+
+class _MainWorkflowProduct:
+    def __init__(self, provider: _MainProvider, *, closed_marker: Callable[[], None]) -> None:
+        self.provider = provider
+        self.closed_marker = closed_marker
+        self.closes = 0
+
+    async def aclose(self) -> None:
+        if not self.provider.open:
+            raise RuntimeError("workflow product closed after its registered provider")
+        self.closes += 1
+        if self.closes > 1:
+            raise RuntimeError("workflow product double close")
+        self.closed_marker()
+
+
 class _ProcessDep:
     pass
 
@@ -448,6 +469,70 @@ async def test_scope_teardown_lifo() -> None:
         stack.push_async_callback(loop_scope.shutdown)
 
     assert teardown_order == ["loop", "process"]
+
+
+async def test_main_stack_closes_workflow_product_before_actual_loop_provider() -> None:
+    """Run the real _main's inner stack, not a mirror of its callback order."""
+    from taskq._ids import new_uuid
+    from taskq.backend._protocol import JobId
+    from taskq.workflows import (
+        Promise,
+        StepContext,
+        WorkflowApp,
+        WorkflowDepsContext,
+        WorkflowDepsFactory,
+        build,
+        step,
+    )
+    from taskq.workflows import _worker_execution as workflow_execution
+
+    events: list[str] = []
+    provider = _MainProvider()
+    registry = ProviderRegistry()
+
+    async def make_provider() -> AsyncIterator[_MainProvider]:
+        events.append("provider-open")
+        try:
+            yield provider
+        finally:
+            provider.closes += 1
+            provider.open = False
+            events.append("provider-close")
+
+    registry.register_factory(_MainProvider, Scope.LOOP, make_provider)
+    product = _MainWorkflowProduct(provider, closed_marker=lambda: events.append("workflow-close"))
+
+    def make(context: WorkflowDepsContext) -> _MainWorkflowProduct:
+        assert context.loop is asyncio.get_running_loop()
+        return product
+
+    app = WorkflowApp(deps_factory=make)
+
+    async def body(ctx: StepContext, deps: _MainWorkflowProduct) -> dict[str, int]:
+        return {"closes": deps.closes}
+
+    @app.workflow("p6_main_stack_order")
+    def declaration() -> Promise[object]:
+        return build(step(body, key="solo"))
+
+    app.get("p6_main_stack_order")
+    typed_factory: WorkflowDepsFactory[object] = make  # declaration remains public/generic
+    assert typed_factory is make
+    settings = _settings()
+    deps = _stub_deps(settings)
+    lease = await workflow_execution._acquire_runner(
+        "p6_main_stack_order",
+        deps.dispatcher_pool,
+        settings.schema_name,
+        JobId(new_uuid()),
+        factory_timeout=1,
+    )
+    lease.release()
+
+    # The product's actual aclose method emits the marker; the owner calls it.
+    assert await _run_main_with_mocked_deps(settings, _registry=registry) == 0
+    assert events == ["provider-open", "workflow-close", "provider-close"], events
+    assert product.closes == 1 and provider.closes == 1
 
 
 # ── Scope teardown runs via AsyncExitStack even on exception ──────

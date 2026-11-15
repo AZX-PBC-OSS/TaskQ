@@ -2538,6 +2538,14 @@ async def _main(
             stack.push_async_callback(process_scope.shutdown)
             stack.push_async_callback(thread_scope.shutdown)
             stack.push_async_callback(loop_scope.shutdown)
+            # LIFO: workflow products unwind FIRST, before registered loop
+            # resources, slot_pool, and open_worker_deps' role pools. Do not
+            # import the optional workflow package for a flows-free worker.
+            import sys
+
+            flow_execution = sys.modules.get("taskq.workflows._worker_execution")
+            if flow_execution is not None:
+                stack.push_async_callback(flow_execution.close_workflow_runners_bounded)
 
             if deps.settings.health_enabled:
                 health_server = HealthServer()

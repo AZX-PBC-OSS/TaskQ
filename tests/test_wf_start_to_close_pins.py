@@ -1055,6 +1055,58 @@ def test_the_declaration_refuses_a_non_timedelta() -> None:
         app_obj.get("stc-refused-arm-type-flow")
 
 
+async def test_current_awaited_claim_keeps_deadline_row_and_ledger_atomic(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+    clean_pg_conn: asyncpg.Connection,
+    demo_app_module: Any,
+) -> None:
+    """A body's lawful awaited label does not split deadline row/ledger writes."""
+    from taskq.workflows.api._hitl import mark_awaited
+    from taskq.workflows.ledger import claim_step_ledger
+    from tests._wf_fixtures import seed_flow, seed_running_node
+
+    schema = module_pg_schema.schema_name
+    compiled = sys.modules[MODULE_NAME].app.get("hang_flow_declared")  # type: ignore[attr-defined]
+    flow_id = await seed_flow(clean_pg_conn, schema, status="running")
+    node_id = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="solo")
+    seeded = await clean_pg_conn.fetchrow(
+        f'SELECT locked_by_worker, attempt, claim_epoch FROM "{schema}".jobs WHERE id = $1',
+        node_id,
+    )
+    assert seeded is not None and seeded["locked_by_worker"] is not None
+    worker_id = JobId(seeded["locked_by_worker"])
+    runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=worker_id)
+    claim = await claim_step_ledger(
+        clean_pg_conn,
+        runner.wsql,
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="solo",
+        map_index=None,
+        attempt=int(seeded["attempt"]),
+        claim_epoch=0,
+    )
+    await mark_awaited(clean_pg_conn, schema, claim.ledger_id)
+    node = compiled.nodes.get("solo")
+    label = await runner._deadline_disposition(  # pyright: ignore[reportPrivateUsage]  # Why: exercise the real deadline disposition after the current claim's wait transition.
+        flow_id,
+        {"id": node_id, "step_key": "solo", "map_index": None},
+        int(seeded["attempt"]),
+        node,
+        claim_epoch=int(seeded["claim_epoch"]),
+        ledger_id=claim.ledger_id,
+        ledger_claimed_at=claim.claimed_at,
+    )
+    assert label == "laddered"
+    row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
+    ledger = await _ledger_rows(module_pg_pool, schema, str(flow_id), "solo")
+    assert row["status"] == "scheduled"
+    assert len(ledger) == 1
+    assert ledger[0]["status"] == "failed"
+    assert ledger[0]["error_class"] == "TimeoutError"
+
+
 # ── (9) the claim identity's fence: the deadline's disposition binds
 #        the caller's own claim (the zombie W1's disposition must never
 #        flip a re-minted live W2 row) ─────────────────────────────────
@@ -1107,6 +1159,7 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
         step_key="solo",
         map_index=None,
         attempt=int(seeded["attempt"]),
+        claim_epoch=0,
     )
     assert w1_claim.claimed_at is not None
     # the row re-pends (the reclaim's shape).
@@ -1130,6 +1183,7 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
         step_key="solo",
         map_index=None,
         attempt=int(w2_attempt),
+        claim_epoch=0,
     )
 
     # W1'S timer fires (the zombie's deadline disposition, its own binds).
@@ -1216,6 +1270,7 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
         step_key="solo",
         map_index=None,
         attempt=int(seeded["attempt"]),
+        claim_epoch=0,
     )
     assert w1_claim.claimed_at is not None
     winner_claim = await claim_step_ledger(
@@ -1226,6 +1281,7 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
         step_key="solo",
         map_index=None,
         attempt=int(seeded["attempt"]),
+        claim_epoch=0,
     )
     assert winner_claim.ledger_id == w1_claim.ledger_id, (
         "the re-mint re-uses the SAME arbiter row — the winner is LIVE on the zombie's row"
