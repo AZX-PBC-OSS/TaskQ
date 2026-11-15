@@ -139,7 +139,7 @@ class RunNode:
     # deferral stamp itself (the signal + the budget face + the disposition's
     # own post-attempt ordinal, written by NODE_DEFER_SQL).
     attempt: int = 0
-    scheduled_at: str | None = None
+    scheduled_at: str | datetime | None = None
     snooze_count: int = 0
     deferral: dict[str, Any] | None = None
     # the row's own declared bound (the column's seconds) + the claim's instant
@@ -219,9 +219,17 @@ class RunNode:
             # fire (a park has no timer; the marker, not a timestamp, is the
             # discriminator). Deferrals and wakes are the park's own counts,
             # distinct from failure.
-            # The field is the JSON/SSE face's ISO string (or None — a
-            # hand-built row's defined absent face renders "unknown").
-            parked_at = self.scheduled_at or "unknown"
+            # The parked-at time: the row's datetime face renders ISO (the
+            # run page's own normalization), the SSE/JSON face's ISO string
+            # passes through; None (a hand-built row's absent face) renders
+            # "unknown" — never a fabricated next fire.
+            raw_parked_at = self.scheduled_at
+            if raw_parked_at is None:
+                parked_at = "unknown"
+            elif isinstance(raw_parked_at, datetime):
+                parked_at = raw_parked_at.isoformat()
+            else:
+                parked_at = str(raw_parked_at)
             return (
                 f"⏰ {signal} · deferred (backpressure) · parked at {parked_at} · "
                 f"snooze #{self.snooze_count}"
