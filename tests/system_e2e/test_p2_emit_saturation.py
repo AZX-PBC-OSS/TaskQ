@@ -486,9 +486,9 @@ async def _observe_and_release(
                     SET release_at=clock_timestamp(), updated_at=clock_timestamp()
                     FROM "{schema}".jobs AS s
                     WHERE c.scenario=$1 AND c.release_at IS NULL AND s.id=$2::uuid
-                      AND s.status='scheduled' AND s.scheduled_at IS NULL
+                      AND s.status='scheduled' AND s.scheduled_at IS NOT NULL
                       AND s.metadata @> '{{"blocking_reason":"backpressure"}}'::jsonb
-                      AND s.metadata @> '{{"wf_deferral":{{"signal":"EmitBackpressure"}}}}'::jsonb
+                      AND s.metadata @> '{{"wf_deferral":{{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}}}'::jsonb
                       AND (s.metadata->'wf_emit_backpressure'->>'deferred_at')::timestamptz
                           + make_interval(secs => $3::int) <= clock_timestamp()
                     RETURNING c.release_at
@@ -596,7 +596,9 @@ async def _healthy_assertions(
         }
         assert row["source_status"] == "scheduled"
         assert row["source_attempt"] == 0
-        assert row["source_scheduled_at"] is None
+        # REPRESENTATION INVERSION: the park instant is stored (NOT NULL);
+        # the marker, never a NULL due time, discriminates.
+        assert row["source_scheduled_at"] is not None
         assert row["source_locked_by"] is None
         assert row["source_lock_expires_at"] is None
         assert row["source_heartbeat_at"] is None
@@ -860,7 +862,7 @@ async def test_two_os_workers_saturation_600_seconds_and_healthy_wake(
                 flow_id,
                 lambda source, leaves: (
                     source["status"] == "scheduled"
-                    and source["scheduled_at"] is None
+                    and source["scheduled_at"] is not None
                     and len(leaves) == 2
                     and sum(row["status"] == "running" for row in leaves) == 1
                     and any(
@@ -878,7 +880,7 @@ async def test_two_os_workers_saturation_600_seconds_and_healthy_wake(
                 flow_id,
                 lambda source, leaves: (
                     source["status"] == "scheduled"
-                    and source["scheduled_at"] is None
+                    and source["scheduled_at"] is not None
                     and len(leaves) == 2
                     and all(row["status"] == "running" for row in leaves)
                 ),
@@ -1115,12 +1117,26 @@ async def test_notify_and_inline_wake_failure_use_real_bounded_sweep(
         for label in fleet:
             path = log_dir / f"p2-system-{scenario}-{label}.worker.log"
             worker_logs[label] = await asyncio.to_thread(path.read_text)
+        # THE MACHINERY'S OWN FAILURE EVIDENCE: the killed drain backends'
+        # connection errors must surface in some worker's log (the direct
+        # route's drain error propagates after the committed terminal
+        # stands; the leader's drain arms log the bounded diagnostic). The
+        # rejected shape's own event name is gone with that shape.
+        failure_classes = (
+            "InterfaceError",
+            "ConnectionDoesNotExistError",
+            "ConnectionDoesNotExist",
+            "PostgresConnectionError",
+        )
         failed_wake_logs = [
             label
             for label, content in worker_logs.items()
-            if "wf.emit_backpressure_wake_failed" in content and "InterfaceError" in content
+            if any(cls in content for cls in failure_classes)
         ]
-        assert failed_wake_logs, "the fine-wake failure never actually occurred"
+        assert failed_wake_logs, (
+            "the killed drain backends' connection failures never surfaced "
+            "in any worker log — the fine-wake failure did not occur"
+        )
         facts["fine_wake_failure_workers"] = failed_wake_logs
         _save(f"{scenario}-facts", facts)
     except BaseException:
