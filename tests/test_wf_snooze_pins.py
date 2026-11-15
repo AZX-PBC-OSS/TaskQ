@@ -762,7 +762,7 @@ async def test_defer_fences_a_cancel_marked_row(
         ledger_id=None,
         ledger_claimed_at=None,
     )
-    assert verdict == "cancel_fenced", verdict
+    assert verdict.verdict == "cancel_fenced", verdict
     row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
     assert row["status"] == "running", "the fenced row stays running carrying its phase"
     assert row["metadata"].get("cancel_phase") == "cooperative", (
@@ -842,7 +842,7 @@ async def test_defer_fences_a_zombie_attempt(
         ledger_id=None,
         ledger_claimed_at=None,
     )
-    assert verdict == "fenced", "the zombie's deferral must match no verdict row"
+    assert verdict.verdict == "fenced", "the zombie's deferral must match no verdict row"
     row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
     assert row["status"] == "running", "the zombie's deferral moved nothing"
     assert row["snooze_count"] == 0
@@ -927,7 +927,7 @@ async def test_defer_fences_a_vanilla_cancel_marked_row(
         ledger_id=None,
         ledger_claimed_at=None,
     )
-    assert verdict == "cancel_fenced", (
+    assert verdict.verdict == "cancel_fenced", (
         f"the vanilla cancel's column mark must fence the deferral "
         f"(the operator's cancel in flight wins), got {verdict!r}"
     )
@@ -1000,7 +1000,7 @@ async def test_the_exhausted_arm_also_fences_the_cancel_mark(
         ledger_id=None,
         ledger_claimed_at=None,
     )
-    assert verdict == "cancel_fenced", (
+    assert verdict.verdict == "cancel_fenced", (
         f"the marked row's consuming past-budget deferral must answer the "
         f"CANCEL's verdict (the cancel outranks the exhaustion), got {verdict!r}"
     )
@@ -1139,10 +1139,11 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
         ledger_claimed_at=zombie_claim.claimed_at,
         backpressure=EmitBackpressure(page_width=1, bound=2, outstanding=1),
         source_logical_attempt=1,
+        flow_id=flow_id,
     )
-    assert park_verdict == "deferred", park_verdict
+    assert park_verdict.verdict == "deferred", park_verdict
     woken = await wake_emit_backpressure(module_pg_pool, wsql, flow_id=flow_id)
-    assert woken.woken == 1, "the parked source must promote for the re-claim"
+    assert woken.promoted == 1, "the parked source must promote for the re-claim"
     reclaimed = await clean_pg_conn.fetchrow(
         render_sql(NODE_CLAIM_SQL_TEMPLATE, schema), node_id, new_uuid()
     )
@@ -1181,7 +1182,7 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
         ledger_id=None,
         ledger_claimed_at=None,
     )
-    assert verdict == "fenced", "the zombie's deferral matches no verdict row"
+    assert verdict.verdict == "fenced", "the zombie's deferral matches no verdict row"
 
     compiled = sys.modules[MODULE_NAME].app.get("snooze_remint_fence_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=zombie_worker)

@@ -20,7 +20,7 @@ import json
 import sys
 import types
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -258,11 +258,13 @@ def test_the_deferral_label_bounds_a_hostile_signal_stamp() -> None:
 
 
 def test_the_deferral_label_renders_a_parked_source_without_a_fire_time() -> None:
-    """The PARKED face (the #718 capacity park's own row): a deferral whose
-    row has NO due time (the park refunded it — the storage domain
-    01.00.41_04 guards) is the timer-less shape. The label names the park
-    honestly ('parked · no timer') and never renders a next-fire time —
-    the docs' law that NULL is never shown as a next scheduled time."""
+    """The PARKED face (the #718 capacity park's own row).
+    REPRESENTATION INVERSION: the park instant is stored in scheduled_at
+    (NOT NULL — the old NULL-timer representation is deleted, and the
+    storage-domain constraint 01.00.41_04 with it). The label reads
+    'deferred (backpressure)' with the parked-at time named as the park
+    time — and never renders a next fire, the unchanged law that a park has
+    no timer."""
     from taskq.web.admin._wf_rows import RunNode
 
     parked = RunNode(
@@ -270,13 +272,16 @@ def test_the_deferral_label_renders_a_parked_source_without_a_fire_time() -> Non
         status="scheduled",
         attempt=0,
         snooze_count=0,
-        scheduled_at=None,
+        scheduled_at=datetime(2026, 11, 15, 9, 30, 0, tzinfo=UTC),
         deferral={"signal": "EmitBackpressure", "consume_budget": False, "attempt": 0},
     )
     label = parked.deferral_label
     assert label is not None, "a parked source sits on a live deferral and renders its label"
-    assert "parked · no timer" in label, (
-        f"the parked source's label must name the timer-less park, got {label!r}"
+    assert "deferred (backpressure)" in label, (
+        f"the parked source's label must name the deferred (backpressure) park, got {label!r}"
+    )
+    assert "parked at 2026-11-15T09:30:00+00:00" in label, (
+        f"the parked label shows the park instant as the parked-at time, got {label!r}"
     )
     assert "next fire" not in label, (
         f"the parked source's label must never fabricate a next fire, got {label!r}"
@@ -404,8 +409,9 @@ async def test_the_runs_list_renders_a_parked_source_without_a_fire_time(
         ledger_claimed_at=claim.claimed_at,
         backpressure=EmitBackpressure(page_width=1, bound=1, outstanding=1),
         source_logical_attempt=1,
+        flow_id=flow_id,
     )
-    assert verdict == "deferred", verdict
+    assert verdict.verdict == "deferred", verdict
 
     app = _make_admin_app(module_pg_pool, schema)
     async with httpx.AsyncClient(
@@ -420,8 +426,10 @@ async def test_the_runs_list_renders_a_parked_source_without_a_fire_time(
     assert "data-wf-run-deferring" in deferring_row, (
         "the parked run must be visible from the runs list (the deferral badge)"
     )
-    assert "parked · no timer" in deferring_row, (
-        f"the parked-only run must render the timer-less park face, got: {deferring_row[:300]}"
+    # REPRESENTATION INVERSION: the park instant is stored, so the badge
+    # names the deferred (backpressure) face — never a fabricated next fire.
+    assert "deferred (backpressure)" in deferring_row, (
+        f"the parked-only run must render the deferred (backpressure) face, got: {deferring_row[:300]}"
     )
     assert "next fire None" not in html, (
         "the page must never render a NULL next fire (the docs' law)"

@@ -466,10 +466,11 @@ async def test_a_stale_claim_after_ledger_remint_is_a_safe_noop(
         ledger_claimed_at=claim.ledger_claimed_at,
         backpressure=EmitBackpressure(page_width=1, bound=2, outstanding=1),
         source_logical_attempt=1,
+        flow_id=flow_id,
     )
-    assert park_verdict == "deferred", park_verdict
+    assert park_verdict.verdict == "deferred", park_verdict
     woken = await wake_emit_backpressure(module_pg_pool, wf_sql, flow_id=flow_id)
-    assert woken.woken == 1, "the parked source must promote for the re-claim"
+    assert woken.promoted == 1, "the parked source must promote for the re-claim"
     reclaimed = await wf_conn.fetchrow(
         render_sql(NODE_CLAIM_SQL_TEMPLATE, wf_schema), node_id, new_uuid()
     )

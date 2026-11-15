@@ -90,8 +90,8 @@ _RUNS_SQL = (
     "d.deferring, d.next_fire, d.parked, d.snooze_count "
     'FROM "{schema}".jobs r '
     "LEFT JOIN LATERAL ("
-    "    SELECT count(*) FILTER (WHERE j.metadata->>'wf_emit_backpressure'->>'version' IS NULL) AS deferring, "
-    "           min(j.scheduled_at) FILTER (WHERE j.metadata->>'wf_emit_backpressure'->>'version' IS NULL) AS next_fire, "
+    "    SELECT count(*) FILTER (WHERE j.metadata->'wf_emit_backpressure'->>'version' IS NULL) AS deferring, "
+    "           min(j.scheduled_at) FILTER (WHERE j.metadata->'wf_emit_backpressure'->>'version' IS NULL) AS next_fire, "
     "           count(*) FILTER (WHERE ("
     "               j.metadata @> '{{\"blocking_reason\":\"backpressure\"}}'::jsonb"
     "               AND j.metadata @> '{{\"wf_deferral\":{{\"signal\":\"EmitBackpressure\",\"consume_budget\":false,\"attempt\":0}}}}'::jsonb"
