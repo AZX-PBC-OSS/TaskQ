@@ -179,12 +179,6 @@ async def test_migration_deadlock_handshake_is_victim_agnostic(pg_dsn: str) -> N
         migration_waiting = False
         polls = 0
         while polls < int(_DEADLOCK_TIMEOUT_S / 0.02):
-            waiting = await locks_conn.fetchval(
-                "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a "
-                "ON a.pid = l.pid WHERE NOT l.granted "
-                "AND a.application_name != '' OR (NOT l.granted AND l.pid = pg_backend_pid())"
-            )
-            _ = waiting
             # The migration's own half: it holds the ledger and waits on
             # jobs (any ungranted lock while the apply task runs).
             ungranted = await locks_conn.fetchval("SELECT count(*) FROM pg_locks WHERE NOT granted")
