@@ -199,8 +199,8 @@ async def test_newest_fit_and_oldest_fit_envelopes_and_declaration_mapping(
         for index in range(_PARK_COUNT)
     ]
 
-    @app.workflow("ladder_flow", max_in_flight=100)
-    def ladder_flow() -> object:
+    @app.workflow("park_envelope_ladder", max_in_flight=100)
+    def park_envelope_ladder() -> object:
         # 1,000 DISTINCT chain_source declarations wired as
         # build(gather([...])) — the variadic gather's list form; exactly at
         # MAX_FAN_IN_PER_JOIN = 1000, and NO 1001st fan-in parent is added.
@@ -210,7 +210,7 @@ async def test_newest_fit_and_oldest_fit_envelopes_and_declaration_mapping(
         ]
         return build(gather(promises))
 
-    compiled = app.get("ladder_flow")
+    compiled = app.get("park_envelope_ladder")
     chain_sources = [
         node for node in compiled.nodes.values() if getattr(node, "kind", None) == "chain_source"
     ]
