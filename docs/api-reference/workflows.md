@@ -129,30 +129,48 @@ legacy default, and failure-boundary law is in
 
 `@app.workflow(name, ..., max_in_flight=N)` declares the run's whole-page
 materialization bound (`None` is the explicit unbounded; the unset default is
-1000). Every `ctx.emit_batch` call admits its WHOLE page — the run's
-outstanding non-terminal rows plus the page's width — before writing
-anything: once outside the transaction, then again inside it under the run's
-admission lock, so concurrent emitters of one run cannot both admit past the
-bound.
+1000). Every `ctx.emit_batch` call admits its WHOLE page against the run's
+derived charge — the other live rows plus their valid reservations — with the
+running source's own row excluded (`charge + page_width <= bound`): once
+outside the transaction, then again inside it under the run's
+intent/admission lock, so concurrent emitters of one run cannot both admit
+past the bound.
 
 When the page does not fit, `emit_batch` raises
 `taskq.workflows.EmitBackpressure` — a typed capacity control, not an error:
 no child, edge, or cursor row exists when it escapes. The source runner then
-PARKS the claimed source: `status='scheduled'` with `scheduled_at=NULL` (no
-timer, no lease, no worker slot), the physical attempt refunded so
-`max_attempts` is never consumed, the current ledger claim resting `awaited`
-(never `failed`), and `metadata.blocking_reason='backpressure'` carrying the
-typed record (page width, bound, outstanding count, `deferrals`/`wakes`
-counters, deferral timestamp). The body's `ctx.attempt` does not move.
+PARKS the claimed source: `status='scheduled'` with `scheduled_at` holding
+the PARK INSTANT (not a due date — no lease, no worker slot, no heartbeat),
+the physical attempt refunded so `max_attempts` is never consumed, the
+current ledger claim resting `awaited` (never `failed`), and the exact
+marker (`metadata.blocking_reason='backpressure'` plus the typed deferral
+and the version-1 record) carrying the page width, bound, outstanding count,
+and `deferrals`/`wakes` counters. The body's `ctx.attempt` does not move.
 
-Wake is event-driven: a fresh post-commit re-check after the park and after
-each relevant child terminal promotes a fitted source `pending` and removes
-the marker in the same statement; a bounded estate-wide sweep over the live
-parked-marker index recovers missed wake seats. A parked source under a
-terminal root is never re-armed; an operator cancel terminalizes and fences
-it. Real failures (body errors, diverged cursors, poisoned pages) are
-unaffected and still consume the ladder. The admin surface renders a parked
-source as scheduled with the backpressure marker — never as a failure.
+Wake is a threshold-created durable intent and an event-driven drain: each
+terminal/park event probes the exact marker once; only a marker-positive
+event whose oldest fitting waiter newly fits creates the durable promotion
+intent (plus its accelerator notification) in the same transaction. The
+drain — the producing route's own post-commit call, the maintenance leader's
+notification/leadership/reconnect arms, or the bounded maintenance-interval
+fallback — promotes the oldest fitting real waiter `pending` under the run's
+advisory lock and attaches a durable page-width RESERVATION, removing the
+marker atomically. A reserved replay may present fewer records than its
+reservation and may not present more: the excess raises the public
+`taskq.workflows.EmitReservationExceededError` (nothing written; the
+reserved source is fenced through the deterministic grant-violation route).
+That error is distinct from a genuine `PageDivergedError` — an idempotency
+-arbiter collision whose remedy is a cursor re-sync; a width comparison
+never claims an arbiter collision. A parked source under a terminal root is
+never re-armed; an operator cancel terminalizes and fences it. Real failures
+(body errors, diverged cursors, poisoned pages) are unaffected and still
+consume the ladder. A committed terminal-root failure after a genuine child
+failure exhausted its retry policy — with an un-emitted parked cursor —
+fences the parked source with durable
+`error_class='WorkflowNotDrainingError'` (a string value, not an importable
+class). The admin surface renders a parked source as scheduled with the
+backpressure marker — `deferred (backpressure)` with the park time as the
+parked-at time, never a next fire — and never as a failure.
 
 `ctx.emit_batch(..., backpressure_timeout_s=...)` is accepted for
 compatibility and is diagnostic-age input only: no value of it turns healthy
@@ -160,7 +178,7 @@ saturation into a failure. A page whose width alone can never fit under the
 declared bound raises the immediate `ValueError` (shrink the page or raise
 the bound).
 
-## The loop (`wf.loop`, `Done`, `Refine`)
+## ## The loop (`wf.loop`, `Done`, `Refine`)
 
 `loop(name, body, ...)` wires a LOOP node: each iteration is FRESH jobs
 (the iteration-scoped step keys `<loop>.iter<i>` keep the idempotency

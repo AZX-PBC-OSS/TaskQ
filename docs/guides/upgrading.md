@@ -146,7 +146,8 @@ declare `RetrySpec.on_exhaustion`:
    intent arbiter.
 
 Existing rows retain NULL epochs/requirements and existing outbox rows remain
-unchanged. (Applying the two 01.00.41 files without `01.00.38_01` fails at
+unchanged. (Applying the two existing 01.00.41 files (`01.00.41_01` and
+`01.00.41_02`) without `01.00.38_01` fails at
 `FlowRunner.create_flow()` with
 `column "required_worker_schema" of relation "jobs" does not exist` — the
 create path stamps the requirement on the root and its rows.)
@@ -158,50 +159,40 @@ queues before creating such runs; an insufficient/missing actual boot capability
 physical entry-to-running trigger before body execution. Do not manufacture
 worker metadata or use queue membership as an upgrade assertion.
 
-## Slot-free emit backpressure and the per-claim ledger (01.00.41_03 + 01.00.41_04 + 01.00.42_01)
+## Slot-free emit backpressure, durable intent, and per-claim ledger (01.00.42_01)
 
-Apply the three PRE files in this order, each before the binary that needs it:
+Apply the one PRE file 01.00.42_01_pre_wf_step_ledger_claim_epoch.sql after the 01.00.38 + existing 01.00.41 files and before corrected bounded-emit/executor binaries; it installs the derived-capacity intent/rotation records, exact-park guard/indexes, and claim-epoch arbiter in one migration transaction.
 
-1. `01.00.41_03_pre_wf_emit_backpressure_waiters.sql` — drops
-   `jobs.scheduled_at`'s `NOT NULL` (a `DROP NOT NULL` is a catalog-only
-   change) and builds the partial waiter index. **Apply before deploying the
-   binary that parks** `EmitBackpressure` sources: without the index the
-   park works but the estate recovery scans `jobs` (the PRE ordering is
-   mandatory, not a performance hint).
-2. `01.00.41_04_pre_wf_scheduled_null_park_check.sql` — the storage-domain
-   constraint: a `scheduled` row may carry a NULL due time only as the exact
-   park representation. `NOT VALID` is catalog-only; the `VALIDATE` pass
-   scans existing rows under `SHARE UPDATE EXCLUSIVE` (writes continue).
-   Existing rows cannot violate it (`scheduled_at` was `NOT NULL` before
-   `01.00.41_03`); apply it in the same window as `01.00.41_03`.
-3. `01.00.42_01_pre_wf_step_ledger_claim_epoch.sql` — **the hard
-   workflow-executor cutover.** `claim_epoch` joins the step ledger's claim
-   arbiter so a refunded-and-reminted attempt (the park's `1 → 0 → 1`
-   cycle) records its own ledger row. There is **NO supported old/new mixed
-   execution across this file**: an old executor's four-expression ledger
-   claim fails with PostgreSQL `42P10` after the job row is already
-   `running` (the old body never runs), and the old binary's terminal/fence
-   writes are equally unsupported. The cutover as it ships is THIS ONE
-   FILE: stop accepting workflow body work, drain every pre-correction
-   workflow process (fleet workers with workflow execution, direct
-   `FlowRunner` processes, custom drivers using the old ledger
-   claim/finalize statements), apply `01.00.42_01`, and restart only
-   corrected binaries. Two further cutover files are PENDING A FUTURE PR
-   (the identity POST `01.00.42_02` and the arbiter restoration
-   `01.00.43_01`, planned as one same-apply run with it) — until those
-   files exist, no operator instruction may wait on them; when they land,
-   the restart gate moves to `01.00.43_01:post` and this runbook is
-   updated in the same PR. The
-   ledger's arbiter rebuild is a stop-accepting-work window on a populated
-   ledger: the index build takes `SHARE` (it blocks writes, not reads)
-   while it scans existing rows.
+The folded file's lock profile (one migration transaction; the cross-table
+order is `wf_step_ledger` BEFORE `jobs`):
 
-A new binary against a pre-`01.00.42_01` schema fails closed at the normal
-ledger claim (`column "claim_epoch" ... does not exist`, `42703`) — after the
-job row is already `running`. That transient running row is recovered by a
-corrected worker after process termination/lease reclaim; it is never a final
-success or a truthful body failure. The PRE gate is the only protection:
-apply the file before deploying the epoch-scoped binary.
+- On `wf_step_ledger`: `ADD COLUMN claim_epoch` takes `ACCESS EXCLUSIVE`
+  (metadata-only), the arbiter rebuild's `DROP INDEX` half takes
+  `ACCESS EXCLUSIVE` (subsumed by the already-held lock), the
+  non-CONCURRENT replacement `CREATE UNIQUE INDEX` takes `SHARE` (the
+  populated-ledger stop-accepting-work window), and `COMMENT ON COLUMN`
+  takes `SHARE UPDATE EXCLUSIVE`.
+- On `jobs`: the non-CONCURRENT `jobs_wf_emit_park_idx` build takes `SHARE`
+  (writes block, reads proceed), and the guard-trigger install — last —
+  takes `SHARE ROW EXCLUSIVE` (writes block, reads proceed; its grant is
+  immediate because every conflicting mode also conflicts with the
+  already-held `SHARE`). The jobs-side apply outage is ONE write-block
+  window from SHARE acquisition through COMMIT; there is no second
+  read-blocking window and ordinary SELECTs proceed throughout.
+
+Drain the producer first (stop new bounded-flow production/emission), then
+the full writer-role drain: old maintenance leaders, direct producers and
+runners, executors, and cancel-serving binaries; wait for every in-flight
+`jobs`/`wf_step_ledger` application transaction to finish and close or prove
+idle the old writer pools. A residual opposite-order writer can deadlock
+against the file's `wf_step_ledger` → `jobs` order, and PostgreSQL's victim
+choice is nondeterministic (SQLSTATE `40P01`): either the migration aborts
+(rollback is fail-closed, no migration record, re-apply after completing the
+drain — never reorder locks or blindly retry) or the residual writer aborts
+(the application must roll back and retry its whole transaction under its
+own retry policy; the migration commits the complete object set, no re-apply
+owed). An operator `lock_timeout` bound reduces the exposure but cannot
+eliminate it.
 
 ## If a migration goes wrong
 
