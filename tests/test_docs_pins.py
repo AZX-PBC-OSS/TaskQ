@@ -217,3 +217,50 @@ def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
                     f"but lists {len(listed)} ({sorted(listed)})"
                 )
     assert not offenders, "A table-count claim disagrees with its list:\n" + "\n".join(offenders)
+
+
+def test_docs5_the_upgrading_guide_pins_the_folded_backpressure_train() -> None:
+    """The contract §10.8's named PR-3 edit, pinned: the enumeration is
+    exactly `01.00.38_01`, `01.00.41_01`, `01.00.41_02`, `01.00.42_01` (the
+    withdrawn `41_03`/`41_04`/`41_05`/`41_06` identities appear nowhere in
+    the instructions); the exact 'two existing 01.00.41 files' wording
+    stands; the section heading and the one-file instruction are exact."""
+    import re
+    from pathlib import Path
+
+    guide = (Path(__file__).parent.parent / "docs" / "guides" / "upgrading.md").read_text()
+
+    # The section heading (the contract's exact text).
+    heading = "## Slot-free emit backpressure, durable intent, and per-claim ledger (01.00.42_01)"
+    assert heading in guide, "the folded 42_01 section heading is missing or altered"
+    section = guide.split(heading, 1)[1].split("\n## ", 1)[0]
+
+    # The one-file instruction, exact.
+    instruction = (
+        "Apply the one PRE file 01.00.42_01_pre_wf_step_ledger_claim_epoch.sql "
+        "after the 01.00.38 + existing 01.00.41 files and before corrected "
+        "bounded-emit/executor binaries; it installs the derived-capacity "
+        "intent/rotation records, exact-park guard/indexes, and claim-epoch "
+        "arbiter in one migration transaction."
+    )
+    assert " ".join(instruction.split()) in " ".join(section.split()), (
+        "the 42_01 apply instruction must be exact"
+    )
+
+    # The withdrawn identities are never instructed.
+    for withdrawn in ("01.00.41_03", "01.00.41_04", "01.00.41_05", "01.00.41_06"):
+        assert withdrawn not in section, withdrawn
+
+    # The base section's parenthetical carries the exact wording.
+    assert (
+        "Applying the two existing 01.00.41 files (`01.00.41_01` and\n"
+        "`01.00.41_02`) without `01.00.38_01` fails at" in guide
+    ) or (
+        "Applying the two existing 01.00.41 files (`01.00.41_01` and `01.00.41_02`) "
+        "without `01.00.38_01` fails at" in " ".join(guide.split())
+    ), "the parenthetical's exact enumeration wording moved or changed"
+
+    # The enumerated train in the backpressure section: exactly the four
+    # keys (parsed from the section's own file names).
+    files = re.findall(r"01\.00\.\d+_\d+[a-z_]*\.sql", section)
+    assert files == ["01.00.42_01_pre_wf_step_ledger_claim_epoch.sql"], files
