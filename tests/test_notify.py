@@ -36,7 +36,6 @@ from taskq.constants import (
 )
 from taskq.testing.assertions import wait_for, wait_for_condition
 from taskq.worker.notify import (
-    _NotifyEntry,
     _active_listeners,
     _connected_lookup,
     _health_check_loop,
@@ -44,6 +43,7 @@ from taskq.worker.notify import (
     _make_events_callback,
     _make_leader_wake_callback,
     _make_worker_events_callback,
+    _NotifyEntry,
     notify_listener_loop,
     reconnect_notify_conn,
 )
@@ -135,7 +135,6 @@ def _make_channels(
         events_channel,
         leader_wake_channel,
         wake_channel,
-        wf_emit_capacity_channel,
         worker_channel,
     )
 

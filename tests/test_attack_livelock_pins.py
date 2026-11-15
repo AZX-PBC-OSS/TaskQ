@@ -440,7 +440,9 @@ async def test_reconnect_loop_observes_shutdown_without_a_hot_spin() -> None:
 
     deps = _notify_deps(always_fails)
     backend = Mock()
-    channels = [_NotifyEntry(wake_channel("taskq_livelock_pin"), lambda *a: None, reconnect_backfill=True)]
+    channels = [
+        _NotifyEntry(wake_channel("taskq_livelock_pin"), lambda *a: None, reconnect_backfill=True)
+    ]
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(random_mod, "uniform", fake_uniform)

@@ -788,16 +788,21 @@ async def test_failed_root_keeps_parked_source_resolved_and_inert(
             flow_id,
             source_id,
             "source",
-            lambda state: _park_is_live(state) or (
-                state["status"] == "failed"
-                and state["error_class"] == "WorkflowNotDrainingError"
+            lambda state: (
+                _park_is_live(state)
+                or (
+                    state["status"] == "failed"
+                    and state["error_class"] == "WorkflowNotDrainingError"
+                )
             ),
             deadline_s=_FAILED_ROOT_OBSERVE_S,
         )
-        if not (_park_is_live(parked) or (
-            parked["status"] == "failed"
-            and parked["error_class"] == "WorkflowNotDrainingError"
-        )):
+        if not (
+            _park_is_live(parked)
+            or (
+                parked["status"] == "failed" and parked["error_class"] == "WorkflowNotDrainingError"
+            )
+        ):
             children_now = await _children(wf_conn, wf_schema, source_id, "screen")
             cursor_now = await _cursor(wf_conn, wf_schema, source_id)
             root_now = await wf_conn.fetchval(

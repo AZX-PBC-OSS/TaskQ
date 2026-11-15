@@ -823,7 +823,11 @@ extraPaths = ["."]
 # worker/, and the auth/aad/aws/vault boundaries.
 [[tool.pyright.executionEnvironments]]
 root = "."
-extraPaths = ["."]
+# `src` is the package root (the src-layout's own import root): the venv's
+# editable .pth binds `taskq` to whichever tree last installed it, so a
+# shared venv resolves another worktree's package without this — the
+# absolute `taskq.*` imports must bind to THIS tree's src.
+extraPaths = [".", "src"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

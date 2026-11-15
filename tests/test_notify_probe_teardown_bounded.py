@@ -44,6 +44,7 @@ from taskq.testing.assertions import wait_for_condition
 from taskq.worker.notify import (
     _active_listeners,
     _health_check_loop,
+    _NotifyEntry,
     notify_listener_loop,
 )
 
@@ -119,18 +120,20 @@ def _make_channels(backend: PostgresBackend) -> list[_NotifyEntry]:
         worker_channel,
     )
     from taskq.worker.notify import (
-        _NotifyEntry,
         _make_callback,
         _make_events_callback,
         _make_leader_wake_callback,
         _make_worker_events_callback,
+        _NotifyEntry,
     )
 
     schema = "taskq_test"
     return [
         _NotifyEntry(wake_channel(schema), _make_callback(backend), reconnect_backfill=True),
         _NotifyEntry(events_channel(schema), _make_events_callback(backend, _WORKER_ID)),
-        _NotifyEntry(worker_channel(schema, str(_WORKER_ID)), _make_worker_events_callback(backend)),
+        _NotifyEntry(
+            worker_channel(schema, str(_WORKER_ID)), _make_worker_events_callback(backend)
+        ),
         _NotifyEntry(leader_wake_channel(schema), _make_leader_wake_callback(backend, _WORKER_ID)),
     ]
 

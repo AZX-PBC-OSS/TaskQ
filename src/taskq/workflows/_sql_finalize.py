@@ -363,10 +363,10 @@ def _wf_emit_park_predicate(alias: str) -> str:
     convention (the bundle's collapse pass un-doubles them)."""
     return (
         "{a}.status = 'scheduled'\n"
-        "  AND {a}.metadata @> '{{\"blocking_reason\":\"backpressure\"}}'::jsonb\n"
-        "  AND {a}.metadata @> '{{\"wf_deferral\":"
-        "{{\"signal\":\"EmitBackpressure\",\"consume_budget\":false,\"attempt\":0}}}}'::jsonb\n"
-        "  AND {a}.metadata @> '{{\"wf_emit_backpressure\":{{\"version\":1}}}}'::jsonb\n"
+        '  AND {a}.metadata @> \'{{"blocking_reason":"backpressure"}}\'::jsonb\n'
+        '  AND {a}.metadata @> \'{{"wf_deferral":'
+        '{{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}}}\'::jsonb\n'
+        '  AND {a}.metadata @> \'{{"wf_emit_backpressure":{{"version":1}}}}\'::jsonb\n'
         "  AND {a}.step_key IS NOT NULL\n"
         "  AND {a}.step_key <> '__flow__'\n"
         "  AND {a}.metadata ? 'flow_id'"
@@ -593,7 +593,9 @@ WF_NOT_DRAINING_FENCE_SQL = (
     "    SELECT j.id\n"
     "    FROM {schema}.jobs AS j\n"
     "    WHERE (j.metadata->>'flow_id')::uuid = $1::uuid\n"
-    "      AND " + _wf_emit_park_predicate("j") + "\n"
+    "      AND "
+    + _wf_emit_park_predicate("j")
+    + "\n"  # Why: the shared predicate renderer is the module's own constant text; the schema token is the render's validated substitution.
     "      AND j.metadata ? 'emit_cursor'\n"
     "), fenced AS (\n"
     "    UPDATE {schema}.jobs AS j\n"
@@ -608,7 +610,7 @@ WF_NOT_DRAINING_FENCE_SQL = (
     "                    'root_id', $1::uuid,\n"
     "                    'child_id', $4::uuid,\n"
     "                    'at', to_char(clock_timestamp() AT TIME ZONE 'UTC',\n"
-    "                                  'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')\n"
+    '                                  \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\')\n'
     "                )\n"
     "            )\n"
     "    FROM parks\n"
@@ -740,6 +742,8 @@ WHERE j.id = (SELECT job_id FROM params)
 #: untouched. The reservation is not a dispatch slot, worker reservation,
 #: lease, or execution permission: ordinary queue claim remains the sole
 #: execution grant.
+# Why S608-safe: the schema token is the render's validated substitution
+# (require_schema); every caller value is $N-bound.
 EMIT_BACKPRESSURE_WAKE_SQL = f"""\
 UPDATE {{schema}}.jobs AS j
 SET status = 'pending',
@@ -767,7 +771,7 @@ SET status = 'pending',
     )
 WHERE j.id = $1
   AND NOT j.metadata ? 'wf_emit_reservation'
-  AND {_wf_emit_park_predicate('j')}
+  AND {_wf_emit_park_predicate("j")}
   AND EXISTS (
       SELECT 1 FROM {{schema}}.jobs AS root
       WHERE root.id = (j.metadata->>'flow_id')::uuid

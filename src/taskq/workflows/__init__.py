@@ -53,8 +53,7 @@ from taskq.workflows._childflow import (
     ChildWorkflowUnknownError,
     SpawnDepthExceededError,
 )
-from taskq.workflows._emit import EmitBackpressure
-from taskq.workflows._emit import EmitReservationExceededError
+from taskq.workflows._emit import EmitBackpressure, EmitReservationExceededError
 from taskq.workflows._policy import (
     CLEAR_POLICY,
     ExecutionPolicy,

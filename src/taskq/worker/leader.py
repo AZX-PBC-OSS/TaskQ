@@ -2391,7 +2391,7 @@ class MaintenanceLeader:
                 wake_task = asyncio.create_task(event.wait())
                 stop_task = asyncio.create_task(shutdown.wait())
                 try:
-                    done, pending = await asyncio.wait(
+                    done, _pending = await asyncio.wait(
                         {wake_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
                     )
                 finally:

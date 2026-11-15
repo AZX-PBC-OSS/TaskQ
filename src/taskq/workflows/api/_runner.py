@@ -537,7 +537,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                         conn,
                         self.wsql,
                         flow_id=claim.flow_id,
-                        bound=int(getattr(self.compiled, "max_in_flight")),
+                        bound=int(self.compiled.max_in_flight),
                     )
         except asyncpg.exceptions.UndefinedTableError as exc:
             # The first contact's translation: the runner door on an
@@ -1240,13 +1240,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         vanilla's gated-allocation law) and the span is the
         non-recording no-op."""
         if self._emit_capacity and getattr(node, "kind", None) == "chain_source":
-            from taskq.workflows._emit import _bump
+            from taskq.workflows._emit import bump_emit_census
 
             # The source body's claim entry (the §4.2 claim family's unit:
             # P + K + S + J + C — every genuine claim of the chain source's
             # row, including the post-park resumption and the genuine
             # failure's J/C re-claims).
-            _bump("source_body_claims")
+            bump_emit_census("source_body_claims")
         with safe_start_span(
             step_span_name(row["step_key"]),
             kind=SpanKind.INTERNAL,

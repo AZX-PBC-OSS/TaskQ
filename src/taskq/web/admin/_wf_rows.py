@@ -219,7 +219,9 @@ class RunNode:
             # fire (a park has no timer; the marker, not a timestamp, is the
             # discriminator). Deferrals and wakes are the park's own counts,
             # distinct from failure.
-            parked_at = self.scheduled_at.isoformat() if self.scheduled_at else "unknown"
+            # The field is the JSON/SSE face's ISO string (or None — a
+            # hand-built row's defined absent face renders "unknown").
+            parked_at = self.scheduled_at or "unknown"
             return (
                 f"⏰ {signal} · deferred (backpressure) · parked at {parked_at} · "
                 f"snooze #{self.snooze_count}"

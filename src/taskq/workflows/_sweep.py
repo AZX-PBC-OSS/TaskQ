@@ -41,7 +41,7 @@ import structlog
 from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
-from taskq.obs import get_logger, get_meter
+from taskq.obs import get_logger
 from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._progress import PROGRESS_RING_BOUND
 from taskq.workflows._reducers import forget_flow_reducers, resolve_flow_reducer

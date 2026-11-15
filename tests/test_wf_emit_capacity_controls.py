@@ -112,8 +112,7 @@ async def test_unreserved_admission_boundary_matches_legacy_at_bound_minus_one_e
             LEGACY_EMIT_IN_FLIGHT_SQL.replace("{schema}", wf_schema), flow, source
         )
         assert int(legacy_count) == observation.charge, (
-            f"{case}: legacy count {legacy_count} != derived charge "
-            f"{observation.charge}"
+            f"{case}: legacy count {legacy_count} != derived charge {observation.charge}"
         )
         admits = observation.charge + width <= bound
         legacy_refuses = int(legacy_count) + width > bound
@@ -126,9 +125,9 @@ async def test_unreserved_admission_boundary_matches_legacy_at_bound_minus_one_e
 
 
 def _new_uuid() -> str:
-    from uuid import uuid4
+    from taskq._ids import new_uuid
 
-    return str(uuid4())
+    return str(new_uuid())
 
 
 class _Conn:
@@ -193,10 +192,11 @@ def test_emit_reservation_exceeded_error_public_surface() -> None:
     or `PageDivergedError`); `WorkflowNotDrainingError` is a durable string,
     not a class and not a surface member."""
     import taskq.workflows as wf_surface
+    from taskq.workflows import EmitBackpressure, EmitReservationExceededError
+
     # PageDivergedError is deliberately NOT root-exported (its non-root
     # export status is unchanged) — the docs keep it unqualified.
     from taskq.workflows._emit import PageDivergedError
-    from taskq.workflows import EmitBackpressure, EmitReservationExceededError
 
     assert "EmitReservationExceededError" in wf_surface.__all__
     assert EmitReservationExceededError.__bases__ == (Exception,)
@@ -268,18 +268,14 @@ def test_docs_surface_scan_rejects_missing_and_finds_qualified_error() -> None:
     ]
     assert _collect_doc_names(positive) == {"EmitReservationExceededError"}
 
-    docs = [
-        (str(p), p.read_text())
-        for p in sorted(Path("docs").rglob("*.md"))
-    ]
+    docs = [(str(p), p.read_text()) for p in sorted(Path("docs").rglob("*.md"))]
     documented = _collect_doc_names(docs)
-    missing = sorted(
-        name for name in documented if name not in wf_surface.__all__
-    )
+    missing = sorted(name for name in documented if name not in wf_surface.__all__)
     assert missing == [], missing
-    guide_text = Path("docs/guides/workflows.md").read_text() + Path(
-        "docs/api-reference/workflows.md"
-    ).read_text()
+    guide_text = (
+        Path("docs/guides/workflows.md").read_text()
+        + Path("docs/api-reference/workflows.md").read_text()
+    )
     assert "`taskq.workflows.EmitReservationExceededError`" in guide_text, (
         "the width-excess refusal must be taught in its fully qualified form"
     )

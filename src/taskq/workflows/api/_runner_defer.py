@@ -303,12 +303,8 @@ async def defer_row_law(
                 from taskq.workflows._emit import emit_capacity_event, ensure_emit_capacity
 
                 if flow_id is None:
-                    raise ValueError(
-                        "the emit park's event rule requires the run's flow id"
-                    )
-                await ensure_emit_capacity(
-                    conn, wsql, flow_id=flow_id, bound=backpressure.bound
-                )
+                    raise ValueError("the emit park's event rule requires the run's flow id")
+                await ensure_emit_capacity(conn, wsql, flow_id=flow_id, bound=backpressure.bound)
                 park_intent_created = await emit_capacity_event(
                     conn, wsql, flow_id=flow_id, probe=False
                 )

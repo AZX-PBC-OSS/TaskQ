@@ -93,9 +93,9 @@ _RUNS_SQL = (
     "    SELECT count(*) FILTER (WHERE j.metadata->'wf_emit_backpressure'->>'version' IS NULL) AS deferring, "
     "           min(j.scheduled_at) FILTER (WHERE j.metadata->'wf_emit_backpressure'->>'version' IS NULL) AS next_fire, "
     "           count(*) FILTER (WHERE ("
-    "               j.metadata @> '{{\"blocking_reason\":\"backpressure\"}}'::jsonb"
-    "               AND j.metadata @> '{{\"wf_deferral\":{{\"signal\":\"EmitBackpressure\",\"consume_budget\":false,\"attempt\":0}}}}'::jsonb"
-    "               AND j.metadata @> '{{\"wf_emit_backpressure\":{{\"version\":1}}}}'::jsonb"
+    '               j.metadata @> \'{{"blocking_reason":"backpressure"}}\'::jsonb'
+    '               AND j.metadata @> \'{{"wf_deferral":{{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}}}\'::jsonb'
+    '               AND j.metadata @> \'{{"wf_emit_backpressure":{{"version":1}}}}\'::jsonb'
     "               AND j.step_key IS NOT NULL AND j.step_key <> '__flow__'"
     "               AND j.metadata ? 'flow_id'"
     "           )) AS parked, "

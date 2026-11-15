@@ -161,9 +161,9 @@ _PARK_IDX_INDEXDEF: Final[str] = (
     "CREATE INDEX jobs_wf_emit_park_idx ON {schema}.jobs USING btree "
     "(((metadata->>'flow_id')::uuid), created_at, id) "
     "WHERE status = 'scheduled'::\"{schema}\".job_status "
-    "AND (metadata @> '{\"blocking_reason\":\"backpressure\"}'::jsonb) "
-    "AND (metadata @> '{\"wf_deferral\":{\"signal\":\"EmitBackpressure\",\"consume_budget\":false,\"attempt\":0}}'::jsonb) "
-    "AND (metadata @> '{\"wf_emit_backpressure\":{\"version\":1}}'::jsonb) "
+    'AND (metadata @> \'{"blocking_reason":"backpressure"}\'::jsonb) '
+    'AND (metadata @> \'{"wf_deferral":{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}\'::jsonb) '
+    'AND (metadata @> \'{"wf_emit_backpressure":{"version":1}}\'::jsonb) '
     "AND (step_key IS NOT NULL) "
     "AND (step_key <> '__flow__'::text) "
     "AND (metadata ? 'flow_id')"
@@ -216,7 +216,14 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     )
     if arbiter is None or not all(
         member in arbiter
-        for member in ("wf_step_ledger", "flow_id", "step_key", "map_index", "attempt", "claim_epoch")
+        for member in (
+            "wf_step_ledger",
+            "flow_id",
+            "step_key",
+            "map_index",
+            "attempt",
+            "claim_epoch",
+        )
     ):
         raise _fail("wf_step_ledger_claim_uniq lacks the five-expression claim_epoch arbiter")
 
@@ -246,7 +253,7 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
         raise _fail("wf_emit_capacity lacks its bound/generation CHECK constraints")
 
     # 4. the rotation singleton.
-    rotation = await conn.fetchval(
+    rotation = await conn.fetchval(  # Why: the schema is the bundle's validated identifier; the singleton read takes no other value.
         "SELECT after_flow_id FROM " + f'"{schema}".wf_emit_intent_rotation WHERE id'
     )
     if rotation is None:

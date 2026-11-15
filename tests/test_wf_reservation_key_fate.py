@@ -66,9 +66,7 @@ async def _observation(conn: Any, wsql: WorkflowSql, flow: JobId) -> tuple[int, 
     return int(row["live_rows"]), int(row["reservations"])
 
 
-async def _seed_worker_claim(
-    conn: Any, schema: str, job: JobId
-) -> tuple[Any, int, int]:
+async def _seed_worker_claim(conn: Any, schema: str, job: JobId) -> tuple[Any, int, int]:
     from taskq._ids import new_uuid
 
     worker = JobId(new_uuid())
@@ -123,7 +121,7 @@ async def test_reserved_row_terminalizes_through_each_family_exactly_once(
 
     # ── the cooperative cancel mark RETAINS the key (the opposite direction) ──
     flow2 = JobId(new_uuid())
-    job2 = await _seed_reserved_running(wf_conn, wf_schema, flow2)
+    await _seed_reserved_running(wf_conn, wf_schema, flow2)
     from taskq.workflows.api._sql_runner import CANCEL_NODES_SQL_TEMPLATE, render_sql
 
     # The statement's CTE does the flip; the outer SELECT's tag is not a

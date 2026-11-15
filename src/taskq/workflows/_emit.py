@@ -64,10 +64,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final, cast
 
 import structlog
+
+from uuid import UUID
 
 from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads
@@ -112,6 +113,7 @@ _not_draining_counter = get_meter().create_counter(
     "proof behind an exhausted child failure, with an un-emitted parked cursor).",
 )
 
+
 @dataclass(frozen=True, slots=True)
 class EmitCapacityCounters:
     """The §4.2 operation-family census, live at the real sites.
@@ -148,7 +150,7 @@ class EmitCapacityCounters:
 COUNTERS = EmitCapacityCounters()
 
 
-def _bump(name: str, by: int = 1) -> None:
+def bump_emit_census(name: str, by: int = 1) -> None:
     object.__setattr__(COUNTERS, name, getattr(COUNTERS, name) + by)
 
 
@@ -370,12 +372,19 @@ async def observe_emit_capacity(
     live_rows = row["live_rows"]
     reservations = row["reservations"]
     min_waiting_width = row["min_waiting_width"]
-    if type(live_rows) is not int or type(reservations) is not int or live_rows < 0 or reservations < 0:
+    if (
+        type(live_rows) is not int
+        or type(reservations) is not int
+        or live_rows < 0
+        or reservations < 0
+    ):
         raise EmitCapacityCorruptionError(
             f"the derived capacity observation for flow {flow_id} returned "
             f"non-integer or negative facts ({live_rows!r}, {reservations!r})"
         )
-    if min_waiting_width is not None and (type(min_waiting_width) is not int or min_waiting_width < 0):
+    if min_waiting_width is not None and (
+        type(min_waiting_width) is not int or min_waiting_width < 0
+    ):
         raise EmitCapacityCorruptionError(
             f"the derived capacity observation for flow {flow_id} returned a "
             f"malformed min_waiting_width ({min_waiting_width!r})"
@@ -387,15 +396,15 @@ async def observe_emit_capacity(
     )
 
 
-def _intent_generation(row: object) -> tuple[int, int, int]:
+def _intent_generation(row: asyncpg.Record) -> tuple[int, int, int]:
     """The locked intent row's validated facts (bound, wake, handled). Every
     value must be an exact in-domain integer; malformed facts fail closed."""
-    if row is None:
+    if row is None:  # pyright: ignore[reportUnnecessaryComparison]  # Why: the runtime guard behind the typed door — the caller checked, but the census re-refuses here.
         raise EmitCapacityCorruptionError("the capacity intent row is missing")
     try:
-        bound = row["bound"]  # pyright: ignore[index-issue]  # Why: the asyncpg Record's mapping access; a missing key is the malformed shape refused below.
-        wake = row["wake_generation"]  # pyright: ignore[index-issue]
-        handled = row["handled_generation"]  # pyright: ignore[index-issue]
+        bound = row["bound"]
+        wake = row["wake_generation"]
+        handled = row["handled_generation"]
     except (KeyError, IndexError) as exc:
         raise EmitCapacityCorruptionError(
             f"the capacity intent row is missing a generation column: {exc}"
@@ -478,8 +487,8 @@ async def emit_capacity_event(
 
     await verify_emit_capacity_objects(conn, wsql.schema)
     if probe:
-        _bump("terminals")
-        _bump("probes")
+        bump_emit_census("terminals")
+        bump_emit_census("probes")
         if await conn.fetchval(wsql.emit_park_exists, flow_id) is None:
             return False
     intent = await conn.fetchrow(wsql.emit_intent_lock, flow_id)
@@ -497,9 +506,9 @@ async def emit_capacity_event(
     if not probe:
         # The park's own event (§4.1 rule 4): the park IS the K family's
         # admission decision and its one observation.
-        _bump("parks")
-        _bump("admission_decisions")
-    _bump("observations")
+        bump_emit_census("parks")
+        bump_emit_census("admission_decisions")
+    bump_emit_census("observations")
     observation = await observe_emit_capacity(conn, wsql, flow_id=flow_id)
     if not observation.something_fits(bound):
         return False
@@ -508,7 +517,7 @@ async def emit_capacity_event(
         # durable fallback makes that suppression safe.
         return False
     created = await conn.fetchval(wsql.emit_intent_generation, flow_id)
-    _bump("new_intents")
+    bump_emit_census("new_intents")
     if created is None:
         raise EmitCapacityCorruptionError(
             f"the bounded run {flow_id}'s wake generation refused to advance "
@@ -545,9 +554,7 @@ async def _reserved_width(metadata: object) -> int | None:
         return None
     raw_reservation = document["wf_emit_reservation"]
     if not isinstance(raw_reservation, dict):
-        raise EmitCapacityCorruptionError(
-            "metadata.wf_emit_reservation must be an object"
-        )
+        raise EmitCapacityCorruptionError("metadata.wf_emit_reservation must be an object")
     reservation = cast("dict[str, object]", raw_reservation)
     if set(reservation) != {"version", "width"}:
         raise EmitCapacityCorruptionError(
@@ -835,9 +842,7 @@ async def emit_batch(
         # never granted.
         async with pool.acquire() as conn:
             source_metadata = await conn.fetchval(
-                "SELECT metadata FROM {schema}.jobs WHERE id = $1".replace(
-                    "{schema}", wsql.schema
-                ),
+                "SELECT metadata FROM {schema}.jobs WHERE id = $1".replace("{schema}", wsql.schema),
                 source_id,
             )
         granted = await _reserved_width(source_metadata)
@@ -866,7 +871,7 @@ async def emit_batch(
                     _window_hook=_window_hook,
                     run_priority=run_priority,
                 )
-            _bump("admission_decisions")
+            bump_emit_census("admission_decisions")
             if poison:
                 _raise_poison(flow_id, source_id, poison)
             return tuple(child_ids)
@@ -875,12 +880,12 @@ async def emit_batch(
         # `charge + W <= bound` over the shared derived observation. There is
         # no own-row subtraction and no second comparison.
         async with pool.acquire() as conn:
-            observation = await observe_emit_capacity(conn, wsql, flow_id=flow_id, source_id=source_id)
+            observation = await observe_emit_capacity(
+                conn, wsql, flow_id=flow_id, source_id=source_id
+            )
         charge = observation.charge
         if charge + len(valid) > max_in_flight:
-            raise EmitBackpressure(
-                page_width=len(valid), bound=max_in_flight, outstanding=charge
-            )
+            raise EmitBackpressure(page_width=len(valid), bound=max_in_flight, outstanding=charge)
         inside_charge = charge
         try:
             async with pool.acquire() as conn, conn.transaction():
@@ -911,7 +916,7 @@ async def emit_batch(
                     _window_hook=_window_hook,
                     run_priority=run_priority,
                 )
-            _bump("admission_decisions")
+            bump_emit_census("admission_decisions")
             if poison:
                 _raise_poison(flow_id, source_id, poison)
             return tuple(child_ids)
@@ -941,6 +946,7 @@ async def emit_batch(
     if poison:
         _raise_poison(flow_id, source_id, poison)
     return tuple(child_ids)
+
 
 #: The flow-target drain's hard committed-transaction ceiling (§6): at most
 #: 200 winning source CASes and queue notifications in one transaction.
@@ -977,7 +983,7 @@ async def wake_emit_backpressure(
     recovery arms' to observe; notifications are accelerators, never
     authority.
     """
-    _bump("flow_drains")
+    bump_emit_census("flow_drains")
     total = 0
     completed = False
     missed = False
@@ -1001,7 +1007,7 @@ async def wake_emit_backpressure(
                 # grant/completion — counted in `candidate_reads`); they are
                 # never duplicated into the event-side E census.
                 observation = await observe_emit_capacity(conn, wsql, flow_id=flow_id)
-                _bump("candidate_reads", 2)
+                bump_emit_census("candidate_reads", 2)
                 candidate = await conn.fetchrow(
                     wsql.emit_candidate, flow_id, observation.charge, bound
                 )
@@ -1022,7 +1028,7 @@ async def wake_emit_backpressure(
                     break
                 wins_tx += 1
                 total += 1
-                _bump("fitted_grants")
+                bump_emit_census("fitted_grants")
                 # NOTIFY accelerates an already durable pending transition.
                 # The effective actor assignment, not a stale original label,
                 # is named.
@@ -1039,8 +1045,9 @@ async def wake_emit_backpressure(
         # final observation.
     return EmitWakeResult(promoted=total, intent_completed=completed, missed=missed)
 
+
 #: The zero UUID — the rotation cursor's reset value (the wrap face).
-_ZERO_UUID: Final[JobId] = JobId("00000000-0000-0000-0000-000000000000")
+_ZERO_UUID: Final[JobId] = JobId(UUID("00000000-0000-0000-0000-000000000000"))
 
 
 async def drain_pending_emit_intents(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
@@ -1056,12 +1063,12 @@ async def drain_pending_emit_intents(pool: asyncpg.Pool, wsql: WorkflowSql) -> i
     an empty ordered read wraps immediately once. For a fixed set of N
     continuously pending flows every flow is offered at least once within
     ``ceil(N/100) + 1`` selections, independent of the failing prefix."""
-    _bump("global_drains")
+    bump_emit_census("global_drains")
     async with pool.acquire() as conn:
         row = await conn.fetchrow(wsql.emit_rotation_read)
         after: JobId = _ZERO_UUID
         if row is not None and row["after_flow_id"] is not None:
-            after = JobId(str(row["after_flow_id"]))
+            after = JobId(row["after_flow_id"])
     offered = 0
     wrapped = False
     while True:
@@ -1074,7 +1081,7 @@ async def drain_pending_emit_intents(pool: asyncpg.Pool, wsql: WorkflowSql) -> i
                 continue
             break
         for intent_row in rows:
-            flow = JobId(str(intent_row["flow_id"]))
+            flow = JobId(intent_row["flow_id"])
             try:
                 await wake_emit_backpressure(pool, wsql, flow_id=flow)
             except Exception:
@@ -1092,7 +1099,7 @@ async def drain_pending_emit_intents(pool: asyncpg.Pool, wsql: WorkflowSql) -> i
             async with pool.acquire() as conn:
                 await conn.execute(wsql.emit_rotation_write, _ZERO_UUID)
             break
-        after = JobId(str(rows[-1]["flow_id"]))
+        after = JobId(rows[-1]["flow_id"])
         # The rotation is committed independently of the per-flow work.
         async with pool.acquire() as conn:
             await conn.execute(wsql.emit_rotation_write, after)
@@ -1110,7 +1117,7 @@ async def sweep_emit_markers(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
         rows = await conn.fetch(wsql.emit_marker_sweep)
         repaired = 0
         for row in rows:
-            flow = JobId(str(row["flow_id"]))
+            flow = JobId(row["flow_id"])
             bound = row["bound"]
             if type(bound) is not int or bound < 1:
                 raise EmitCapacityCorruptionError(
@@ -1158,11 +1165,11 @@ async def fence_not_draining_parked_sources(
         flow_id,
         WORKFLOW_NOT_DRAINING_CLASS,
         (
-            f"the run is provably not draining: the root terminal 'failed' "
-            f"committed after the causal child failure exhausted its retry "
-            f"policy, while this source still parks on an un-emitted "
-            f"committed cursor (reason: "
-            f"terminal_root_after_child_failure_exhaustion)"
+            "the run is provably not draining: the root terminal 'failed' "
+            "committed after the causal child failure exhausted its retry "
+            "policy, while this source still parks on an un-emitted "
+            "committed cursor (reason: "
+            "terminal_root_after_child_failure_exhaustion)"
         ),
         child_id,
     )

@@ -14,12 +14,11 @@ from typing import Any
 import pytest
 
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
-from taskq.workflows._emit import reset_counters
 
 pytestmark = pytest.mark.integration
 
 
-class Ok:  # noqa: D101 — the chain outcome vocabulary (the enum's plain face is refused at the route).
+class Ok:
     OK = "ok"
 
 
@@ -31,7 +30,11 @@ def _chain(name: str, body: Any) -> Any:
     class OkOut(enum.Enum):
         OK = "ok"
 
-    return Chain(name=name, start="screen", steps={"screen": Step(body=body, outcomes=OkOut, route=Route({OkOut.OK: DONE}))})
+    return Chain(
+        name=name,
+        start="screen",
+        steps={"screen": Step(body=body, outcomes=OkOut, route=Route({OkOut.OK: DONE}))},
+    )
 
 
 def _pre_registration() -> dict[str, Any]:
@@ -48,7 +51,12 @@ def _pre_registration() -> dict[str, Any]:
     v_general = 19 * P + 18 * S + 4 * R + 4 * B + J + C
     v_lane = 19 * P + 18 * S + 4 * R + B + J + C
     return {
-        "P": P, "S": S, "R": R, "B": B, "J": J, "C": C,
+        "P": P,
+        "S": S,
+        "R": R,
+        "B": B,
+        "J": J,
+        "C": C,
         "admission_decisions <= P + K": f"{P} + {K_ceiling}",
         "source_body_claims": claims_ceiling,
         "fitted_grants <= P + S": G_ceiling,
@@ -124,6 +132,7 @@ async def test_direct_lane_counters_within_the_preregistered_pin(
     runner = FlowRunner(compiled, module_pg_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     _rc()
+
     async def _pump() -> None:
         # The source parks once (the second page's admission: charge 1 + a
         # two-wide page under bound 2); the slow child's terminal event

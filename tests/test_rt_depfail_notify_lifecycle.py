@@ -24,12 +24,12 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.settings import WorkerSettings
 from taskq.testing.assertions import wait_for_condition
 from taskq.worker.notify import (
-    _NotifyEntry,
     _connected_lookup,
     _health_check_loop,
     _make_callback,
     _make_events_callback,
     _make_worker_events_callback,
+    _NotifyEntry,
 )
 
 _GRACE = timedelta(seconds=30)
@@ -87,9 +87,7 @@ def _make_backend() -> PostgresBackend:
     )
 
 
-def _make_channels(
-    backend: PostgresBackend, worker_id: UUID = _WORKER_ID
-) -> list[_NotifyEntry]:
+def _make_channels(backend: PostgresBackend, worker_id: UUID = _WORKER_ID) -> list[_NotifyEntry]:
     from taskq.constants import (
         events_channel,
         leader_wake_channel,

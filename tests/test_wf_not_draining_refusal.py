@@ -110,7 +110,7 @@ async def test_exhausted_child_failure_with_parked_cursor_fences_the_source(
     await asyncio.wait_for(runner.drive(flow_id), timeout=60)
 
     source = await wf_conn.fetchrow(
-        f'SELECT status::text AS status, attempt::int AS attempt, error_class, metadata '
+        f"SELECT status::text AS status, attempt::int AS attempt, error_class, metadata "
         f'FROM "{wf_schema}".jobs WHERE id = $1',
         source_id,
     )
@@ -136,14 +136,16 @@ async def test_exhausted_child_failure_with_parked_cursor_fences_the_source(
     assert child_ledger == "RuntimeError", child_ledger
     # The refusal is durable on the event stream.
     event = await wf_conn.fetchval(
-        f"SELECT count(*) FROM \"{wf_schema}\".job_events WHERE job_id = $1 "
+        f'SELECT count(*) FROM "{wf_schema}".job_events WHERE job_id = $1 '
         "AND detail->>'error_class' = $2",
         source_id,
         WORKFLOW_NOT_DRAINING_CLASS,
     )
     assert int(event) >= 1, "the refusal's state_change event is on the record"
     # No further claim: the fenced row is terminal.
-    root = await wf_conn.fetchval(f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
+    root = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+    )
     assert root == "failed", root
 
 
@@ -246,7 +248,9 @@ async def test_healthy_saturation_and_nonterminal_retries_never_refuse(
     assert state["status"] == "scheduled", state
     assert state["error_class"] is None, state
     assert "wf_not_draining" not in _meta(state["metadata"]), state
-    root = await wf_conn.fetchval(f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow)
+    root = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow
+    )
     assert root == "running", "a healthy parked run never derives not-draining"
 
 

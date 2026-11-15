@@ -954,7 +954,7 @@ def test_waiter_migration_checksum_registration_and_shape() -> None:
         "jobs_wf_emit_park_idx",
     ):
         assert object_sql in joined, object_sql
-    park_index = [s for s in statements if "jobs_wf_emit_park_idx" in s and "CREATE INDEX" in s][0]
+    park_index = next(s for s in statements if "jobs_wf_emit_park_idx" in s and "CREATE INDEX" in s)
     assert "blocking_reason" in park_index
     assert "consume_budget" in park_index
     # REPRESENTATION INVERSION: no NULL/due timestamp leg exists in the
@@ -974,9 +974,7 @@ async def test_waiter_probe_tiny_plans_and_wake_semantics(
     )
 
     async def plan() -> list[dict[str, object]]:
-        raw = await wf_conn.fetchval(
-            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", flow_id
-        )
+        raw = await wf_conn.fetchval(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", flow_id)
         return _plan_document(raw)
 
     empty_plan = await plan()
@@ -999,15 +997,11 @@ async def test_waiter_probe_tiny_plans_and_wake_semantics(
         outstanding=1000,
         flow_id=cap_flow,
     )
-    cap_query = (
-        wf_sql.emit_candidate.replace("$2::bigint", "0::bigint").replace(
-            "$3::bigint", "1000::bigint"
-        )
+    cap_query = wf_sql.emit_candidate.replace("$2::bigint", "0::bigint").replace(
+        "$3::bigint", "1000::bigint"
     )
     cap_plan = _plan_document(
-        await wf_conn.fetchval(
-            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {cap_query}", cap_flow
-        )
+        await wf_conn.fetchval(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {cap_query}", cap_flow)
     )
     assert _actual_root_rows(cap_plan) == 1
     print(f"EXPLAIN ANALYZE tiny shipped-cap: {json.dumps(cap_plan, default=str)}")
@@ -1025,7 +1019,6 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     wf_sql: WorkflowSql,
 ) -> None:
     """1000-active + real history/coexisting rows prove the shared index walk."""
-    from taskq.workflows._sql_finalize import WF_EMIT_PARK_EXISTS_SQL
     from tests._wf_fixtures import seed_flow
 
     cap_flow, cap_claim = await _claimed(
@@ -1168,9 +1161,7 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     query = wf_sql.emit_park_exists.replace("SELECT 1", "SELECT j.id").replace("LIMIT 1", "")
     candidate_rows = await wf_conn.fetch(query, cap_flow)
     assert [row["id"] for row in candidate_rows] == [cap_claim.job_id]
-    raw_plan = await wf_conn.fetchval(
-        f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", cap_flow
-    )
+    raw_plan = await wf_conn.fetchval(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}", cap_flow)
     document = _plan_document(raw_plan)
     nodes = _plan_nodes(document)
     # THE POPULATED LAW: the estate probe runs on the DEDICATED waiter
@@ -1180,9 +1171,7 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     # one). A plan that falls back to the generic scheduled-NULL index
     # scans the whole parked population per probe — the degradation this
     # pin exists to red.
-    waiter_nodes = [
-        node for node in nodes if node.get("Index Name") == "jobs_wf_emit_park_idx"
-    ]
+    waiter_nodes = [node for node in nodes if node.get("Index Name") == "jobs_wf_emit_park_idx"]
     print(
         "EXPLAIN ANALYZE populated waiter before index assertion: "
         + json.dumps(document, default=str, sort_keys=True)
@@ -1213,9 +1202,7 @@ async def test_waiter_probe_populated_cap_uses_partial_index(
     )
     degraded_nodes = _plan_nodes(degraded)
     assert [
-        node
-        for node in degraded_nodes
-        if node.get("Index Name") == "jobs_wf_emit_park_idx"
+        node for node in degraded_nodes if node.get("Index Name") == "jobs_wf_emit_park_idx"
     ] == [], degraded_nodes
     print(
         "EXPLAIN ANALYZE populated waiter WITHOUT the index (the red direction): "
@@ -1492,7 +1479,7 @@ async def test_pending_same_tx_fork_counts_before_parent_wake(
         ),
     )
     await wf_conn.execute(
-        f'UPDATE "{wf_schema}".jobs SET status = \'running\', locked_by_worker = $2, '
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'running', locked_by_worker = $2, "
         "lock_expires_at = now() + interval '90 seconds' WHERE id = $1",
         peer_id,
         worker,
@@ -1651,9 +1638,9 @@ async def test_pre_waiter_schema_park_rolls_back_without_stranding_marker(pg_dsn
         # representation is unreachable in every era).
         from taskq.workflows._capability import verify_emit_capacity_objects
 
-        with pytest.raises(Exception, match="01.00.42_01"):
+        with pytest.raises(Exception, match=r"01\.00\.42_01"):
             await verify_emit_capacity_objects(pool, schema)
-        with pytest.raises(Exception, match="01.00.42_01"):
+        with pytest.raises(Exception, match=r"01\.00\.42_01"):
             await _park_primitive_claim(pool, old_sql, claim, logical_attempt=1, flow_id=_flow_id)
         row = await conn.fetchrow(
             f"SELECT status, scheduled_at, attempt, locked_by_worker, metadata "
@@ -1679,6 +1666,7 @@ async def test_pre_waiter_schema_park_rolls_back_without_stranding_marker(pg_dsn
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
 
+
 async def test_claimable_listing_agrees_with_the_claim_cas(pg_dsn: str) -> None:
     """The direct driver's listing and its claim CAS must agree on every row
     shape. REPRESENTATION INVERSION: the scheduled-NULL storage state is
@@ -1689,7 +1677,10 @@ async def test_claimable_listing_agrees_with_the_claim_cas(pg_dsn: str) -> None:
     import json as _json
 
     from taskq.migrate import apply_pending
-    from taskq.workflows.api._sql_runner import CLAIMABLE_NODES_SQL_TEMPLATE, NODE_CLAIM_SQL_TEMPLATE
+    from taskq.workflows.api._sql_runner import (
+        CLAIMABLE_NODES_SQL_TEMPLATE,
+        NODE_CLAIM_SQL_TEMPLATE,
+    )
     from taskq.workflows.engine import render_workflow_sql
 
     schema = f"bp_agree_{new_uuid().hex}".lower()
@@ -1758,6 +1749,7 @@ async def test_claimable_listing_agrees_with_the_claim_cas(pg_dsn: str) -> None:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
 
+
 async def test_malformed_waiter_marker_fails_closed_not_skip(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -1773,7 +1765,7 @@ async def test_malformed_waiter_marker_fails_closed_not_skip(
     # The malformed live marker: version 1 present, page_width absent (the
     # width validator's fail-closed arm).
     await wf_conn.execute(
-        f'UPDATE "{wf_schema}".jobs SET status = \'scheduled\', '
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'scheduled', "
         "metadata = metadata || $2::jsonb WHERE id = $1",
         claim_v.job_id,
         _json.dumps(
@@ -1868,6 +1860,7 @@ async def test_pre_epoch_schema_refuses_the_normal_ledger_claim_fail_closed(
             await pool.close()
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
+
 
 async def test_the_reaper_never_fences_a_live_claimed_attempt(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql

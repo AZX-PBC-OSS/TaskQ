@@ -758,9 +758,7 @@ async def notify_listener_loop(
         _NotifyEntry(wake_channel(schema), _make_callback(backend), reconnect_backfill=True),
         _NotifyEntry(events_channel(schema), _make_events_callback(backend, worker_id)),
         _NotifyEntry(worker_channel(schema, worker_id_str), _make_worker_events_callback(backend)),
-        _NotifyEntry(
-            leader_wake_channel(schema), _make_leader_wake_callback(backend, worker_id)
-        ),
+        _NotifyEntry(leader_wake_channel(schema), _make_leader_wake_callback(backend, worker_id)),
         # The #718 emit-capacity channel: the same registry, a known NON-ZERO
         # index, its own leadership-gated callback, and its own
         # reconnect-backfill hook. Only the current fenced leader arms the
