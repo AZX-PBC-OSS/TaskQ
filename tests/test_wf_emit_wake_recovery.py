@@ -767,6 +767,8 @@ async def test_inline_wake_failure_is_soft_and_estate_marker_recovers(
         flow_id: JobId | None = None,
         batch_size: int = 100,
         after: tuple[JobId, JobId] | None = None,
+        chunk_size: int = 200,
+        exhaust: bool = False,
     ) -> Never:
         raise asyncpg.ConnectionDoesNotExistError("synthetic inline wake connection loss")
 
