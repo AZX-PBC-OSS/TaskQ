@@ -315,8 +315,11 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         # the lock-scope discipline itself stays proven below (the dead
         # probe index absent, the marker predicates named, both paths).
         "jobs_wf_flow_nodes_idx",
-        # 01.00.41_03 (pre): live slot-free emit-backpressure waiters only.
-        "jobs_wf_emit_backpressure_waiter_idx",
+        # 01.00.42_01 (folded PRE): the exact-park partial index — the
+        # marker-keyed (flow uuid, created_at, id) probe/candidate/sweep
+        # access path (the estate-waiter index it replaces was never
+        # published on the binding base).
+        "jobs_wf_emit_park_idx",
     }
 )
 _PINNED_JOBS_ARCHIVE_INDEXES: frozenset[str] = frozenset(

@@ -160,17 +160,17 @@ reservation and may not present more: the excess raises the public
 `taskq.workflows.EmitReservationExceededError` (nothing written; the
 reserved source is fenced through the deterministic grant-violation route).
 That error is distinct from a genuine `PageDivergedError` — an idempotency
--arbiter collision whose remedy is a cursor re-sync; a width comparison
-never claims an arbiter collision. A parked source under a terminal root is
-never re-armed; an operator cancel terminalizes and fences it. Real failures
-(body errors, diverged cursors, poisoned pages) are unaffected and still
-consume the ladder. A committed terminal-root failure after a genuine child
-failure exhausted its retry policy — with an un-emitted parked cursor —
-fences the parked source with durable
-`error_class='WorkflowNotDrainingError'` (a string value, not an importable
-class). The admin surface renders a parked source as scheduled with the
-backpressure marker — `deferred (backpressure)` with the park time as the
-parked-at time, never a next fire — and never as a failure.
+arbiter collision whose remedy is a cursor re-sync; a width comparison never
+claims an arbiter collision. A parked source under a terminal root is never
+re-armed; an operator cancel terminalizes and fences it. Real failures (body
+errors, diverged cursors, poisoned pages) are unaffected and still consume
+the ladder. A committed terminal-root failure after a genuine child failure
+exhausted its retry policy — with an un-emitted parked cursor — fences the
+parked source with durable `error_class='WorkflowNotDrainingError'` (a
+string value, not an importable class). The admin surface renders a parked
+source as scheduled with the backpressure marker — `deferred (backpressure)`
+with the park time as the parked-at time, never a next fire — and never as a
+failure.
 
 `ctx.emit_batch(..., backpressure_timeout_s=...)` is accepted for
 compatibility and is diagnostic-age input only: no value of it turns healthy
@@ -178,7 +178,7 @@ saturation into a failure. A page whose width alone can never fit under the
 declared bound raises the immediate `ValueError` (shrink the page or raise
 the bound).
 
-## ## The loop (`wf.loop`, `Done`, `Refine`)
+## The loop (`wf.loop`, `Done`, `Refine`)
 
 `loop(name, body, ...)` wires a LOOP node: each iteration is FRESH jobs
 (the iteration-scoped step keys `<loop>.iter<i>` keep the idempotency

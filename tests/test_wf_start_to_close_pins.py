@@ -1300,10 +1300,11 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
         ledger_claimed_at=w1_claim.claimed_at,
         backpressure=EmitBackpressure(page_width=1, bound=2, outstanding=1),
         source_logical_attempt=1,
+        flow_id=flow_id,
     )
-    assert park_verdict == "deferred", park_verdict
+    assert park_verdict.verdict == "deferred", park_verdict
     woken = await wake_emit_backpressure(module_pg_pool, runner.wsql, flow_id=flow_id)
-    assert woken.woken == 1, "the parked source must promote for the re-claim"
+    assert woken.promoted == 1, "the parked source must promote for the re-claim"
     w2 = JobId(new_uuid())
     reclaimed = await clean_pg_conn.fetchrow(
         render_sql(NODE_CLAIM_SQL_TEMPLATE, schema), node_id, w2

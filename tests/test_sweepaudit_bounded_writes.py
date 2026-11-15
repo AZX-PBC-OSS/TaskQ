@@ -589,13 +589,35 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE j.id = $1",
         "one live parked job PK, refenced by a nonterminal root",
     ),
-    "EMIT_BACKPRESSURE_CANDIDATE_LOCK_SQL": (
-        "WHERE j.id = $1",
-        "one parked-row PK lock before validating/interpreting its descriptor",
+    # ── #718's derived-capacity statements: the intent/rotation writes are
+    # one PK-keyed row at a time; the fence is one indexed flow probe away
+    # from the parked estate and the markers' UPDATE keys the winner PKs.
+    "WF_EMIT_INTENT_GENERATION_SQL": (
+        "WHERE flow_id = $1",
+        "one bounded run's PK intent row: the threshold crossing bumps the "
+        "generation exactly once, CAS-gated on handled (never pending)",
     ),
-    "EMIT_BACKPRESSURE_ROOT_LOCK_SQL": (
-        "WHERE id = $1",
-        "one nonterminal-root PK lock per ordered flow before admission",
+    "WF_EMIT_INTENT_HANDLED_SQL": (
+        "WHERE flow_id = $1",
+        "one bounded run's PK intent row: the completing drain marks the "
+        "generation handled, CAS-gated on pending",
+    ),
+    "WF_EMIT_ROTATION_WRITE_SQL": (
+        "WHERE id = true",
+        "the singleton rotation row (the CHECK pins id = true): the global "
+        "fairness cursor's one owner, never growing with run cardinality",
+    ),
+    "WF_EMIT_INTENT_LOCK_SQL": (
+        "WHERE flow_id = $1",
+        "one bounded run's PK intent row locked FOR UPDATE (the canonical "
+        "root -> intent order's row lock; a keyed read, no write set)",
+    ),
+    "WF_NOT_DRAINING_FENCE_SQL": (
+        "FROM parks",
+        "the §5.4 non-drainage refusal: its write set is the exact-park "
+        "winner PKs captured by the parks CTE (the indexed exact-marker "
+        "probe of ONE terminal flow with an un-emitted committed cursor) — "
+        "a keyed family, never an estate scan",
     ),
 }
 

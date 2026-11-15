@@ -287,6 +287,9 @@ async def _routed_node(
     runner.schema = wf_schema  # type: ignore[attr-defined]
     runner._worker_id = worker  # type: ignore[attr-defined]
     runner.compiled = type("C", (), {"capture": "none", "name": "routing-pin"})()  # type: ignore[attr-defined]
+    # The ladder route's host fields: the unbounded run pays no §4.1 event
+    # tax and never drains.
+    runner._emit_capacity = False  # type: ignore[attr-defined]
     row = {"id": str(node_id), "step_key": step_key, "map_index": None}
     ownership = AttemptClaim(
         job_id=node_id,
