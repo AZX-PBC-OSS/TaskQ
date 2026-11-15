@@ -198,7 +198,7 @@ COMMENT ON INDEX "{schema}".wf_emit_capacity_pending_idx IS
 -- statement form directly with the child it knows; this function derives
 -- the causal child from the rows (the most recently failed exhausted
 -- child).
-CREATE OR REPLACE FUNCTION {schema}.fence_not_draining_parked(p_root uuid)
+CREATE OR REPLACE FUNCTION "{schema}".fence_not_draining_parked(p_root uuid)
 RETURNS integer
 LANGUAGE plpgsql
 AS $fence$
@@ -207,7 +207,7 @@ DECLARE
     v_fenced integer;
 BEGIN
     SELECT l.job_id INTO v_child
-    FROM {schema}.wf_step_ledger l
+    FROM "{schema}".wf_step_ledger l
     WHERE l.flow_id = p_root
       AND l.status = 'failed'
       AND l.job_id IS NOT NULL
@@ -216,7 +216,7 @@ BEGIN
 
     WITH parks AS (
         SELECT j.id
-        FROM {schema}.jobs AS j
+        FROM "{schema}".jobs AS j
         WHERE (j.metadata->>'flow_id')::uuid = p_root
           AND j.status = 'scheduled'
           AND j.metadata @> '{{"blocking_reason":"backpressure"}}'::jsonb
@@ -227,7 +227,7 @@ BEGIN
           AND j.metadata ? 'flow_id'
           AND j.metadata ? 'emit_cursor'
     ), fenced AS (
-        UPDATE {schema}.jobs AS j
+        UPDATE "{schema}".jobs AS j
         SET status = 'failed',
             finished_at = clock_timestamp(),
             error_class = 'WorkflowNotDrainingError',
@@ -250,7 +250,7 @@ BEGIN
         WHERE j.id = parks.id
         RETURNING j.id
     ), ledger AS (
-        UPDATE {schema}.wf_step_ledger AS l
+        UPDATE "{schema}".wf_step_ledger AS l
         SET status = 'fenced',
             error_class = 'WorkflowNotDrainingError',
             updated_at = clock_timestamp()
@@ -259,7 +259,7 @@ BEGIN
           AND l.status = 'awaited'
         RETURNING l.id
     ), evt AS (
-        INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
+        INSERT INTO "{schema}".job_events (job_id, occurred_at, kind, detail)
         SELECT fenced.id, clock_timestamp(), 'state_change',
                jsonb_build_object('from_state', 'scheduled',
                                   'to_state', 'failed',
