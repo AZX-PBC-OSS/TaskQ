@@ -825,7 +825,7 @@ _SWEEP_3_SQL = """\
 --
 -- THE EXACT-PARK EXCLUSION: a scheduled row carrying the live
 -- EmitBackpressure marker is never the scheduler's to promote — the
-#718 guard trigger (01.00.42_01) refuses the transition server-side for
+-- #718 guard trigger (01.00.42_01) refuses the transition server-side for
 -- old binaries, and this NOT-P leg keeps the new binary from ever
 -- trying. A winning reserved promotion installs the versioned
 -- reservation and removes the marker, so genuinely promoted rows pass.

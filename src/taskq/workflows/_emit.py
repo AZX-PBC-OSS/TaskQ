@@ -331,11 +331,16 @@ async def observe_emit_capacity(
 def _intent_generation(row: object) -> tuple[int, int, int]:
     """The locked intent row's validated facts (bound, wake, handled). Every
     value must be an exact in-domain integer; malformed facts fail closed."""
-    if not isinstance(row, dict):  # pragma: no cover - asyncpg rows are mappings
-        raise EmitCapacityCorruptionError("the capacity intent row is not a mapping")
-    bound = row["bound"]
-    wake = row["wake_generation"]
-    handled = row["handled_generation"]
+    if row is None:
+        raise EmitCapacityCorruptionError("the capacity intent row is missing")
+    try:
+        bound = row["bound"]  # pyright: ignore[index-issue]  # Why: the asyncpg Record's mapping access; a missing key is the malformed shape refused below.
+        wake = row["wake_generation"]  # pyright: ignore[index-issue]
+        handled = row["handled_generation"]  # pyright: ignore[index-issue]
+    except (KeyError, IndexError) as exc:
+        raise EmitCapacityCorruptionError(
+            f"the capacity intent row is missing a generation column: {exc}"
+        ) from exc
     for name, value, minimum in (
         ("bound", bound, 1),
         ("wake_generation", wake, 0),

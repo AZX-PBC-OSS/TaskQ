@@ -10,8 +10,10 @@ These are the behavioral controls for the accepted P2 contract, not an
 implementation of it.  They deliberately assert only application-visible row,
 read, claim and retry facts:
 
-* a saturated bounded source parks as ``status='scheduled'`` with
-  ``scheduled_at IS NULL`` and the exact live
+* a saturated bounded source parks as ``status='scheduled'`` with the PARK
+  INSTANT stored in ``scheduled_at`` (NOT NULL — the contract inverted the
+  old NULL-timestamp representation; the marker, never the timestamp, is
+  the discriminator) and the exact live
   ``metadata.blocking_reason='backpressure'`` marker (plus its versioned live
   record and durable deferral counter);
 * the park refunds the physical ``jobs.attempt`` to zero, clears every
@@ -215,9 +217,14 @@ def _json_object(raw: object) -> dict[str, Any]:
 
 
 def _park_is_live(state: dict[str, Any]) -> bool:
+    # THE REPRESENTATION INVERSION (the contract changes the park's storage
+    # face): the old shape rested a park at scheduled_at NULL; the new shape
+    # stores the PARK INSTANT — scheduled_at is NOT NULL and deliberately
+    # absent from park identity. The marker, never the timestamp,
+    # discriminates, so liveness is the marker on a scheduled row.
     return (
         state["status"] == "scheduled"
-        and state["scheduled_at"] is None
+        and state["scheduled_at"] is not None
         and state["blocking_reason"] == "backpressure"
     )
 
@@ -485,7 +492,7 @@ async def test_saturated_source_parks_without_retry_and_resumes_once(
         return build(chain_source(chain, source_body, key="source", max_attempts=4))
 
     compiled = app.get(f"parking_flow_{suffix}")
-    recording_pool = _RecordingPool(wf_pool, wf_sql.emit_in_flight)
+    recording_pool = _RecordingPool(wf_pool, wf_sql.emit_capacity_observation)
     source_runner = FlowRunner(compiled, cast("asyncpg.Pool", recording_pool), wf_schema)
     child_runner_zero = FlowRunner(compiled, cast("asyncpg.Pool", recording_pool), wf_schema)
     child_runner_one = FlowRunner(compiled, cast("asyncpg.Pool", recording_pool), wf_schema)
@@ -583,13 +590,15 @@ async def test_saturated_source_parks_without_retry_and_resumes_once(
     diagnostic = json.dumps(observed, default=str, sort_keys=True)
     assert parked is not None, (
         "the source under the saturated bound did not park with the exact "
-        "live marker (status scheduled + scheduled_at NULL + "
+        "live marker (status scheduled + the park instant in scheduled_at + "
         "blocking_reason='backpressure'); on the base it stayed claimed and "
         "the 50 ms occupancy loop handed the page to the retry ladder: "
         f"{diagnostic}"
     )
     assert parked["blocking_reason"] == "backpressure", diagnostic
-    assert parked["scheduled_at"] is None, diagnostic
+    # REPRESENTATION INVERSION: the park instant is now stored in
+    # scheduled_at (NOT NULL — never a NULL due date and never a next fire).
+    assert parked["scheduled_at"] is not None, diagnostic
     assert parked["attempt"] == 0, (
         f"the park must refund the physical claim attempt to zero at rest: {diagnostic}"
     )
@@ -623,7 +632,7 @@ async def test_saturated_source_parks_without_retry_and_resumes_once(
     )
     assert direct_tick_state is not None, diagnostic
     assert direct_tick_state["status"] == "scheduled", diagnostic
-    assert direct_tick_state["scheduled_at"] is None, diagnostic
+    assert direct_tick_state["scheduled_at"] is not None, diagnostic
     assert direct_tick_state["attempt"] == parked["attempt"], diagnostic
     assert direct_tick_state["claim_epoch"] == parked["claim_epoch"], diagnostic
     assert direct_tick_state["blocking_reason"] == "backpressure", diagnostic
@@ -867,7 +876,9 @@ async def test_failed_root_keeps_parked_source_resolved_and_inert(
             f"a failed root must not promote its parked source: {inert_diagnostic}"
         )
         assert inert["blocking_reason"] == "backpressure", inert_diagnostic
-        assert inert["scheduled_at"] is None, inert_diagnostic
+        # REPRESENTATION INVERSION: the park instant is stored (NOT NULL),
+        # never a NULL due date.
+        assert inert["scheduled_at"] is not None, inert_diagnostic
         assert inert["attempt"] == snapshot["attempt"] == 0, inert_diagnostic
         assert source_attempts == [(0, 1), (1, 1)], (
             "the failed root must never re-enter the parked source's body: "
@@ -948,7 +959,7 @@ async def test_unsaturated_exact_fit_pages_complete_without_parking(
         return build(chain_source(chain, source_body, key="source", max_attempts=4))
 
     compiled = app.get(f"parking_exact_fit_{suffix}")
-    recording_pool = _RecordingPool(wf_pool, wf_sql.emit_in_flight)
+    recording_pool = _RecordingPool(wf_pool, wf_sql.emit_capacity_observation)
     runner = FlowRunner(compiled, cast("asyncpg.Pool", recording_pool), wf_schema)
     claim = await runner.create_flow()
     flow_id = claim.flow_id

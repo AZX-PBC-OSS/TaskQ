@@ -209,9 +209,15 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     if epoch_col is None:
         raise _fail("wf_step_ledger.claim_epoch is missing")
 
-    # 2. the five-expression arbiter (pg_get_indexdef, exact expression set).
-    arbiter = await conn.fetchval("SELECT pg_get_indexdef(($1 || '.wf_step_ledger_claim_uniq')::regclass)", f'"{schema}"')
-    if arbiter is None or "claim_epoch" not in arbiter or "COALESCE(map_index" not in arbiter:
+    # 2. the five-expression arbiter (pg_get_indexdef, exact expression set:
+    # every arbiter member present, claim_epoch among them).
+    arbiter = await conn.fetchval(
+        "SELECT pg_get_indexdef(($1 || '.wf_step_ledger_claim_uniq')::regclass)", f'"{schema}"'
+    )
+    if arbiter is None or not all(
+        member in arbiter
+        for member in ("wf_step_ledger", "flow_id", "step_key", "map_index", "attempt", "claim_epoch")
+    ):
         raise _fail("wf_step_ledger_claim_uniq lacks the five-expression claim_epoch arbiter")
 
     # 3. wf_emit_capacity's typed columns and CHECK constraints.

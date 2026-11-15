@@ -34,6 +34,7 @@ import contextlib
 import logging
 import random
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import cast
 from uuid import UUID
 

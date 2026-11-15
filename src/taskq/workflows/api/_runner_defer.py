@@ -214,6 +214,7 @@ async def defer_row_law(
     backpressure: EmitBackpressure | None = None,
     source_logical_attempt: int | None = None,
     iteration_rest: tuple[JobId, Any] | None = None,
+    flow_id: JobId | None = None,
 ) -> _DeferOutcome:
     """the ROW LAW + the LEDGER'S TRUTH, one transaction (the terminal-atomicity law's own
     shape — a split write leaves the row 'scheduled' with the ledger
@@ -301,6 +302,10 @@ async def defer_row_law(
                 # rides the same transaction.
                 from taskq.workflows._emit import emit_capacity_event, ensure_emit_capacity
 
+                if flow_id is None:
+                    raise ValueError(
+                        "the emit park's event rule requires the run's flow id"
+                    )
                 await ensure_emit_capacity(
                     conn, wsql, flow_id=flow_id, bound=backpressure.bound
                 )
@@ -604,6 +609,7 @@ class DeferOps(_DeferHost):
             ledger_claimed_at=ledger_claimed_at,
             backpressure=exc if isinstance(exc, EmitBackpressure) else None,
             source_logical_attempt=source_logical_attempt,
+            flow_id=flow_id,
         )
         verdict_text = outcome.verdict
 

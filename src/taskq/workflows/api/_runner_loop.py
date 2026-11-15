@@ -162,6 +162,7 @@ class LoopOps(_LoopHost):
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
             iteration_rest=iteration_rest,
+            flow_id=flow_id,
         )
         verdict_text = outcome.verdict
 
