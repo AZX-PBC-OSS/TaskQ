@@ -2370,7 +2370,7 @@ class MaintenanceLeader:
         owns the retry."""
         subscribe = getattr(self._backend, "subscribe_wf_emit_capacity", None)
         if not callable(subscribe):
-            logger.warning(
+            log.warning(
                 "wf-emit-capacity-subscribe-missing",
                 kind="wf_emit_capacity_subscribe_missing",
             )
@@ -2381,7 +2381,7 @@ class MaintenanceLeader:
             try:
                 await self._wf_emit_capacity_drain_once()
             except Exception as exc:
-                logger.warning(
+                log.warning(
                     "wf-emit-capacity-drain-failed",
                     kind="wf_emit_capacity_drain_failed",
                     error_class=type(exc).__name__,
@@ -2390,18 +2390,25 @@ class MaintenanceLeader:
             while not shutdown.is_set():
                 wake_task = asyncio.create_task(event.wait())
                 stop_task = asyncio.create_task(shutdown.wait())
-                done, pending = await asyncio.wait(
-                    {wake_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in pending:
-                    task.cancel()
+                try:
+                    done, pending = await asyncio.wait(
+                        {wake_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    # The loop's own waiters never outlive this frame: a
+                    # cancellation (the TaskGroup's shutdown) must cancel and
+                    # await both probe tasks — a leaked Event.wait keeps
+                    # writing loop state into later tests.
+                    for task in (wake_task, stop_task):
+                        task.cancel()
+                    await asyncio.gather(wake_task, stop_task, return_exceptions=True)
                 if stop_task in done:
                     break
                 event.clear()
                 try:
                     await self._wf_emit_capacity_drain_once()
                 except Exception as exc:
-                    logger.warning(
+                    log.warning(
                         "wf-emit-capacity-drain-failed",
                         kind="wf_emit_capacity_drain_failed",
                         error_class=type(exc).__name__,

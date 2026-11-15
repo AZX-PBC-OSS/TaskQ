@@ -31,15 +31,18 @@ from taskq.constants import (
     events_channel,
     leader_wake_channel,
     wake_channel,
+    wf_emit_capacity_channel,
     worker_channel,
 )
 from taskq.testing.assertions import wait_for, wait_for_condition
 from taskq.worker.notify import (
+    _NotifyEntry,
     _active_listeners,
     _connected_lookup,
     _health_check_loop,
     _make_callback,
     _make_events_callback,
+    _make_leader_wake_callback,
     _make_worker_events_callback,
     notify_listener_loop,
     reconnect_notify_conn,
@@ -123,19 +126,25 @@ def _make_backend() -> PostgresBackend:
 
 def _make_channels(
     backend: PostgresBackend, worker_id: uuid.UUID = _WORKER_ID
-) -> list[tuple[str, object]]:
-    """Build a minimal channels list (wake + events + worker) for tests."""
+) -> list[_NotifyEntry]:
+    """Build a minimal channels list (wake + events + worker + leader) for
+    tests — the real registry shape (`_NotifyEntry` carries the channel, its
+    callback, and the per-entry reconnect-backfill flag the reconnect pass
+    reads)."""
     from taskq.constants import (
         events_channel,
+        leader_wake_channel,
         wake_channel,
+        wf_emit_capacity_channel,
         worker_channel,
     )
 
     schema = "taskq_test"
     return [
-        (wake_channel(schema), _make_callback(backend)),
-        (events_channel(schema), _make_events_callback(backend, worker_id)),
-        (worker_channel(schema, str(worker_id)), _make_worker_events_callback(backend)),
+        _NotifyEntry(wake_channel(schema), _make_callback(backend), reconnect_backfill=True),
+        _NotifyEntry(events_channel(schema), _make_events_callback(backend, worker_id)),
+        _NotifyEntry(worker_channel(schema, str(worker_id)), _make_worker_events_callback(backend)),
+        _NotifyEntry(leader_wake_channel(schema), _make_leader_wake_callback(backend, worker_id)),
     ]
 
 
@@ -168,12 +177,13 @@ class TestListenerStartup:
 
         await asyncio.wait_for(_runner(), timeout=2.0)
 
-        assert conn.add_listener.call_count == 4
+        assert conn.add_listener.call_count == 5
         channels_registered = [c[0][0] for c in conn.add_listener.call_args_list]
         assert wake_channel("taskq_test") in channels_registered
         assert events_channel("taskq_test") in channels_registered
         assert worker_channel("taskq_test", str(_WORKER_ID)) in channels_registered
         assert leader_wake_channel("taskq_test") in channels_registered
+        assert wf_emit_capacity_channel("taskq_test") in channels_registered
 
 
 # ---- Fan-out (wake channel) ----------------------------------------------------------------------
@@ -411,11 +421,12 @@ class TestShutdownPath:
 
         await asyncio.wait_for(_runner(), timeout=2.0)
 
-        assert conn.remove_listener.call_count == 4
+        assert conn.remove_listener.call_count == 5
         channels_removed = [c[0][0] for c in conn.remove_listener.call_args_list]
         assert wake_channel("taskq_test") in channels_removed
         assert events_channel("taskq_test") in channels_removed
         assert worker_channel("taskq_test", str(_WORKER_ID)) in channels_removed
+        assert wf_emit_capacity_channel("taskq_test") in channels_removed
         assert leader_wake_channel("taskq_test") in channels_removed
 
         unlisten_calls = [
