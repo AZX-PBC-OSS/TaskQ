@@ -425,6 +425,20 @@ WHERE l.status IN ('running', 'awaited', 'crashed')
       WHERE f.id = l.flow_id
         AND f.status IN {terminal}
   )
+  -- THE LIVE-CLAIM EXCLUSION: a ledger row whose OWN job is a live
+  -- claimed running row (its lease still holds) belongs to an attempt
+  -- that is executing RIGHT NOW and will write its own terminal — the
+  -- reaper must never fence it (a fenced record over a heartbeating
+  -- attempt is the ledger lie: the deadline's own disposition would then
+  -- refuse its truthful write). The reaper's subjects are the rows whose
+  -- worker died: a lapsed lease, a non-running job, a refunded park.
+  AND NOT EXISTS (
+      SELECT 1 FROM {schema}.jobs j2
+      WHERE j2.id = l.job_id
+        AND j2.status = 'running'
+        AND j2.lock_expires_at IS NOT NULL
+        AND j2.lock_expires_at > clock_timestamp()
+  )
 RETURNING l.id, l.flow_id
 """
 

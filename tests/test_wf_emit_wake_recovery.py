@@ -224,7 +224,13 @@ async def test_cancel_while_parked_is_terminal_fenced_and_never_reenters(
             source_id,
         )
         assert cooperative_children == 2
-        assert await reap_phantom_ledger(wf_pool, wf_sql) == cooperative_children
+        # THE REAPER'S LIVE-CLAIM EXCLUSION: the cooperative children are
+        # LIVE claimed attempts (their bodies hold the gate; their leases
+        # hold) — their own cooperative-cancel dispositions write their own
+        # truthful ledger terminals; the reaper must not fence them (a
+        # fenced record over a heartbeating attempt is the ledger lie, and
+        # it would refuse the attempt's own truthful write).
+        assert await reap_phantom_ledger(wf_pool, wf_sql) == 0
         event_count = await wf_conn.fetchval(
             f'SELECT count(*) FROM "{wf_schema}".job_events '
             "WHERE job_id = $1 AND kind = 'state_change' "
@@ -2281,3 +2287,56 @@ async def test_the_wake_pass_pages_the_whole_population_under_the_lock_budget(
         f"the wrap's transactions would exhaust a 100-connection deployment's "
         f"lock table ({sampled_max} vs {max_locks * 100})"
     )
+
+
+async def test_the_reaper_never_fences_a_live_claimed_attempt(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
+) -> None:
+    """THE REAPER'S LIVE-CLAIM EXCLUSION (the deadline race's own fence): a
+    terminal flow's LIVE claimed running job (its lease still holds) is an
+    attempt executing RIGHT NOW — its ledger row must stay live so the
+    attempt's own disposition writes its truthful terminal. The rejected
+    shape: a reaper pass inside the claim→disposition window fenced the
+    running row, the disposition's own truthful write then REFUSED (the
+    fenced status is outside every terminal write's guard), and the record
+    read 'fenced' forever — a heartbeating attempt whose ledger said it
+    was dead. When the lease lapses, the row IS the reaper's subject (the
+    opposite direction: the crash window's own fence)."""
+    flow_id, claim = await _claimed(
+        wf_conn, wf_schema, wf_sql, metadata={"wf_source_logical_attempt": 1}
+    )
+    # The flow terminalizes while the job's attempt is live (a real
+    # claimed row: running, a future lease).
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', finished_at = now() WHERE id = $1",
+        flow_id,
+    )
+    live_row = await wf_conn.fetchrow(
+        f"SELECT status::text AS status, lock_expires_at FROM \"{wf_schema}\".jobs WHERE id = $1",
+        claim.job_id,
+    )
+    assert live_row is not None
+    assert live_row["status"] == "running" and live_row["lock_expires_at"] is not None
+
+    assert await reap_phantom_ledger(wf_pool, wf_sql) == 0, (
+        "the reaper fenced a LIVE claimed attempt's ledger row — the "
+        "attempt is heartbeating and will write its own terminal"
+    )
+    live_status = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".wf_step_ledger WHERE id = $1',
+        claim.ledger_id,
+    )
+    assert live_status == "running", live_status
+
+    # The lease lapses (the worker died): the row is now the reaper's subject.
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs SET lock_expires_at = now() - interval \'1 second\' '
+        "WHERE id = $1",
+        claim.job_id,
+    )
+    assert await reap_phantom_ledger(wf_pool, wf_sql) == 1
+    fenced_status = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".wf_step_ledger WHERE id = $1',
+        claim.ledger_id,
+    )
+    assert fenced_status == "fenced", fenced_status
