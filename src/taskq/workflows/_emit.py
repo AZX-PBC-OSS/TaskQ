@@ -996,9 +996,12 @@ async def wake_emit_backpressure(
                 )
             bound, _wake_generation, _handled_generation = _intent_generation(intent)
             while wins_tx < FLOW_DRAIN_MAX_WINS:
-                _bump("observations")
+                # The drain's reads are the §4.2 V-family's own units (one
+                # fresh observation + one candidate comparison per
+                # grant/completion — counted in `candidate_reads`); they are
+                # never duplicated into the event-side E census.
                 observation = await observe_emit_capacity(conn, wsql, flow_id=flow_id)
-                _bump("candidate_reads")
+                _bump("candidate_reads", 2)
                 candidate = await conn.fetchrow(
                     wsql.emit_candidate, flow_id, observation.charge, bound
                 )
