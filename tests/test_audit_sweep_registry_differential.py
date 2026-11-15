@@ -213,6 +213,11 @@ class ScriptConn:
         if "wf_emit_intent_rotation" in sql or "wf_emit_capacity" in sql:
             self.stream.append(("call", "wf_stmt"))
             return None
+        if "roots_updated" in sql:
+            # The root-maintenance statement's own shape: zero roots
+            # maintained, zero §5.4 fences (the double's world is empty).
+            self.stream.append(("call", "wf_stmt"))
+            return {"roots_updated": 0, "not_draining_fenced": 0}
         return {
             "blocked": 0,
             "blocked_required": 0,
