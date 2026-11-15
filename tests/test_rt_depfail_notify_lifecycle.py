@@ -24,6 +24,7 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.settings import WorkerSettings
 from taskq.testing.assertions import wait_for_condition
 from taskq.worker.notify import (
+    _NotifyEntry,
     _connected_lookup,
     _health_check_loop,
     _make_callback,
@@ -88,14 +89,21 @@ def _make_backend() -> PostgresBackend:
 
 def _make_channels(
     backend: PostgresBackend, worker_id: UUID = _WORKER_ID
-) -> list[tuple[str, object]]:
-    from taskq.constants import events_channel, wake_channel, worker_channel
+) -> list[_NotifyEntry]:
+    from taskq.constants import (
+        events_channel,
+        leader_wake_channel,
+        wake_channel,
+        worker_channel,
+    )
+    from taskq.worker.notify import _make_leader_wake_callback
 
     schema = "taskq_test"
     return [
-        (wake_channel(schema), _make_callback(backend)),
-        (events_channel(schema), _make_events_callback(backend, worker_id)),
-        (worker_channel(schema, str(worker_id)), _make_worker_events_callback(backend)),
+        _NotifyEntry(wake_channel(schema), _make_callback(backend), reconnect_backfill=True),
+        _NotifyEntry(events_channel(schema), _make_events_callback(backend, worker_id)),
+        _NotifyEntry(worker_channel(schema, str(worker_id)), _make_worker_events_callback(backend)),
+        _NotifyEntry(leader_wake_channel(schema), _make_leader_wake_callback(backend, worker_id)),
     ]
 
 
@@ -110,7 +118,7 @@ async def _run_health_loop(
     deps: Mock,
     backend: PostgresBackend,
     shutdown: asyncio.Event,
-    channels: list[tuple[str, object]],
+    channels: list[_NotifyEntry],
 ) -> asyncio.Task[None]:
     async def _runner() -> None:
         await _health_check_loop(deps, backend, shutdown, channels)
