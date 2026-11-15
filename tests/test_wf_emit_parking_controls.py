@@ -779,16 +779,25 @@ async def test_failed_root_keeps_parked_source_resolved_and_inert(
         child_task = asyncio.create_task(child_runner.tick(flow_id))
         await asyncio.wait_for(child_task, timeout=_WAKE_DEADLINE_S)
         allow_page_one.set()
+        # The wait accepts the LIVE park or the §5.4 fence that superseded
+        # it (the child's exhausted failure roots-fail fast; the fence is
+        # the same transaction's outcome).
         parked = await _await_source_status(
             wf_conn,
             wf_schema,
             flow_id,
             source_id,
             "source",
-            _park_is_live,
+            lambda state: _park_is_live(state) or (
+                state["status"] == "failed"
+                and state["error_class"] == "WorkflowNotDrainingError"
+            ),
             deadline_s=_FAILED_ROOT_OBSERVE_S,
         )
-        if not _park_is_live(parked):
+        if not (_park_is_live(parked) or (
+            parked["status"] == "failed"
+            and parked["error_class"] == "WorkflowNotDrainingError"
+        )):
             children_now = await _children(wf_conn, wf_schema, source_id, "screen")
             cursor_now = await _cursor(wf_conn, wf_schema, source_id)
             root_now = await wf_conn.fetchval(
@@ -838,19 +847,27 @@ async def test_failed_root_keeps_parked_source_resolved_and_inert(
         )
         assert root_failed, (
             "the failed child must terminalize the root while the source is "
-            f"parked resolved: {root_diagnostic}"
+            f"parked: {root_diagnostic}"
         )
-        assert _park_is_live(snapshot), (
-            f"the parked source must remain live-parked when the root fails: {root_diagnostic}"
+        # BEHAVIOR SUPERSESSION (the contract's §5.4): the failed root
+        # behind this child's EXHAUSTED retry policy, with the source's
+        # un-emitted committed cursor still parked, is the proven
+        # non-drainage shape — the SAME failure transaction fenced the
+        # source (the old law left it live-parked resolved; that law is
+        # superseded). The fence is the refusal: the named durable class,
+        # the reason, the causal ids, no ledger 'failed' ladder charge.
+        assert snapshot["status"] == "failed", (
+            f"the proven non-drainage fence terminalizes the parked source: {root_diagnostic}"
         )
+        assert snapshot["error_class"] == "WorkflowNotDrainingError", root_diagnostic
         assert snapshot["failed_ledger"] == 0, (
-            "the source must carry no failed ledger terminal for a failed "
-            f"sibling: {root_diagnostic}"
+            "the fence spends no source ladder charge: the refusal is not a "
+            f"failed ladder terminal on the source's own claim: {root_diagnostic}"
         )
-        # Remove the resolved-blocked waiter so the next page would fit.  A
-        # spurious wake under the already-failed root must NOT re-arm the
-        # source; pumping the direct driver must not create a later claim,
-        # page or cursor movement.
+        # Remove the resolved-blocked waiter so a spurious wake would have
+        # something to win. The FENCED source must never re-arm: pumping
+        # the direct driver must not create a later claim, page or cursor
+        # movement.
         await wf_conn.execute(f'DELETE FROM "{wf_schema}".jobs WHERE id = $1', join_id)
         for _ in range(3):
             await source_runner.tick(flow_id)
@@ -872,13 +889,10 @@ async def test_failed_root_keeps_parked_source_resolved_and_inert(
             default=str,
             sort_keys=True,
         )
-        assert inert["status"] == "scheduled", (
-            f"a failed root must not promote its parked source: {inert_diagnostic}"
+        assert inert["status"] == "failed", (
+            f"the fenced source stays terminal (a failed root never re-arms it): {inert_diagnostic}"
         )
-        assert inert["blocking_reason"] == "backpressure", inert_diagnostic
-        # REPRESENTATION INVERSION: the park instant is stored (NOT NULL),
-        # never a NULL due date.
-        assert inert["scheduled_at"] is not None, inert_diagnostic
+        assert inert["error_class"] == "WorkflowNotDrainingError", inert_diagnostic
         assert inert["attempt"] == snapshot["attempt"] == 0, inert_diagnostic
         assert source_attempts == [(0, 1), (1, 1)], (
             "the failed root must never re-enter the parked source's body: "

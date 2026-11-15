@@ -112,6 +112,55 @@ _not_draining_counter = get_meter().create_counter(
     "proof behind an exhausted child failure, with an un-emitted parked cursor).",
 )
 
+@dataclass(frozen=True, slots=True)
+class EmitCapacityCounters:
+    """The §4.2 operation-family census, live at the real sites.
+
+    Every family the invocation-bound table names is counted exactly once
+    per operation instance: ``admission_decisions`` (P + K: one whole-page
+    admission decision each), ``source_body_claims`` (P + K + S + J + C),
+    ``fitted_grants`` (G), ``new_intents`` (I), ``flow_drains`` (D),
+    ``global_drains`` (U), and the read families ``probes`` (E_probe = T)
+    and ``observations`` (E_observation = X + K) plus ``candidate_reads``
+    (the G + D read family). No count is hidden inside another; the
+    snapshot is the acceptance report's input."""
+
+    admission_decisions: int = 0
+    source_body_claims: int = 0
+    fitted_grants: int = 0
+    new_intents: int = 0
+    flow_drains: int = 0
+    global_drains: int = 0
+    probes: int = 0
+    observations: int = 0
+    candidate_reads: int = 0
+    parks: int = 0
+    terminals: int = 0
+
+    def snapshot(self) -> dict[str, int]:
+        from dataclasses import asdict
+
+        return {k: int(v) for k, v in asdict(self).items()}
+
+
+#: The process census (the tests reset it between lanes; the product never
+#: reads it for behavior).
+COUNTERS = EmitCapacityCounters()
+
+
+def _bump(name: str, by: int = 1) -> None:
+    object.__setattr__(COUNTERS, name, getattr(COUNTERS, name) + by)
+
+
+def reset_counters() -> dict[str, int]:
+    """Zero the census and return the pre-reset snapshot (the lane's own
+    seam; the product's behavior never reads it)."""
+    before = COUNTERS.snapshot()
+    for name in before:
+        object.__setattr__(COUNTERS, name, 0)
+    return before
+
+
 #: The cursor checkpoint's metadata key on the source row itself (the
 #: checkpoint rides the row's jsonb — no new table, no new column, no
 #: migration). The value is the caller's cursor document, merged at the
@@ -429,6 +478,8 @@ async def emit_capacity_event(
 
     await verify_emit_capacity_objects(conn, wsql.schema)
     if probe:
+        _bump("terminals")
+        _bump("probes")
         if await conn.fetchval(wsql.emit_park_exists, flow_id) is None:
             return False
     intent = await conn.fetchrow(wsql.emit_intent_lock, flow_id)
@@ -443,6 +494,12 @@ async def emit_capacity_event(
             "terminal/park event — the bound stamp is missing (fail-closed)"
         )
     bound, wake_generation, handled_generation = _intent_generation(intent)
+    if not probe:
+        # The park's own event (§4.1 rule 4): the park IS the K family's
+        # admission decision and its one observation.
+        _bump("parks")
+        _bump("admission_decisions")
+    _bump("observations")
     observation = await observe_emit_capacity(conn, wsql, flow_id=flow_id)
     if not observation.something_fits(bound):
         return False
@@ -451,6 +508,7 @@ async def emit_capacity_event(
         # durable fallback makes that suppression safe.
         return False
     created = await conn.fetchval(wsql.emit_intent_generation, flow_id)
+    _bump("new_intents")
     if created is None:
         raise EmitCapacityCorruptionError(
             f"the bounded run {flow_id}'s wake generation refused to advance "
@@ -808,6 +866,7 @@ async def emit_batch(
                     _window_hook=_window_hook,
                     run_priority=run_priority,
                 )
+            _bump("admission_decisions")
             if poison:
                 _raise_poison(flow_id, source_id, poison)
             return tuple(child_ids)
@@ -852,6 +911,7 @@ async def emit_batch(
                     _window_hook=_window_hook,
                     run_priority=run_priority,
                 )
+            _bump("admission_decisions")
             if poison:
                 _raise_poison(flow_id, source_id, poison)
             return tuple(child_ids)
@@ -917,6 +977,7 @@ async def wake_emit_backpressure(
     recovery arms' to observe; notifications are accelerators, never
     authority.
     """
+    _bump("flow_drains")
     total = 0
     completed = False
     missed = False
@@ -935,7 +996,9 @@ async def wake_emit_backpressure(
                 )
             bound, _wake_generation, _handled_generation = _intent_generation(intent)
             while wins_tx < FLOW_DRAIN_MAX_WINS:
+                _bump("observations")
                 observation = await observe_emit_capacity(conn, wsql, flow_id=flow_id)
+                _bump("candidate_reads")
                 candidate = await conn.fetchrow(
                     wsql.emit_candidate, flow_id, observation.charge, bound
                 )
@@ -956,6 +1019,7 @@ async def wake_emit_backpressure(
                     break
                 wins_tx += 1
                 total += 1
+                _bump("fitted_grants")
                 # NOTIFY accelerates an already durable pending transition.
                 # The effective actor assignment, not a stale original label,
                 # is named.
@@ -989,6 +1053,7 @@ async def drain_pending_emit_intents(pool: asyncpg.Pool, wsql: WorkflowSql) -> i
     an empty ordered read wraps immediately once. For a fixed set of N
     continuously pending flows every flow is offered at least once within
     ``ceil(N/100) + 1`` selections, independent of the failing prefix."""
+    _bump("global_drains")
     async with pool.acquire() as conn:
         row = await conn.fetchrow(wsql.emit_rotation_read)
         after: JobId = _ZERO_UUID

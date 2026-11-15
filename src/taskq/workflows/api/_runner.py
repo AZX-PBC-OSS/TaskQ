@@ -1239,6 +1239,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         law. Telemetry off → the attributes are never built (the
         vanilla's gated-allocation law) and the span is the
         non-recording no-op."""
+        if self._emit_capacity and getattr(node, "kind", None) == "chain_source":
+            from taskq.workflows._emit import _bump
+
+            # The source body's claim entry (the §4.2 claim family's unit:
+            # P + K + S + J + C — every genuine claim of the chain source's
+            # row, including the post-park resumption and the genuine
+            # failure's J/C re-claims).
+            _bump("source_body_claims")
         with safe_start_span(
             step_span_name(row["step_key"]),
             kind=SpanKind.INTERNAL,
