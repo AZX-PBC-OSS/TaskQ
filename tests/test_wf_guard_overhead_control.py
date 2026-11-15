@@ -14,11 +14,7 @@ from __future__ import annotations
 
 import json as _json
 import statistics
-from typing import Any
-
 import pytest
-
-from taskq.backend._protocol import JobId
 
 pytestmark = pytest.mark.integration
 

@@ -15,7 +15,6 @@ from typing import Any, cast
 
 import pytest
 
-from taskq.backend._protocol import JobId
 from taskq.workflows._sql import WorkflowSql
 
 pytestmark = pytest.mark.integration
@@ -120,7 +119,7 @@ class _ParkArm:
                 insert_order.append(lo)
             lo += 1
             hi -= 1
-        for slot, index in enumerate(insert_order):
+        for index in insert_order:
             job_id, width = rows[index]
             age = count - index  # the logical order: later index = newer
             await self._conn.execute(

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import enum
-import json as _json
 from typing import Any
 
 import pytest
@@ -139,7 +138,7 @@ async def test_bounded_wake_latency_measured_on_the_new_claim(
         del item
         # The page-0 children hold the bound until the release (the park's
         # precondition); the page-1 child (the resumed page) runs free.
-        if ctx.map_index < 2:
+        if ctx.map_index is not None and ctx.map_index < 2:
             await release.wait()
         return OkOut.OK
 
@@ -211,7 +210,6 @@ async def test_bounded_wake_latency_measured_on_the_new_claim(
         await source_task
     except asyncio.CancelledError:
         pass
-    new_claim: Any = "measured-in-sql"
     # THE MEASUREMENT — the pair the machinery can PROVE, causally ordered
     # in one clock domain:
     #

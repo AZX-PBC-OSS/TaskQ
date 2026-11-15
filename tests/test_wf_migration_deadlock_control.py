@@ -247,10 +247,10 @@ async def test_migration_deadlock_handshake_is_victim_agnostic(pg_dsn: str) -> N
             # re-apply owed); the writer's application rolled back.
             assert record == 1, facts
             assert _post_fold_complete(facts), facts
-        no_partial = _post_fold_complete(facts) or (
-            record == 0 and not _post_fold_complete(facts)
-        )
-        assert no_partial
+        # No partial object set in either branch: the post-fold set is
+        # complete (the surviving migration) or the pre-fold shape is
+        # intact with no record (the lost migration, re-applied above).
+        assert record == 1 and _post_fold_complete(facts)
         await probe.close()
         await migration_conn.close()
         await writer_conn.close()
