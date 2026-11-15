@@ -822,11 +822,26 @@ _SWEEP_3_SQL = """\
 -- rationale is _SWEEP_1_SQL's comment block (LIMIT caps one call's
 -- lock-hold and write set; MATERIALIZED fences the LIMIT; no keyset
 -- cursor — every snapped row is transitioned by this same statement).
+--
+-- THE EXACT-PARK EXCLUSION: a scheduled row carrying the live
+-- EmitBackpressure marker is never the scheduler's to promote — the
+#718 guard trigger (01.00.42_01) refuses the transition server-side for
+-- old binaries, and this NOT-P leg keeps the new binary from ever
+-- trying. A winning reserved promotion installs the versioned
+-- reservation and removes the marker, so genuinely promoted rows pass.
 WITH snap AS MATERIALIZED (
     SELECT id, status AS prev_status
     FROM "{schema}".jobs
     WHERE status = 'scheduled'
       AND scheduled_at <= statement_timestamp()
+      AND NOT (
+          metadata @> '{{"blocking_reason":"backpressure"}}'::jsonb
+          AND metadata @> '{{"wf_deferral":{{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}}}'::jsonb
+          AND metadata @> '{{"wf_emit_backpressure":{{"version":1}}}}'::jsonb
+          AND step_key IS NOT NULL
+          AND step_key <> '__flow__'
+          AND metadata ? 'flow_id'
+      )
     ORDER BY scheduled_at
     LIMIT $1
     FOR UPDATE SKIP LOCKED

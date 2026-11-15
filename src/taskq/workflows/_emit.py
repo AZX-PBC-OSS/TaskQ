@@ -364,9 +364,14 @@ async def ensure_emit_capacity(
     stamp or first new-binary bounded claim adoption) and return the
     authoritative stored bound. A record that already exists with a
     different bound fails closed — the bound is immutable, so a mismatch is
-    corruption, never an update."""
+    corruption, never an update. The §2.1 whole-object-set preflight runs
+    first (cached per schema): a schema lacking any part of the folded
+    ``42_01`` object set refuses before any write."""
     if type(bound) is not int or bound < 1:
         raise ValueError(f"the emit bound must be a positive int; got {bound!r}")
+    from taskq.workflows._capability import verify_emit_capacity_objects
+
+    await verify_emit_capacity_objects(conn, wsql.schema)
     await conn.execute(wsql.emit_intent_stamp, flow_id, bound)
     row = await conn.fetchrow(wsql.emit_intent_bound, flow_id)
     if row is None or row["bound"] is None:
@@ -404,6 +409,9 @@ async def emit_capacity_event(
     crossed the threshold (a waiter newly fits, no intent was pending) and
     created the durable generation bump with its accelerator notification.
     """
+    from taskq.workflows._capability import verify_emit_capacity_objects
+
+    await verify_emit_capacity_objects(conn, wsql.schema)
     if probe:
         if await conn.fetchval(wsql.emit_park_exists, flow_id) is None:
             return False
@@ -894,6 +902,9 @@ async def wake_emit_backpressure(
     while True:
         wins_tx = 0
         async with pool.acquire() as conn, conn.transaction():
+            from taskq.workflows._capability import verify_emit_capacity_objects
+
+            await verify_emit_capacity_objects(conn, wsql.schema)
             await conn.execute(wsql.emit_admission_lock, str(flow_id))
             intent = await conn.fetchrow(wsql.emit_intent_lock, flow_id)
             if intent is None:
@@ -939,3 +950,92 @@ async def wake_emit_backpressure(
         # next chunk's own first fresh observation is the ceiling rule's
         # final observation.
     return EmitWakeResult(promoted=total, intent_completed=completed, missed=missed)
+
+#: The zero UUID — the rotation cursor's reset value (the wrap face).
+_ZERO_UUID: Final[JobId] = JobId("00000000-0000-0000-0000-000000000000")
+
+
+async def drain_pending_emit_intents(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
+    """The leader's global drain (§6): the pending-intent selection — at most
+    100 distinct flow ids in one short indexed read, under the persistent
+    rotating ``after_flow_id`` cursor — followed by each selected flow's own
+    bounded drain transaction (each commits independently; no row lock is
+    retained past the selection).
+
+    A full selection persists its last ``flow_id`` as the rotation cursor
+    even if a selected flow failed; a short selection resets the cursor to
+    the zero UUID after its flows were offered, so the next selection wraps;
+    an empty ordered read wraps immediately once. For a fixed set of N
+    continuously pending flows every flow is offered at least once within
+    ``ceil(N/100) + 1`` selections, independent of the failing prefix."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(wsql.emit_rotation_read)
+        after: JobId = _ZERO_UUID
+        if row is not None and row["after_flow_id"] is not None:
+            after = JobId(str(row["after_flow_id"]))
+    offered = 0
+    wrapped = False
+    while True:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(wsql.emit_pending_intents, after)
+        if not rows:
+            if after != _ZERO_UUID and not wrapped:
+                wrapped = True
+                after = _ZERO_UUID
+                continue
+            break
+        for intent_row in rows:
+            flow = JobId(str(intent_row["flow_id"]))
+            try:
+                await wake_emit_backpressure(pool, wsql, flow_id=flow)
+            except Exception:
+                # One flow's failure never suppresses the rotation's
+                # advancement (§6): the bounded diagnostic stands in for the
+                # flow, later flows are still offered, and the failed flow's
+                # own pending intent is retried on a later selection.
+                logger.warning(
+                    "wf.emit_intent_drain_flow_failed",
+                    flow_id=str(flow),
+                    offered_anyway=True,
+                )
+            offered += 1
+        if len(rows) < 100:
+            async with pool.acquire() as conn:
+                await conn.execute(wsql.emit_rotation_write, _ZERO_UUID)
+            break
+        after = JobId(str(rows[-1]["flow_id"]))
+        # The rotation is committed independently of the per-flow work.
+        async with pool.acquire() as conn:
+            await conn.execute(wsql.emit_rotation_write, after)
+    return offered
+
+
+async def sweep_emit_markers(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
+    """The bounded exact-marker recovery sweep (§5.3): visit only the
+    ``jobs_wf_emit_park_idx`` partial index, derive just the marked bounded
+    flows, and create each one's missing required intent (the one-time bound
+    adoption from the marker's own validated facts, then the generation bump
+    when no intent is pending). An empty index result ends the sweep — there
+    is no parked-estate scan, no source re-claim, and no due-time wake."""
+    async with pool.acquire() as conn, conn.transaction():
+        rows = await conn.fetch(wsql.emit_marker_sweep)
+        repaired = 0
+        for row in rows:
+            flow = JobId(str(row["flow_id"]))
+            bound = row["bound"]
+            if type(bound) is not int or bound < 1:
+                raise EmitCapacityCorruptionError(
+                    f"the exact-marker sweep found flow {flow} with a malformed "
+                    f"stored bound ({bound!r})"
+                )
+            await ensure_emit_capacity(conn, wsql, flow_id=flow, bound=int(bound))
+            created = await conn.fetchval(wsql.emit_intent_generation, flow)
+            if created is not None:
+                repaired += 1
+    if repaired:
+        logger.warning(
+            "wf.emit_marker_sweep_repaired",
+            kind="wf_emit_marker_sweep_repaired",
+            repaired=repaired,
+        )
+    return repaired

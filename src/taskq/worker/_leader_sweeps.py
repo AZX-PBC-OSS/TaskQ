@@ -678,31 +678,29 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             batch_size=ctx.deps.settings.event_writer_batch_size,
         )
 
-    # Estate-wide parked-source recovery state: the FAIR cursor (the wrap law)
-    # alternates a bounded forward keyset stride with a from-start WRAP pass
-    # that examines the whole parked population, so no blocked prefix — however
-    # long — can starve a fitted waiter behind it; a short stride pass still
-    # resets by itself.
-    from taskq.workflows._emit import EstateWakeCursor
-
-    wf_emit_backpressure_state = EstateWakeCursor()
-
-    async def wf_emit_backpressure_wake_call() -> int:
-        from taskq.workflows._emit import wake_emit_backpressure
+    # The bounded recovery arms (§5.3): the pending-intent selection (the
+    # §6 global rotation over `wf_emit_capacity`) and the bounded
+    # exact-marker sweep (the completeness authority for an omitted
+    # terminal seat). Both cease work when their index result is empty;
+    # neither is a parked-estate seq scan, a source re-claim, or a due-time
+    # wake.
+    async def wf_emit_intent_drain_call() -> int:
+        from taskq.workflows._emit import drain_pending_emit_intents
         from taskq.workflows.engine import render_workflow_sql
 
-        after, batch, exhaust = wf_emit_backpressure_state.next_pass(
-            ctx.deps.settings.event_writer_batch_size
-        )
-        result = await wake_emit_backpressure(
+        return await drain_pending_emit_intents(
             ctx.deps.dispatcher_pool,
             render_workflow_sql(ctx.deps.settings.schema_name),
-            batch_size=batch,
-            after=after,
-            exhaust=exhaust,
         )
-        wf_emit_backpressure_state.observe(result)
-        return result.woken
+
+    async def wf_emit_marker_sweep_call() -> int:
+        from taskq.workflows._emit import sweep_emit_markers
+        from taskq.workflows.engine import render_workflow_sql
+
+        return await sweep_emit_markers(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+        )
 
     async def wf_outbox_retention_call() -> int:
         # delivered outbox rows retained forever — measured at 5.9k and
@@ -1192,16 +1190,30 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_hold_stamp_reconcile_tick"),
         ),
         _SweepSpec(
-            # One index-backed estate pass owns crash/missed-seat recovery.
-            # Its closure cursor drains fairly across calls, so a still-full
-            # prefix cannot pin every future pass to the same blocked rows.
-            name="wf_emit_backpressure_wake",
-            call=wf_emit_backpressure_wake_call,
-            warn_event="sweep-wf-emit-backpressure-wake-failed",
-            warn_kind="sweep_wf_emit_backpressure_wake_failed",
+            # The pending-intent selection (§5.3/§6): one indexed 100-flow
+            # read under the persistent rotation, then each selected flow's
+            # own bounded drain transaction. NOTIFY loss and queue overflow
+            # heal here; an empty index costs one short read.
+            name="wf_emit_intent_drain",
+            call=wf_emit_intent_drain_call,
+            warn_event="sweep-wf-emit-intent-drain-failed",
+            warn_kind="sweep_wf_emit_intent_drain_failed",
             gated_on=("workflow_sweeps_capable",),
             drain=False,
-            dbg_tick=_dbg_tick("wf_emit_backpressure_wake_tick"),
+            dbg_tick=_dbg_tick("wf_emit_intent_drain_tick"),
+        ),
+        _SweepSpec(
+            # The bounded exact-marker sweep (§5.3): visits only the
+            # jobs_wf_emit_park_idx partial index and creates the missing
+            # required intent for a marked bounded flow (the completeness
+            # authority for an omitted terminal seat).
+            name="wf_emit_marker_sweep",
+            call=wf_emit_marker_sweep_call,
+            warn_event="sweep-wf-emit-marker-sweep-failed",
+            warn_kind="sweep_wf_emit_marker_sweep_failed",
+            gated_on=("workflow_sweeps_capable",),
+            drain=False,
+            dbg_tick=_dbg_tick("wf_emit_marker_sweep_tick"),
         ),
         _SweepSpec(
             # wf_outbox_retention — the delivered outbox's TTL: delivered rows are narration; past the period

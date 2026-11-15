@@ -821,6 +821,9 @@ class MaintenanceLeader:
                 tg.create_task(self._scheduled_wake_loop(shutdown), name="leader.scheduled_wake")
                 tg.create_task(self._cron_loop(shutdown), name="leader.cron")
                 tg.create_task(self._sweep_loop(shutdown), name="leader.sweep")
+                tg.create_task(
+                    self._wf_emit_capacity_drain_loop(shutdown), name="leader.wf_emit_capacity"
+                )
                 tg.create_task(self._prune_loop(shutdown), name="leader.prune")
                 tg.create_task(self._archive_expiry_loop(shutdown), name="leader.archive_expiry")
                 tg.create_task(self._queue_depth_loop(shutdown), name="leader.queue_depth")
@@ -2342,6 +2345,68 @@ class MaintenanceLeader:
 
     async def _sweep_loop(self, shutdown: asyncio.Event) -> None:
         await _sweep_loop(self._sweep_ctx, shutdown)
+
+    async def _wf_emit_capacity_drain_once(self) -> None:
+        """One global pending-intent drain pass (the §6 selection + the
+        per-flow bounded drains)."""
+        from taskq.workflows._emit import drain_pending_emit_intents
+        from taskq.workflows.engine import render_workflow_sql
+
+        await drain_pending_emit_intents(
+            self._sweep_ctx.deps.dispatcher_pool,
+            render_workflow_sql(self._sweep_ctx.deps.settings.schema_name),
+        )
+
+    async def _wf_emit_capacity_drain_loop(self, shutdown: asyncio.Event) -> None:
+        """The #718 capacity drain's event arm: a committed capacity
+        notification arms the drain immediately; leadership assumption
+        performs the initial reconciliation backfill. Durable intents, never
+        notifications, are the authority — between arms this loop owns no
+        worker slot, claim, flow set, or per-flow task, and the sweep
+        table's pending-intent selection at the maintenance interval bounds
+        notification loss. A drain error is logged with a bounded
+        diagnostic and the loop resumes waiting (the event is level
+        -cleared, so a failing drain cannot spin); the periodic fallback
+        owns the retry."""
+        subscribe = getattr(self._backend, "subscribe_wf_emit_capacity", None)
+        if not callable(subscribe):
+            logger.warning(
+                "wf-emit-capacity-subscribe-missing",
+                kind="wf_emit_capacity_subscribe_missing",
+            )
+            return
+        cm = cast("contextlib.AbstractAsyncContextManager[asyncio.Event]", subscribe())
+        async with cm as event:
+            # Leadership assumption (the R term's initial reconciliation).
+            try:
+                await self._wf_emit_capacity_drain_once()
+            except Exception as exc:
+                logger.warning(
+                    "wf-emit-capacity-drain-failed",
+                    kind="wf_emit_capacity_drain_failed",
+                    error_class=type(exc).__name__,
+                    error=str(exc)[:500],
+                )
+            while not shutdown.is_set():
+                wake_task = asyncio.create_task(event.wait())
+                stop_task = asyncio.create_task(shutdown.wait())
+                done, pending = await asyncio.wait(
+                    {wake_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending:
+                    task.cancel()
+                if stop_task in done:
+                    break
+                event.clear()
+                try:
+                    await self._wf_emit_capacity_drain_once()
+                except Exception as exc:
+                    logger.warning(
+                        "wf-emit-capacity-drain-failed",
+                        kind="wf_emit_capacity_drain_failed",
+                        error_class=type(exc).__name__,
+                        error=str(exc)[:500],
+                    )
 
     async def _prune_loop(self, shutdown: asyncio.Event) -> None:
         await _prune_loop(self._sweep_ctx, shutdown)

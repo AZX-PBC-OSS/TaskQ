@@ -74,12 +74,17 @@ WHERE id = $1
     status = 'pending'
     OR (status = 'scheduled' AND scheduled_at <= now())
   )
-  -- A parked source has no timer and no body. Even a malformed/stale status
-  -- transition cannot bypass the prompt wake's atomic marker removal here.
+  -- A parked source has no body and no claim of its own: the marker, never
+  -- a timestamp, is the discriminator, and a row still carrying the live
+  -- EmitBackpressure marker is the promotion's to move (the promotion CAS
+  -- removes the marker atomically with the reservation it installs).
   AND NOT (
       metadata @> '{"blocking_reason":"backpressure"}'::jsonb
-      AND metadata @> '{"wf_deferral":{"signal":"EmitBackpressure"}}'::jsonb
+      AND metadata @> '{"wf_deferral":{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}'::jsonb
       AND metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
+      AND step_key IS NOT NULL
+      AND step_key <> '__flow__'
+      AND metadata ? 'flow_id'
   )
   AND deps_pending = 0
   -- THE HOLD-STAMP LEG (the fence's last word — the two-driver race's
@@ -283,23 +288,22 @@ WHERE (metadata->>'flow_id')::uuid = $1
     OR (
       status = 'scheduled'
       -- THE CLAIM CAS'S OWN SCHEDULED SHAPE: a scheduled row is claimable
-      -- only at a real non-NULL due time that has passed — the same leg the
-      -- claim CAS evaluates (NULL fails scheduled_at <= now() and can never
-      -- be claimed). A scheduled NULL row is the capacity park's exclusive
-      -- storage domain (01.00.41_04's constraint enforces the exact marker);
-      -- it is never listed here and never spins the driver.
-      AND scheduled_at IS NOT NULL
+      -- only at a real due time that has passed — the same leg the claim
+      -- CAS evaluates.
       AND scheduled_at <= now()
     )
   )
-  -- The park's marker leg mirrors the claim CAS's own exclusion: a row
-  -- still carrying the live backpressure marker is the wake's to promote,
-  -- never a claim's to take — even a stale due stamp cannot bypass the
-  -- marker's removal by the promoting wake.
+  -- The exact-park exclusion mirrors the claim CAS's own: a row still
+  -- carrying the live EmitBackpressure marker is the promotion's to move,
+  -- never a claim's to take — the promotion removes the marker atomically
+  -- with the reservation it installs.
   AND NOT (
       metadata @> '{"blocking_reason":"backpressure"}'::jsonb
-      AND metadata @> '{"wf_deferral":{"signal":"EmitBackpressure"}}'::jsonb
+      AND metadata @> '{"wf_deferral":{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}'::jsonb
       AND metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
+      AND step_key IS NOT NULL
+      AND step_key <> '__flow__'
+      AND metadata ? 'flow_id'
   )
   AND deps_pending = 0
   AND step_key <> '__flow__'

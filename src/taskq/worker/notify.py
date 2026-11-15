@@ -51,6 +51,7 @@ from taskq.constants import (
     events_channel,
     leader_wake_channel,
     wake_channel,
+    wf_emit_capacity_channel,
     worker_channel,
 )
 from taskq.obs import get_logger, get_meter
@@ -370,10 +371,57 @@ def _make_leader_wake_callback(
     return _on_leader_wake
 
 
+def _make_wf_emit_capacity_callback(
+    backend: PostgresBackend,
+) -> Callable[[asyncpg.Connection, int, str, str], None]:
+    """The #718 emit-capacity channel's listener (leadership-gated): a
+    committed capacity notification arms the leader's drain event. The
+    callback is total with respect to local delivery — it sets its own
+    events FIRST and does only non-raising bookkeeping after; a raising
+    hook can never prevent the event from being set. The payload is never
+    parsed (no invented capacity payload): the durable intent rows, which
+    the drain re-reads, are the authority. Only the current fenced leader
+    holds a subscriber, so an empty registry (a follower, or a worker
+    outside the leadership) arms nothing."""
+
+    def _on_wf_emit_capacity(
+        conn: asyncpg.Connection,
+        pid: int,
+        channel: str,
+        payload: str,
+    ) -> None:
+        _notify_received_counter.add(1)
+        for event in list(backend._wf_emit_capacity_subscribers):  # pyright: ignore[reportPrivateUsage]  # Why: snapshot iteration, the same registry shape as the leadership wake's subscribers; event.set() is idempotent
+            event.set()
+        logger.debug(
+            "wf_emit_capacity_received",
+            kind="wf_emit_capacity_received",
+            channel=channel,
+            pid=pid,
+        )
+
+    return _on_wf_emit_capacity
+
+
+@dataclass(frozen=True, slots=True)
+class _NotifyEntry:
+    """One listener registry entry: its channel, its callback, and the
+    explicit per-entry reconnect-backfill hook flag. The flag is the ONLY
+    reconnect behavior selector: a reconnect offers one simulated wake to
+    every flagged entry, using that entry's own channel and callback, after
+    all LISTEN/add_listener calls succeed and before any tail processing —
+    no entry is omitted, no hook reuses another entry's channel, and no
+    cross-channel notification is synthesized."""
+
+    channel: str
+    callback: Callable[[asyncpg.Connection, int, str, str], None]
+    reconnect_backfill: bool = False
+
+
 async def reconnect_notify_conn(
     deps: WorkerDeps,
     backend: PostgresBackend,
-    channels: list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]],
+    channels: list[_NotifyEntry],
     *,
     close_old: bool = False,
 ) -> None:
@@ -454,7 +502,8 @@ async def reconnect_notify_conn(
         # False when no socket is available).
         apply_keepalive_to_conn(new_conn, label="notify")
         try:
-            for channel, on_notify in channels:
+            for entry in channels:
+                channel, on_notify = entry.channel, entry.callback
                 # Why bounded: a rebuilt conn can complete the factory
                 # handshake and still black-hole on the LISTEN execute ,
                 # the same black-hole shape the health-check query bound
@@ -486,16 +535,23 @@ async def reconnect_notify_conn(
             await close_conn_bounded(new_conn, "notify", CLOSE_TIMEOUT_SECS, family="mid_run")
             raise
         deps.notify_conn = new_conn
-        # Simulate a wake notify so any pending subscribers are unblocked after reconnect.
-        if channels:
-            wake_ch, wake_cb = channels[0]
-            wake_cb(new_conn, 0, wake_ch, "")
+        # Reconnect correction: EVERY registered reconnect-backfill hook is
+        # offered one simulated wake, using that entry's OWN channel and
+        # callback, after ALL LISTEN/add_listener calls succeeded and before
+        # any tail processing. No hook reuses another entry's channel (no
+        # cross-channel notification is synthesized), no non-zero entry is
+        # omitted, and no invented capacity payload is parsed — each hook
+        # sets its own local event first (total with respect to local
+        # delivery) and the durable backfill re-reads real rows.
+        for entry in channels:
+            if entry.reconnect_backfill:
+                entry.callback(new_conn, 0, entry.channel, "")
         _notify_reconnects_counter.add(1)
         _connected_lookup[backend] = True
         logger.info(
             "notify-listener-connect",
             kind="notify_listener_connect",
-            channels=[ch for ch, _ in channels],
+            channels=[entry.channel for entry in channels],
             host=dsn_host(str(deps.settings.pg_dsn_direct))
             if deps.settings.pg_dsn_direct
             else None,
@@ -522,7 +578,7 @@ async def _recover_notify_conn(
     deps: WorkerDeps,
     backend: PostgresBackend,
     shutdown: asyncio.Event,
-    channels: list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]],
+    channels: list[_NotifyEntry],
     conn: asyncpg.Connection,
     exc: BaseException,
 ) -> asyncpg.Connection | None:
@@ -546,9 +602,10 @@ async def _recover_notify_conn(
         "notify-conn-error",
         kind="notify_conn_error",
         error=repr(exc),
-        channels=[ch for ch, _ in channels],
+        channels=[entry.channel for entry in channels],
     )
-    for channel, on_notify in channels:
+    for entry in channels:
+        channel, on_notify = entry.channel, entry.callback
         # Why bounded + TimeoutError suppressed: the unlisten is a
         # best-effort network round trip on a conn already judged
         # dead, unbounded, a wedged conn parks the health check's
@@ -597,7 +654,7 @@ async def _recover_notify_conn(
                     reason="caller-owned notify_conn dropped and no "
                     "notify_conn_factory to rebuild through; falling "
                     "back to poll-based dispatch",
-                    channels=[ch for ch, _ in channels],
+                    channels=[entry.channel for entry in channels],
                 )
                 return None
             attempt += 1
@@ -620,7 +677,7 @@ async def _recover_notify_conn(
                 delay=slept,
                 error=repr(recovery_exc),
                 error_type=type(recovery_exc).__name__,
-                channels=[ch for ch, _ in channels],
+                channels=[entry.channel for entry in channels],
             )
             await asyncio.sleep(slept)
             delay = min(delay * 2, 30.0)
@@ -631,7 +688,7 @@ async def _health_check_loop(
     deps: WorkerDeps,
     backend: PostgresBackend,
     shutdown: asyncio.Event,
-    channels: list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]],
+    channels: list[_NotifyEntry],
 ) -> None:
     # Deliberately does not tick LoopLiveness. This loop is exempt from
     # watchdog detector 2 (see _watchdog's module docstring), for three
@@ -696,11 +753,22 @@ async def notify_listener_loop(
     assert_own_process("worker-notify-listener-loop")
     schema = deps.settings.schema_name
     worker_id_str = str(worker_id)
-    channels: list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]] = [
-        (wake_channel(schema), _make_callback(backend)),
-        (events_channel(schema), _make_events_callback(backend, worker_id)),
-        (worker_channel(schema, worker_id_str), _make_worker_events_callback(backend)),
-        (leader_wake_channel(schema), _make_leader_wake_callback(backend, worker_id)),
+    channels: list[_NotifyEntry] = [
+        _NotifyEntry(wake_channel(schema), _make_callback(backend), reconnect_backfill=True),
+        _NotifyEntry(events_channel(schema), _make_events_callback(backend, worker_id)),
+        _NotifyEntry(worker_channel(schema, worker_id_str), _make_worker_events_callback(backend)),
+        _NotifyEntry(
+            leader_wake_channel(schema), _make_leader_wake_callback(backend, worker_id)
+        ),
+        # The #718 emit-capacity channel: the same registry, a known NON-ZERO
+        # index, its own leadership-gated callback, and its own
+        # reconnect-backfill hook. Only the current fenced leader arms the
+        # drain event; every listener retains its ordinary duties.
+        _NotifyEntry(
+            wf_emit_capacity_channel(schema),
+            _make_wf_emit_capacity_callback(backend),
+            reconnect_backfill=True,
+        ),
     ]
 
     _active_listeners.add(backend)
@@ -720,7 +788,8 @@ async def notify_listener_loop(
 
     try:
         try:
-            for channel, on_notify_callback in channels:
+            for entry in channels:
+                channel, on_notify_callback = entry.channel, entry.callback
                 await asyncio.wait_for(
                     deps.notify_conn.add_listener(channel, on_notify_callback),  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess]  # Why: stubs over-narrow callback type; notify_conn is non-None after open_worker_deps
                     timeout=float(deps.settings.notify_listener_setup_timeout),
@@ -730,7 +799,7 @@ async def notify_listener_loop(
                 "notify-listener-setup-timeout",
                 kind="notify_listener_setup_timeout",
                 timeout=float(deps.settings.notify_listener_setup_timeout),
-                channels=[ch for ch, _ in channels],
+                channels=[entry.channel for entry in channels],
             )
             if deps.owns_notify_conn:
                 conn = deps.notify_conn
@@ -782,7 +851,8 @@ async def notify_listener_loop(
         deps.notify_reconnect_fn = None
         _connected_lookup[backend] = False
         _connected_lookup.pop(backend, None)
-        for channel, on_notify_callback in channels:
+        for entry in channels:
+            channel, on_notify_callback = entry.channel, entry.callback
             # Why bounded + TimeoutError suppressed: the teardown unlisten
             # is a best-effort network round trip, unbounded, a wedged
             # notify conn stalls the listener's shutdown past every
@@ -805,6 +875,6 @@ async def notify_listener_loop(
         logger.info(
             "notify-listener-stop",
             kind="notify_listener_stop",
-            channels=[ch for ch, _ in channels],
+            channels=[entry.channel for entry in channels],
         )
         _active_listeners.discard(backend)

@@ -79,6 +79,7 @@ face), never its special case.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 

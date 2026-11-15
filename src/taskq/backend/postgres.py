@@ -357,6 +357,15 @@ class PostgresBackend:
         self._leader_wake_subscribers: set[asyncio.Event] = set()
         self._leader_wake_lock: asyncio.Lock = asyncio.Lock()
 
+        # The #718 emit-capacity registry: events set when a committed
+        # capacity notification arrives on ``wf_emit_capacity_channel`` (see
+        # ``MaintenanceLeader._wf_emit_capacity_drain_loop``). Only the
+        # current fenced leader holds a subscriber, so the registry itself is
+        # the leadership gate; same shape and lock discipline as the
+        # leadership wake registry.
+        self._wf_emit_capacity_subscribers: set[asyncio.Event] = set()
+        self._wf_emit_capacity_lock: asyncio.Lock = asyncio.Lock()
+
         self._sql: SqlTemplates = render(self._schema_name)
         self._schedule_sql = ScheduleSql.build(self._schema_name)
         self._batch_sql: BatchSql = render_batch_sql(self._schema_name)
@@ -1381,6 +1390,22 @@ class PostgresBackend:
         """
         event = asyncio.Event()
         return _SubscriberContext(event, self._leader_wake_subscribers, self._leader_wake_lock)
+
+    def subscribe_wf_emit_capacity(self) -> AsyncContextManager[asyncio.Event]:
+        """Subscribe to the #718 emit-capacity notifications (see
+        ``wf_emit_capacity_channel``).
+
+        The maintenance leader's drain loop uses this to run the global
+        pending-intent drain immediately when a terminal/park event crossed
+        the threshold, rather than waiting for the sweep interval. The
+        notification is a hint: durable intents are the authority, and the
+        sweep table's periodic selection is the loss bound. Only the leader
+        subscribes — the registry's membership is the leadership gate.
+        """
+        event = asyncio.Event()
+        return _SubscriberContext(
+            event, self._wf_emit_capacity_subscribers, self._wf_emit_capacity_lock
+        )
 
     # ── Schedule crud ────────────────────────────────────────────────────
 

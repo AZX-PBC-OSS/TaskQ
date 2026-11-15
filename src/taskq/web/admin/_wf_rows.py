@@ -212,12 +212,18 @@ class RunNode:
         # the label is a display, never a megabyte line through the DOM and
         # every SSE frame.
         signal = _truncate_error_text(str(self.deferral.get("signal") or "Snooze"))
-        if self.scheduled_at is None:
-            # The PARKED face (the capacity park's own row): no timer exists,
-            # so there is no next fire to name — the label says so honestly
-            # and names the live marker (the docs' law: a parked source is
-            # never rendered with a fabricated next-fire time).
-            return f"⏰ {signal} · parked · no timer · snooze #{self.snooze_count}"
+        if signal == "EmitBackpressure":
+            # The PARKED face (the capacity park's own row): the row's
+            # scheduled_at is the PARK INSTANT — displayed as the parked-at
+            # time under the deferred (backpressure) label, never as a next
+            # fire (a park has no timer; the marker, not a timestamp, is the
+            # discriminator). Deferrals and wakes are the park's own counts,
+            # distinct from failure.
+            parked_at = self.scheduled_at.isoformat() if self.scheduled_at else "unknown"
+            return (
+                f"⏰ {signal} · deferred (backpressure) · parked at {parked_at} · "
+                f"snooze #{self.snooze_count}"
+            )
         if self.deferral.get("consume_budget"):
             # the burn is the budget's charge — no snooze count (the counter
             # never moved), the budget face named.

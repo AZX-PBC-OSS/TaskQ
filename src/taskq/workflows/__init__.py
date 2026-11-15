@@ -54,6 +54,7 @@ from taskq.workflows._childflow import (
     SpawnDepthExceededError,
 )
 from taskq.workflows._emit import EmitBackpressure
+from taskq.workflows._emit import EmitReservationExceededError
 from taskq.workflows._policy import (
     CLEAR_POLICY,
     ExecutionPolicy,
@@ -137,6 +138,7 @@ __all__ = [
     "DeliveryResult",
     "Done",
     "EmitBackpressure",
+    "EmitReservationExceededError",
     "ExecutionPolicy",
     "ExhaustionEvent",
     "Exit",
