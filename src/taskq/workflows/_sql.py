@@ -45,10 +45,10 @@ from taskq.workflows._sql_finalize import (
     DECREMENT_ABSORBED_SQL,
     DECREMENT_SQL,
     EMIT_ADMISSION_LOCK_SQL,
+    EMIT_BACKPRESSURE_WAKE_SQL,
     EMIT_CHILDREN_SQL,
     EMIT_CURSOR_SQL,
     EMIT_EDGES_SQL,
-    EMIT_IN_FLIGHT_SQL,
     FAIL_CLOSED_CASCADE_SQL,
     FIRE_SQL,
     FLOW_STATUS_SQL,
@@ -62,6 +62,19 @@ from taskq.workflows._sql_finalize import (
     NODE_INSERT_SQL,
     OUTBOX_INSERT_SQL,
     TERMINAL_MARK_SQL,
+    WF_EMIT_CANDIDATE_SQL,
+    WF_EMIT_CAPACITY_OBSERVATION_SQL,
+    WF_EMIT_INTENT_BOUND_SQL,
+    WF_EMIT_INTENT_GENERATION_SQL,
+    WF_EMIT_INTENT_HANDLED_SQL,
+    WF_EMIT_INTENT_LOCK_SQL,
+    WF_EMIT_INTENT_STAMP_SQL,
+    WF_EMIT_MARKER_SWEEP_SQL,
+    WF_EMIT_PARK_EXISTS_SQL,
+    WF_EMIT_PENDING_INTENTS_SQL,
+    WF_EMIT_ROTATION_READ_SQL,
+    WF_EMIT_ROTATION_WRITE_SQL,
+    WF_NOT_DRAINING_FENCE_SQL,
 )
 from taskq.workflows._sql_ledger import (
     FLOW_RUN_INSERT_SQL,
@@ -181,8 +194,21 @@ class WorkflowSql:
     emit_children: str
     emit_edges: str
     emit_cursor: str
-    emit_in_flight: str
     emit_admission_lock: str
+    emit_park_exists: str
+    emit_capacity_observation: str
+    emit_candidate: str
+    emit_backpressure_wake: str
+    emit_intent_lock: str
+    emit_intent_stamp: str
+    emit_intent_bound: str
+    emit_intent_generation: str
+    emit_intent_handled: str
+    emit_pending_intents: str
+    emit_rotation_read: str
+    emit_rotation_write: str
+    emit_marker_sweep: str
+    wf_not_draining_fence: str
     fork_join_node: str
     fork_join_consumers: str
     fork_consumer_edges: str
@@ -261,8 +287,21 @@ class WorkflowSql:
             emit_children=render(EMIT_CHILDREN_SQL),
             emit_edges=render(EMIT_EDGES_SQL),
             emit_cursor=render(EMIT_CURSOR_SQL),
-            emit_in_flight=render(EMIT_IN_FLIGHT_SQL),
             emit_admission_lock=render(EMIT_ADMISSION_LOCK_SQL),
+            emit_park_exists=render(WF_EMIT_PARK_EXISTS_SQL),
+            emit_capacity_observation=render(WF_EMIT_CAPACITY_OBSERVATION_SQL),
+            emit_candidate=render(WF_EMIT_CANDIDATE_SQL),
+            emit_backpressure_wake=render(EMIT_BACKPRESSURE_WAKE_SQL),
+            emit_intent_lock=render(WF_EMIT_INTENT_LOCK_SQL),
+            emit_intent_stamp=render(WF_EMIT_INTENT_STAMP_SQL),
+            emit_intent_bound=render(WF_EMIT_INTENT_BOUND_SQL),
+            emit_intent_generation=render(WF_EMIT_INTENT_GENERATION_SQL),
+            emit_intent_handled=render(WF_EMIT_INTENT_HANDLED_SQL),
+            emit_pending_intents=render(WF_EMIT_PENDING_INTENTS_SQL),
+            emit_rotation_read=render(WF_EMIT_ROTATION_READ_SQL),
+            emit_rotation_write=render(WF_EMIT_ROTATION_WRITE_SQL),
+            emit_marker_sweep=render(WF_EMIT_MARKER_SWEEP_SQL),
+            wf_not_draining_fence=render(WF_NOT_DRAINING_FENCE_SQL),
             fork_join_node=render(FORK_JOIN_NODE_SQL),
             fork_join_consumers=render(FORK_JOIN_CONSUMERS_SQL),
             fork_consumer_edges=render(FORK_CONSUMER_EDGES_SQL),

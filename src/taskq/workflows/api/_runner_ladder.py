@@ -167,6 +167,11 @@ class _LadderHost(Protocol):
     schema: str
     compiled: Any  # the compiled workflow (the declared capture's source)
     _worker_id: JobId
+    # The bounded-run gate (the §4.1 event rule's host-side fact) and the
+    # terminal route's own post-COMMIT drain trigger.
+    _emit_capacity: bool
+
+    async def _drain_created_intent(self, flow_id: JobId, intent_created: bool) -> None: ...
 
     async def _project_auto(
         self, flow_id: JobId, node_id: JobId, kind: str, payload: dict[str, Any]
@@ -415,11 +420,13 @@ class LadderOps(_LadderHost):
             map_index=row["map_index"],
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            emit_capacity=self._emit_capacity,
             terminal_effect=(None if deterministic else self._terminal_effect_for(node, row)),
             terminal_reason=(
                 "non_retryable" if retry_kind == "non_retryable" else "retry_exhausted"
             ),
         )
+        await self._drain_created_intent(flow_id, final.intent_created)
         if final.applied:
             await self._project_auto(
                 flow_id,
@@ -624,9 +631,11 @@ class LadderOps(_LadderHost):
                 map_index=row["map_index"],
                 ledger_id=ledger_id,
                 ledger_claimed_at=ledger_claimed_at,
+                emit_capacity=self._emit_capacity,
                 terminal_effect=self._terminal_effect_for(node, row),
                 terminal_reason="deadline",
             )
+            await self._drain_created_intent(flow_id, final.intent_created)
             if final.applied:
                 await self._project_auto(
                     flow_id,

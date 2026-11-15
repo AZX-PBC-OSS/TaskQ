@@ -245,6 +245,7 @@ def _jsonb_len(value: dict[str, object] | None) -> int | None:
 @dataclass(frozen=True, slots=True)
 class _Tx1Outcome:
     applied: bool
+    intent_created: bool = False
 
 
 async def _classify_own_ledger_no_match(
@@ -312,6 +313,7 @@ async def _run_tx1(
     map_index: int | None = None,
     ledger_id: JobId | None = None,
     ledger_claimed_at: datetime | None = None,
+    emit_capacity: bool = False,
     terminal_effect: TerminalEffect | None = None,
     terminal_reason: TerminalEffectReason = "retry_exhausted",
 ) -> _Tx1Outcome:
@@ -465,7 +467,19 @@ async def _run_tx1(
                 reason=terminal_reason,
                 effect=terminal_effect,
             )
-        return _Tx1Outcome(applied=True)
+        # THE §4.1 TERMINAL EVENT RULE — in this same transaction, after the
+        # winning terminal write, under the canonical root (already held) ->
+        # intent -> winning-nodes order. A bounded flow pays one indexed
+        # exact-marker existence probe; only a marker-positive probe derives
+        # capacity once. A non-crossing terminal's zero-row probe performs no
+        # count, no width query, no candidate scan, no notification, and no
+        # promotion; an unbounded flow pays nothing here at all.
+        intent_created = False
+        if emit_capacity:
+            from taskq.workflows._emit import emit_capacity_event
+
+            intent_created = await emit_capacity_event(conn, wsql, flow_id=flow_id, probe=True)
+        return _Tx1Outcome(applied=True, intent_created=intent_created)
 
 
 async def _fire_and_deliver(
@@ -785,7 +799,7 @@ async def finalize_node(
     map_index: int | None = None,
     ledger_id: JobId | None = None,
     ledger_claimed_at: datetime | None = None,
-    wake_backpressure: bool = False,
+    emit_capacity: bool = False,
     terminal_effect: TerminalEffect | None = None,
     terminal_reason: TerminalEffectReason = "retry_exhausted",
 ) -> FinalizeResult:
@@ -801,7 +815,12 @@ async def finalize_node(
     ``LedgerClaim.ledger_id``) when held, else the arbiter tuple keyed with
     *map_index* — either way the write touches exactly the claimed row, so
     two map children of one step key never overwrite each other's outcome.
-    """
+
+    *emit_capacity* gates the bounded run's §4.1 terminal event rule inside
+    tx1 (one indexed exact-marker probe; only a marker-positive probe
+    derives capacity and may create the durable promotion intent). It is a
+    declaration fact of the run, never a wake seat: no promotion executes
+    here."""
     assert_valid_transition("running", outcome, job_id)
 
     # the finalize's reducers are resolvable outside this call's stack — the
@@ -852,6 +871,7 @@ async def finalize_node(
                 map_index=map_index,
                 ledger_id=ledger_id,
                 ledger_claimed_at=ledger_claimed_at,
+                emit_capacity=emit_capacity,
                 terminal_effect=terminal_effect,
                 terminal_reason=terminal_reason,
             )
@@ -860,14 +880,6 @@ async def finalize_node(
     applied = tx1.applied
     if not applied:
         return FinalizeResult(applied=False, attempt=None)
-
-    if wake_backpressure:
-        from taskq.workflows._emit import wake_emit_backpressure_safely
-
-        # _tx1's COMMIT is acknowledged and its pool acquisition has exited.
-        # The fresh helper therefore sees the exact terminal+same-tx fork. It is
-        # deliberately outside the successful child's subsequent tx2/ladder.
-        await wake_emit_backpressure_safely(pool, wsql, flow_id=flow_id)
 
     async def _tx2() -> tuple[tuple[DecrementHit, ...], tuple[FiredJoin, ...]]:
         async with pool.acquire() as conn:
@@ -891,4 +903,5 @@ async def finalize_node(
         attempt=attempt,
         decremented=hits,
         fired=fired,
+        intent_created=tx1.intent_created,
     )

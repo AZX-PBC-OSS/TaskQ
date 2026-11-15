@@ -40,17 +40,24 @@ lost children.
 
 The MAX-IN-FLIGHT bound is DECLARED at the workflow level (the runner
 supplies the workflow's declaration; ``None`` = explicit unbounded). Every
-whole page passes the same admission lock and count immediately before its
-write. Ordinary saturation raises :class:`EmitBackpressure`: it writes no
-page and the runner parks the claimed source without a timer, lease, worker
-slot, failed ledger outcome, or retry-budget charge. Truly parked sources
-do not count as their siblings' outstanding work.
+whole page passes the same admission lock and derived observation immediately
+before its write. Ordinary saturation raises :class:`EmitBackpressure`: it
+writes no page and the runner parks the claimed source on the exact marker
+with the park instant. Live rows remain the only current-status and capacity
+authority — there is no persisted charge, waiter count, cached head, or
+cached minimum width to drift.
 
-Wake is a fresh post-commit read, never a jobs trigger or deferred in-tx
-lookup. The engine, direct tick, post-park completion, and the bounded leader
-recovery all call :func:`wake_emit_backpressure`. Its row+root locks,
-whole-page recheck, admission lock, and atomic live-marker removal preserve
-the bound under concurrent wakes. Durable rows, not NOTIFY, are authority.
+Wake is a threshold-created durable intent plus an event-driven drain, never
+a jobs trigger or a polling loop. Each terminal/park event runs one indexed
+exact-marker probe (a park runs one shared observation instead), and only a
+marker-positive event that newly fits derives capacity and creates the
+durable promotion intent with its accelerator notification. The drain — the
+runner's own commit-acknowledged call, the maintenance leader, or the
+bounded recovery arms — selects the oldest fitting real waiter and attaches
+a durable page-width reservation, so a woken source cannot be barged into
+another no-fit re-park. A replay may consume less than its reservation; it
+may not exceed it (:class:`EmitReservationExceededError`). Durable rows, not
+NOTIFY, are authority.
 """
 
 from __future__ import annotations
@@ -65,18 +72,10 @@ import structlog
 from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
-from taskq.constants import wake_channel
+from taskq.constants import wake_channel, wf_emit_capacity_channel
 from taskq.obs import get_logger
 from taskq.workflows._fork import FORK_CHUNK
 from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
-from taskq.workflows._sql_finalize import (
-    EMIT_BACKPRESSURE_CANDIDATE_LOCK_SQL,
-    EMIT_BACKPRESSURE_CANDIDATES_SQL,
-    EMIT_BACKPRESSURE_CURSOR_CANDIDATES_SQL,
-    EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL,
-    EMIT_BACKPRESSURE_ROOT_LOCK_SQL,
-    EMIT_BACKPRESSURE_WAKE_SQL,
-)
 from taskq.workflows._types import MAP_INDEX_CEILING, EmitChild, _jsonb, _row_metadata
 
 if TYPE_CHECKING:
@@ -90,14 +89,15 @@ __all__ = [
     "EMIT_MAX_IN_FLIGHT_DEFAULT",
     "EmitBackpressure",
     "EmitCancelledError",
+    "EmitCapacityObservation",
     "EmitFencedError",
+    "EmitReservationExceededError",
     "EmitStaleClaimError",
     "EmitWakeResult",
     "MapIndexExhaustedError",
     "PageDivergedError",
     "emit_batch",
     "wake_emit_backpressure",
-    "wake_emit_backpressure_safely",
 ]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
@@ -221,77 +221,259 @@ class EmitBackpressure(Exception):  # noqa: N818  # Why: mandated typed control-
 
 @dataclass(frozen=True, slots=True)
 class EmitWakeResult:
-    """One bounded marker pass: committed promotions and its resume cursor."""
+    """One flow-target drain invocation's committed outcome."""
 
-    woken: int
-    next_cursor: tuple[JobId, JobId] | None = None
-
-
-@dataclass
-class EstateWakeCursor:
-    """The estate wake pass's FAIR cursor (the wrap/round-robin law).
-
-    A pure keyset cursor advances monotonically and never revisits a
-    row it passed over: under continuous arrivals every pass is full,
-    the cursor never resets on its own, and a parked row whose fit
-    arrives AFTER the cursor passed it starves forever. Merely
-    alternating the pass START between the cursor and the beginning is
-    not fair either: a blocked prefix at least as wide as the batch
-    re-fills every from-start pass's window, and a fitted waiter
-    behind it is never examined.
-
-    The fair cursor alternates each pass between a FORWARD STRIDE (a
-    keyset batch from the cursor) and a WRAP (a from-start pass with
-    ``exhaust=True`` — the wake pages the WHOLE matching set in
-    chunked transactions, whatever the population): every parked row
-    is examined at least once per two-pass cycle for ANY population,
-    so a row whose fit arrives at any time wakes within two estate
-    passes. The wrap never advances the stride cursor (it re-examines
-    everything next cycle); a short stride pass (the estate's tail)
-    resets the stride to the beginning by itself. The leader's
-    recovery arm owns one of these."""
-
-    cursor: tuple[JobId, JobId] | None = None
-    _next_is_wrap: bool = False
-    _issued_wrap: bool = False
-
-    def next_pass(self, batch_size: int) -> tuple[tuple[JobId, JobId] | None, int, bool]:
-        """The next pass's ``(after, batch_size, exhaust)``: a forward
-        keyset stride at the caller's batch, then a from-start wrap that
-        pages the whole parked population."""
-        if self._next_is_wrap:
-            self._next_is_wrap = False
-            self._issued_wrap = True
-            return None, batch_size, True
-        self._issued_wrap = False
-        self._next_is_wrap = True
-        return self.cursor, batch_size, False
-
-    def observe(self, result: EmitWakeResult) -> None:
-        """Fold one pass's result. Only a STRIDE pass moves the cursor (a
-        wrap re-examines everything next cycle and must not skip the tail
-        it wrapped over); a short stride pass (next_cursor None — the
-        estate's tail) restarts the stride from the beginning by itself."""
-        if self._issued_wrap:
-            return
-        self.cursor = result.next_cursor
+    promoted: int
+    intent_completed: bool
+    missed: bool = False
 
 
-#: The wake's per-transaction lock budget's own ceiling: one chunk's
-#: advisory locks (per distinct flow) plus row locks stay far below
-#: ``max_locks_per_transaction * max_connections`` at any deployment shape.
-_WAKE_MAX_CHUNK: Final[int] = 1000
+class EmitReservationExceededError(Exception):
+    """A reserved replay presented a wider page than its reservation granted.
+
+    The excess was never granted: no child, edge, or cursor write has
+    occurred, and the reserved source is terminalized through the named
+    deterministic grant-violation route with its reservation removed. This
+    is not another backpressure park (the reservation's grant is spent
+    fencing the source, not waiting on capacity), and it is never a
+    :class:`PageDivergedError` — the idempotency arbiter did not refuse; a
+    width comparison is not an arbiter collision and never asks an operator
+    to re-sync a cursor.
+    """
+
+    def __init__(self, *, flow_id: JobId, source_id: JobId, granted: int, presented: int) -> None:
+        self.flow_id = flow_id
+        self.source_id = source_id
+        self.granted = granted
+        self.presented = presented
+        super().__init__(
+            f"emit replay presented {presented} records past the reserved "
+            f"page width {granted}: flow {flow_id}, source {source_id} — the "
+            "excess was never granted; nothing was written and the reserved "
+            "source is fenced (the deterministic grant-violation route)"
+        )
+
+
+class EmitCapacityCorruptionError(RuntimeError):
+    """A bounded run's durable capacity facts are missing or malformed.
+
+    Fail-closed: the observation/intent machinery refuses rather than
+    silently treating the run as unbounded (a drifted bound record or a
+    missing stamp is corruption, never an ordinary empty result)."""
+
+
+@dataclass(frozen=True, slots=True)
+class EmitCapacityObservation:
+    """One derived-capacity observation's returned values (§2.3).
+
+    ``charge = live_rows + reservations`` is computed from the returned
+    values — never a persisted column. ``min_waiting_width`` is the minimum
+    validated parked page width; zero is a valid width, so waiter presence
+    is the NULL test, never a truthiness test."""
+
+    live_rows: int
+    reservations: int
+    min_waiting_width: int | None
+
+    @property
+    def charge(self) -> int:
+        return self.live_rows + self.reservations
+
+    @property
+    def waiter_present(self) -> bool:
+        return self.min_waiting_width is not None
+
+    def something_fits(self, bound: int) -> bool:
+        """The single admission rule's threshold face:
+        ``charge + min_waiting_width <= bound``."""
+        return self.waiter_present and self.charge + int(self.min_waiting_width or 0) <= bound
+
+
+async def observe_emit_capacity(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    source_id: JobId | None = None,
+) -> EmitCapacityObservation:
+    """The shared derived observation (§2.3): one hoisted status-leg scan of
+    the flow's live non-root rows plus exact parks.
+
+    ``source_id`` is the currently running source's own id for unreserved
+    admission (the single authoritative own-row exclusion) and ``None`` for
+    terminal, park, and drain observations — the park observation includes
+    its own newly written row."""
+    row = await conn.fetchrow(wsql.emit_capacity_observation, flow_id, source_id)
+    if row is None:  # pragma: no cover - the aggregate always returns one row
+        raise EmitCapacityCorruptionError(
+            f"the derived capacity observation for flow {flow_id} returned no row"
+        )
+    live_rows = row["live_rows"]
+    reservations = row["reservations"]
+    min_waiting_width = row["min_waiting_width"]
+    if type(live_rows) is not int or type(reservations) is not int or live_rows < 0 or reservations < 0:
+        raise EmitCapacityCorruptionError(
+            f"the derived capacity observation for flow {flow_id} returned "
+            f"non-integer or negative facts ({live_rows!r}, {reservations!r})"
+        )
+    if min_waiting_width is not None and (type(min_waiting_width) is not int or min_waiting_width < 0):
+        raise EmitCapacityCorruptionError(
+            f"the derived capacity observation for flow {flow_id} returned a "
+            f"malformed min_waiting_width ({min_waiting_width!r})"
+        )
+    return EmitCapacityObservation(
+        live_rows=live_rows,
+        reservations=reservations,
+        min_waiting_width=min_waiting_width,
+    )
+
+
+def _intent_generation(row: object) -> tuple[int, int, int]:
+    """The locked intent row's validated facts (bound, wake, handled). Every
+    value must be an exact in-domain integer; malformed facts fail closed."""
+    if not isinstance(row, dict):  # pragma: no cover - asyncpg rows are mappings
+        raise EmitCapacityCorruptionError("the capacity intent row is not a mapping")
+    bound = row["bound"]
+    wake = row["wake_generation"]
+    handled = row["handled_generation"]
+    for name, value, minimum in (
+        ("bound", bound, 1),
+        ("wake_generation", wake, 0),
+        ("handled_generation", handled, 0),
+    ):
+        if type(value) is not int or value < minimum:
+            raise EmitCapacityCorruptionError(
+                f"the capacity intent row's {name} is malformed: {value!r}"
+            )
+    if wake < handled:
+        raise EmitCapacityCorruptionError(
+            f"the capacity intent row's generations are contradictory "
+            f"(wake {wake} < handled {handled})"
+        )
+    return int(bound), int(wake), int(handled)
+
+
+async def ensure_emit_capacity(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    bound: int,
+) -> int:
+    """Stamp the bounded run's immutable capacity record once (create-time
+    stamp or first new-binary bounded claim adoption) and return the
+    authoritative stored bound. A record that already exists with a
+    different bound fails closed — the bound is immutable, so a mismatch is
+    corruption, never an update."""
+    if type(bound) is not int or bound < 1:
+        raise ValueError(f"the emit bound must be a positive int; got {bound!r}")
+    await conn.execute(wsql.emit_intent_stamp, flow_id, bound)
+    row = await conn.fetchrow(wsql.emit_intent_bound, flow_id)
+    if row is None or row["bound"] is None:
+        raise EmitCapacityCorruptionError(
+            f"the bounded run {flow_id} has no capacity record after its stamp"
+        )
+    stored = row["bound"]
+    if type(stored) is not int or stored != bound:
+        raise EmitCapacityCorruptionError(
+            f"the bounded run {flow_id}'s stored bound {stored!r} contradicts "
+            f"the compiled declaration's {bound!r} — the bound is immutable, "
+            "so this is corruption"
+        )
+    return int(stored)
+
+
+async def emit_capacity_event(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    probe: bool,
+) -> bool:
+    """The §4.1 terminal/park event rule, run in the caller's transaction
+    under the canonical root -> intent -> winning-nodes order.
+
+    ``probe=True`` (a terminal event) executes the one indexed exact-marker
+    existence probe first: a zero-row probe performs no count, no width
+    query, no candidate scan, no notification, and no promotion.
+    ``probe=False`` (a park event) skips the probe — the committed exact
+    park already proves the marker-positive case — and runs exactly one
+    shared observation including the park's own row.
+
+    Returns the one-bit ``intent_created`` result: True only when this event
+    crossed the threshold (a waiter newly fits, no intent was pending) and
+    created the durable generation bump with its accelerator notification.
+    """
+    if probe:
+        if await conn.fetchval(wsql.emit_park_exists, flow_id) is None:
+            return False
+    intent = await conn.fetchrow(wsql.emit_intent_lock, flow_id)
+    if intent is None:
+        raise EmitCapacityCorruptionError(
+            f"the bounded run {flow_id} has no capacity record at its "
+            "terminal/park event — the bound stamp is missing (fail-closed)"
+        )
+    bound, wake_generation, handled_generation = _intent_generation(intent)
+    observation = await observe_emit_capacity(conn, wsql, flow_id=flow_id)
+    if not observation.something_fits(bound):
+        return False
+    if wake_generation != handled_generation:
+        # An intent is already pending: no generation, no notification — the
+        # durable fallback makes that suppression safe.
+        return False
+    created = await conn.fetchval(wsql.emit_intent_generation, flow_id)
+    if created is None:
+        raise EmitCapacityCorruptionError(
+            f"the bounded run {flow_id}'s wake generation refused to advance "
+            "at its overflow bound (fail-closed corruption refusal)"
+        )
+    await conn.execute(
+        "SELECT pg_notify($1, $2)",
+        wf_emit_capacity_channel(wsql.schema),
+        str(flow_id),
+    )
+    return True
 
 
 class _AdmissionLostError(Exception):
     """The locked recheck lost capacity; roll back before typed parking."""
 
 
-async def _outstanding(conn: ConnLike, wsql: WorkflowSql, flow_id: JobId, source_id: JobId) -> int:
-    """The run's non-terminal row count (the ledger's truth), excluding
-    the source's own claim row."""
-    n = await conn.fetchval(wsql.emit_in_flight, flow_id, source_id)
-    return int(n or 0)
+def _metadata_document(raw: object) -> dict[str, object]:
+    decoded: object = _json_loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(decoded, dict):
+        raise ValueError("a live emit-backpressure row must have object metadata")
+    return cast("dict[str, object]", decoded)
+
+
+async def _reserved_width(metadata: object) -> int | None:
+    """The claimed source row's validated page-width reservation (§2.5), or
+    None when the row carries no reservation key. Malformed facts fail
+    closed — a reservation is exactly the two-key object
+    ``{"version":1,"width":W}`` with a validated positive-or-zero integer
+    width; None, bool, float, negative, a different version, and unknown
+    keys never coerce."""
+    document = _metadata_document(metadata)
+    if "wf_emit_reservation" not in document:
+        return None
+    raw_reservation = document["wf_emit_reservation"]
+    if not isinstance(raw_reservation, dict):
+        raise EmitCapacityCorruptionError(
+            "metadata.wf_emit_reservation must be an object"
+        )
+    reservation = cast("dict[str, object]", raw_reservation)
+    if set(reservation) != {"version", "width"}:
+        raise EmitCapacityCorruptionError(
+            "metadata.wf_emit_reservation must carry exactly version and width"
+        )
+    if type(reservation["version"]) is not int or reservation["version"] != 1:
+        raise EmitCapacityCorruptionError("unsupported wf_emit_reservation version")
+    width = reservation["width"]
+    if type(width) is not int or width < 0:
+        raise EmitCapacityCorruptionError(
+            f"wf_emit_reservation.width must be an integer >= 0; got {width!r}"
+        )
+    return width
 
 
 async def _emit_tx(
@@ -484,14 +666,22 @@ async def emit_batch(
     *max_in_flight* is the workflow's declared whole-page bound (``None`` is
     explicit unbounded). Saturation raises :class:`EmitBackpressure` before
     any write; the source runner then releases its physical claim and parks
-    without a timer. The locked second gate remains the actual bound defense
-    against concurrent emitters. The legacy timeout argument is retained only
-    as diagnostic-age input and never turns healthy capacity into failure.
+    on the exact marker with the park instant. The locked second gate remains
+    the actual bound defense against concurrent emitters. The legacy timeout
+    argument is retained only as diagnostic-age input and never turns healthy
+    capacity into failure.
+
+    A reserved replay (the row was promoted with a page-width reservation)
+    is governed by its grant instead of the shared bound: a smaller or equal
+    page commits and converts the reservation; a wider page raises
+    :class:`EmitReservationExceededError` — the excess was never granted.
 
     Returns the minted child ids (uuid7 via the seam). Raises
     :class:`EmitFencedError` when the claim was superseded (nothing
     written). Raises :class:`EmitBackpressure` when the whole page cannot fit
     (nothing written and no elapsed-time failure). Raises
+    :class:`EmitReservationExceededError` when a reserved replay presented a
+    wider page than its reservation (nothing written). Raises
     :class:`PageDivergedError` when the page's rows already exist (the
     cursor diverged from the row history — the tx rolled back, nothing
     written). Raises :class:`MapIndexExhaustedError` when a record's
@@ -552,16 +742,70 @@ async def emit_batch(
                 "bound; the loud config refusal, never a silent starve)"
             )
 
+        # The reserved replay's own law (§2.5): the source was promoted with
+        # a page-width reservation. A smaller or equal page is charge-neutral
+        # or freeing and commits without a new fit test; a wider page was
+        # never granted.
         async with pool.acquire() as conn:
-            count = await _outstanding(conn, wsql, flow_id, source_id)
-        if count + len(valid) > max_in_flight:
-            raise EmitBackpressure(page_width=len(valid), bound=max_in_flight, outstanding=count)
-        inside = count
+            source_metadata = await conn.fetchval(
+                "SELECT metadata FROM {schema}.jobs WHERE id = $1".replace(
+                    "{schema}", wsql.schema
+                ),
+                source_id,
+            )
+        granted = await _reserved_width(source_metadata)
+        if granted is not None:
+            if len(valid) > granted:
+                raise EmitReservationExceededError(
+                    flow_id=flow_id,
+                    source_id=source_id,
+                    granted=granted,
+                    presented=len(valid),
+                )
+            async with pool.acquire() as conn, conn.transaction():
+                await _emit_tx(
+                    conn,
+                    wsql,
+                    flow_id=flow_id,
+                    source_id=source_id,
+                    worker_id=worker_id,
+                    attempt=attempt,
+                    claim_epoch=claim_epoch,
+                    children=valid,
+                    cursor=cursor,
+                    child_ids=child_ids,
+                    max_attempts=max_attempts,
+                    retry_kind=retry_kind,
+                    _window_hook=_window_hook,
+                    run_priority=run_priority,
+                )
+            if poison:
+                _raise_poison(flow_id, source_id, poison)
+            return tuple(child_ids)
+
+        # The single authoritative unreserved admission: `$2 = source_id` plus
+        # `charge + W <= bound` over the shared derived observation. There is
+        # no own-row subtraction and no second comparison.
+        async with pool.acquire() as conn:
+            observation = await observe_emit_capacity(conn, wsql, flow_id=flow_id, source_id=source_id)
+        charge = observation.charge
+        if charge + len(valid) > max_in_flight:
+            raise EmitBackpressure(
+                page_width=len(valid), bound=max_in_flight, outstanding=charge
+            )
+        inside_charge = charge
         try:
             async with pool.acquire() as conn, conn.transaction():
                 await conn.execute(wsql.emit_admission_lock, str(flow_id))
-                inside = await _outstanding(conn, wsql, flow_id, source_id)
-                if inside + len(valid) > max_in_flight:
+                # The bounded run's one-time adoption: existing active runs
+                # get their immutable bound record stamped at the first
+                # new-binary bounded claim (a no-op probe once stamped).
+                await conn.fetchval(wsql.emit_intent_stamp, flow_id, max_in_flight)
+                inside = await observe_emit_capacity(
+                    conn, wsql, flow_id=flow_id, source_id=source_id
+                )
+                inside_charge = inside.charge
+                if inside_charge + len(valid) > max_in_flight:
                     raise _AdmissionLostError
                 await _emit_tx(
                     conn,
@@ -584,7 +828,7 @@ async def emit_batch(
             return tuple(child_ids)
         except _AdmissionLostError:
             raise EmitBackpressure(
-                page_width=len(valid), bound=max_in_flight, outstanding=inside
+                page_width=len(valid), bound=max_in_flight, outstanding=inside_charge
             ) from None
 
     async with pool.acquire() as conn, conn.transaction():
@@ -609,258 +853,89 @@ async def emit_batch(
         _raise_poison(flow_id, source_id, poison)
     return tuple(child_ids)
 
-
-@dataclass(frozen=True, slots=True)
-class _WaitDescriptor:
-    page_width: int
-    bound: int
-
-
-def _metadata_document(raw: object) -> dict[str, object]:
-    decoded: object = _json_loads(raw) if isinstance(raw, str) else raw
-    if not isinstance(decoded, dict):
-        raise ValueError("a live emit-backpressure row must have object metadata")
-    return cast("dict[str, object]", decoded)
-
-
-def _counter(record: dict[str, object], key: str, *, minimum: int = 0) -> int:
-    value = record.get(key)
-    if type(value) is not int or value < minimum:
-        raise ValueError(
-            f"wf_emit_backpressure.{key} must be an integer >= {minimum}; "
-            f"got {type(value).__name__} {value!r}"
-        )
-    return value
-
-
-def _timestamp(record: dict[str, object], key: str, *, optional: bool = False) -> None:
-    value = record.get(key)
-    if optional and value is None:
-        return
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"wf_emit_backpressure.{key} must be a UTC timestamp string")
-    try:
-        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
-    except ValueError as exc:
-        raise ValueError(f"wf_emit_backpressure.{key} is not a timestamp") from exc
-    if parsed.tzinfo is None:
-        raise ValueError(f"wf_emit_backpressure.{key} must carry a timezone")
-
-
-def _wait_descriptor(metadata: object) -> _WaitDescriptor:
-    """Validate every live field before wake interprets its admission facts."""
-    document = _metadata_document(metadata)
-    if (
-        document.get("blocking_reason") != "backpressure"
-        or not isinstance(document.get("wf_deferral"), dict)
-        or cast("dict[str, object]", document["wf_deferral"]).get("signal") != "EmitBackpressure"
-    ):
-        raise ValueError("the selected row has no coherent EmitBackpressure marker")
-    raw_record = document.get("wf_emit_backpressure")
-    if not isinstance(raw_record, dict):
-        raise ValueError("metadata.wf_emit_backpressure must be an object")
-    record = cast("dict[str, object]", raw_record)
-    if _counter(record, "version", minimum=1) != 1:
-        raise ValueError("unsupported wf_emit_backpressure version")
-    page_width = _counter(record, "page_width")
-    bound = _counter(record, "bound", minimum=1)
-    _counter(record, "deferrals", minimum=1)
-    _counter(record, "wakes")
-    _counter(record, "outstanding")
-    _timestamp(record, "deferred_at")
-    _timestamp(record, "last_wake_at", optional=True)
-    return _WaitDescriptor(page_width=page_width, bound=bound)
+#: The flow-target drain's hard committed-transaction ceiling (§6): at most
+#: 200 winning source CASes and queue notifications in one transaction.
+FLOW_DRAIN_MAX_WINS: Final[int] = 200
 
 
 async def wake_emit_backpressure(
     pool: asyncpg.Pool,
     wsql: WorkflowSql,
     *,
-    flow_id: JobId | None = None,
-    batch_size: int = 100,
-    after: tuple[JobId, JobId] | None = None,
-    chunk_size: int = 200,
-    exhaust: bool = False,
+    flow_id: JobId,
 ) -> EmitWakeResult:
-    """Promote fitted, exactly parked sources; the estate pass pages the
-    matching set in CHUNKED TRANSACTIONS under a hard per-transaction lock
-    budget.
+    """The one promotion primitive: a commit-acknowledged, run-targeted drain
+    of this flow's parked waiters (§1, §3.1, §6).
 
-    ``flow_id`` is the post-commit accelerator: one flow's own parked
-    waiters (bounded by that run's own graph) in one transaction, at most
-    ``batch_size`` of them. With no flow this is the estate recovery pass,
-    and the caller's cursor must be FAIR — :class:`EstateWakeCursor`
-    alternates a forward keyset stride with a from-start WRAP
-    (``exhaust=True``). The ACTUAL guarantees, stated for ANY parked
-    population:
+    Canonical root -> intent -> winning-nodes order per transaction: the
+    run's intent/admission advisory lock, the durable intent row, then the
+    candidate CAS. Each iteration runs one fresh shared observation (the
+    derived ``charge``) and the single authoritative candidate comparison —
+    the oldest FITTING waiter on real rows, never a cached head. A winning
+    CAS attaches the durable page-width reservation, removes the live marker
+    atomically, and emits the effective queue wake. At most
+    :data:`FLOW_DRAIN_MAX_WINS` winning CASes/notifications commit in one
+    transaction; a full chunk continues only into a fresh transaction whose
+    own first observation again returns a fitting candidate (progress is the
+    necessary condition for continuation).
 
-    * COVERAGE: every parked row is examined at least once per two-pass
-      cycle — the wrap pass pages the WHOLE matching set (keyset pages of
-      ``chunk_size`` until the set is exhausted), so no blocked prefix,
-      however long, and no population size can starve a fitted waiter
-      behind it.
-    * LOCK BUDGET: each transaction processes at most ``chunk_size``
-      candidates — one advisory lock per distinct flow plus the chunk's
-      own row locks — a hard per-transaction ceiling (``chunk_size`` is
-      validated to at most 1000, far below
-      ``max_locks_per_transaction * max_connections`` at any deployment
-      shape). The wrap can never exhaust the shared lock table; its own
-      cost is ``ceil(matching/chunk_size)`` committed transactions, the
-      recovery arm's honest work for the population it recovers.
-    * ISOLATION: one malformed parked record skips its own row with a
-      bounded, named diagnostic; the valid waiters still wake. An
-      infrastructure fault aborts THAT chunk (its committed predecessors
-      stand) and propagates — the sweep's failure arm owns the retry, and
-      the next cycle's wrap re-examines the aborted chunk's rows.
+    Completion is exactly a fresh observation returning no fitting
+    candidate — only then does the same transaction set
+    ``handled_generation = wake_generation``. A zero-row CAS never marks the
+    intent handled and never retries in a loop: the invocation commits any
+    earlier winning promotions, leaves the generation pending, and ends. A
+    durable intent left pending is the terminal/park events' and the bounded
+    recovery arms' to observe; notifications are accelerators, never
+    authority.
     """
-    if type(batch_size) is not int or batch_size < 1:
-        raise ValueError("emit-backpressure wake batch_size must be positive")
-    if type(chunk_size) is not int or not 1 <= chunk_size <= _WAKE_MAX_CHUNK:
-        raise ValueError(
-            f"emit-backpressure wake chunk_size must be an integer in "
-            f"[1, {_WAKE_MAX_CHUNK}] — the per-transaction lock budget (an "
-            "advisory lock per distinct flow plus the chunk's own row locks "
-            "must stay far below max_locks_per_transaction * connections)"
-        )
-    if after is not None and flow_id is not None:
-        raise ValueError("an estate cursor cannot be combined with one flow target")
-
-    from taskq.workflows.api._sql_runner import render_sql
-
-    root_lock_sql = render_sql(EMIT_BACKPRESSURE_ROOT_LOCK_SQL, wsql.schema)
-    candidate_lock_sql = render_sql(EMIT_BACKPRESSURE_CANDIDATE_LOCK_SQL, wsql.schema)
-    wake_sql = render_sql(EMIT_BACKPRESSURE_WAKE_SQL, wsql.schema)
-    first_page_sql: str
-    next_page_sql: str | None
-    base_args: tuple[object, ...]
-    if flow_id is not None:
-        first_page_sql = render_sql(EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL, wsql.schema)
-        next_page_sql = None  # the flow's own parked set is its graph's bound
-        base_args = (flow_id,)
-    else:
-        first_page_sql = render_sql(EMIT_BACKPRESSURE_CANDIDATES_SQL, wsql.schema)
-        next_page_sql = render_sql(EMIT_BACKPRESSURE_CURSOR_CANDIDATES_SQL, wsql.schema)
-        base_args = ()
-
-    woken = 0
-    processed = 0
-    last: tuple[JobId, JobId] | None = None
-    page_after: tuple[JobId, JobId] | None = after
+    total = 0
+    completed = False
+    missed = False
     while True:
-        # THE PAGE'S OWN LIMIT: the wrap pages at the chunk budget; a
-        # non-exhaust pass pages at min(chunk, its remaining coverage
-        # target) — the stride's batch bound is never swallowed by a
-        # larger chunk.
-        if flow_id is not None:
-            page_limit = batch_size
-        elif exhaust:
-            page_limit = chunk_size
-        else:
-            page_limit = max(1, min(chunk_size, batch_size - processed))
-        # ONE TRANSACTION PER CHUNK: the locks (the roots' FOR UPDATE NOWAIT,
-        # the candidates' row locks, one advisory lock per distinct flow)
-        # release at this chunk's commit — the pass's lock footprint is
-        # chunk_size, never the parked population's size.
+        wins_tx = 0
         async with pool.acquire() as conn, conn.transaction():
-            if page_after is None:
-                candidates = await conn.fetch(first_page_sql, *base_args, page_limit)
-            else:
-                assert next_page_sql is not None
-                candidates = await conn.fetch(next_page_sql, *page_after, page_limit)
-            count = len(candidates)
-            processed += count
-            locked_roots: dict[JobId, bool] = {}
-            for candidate in candidates:
-                source_id = JobId(candidate["id"])
-                candidate_flow = JobId(candidate["flow_id"])
-                last = (candidate_flow, source_id)
-                live_root = locked_roots.get(candidate_flow)
-                if live_root is None:
-                    root = await conn.fetchrow(root_lock_sql, candidate_flow)
-                    live_root = root is not None and root["status"] not in {
-                        "succeeded",
-                        "failed",
-                        "cancelled",
-                        "crashed",
-                        "abandoned",
-                    }
-                    locked_roots[candidate_flow] = live_root
-                if not live_root:
-                    continue
-
-                # Canonical root -> waiter -> admission order. This fresh locked
-                # row read refutes the initial index probe before descriptor use.
-                source = await conn.fetchrow(candidate_lock_sql, source_id)
-                if source is None:
-                    continue
-                try:
-                    descriptor = _wait_descriptor(source["metadata"])
-                except ValueError as exc:
-                    # PER-ROW ISOLATION: one malformed/corrupt parked record is
-                    # that row's own fault, never the estate's — the pass skips
-                    # it (the paging cursor already advanced past it) and the
-                    # valid waiters still wake. The durable marker stays: the
-                    # row is visible, named, and bounded — the operator's
-                    # alert, never a poisoned recovery loop. An infrastructure
-                    # fault is NOT isolated: it aborts the chunk (its
-                    # committed predecessors stand) and the sweep's own
-                    # failure arm owns the retry.
-                    logger.warning(
-                        "wf.emit_backpressure_waiter_invalid",
-                        flow_id=str(candidate_flow),
-                        job_id=str(source_id),
-                        error_class=type(exc).__name__,
-                        error=str(exc)[:500],
-                    )
-                    continue
-                await conn.execute(wsql.emit_admission_lock, str(candidate_flow))
-                outstanding = await _outstanding(conn, wsql, candidate_flow, source_id)
-                if outstanding + descriptor.page_width > descriptor.bound:
-                    continue
-                promoted = await conn.fetchrow(wake_sql, source_id)
+            await conn.execute(wsql.emit_admission_lock, str(flow_id))
+            intent = await conn.fetchrow(wsql.emit_intent_lock, flow_id)
+            if intent is None:
+                raise EmitCapacityCorruptionError(
+                    f"the bounded run {flow_id} has no capacity record at its "
+                    "drain — the bound stamp is missing (fail-closed)"
+                )
+            bound, _wake_generation, _handled_generation = _intent_generation(intent)
+            while wins_tx < FLOW_DRAIN_MAX_WINS:
+                observation = await observe_emit_capacity(conn, wsql, flow_id=flow_id)
+                candidate = await conn.fetchrow(
+                    wsql.emit_candidate, flow_id, observation.charge, bound
+                )
+                if candidate is None:
+                    # Completion: the fresh observation returned no fitting
+                    # candidate (including the case with no waiters).
+                    await conn.fetchval(wsql.emit_intent_handled, flow_id)
+                    completed = True
+                    break
+                promoted = await conn.fetchrow(
+                    wsql.emit_backpressure_wake, candidate["id"], int(candidate["width"])
+                )
                 if promoted is None:
-                    continue
-                woken += 1
-                # NOTIFY accelerates an already durable pending transition. The
-                # effective actor assignment, not a stale original label, is named.
+                    # The exact real row changed between the candidate
+                    # comparison and the CAS — an ordinary miss, not
+                    # corruption: no handled mark, no immediate re-read.
+                    missed = True
+                    break
+                wins_tx += 1
+                total += 1
+                # NOTIFY accelerates an already durable pending transition.
+                # The effective actor assignment, not a stale original label,
+                # is named.
                 await conn.execute(
                     "SELECT pg_notify($1, $2)",
                     wake_channel(wsql.schema),
                     str(promoted["effective_queue"]),
                 )
-        # THE CHUNK COMMITTED (its locks are released). The paging decision:
-        if count < page_limit:
-            # The set's end: the pass is done; a short pass resets the
-            # caller's cursor by itself (the next_cursor is None).
-            return EmitWakeResult(woken=woken, next_cursor=None)
-        if flow_id is not None:
-            # The flow accelerator's own shape: one transaction, at most
-            # batch_size of the flow's own waiters — the next post-commit
-            # seat (or the estate wrap) covers the rest.
-            return EmitWakeResult(woken=woken, next_cursor=None)
-        if not exhaust and processed >= batch_size:
-            # The pass's own coverage target: the caller's cursor advances
-            # to the last processed row.
-            return EmitWakeResult(woken=woken, next_cursor=last)
-        page_after = last
-
-
-async def wake_emit_backpressure_safely(
-    pool: asyncpg.Pool,
-    wsql: WorkflowSql,
-    *,
-    flow_id: JobId,
-    batch_size: int = 100,
-) -> int:
-    """Fail-soft inline wake seat; committed rows and bounded sweep remain truth."""
-    try:
-        result = await wake_emit_backpressure(pool, wsql, flow_id=flow_id, batch_size=batch_size)
-    except Exception as exc:  # Why: an accelerator must not fail the successful child.
-        logger.warning(
-            "wf.emit_backpressure_wake_failed",
-            flow_id=str(flow_id),
-            error_class=type(exc).__name__,
-            error=str(exc)[:500],
-        )
-        return 0
-    return result.woken
+        if missed or completed or wins_tx < FLOW_DRAIN_MAX_WINS:
+            break
+        # The chunk committed at its 200-win ceiling having observed another
+        # fitting candidate (the candidate comparison returned a row): the
+        # next chunk's own first fresh observation is the ceiling rule's
+        # final observation.
+    return EmitWakeResult(promoted=total, intent_completed=completed, missed=missed)

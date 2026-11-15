@@ -32,7 +32,18 @@ WHERE id = $1
 """
 
 TERMINAL_MARK_SQL = """\
-WITH upd AS (
+-- THE RESERVATION CAPTURE (§2.4): the winning row's OLD reservation fact is
+-- captured in its own CTE before the terminal UPDATE removes the key — the
+-- diagnostics count only captured winners, never an already-converted row
+-- and never a Python pre-read.
+WITH target AS (
+    SELECT j.id,
+           (j.metadata ? 'wf_emit_reservation') AS had_reservation,
+           CASE WHEN j.metadata ? 'wf_emit_reservation'
+                THEN j.metadata->'wf_emit_reservation' END AS old_reservation
+    FROM {schema}.jobs j
+    WHERE j.id = $1
+), upd AS (
     UPDATE {schema}.jobs
     SET status = $2::"{schema}".job_status,
         finished_at = clock_timestamp(),
@@ -41,6 +52,9 @@ WITH upd AS (
         error_class = $5,
         error_message = $6,
         error_traceback = $7,
+        -- THE TERMINAL REMOVES THE RESERVATION KEY (§2.4): no key survives
+        -- a terminal row for re-arm; a row without one is unchanged.
+        metadata = metadata - 'wf_emit_reservation',
         -- THE RESULT'S EXPIRY (the vanilla mark_succeeded's
         -- lateral equivalent): the SUCCEEDED terminal stamps
         -- result_expires_at from the ROW'S OWN COHORT's stored
@@ -113,7 +127,10 @@ evt AS (
                                                 'error_class', $5::text))
     FROM upd
 )
-SELECT id, status, attempt, payload, trace_id FROM upd
+SELECT upd.id, upd.status, upd.attempt, upd.payload, upd.trace_id,
+       t.had_reservation, t.old_reservation
+FROM upd
+JOIN target t ON t.id = upd.id
 """
 
 
@@ -313,9 +330,13 @@ SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
 # the cursor checkpoint — the fence carrier. A zombie source (its claim
 # superseded by the reclaim + re-claim) updates NOTHING → the emit
 # refuses (EmitFencedError) → the children above roll back with the tx.
+# The commit also removes the page-width RESERVATION key (§2.4's reserved-
+# replay disposition: a committed page converts the reservation — the next
+# derived charge changes by W' - W; unreserved emits carry no key and are
+# unchanged).
 EMIT_CURSOR_SQL = """\
 UPDATE {schema}.jobs
-SET metadata = metadata || $2::jsonb
+SET metadata = (metadata - 'wf_emit_reservation') || $2::jsonb
 WHERE id = $1
   AND status = 'running'
   AND locked_by_worker = $3
@@ -332,38 +353,283 @@ RETURNING id
 """
 
 
-# the run's non-terminal row count (the ledger's truth), excluding the source's
-# own claim row — the admission's arithmetic input, read inside the tx under
-# the lock. Only the exact committed park representation is not executable
-# work (the accepted in-flight law: real timers, holds, retries, running rows
-# AND resolved-blocked join waiters each occupy their unit of materialization
-# capacity).
-EMIT_IN_FLIGHT_SQL = """\
-SELECT count(*) FROM {schema}.jobs
-WHERE (metadata->>'flow_id')::uuid = $1
-  AND metadata ? 'flow_id'
-  AND step_key <> '__flow__'
-  AND id <> $2::uuid
-  AND status IN ('pending', 'scheduled', 'running')
-  -- Only the exact committed park representation is not executable work.
-  -- Ordinary NULL holds, retries, deadlines, and live/running sources count.
-  AND NOT (
-      status = 'scheduled'
-      AND scheduled_at IS NULL
-      AND metadata @> '{{"blocking_reason":"backpressure"}}'::jsonb
-      AND metadata @> '{{"wf_deferral":{{"signal":"EmitBackpressure"}}}}'::jsonb
-      AND metadata @> '{{"wf_emit_backpressure":{{"version":1}}}}'::jsonb
-  )
+def _wf_emit_park_predicate(alias: str) -> str:
+    """The one shared exact-park predicate ``P(a)`` (the representation's own
+    identity): the marker, never a timestamp, is the discriminator.
+    ``scheduled_at`` is deliberately absent from park identity — it stores
+    the park instant and is never a due date. Every park-scoped statement
+    renders this one definition with its own alias; there is no second
+    spelling to drift."""
+    a = alias
+    return f"""\
+{a}.status = 'scheduled'
+  AND {a}.metadata @> '{{"blocking_reason":"backpressure"}}'::jsonb
+  AND {a}.metadata @> '{{"wf_deferral":{{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}}}'::jsonb
+  AND {a}.metadata @> '{{"wf_emit_backpressure":{{"version":1}}}}'::jsonb
+  AND {a}.step_key IS NOT NULL
+  AND {a}.step_key <> '__flow__'
+  AND {a}.metadata ? 'flow_id'"""
+
+
+def _wf_emit_validated_park_width(alias: str) -> str:
+    """The shared inline scalar ``validated_park_width(a)``: NULL when the row
+    is not an exact park; otherwise only the validated positive-or-zero
+    ``wf_emit_backpressure.page_width``. Malformed values refuse (the
+    row-dependent arm — a uuid-text cast cannot constant-fold) rather than
+    coerce; constant raise arms such as ``1/0`` are forbidden because
+    PostgreSQL folds them at plan time."""
+    a = alias
+    width_text = f"{a}.metadata->'wf_emit_backpressure'->>'page_width'"
+    return f"""\
+CASE WHEN NOT ({_wf_emit_park_predicate(a)})
+     THEN NULL
+     WHEN jsonb_typeof({a}.metadata->'wf_emit_backpressure'->'page_width') = 'number'
+          AND {width_text} ~ '^[0-9]+$'
+     THEN ({width_text})::bigint
+     ELSE ({a}.id::text)::integer
+END"""
+
+
+def _wf_emit_validated_marker_bound(alias: str) -> str:
+    """The shared inline scalar validator for the exact-park marker's own
+    ``bound`` (a positive integer). Row-dependent fail-closed arm."""
+    a = alias
+    bound_text = f"{a}.metadata->'wf_emit_backpressure'->>'bound'"
+    return f"""\
+CASE WHEN NOT ({_wf_emit_park_predicate(a)})
+     THEN NULL
+     WHEN jsonb_typeof({a}.metadata->'wf_emit_backpressure'->'bound') = 'number'
+          AND {bound_text} ~ '^[1-9][0-9]*$'
+     THEN ({bound_text})::bigint
+     ELSE ({a}.id::text)::integer
+END"""
+
+
+def _wf_emit_validated_reservation_width(alias: str) -> str:
+    """The shared inline scalar ``validated_reservation_width(a)``: NULL when
+    the reservation key is absent; otherwise exactly the two-key object
+    ``{{"version":1,"width":W}}`` with validated positive-or-zero integer
+    width. Unknown keys, wrong types, null, bool, float, negative widths, and
+    version drift fail closed; no reservation is valid on an exact park."""
+    a = alias
+    res = f"{a}.metadata->'wf_emit_reservation'"
+    return f"""\
+CASE WHEN NOT ({a}.metadata ? 'wf_emit_reservation')
+     THEN NULL
+     WHEN ({_wf_emit_park_predicate(a)})
+          -- No reservation is valid on an exact park.
+          OR jsonb_typeof({res}) <> 'object'
+          OR ({res}) - '{{"version","width"}}'::text[] <> '{{}}'::jsonb
+          OR jsonb_typeof({res}->'version') <> 'number'
+          OR ({res}->>'version') <> '1'
+          OR jsonb_typeof({res}->'width') <> 'number'
+          OR ({res}->>'width') !~ '^[0-9]+$'
+     THEN ({a}.id::text)::integer
+     ELSE ({res}->>'width')::bigint
+END"""
+
+
+#: The derived observation — the sole capacity authority and the folded home
+#: of the legacy in-flight count. The status leg is HOISTED outside the
+#: aggregate so the scan stays on ``jobs_wf_flow_nodes_idx`` (its required
+#: key: the flow uuid, then the full pending/scheduled/running domain); the
+#: examined rows are the live non-root rows plus exact parks admitted by
+#: those predicates — never terminal history, so the observation is
+#: ``Theta(live + parked)``. ``$2`` is the running source's own id for
+#: unreserved admission (the single authoritative own-row exclusion) and
+#: NULL for terminal, park, and drain observations — in particular the park
+#: observation includes its own newly written row. No persisted charge
+#: exists to drift: every counted leg derives from these real rows.
+WF_EMIT_CAPACITY_OBSERVATION_SQL = f"""\
+WITH observed AS MATERIALIZED (
+    SELECT
+        ({_wf_emit_park_predicate('j')}) AS is_park,
+        {_wf_emit_validated_park_width('j')} AS park_width,
+        {_wf_emit_validated_reservation_width('j')} AS reservation_width
+    FROM {{schema}}.jobs AS j
+    WHERE (j.metadata->>'flow_id')::uuid = $1::uuid
+      AND j.status IN ('pending', 'scheduled', 'running')
+      AND j.metadata ? 'flow_id'
+      AND j.step_key IS NOT NULL
+      AND j.step_key <> '__flow__'
+      AND ($2::uuid IS NULL OR j.id <> $2::uuid)
+)
+SELECT count(*) FILTER (WHERE NOT is_park) AS live_rows,
+       coalesce(sum(reservation_width), 0)::bigint AS reservations,
+       min(park_width) FILTER (WHERE is_park) AS min_waiting_width
+FROM observed
 """
 
-
-# one run's emitters serialize on this transaction-scoped advisory lock — the
-# concurrent emitters' count+insert is atomic per run.
-EMIT_ADMISSION_LOCK_SQL = """\
-SELECT pg_advisory_xact_lock(hashtext($1::text))
+#: The per-terminal exact-marker existence probe (the event rule's step 1):
+#: one indexed zero-row query through ``jobs_wf_emit_park_idx`` for a
+#: non-crossing terminal; no count, no intent, no notify follows a zero-row
+#: probe.
+WF_EMIT_PARK_EXISTS_SQL = f"""\
+SELECT 1
+FROM {{schema}}.jobs AS j
+WHERE (j.metadata->>'flow_id')::uuid = $1::uuid
+  AND {_wf_emit_park_predicate('j')}
+LIMIT 1
 """
 
+#: The single authoritative candidate comparison (the drain's own): the
+#: oldest FITTING waiter on real rows — a non-fitting older row can never
+#: block a smaller follower. The drain supplies the already-derived
+#: ``$charge``; the fit comparison rides the ``jobs_wf_emit_park_idx``
+#: (flow, created_at, id) partial index, so the scan is
+#: ``Theta(parked) <= Theta(S)``.
+WF_EMIT_CANDIDATE_SQL = f"""\
+SELECT j.id, {_wf_emit_validated_park_width('j')} AS width
+FROM {{schema}}.jobs AS j
+WHERE (j.metadata->>'flow_id')::uuid = $1::uuid
+  AND {_wf_emit_park_predicate('j')}
+  AND $2::bigint + {_wf_emit_validated_park_width('j')} <= $3::bigint
+ORDER BY j.created_at, j.id
+LIMIT 1
+"""
 
+#: The bounded run's capacity/intent record — bound and wake intents only.
+#: There is no persisted live-row charge, waiter count, cached head, or
+#: cached minimum width anywhere: capacity is derived from ``jobs`` rows.
+WF_EMIT_INTENT_LOCK_SQL = """\
+SELECT bound, wake_generation, handled_generation
+FROM {schema}.wf_emit_capacity
+WHERE flow_id = $1
+FOR UPDATE
+"""
+
+#: The stamp at create/adoption: ``bound`` is immutable from the run's
+#: compiled declaration. A conflicting existing bound is corruption and is
+#: refused by the caller's read-back check.
+WF_EMIT_INTENT_STAMP_SQL = """\
+INSERT INTO {schema}.wf_emit_capacity (flow_id, bound, wake_generation, handled_generation)
+VALUES ($1, $2, 0, 0)
+ON CONFLICT (flow_id) DO NOTHING
+RETURNING flow_id
+"""
+
+#: The adopted record's bound read-back (the missing/mismatched fail-closed
+#: check before feature use).
+WF_EMIT_INTENT_BOUND_SQL = """\
+SELECT bound FROM {schema}.wf_emit_capacity WHERE flow_id = $1
+"""
+
+#: The threshold crossing: one durable generation bump, only when no intent
+#: is already pending. The near-overflow refusal is named and fail-closed —
+#: the bigint domains never wrap or reset.
+WF_EMIT_INTENT_GENERATION_SQL = """\
+UPDATE {schema}.wf_emit_capacity
+SET wake_generation = wake_generation + 1
+WHERE flow_id = $1
+  AND wake_generation = handled_generation
+  AND wake_generation < 9223372036854775806::bigint
+RETURNING wake_generation
+"""
+
+#: Completion: the drain transaction that observed no fitting candidate marks
+#: the generation handled. CAS-gated so a concurrent terminal's newer
+#: generation survives.
+WF_EMIT_INTENT_HANDLED_SQL = """\
+UPDATE {schema}.wf_emit_capacity
+SET handled_generation = wake_generation
+WHERE flow_id = $1
+  AND wake_generation > handled_generation
+RETURNING flow_id
+"""
+
+#: The global pending-intent selection: at most 100 distinct flow ids in one
+#: short indexed read (the pending-generation partial index), ordered,
+#: rotated by the persistent ``after_flow_id`` cursor, and holding no row
+#: lock past the read.
+WF_EMIT_PENDING_INTENTS_SQL = """\
+SELECT flow_id, bound, wake_generation, handled_generation
+FROM {schema}.wf_emit_capacity
+WHERE wake_generation > handled_generation
+  AND flow_id > $1::uuid
+ORDER BY flow_id
+LIMIT 100
+"""
+
+#: The fairness rotation's singleton: one row, one ``after_flow_id``, never
+#: growing with run cardinality.
+WF_EMIT_ROTATION_READ_SQL = """\
+SELECT after_flow_id FROM {schema}.wf_emit_intent_rotation WHERE id = true
+"""
+
+WF_EMIT_ROTATION_WRITE_SQL = """\
+UPDATE {schema}.wf_emit_intent_rotation
+SET after_flow_id = $1::uuid
+WHERE id = true
+"""
+
+#: The bounded exact-marker sweep's selection: visits only the
+#: ``jobs_wf_emit_park_idx`` partial index, derives just the marked bounded
+#: flows, and stops when the index result is empty. It is never a
+#: parked-estate seq scan or a due-time wake.
+WF_EMIT_MARKER_SWEEP_SQL = f"""\
+SELECT (j.metadata->>'flow_id')::uuid AS flow_id,
+       min({_wf_emit_validated_park_width('j')}) AS min_waiting_width,
+       min({_wf_emit_validated_marker_bound('j')}) AS bound
+FROM {{schema}}.jobs AS j
+WHERE {_wf_emit_park_predicate('j')}
+GROUP BY (j.metadata->>'flow_id')::uuid
+LIMIT 100
+"""
+
+#: The loud non-drainage refusal: on the committed terminal-root proof (a
+#: genuine child failure exhausted its declared retry policy and the root
+#: terminal ``failed`` committed, while an exact parked source still holds
+#: an un-emitted committed cursor), the same failure-cascade transaction
+#: fences every such parked source. No logical attempt is spent, no ladder
+#: retry is created, and the causal child's genuine error is never
+#: overwritten.
+WF_NOT_DRAINING_FENCE_SQL = f"""\
+WITH parks AS (
+    SELECT j.id
+    FROM {{schema}}.jobs AS j
+    WHERE (j.metadata->>'flow_id')::uuid = $1::uuid
+      AND {_wf_emit_park_predicate('j')}
+      AND j.metadata ? 'emit_cursor'
+), fenced AS (
+    UPDATE {{schema}}.jobs AS j
+    SET status = 'failed',
+        finished_at = clock_timestamp(),
+        error_class = $2,
+        error_message = $3,
+        metadata = (j.metadata - 'blocking_reason' - 'wf_emit_reservation')
+            || jsonb_build_object(
+                'wf_not_draining', jsonb_build_object(
+                    'reason', 'terminal_root_after_child_failure_exhaustion',
+                    'root_id', $1::uuid,
+                    'child_id', $4::uuid,
+                    'at', to_char(clock_timestamp() AT TIME ZONE 'UTC',
+                                  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+                )
+            )
+    FROM parks
+    WHERE j.id = parks.id
+    RETURNING j.id
+), ledger AS (
+    UPDATE {{schema}}.wf_step_ledger AS l
+    SET status = 'fenced',
+        error_class = $2,
+        updated_at = clock_timestamp()
+    FROM fenced
+    WHERE l.job_id = fenced.id
+      AND l.status = 'awaited'
+    RETURNING l.id
+), evt AS (
+    INSERT INTO {{schema}}.job_events (job_id, occurred_at, kind, detail)
+    SELECT fenced.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'scheduled',
+                              'to_state', 'failed',
+                              'error_class', $2::text,
+                              'reason',
+                              'terminal_root_after_child_failure_exhaustion')
+    FROM fenced
+)
+SELECT (SELECT count(*) FROM fenced)::int AS fenced_count
+"""
 # A dedicated ordinary-capacity park, intentionally separate from
 # NODE_DEFER_SQL's delay/GREATEST/snooze/provider-retry machinery. The job and
 # current ledger update commit or roll back together. The caller validates the
@@ -379,7 +645,10 @@ WITH params AS (
 ), parked AS (
     UPDATE {schema}.jobs AS j
     SET status = 'scheduled',
-        scheduled_at = NULL,
+        -- THE PARK INSTANT, not a due date: scheduled_at stays NOT NULL and
+        -- is deliberately absent from park identity and claim eligibility —
+        -- the marker, never the timestamp, is the discriminator.
+        scheduled_at = clock_timestamp(),
         finished_at = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -388,7 +657,9 @@ WITH params AS (
         cancel_requested_at = NULL,
         attempt = 0,
         assignment_routed = true,
-        metadata = j.metadata || jsonb_build_object(
+        -- A park strips any stale reservation key: no reservation is valid
+        -- on an exact park (the derived observation's own invariant).
+        metadata = (j.metadata - 'wf_emit_reservation') || jsonb_build_object(
             'blocking_reason', 'backpressure',
             'wf_source_logical_attempt', (SELECT logical_attempt FROM params),
             'wf_deferral', jsonb_build_object(
@@ -448,58 +719,35 @@ WHERE j.id = (SELECT job_id FROM params)
 """
 
 
-_EMIT_WAITER_PREDICATE = """\
-j.status = 'scheduled'
-  AND j.scheduled_at IS NULL
-  AND j.metadata @> '{"blocking_reason":"backpressure"}'::jsonb
-  AND j.metadata @> '{"wf_deferral":{"signal":"EmitBackpressure"}}'::jsonb
-  AND j.metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
-  AND j.step_key IS NOT NULL
-  AND j.step_key <> '__flow__'
-  AND j.metadata ? 'flow_id'
-"""
-
-EMIT_BACKPRESSURE_FLOW_CANDIDATES_SQL = (
-    "SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.metadata "
-    "FROM {schema}.jobs AS j WHERE "
-    + _EMIT_WAITER_PREDICATE
-    + " AND (j.metadata->>'flow_id')::uuid = $1 ORDER BY j.id LIMIT $2"
-)
-
-EMIT_BACKPRESSURE_CANDIDATES_SQL = (
-    "SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.metadata "
-    "FROM {schema}.jobs AS j WHERE "
-    + _EMIT_WAITER_PREDICATE
-    + " ORDER BY (j.metadata->>'flow_id')::uuid, j.id LIMIT $1"
-)
-
-EMIT_BACKPRESSURE_CURSOR_CANDIDATES_SQL = (
-    "SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.metadata "
-    "FROM {schema}.jobs AS j WHERE "
-    + _EMIT_WAITER_PREDICATE
-    + " AND ((j.metadata->>'flow_id')::uuid, j.id) > ($1::uuid, $2::uuid)"
-    + " ORDER BY (j.metadata->>'flow_id')::uuid, j.id LIMIT $3"
-)
-
-EMIT_BACKPRESSURE_ROOT_LOCK_SQL = """\
-SELECT status FROM {schema}.jobs WHERE id = $1 AND step_key = '__flow__' FOR UPDATE NOWAIT
-"""
-
-EMIT_BACKPRESSURE_CANDIDATE_LOCK_SQL = (
-    "SELECT j.id, j.status, j.scheduled_at, j.actor, j.queue, j.metadata "
-    "FROM {schema}.jobs AS j WHERE j.id = $1 AND " + _EMIT_WAITER_PREDICATE + " FOR UPDATE"
-)
-
-EMIT_BACKPRESSURE_WAKE_SQL = """\
-UPDATE {schema}.jobs AS j
+#: The promotion CAS (the one commit-acknowledged, run-targeted promotion
+#: primitive's row law): a fitted waiter's exact real row goes ``scheduled ->
+#: pending`` and carries a durable page-width RESERVATION — a woken source
+#: cannot be barged into another no-fit re-park. The CAS requires the
+#: candidate id, ``P(j)``, absence of an existing reservation, and a
+#: nonterminal root; it emits the effective queue wake only on a winning
+#: row. ``$2`` is the candidate's validated page width (read from the same
+#: row by the candidate comparison). ``attempt = 0`` and ``claim_epoch`` are
+#: untouched. The reservation is not a dispatch slot, worker reservation,
+#: lease, or execution permission: ordinary queue claim remains the sole
+#: execution grant.
+EMIT_BACKPRESSURE_WAKE_SQL = f"""\
+UPDATE {{schema}}.jobs AS j
 SET status = 'pending',
     scheduled_at = clock_timestamp(),
     assignment_routed = true,
-    metadata = (j.metadata - 'blocking_reason') || jsonb_build_object(
+    metadata = (
+        (j.metadata - 'blocking_reason')
+        || jsonb_build_object(
+            'wf_emit_reservation',
+            jsonb_build_object('version', 1, 'width', $2::int)
+        )
+    )
+    || jsonb_build_object(
         'wf_emit_backpressure',
-        (j.metadata->'wf_emit_backpressure') || jsonb_build_object(
+        (j.metadata->'wf_emit_backpressure')
+        || jsonb_build_object(
             'wakes', COALESCE(NULLIF(
-                j.metadata #>> '{wf_emit_backpressure,wakes}', ''
+                j.metadata #>> '{{wf_emit_backpressure,wakes}}', ''
             )::int, 0) + 1,
             'last_wake_at', to_char(
                 clock_timestamp() AT TIME ZONE 'UTC',
@@ -508,27 +756,19 @@ SET status = 'pending',
         )
     )
 WHERE j.id = $1
+  AND NOT j.metadata ? 'wf_emit_reservation'
+  AND {_wf_emit_park_predicate('j')}
   AND EXISTS (
-      SELECT 1 FROM {schema}.jobs AS root
+      SELECT 1 FROM {{schema}}.jobs AS root
       WHERE root.id = (j.metadata->>'flow_id')::uuid
         AND root.step_key = '__flow__'
         AND root.status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
   )
-  AND j.status = 'scheduled'
-  AND j.scheduled_at IS NULL
-  AND j.metadata @> '{"blocking_reason":"backpressure"}'::jsonb
-  AND j.metadata @> '{"wf_deferral":{"signal":"EmitBackpressure"}}'::jsonb
-  AND j.metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
-  AND j.step_key IS NOT NULL
-  AND j.step_key <> '__flow__'
-  AND j.metadata ? 'flow_id'
 RETURNING COALESCE(
-    (SELECT ac.queue FROM {schema}.actor_config AS ac WHERE ac.actor = j.actor),
+    (SELECT ac.queue FROM {{schema}}.actor_config AS ac WHERE ac.actor = j.actor),
     j.queue
 ) AS effective_queue
 """
-
-
 FORK_JOIN_NODE_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,

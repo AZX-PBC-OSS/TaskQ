@@ -51,6 +51,11 @@ class _ExitHost(Protocol):
     schema: str
     compiled: Any
     _worker_id: JobId
+    # The bounded-run gate (the §4.1 event rule's host-side fact) and the
+    # terminal route's own post-COMMIT drain trigger.
+    _emit_capacity: bool
+
+    async def _drain_created_intent(self, flow_id: JobId, intent_created: bool) -> None: ...
 
     async def _project_auto(
         self, flow_id: JobId, node_id: JobId, kind: str, payload: dict[str, Any]
@@ -88,7 +93,7 @@ class ExitOps(_ExitHost):
         on the EXACT claim identity (the claim's own row id + instant),
         never a four-expression fallback."""
         step_key: str = row["step_key"]
-        await finalize_node(
+        exit_final = await finalize_node(
             self.pool,
             self.wsql,
             flow_id=flow_id,
@@ -102,7 +107,9 @@ class ExitOps(_ExitHost):
             map_index=row["map_index"],
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            emit_capacity=self._emit_capacity,
         )
+        await self._drain_created_intent(flow_id, exit_final.intent_created)
         # the compiled graph's descendants (the wiring's own edges — never a
         # runtime guess), skipped with the record. Bounded by the graph's size;
         # a downstream row that is already terminal (or does not exist — an

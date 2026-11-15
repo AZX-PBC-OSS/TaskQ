@@ -475,6 +475,10 @@ class FinalizeResult:
     attempt: int | None
     decremented: tuple[DecrementHit, ...] = ()
     fired: tuple[FiredJoin, ...] = ()
+    #: The one-bit §4.1 result: True only when this terminal's event rule
+    #: crossed the threshold and created the durable promotion intent (the
+    #: direct route's acknowledged post-COMMIT drain trigger).
+    intent_created: bool = False
 
 
 # ── The wire-shape helpers (one home; engine, fork and sweep import) ────

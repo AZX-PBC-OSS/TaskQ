@@ -328,10 +328,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # it from the row; this echo only spares the dev loop a per-node read.
         # ``None`` = no override declared.
         self._run_priority: int | None = None
-        # Existing compiled declarations gate every inline capacity wake. A
-        # source-free or explicitly unbounded workflow performs no per-terminal
-        # waiter SQL; the durable partial-index sweep remains authoritative.
-        self._wake_backpressure = getattr(compiled, "max_in_flight", None) is not None and any(
+        # Existing compiled declarations gate the bounded run's §4.1
+        # terminal/park event rule. A source-free or explicitly unbounded
+        # workflow performs no per-terminal probe SQL and pays no feature
+        # tax; the durable exact-marker sweep remains the completeness
+        # authority for any flow a missed seat could ever strand.
+        self._emit_capacity = getattr(compiled, "max_in_flight", None) is not None and any(
             getattr(node, "kind", None) == "chain_source" for node in compiled.nodes.values()
         )
         # the worker settings' value the fleet door threads
@@ -524,6 +526,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # cohort never splits (the children riding the declarations
                     # while the root says 6 would split the fork's cohort).
                     self._run_priority = await self._adopted_run_priority(conn, claim.flow_id)
+                if self._emit_capacity and claim.created:
+                    from taskq.workflows._emit import ensure_emit_capacity
+
+                    # The bounded run's immutable bound record is stamped in
+                    # the create's own transaction (§2.1: the run's compiled
+                    # declaration stamps it at create; unbounded runs have
+                    # neither stamp nor intent row and pay no feature tax).
+                    await ensure_emit_capacity(
+                        conn,
+                        self.wsql,
+                        flow_id=claim.flow_id,
+                        bound=int(getattr(self.compiled, "max_in_flight")),
+                    )
         except asyncpg.exceptions.UndefinedTableError as exc:
             # The first contact's translation: the runner door on an
             # unmigrated schema raises the same typed
@@ -759,8 +774,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         heal + the outbox drain) and the flow's WORK is executed by the
         fleet's workers through the queue-routed dispatch (the
         worker-hosted door). The in-process body execution — the
-        dev-loop driver — is the ``execute=True`` default, unchanged."""
+        dev-loop driver — is the ``execute=True`` default, unchanged.
+
+        Each new runner drive performs ONE initial flow backfill (§5.3's
+        ``B`` term): the same promotion primitive, once, before the first
+        tick — a crashed predecessor's committed but undrained intent is
+        observed from real rows, never from elapsed time."""
         await self._refuse_guarded_direct_run(flow_id)
+        if self._emit_capacity:
+            from taskq.workflows._emit import wake_emit_backpressure
+
+            await wake_emit_backpressure(self.pool, self.wsql, flow_id=flow_id)
         for _ in range(max_ticks):
             if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
                 return "terminal"
@@ -815,13 +839,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # the dev loop's timer arm mirrors the leader's — the due set empties
         # per tick.
         await sweep_due_timers(self.pool, schema=self.schema, drain=True)
-        if self._wake_backpressure:
-            from taskq.workflows._emit import wake_emit_backpressure_safely
-
-            # Direct tick mirrors the bounded leader arm through the one
-            # primitive. It self-consumes only exact live parked markers.
-            await wake_emit_backpressure_safely(self.pool, self.wsql, flow_id=flow_id)
         return ran
+
+    async def _drain_created_intent(self, flow_id: JobId, intent_created: bool) -> None:
+        """The terminal route's own post-COMMIT drain trigger (§5.3): the
+        one-bit ``intent_created`` result calls the same promotion primitive
+        once, after the producing transaction's acknowledged commit. A drain
+        error propagates — the already committed terminal remains intact,
+        and re-entering :meth:`drive` reconciles."""
+        if not intent_created:
+            return
+        from taskq.workflows._emit import wake_emit_backpressure
+
+        await wake_emit_backpressure(self.pool, self.wsql, flow_id=flow_id)
 
     async def _drive_descendants(self, flow_id: JobId, *, execute: bool) -> bool:
         """The descendant flows' one claim pass (the dev-loop driver's
@@ -1084,35 +1114,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         assert isinstance(queue, str)  # TerminalEffect declaration validated
         return queue
 
-    async def _exhaust_loop(
-        self,
-        flow_id: JobId,
-        row: dict[str, Any],
-        error_class: str | None,
-        message: str | None,
-        *,
-        worker_id: JobId,
-        attempt: int,
-        claim_epoch: int,
-    ) -> None:
-        """P2 post-commit seat around the reviewed P0 loop terminal kernel."""
-        await LoopOps._exhaust_loop(
-            self,
-            flow_id,
-            row,
-            error_class,
-            message,
-            worker_id=worker_id,
-            attempt=attempt,
-            claim_epoch=claim_epoch,
-        )
-        if self._wake_backpressure:
-            from taskq.workflows._emit import wake_emit_backpressure_safely
-
-            # The delegated function's transaction/pool scope has exited. A
-            # failed/stale loop CAS leaves the exact marker authoritative.
-            await wake_emit_backpressure_safely(self.pool, self.wsql, flow_id=flow_id)
-
     async def run_fleet_claimed_step(
         self,
         flow_id: JobId,
@@ -1262,19 +1263,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     run_priority=run_priority,
                     ledger_claimed_at=ledger_claimed_at,
                 )
-                if self._wake_backpressure and outcome in {
-                    "succeeded",
-                    "skipped",
-                    "loop",
-                    "laddered",
-                    "cancelled",
-                }:
-                    from taskq.workflows._emit import wake_emit_backpressure_safely
-
-                    # Common direct/fleet completion seat, including chain
-                    # terminals. Wake only removes fitted live parked rows;
-                    # durable markers remain when a nonterminal retry is full.
-                    await wake_emit_backpressure_safely(self.pool, self.wsql, flow_id=flow_id)
             except Exception:
                 # safe_start_span's fallback recorded the scrubbed error on its
                 # way out; the outcome attribute names the ledger's own
@@ -1571,7 +1559,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                             node=row["step_key"],
                             outcome=repr(outcome_value)[:200],
                         )
-                        await finalize_node(
+                        router_failed = await finalize_node(
                             self.pool,
                             self.wsql,
                             flow_id=flow_id,
@@ -1586,8 +1574,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                             map_index=row["map_index"],
                             ledger_id=ledger_id,
                             ledger_claimed_at=ledger_claimed_at,
-                            wake_backpressure=self._wake_backpressure,
+                            emit_capacity=self._emit_capacity,
                         )
+                        await self._drain_created_intent(flow_id, router_failed.intent_created)
                         return "succeeded"
                 result = encode_result(outcome_value)
         except NodeHeldError as held:
@@ -2154,8 +2143,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             map_index=row["map_index"],
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
-            wake_backpressure=self._wake_backpressure,
+            emit_capacity=self._emit_capacity,
         )
+        await self._drain_created_intent(flow_id, final.intent_created)
         # the finalize seam's additive write, after the two-tx finalize
         # returned (the projection is never inside the finalize's transactions
         # — the zero-finalize-changes probe pins the terminal-mark statement's
@@ -2756,7 +2746,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 step_key=row["step_key"],
                 map_index=row["map_index"],
             )
-        await finalize_node(
+        skipped_final = await finalize_node(
             self.pool,
             self.wsql,
             flow_id=flow_id,
@@ -2770,8 +2760,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             map_index=row["map_index"],
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
-            wake_backpressure=self._wake_backpressure,
+            emit_capacity=self._emit_capacity,
         )
+        await self._drain_created_intent(flow_id, skipped_final.intent_created)
         await self._project_auto(
             flow_id,
             JobId(row["id"]),

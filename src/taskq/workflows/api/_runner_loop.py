@@ -58,6 +58,10 @@ class _LoopHost(Protocol):
     #: the id the node claim stamped on the row — the loop's advance/exhaust
     #: bind it (a zombie driver's write is refused by its own legs).
     _worker_id: JobId
+    #: The bounded-run gate (the compiled declaration's own fact): True only
+    #: when the run declares ``max_in_flight`` and carries chain sources —
+    #: the §4.1 event rule's host-side gate. Unbounded runs pay nothing.
+    _emit_capacity: bool
 
     async def _flow_input(self, flow_id: JobId) -> object: ...
 
@@ -145,7 +149,7 @@ class LoopOps(_LoopHost):
         )
 
         disposition = deferral_disposition(exc)
-        verdict_text = await defer_row_law(
+        outcome = await defer_row_law(
             self.pool,
             self.wsql,
             job_id=JobId(row["id"]),
@@ -159,6 +163,7 @@ class LoopOps(_LoopHost):
             ledger_claimed_at=ledger_claimed_at,
             iteration_rest=iteration_rest,
         )
+        verdict_text = outcome.verdict
 
         if verdict_text == "deferred":
             # the loop's counters are the advance statement's own —
@@ -171,6 +176,10 @@ class LoopOps(_LoopHost):
                 disposition=disposition,
                 delay_seconds=exc.delay.total_seconds(),
             )
+            if disposition == "emit_backpressure":
+                # The park's terminal route drains the intent its own
+                # transaction may have created — once, post-COMMIT.
+                await self._drain_created_intent(flow_id, outcome.intent_created)
             return "deferred"
         if verdict_text == "fenced":
             logger.info(
@@ -867,7 +876,18 @@ class LoopOps(_LoopHost):
             )
             if result is None or not result["loop_exhausted"]:
                 return  # another writer got there first — the CAS held
+            intent_created = False
+            if self._emit_capacity:
+                from taskq.workflows._emit import emit_capacity_event
+
+                # The §4.1 terminal event rule in the exhaust's own
+                # transaction (the winning loop terminal is this flow's
+                # terminal statement).
+                intent_created = await emit_capacity_event(
+                    conn, self.wsql, flow_id=flow_id, probe=True
+                )
             if policy != "escalate":
+                await self._drain_created_intent(flow_id, intent_created)
                 return  # the fail policy: the named state is the record, no enqueue
             bindings = escalation_bindings(
                 self.compiled.name,
@@ -894,3 +914,7 @@ class LoopOps(_LoopHost):
                 ESCALATION_STEP_KEY,
                 dumps_jsonb_str(bindings),
             )
+        # The exhaust transaction committed. The loop's own terminal route
+        # drains the intent it just created — exactly one acknowledged
+        # post-COMMIT promotion pass per threshold crossing.
+        await self._drain_created_intent(flow_id, intent_created)
