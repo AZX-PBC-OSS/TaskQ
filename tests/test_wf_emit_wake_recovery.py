@@ -2312,7 +2312,7 @@ async def test_the_reaper_never_fences_a_live_claimed_attempt(
         flow_id,
     )
     live_row = await wf_conn.fetchrow(
-        f"SELECT status::text AS status, lock_expires_at FROM \"{wf_schema}\".jobs WHERE id = $1",
+        f'SELECT status::text AS status, lock_expires_at FROM "{wf_schema}".jobs WHERE id = $1',
         claim.job_id,
     )
     assert live_row is not None
@@ -2330,7 +2330,7 @@ async def test_the_reaper_never_fences_a_live_claimed_attempt(
 
     # The lease lapses (the worker died): the row is now the reaper's subject.
     await wf_conn.execute(
-        f'UPDATE "{wf_schema}".jobs SET lock_expires_at = now() - interval \'1 second\' '
+        f"UPDATE \"{wf_schema}\".jobs SET lock_expires_at = now() - interval '1 second' "
         "WHERE id = $1",
         claim.job_id,
     )
