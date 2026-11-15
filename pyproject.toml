@@ -448,6 +448,22 @@ ignore = [
 # binding. S311: random module used for jitter in the deadlock-retry backoff
 # (the hardening H7 cure), not crypto.
 "src/taskq/workflows/_sql.py" = ["S608"]
+# The folded #718 statement constants' shared renderers (the park
+# predicate's alias substitution is the module's own constant text) and the
+# catalog preflight's schema-identifier reads: the schema name is validated
+# against _IDENT_RE at the bundle's construction; every caller-controlled
+# value uses $N parameter binding.
+"src/taskq/workflows/_sql_finalize.py" = ["S608"]
+"src/taskq/workflows/_capability.py" = ["S608"]
+# The #718 controls: the pre-registration's variables mirror the contract's
+# lane-table symbols (P/S/R/B/J/C) verbatim — the counts and labels may not
+# change between the print and the assertion; the others' statement
+# constants are the contract's own marker shapes (schema identifiers
+# validated upstream, values $-bound).
+"tests/test_wf_counters_preregistered.py" = ["N806", "S608"]
+"tests/test_wf_reservation_key_fate.py" = ["S608"]
+"tests/test_wf_not_draining_refusal.py" = ["S608"]
+"tests/test_wf_emit_capacity_controls.py" = ["S608"]
 "src/taskq/workflows/_sql_status.py" = ["S608"]
 "src/taskq/workflows/_progress_read.py" = ["S608"]
 "src/taskq/workflows/engine.py" = ["S608", "S311", "SIM117"]

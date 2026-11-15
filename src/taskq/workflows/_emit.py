@@ -65,10 +65,9 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, cast
+from uuid import UUID
 
 import structlog
-
-from uuid import UUID
 
 from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads

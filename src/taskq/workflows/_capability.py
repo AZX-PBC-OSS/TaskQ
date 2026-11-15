@@ -253,7 +253,7 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
         raise _fail("wf_emit_capacity lacks its bound/generation CHECK constraints")
 
     # 4. the rotation singleton.
-    rotation = await conn.fetchval(  # Why: the schema is the bundle's validated identifier; the singleton read takes no other value.
+    rotation = await conn.fetchval(
         "SELECT after_flow_id FROM " + f'"{schema}".wf_emit_intent_rotation WHERE id'
     )
     if rotation is None:
