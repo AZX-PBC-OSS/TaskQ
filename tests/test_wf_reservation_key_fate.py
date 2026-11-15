@@ -66,28 +66,6 @@ async def _observation(conn: Any, wsql: WorkflowSql, flow: JobId) -> tuple[int, 
     return int(row["live_rows"]), int(row["reservations"])
 
 
-async def _seed_worker_claim(conn: Any, schema: str, job: JobId) -> tuple[Any, int, int]:
-    from taskq._ids import new_uuid
-
-    worker = JobId(new_uuid())
-    from taskq.workflows.api._sql_runner import render_sql
-
-    claimed = await conn.fetchrow(
-        render_sql(
-            """
-UPDATE {schema}.jobs SET status = 'running', attempt = attempt + 1,
-    claim_epoch = claim_epoch + 1, locked_by_worker = $2,
-    lock_expires_at = now() + interval '90 seconds'
-WHERE id = $1 AND status = 'pending' RETURNING attempt, claim_epoch
-""",
-            schema,
-        ),
-        job,
-        worker,
-    )
-    return worker, int(claimed["attempt"]), int(claimed["claim_epoch"])
-
-
 async def test_reserved_row_terminalizes_through_each_family_exactly_once(
     wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
 ) -> None:

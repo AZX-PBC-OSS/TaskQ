@@ -8,6 +8,7 @@ the intended pass."""
 from __future__ import annotations
 
 import asyncio
+import enum
 import json as _json
 from typing import Any
 
@@ -18,17 +19,14 @@ from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
 pytestmark = pytest.mark.integration
 
 
-class Ok:
+class OkOut(enum.Enum):
+    """The chain outcome vocabulary (the enum the route declares)."""
+
     OK = "ok"
 
 
 def _chain(name: str, body: Any) -> Any:
-    import enum
-
     from taskq.workflows import DONE, Chain, Route, Step
-
-    class OkOut(enum.Enum):
-        OK = "ok"
 
     return Chain(
         name=name,
@@ -95,14 +93,14 @@ async def test_direct_lane_counters_within_the_preregistered_pin(
 
     child_calls: list[int | None] = []
 
-    async def screen(ctx: StepContext, item: object) -> Ok:
+    async def screen(ctx: StepContext, item: object) -> OkOut:
         child_calls.append(ctx.map_index)
         # The first page's own child stays live briefly (no gate: every
         # body completes, every tick returns) so the second page's
         # admission sees charge = 1 and parks the two-wide page.
         if ctx.map_index == 0:
             await asyncio.sleep(0.5)
-        return Ok.OK
+        return OkOut.OK
 
     chain = _chain(f"counters-{new_uuid_hex()}", screen)
     app = WorkflowApp()
