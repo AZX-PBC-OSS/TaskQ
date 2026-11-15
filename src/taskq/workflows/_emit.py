@@ -399,6 +399,7 @@ async def emit_capacity_event(
     *,
     flow_id: JobId,
     probe: bool,
+    missing_ok: bool = False,
 ) -> bool:
     """The §4.1 terminal/park event rule, run in the caller's transaction
     under the canonical root -> intent -> winning-nodes order.
@@ -422,6 +423,11 @@ async def emit_capacity_event(
             return False
     intent = await conn.fetchrow(wsql.emit_intent_lock, flow_id)
     if intent is None:
+        if missing_ok:
+            # The sweep's estate-wide face: a flow with no capacity record
+            # is an unbounded run (neither stamp nor intent row, no feature
+            # tax) — nothing to observe and nothing to notify.
+            return False
         raise EmitCapacityCorruptionError(
             f"the bounded run {flow_id} has no capacity record at its "
             "terminal/park event — the bound stamp is missing (fail-closed)"

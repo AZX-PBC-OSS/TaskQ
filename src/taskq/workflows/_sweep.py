@@ -1102,11 +1102,21 @@ async def sweep_loop_budget(
             await conn.executemany(
                 render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, wsql.schema), outbox_rows
             )
-    if exhausted:
-        from taskq.workflows._emit import wake_emit_backpressure_safely
+        # THE §4.1 EVENT RULE — in this same transaction, per affected
+        # bounded flow: the winning loop terminals are this statement's
+        # terminal event. The gate is the run's own bounded declaration; the
+        # derived charge counts this transaction's own committed exhaust
+        # rows. The promotion itself stays the drain's (the notification is
+        # only the accelerator); the leader's capacity listener (or the
+        # maintenance-interval fallback) observes the created intent.
+        if exhausted:
+            from taskq.workflows._emit import emit_capacity_event
 
-        # Every winner committed before this fresh read. One bounded wake per
-        # affected flow, not one nested wake per row in the exhaust batch.
-        for terminal_flow in sorted({JobId(row["flow_id"]) for row in winners}):
-            await wake_emit_backpressure_safely(pool, wsql, flow_id=terminal_flow)
+            for terminal_flow in sorted({JobId(row["flow_id"]) for row in winners}):
+                # The sweep serves every flow and holds no declaration: a
+                # missing capacity record is an UNBOUNDED run (no feature
+                # tax, nothing to notify), not corruption.
+                await emit_capacity_event(
+                    conn, wsql, flow_id=terminal_flow, probe=True, missing_ok=True
+                )
     return exhausted
