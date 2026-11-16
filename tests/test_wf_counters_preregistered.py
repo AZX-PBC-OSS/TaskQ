@@ -186,3 +186,66 @@ def new_uuid_hex() -> str:
     from taskq._ids import new_uuid
 
     return new_uuid().hex
+
+
+async def test_non_crossing_terminal_causes_one_zero_row_probe_and_no_derivation(
+    wf_conn: Any, wf_schema: str, module_pg_pool: Any, wf_sql: Any
+) -> None:
+    """§9 control 2's own first law, as a census control: a terminal event
+    on a bounded flow with NO exact park causes ONE zero-row indexed probe
+    and NO derived count, NO intent, NO grant, and NO claim — the
+    fit-count-every-terminal mutant derives on every terminal and reds
+    here (its observations census moves; the law's is zero)."""
+    from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, chain_source
+    from taskq.workflows._emit import COUNTERS
+    from taskq.workflows._emit import reset_counters as _rc
+
+    async def screen(ctx: StepContext, item: object) -> OkOut:
+        del ctx, item
+        return OkOut.OK
+
+    chain = _chain(f"noncrossing-{new_uuid_hex()}", screen)
+    app = WorkflowApp()
+
+    @app.workflow("noncrossing_flow", max_in_flight=2)
+    def noncrossing_flow() -> Promise[object]:
+        async def source(ctx: StepContext) -> None:
+            from taskq.workflows.chain import chain_start
+
+            # One page, one child — the bound never holds; the source
+            # never parks; the terminals are all NON-CROSSING.
+            await ctx.emit_batch(
+                [chain_start(chain, {"app_id": 0}, map_index=0, trace_id="app-0")],
+                cursor={"page": 0},
+            )
+
+        return build(chain_source(chain, source, key="source", max_attempts=2))
+
+    compiled = app.get("noncrossing_flow")
+    runner = FlowRunner(compiled, module_pg_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    _rc()
+    verdict = await runner.drive(flow_id, tick=0.05, max_ticks=40)
+    assert verdict == "terminal", verdict
+
+    snap = COUNTERS.snapshot()
+    print("NON-CROSSING CENSUS:", _json.dumps(snap, sort_keys=True))
+    # THE ZERO-DERIVATION LAW: the terminals' own probes ran (one per
+    # terminal event) and NOTHING derived: no observation, no intent, no
+    # grant; the park family is zero (the flow never parked).
+    assert snap["parks"] == 0, snap
+    assert snap["probes"] >= 1, snap
+    assert snap["observations"] == 0, snap
+    assert snap["new_intents"] == 0, snap
+    assert snap["fitted_grants"] == 0, snap
+    # The V-family bounds still hold.
+    families = (
+        snap["admission_decisions"]
+        + snap["source_body_claims"]
+        + snap["fitted_grants"]
+        + snap["new_intents"]
+        + snap["flow_drains"]
+        + snap["global_drains"]
+        + snap["candidate_reads"]
+    )
+    assert families <= 57, families

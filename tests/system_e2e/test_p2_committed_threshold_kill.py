@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+from pathlib import Path
 import time
 from typing import Any
 
@@ -812,5 +813,114 @@ async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
             await _stop(victim)
         if replacement is not None:
             await _stop(replacement)
+        await conn.close()
+        await pool.close()
+
+
+async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
+    pg_dsn: str, module_pg_schema: Any, log_dir: Any
+) -> None:
+    """§4.2 control 3's healthy two-OS-worker lane: two real OS workers,
+    the two-page/one-source healthy flow (P=2, S=1), the initial
+    leadership assumption counted (R=1, no direct runner: B=0), no
+    failures (J=C=0). The pre-registration prints 60 versus 60 BEFORE
+    execution; the pods' own census snapshots (the WARNING-level
+    ``p2sat-census`` lines) are the measurement — the fleet's V is the
+    SUM of the pods' own operation instances. The red predicates: the
+    measured V exceeding the lane pin 60 (and V_lane > V_general is
+    impossible here — equality)."""
+    from taskq.workflows import FlowRunner
+
+    schema = module_pg_schema.schema_name
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=8)
+    conn = await asyncpg.connect(pg_dsn)
+    pods: list[Any] = []
+    try:
+        # THE PRE-REGISTRATION, printed BEFORE execution: P=2, S=1,
+        # R=1 (the initial leadership assumption; no later recoveries —
+        # a healthy lane), B=0 (no direct runner), J=C=0.
+        pre_registered = {
+            "P": 2,
+            "S": 1,
+            "R": 1,
+            "B": 0,
+            "J": 0,
+            "C": 0,
+            "V_lane": 19 * 2 + 18 * 1 + 4 * 1 + 0,
+            "V_general": 19 * 2 + 18 * 1 + 4 * 1 + 4 * 0,
+        }
+        assert pre_registered["V_lane"] == 60, pre_registered
+        assert pre_registered["V_general"] == 60, pre_registered
+        assert pre_registered["V_lane"] <= pre_registered["V_general"]
+        print("C3-TWO-WORKER-PRE-REGISTRATION " + _json.dumps(pre_registered, sort_keys=True), flush=True)
+
+        runner = FlowRunner(entry.p2sat_app.get("c4_kill_recovery_flow"), pool, schema)
+        flow_id = str((await runner.create_flow()).flow_id)
+
+        # THE TWO OS WORKERS: both consume the flow's queues; the first
+        # to assume leadership counts the lane's own R=1.
+        for tag in ("c3-two-worker-a", "c3-two-worker-b"):
+            pods.append(
+                await _spawn_pod(conn, pg_dsn, schema, log_dir, tag)
+            )
+
+        async def _done() -> bool:
+            root = await pool.fetchval(
+                f'SELECT status::text FROM "{schema}".jobs '
+                "WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key='__flow__'",
+                flow_id,
+            )
+            return root == "succeeded"
+
+        await _wait_for(_done, 0.5, 300, "the two-worker lane never completed the run")
+
+        # THE MEASUREMENT: each pod's own census snapshot (its periodic
+        # WARNING line), summed — the fleet's own operation instances. A
+        # follower that never ran an operation has no census line and
+        # contributes zero (legal: the leadership's own arms are the
+        # leader's; the R=1 term IS its assumption's own count).
+        total: dict[str, int] = {}
+        for pod in pods:
+            pod_log = Path(pod.log_path)
+            content = await asyncio.to_thread(pod_log.read_text)
+            lines = [ln for ln in content.splitlines() if '"p2sat-census"' in ln]
+            if not lines:
+                continue
+            census = {
+                key: int(value)
+                for key, value in _json.loads(lines[-1]).items()
+                if type(value) is int
+            }
+            for key, value in census.items():
+                total[key] = total.get(key, 0) + value
+        families = (
+            total.get("admission_decisions", 0)
+            + total.get("source_body_claims", 0)
+            + total.get("fitted_grants", 0)
+            + total.get("new_intents", 0)
+            + total.get("flow_drains", 0)
+            + total.get("global_drains", 0)
+            + total.get("candidate_reads", 0)
+        )
+        print(
+            "C3-TWO-WORKER-MEASURED V="
+            + _json.dumps(
+                {"V": families, "families": total, "pin": pre_registered},
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        assert families <= pre_registered["V_lane"], (
+            f"measured V {families} exceeds the two-worker lane pin "
+            f"{pre_registered['V_lane']} (red): {total}"
+        )
+        # THE EVENT-SIDE LAW: E = T + X + K <= 2T + K.
+        e = total.get("probes", 0) + total.get("observations", 0)
+        assert e <= 2 * total.get("terminals", 0) + total.get("parks", 0), (
+            f"E {e} > 2T + K — a hidden observation escaped the instrument"
+        )
+    finally:
+        for pod in pods:
+            await _stop(pod)
         await conn.close()
         await pool.close()
