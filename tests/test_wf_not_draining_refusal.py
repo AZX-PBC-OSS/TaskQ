@@ -82,24 +82,38 @@ async def test_exhausted_child_failure_with_parked_cursor_fences_the_source(
         async def source(ctx: StepContext) -> None:
             from taskq.workflows.chain import chain_start
 
-            # Page 0: two gate-held children (both live at once).
-            await ctx.emit_batch(
-                [
-                    chain_start(chain, {"app_id": 0}, map_index=0, trace_id="app-0"),
-                    chain_start(chain, {"app_id": 1}, map_index=1, trace_id="app-1"),
-                ],
-                cursor={"page": 0},
-            )
-            # Page 1 cannot fit while both children hold their slots; the
-            # source parks on the exact marker. When one child's genuine
-            # failure exhausts its single declared attempt, the page may
-            # transiently fit and re-park; when the LAST child's failure
-            # exhausts and the root terminal-fails, the parked cursor is
-            # the proof and the fence fires.
-            await ctx.emit_batch(
-                [chain_start(chain, {"app_id": 2}, map_index=2, trace_id="app-2")],
-                cursor={"page": 1},
-            )
+            # THE CURSOR-DRIVEN PAGES (the honest author shape): the
+            # resume continues from the last COMMITTED page. Page 0: two
+            # children (they fit the bound exactly); page 1: two more —
+            # 2 live + 2 > 2 refuses, and the source parks on the exact
+            # marker (page_width=2). THE PARK STAYS UNFITTABLE while
+            # either child lives (1 + 2 > 2), so no drain can resolve it
+            # mid-estate; when the LAST child's genuine failure exhausts
+            # its single declared attempt, the fail_closed join shape
+            # downstream (the gather's own durable shape, seeded — the
+            # chain+emit composition cannot express a cross-item fan-in)
+            # makes the exhaustion's OWN cascade transaction the §5.4
+            # seat: the gated root failure (no unresolved live work rests
+            # — the parked source is resolved-blocked) commits the root
+            # terminal ``failed`` and the SAME transaction fences the
+            # still-parked source, before any post-commit drain could
+            # look (its own intent_created bit is False: the park never
+            # fit while work lived).
+            cursor = await ctx.cursor()
+            start_page = int(cursor.get("page", -1)) + 1
+            for page in range(start_page, 2):
+                await ctx.emit_batch(
+                    [
+                        chain_start(
+                            chain,
+                            {"app_id": page * 2 + offset},
+                            map_index=page * 2 + offset,
+                            trace_id=f"app-{page}-{offset}",
+                        )
+                        for offset in (0, 1)
+                    ],
+                    cursor={"page": page},
+                )
 
         return build(chain_source(chain, source, key="source", max_attempts=2))
 
@@ -107,6 +121,62 @@ async def test_exhausted_child_failure_with_parked_cursor_fences_the_source(
     runner = FlowRunner(compiled, module_pg_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     source_id = await _source_id(wf_conn, wf_schema, flow_id)
+    # Tick 1 (under the drive's own adoption): the source claims, emits
+    # page 0, parks on page 1.
+    await asyncio.wait_for(runner.drive(flow_id, max_ticks=1), timeout=60)
+    parked = await wf_conn.fetchval(
+        f"""SELECT count(*) FROM "{wf_schema}".jobs
+        WHERE (metadata->>'flow_id')::uuid = $1::uuid
+          AND metadata @> '{{"blocking_reason": "backpressure"}}'""",
+        flow_id,
+    )
+    assert int(parked) == 1, parked
+    # THE FAIL_CLOSED JOIN SHAPE (the gather's own durable shape, seeded):
+    # each page-0 child fans into its own pending join row — deps_pending=1
+    # (the already-terminal sibling parent resolved, this child unresolved),
+    # every edge fail_closed — so each child's exhaustion cascade finds
+    # blocked >= 1 and reaches the gated root failure.
+    sibling = new_uuid_hex()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, status, attempt, '
+        "max_attempts, retry_kind, step_key, finished_at, metadata, fairness_key, "
+        "idempotency_scope, idempotency_key) "
+        "VALUES ($1, 'wf', 'default', '{}', 'succeeded', 1, 1, 'transient', 'sibling', "
+        "clock_timestamp(), $2::jsonb, $3, 'workflow-run', $4)",
+        sibling,
+        _json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
+        f"wf:{flow_id}:sibling",
+    )
+    children = await wf_conn.fetch(
+        f"""SELECT id FROM "{wf_schema}".jobs
+        WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key = 'screen'
+        ORDER BY id""",
+        flow_id,
+    )
+    assert len(children) == 2, [dict(r) for r in children]
+    for row in children:
+        join_id = new_uuid_hex()
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, status, attempt, '
+            "max_attempts, retry_kind, step_key, deps_pending, metadata, fairness_key, "
+            "idempotency_scope, idempotency_key) "
+            "VALUES ($1, 'wf', 'default', '{}', 'pending', 0, 1, 'transient', "
+            "'gather_join', 1, $2::jsonb, $3, 'workflow-run', $4)",
+            join_id,
+            _json.dumps({"flow_id": str(flow_id), "blocking_reason": "join"}),
+            str(flow_id),
+            f"wf:{flow_id}:gather:{join_id}",
+        )
+        for parent in (row["id"], sibling):
+            await wf_conn.execute(
+                f'INSERT INTO "{wf_schema}".wf_edge '
+                "(child_id, parent_id, flow_id, failure_policy) "
+                "VALUES ($1, $2, $3, 'fail_closed')",
+                join_id,
+                parent,
+                flow_id,
+            )
     await asyncio.wait_for(runner.drive(flow_id), timeout=60)
 
     source = await wf_conn.fetchrow(

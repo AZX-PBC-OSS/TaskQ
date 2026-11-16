@@ -355,6 +355,13 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "still-non-terminal peer parents, the one flow root) — bounded by "
         "the join's declared fan-in, never the backlog",
     ),
+    "WF_FLOW_FAILED_GATED_SQL": (
+        "WHERE f.id = (SELECT id FROM flow_locked)",
+        "the root's own gated failure (N1): ONE row — the flow root keyed "
+        "by its own primary key through the flow_locked CTE's FOR UPDATE "
+        "($1::uuid is the root id, not a backlog scan); the unresolved-live "
+        "gate only ever withholds, never widens",
+    ),
     "COLLECT_FAN_IN_APPEND_SQL": (
         "WHERE j.id = $1",
         "keyed single join row (the collect fan-in appends the failed child's FailureInfo item)",
