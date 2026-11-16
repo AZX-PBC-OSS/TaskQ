@@ -596,7 +596,11 @@ SET after_flow_id = $1::uuid
 #: repair transaction (a malformed marker poisons only its own flow's
 #: repair, with a bounded diagnostic, and the rest repair on) — the
 #: selection itself aggregates nothing and can never abort on one row's
-#: malformed width.
+#: malformed width. THE SELECTION'S OWN LAW (N3): a marked flow is
+#: selected when its intent record is ABSENT (the omitted seat) OR NOT
+#: PENDING (``wake = handled`` — a vanilla-writer release freed a live
+#: row and the parked waiter may now fit); an intent that is already
+#: PENDING is the drain arms' own to observe (never double-selected).
 WF_EMIT_MARKER_SWEEP_SQL = (
     "SELECT DISTINCT (j.metadata->>'flow_id')::uuid AS flow_id\n"
     "FROM {schema}.jobs AS j\n"
@@ -605,6 +609,7 @@ WF_EMIT_MARKER_SWEEP_SQL = (
     "  AND NOT EXISTS (\n"
     "      SELECT 1 FROM {schema}.wf_emit_capacity c\n"
     "      WHERE c.flow_id = (j.metadata->>'flow_id')::uuid\n"
+    "        AND c.wake_generation > c.handled_generation\n"
     "  )\n"
     "ORDER BY flow_id\n"
     "LIMIT 100\n"
@@ -961,23 +966,42 @@ peers AS (
       AND NOT (p.deps_pending > 0
                AND p.metadata @> '{{"blocking_reason": "join"}}'::jsonb)
     RETURNING p.id
+)
+SELECT (SELECT count(*) FROM blocked) AS blocked,
+       (SELECT count(*) FROM peers) AS peers_cancelled
+"""
+
+#: THE ROOT'S OWN GATED FAILURE (N1): its own statement — its own fresh
+#: snapshot, taken after the root lock's grant — so the unresolved-live
+#: gate decides from the ROWS AS THEY STAND NOW (a promotion the drain
+#: committed while this transaction waited on the root is visible). The
+#: maintenance seat's own law, applied at the cascade seat: a live
+#: unresolved node (a promoted pending source, a running node) withholds
+#: the root's failure; the maintenance's later pass owns the finalize once
+#: the live work rests.
+WF_FLOW_FAILED_GATED_SQL = """\
+WITH flow_locked AS (
+    SELECT f.id FROM {schema}.jobs f WHERE f.id = $1::uuid FOR UPDATE
 ),
-flow_failed AS (
+failed AS (
     UPDATE {schema}.jobs f
     SET status = 'failed',
         finished_at = clock_timestamp(),
-        error_class = $3::text
-    WHERE f.id = $5::uuid
-      AND f.status NOT IN {terminal}
-      -- The flow fails only when the cascade actually RESOLVED a
-      -- fail_closed join of this parent: no fail_closed edge → no
-      -- cascade → the collect-only failure never touches the flow.
-      AND EXISTS (SELECT 1 FROM blocked)
+        error_class = $2::text
+    WHERE f.id = (SELECT id FROM flow_locked)
+      AND f.status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
+      AND NOT EXISTS (
+          SELECT 1 FROM {schema}.jobs n
+          WHERE (n.metadata->>'flow_id')::uuid = f.id
+            AND n.metadata ? 'flow_id'
+            AND n.step_key <> '__flow__'
+            AND n.id <> f.id
+            AND n.status IN ('pending', 'scheduled', 'running')
+            AND NOT (n.metadata ? 'blocking_reason')
+      )
     RETURNING f.id
 )
-SELECT (SELECT count(*) FROM blocked) AS blocked,
-       (SELECT count(*) FROM peers) AS peers_cancelled,
-       (SELECT count(*) FROM flow_failed) AS flow_failed
+SELECT (SELECT count(*) FROM failed)::int AS flow_failed
 """
 
 

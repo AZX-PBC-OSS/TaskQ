@@ -102,17 +102,21 @@ def _registry(schema: str, backend: Any, log: list[tuple[str, int]]) -> list[_No
     non-zero index), every entry's callback wrapped in a recording
     delegate that calls the real callback through."""
     cap_cb = _make_wf_emit_capacity_callback(backend)
+
+    def own_cb(conn: Any, pid: int, ch: str, payload: str) -> None:
+        del conn, pid, ch, payload
+
     entries = [
         (
             _NotifyEntry(
                 wake_channel(schema),
-                _recording(cap_cb, log, wake_channel(schema)),
+                _recording(own_cb, log, wake_channel(schema)),
                 reconnect_backfill=True,
             )
         ),
-        _NotifyEntry(events_channel(schema), _recording(cap_cb, log, events_channel(schema))),
+        _NotifyEntry(events_channel(schema), _recording(own_cb, log, events_channel(schema))),
         _NotifyEntry(
-            leader_wake_channel(schema), _recording(cap_cb, log, leader_wake_channel(schema))
+            leader_wake_channel(schema), _recording(own_cb, log, leader_wake_channel(schema))
         ),
         _NotifyEntry(
             wf_emit_capacity_channel(schema),
@@ -245,3 +249,101 @@ async def test_raising_gated_hook_cannot_prevent_the_drain_arms(
         "the drain arms regardless of the bookkeeping fault"
     )
     await deps.notify_conn.close()
+
+
+
+# ── N6: the two fail-closed HOST MUTANTS, in-tree ──────────────────────────
+
+
+def _mutant_host_wake_only_channels0(
+    channels: list[_NotifyEntry], conn: Any, wake_log: list[str]
+) -> asyncio.Task[None]:
+    """THE HOST MUTANT A (the pre-fix host's own shape): the reconnect
+    LISTENs every channel but offers ONE simulated wake to
+    ``channels[0]`` only — every non-zero entry (the capacity channel
+    among them) is omitted."""
+
+    async def _reconnect() -> None:
+        for entry in channels:
+            await conn.execute(f'LISTEN "{entry.channel}"')
+            await conn.add_listener(entry.channel, entry.callback)
+        wake_log.append(channels[0].channel)
+        channels[0].callback(conn, 0, channels[0].channel, "")
+
+    return asyncio.create_task(_reconnect())
+
+
+def _mutant_host_cross_channel_wake(
+    channels: list[_NotifyEntry], conn: Any, wake_log: list[str]
+) -> asyncio.Task[None]:
+    """THE HOST MUTANT B: the reconnect wakes every backfill hook but
+    carries ``channels[0]``'s channel to EVERY callback — a substituted,
+    cross-channel notification."""
+
+    async def _reconnect() -> None:
+        for entry in channels:
+            await conn.execute(f'LISTEN "{entry.channel}"')
+            await conn.add_listener(entry.channel, entry.callback)
+        for entry in channels:
+            if entry.reconnect_backfill:
+                wake_log.append(channels[0].channel)
+                entry.callback(conn, 0, channels[0].channel, "")
+
+    return asyncio.create_task(_reconnect())
+
+
+@pytest.mark.parametrize(
+    ("mutant", "fault"), (
+        (_mutant_host_wake_only_channels0, "omission"),
+        (_mutant_host_cross_channel_wake, "substitution"),
+    )
+)
+async def test_fail_closed_host_mutants_show_their_own_fault_signature(
+    module_pg_schema: Any, mutant: Any, fault: str
+) -> None:
+    """The committed-intent scenario against each fail-closed host
+    mutant; each mutant's OWN fault signature is the asserted red:
+
+    * the ``omission`` host (the pre-fix channels[0]-only wake): the
+      capacity entry is never offered its own simulated wake — its event
+      stays UNSET and the drain never arms;
+    * the ``substitution`` host (a wake carrying ``channels[0]`` to the
+      capacity callback): the callback's own totality still sets the
+      event (a total callback cannot be prevented from delivering), but
+      the DELIVERY'S IDENTITY is the fault — no wake ever carries the
+      capacity channel's own name, which is exactly the correction's
+      own assert (the entry's own channel, its own callback).
+
+    The fixed host's own control (the order/own-channel arm) is the
+    green these reds are the mirror of."""
+    schema = module_pg_schema.schema_name
+    backend = _BackendStandIn()
+    drained = asyncio.Event()
+    backend._wf_emit_capacity_subscribers.add(drained)
+    log: list[tuple[str, int]] = []
+    channels = _registry(schema, backend, log)
+
+    conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+    wake_log: list[str] = []
+    task = mutant(channels, conn, wake_log)
+    await asyncio.wait_for(task, 10.0)
+    await conn.close()
+
+    if fault == "omission":
+        assert not drained.is_set(), (
+            "the channels[0]-only host must never arm the capacity drain "
+            "event (the omission is the fault)"
+        )
+        assert wf_emit_capacity_channel(schema) not in wake_log, wake_log
+    else:
+        # The SUBSTITUTION's own signature: the delivery happened (the
+        # total callback), but NEVER under the capacity channel's own
+        # name — every delivered wake carried another entry's channel.
+        assert drained.is_set(), (
+            "the total callback's own delivery cannot be prevented"
+        )
+        assert wake_log, "the mutant host delivered its substituted wakes"
+        assert wf_emit_capacity_channel(schema) not in wake_log, (
+            f"the substituted host never delivers the capacity channel's "
+            f"own wake: {wake_log}"
+        )

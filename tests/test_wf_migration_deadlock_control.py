@@ -62,9 +62,48 @@ def _folded_statements(schema: str) -> list[str]:
 #: one backend HOLDING its own table's lock while WAITING (granted=f) on the
 #: OTHER table's — the migration half holds wf_step_ledger and waits on
 #: jobs; the writer half holds jobs and waits on wf_step_ledger.
+#: The handshake's PER-BACKEND (per-pid), PER-RELATION half-probes (N9):
+#: each half is THE SAME backend pid HOLDING its own table's lock while
+#: WAITING (granted=f) on the OTHER table's — the migration half holds
+#: wf_step_ledger and waits on jobs; the writer half holds jobs and waits
+#: on wf_step_ledger. The halves' pids must be distinct (two halves of one
+#: cycle, never one backend or unrelated sessions).
+_MIGRATION_HALF_PIDS_SQL = """SELECT DISTINCT l.pid
+FROM pg_locks l
+JOIN pg_class c ON c.oid = l.relation
+JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE a.datname = current_database()
+  AND l.locktype = 'relation' AND l.granted AND c.relname = 'wf_step_ledger'
+  AND l.pid IN (
+      SELECT l2.pid FROM pg_locks l2
+      JOIN pg_class c2 ON c2.oid = l2.relation
+      WHERE NOT l2.granted AND l2.locktype = 'relation' AND c2.relname = 'jobs'
+  )
+"""
+
+_WRITER_HALF_PIDS_SQL = """SELECT DISTINCT l.pid
+FROM pg_locks l
+JOIN pg_class c ON c.oid = l.relation
+JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE a.datname = current_database()
+  AND l.locktype = 'relation' AND l.granted AND c.relname = 'jobs'
+  AND l.pid IN (
+      SELECT l2.pid FROM pg_locks l2
+      JOIN pg_class c2 ON c2.oid = l2.relation
+      WHERE NOT l2.granted AND l2.locktype = 'relation' AND c2.relname = 'wf_step_ledger'
+  )
+"""
+
 _MIGRATION_HALF_SQL = """SELECT
-    count(*) FILTER (WHERE l.locktype = 'relation' AND NOT l.granted
-                     AND c.relname = 'jobs' AND a.datname = current_database()) AS waiters,
+    count(DISTINCT l.pid) FILTER (WHERE l.locktype = 'relation' AND l.granted
+                                  AND c.relname = 'wf_step_ledger'
+                                  AND a.datname = current_database()
+                                  AND l.pid IN (
+                                      SELECT l2.pid FROM pg_locks l2
+                                      JOIN pg_class c2 ON c2.oid = l2.relation
+                                      WHERE NOT l2.granted AND l2.locktype = 'relation'
+                                        AND c2.relname = 'jobs'
+                                  )) AS paired_pids,
     count(*) FILTER (WHERE l.locktype = 'relation' AND l.granted
                      AND c.relname = 'wf_step_ledger' AND a.datname = current_database()) AS holders
 FROM pg_locks l
@@ -73,8 +112,15 @@ JOIN pg_stat_activity a ON a.pid = l.pid
 """
 
 _WRITER_HALF_SQL = """SELECT
-    count(*) FILTER (WHERE l.locktype = 'relation' AND NOT l.granted
-                     AND c.relname = 'wf_step_ledger' AND a.datname = current_database()) AS waiters,
+    count(DISTINCT l.pid) FILTER (WHERE l.locktype = 'relation' AND l.granted
+                                  AND c.relname = 'jobs'
+                                  AND a.datname = current_database()
+                                  AND l.pid IN (
+                                      SELECT l2.pid FROM pg_locks l2
+                                      JOIN pg_class c2 ON c2.oid = l2.relation
+                                      WHERE NOT l2.granted AND l2.locktype = 'relation'
+                                        AND c2.relname = 'wf_step_ledger'
+                                  )) AS paired_pids,
     count(*) FILTER (WHERE l.locktype = 'relation' AND l.granted
                      AND c.relname = 'jobs' AND a.datname = current_database()) AS holders
 FROM pg_locks l
@@ -233,7 +279,7 @@ async def test_migration_deadlock_handshake_is_victim_agnostic(pg_dsn: str) -> N
             # on a jobs lock — never "any ungranted lock anywhere" (a pair of
             # unrelated waits on a busy database satisfied that count).
             row = await locks_conn.fetchrow(_MIGRATION_HALF_SQL.format(schema=schema))
-            if row is not None and int(row["holders"]) >= 1 and int(row["waiters"]) >= 1:
+            if row is not None and int(row["paired_pids"]) >= 1:
                 migration_waiting = True
                 break
             polls += 1
@@ -257,14 +303,23 @@ async def test_migration_deadlock_handshake_is_victim_agnostic(pg_dsn: str) -> N
             writer = await locks_conn.fetchrow(_WRITER_HALF_SQL.format(schema=schema))
             if (
                 mig is not None
-                and int(mig["holders"]) >= 1
-                and int(mig["waiters"]) >= 1
+                and int(mig["paired_pids"]) >= 1
                 and writer is not None
-                and int(writer["holders"]) >= 1
-                and int(writer["waiters"]) >= 1
+                and int(writer["paired_pids"]) >= 1
             ):
-                handshake_formed = True
-                break
+                # THE TWO HALVES' OWN BACKENDS ARE DISTINCT (one cycle,
+                # two pids).
+                mig_pids = await locks_conn.fetch(
+                    _MIGRATION_HALF_PIDS_SQL.format(schema=schema)
+                )
+                writer_pids = await locks_conn.fetch(
+                    _WRITER_HALF_PIDS_SQL.format(schema=schema)
+                )
+                if {
+                    int(r["pid"]) for r in mig_pids
+                }.isdisjoint({int(r["pid"]) for r in writer_pids}):
+                    handshake_formed = True
+                    break
             polls += 1
             await asyncio.sleep(0.02)
         assert handshake_formed, (

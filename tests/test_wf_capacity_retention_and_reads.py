@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 
 from taskq._ids import new_uuid
+from taskq.backend._protocol import JobId
 from taskq.workflows._sql import WorkflowSql
 
 pytestmark = pytest.mark.integration
@@ -171,9 +172,7 @@ async def test_capacity_record_retires_with_its_run_and_never_before(
 
     # The run's root is RUNNING (not terminal-aged): the retention pass
     # removes nothing.
-    await prune_wf_step_ledger(
-        wf_pool, wsql, retention=timedelta(hours=1), batch_size=100
-    )
+    await prune_wf_step_ledger(wf_pool, wsql, retention=timedelta(hours=1), batch_size=100)
     still = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".wf_emit_capacity WHERE flow_id = $1::uuid',
         flow,
@@ -244,3 +243,225 @@ async def test_runs_list_renders_a_repended_reserved_source_honestly(
     assert int(row["deferring"]) == 1, dict(row)
     assert row["next_fire"] is not None, dict(row)
     assert int(row["parked"]) == 0, dict(row)
+
+
+async def test_vanilla_deadline_release_wake_is_never_lost_by_the_marker_sweep(
+    wf_conn: Any, wf_schema: str, wf_pool: Any
+) -> None:
+    """N3's executed counterexample, as a control: a flow-unaware vanilla
+    terminal (the real deadline sweep) frees a live row so a parked
+    waiter NOW FITS — the exact-marker sweep is the completeness
+    authority for that case and must bump the intent within its own
+    selection (the pre-fix selection excluded every capacity-bearing
+    flow and the wake was lost forever)."""
+    from taskq.workflows._emit import _SWEEP_CURSORS, sweep_emit_markers
+
+    wsql = _wsql(wf_schema)
+    # The estate: SIX live peers + one park W=5 under bound 10 — the park
+    # does NOT fit (6 + 5 > 10); the intent is NOT pending (w=0, h=0).
+    flow = await _seed_marked_flow(wf_conn, wf_schema, width=5, bound=10, with_intent=True)
+    for i in range(6):
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, status, '
+            "attempt, max_attempts, retry_kind, step_key, map_index, metadata, "
+            "created_at, fairness_key, schedule_to_close, idempotency_scope, "
+            "idempotency_key) "
+            f"VALUES ($1, 'wf', 'default', '{{}}', 'pending', 0, 2, 'transient', "
+            "'peer', $2, $3::jsonb, clock_timestamp(), $4, "
+            "now() + interval '1 hour', 'workflow-run', $5)",
+            str(new_uuid()),
+            i,
+            _json.dumps({"flow_id": flow}),
+            flow,
+            f"wf:{flow}:peer{i}",
+        )
+    # THE PRE-CHECK: the sweep alone bumps nothing (the waiter doesn't fit).
+    _SWEEP_CURSORS.pop(wf_schema, None)
+    await sweep_emit_markers(wf_pool, wsql)
+    intent_before = await wf_conn.fetchrow(
+        f'SELECT wake_generation, handled_generation FROM "{wf_schema}".wf_emit_capacity '
+        "WHERE flow_id = $1::uuid",
+        flow,
+    )
+    assert intent_before is not None
+    assert int(intent_before["wake_generation"]) == 0, intent_before
+
+    # THE VANILLA WRITER'S OWN RELEASE: the real deadline sweep
+    # terminalizes one live peer (its schedule_to_close elapsed) — the
+    # parked waiter NOW FITS (5 + 5 <= 10).
+    await wf_conn.execute(
+        f"""UPDATE "{wf_schema}".jobs
+            SET schedule_to_close = now() - interval '1 hour'
+            WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key = 'peer'
+              AND map_index = 0""",
+        flow,
+    )
+    from taskq.backend._sweeps import sweep_deadline_exceeded
+
+    swept = await sweep_deadline_exceeded(wf_conn, schema=wf_schema, batch_size=10)
+    assert swept == 1, swept
+
+    # THE COMPLETENESS AUTHORITY: the marker sweep re-observes the marked
+    # flow and BUMPS the intent — the wake is not lost.
+    _SWEEP_CURSORS.pop(wf_schema, None)
+    repaired = await sweep_emit_markers(wf_pool, wsql)
+    intent_after = await wf_conn.fetchrow(
+        f'SELECT wake_generation, handled_generation FROM "{wf_schema}".wf_emit_capacity '
+        "WHERE flow_id = $1::uuid",
+        flow,
+    )
+    assert intent_after is not None
+    assert int(intent_after["wake_generation"]) == 1, intent_after
+    assert int(intent_after["handled_generation"]) < int(intent_after["wake_generation"])
+    assert repaired >= 1, repaired
+
+
+async def test_handled_intent_never_rebumps_while_pending_no_busy_loop(
+    wf_conn: Any, wf_schema: str, wf_pool: Any
+) -> None:
+    """The no-busy-loop law over the N3 selection: a marked flow whose
+    intent is PENDING (the drain's own to observe) is never selected, and
+    a handled-but-not-fitting flow is re-observed at the maintenance
+    interval WITHOUT a re-bump — two consecutive sweeps move the
+    generations zero times."""
+    from taskq.workflows._emit import _SWEEP_CURSORS, sweep_emit_markers
+
+    wsql = _wsql(wf_schema)
+    # The PENDING case: the intent's wake > handled — the drain's own;
+    # the sweep never selects it.
+    pending_flow = await _seed_marked_flow(wf_conn, wf_schema, width=5, bound=10, with_intent=True)
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".wf_emit_capacity SET wake_generation = 1 WHERE flow_id = $1::uuid',
+        pending_flow,
+    )
+    _SWEEP_CURSORS.pop(wf_schema, None)
+    repaired = await sweep_emit_markers(wf_pool, wsql)
+    assert repaired == 0, repaired
+    intent = await wf_conn.fetchrow(
+        f'SELECT wake_generation, handled_generation FROM "{wf_schema}".wf_emit_capacity '
+        "WHERE flow_id = $1::uuid",
+        pending_flow,
+    )
+    assert intent is not None and (
+        int(intent["wake_generation"]),
+        int(intent["handled_generation"]),
+    ) == (
+        1,
+        0,
+    ), intent
+
+    # The HANDLED-but-not-fitting case: six live peers hold the charge
+    # (6 + 5 > 10 — the parked waiter does NOT fit); the flow is
+    # re-observed (the maintenance interval's own work) and NEVER
+    # re-bumped.
+    handled_flow = await _seed_marked_flow(wf_conn, wf_schema, width=5, bound=10, with_intent=True)
+    for i in range(6):
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, status, '
+            "attempt, max_attempts, retry_kind, step_key, map_index, metadata, "
+            "created_at, fairness_key, idempotency_scope, idempotency_key) "
+            f"VALUES ($1, 'wf', 'default', '{{}}', 'pending', 0, 2, 'transient', "
+            "'peer', $2, $3::jsonb, clock_timestamp(), $4, 'workflow-run', $5)",
+            str(new_uuid()),
+            i,
+            _json.dumps({"flow_id": handled_flow}),
+            handled_flow,
+            f"wf:{handled_flow}:peer{i}",
+        )
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".wf_emit_capacity SET wake_generation = 1, '
+        "handled_generation = 1 WHERE flow_id = $1::uuid",
+        handled_flow,
+    )
+    _SWEEP_CURSORS.pop(wf_schema, None)
+    for _ in range(2):
+        await sweep_emit_markers(wf_pool, wsql)
+    intent2 = await wf_conn.fetchrow(
+        f'SELECT wake_generation, handled_generation FROM "{wf_schema}".wf_emit_capacity '
+        "WHERE flow_id = $1::uuid",
+        handled_flow,
+    )
+    assert intent2 is not None and (
+        int(intent2["wake_generation"]),
+        int(intent2["handled_generation"]),
+    ) == (1, 1), intent2
+    _SWEEP_CURSORS.pop(wf_schema, None)
+
+
+async def test_retention_never_removes_the_record_while_a_live_node_references_the_run(
+    wf_conn: Any, wf_schema: str, wf_pool: Any
+) -> None:
+    """N5: the retention's own gate — a terminal-aged root with a LIVE
+    (pending/scheduled/running) node still referencing the run keeps its
+    capacity record (the record is the live node's own drain authority;
+    removing it strand the node's own park/wake cycle). The record goes
+    only when no live node references the run."""
+    from datetime import timedelta
+
+    from taskq.workflows._sweep import prune_wf_step_ledger
+
+    wsql = _wsql(wf_schema)
+    flow = await _seed_marked_flow(wf_conn, wf_schema, width=5, bound=10, with_intent=True)
+
+    # THE LIVE-NODE SHAPE: the root terminal-aged; ONE node still LIVE
+    # (a pending node — the N1 strand's own shape is exactly such a live
+    # node). The retention must keep the record.
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', "
+        "finished_at = clock_timestamp() - interval '2 hours' "
+        "WHERE id = $1::uuid AND step_key = '__flow__'",
+        flow,
+    )
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', "
+        "finished_at = clock_timestamp() - interval '2 hours' "
+        "WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key <> '__flow__' "
+        "AND map_index <> 7",
+        flow,
+    )
+    live_node = JobId(new_uuid())
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, status, attempt, '
+        "max_attempts, retry_kind, step_key, map_index, metadata, created_at, "
+        "fairness_key, idempotency_scope, idempotency_key) "
+        "VALUES ($1, 'wf', 'default', '{}', 'pending', 0, 2, 'transient', 'peer', "
+        "7, $2::jsonb, clock_timestamp(), $3, 'workflow-run', $4)",
+        live_node,
+        _json.dumps({"flow_id": flow}),
+        flow,
+        f"wf:{flow}:peer7",
+    )
+    await prune_wf_step_ledger(wf_pool, wsql, retention=timedelta(hours=1), batch_size=100)
+    still = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_emit_capacity WHERE flow_id = $1::uuid',
+        flow,
+    )
+    assert int(still) == 1, (
+        "the retention removed the capacity record while a live node "
+        "references the run (N5's own forbidden shape)"
+    )
+
+    # THE LIVE WORK RESOLVES (the §5.4 fence's own shape: the parked
+    # source under the terminal root is fenced; every node terminal):
+    # only now does no live node reference the run.
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', "
+        "finished_at = clock_timestamp() - interval '2 hours', "
+        "metadata = metadata - 'blocking_reason' - 'wf_emit_reservation' "
+        '|| \'{"wf_not_draining": {"reason": "terminal_root_after_child_failure_exhaustion"}}\'::jsonb '
+        "WHERE (metadata->>'flow_id')::uuid = $1::uuid "
+        "AND status IN ('pending', 'scheduled', 'running')",
+        flow,
+    )
+    await prune_wf_step_ledger(wf_pool, wsql, retention=timedelta(hours=1), batch_size=100)
+    diag = await wf_conn.fetch(
+        f'SELECT step_key, status::text AS status FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1::uuid",
+        flow,
+    )
+    print("N5-DIAG states:", [(r["step_key"], r["status"]) for r in diag], flush=True)
+    gone = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_emit_capacity WHERE flow_id = $1::uuid',
+        flow,
+    )
+    assert int(gone) == 0, gone

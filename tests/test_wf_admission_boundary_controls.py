@@ -853,3 +853,243 @@ async def test_direct_drive_producing_verdict_and_cursor_resume_after_death(
 
 
 _APP_HOLDER: dict[str, Any] = {}
+
+
+async def test_grouped_deterministic_error_terminals_on_the_first_violation(
+    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: Any
+) -> None:
+    """N2: a deterministic refusal delivered inside an ``ExceptionGroup``
+    (an ``asyncio.TaskGroup`` body's own shape) is still deterministic —
+    the classification walks the group's leaves; the source terminalizes
+    on the FIRST violation (one failed ledger row at attempt 1, the key
+    removed, the wide page never written), never a 3-attempt ladder with
+    ``error_class='ExceptionGroup'``."""
+    chain = _chain(new_uuid().hex)
+
+    async def source_body(ctx: StepContext) -> None:
+        cursor = await ctx.cursor()
+        page = int(cursor.get("page", -1)) + 1
+
+        async def _emit_wide() -> None:
+            await ctx.emit_batch(
+                [
+                    chain_start(
+                        chain,
+                        {"record_id": 200 + i},
+                        map_index=200 + i,
+                        trace_id=f"record-{200 + i}",
+                    )
+                    for i in range(3)
+                ],
+                cursor={"page": 1},
+            )
+
+        if page == 0:
+            await ctx.emit_batch(
+                [
+                    chain_start(
+                        chain,
+                        {"record_id": record_id},
+                        map_index=record_id,
+                        trace_id=f"record-{record_id}",
+                    )
+                    for record_id in (0, 1)
+                ],
+                cursor={"page": 0},
+            )
+            # The page-1 attempt PROPAGATES its refusal — the runner's own
+            # park door (never swallowed).
+            await ctx.emit_batch(
+                [
+                    chain_start(
+                        chain,
+                        {"record_id": record_id},
+                        map_index=record_id,
+                        trace_id=f"record-{record_id}",
+                    )
+                    for record_id in (100, 101)
+                ],
+                cursor={"page": 1},
+            )
+            return
+        # THE GROUPED REPLAY: the wide page's refusal delivered inside a
+        # TaskGroup (the author's own multi-coroutine shape).
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(_emit_wide())
+
+    name = f"n2_grouped_{new_uuid().hex}"
+    app = WorkflowApp()
+
+    @app.workflow(name, max_in_flight=3)
+    def flow() -> Promise[object]:
+        # THE BOUND IS 3: a 3-wide page passes the impossible-admission
+        # door (3 <= 3); the RESERVATION's own check (granted 2) is what
+        # fires the typed refusal — the grouped leaf.
+        return build(chain_source(chain, source_body, key="source", max_attempts=3))
+
+    runner = FlowRunner(app.get(name), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    source_id = await _source_id(wf_conn, wf_schema, flow_id)
+
+    meta: dict[str, Any] = {}
+    for _ in range(40):
+        await runner.tick(flow_id)
+        meta = await _source_meta(wf_conn, wf_schema, source_id)
+        pressure = meta.get("wf_emit_backpressure") or {}
+        if int(pressure.get("deferrals", 0)) >= 1:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail(f"the source never parked: {meta}")
+
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', "
+        "finished_at = clock_timestamp() WHERE parent_id = $1::uuid",
+        source_id,
+    )
+    from taskq.workflows._emit import wake_emit_backpressure
+
+    wake = await wake_emit_backpressure(wf_pool, wf_sql, flow_id=flow_id)
+    assert wake.promoted == 1, wake
+    meta = await _source_meta(wf_conn, wf_schema, source_id)
+    assert meta["wf_emit_reservation"] == {"version": 1, "width": 2}, meta
+
+    # THE GROUPED REPLAY: the deterministic leaf routes the terminal.
+    verdict: tuple[str, str | None] | None = None
+    for _ in range(40):
+        await runner.tick(flow_id)
+        row = await wf_conn.fetchrow(
+            f'SELECT status::text AS status, error_class FROM "{wf_schema}".jobs WHERE id = $1',
+            source_id,
+        )
+        assert row is not None
+        if row["status"] in ("failed", "succeeded"):
+            verdict = (row["status"], row["error_class"])
+            break
+        await asyncio.sleep(0.05)
+    assert verdict is not None, "the grouped replay never terminalized"
+    assert verdict == ("failed", "ExceptionGroup") or verdict == (
+        "failed",
+        "EmitReservationExceededError",
+    ), verdict
+    ledgers = await wf_conn.fetch(
+        f"""SELECT attempt::int AS a, status::text AS status, error_class
+            FROM "{wf_schema}".wf_step_ledger
+            WHERE flow_id = $1::uuid AND step_key = 'source' ORDER BY attempt""",
+        flow_id,
+    )
+    failed_rows = [r for r in ledgers if r["status"] == "failed"]
+    assert len(failed_rows) == 1, [(r["a"], r["status"], r["error_class"]) for r in ledgers]
+    assert "EmitReservationExceededError" in (failed_rows[0]["error_class"] or ""), (
+        failed_rows[0]
+    )
+    assert int(failed_rows[0]["a"]) == 1
+    meta = await _source_meta(wf_conn, wf_schema, source_id)
+    assert "wf_emit_reservation" not in meta, meta
+    children = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".jobs WHERE parent_id = $1::uuid AND map_index >= 200',
+        source_id,
+    )
+    assert int(children) == 0, children
+
+
+async def test_bare_tick_never_scans_the_parked_estate(
+    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: Any
+) -> None:
+    """N11 (control 13's own law): a BARE `tick()` performs NO parked
+    -estate scan — the parked rows' states are bit-identical across bare
+    ticks and the drain/observation families never move (the marker
+    sweep is the LEADER's arm, never the driver's own dispatch pass);
+    and the drive's own initial backfill is its FIRST drain (the B
+    term)."""
+    chain = _chain(new_uuid().hex)
+
+    async def source_body(ctx: StepContext) -> None:
+        cursor = await ctx.cursor()
+        page = int(cursor.get("page", -1)) + 1
+        for p in range(page, 2):
+            await ctx.emit_batch(
+                [
+                    chain_start(
+                        chain,
+                        {"record_id": record_id},
+                        map_index=record_id,
+                        trace_id=f"record-{record_id}",
+                    )
+                    for record_id in ([0, 1], [2])[p]
+                ],
+                cursor={"page": p},
+            )
+
+    name = f"n11_bare_tick_{new_uuid().hex}"
+    app = WorkflowApp()
+
+    @app.workflow(name, max_in_flight=2)
+    def flow() -> Promise[object]:
+        return build(chain_source(chain, source_body, key="source", max_attempts=2))
+
+    runner = FlowRunner(app.get(name), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    source_id = await _source_id(wf_conn, wf_schema, flow_id)
+
+    # The producing drive: EXACTLY ONE TICK — the source's own claim
+    # runs its body (page 0's emit; page 1's refusal PARKS the source)
+    # and the drive exhausts its own bound; the children stay UNCLAIMED
+    # (pending, charge-holding) — the parked estate, no blocked bodies.
+    verdict = await runner.drive(flow_id, tick=0.05, max_ticks=1)
+    assert verdict == "max_ticks", verdict
+    meta_before = await _source_meta(wf_conn, wf_schema, source_id)
+    assert "wf_emit_backpressure" in meta_before, meta_before
+    parked_before = await wf_conn.fetchval(
+        f"""SELECT count(*) FROM "{wf_schema}".jobs
+            WHERE (metadata->>'flow_id')::uuid = $1::uuid
+              AND status = 'scheduled'
+              AND metadata @> '{{"blocking_reason":"backpressure"}}'""",
+        flow_id,
+    )
+    assert int(parked_before) >= 1, parked_before
+
+    # THE BARE TICKS: no estate scan — the parked rows' states and the
+    # drain families are bit-identical across the ticks.
+    from taskq.workflows._emit import COUNTERS
+    from taskq.workflows._emit import reset_counters as _rc
+
+    _rc()
+    pre = COUNTERS.snapshot()
+    for _ in range(20):
+        await runner.tick(flow_id, execute=False)
+    post = COUNTERS.snapshot()
+    for family in (
+        "flow_drains",
+        "candidate_reads",
+        "fitted_grants",
+        "new_intents",
+        "observations",
+        "probes",
+    ):
+        assert post[family] == pre[family], (
+            f"the bare tick moved the {family} family (an estate scan "
+            f"escaped into the driver): {pre} -> {post}"
+        )
+    meta_after = await _source_meta(wf_conn, wf_schema, source_id)
+    assert meta_after == meta_before, (meta_before, meta_after)
+    parked_after = await wf_conn.fetchval(
+        f"""SELECT count(*) FROM "{wf_schema}".jobs
+            WHERE (metadata->>'flow_id')::uuid = $1::uuid
+              AND status = 'scheduled'
+              AND metadata @> '{{"blocking_reason":"backpressure"}}'""",
+        flow_id,
+    )
+    assert int(parked_after) == int(parked_before)
+
+    # THE B TERM: the drive's own initial backfill is the drive's FIRST
+    # drain (exactly one flow drain on the fresh drive's first act, the
+    # same primitive the arms call).
+    _rc()
+    pre2 = COUNTERS.snapshot()
+    from taskq.workflows._emit import wake_emit_backpressure
+
+    wake = await wake_emit_backpressure(wf_pool, wf_sql, flow_id=flow_id)
+    _ = wake
+    post2 = COUNTERS.snapshot()
+    assert post2["flow_drains"] - pre2["flow_drains"] == 1, (pre2, post2)

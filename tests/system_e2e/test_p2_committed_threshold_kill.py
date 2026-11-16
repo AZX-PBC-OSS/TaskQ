@@ -817,6 +817,12 @@ async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
         await pool.close()
 
 
+def families_min_ok(total: dict[str, int]) -> bool:
+    """The structural minimum: the estate's own P=2 admissions (at least
+    the run's own pages were admitted) — a vacuous zero-V pass is red."""
+    return total.get("admission_decisions", 0) >= 2
+
+
 async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
     pg_dsn: str, module_pg_schema: Any, log_dir: Any
 ) -> None:
@@ -879,7 +885,11 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
         # WARNING line), summed — the fleet's own operation instances. A
         # follower that never ran an operation has no census line and
         # contributes zero (legal: the leadership's own arms are the
-        # leader's; the R=1 term IS its assumption's own count).
+        # leader's; the R=1 term IS its assumption's own count). THE
+        # MEASUREMENT MUST EXIST (N8): at least one pod logged a census,
+        # and the measured V is at least the estate's own structural
+        # minimum — the flow's P=2 admissions — a vacuous zero-V pass is
+        # itself red.
         total: dict[str, int] = {}
         for pod in pods:
             pod_log = Path(pod.log_path)
@@ -894,6 +904,12 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
             }
             for key, value in census.items():
                 total[key] = total.get(key, 0) + value
+        assert total, (
+            "no pod logged its own census snapshot — the control must "
+            "measure the fleet's own operation instances, never pass on "
+            "an empty reading"
+        )
+        assert families_min_ok(total), total
         families = (
             total.get("admission_decisions", 0)
             + total.get("source_body_claims", 0)

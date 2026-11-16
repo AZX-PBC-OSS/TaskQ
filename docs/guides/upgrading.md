@@ -166,10 +166,34 @@ Apply the one PRE file 01.00.42_01_pre_wf_step_ledger_claim_epoch.sql after the 
 **Storage cost (§10.7):** the intent record is one `wf_emit_capacity` row
 per bounded run (four typed columns plus its CHECK constraints; the
 pending-generation partial index covers only rows with a pending wake) and
-one singleton rotation row total — the record's retention lifetime is the
-run's own: the leader's capacity-retention arm removes a run's record
-exactly when the run's own rows were retained away, and never while any
-row of the run still exists.
+one singleton rotation row total. The record's retention lifetime is the
+run's own: the leader's retention pass (the same statement that deletes a
+retained run's ledger rows) deletes the run's record — and only when the
+run's root is terminal-aged AND no live (pending/scheduled/running) node
+of the run still exists; retention cannot remove a record while a live
+node references the run.
+
+**Operational facts (§10.7):** the engine's hard ceilings are fixed and
+not caller-tunable: a flow drain commits at most **200** winning
+promotions/notifications per transaction (a full chunk continues into a
+fresh one), and the global pending-intent selection reads at most **100**
+distinct flows per pass under the persistent rotation cursor. The normal
+event wake target is **< 1 s** from the committing terminal's database
+commit to the woken source's next claim, on a competent fleet with a
+supported session-`LISTEN` configuration; crash/notification-loss
+recovery is bounded by the leader lease, the maintenance interval, and
+ordinary dispatch (never a time guarantee on a stalled database). A
+parked waiter can exist only per declared chain source (`parked <= S` —
+an exact park is a state of one durable source row), so the candidate
+fit scan is `Theta(parked) <= Theta(S)`. The derived-capacity observation
+is hoisted (`Theta(live + parked)`, terminal history never scanned); the
+per-terminal exact-marker probe is one indexed zero-row read on
+non-crossing terminals. The proven non-drainage refusal (a committed
+terminal root behind an exhausted child failure with an un-emitted
+parked cursor) is exported only as the durable
+`error_class='WorkflowNotDrainingError'` string and the
+`taskq.workflows.wf_not_draining` metric counter — never as an
+importable class.
 
 The folded file's lock profile (one migration transaction; the cross-table
 order is `wf_step_ledger` BEFORE `jobs`):

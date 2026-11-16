@@ -51,9 +51,10 @@ async def _seed_reserved(
     await conn.execute(
         f'INSERT INTO "{schema}".jobs '
         "(id, actor, queue, payload, status, max_attempts, retry_kind, step_key, "
-        "metadata, fairness_key, attempt) "
+        "metadata, fairness_key, attempt, claim_epoch, locked_by_worker, "
+        "lock_expires_at) "
         f"VALUES ($1, 'wf-node', 'default', '{{}}', $2, 3, 'transient', $3, "
-        "$4::jsonb, $5, 1)",
+        "$4::jsonb, $5, 1, 1, $1, now() + interval '90 seconds')",
         job,
         status,
         step_key,
@@ -65,6 +66,12 @@ async def _seed_reserved(
 
 def _wsql(schema: str) -> WorkflowSql:
     return WorkflowSql.build(schema)
+
+
+async def _observation(conn: Any, wsql: WorkflowSql, flow: JobId) -> tuple[int, int]:
+    """The derived charge after a winning statement (the §2.3 read)."""
+    row = await conn.fetchrow(wsql.emit_capacity_observation, flow, None)
+    return int(row["live_rows"]), int(row["reservations"])
 
 
 async def test_deadline_sweep_terminal_removes_the_reservation_key(
@@ -140,7 +147,6 @@ async def test_peer_cancel_terminal_removes_the_reservation_key(
         _json.dumps({"blocking_reason": "failed_parent"}),
         "TestParentFailure",
         _json.dumps({"peer_cancel": {"by": "peer_failure"}}),
-        flow,
     )
     row = await wf_conn.fetchrow(
         f'SELECT status::text AS status, metadata FROM "{wf_schema}".jobs WHERE id = $1', job
@@ -325,3 +331,125 @@ async def test_actor_deregister_force_terminal_removes_the_reservation_key(
     )
     assert row is not None and row["status"] == "cancelled", row
     assert "wf_emit_reservation" not in _meta(row["metadata"]), row
+
+
+async def test_node_retry_rearm_strips_key_and_restores_claimability(
+    wf_conn: Any, wf_schema: str
+) -> None:
+    """N4: the per-node/manual re-arm (RETRY_NODE_CAS — the admin run
+    page's node retry, the CLI, `retry_workflow_node`) strips the
+    reservation key AND the park-marker family; the re-armed row is an
+    ordinary claimable live row (the pre-fix shape: `reservations=7`
+    charged by a stale key, and the row's own honest next page would die
+    through the deterministic grant-violation route)."""
+    from taskq.workflows.api._sql_runner import (
+        NODE_CLAIM_SQL_TEMPLATE,
+        RETRY_NODE_CAS_SQL_TEMPLATE,
+        render_sql,
+    )
+
+    wsql = _wsql(wf_schema)
+    flow = JobId(new_uuid())
+    job = await _seed_reserved(wf_conn, wf_schema, flow, "source", "pending", width=7)
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', "
+        "finished_at = clock_timestamp() WHERE id = $1",
+        job,
+    )
+    # THE INPUT: the terminal row carrying a STALE key (the mixed-version /
+    # foreign-writer shape the defensive strip is written for).
+    stale = await wf_conn.fetchrow(
+        f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', job
+    )
+    assert stale is not None and "wf_emit_reservation" in _meta(stale["metadata"])
+
+    matched = await wf_conn.fetchval(
+        render_sql(RETRY_NODE_CAS_SQL_TEMPLATE, wf_schema), flow, "source"
+    )
+    assert int(matched or 0) >= 1, matched
+    row = await wf_conn.fetchrow(
+        f'SELECT status::text AS status, metadata FROM "{wf_schema}".jobs WHERE id = $1', job
+    )
+    assert row is not None and row["status"] == "pending", row
+    meta = _meta(row["metadata"])
+    for banned in (
+        "wf_emit_reservation",
+        "blocking_reason",
+        "wf_deferral",
+        "wf_emit_backpressure",
+        "wf_not_draining",
+    ):
+        assert banned not in meta, (banned, meta)
+    # THE DERIVED CHARGE: no stale reservation.
+    obs = await wf_conn.fetchrow(wsql.emit_capacity_observation, flow, None)
+    assert obs is not None and (int(obs["live_rows"]), int(obs["reservations"])) == (1, 0), obs
+    # THE CLAIMABILITY: the real node claim claims the re-armed row.
+    worker = JobId(new_uuid())
+    claimed = await wf_conn.fetchrow(
+        render_sql(NODE_CLAIM_SQL_TEMPLATE, wf_schema), job, worker
+    )
+    assert claimed is not None, "the node-retry re-armed row is claimable"
+
+
+async def test_terminal_mixed_key_present_and_key_absent_winners(
+    wf_conn: Any, wf_schema: str, wf_sql: WorkflowSql
+) -> None:
+    """§2.4's mixed-winner arm: one terminal statement over BOTH a
+    key-present and a key-absent winner removes the key from exactly the
+    winners that had one, charges exactly the captured widths, and never
+    double-accounts (the captured diagnostic is the statement's own
+    RETURNING, read here — the capture's consumer)."""
+    flow = JobId(new_uuid())
+    with_key = await _seed_reserved(
+        wf_conn, wf_schema, flow, "source", "running", width=7
+    )
+    without_key = JobId(new_uuid())
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".jobs '
+        "(id, actor, queue, payload, status, max_attempts, retry_kind, step_key, "
+        "metadata, fairness_key, attempt, claim_epoch, locked_by_worker, "
+        "lock_expires_at) "
+        f"VALUES ($1, 'wf-node', 'default', '{{}}', 'running', 3, 'transient', 'source', "
+        "$2::jsonb, $3, 1, 1, $1, now() + interval '90 seconds')",
+        without_key,
+        _json.dumps({"flow_id": str(flow)}),
+        str(flow),
+    )
+    live, reservations = await _observation(wf_conn, wf_sql, flow)
+    assert (live, reservations) == (2, 7), (live, reservations)
+
+    # THE ENGINE TERMINAL over both rows: the key-present winner loses its
+    # key; the key-absent winner is unchanged; the charge moves exactly
+    # once. THE CAPTURE'S OWN CONSUMER (§2.4): the statement's RETURNING
+    # carries the captured had_reservation/old_reservation facts — the
+    # VALIDATED old width (never a raw blob) — read and asserted here.
+    for job, had_key in ((with_key, True), (without_key, False)):
+        captured = await wf_conn.fetchrow(
+            wf_sql.terminal_mark,
+            job,
+            "succeeded",
+            "{}",
+            2,
+            None,
+            None,
+            None,
+            job,
+            1,
+            1,
+        )
+        assert captured is not None, "the terminal mark's own fence matched"
+        assert bool(captured["had_reservation"]) is had_key, dict(captured)
+        if had_key:
+            assert int(captured["old_reservation"]) == 7, dict(captured)
+        else:
+            assert captured["old_reservation"] is None, dict(captured)
+    live, reservations = await _observation(wf_conn, wf_sql, flow)
+    assert (live, reservations) == (0, 0), "the charge moved exactly once, no double accounting"
+    for job in (with_key, without_key):
+        row = await wf_conn.fetchrow(
+            f'SELECT status::text AS status, metadata FROM "{wf_schema}".jobs WHERE id = $1',
+            job,
+        )
+        assert row is not None and row["status"] == "succeeded", row
+        meta = _meta(row["metadata"])
+        assert "wf_emit_reservation" not in meta, meta

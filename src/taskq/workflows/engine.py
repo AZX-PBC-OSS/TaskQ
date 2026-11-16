@@ -662,29 +662,55 @@ async def _resolve_failed_parent(
         "failed_step": step_key,
     }
     peer_record = {"peer_cancel": {"by": "peer_failure", "cascade_from": str(parent_id)}}
-    await conn.execute(
+    cascade_row = await conn.fetchrow(
         wsql.fail_closed_cascade,
         parent_id,
         _jsonb(cascade_stamp),
         CANCEL_ORIGIN_PEER_FAILURE,
         _jsonb(peer_record),
-        flow_id,
     )
+    # THE UNRESOLVED-LIVE GATE (N1 — the maintenance seat's own law, applied
+    # at the cascade seat too): `flow_failed` inside the statement fails the
+    # root ONLY when NO unresolved live node remains (a promoted pending
+    # source counts as unresolved live work — the state machine's own
+    # precedence row 1 outranks the failure). When the gate held the root's
+    # failure back (the drain just promoted the source in a concurrent
+    # transaction), the §5.4 fence MUST NOT fire: its own proof ("the root
+    # terminal 'failed' has just committed") is false here, and fencing the
+    # parked source under a live run would strand the run's own continuation.
+    # THE ROOT'S OWN LOCK + THE GATED FAILURE (N1): the failure's own
+    # decision is its OWN statement — its own fresh snapshot, taken after
+    # the root lock's grant — so the unresolved-live gate decides from the
+    # rows as they stand NOW (a promotion the drain committed while this
+    # transaction waited on the root is visible; deciding from the wait's
+    # own stale snapshot is the strand's own mechanism).
+    flow_actually_failed = False
+    if cascade_row is not None and int(cascade_row["blocked"]) >= 1:
+        root_id = await conn.fetchval(wsql.emit_root_lock, flow_id)
+        if root_id is not None:
+            failed_row = await conn.fetchrow(
+                wsql.flow_failed_gated,
+                flow_id,
+                CANCEL_ORIGIN_PEER_FAILURE,
+            )
+            flow_actually_failed = failed_row is not None and int(failed_row["flow_failed"]) == 1
     # THE §5.4 NON-DRAINAGE REFUSAL — in this same failure-cascade
-    # transaction: the cascade just committed the flow root's terminal
-    # `failed` behind this child's exhausted failure. An exact parked source
-    # still holding an un-emitted committed cursor is the one durable proof
-    # that the run is provably not draining; the fence ends it (no logical
-    # attempt spent, no ladder retry, the child's genuine error untouched).
-    from taskq.workflows._emit import fence_not_draining_parked_sources
+    # transaction, ONLY when this statement's own root finalize actually
+    # committed: the root terminal `failed` behind this child's exhausted
+    # failure. An exact parked source still holding an un-emitted committed
+    # cursor is the one durable proof that the run is provably not draining;
+    # the fence ends it (no logical attempt spent, no ladder retry, the
+    # child's genuine error untouched).
+    if flow_actually_failed:
+        from taskq.workflows._emit import fence_not_draining_parked_sources
 
-    await fence_not_draining_parked_sources(
-        conn,
-        wsql,
-        flow_id=flow_id,
-        child_id=parent_id,
-        child_step_key=step_key,
-    )
+        await fence_not_draining_parked_sources(
+            conn,
+            wsql,
+            flow_id=flow_id,
+            child_id=parent_id,
+            child_step_key=step_key,
+        )
 
     # the absorbed fan-in (collect | maybe) — the typed partial result's
     # failure items. The ledger's attempt rows for this child are the

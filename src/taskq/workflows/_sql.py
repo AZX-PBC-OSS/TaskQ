@@ -76,6 +76,7 @@ from taskq.workflows._sql_finalize import (
     WF_EMIT_PENDING_INTENTS_SQL,
     WF_EMIT_ROTATION_READ_SQL,
     WF_EMIT_ROTATION_WRITE_SQL,
+    WF_FLOW_FAILED_GATED_SQL,
     WF_NOT_DRAINING_FENCE_SQL,
 )
 from taskq.workflows._sql_ledger import (
@@ -184,6 +185,7 @@ class WorkflowSql:
     decrement: str
     decrement_absorbed: str
     fail_closed_cascade: str
+    flow_failed_gated: str
     collect_fan_in: str
     collect_fan_in_append: str
     fire: str
@@ -279,6 +281,7 @@ class WorkflowSql:
             decrement=render(DECREMENT_SQL),
             decrement_absorbed=render(DECREMENT_ABSORBED_SQL),
             fail_closed_cascade=render(FAIL_CLOSED_CASCADE_SQL),
+            flow_failed_gated=render(WF_FLOW_FAILED_GATED_SQL),
             collect_fan_in=render(COLLECT_FAN_IN_SQL),
             collect_fan_in_append=render(COLLECT_FAN_IN_APPEND_SQL),
             fire=render(FIRE_SQL),

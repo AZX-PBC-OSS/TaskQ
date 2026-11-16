@@ -992,9 +992,13 @@ async def wake_emit_backpressure(
     serializes the drain with the root-failure and maintenance seats
     (which hold the same row lock): a root-finalize either runs before
     the drain — the §5.4 fence fences the still-parked source — or after
-    it, where the promoted source is unresolved live work and the root
-    legitimately does not finalize; a terminal root can never be raced by
-    a promotion that then strands a reserved pending source under it.
+    it, where the promoted source is unresolved live work and BOTH root
+    -failure seats (the maintenance's ``has_unresolved`` aggregate and
+    the failure cascade's own unresolved-live gate) legitimately withhold
+    the finalize while that work rests — the run continues and the later
+    pass owns the terminal once the live work rests. A terminal root can
+    never be raced by a promotion that then strands a reserved pending
+    source under it.
     Each iteration runs one fresh shared observation (the derived
     ``charge``) and the single authoritative candidate comparison —
     the oldest FITTING waiter on real rows, never a cached head. A
@@ -1252,15 +1256,18 @@ async def sweep_emit_markers(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
                     conn, wsql, flow_id=flow, probe=True, census_family="maintenance"
                 ):
                     repaired += 1
-        except Exception:
+        except Exception as exc:
             # One flow's malformed marker never aborts the others'
             # repairs (D7's per-flow isolation): the bounded diagnostic
-            # stands in for the flow; it is retried on a later
+            # stands in for the flow — NAMING the fault (the operator's
+            # own quarantine record) — and it is retried on a later
             # selection, never dropped.
             logger.warning(
                 "wf.emit_marker_sweep_flow_failed",
                 flow_id=str(flow),
                 offered_anyway=True,
+                error_class=type(exc).__name__,
+                error=str(exc)[:300],
             )
     if len(rows) >= _SWEEP_BATCH:
         # A full selection persists its last flow id as the rotation

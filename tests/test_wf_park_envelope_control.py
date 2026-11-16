@@ -277,8 +277,19 @@ async def test_newest_fit_and_oldest_fit_envelopes_and_declaration_mapping(
     # BEFORE the plan checks (the declaration-based `parked <= S` law's
     # own basis; row-level seeding with an unproven declaration count is
     # not sufficient).
-    declared_keys = sorted(compiled.nodes.keys())
-    assert len(declared_keys) >= _PARK_COUNT
+    # THE MAPPING'S OWN KEYS: the DECLARED chain sources' OWN step keys
+    # (kind == 'chain_source') — never the whole node table (which also
+    # carries the gather join; taking sorted(nodes.keys())[:1000] mapped
+    # the join and dropped a real declared source).
+    declared_keys = sorted(
+        key
+        for key, node in compiled.nodes.items()
+        if getattr(node, "kind", None) == "chain_source"
+    )
+    assert len(declared_keys) == _PARK_COUNT == 1000, (
+        f"the declared chain sources' own keys must be exactly S=1000; "
+        f"got {len(declared_keys)}"
+    )
 
     # The derivation record binds the fixture (checked in BEFORE first run).
     record = json.loads((Path(__file__).parent / "data" / "wf_emit_park_envelope.json").read_text())

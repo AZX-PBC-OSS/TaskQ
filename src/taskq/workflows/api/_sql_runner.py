@@ -551,7 +551,17 @@ SET status = 'pending',
     error_message = NULL,
     scheduled_at = now(),
     locked_by_worker = NULL,
-    lock_expires_at = NULL
+    lock_expires_at = NULL,
+    -- THE MANUAL RE-ARM'S DEFENSIVE STRIP (§2.4, N4): a manually
+    -- re-armed terminal row carries no old episode's keys into its new
+    -- one — the reservation key (a future promotion re-grants it; a
+    -- stale key would charge the derived capacity and force the
+    -- re-armed row's own honest next page through the deterministic
+    -- grant-violation route), the park marker family, and any
+    -- terminal-fence stamp.
+    metadata = metadata - 'wf_emit_reservation'
+        - 'blocking_reason' - 'wf_deferral' - 'wf_emit_backpressure'
+        - 'wf_not_draining'
 WHERE step_key = $2
   AND (metadata->>'flow_id')::uuid = $1
   AND status = 'failed'
@@ -600,7 +610,12 @@ SET status = 'pending',
     finished_at = NULL,
     scheduled_at = now(),
     locked_by_worker = NULL,
-    lock_expires_at = NULL
+    lock_expires_at = NULL,
+    -- THE MANUAL RE-ARM'S DEFENSIVE STRIP (§2.4, N4): the same keys the
+    -- node-retry re-arm strips — a re-armed row is an ordinary live row.
+    metadata = metadata - 'wf_emit_reservation'
+        - 'blocking_reason' - 'wf_deferral' - 'wf_emit_backpressure'
+        - 'wf_not_draining'
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status = 'succeeded'
   AND result @> '{"skipped": true}'::jsonb

@@ -1010,15 +1010,23 @@ deleted AS (
     RETURNING x.id
 ),
 capacity_gone AS (
-    -- THE RUN'S OWN CAPACITY RECORD DIES WITH ITS RUN (D10, §2.1): the
-    -- record's retention lifetime IS the run's; a terminal-aged flow has
-    -- no live node left to reference it, so the same retention pass that
-    -- deletes the run's ledger rows deletes the run's intent record in
-    -- this same statement. Never a separate sweep, never an
-    -- unbounded walk.
+    -- THE RUN'S OWN CAPACITY RECORD DIES WITH ITS RUN (D10, §2.1/N5):
+    -- the record's retention lifetime IS the run's, and retention can
+    -- NEVER remove it while a live node references the run — the doomed
+    -- flows are terminal-aged AND have NO live (pending/scheduled/
+    -- running) node row left; the same retention pass that deletes the
+    -- run's ledger rows deletes the run's intent record in this same
+    -- statement. Never a separate sweep, never an unbounded walk.
     DELETE FROM {schema}.wf_emit_capacity c
     USING doomed_flows df
     WHERE c.flow_id = df.id
+      AND NOT EXISTS (
+          SELECT 1 FROM {schema}.jobs n
+          WHERE (n.metadata->>'flow_id')::uuid = df.id
+            AND n.metadata ? 'flow_id'
+            AND n.step_key <> '__flow__'
+            AND n.status IN ('pending', 'scheduled', 'running')
+      )
     RETURNING c.flow_id
 )
 SELECT (SELECT count(*) FROM deleted) AS deleted,

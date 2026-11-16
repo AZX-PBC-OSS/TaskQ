@@ -10,7 +10,7 @@ terminal-fail cascade) in ``taskq.workflows.engine``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 
 import asyncpg
 import structlog
@@ -88,49 +88,12 @@ def is_infra_fault(exc: BaseException) -> bool:
     return isinstance(exc, infra)
 
 
-def is_deterministic_authoring_failure(exc: BaseException) -> bool:
-    """the FAILURE-CLASS ROUTING RULE's deterministic leg (the rule
-    stated once, pinned per class):
-    a DETERMINISTIC authoring failure never rides the retry ladder. The
-    three classes the engine itself defines are deterministic BY
-    CONSTRUCTION — each is raised by the engine's own gates for a defect
-    that re-running cannot fix:
-
-    * :class:`ProgressRefusedError` — a wrong-shaped emission (an
-      authoring bug; the body will send the same shape on every retry);
-    * :class:`PageDivergedError` — the emit's page already exists (the
-      resume's cursor diverged from the row history; the re-claim
-      re-reads the same cursor and collides again);
-    * :class:`MapIndexExhaustedError` — the smallint ceiling (the
-      record's identity cannot grow past it on any retry);
-    * :class:`FanInBoundExceededError` — the fork's fan-in past the
-      declared bound (re-running cannot shrink the
-      corpus; the refusal NAMES the child_driven escape — the remedy is
-      a re-wiring, never a retry);
-    * :class:`SpawnDepthExceededError` — the spawn's ancestor walk past
-      the declared max depth (re-running cannot shrink
-      the ancestor chain — the child line's own bound, the fan-in
-      bound's sibling);
-    * :class:`ChildFlowLostError` — the parent's resume found a
-      DANGLING child pointer (re-running cannot restore
-      the purged rows — the respawn refusal is the honest face, the
-      silent re-execution it replaced was the lie).
-
-    ROUTING RULE, per class
-    ``deterministic = the NAMED terminal`` (finalize immediately, the
-    error class on the record, the ladder unburned — a retry budget
-    spent on a deterministic death is the record's lie: three identical
-    failures pretending to be a flake); ``infra = reclaim`` (the
-    machinery boundary's classifier, :func:`is_infra_fault` — the
-    ladder untouched); ``transient = the ladder`` (the body's ordinary
-    failures — the backoff curve, then the terminal).
-
-    The body boundary consults this before the ladder
-    (:meth:`LadderOps._ladder_or_fail`): a body-raised wrong-shape
-    emission is deterministic here, never a raw
-    laddered failure — the deterministic death must not be
-    mislabeled transient and burn the ladder.
-    """
+def _deterministic_classes() -> tuple[type[BaseException], ...]:
+    """The DETERMINISTIC authoring-failure classes (§2.1/§2.5's own
+    fail-closed refusals): each is raised by the engine's own gates for a
+    defect that re-running cannot fix — the one tuple both the routing
+    predicate and the terminal's own record-class helper consume (one
+    truth, never a second spelling to drift)."""
     from taskq.exceptions import ReservedTimerNamespaceError
     from taskq.workflows._childflow import ChildFlowLostError, SpawnDepthExceededError
     from taskq.workflows._emit import (
@@ -143,41 +106,70 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     from taskq.workflows.api._runner_errors import VanishedNodeError
     from taskq.workflows.definitions import FanInBoundExceededError
 
-    deterministic: tuple[type[BaseException], ...] = (
+    return (
         ProgressRefusedError,
         PageDivergedError,
-        # THE RESERVED GRANT VIOLATION (§2.5): a reserved replay that
-        # presents a wider page than its stored reservation grants was
-        # never granted the excess — re-running the same body re-presents
-        # the same page and re-raises on every attempt (a retry budget
-        # spent on it is the record's lie). The named deterministic
-        # grant-violation route terminalizes on the FIRST violation with
-        # the reservation key removed in the same winning terminal
-        # statement (§2.4's engine terminal mark), never a laddered
-        # transient.
         EmitReservationExceededError,
-        # THE CAPACITY CORRUPTION (§2.1's fail-closed law): a
-        # stored/compiled bound mismatch, a missing record for a stamped
-        # bounded run, a missing live root — every one re-raises on the
-        # very next attempt (the drift does not heal by retrying); the
-        # deterministic terminal owns the death on the first violation,
-        # the ladder unburned.
         EmitCapacityCorruptionError,
         MapIndexExhaustedError,
         FanInBoundExceededError,
-        # E17 — the reserved-timer-prefix mint refusal: the payload
-        # model's name is the code's own —
-        # re-running the body re-raises the same refusal on every
-        # attempt (a retry budget spent on it is the record's lie).
         ReservedTimerNamespaceError,
         SpawnDepthExceededError,
         ChildFlowLostError,
-        # a step key the registry does not carry has no body on any attempt —
-        # the registry is the truth (D1); the remedy is cancel-then-restart,
-        # never a retry budget spent on an unresolvable key.
         VanishedNodeError,
     )
-    return isinstance(exc, deterministic)
+
+
+def _find_deterministic_leaf(exc: BaseException) -> str | None:
+    """The FIRST deterministic leaf's own class name, walking groups and
+    `__cause__` chains (the seen-set bounds the walk against cycles);
+    None when nothing deterministic is carried."""
+    classes = _deterministic_classes()
+
+    def _walk(candidate: BaseException, seen: frozenset[int]) -> str | None:
+        if isinstance(candidate, classes):
+            return type(candidate).__name__
+        if isinstance(candidate, BaseExceptionGroup):
+            leaves = cast("tuple[BaseException, ...]", candidate.exceptions)
+            for leaf in leaves:
+                found = _walk(leaf, seen)
+                if found is not None:
+                    return found
+            return None
+        cause = candidate.__cause__
+        if cause is None or id(cause) in seen:
+            return None
+        return _walk(cause, seen | {id(cause)})
+
+    return _walk(exc, frozenset({id(exc)}))
+
+
+def _deterministic_error_class(exc: BaseException) -> str:
+    """The deterministic terminal's own record class: the deterministic
+    refusal's OWN name — a grouped deterministic error records its first
+    deterministic leaf's name (the group's wrapper name is not the
+    remedy's own vocabulary); a plain deterministic error records its own
+    name. A non-deterministic shape is never this helper's caller."""
+    return _find_deterministic_leaf(exc) or type(exc).__name__
+
+
+def is_deterministic_authoring_failure(exc: BaseException) -> bool:
+    """the FAILURE-CLASS ROUTING RULE's deterministic leg (the rule
+    stated once, pinned per class): a DETERMINISTIC authoring failure
+    never rides the retry ladder.
+
+    The classes are :func:`_deterministic_classes`' own tuple (the
+    engine's own fail-closed refusals — each re-raises on every retry,
+    so a retry budget spent on one is the record's lie). The GROUPED
+    face (N2): a body that emits pages inside ``asyncio.TaskGroup`` (or
+    a multi-coroutine gather) receives an ``ExceptionGroup`` — the
+    group is an ordinary ``Exception`` to the body arm, but the
+    deterministic facts ride its LEAVES: a grouped deterministic error
+    IS deterministic (re-running the body re-presents the same page and
+    re-raises the same leaf), recursively over nested groups and,
+    defensively, over a wrapped ``__cause__``.
+    """
+    return _find_deterministic_leaf(exc) is not None
 
 
 class _LadderHost(Protocol):
@@ -436,7 +428,12 @@ class LadderOps(_LadderHost):
             attempt=attempt,
             claim_epoch=claim_epoch,
             outcome="failed",
-            error_class=type(exc).__name__,
+            # THE RECORD'S OWN TRUTH (N2): the deterministic terminal names
+            # the DETERMINISTIC refusal's own class — a grouped
+            # deterministic error records its deterministic LEAF's name
+            # (the refusal the remedy names), never the group's own
+            # wrapper name.
+            error_class=_deterministic_error_class(exc),
             error_message=str(exc)[:MESSAGE_TERMINAL_MAX],
             capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the compile (the workflow decorator's declaration); the host protocol's compiled is the runner's Any-typed field.
             map_index=row["map_index"],
