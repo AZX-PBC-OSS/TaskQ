@@ -446,6 +446,29 @@ async def _c4seed_source_body(ctx: Any) -> None:
     del ctx
 
 
+FLOW600_ESTATE: Final = 600  # the §9 control 8's flow_600 waiter estate
+
+
+async def _c4f600_source_body(ctx: Any) -> None:
+    """The flow_600 estate's own source: the 600 park rows are SEEDED (the
+    §9.2 pattern); the source only terminalizes."""
+    del ctx
+
+
+@p2sat_app.workflow("c4_flow600", queue=SOURCE_QUEUE, max_in_flight=FLOW600_ESTATE * 2)
+def c4_flow600() -> Promise[object]:
+    return build(
+        chain_source(
+            _C4C_CHAIN,
+            _c4f600_source_body,
+            key="source",
+            actor=_SOURCE_ACTOR,
+            max_attempts=2,
+            queue=SOURCE_QUEUE,
+        )
+    )
+
+
 @p2sat_app.workflow("c4_seed_flow", queue=SOURCE_QUEUE, max_in_flight=CHUNK_ESTATE)
 def c4_seed_flow() -> Promise[object]:
     return build(
