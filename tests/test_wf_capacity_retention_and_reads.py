@@ -158,37 +158,44 @@ async def test_capacity_record_retires_with_its_run_and_never_before(
     wf_conn: Any, wf_schema: str, wf_pool: Any
 ) -> None:
     """D10: the capacity record's retention lifetime is the run's — the
-    rootless-family walk removes it exactly when the run's rows were
-    retained away, and never while any row of the run exists."""
-    from taskq.workflows._sweep import prune_wf_capacity_with_run
+    RUN'S OWN retention pass (the step-ledger retention's flows-side
+    statement, the same statement and transaction that delete the run's
+    ledger rows) deletes the record with the run; and nothing removes it
+    while the run's own rows still exist."""
+    from datetime import timedelta
+
+    from taskq.workflows._sweep import prune_wf_step_ledger
 
     wsql = _wsql(wf_schema)
     flow = await _seed_marked_flow(wf_conn, wf_schema, with_intent=True)
 
-    # The run's rows all exist: the walk removes nothing.
-    deleted = await prune_wf_capacity_with_run(wf_pool, wsql, batch_size=100)
-    assert deleted == 0, deleted
+    # The run's root is RUNNING (not terminal-aged): the retention pass
+    # removes nothing.
+    await prune_wf_step_ledger(
+        wf_pool, wsql, retention=timedelta(hours=1), batch_size=100
+    )
     still = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".wf_emit_capacity WHERE flow_id = $1::uuid',
         flow,
     )
     assert int(still) == 1, still
 
-    # THE RUN RETAINED AWAY: the run's root and node rows are gone. The
-    # rootless walk's own cursor law: a row VISITED before it became
-    # doomed is re-visited after the exhausted pass's wraparound (the
-    # walk moves past live rows; the rewind restarts it) — the family's
-    # documented advance law, bounded by the batch.
+    # THE RUN TERMINAL AND AGED PAST ITS RETENTION: the same pass that
+    # deletes the run's ledger rows deletes the run's capacity record.
     await wf_conn.execute(
-        f"DELETE FROM \"{wf_schema}\".jobs WHERE (metadata->>'flow_id')::uuid = $1::uuid",
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', "
+        "finished_at = clock_timestamp() - interval '2 hours' "
+        "WHERE id = $1::uuid AND step_key = '__flow__'",
         flow,
     )
-    deleted_total = 0
-    for _ in range(3):
-        deleted_total += await prune_wf_capacity_with_run(wf_pool, wsql, batch_size=100)
-        if deleted_total >= 1:
-            break
-    assert deleted_total == 1, deleted_total
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', "
+        "finished_at = clock_timestamp() - interval '2 hours' "
+        "WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key <> '__flow__'",
+        flow,
+    )
+    await prune_wf_step_ledger(wf_pool, wsql, retention=timedelta(hours=1), batch_size=100)
+    # THE D10 ASSERT: the run's own capacity record went with the run.
     gone = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".wf_emit_capacity WHERE flow_id = $1::uuid',
         flow,

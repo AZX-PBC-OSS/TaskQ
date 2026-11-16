@@ -78,6 +78,7 @@ def _park_predicate() -> str:
     ``format`` VALUE (not part of the template) the braces collapse here —
     the same collapse the bundle's render pass applies."""
     from taskq.workflows._sql_finalize import park_predicate as _pp
+
     _wf_emit_park_predicate = _pp
 
     return _wf_emit_park_predicate("j").replace("{{", "{").replace("}}", "}")

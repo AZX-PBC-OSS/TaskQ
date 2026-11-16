@@ -58,7 +58,6 @@ from taskq.workflows._sql_sweep import (
     NODE_PROGRESS_ROOTLESS_RETENTION_SQL,
     SIGNALS_ROOTLESS_RETENTION_SQL,
     STEP_LEDGER_ROOTLESS_RETENTION_SQL,
-    WF_EMIT_CAPACITY_ROOTLESS_RETENTION_SQL,
     render_rootless_retention_sql,
 )
 from taskq.workflows._types import (
@@ -789,24 +788,6 @@ async def prune_wf_join_fire_rootless(
     sql = render_rootless_retention_sql(JOIN_FIRE_ROOTLESS_RETENTION_SQL, wsql.schema)
     async with pool.acquire() as conn:
         summary = await conn.fetchrow(sql, batch_size, retention)
-    assert summary is not None
-    return int(summary["deleted"])
-
-
-async def prune_wf_capacity_with_run(
-    pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size: int = DEFAULT_BATCH_SIZE
-) -> int:
-    """The capacity record's retention arm (D10): a bounded run's
-    ``wf_emit_capacity`` row's retention lifetime is the RUN's — the row
-    is removable exactly when the run's own rows were retained away (the
-    root deleted and no row of the flow references it any more). The
-    rootless family's own law (the PK-ordered batch-bounded walk on the
-    persisted per-arm cursor; the advance rides the last VISITED row; the
-    wraparound rewinds on the exhausted pass). No TTL gate: the record
-    has no clock of its own. Returns the deleted count."""
-    sql = render_rootless_retention_sql(WF_EMIT_CAPACITY_ROOTLESS_RETENTION_SQL, wsql.schema)
-    async with pool.acquire() as conn:
-        summary = await conn.fetchrow(sql, batch_size)
     assert summary is not None
     return int(summary["deleted"])
 

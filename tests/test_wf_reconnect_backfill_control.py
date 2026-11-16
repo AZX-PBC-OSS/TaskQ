@@ -40,7 +40,6 @@ from typing import Any
 import asyncpg
 import pytest
 
-from taskq.backend._protocol import JobId
 from taskq.constants import (
     events_channel,
     leader_wake_channel,
@@ -68,13 +67,14 @@ class _DepsStandIn:
     """The reconnect's own surface: the lock, the current conn, the
     factory, and the two settings bounds the reconnect reads."""
 
-    def __init__(self, factory: Any, setup_timeout: float = 5.0, factory_timeout: float = 5.0) -> None:
+    def __init__(
+        self, factory: Any, setup_timeout: float = 5.0, factory_timeout: float = 5.0
+    ) -> None:
         from asyncio import Lock
 
         self.notify_reconnect_lock = Lock()
-        self.notify_conn = None
+        self.notify_conn: Any = None
         self.notify_conn_factory = factory
-        self.notify_conn = None
         self.settings = type(
             "_S",
             (),
@@ -103,9 +103,17 @@ def _registry(schema: str, backend: Any, log: list[tuple[str, int]]) -> list[_No
     delegate that calls the real callback through."""
     cap_cb = _make_wf_emit_capacity_callback(backend)
     entries = [
-        (_NotifyEntry(wake_channel(schema), _recording(cap_cb, log, wake_channel(schema)), reconnect_backfill=True)),
+        (
+            _NotifyEntry(
+                wake_channel(schema),
+                _recording(cap_cb, log, wake_channel(schema)),
+                reconnect_backfill=True,
+            )
+        ),
         _NotifyEntry(events_channel(schema), _recording(cap_cb, log, events_channel(schema))),
-        _NotifyEntry(leader_wake_channel(schema), _recording(cap_cb, log, leader_wake_channel(schema))),
+        _NotifyEntry(
+            leader_wake_channel(schema), _recording(cap_cb, log, leader_wake_channel(schema))
+        ),
         _NotifyEntry(
             wf_emit_capacity_channel(schema),
             _recording(cap_cb, log, wf_emit_capacity_channel(schema)),
@@ -133,7 +141,7 @@ async def test_reconnect_backfills_every_hook_in_order_and_arms_capacity_event(
         f'INSERT INTO "{schema}".wf_emit_capacity '
         "(flow_id, bound, wake_generation, handled_generation) "
         "VALUES ($1::uuid, 4, 1, 0)",
-        str(JobId.__new__(JobId)) if False else _flow_id(),
+        _flow_id(),
     )
 
     log: list[tuple[str, int]] = []
@@ -222,9 +230,7 @@ async def test_raising_gated_hook_cannot_prevent_the_drain_arms(
     cap_channel = wf_emit_capacity_channel(schema)
     for index, entry in enumerate(channels):
         if entry.channel == cap_channel:
-            channels[index] = _NotifyEntry(
-                cap_channel, raising_hook, reconnect_backfill=True
-            )
+            channels[index] = _NotifyEntry(cap_channel, raising_hook, reconnect_backfill=True)
 
     async def factory() -> asyncpg.Connection:
         return await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -232,14 +238,10 @@ async def test_raising_gated_hook_cannot_prevent_the_drain_arms(
     deps = _DepsStandIn(factory)
     deps.notify_conn = await factory()
     await deps.notify_conn.close()
-    raised = None
-    try:
+    with contextlib.suppress(RuntimeError):
         await reconnect_notify_conn(deps, backend, channels)
-    except RuntimeError as exc:
-        raised = exc
     assert drained.is_set(), (
         "the raising hook's own event was set first — the delivery is total; "
         "the drain arms regardless of the bookkeeping fault"
     )
-    assert raised is not None or True  # the retry loop's own input either way
     await deps.notify_conn.close()

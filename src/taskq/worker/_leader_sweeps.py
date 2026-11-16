@@ -865,22 +865,6 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             )
         return deleted
 
-    async def wf_capacity_retention_call() -> int:
-        # the capacity record's retention arm (D10): the record's
-        # lifetime is the RUN's — the rootless-family law removes it
-        # exactly when the run's own rows were retained away (the root
-        # deleted, no referencing row left). No TTL period gate: the
-        # record has no clock of its own; the prune-family batch knob
-        # bounds each pass. The lazy import keeps the import law.
-        from taskq.workflows._sweep import prune_wf_capacity_with_run
-        from taskq.workflows.engine import render_workflow_sql
-
-        return await prune_wf_capacity_with_run(
-            ctx.deps.dispatcher_pool,
-            render_workflow_sql(ctx.deps.settings.schema_name),
-            batch_size=ctx.deps.settings.prune_batch_size,
-        )
-
     async def wf_node_progress_retention_call() -> int:
         # the state channel outlives its flows forever; the flow is reached
         # through the node's jobs row. Two-pass law (the flows-side join
@@ -1413,20 +1397,6 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             period_setting="workflow_node_progress_retention_period",
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             dbg_tick=_dbg_tick("wf_node_progress_retention_tick"),
-        ),
-        _SweepSpec(
-            # wf_capacity_retention — the capacity record dies with its
-            # run (D10): the rootless-family walk removes the record
-            # exactly when the run's own rows were retained away. No TTL
-            # gate (the record has no clock of its own); the prune
-            # family's batch knob bounds each pass.
-            name="wf_capacity_retention",
-            call=wf_capacity_retention_call,
-            warn_event="sweep-wf-capacity-retention-failed",
-            warn_kind="sweep_wf_capacity_retention_failed",
-            gated_on=("workflow_sweeps_capable",),
-            extra_except=(asyncpg.exceptions.UndefinedTableError,),
-            dbg_tick=_dbg_tick("wf_capacity_retention_tick"),
         ),
     )
 

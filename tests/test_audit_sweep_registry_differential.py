@@ -212,6 +212,11 @@ class ScriptConn:
         cursor row content and no pending intent row (nothing to drain)."""
         if "wf_emit_intent_rotation" in sql or "wf_emit_capacity" in sql:
             self.stream.append(("call", "wf_stmt"))
+            # The flows-side RETENTION pass (the run's own retention: the
+            # ledger's doomed flows + the run's own capacity record, D10):
+            # the zero summary — the double's world retains nothing.
+            if "doomed_flows" in sql:
+                return {"deleted": 0, "null_observed": 0, "capacity_gone": 0}
             return None
         if "roots_updated" in sql:
             # The root-maintenance statement's own shape: zero roots

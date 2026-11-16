@@ -1222,7 +1222,8 @@ async def sweep_emit_markers(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
     due-time wake, and NO re-bump of an intent the drain already handled
     (that would be a busy loop, not recovery)."""
     after = _SWEEP_CURSORS.get(wsql.schema, str(_ZERO_UUID))
-    rows = await pool.fetch(wsql.emit_marker_sweep, after)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(wsql.emit_marker_sweep, after)
     if not rows:
         # An empty ordered read wraps the cursor immediately once (the
         # §6 rotation's own semantics): the walk restarts on the next

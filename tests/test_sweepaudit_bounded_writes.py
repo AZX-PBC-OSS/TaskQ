@@ -85,6 +85,15 @@ _LIMIT_CLAUSE_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
 # check fails until the entry is removed. Registering a new entry requires
 # writing the justification - that sentence is the review.
 _EXEMPT: dict[str, tuple[str, str]] = {
+    # ── The D1 live-root lock (§3.1's canonical order): a single-row PK
+    # probe ──
+    "EMIT_ROOT_LOCK_SQL": (
+        "WHERE id = $1::uuid AND step_key = '__flow__'",
+        "the drain's own live-root FOR UPDATE lock (the §3.1 canonical "
+        "order): a PRIMARY-KEY probe on the run's own __flow__ row — the "
+        "write set is exactly one row by construction (the flow's own id "
+        "is the key); it cannot grow with any backlog",
+    ),
     # ── Worker-scoped refunds: the predicate names the calling worker ──
     "_RECONCILE_LOST_CLAIMS_SQL_TEMPLATE": (
         "WHERE j.locked_by_worker = $1",
@@ -603,9 +612,13 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "generation handled, CAS-gated on pending",
     ),
     "WF_EMIT_ROTATION_WRITE_SQL": (
-        "WHERE id = true",
+        "ON CONFLICT (id) DO UPDATE",
         "the singleton rotation row (the CHECK pins id = true): the global "
-        "fairness cursor's one owner, never growing with run cardinality",
+        "fairness cursor's one owner, never growing with run cardinality. "
+        "The write is an UPSERT (the D10 reset law): a schema whose "
+        "singleton was truncated re-seeds it on the first write — the "
+        "conflict target IS the singleton identity, the write set is "
+        "exactly one row by construction",
     ),
     "WF_EMIT_INTENT_LOCK_SQL": (
         "WHERE flow_id = $1",
