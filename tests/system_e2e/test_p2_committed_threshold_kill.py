@@ -68,8 +68,8 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
-from pathlib import Path
 import time
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -852,7 +852,10 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
         assert pre_registered["V_lane"] == 60, pre_registered
         assert pre_registered["V_general"] == 60, pre_registered
         assert pre_registered["V_lane"] <= pre_registered["V_general"]
-        print("C3-TWO-WORKER-PRE-REGISTRATION " + _json.dumps(pre_registered, sort_keys=True), flush=True)
+        print(
+            "C3-TWO-WORKER-PRE-REGISTRATION " + _json.dumps(pre_registered, sort_keys=True),
+            flush=True,
+        )
 
         runner = FlowRunner(entry.p2sat_app.get("c4_kill_recovery_flow"), pool, schema)
         flow_id = str((await runner.create_flow()).flow_id)
@@ -860,9 +863,7 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
         # THE TWO OS WORKERS: both consume the flow's queues; the first
         # to assume leadership counts the lane's own R=1.
         for tag in ("c3-two-worker-a", "c3-two-worker-b"):
-            pods.append(
-                await _spawn_pod(conn, pg_dsn, schema, log_dir, tag)
-            )
+            pods.append(await _spawn_pod(conn, pg_dsn, schema, log_dir, tag))
 
         async def _done() -> bool:
             root = await pool.fetchval(

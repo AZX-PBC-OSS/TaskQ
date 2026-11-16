@@ -449,6 +449,104 @@ async def _c4seed_source_body(ctx: Any) -> None:
 FLOW600_ESTATE: Final = 600  # the §9 control 8's flow_600 waiter estate
 
 
+# ── the §9 control 7's occupancy estate: the consuming child's own actor
+# (its own queue + the projected cohort) — the actor's own capacity gate
+# (actor_config.max_concurrent = 1, seeded by the control) serialises the
+# children; the source's park + the wake must never need a slot. ────────
+C7_CHILD_QUEUE: Final = "p2sat_c7_child"
+
+
+async def _c7_child_body(ctx: StepContext, item: object) -> C4Ok:
+    del item
+    # The occupancy's own hold: the child holds its actor's ONE slot for
+    # the gate's span (the control passes the span through the gate
+    # table).
+    import asyncio as _aio
+
+    conn = await asyncpg.connect(os.environ["TASKQ_PG_DSN"])
+    try:
+        hold = await conn.fetchval(
+            'SELECT hold_s FROM "'
+            + os.environ["TASKQ_SCHEMA_NAME"]
+            + '".p2sat_c7_gate WHERE id = 1'
+        )
+    finally:
+        await conn.close()
+    if hold is not None:
+        await _aio.sleep(float(hold))
+    return C4Ok.OK
+
+
+_C7_CHAIN: Final = Chain(
+    name=f"c7-{new_uuid()!s}",
+    start="child",
+    actor="p2sat_c7_child",
+    queue=C7_CHILD_QUEUE,
+    steps={"child": Step(body=_c7_child_body, outcomes=C4Ok, route=Route({C4Ok.OK: DONE}))},
+)
+
+
+def _aio_monotonic() -> float:
+    import time as _t
+
+    return _t.monotonic()
+
+
+async def _c7_source_body(ctx: Any) -> None:
+    cursor = await ctx.cursor()
+    start_page = int(cursor.get("page", -1)) + 1
+    for page in range(start_page, 2):
+        await ctx.emit_batch(
+            [
+                chain_start(
+                    _C7_CHAIN,
+                    {"app_id": page},
+                    map_index=page,
+                    trace_id=f"c7-app-{page}",
+                )
+            ],
+            cursor={"page": page},
+        )
+        if page == 0:
+            # The occupancy's own shape: the FIRST child must be LIVE
+            # (claimed, holding its actor's one slot) when the second
+            # page's admission runs — the source OBSERVES the fleet's own
+            # dispatch (the child's row flips running) instead of guessing
+            # a duration; the page-1 emit then sees charge 1 and parks
+            # the source deterministically.
+            conn = await asyncpg.connect(os.environ["TASKQ_PG_DSN"])
+            try:
+                schema_name = os.environ["TASKQ_SCHEMA_NAME"]
+                deadline = _aio_monotonic() + 60.0
+                while _aio_monotonic() < deadline:
+                    state = await conn.fetchval(
+                        'SELECT status FROM "'
+                        + schema_name
+                        + "\".jobs WHERE (metadata->>'flow_id')::uuid = $1::uuid "
+                        "AND step_key = 'child' AND map_index = 0",
+                        ctx.flow_id,
+                    )
+                    if state == "running":
+                        break
+                    await asyncio.sleep(0.05)
+            finally:
+                await conn.close()
+
+
+@p2sat_app.workflow("c7_occupancy_flow", queue=SOURCE_QUEUE, max_in_flight=1)
+def c7_occupancy_flow() -> Promise[object]:
+    return build(
+        chain_source(
+            _C7_CHAIN,
+            _c7_source_body,
+            key="source",
+            actor=_SOURCE_ACTOR,
+            max_attempts=2,
+            queue=SOURCE_QUEUE,
+        )
+    )
+
+
 async def _c4f600_source_body(ctx: Any) -> None:
     """The flow_600 estate's own source: the 600 park rows are SEEDED (the
     §9.2 pattern); the source only terminalizes."""
