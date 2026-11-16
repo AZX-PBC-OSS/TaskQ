@@ -469,14 +469,43 @@ async def _run() -> int:
     # other system worker retain the untouched method.
     asyncpg.Connection.fetchval = _observed_fetchval  # type: ignore[method-assign]  # Why: process-local transparent observation only.
     settings = WorkerSettings.load()
-    return await _main(
-        settings,
-        actor_registry={
-            "p2sat_source_probe": source_probe,
-            "p2sat_record_probe": leaf_probe,
-            "p2sat_sibling_probe": sibling_probe,
-        },
-    )
+    # THE §4.2 CENSUS, logged PERIODICALLY by this proof pod: the counts
+    # are cumulative, so the LAST census line in the pod's log is its
+    # end-of-run census (within the cadence's tail). The lane's
+    # pre-registered V reads the two pods' last snapshots from their worker
+    # logs. Test-owned proof subprocesses only; production workers never
+    # log the census.
+    import structlog
+
+    from taskq.workflows._emit import COUNTERS
+
+    async def _census_logger() -> None:
+        while True:
+            await asyncio.sleep(10.0)
+            structlog.get_logger("p2sat.census").warning(
+                "p2sat-census",
+                **{key: int(value) for key, value in COUNTERS.snapshot().items()},
+            )
+
+    census_task = asyncio.create_task(_census_logger())
+    try:
+        code = await _main(
+            settings,
+            actor_registry={
+                "p2sat_source_probe": source_probe,
+                "p2sat_record_probe": leaf_probe,
+                "p2sat_sibling_probe": sibling_probe,
+            },
+        )
+    finally:
+        census_task.cancel()
+        # The final snapshot at return (the loop's own 10s cadence may miss
+        # the tail's arms).
+        structlog.get_logger("p2sat.census").warning(
+            "p2sat-census",
+            **{key: int(value) for key, value in COUNTERS.snapshot().items()},
+        )
+    return code
 
 
 if __name__ == "__main__":

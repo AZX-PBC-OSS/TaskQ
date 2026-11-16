@@ -691,6 +691,8 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         return await drain_pending_emit_intents(
             ctx.deps.dispatcher_pool,
             render_workflow_sql(ctx.deps.settings.schema_name),
+            # The maintenance-interval selection (the M family's own read).
+            trigger="interval",
         )
 
     async def wf_emit_marker_sweep_call() -> int:

@@ -137,6 +137,12 @@ class EmitCapacityCounters:
     candidate_reads: int = 0
     parks: int = 0
     terminals: int = 0
+    # THE M FAMILY (§4.2): the disclosed maintenance-interval recovery
+    # arms' own reads/repairs — outside the healthy lane's V and E.
+    maintenance_probes: int = 0
+    maintenance_observations: int = 0
+    maintenance_selections: int = 0
+    maintenance_repairs: int = 0
 
     def snapshot(self) -> dict[str, int]:
         from dataclasses import asdict
@@ -467,6 +473,7 @@ async def emit_capacity_event(
     flow_id: JobId,
     probe: bool,
     missing_ok: bool = False,
+    census_family: str = "lane",
 ) -> bool:
     """The §4.1 terminal/park event rule, run in the caller's transaction
     under the canonical root -> intent -> winning-nodes order.
@@ -486,8 +493,11 @@ async def emit_capacity_event(
 
     await verify_emit_capacity_objects(conn, wsql.schema)
     if probe:
-        bump_emit_census("terminals")
-        bump_emit_census("probes")
+        if census_family == "maintenance":
+            bump_emit_census("maintenance_probes")
+        else:
+            bump_emit_census("terminals")
+            bump_emit_census("probes")
         if await conn.fetchval(wsql.emit_park_exists, flow_id) is None:
             return False
     intent = await conn.fetchrow(wsql.emit_intent_lock, flow_id)
@@ -507,7 +517,10 @@ async def emit_capacity_event(
         # admission decision and its one observation.
         bump_emit_census("parks")
         bump_emit_census("admission_decisions")
-    bump_emit_census("observations")
+    if census_family == "maintenance":
+        bump_emit_census("maintenance_observations")
+    else:
+        bump_emit_census("observations")
     observation = await observe_emit_capacity(conn, wsql, flow_id=flow_id)
     if not observation.something_fits(bound):
         return False
@@ -516,7 +529,10 @@ async def emit_capacity_event(
         # durable fallback makes that suppression safe.
         return False
     created = await conn.fetchval(wsql.emit_intent_generation, flow_id)
-    bump_emit_census("new_intents")
+    if census_family == "maintenance":
+        bump_emit_census("maintenance_repairs")
+    else:
+        bump_emit_census("new_intents")
     if created is None:
         raise EmitCapacityCorruptionError(
             f"the bounded run {flow_id}'s wake generation refused to advance "
@@ -1049,7 +1065,12 @@ async def wake_emit_backpressure(
 _ZERO_UUID: Final[JobId] = JobId(UUID("00000000-0000-0000-0000-000000000000"))
 
 
-async def drain_pending_emit_intents(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
+async def drain_pending_emit_intents(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    trigger: str = "notification",
+) -> int:
     """The leader's global drain (§6): the pending-intent selection — at most
     100 distinct flow ids in one short indexed read, under the persistent
     rotating ``after_flow_id`` cursor — followed by each selected flow's own
@@ -1062,7 +1083,13 @@ async def drain_pending_emit_intents(pool: asyncpg.Pool, wsql: WorkflowSql) -> i
     an empty ordered read wraps immediately once. For a fixed set of N
     continuously pending flows every flow is offered at least once within
     ``ceil(N/100) + 1`` selections, independent of the failing prefix."""
-    bump_emit_census("global_drains")
+    if trigger == "notification":
+        # The committed-notification/leadership/reconnect arm's own
+        # invocation (the V family's U).
+        bump_emit_census("global_drains")
+    else:
+        # The maintenance-interval selection (the M family).
+        bump_emit_census("maintenance_selections")
     async with pool.acquire() as conn:
         row = await conn.fetchrow(wsql.emit_rotation_read)
         after: JobId = _ZERO_UUID
@@ -1108,10 +1135,14 @@ async def drain_pending_emit_intents(pool: asyncpg.Pool, wsql: WorkflowSql) -> i
 async def sweep_emit_markers(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
     """The bounded exact-marker recovery sweep (§5.3): visit only the
     ``jobs_wf_emit_park_idx`` partial index, derive just the marked bounded
-    flows, and create each one's missing required intent (the one-time bound
-    adoption from the marker's own validated facts, then the generation bump
-    when no intent is pending). An empty index result ends the sweep — there
-    is no parked-estate scan, no source re-claim, and no due-time wake."""
+    flows, and repair a MISSING required intent — the one-time bound
+    adoption from the marker's own validated facts, then the §4.1 threshold
+    rule itself (the shared observation; a generation bump only when a
+    waiter NEWLY fits and no intent is pending). An empty index result —
+    or a flow whose parked waiter does not fit — ends the sweep's work:
+    there is no parked-estate scan, no source re-claim, no due-time wake,
+    and NO re-bump of an intent the drain already handled (that would be a
+    busy loop, not recovery)."""
     async with pool.acquire() as conn, conn.transaction():
         rows = await conn.fetch(wsql.emit_marker_sweep)
         repaired = 0
@@ -1124,8 +1155,12 @@ async def sweep_emit_markers(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
                     f"stored bound ({bound!r})"
                 )
             await ensure_emit_capacity(conn, wsql, flow_id=flow, bound=int(bound))
-            created = await conn.fetchval(wsql.emit_intent_generation, flow)
-            if created is not None:
+            # The threshold rule, exactly as the terminal/park events run
+            # it: derive once; a non-fitting waiter never re-arms the
+            # intent the drain handled.
+            if await emit_capacity_event(
+                conn, wsql, flow_id=flow, probe=True, census_family="maintenance"
+            ):
                 repaired += 1
     if repaired:
         logger.warning(

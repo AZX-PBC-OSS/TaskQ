@@ -514,6 +514,7 @@ async def _healthy_assertions(
     flow_id: str,
     fleet: dict[str, WorkerProc],
     release_at: datetime,
+    log_dir: Path | None = None,
 ) -> dict[str, Any]:
     source = await _source(pool, schema, flow_id)
     source_id = source["id"]
@@ -582,6 +583,10 @@ async def _healthy_assertions(
     assert "blocking_reason" not in meta
     assert "wf_repend" not in meta and "wf_repend_folded" not in meta
     assert source["snooze_count"] == 0
+    # THE NON-CONSUMING CHARGE: healthy saturation never moves the workflow
+    # classifier's own counter — no wf_retry document is written to the
+    # row at all (the deferral is not a non-consuming retry).
+    assert "wf_retry" not in meta, meta.get("wf_retry")
     assert pressure["page_width"] == pressure["bound"] == 2
     assert pressure["outstanding"] == 2
     assert pressure["deferrals"] == 1 and pressure["wakes"] == 1
@@ -738,6 +743,19 @@ async def _healthy_assertions(
     parked_read_bound = int(held_s) * 2 + 20  # two 1 Hz leaders + bounded failure headroom.
     assert len(source_admissions) <= 8 * 2, [dict(row) for row in source_admissions]
     assert len(parked_probes) <= parked_read_bound
+    # THE EARLY/LATE WINDOW LAW: the parked window's probe count does not
+    # ACCRUE with elapsed time — the late half's count stays at the leaders'
+    # own fixed cadence (the bounded recovery arms' disclosed slack), never
+    # a minute-driven growth.
+    release_mid = release_at - (release_at - min(
+        (row["occurred_at"] for row in parked_probes), default=release_at
+    )) / 2
+    early = [row for row in parked_probes if row["occurred_at"] < release_mid]
+    late = [row for row in parked_probes if row["occurred_at"] >= release_mid]
+    assert len(late) <= len(early) + 30, (
+        f"the parked window's probe count accrued with elapsed time "
+        f"(early {len(early)} vs late {len(late)}) — a hidden timer's clock work"
+    )
     facts = {
         "scenario": scenario,
         "flow_id": flow_id,
@@ -781,6 +799,74 @@ async def _healthy_assertions(
         "source_job_attempts": [dict(row) for row in source_attempt_rows],
     }
     assert facts["separate_os_workers"]
+    if log_dir is None:
+        return facts
+    # THE §4.2 CENSUS (the two proof pods' own shutdown snapshots, one log
+    # line each): the families' measured sums against the pre-registered
+    # V_lane = 60. The fleet's V is the SUM of the pods' own operation
+    # instances — the drain runs on the pods, not in this process.
+    worker_logs_600 = {}
+    for label in fleet:
+        path600 = (log_dir if log_dir is not None else Path("/dev/null")) / (
+            f"p2-system-{scenario}-{label}.worker.log"
+        )
+        worker_logs_600[label] = await asyncio.to_thread(path600.read_text)
+    census_total: dict[str, int] = {}
+    census_by_pod: dict[str, dict[str, int]] = {}
+    for label, content in worker_logs_600.items():
+        lines = [ln for ln in content.splitlines() if '"p2sat-census"' in ln]
+        assert lines, f"pod {label} never logged its census snapshot"
+        snapshot = json.loads(lines[-1])
+        census_by_pod[label] = {
+            key: int(value)
+            for key, value in snapshot.items()
+            if key
+            in (
+                "admission_decisions",
+                "source_body_claims",
+                "fitted_grants",
+                "new_intents",
+                "flow_drains",
+                "global_drains",
+                "candidate_reads",
+                "probes",
+                "observations",
+                "terminals",
+                "parks",
+            )
+        }
+        for key, value in census_by_pod[label].items():
+            census_total[key] = census_total.get(key, 0) + int(value)
+    families_v = (
+        census_total.get("admission_decisions", 0)
+        + census_total.get("source_body_claims", 0)
+        + census_total.get("fitted_grants", 0)
+        + census_total.get("new_intents", 0)
+        + census_total.get("flow_drains", 0)
+        + census_total.get("global_drains", 0)
+        + census_total.get("candidate_reads", 0)
+    )
+    event_e = census_total.get("probes", 0) + census_total.get("observations", 0)
+    event_bound = 2 * census_total.get("terminals", 0) + census_total.get("parks", 0)
+    facts["census_by_pod"] = census_by_pod
+    facts["census_total"] = census_total
+    facts["V_measured"] = families_v
+    facts["V_lane"] = 60  # the pre-registered two-worker lane pin (§4.2)
+    facts["E_measured"] = event_e
+    facts["E_bound_2T_plus_K"] = event_bound
+    print(
+        f"P2SAT-V-MEASURED V={families_v} V_lane={facts['V_lane']} "
+        f"E={event_e} 2T+K={event_bound} census={json.dumps(census_total, sort_keys=True)}",
+        flush=True,
+    )
+    assert families_v <= facts["V_lane"], (
+        f"measured V {families_v} exceeds the pre-registered two-worker "
+        f"lane pin 60: {census_total}"
+    )
+    assert event_e <= event_bound, (
+        f"E {event_e} > 2T + K {event_bound} — a hidden count/fallback "
+        f"escaped the census: {census_total}"
+    )
     return facts
 
 
@@ -818,7 +904,33 @@ async def _flow_facts(pool: asyncpg.Pool, schema: str, flow_id: str) -> dict[str
 async def test_two_os_workers_saturation_600_seconds_and_healthy_wake(
     pg_dsn: str, module_pg_schema: Any, log_dir: Path
 ) -> None:
-    """The actual required ten-minute, two-process, continuously observed gate."""
+    """The actual required ten-minute, two-process, continuously observed gate.
+
+    THE §4.2 PRE-REGISTRATION (printed here, before execution; neither the
+    counts nor the labels change after observation): the healthy two-OS
+    -worker two-page/one-source lane's shape is P=2, S=1, R=1 (initial
+    maintenance-leadership reconciliation), B=0, J=C=0, so the fixed family
+    ceilings are admission P+K ≤ 3, claims 2P+2S+J+C ≤ 6, grants ≤ 3,
+    intents ≤ 6, per-flow drains ≤ 3P+3S+R+B = 10, global/direct drains
+    ≤ 2R+2B+… = 10, reads ≤ 4P+4S+R+B = 9 — and the invocation bound
+    V_lane = 19P + 18S + 4R + B + J + C = **60** equals V_general = 60.
+    The red predicates: V_lane > V_general is red (impossible here —
+    equality), and measured V > V_lane is red."""
+    P, S, R, B = 2, 1, 1, 0
+    pre_registration = {
+        "P": P, "S": S, "R": R, "B": B, "J": 0, "C": 0,
+        "admission_decisions <= P+K": 3,
+        "source_body_claims <= 2P+2S+J+C": 6,
+        "fitted_grants <= P+S": 3,
+        "new_intents <= 2P+2S": 6,
+        "flow_drains <= 3P+3S+R+B": 10,
+        "global_drains <= 5P+5S+2R+2B": 10,
+        "candidate_reads <= 4P+4S+R+B": 9,
+        "V_lane": 19 * P + 18 * S + 4 * R + B,
+        "V_general": 19 * P + 18 * S + 4 * R + 4 * B,
+    }
+    assert pre_registration["V_lane"] == 60 and pre_registration["V_general"] == 60
+    print("P2SAT-V-PRE-REGISTRATION " + json.dumps(pre_registration, sort_keys=True), flush=True)
     schema = module_pg_schema.schema_name
     scenario = "healthy600"
     pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=24)
@@ -925,6 +1037,7 @@ async def test_two_os_workers_saturation_600_seconds_and_healthy_wake(
                 flow_id,
                 fleet,
                 observation["release_at"],
+                log_dir=log_dir,
             )
             throughput = await pool.fetch(
                 f"""WITH bounds AS (
