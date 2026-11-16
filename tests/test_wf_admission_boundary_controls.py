@@ -253,23 +253,28 @@ async def test_stored_bound_contradicting_compiled_declaration_fails_closed(
     """D5: the stored bound is the admission's authority — a compiled
     declaration that drifted WIDE must fail closed at the admission (a
     typed corruption refusal, nothing written), never admit a page the
-    stored bound never granted."""
+    stored bound never granted.
+
+    THE DETERMINISTIC OBSERVABLE (no timing window): the corruption is
+    a deterministic authoring failure (the D2 law — a retry budget
+    spent on it is the record's lie), so the FIRST tick's own emit
+    refusal terminalizes the source on the record; the control asserts
+    the STRUCTURAL facts — the ledger's failed row carries the typed
+    corruption class at attempt 1, the stored bound is unchanged, the
+    violating page committed nothing — and never a duration."""
     name = f"d5_stored_bound_{new_uuid().hex}"
     chain = _chain(new_uuid().hex)
 
-    def source_body(ctx: StepContext) -> Any:
-        async def source() -> None:
-            # The drifted declaration's wide page: five records — the
-            # stored bound (4) never granted them.
-            await ctx.emit_batch(
-                [
-                    chain_start(chain, {"record_id": i}, map_index=i, trace_id=f"d5-{i}")
-                    for i in range(5)
-                ],
-                cursor={"page": 0},
-            )
-
-        return source()
+    async def source_body(ctx: StepContext) -> None:
+        # The drifted declaration's wide page: five records — the
+        # stored bound (4) never granted them.
+        await ctx.emit_batch(
+            [
+                chain_start(chain, {"record_id": i}, map_index=i, trace_id=f"d5-{i}")
+                for i in range(5)
+            ],
+            cursor={"page": 0},
+        )
 
     app = WorkflowApp()
 
@@ -286,35 +291,38 @@ async def test_stored_bound_contradicting_compiled_declaration_fails_closed(
     drifted = dataclasses.replace(runner.compiled, max_in_flight=6)
     runner2 = FlowRunner(drifted, wf_pool, wf_schema)
 
-    # The page exceeds the STORED bound: the admission fails closed.
-    refused = None
-    for _ in range(10):
-        try:
-            await runner2.tick(flow_id)
-        except Exception as exc:  # the corruption's propagation face
-            if "bound" in str(exc).lower():
-                refused = exc
-                break
-        row = await wf_conn.fetchrow(
-            f'SELECT status::text AS status, error_class FROM "{wf_schema}".jobs WHERE id = $1',
-            source_id,
-        )
-        assert row is not None
-        if row["status"] == "failed":
-            refused = row["error_class"]
-            break
-    assert refused is not None, "the admission never refused the drifted bound"
+    # ONE TICK: the claim, the body, the emit's pre-check passes (the
+    # compiled bound), the locked recheck refuses (the stored bound), and
+    # the deterministic terminal owns the death on the record.
+    await runner2.tick(flow_id)
 
-    # THE STORED BOUND STAYED 4; the violating page committed NOTHING.
+    # THE STRUCTURAL INVARIANTS.
+    ledger_rows = await wf_conn.fetch(
+        f"""SELECT attempt::int AS a, status::text AS status, error_class
+            FROM "{wf_schema}".wf_step_ledger
+            WHERE flow_id = $1::uuid AND step_key = 'source' ORDER BY attempt""",
+        flow_id,
+    )
+    assert len(ledger_rows) == 1, [(r["a"], r["status"]) for r in ledger_rows]
+    assert ledger_rows[0]["status"] == "failed", ledger_rows
+    assert ledger_rows[0]["error_class"] == "EmitCapacityCorruptionError", ledger_rows
+    assert int(ledger_rows[0]["a"]) == 1, ledger_rows
     stored = await wf_conn.fetchval(
         f'SELECT bound FROM "{wf_schema}".wf_emit_capacity WHERE flow_id = $1::uuid',
         flow_id,
     )
     assert int(stored) == 4, stored
     children = await wf_conn.fetchval(
-        f'SELECT count(*) FROM "{wf_schema}".jobs WHERE parent_id = $1::uuid', flow_id
+        f'SELECT count(*) FROM "{wf_schema}".jobs WHERE parent_id = $1::uuid', source_id
     )
     assert int(children) == 0, children
+    source = await wf_conn.fetchrow(
+        f'SELECT status::text AS status, metadata FROM "{wf_schema}".jobs WHERE id = $1',
+        source_id,
+    )
+    assert source is not None and source["status"] == "failed", source
+    meta = _meta_of(source["metadata"])
+    assert "wf_emit_reservation" not in meta, meta
 
 
 async def test_drive_adopts_existing_active_run_missing_capacity_record(

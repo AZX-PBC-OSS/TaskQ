@@ -134,6 +134,7 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     from taskq.exceptions import ReservedTimerNamespaceError
     from taskq.workflows._childflow import ChildFlowLostError, SpawnDepthExceededError
     from taskq.workflows._emit import (
+        EmitCapacityCorruptionError,
         EmitReservationExceededError,
         MapIndexExhaustedError,
         PageDivergedError,
@@ -155,6 +156,13 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
         # statement (§2.4's engine terminal mark), never a laddered
         # transient.
         EmitReservationExceededError,
+        # THE CAPACITY CORRUPTION (§2.1's fail-closed law): a
+        # stored/compiled bound mismatch, a missing record for a stamped
+        # bounded run, a missing live root — every one re-raises on the
+        # very next attempt (the drift does not heal by retrying); the
+        # deterministic terminal owns the death on the first violation,
+        # the ladder unburned.
+        EmitCapacityCorruptionError,
         MapIndexExhaustedError,
         FanInBoundExceededError,
         # E17 — the reserved-timer-prefix mint refusal: the payload
