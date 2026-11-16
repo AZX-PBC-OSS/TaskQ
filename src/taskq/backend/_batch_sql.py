@@ -230,7 +230,11 @@ aborted AS (
         error_class = '{batch_aborted_class}',
         error_message = 'Batch aborted due to consecutive failures',
         cancel_requested_at = clock_timestamp(),
-        cancel_phase = 2
+        cancel_phase = 2,
+        -- THE TERMINAL REMOVES THE RESERVATION KEY (§2.4): the batch
+        -- abort's terminal removes any held page-width reservation in
+        -- the same winning statement.
+        metadata = metadata - 'wf_emit_reservation'
     WHERE j.id = ANY ((SELECT ids FROM batch_ids)::uuid[])
       AND j.status IN ('pending', 'scheduled')
     RETURNING j.id

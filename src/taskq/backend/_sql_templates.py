@@ -2235,7 +2235,18 @@ WITH retried AS (
         finished_at = NULL,
         result = NULL,
         result_size_bytes = NULL,
-        result_expires_at = NULL
+        result_expires_at = NULL,
+        -- THE MANUAL RE-ARM'S DEFENSIVE STRIP (§2.4): a manually re-armed
+        -- terminal row carries no old episode's keys into its new one —
+        -- the reservation key (a future promotion re-grants it), the
+        -- park marker family (blocking_reason / wf_deferral /
+        -- wf_emit_backpressure: a cancelled or fenced exact park must
+        -- restore an ORDINARY live row, or the claim/derived predicates
+        -- see a park no promotion owns and the row is permanently
+        -- unclaimable), and any terminal-fence stamp.
+        metadata = metadata - 'wf_emit_reservation'
+            - 'blocking_reason' - 'wf_deferral' - 'wf_emit_backpressure'
+            - 'wf_not_draining'
     WHERE id = $1
       -- An operator re-run is "run this again", so every state a job can
       -- come to rest in is a valid source, including 'succeeded' (the

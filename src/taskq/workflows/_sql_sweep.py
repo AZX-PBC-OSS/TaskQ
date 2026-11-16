@@ -1080,6 +1080,77 @@ SELECT (SELECT count(*) FROM deleted) AS deleted,
 """
 
 
+#: The capacity record's rootless pass (D10 — the retention law): the
+#: run's own retention lifetime. A bounded run's ``wf_emit_capacity`` row
+#: is removable exactly when the run's rows are retained away — the root
+#: row gone (the jobs archive's own delete) AND no row of the flow
+#: references it any more. While ANY jobs row of the run exists the record
+#: stays (retention cannot remove it while a node references it). The
+#: family's own law: the PK-ordered batch-bounded walk on the persisted
+#: per-arm cursor (01.00.36_01's ``wf_rootless_sweep_state``), one PK
+#: probe + one node-reference probe per visited row, the advance rides the
+#: last VISITED row, the wraparound rewinds on the exhausted pass. No TTL
+#: gate: the record has no clock of its own — the run's own retention is
+#: its lifetime.
+WF_EMIT_CAPACITY_ROOTLESS_RETENTION_SQL = """\
+WITH cur AS (
+    SELECT s.cursor_a AS cursor_a
+    FROM {schema}.wf_rootless_sweep_state s
+    WHERE s.arm = 'wf_emit_capacity'
+    FOR UPDATE
+),
+visited AS (
+    SELECT c.flow_id
+    FROM {schema}.wf_emit_capacity c
+    WHERE c.flow_id > COALESCE((SELECT cursor_a FROM cur),
+                               '00000000-0000-0000-0000-000000000000')::uuid
+    ORDER BY c.flow_id
+    LIMIT $1
+),
+doomed AS (
+    SELECT v.flow_id
+    FROM visited v
+    WHERE NOT EXISTS (
+              SELECT 1 FROM {schema}.jobs f
+              WHERE f.id = v.flow_id AND f.step_key = '__flow__'
+          )
+      AND NOT EXISTS (
+              SELECT 1 FROM {schema}.jobs n
+              WHERE (n.metadata->>'flow_id')::uuid = v.flow_id
+                AND n.metadata ? 'flow_id'
+          )
+),
+deleted AS (
+    DELETE FROM {schema}.wf_emit_capacity c USING doomed d
+    WHERE c.flow_id = d.flow_id
+    RETURNING c.flow_id
+),
+last_visit AS (
+    SELECT v.flow_id
+    FROM visited v
+    ORDER BY v.flow_id DESC
+    LIMIT 1
+),
+advanced AS (
+    INSERT INTO {schema}.wf_rootless_sweep_state (arm, cursor_a, updated_at)
+    SELECT 'wf_emit_capacity', (SELECT flow_id::text FROM last_visit), statement_timestamp()
+    WHERE EXISTS (SELECT 1 FROM visited)
+    ON CONFLICT (arm) DO UPDATE
+        SET cursor_a = EXCLUDED.cursor_a, updated_at = EXCLUDED.updated_at
+),
+rewound AS (
+    UPDATE {schema}.wf_rootless_sweep_state s
+    SET cursor_a = NULL, updated_at = statement_timestamp()
+    WHERE s.arm = 'wf_emit_capacity'
+      AND (SELECT cursor_a FROM cur) IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM visited)
+    RETURNING s.arm
+)
+SELECT (SELECT count(*) FROM deleted) AS deleted,
+       (SELECT count(*) FROM visited) AS visited
+"""
+
+
 SIGNALS_RETENTION_SQL = """\
 WITH doomed_flows AS (
     -- The flows-side doomed selection: see EDGE_RETENTION_SQL.

@@ -461,12 +461,12 @@ async def test_park_before_ack_kill_preserves_marker_and_promotes_once(
         assert meta.get("emit_cursor", {}).get("page") == 0, meta
         assert meta["wf_source_logical_attempt"] == 1, meta
         ledgers = await _source_ledger(pool, schema, flow_id)
-        # The preserved history: the parked claim's own ledger row rests in
-        # one of the product's two preserved shapes — 'awaited' (the
-        # park's own rest) or 'fenced' (the zombie fence's rest, when the
-        # re-mint arbiter raced the park's own rest) — never 'failed',
-        # never a spend; the attempt is still 1.
-        assert [r["status"] for r in ledgers] in (["awaited"], ["fenced"]), ledgers
+        # THE PRESERVED 'AWAITED' (the contract's own word): the park's
+        # own rest is the claimed attempt's ledger row at 'awaited' —
+        # exactly one row, exactly attempt 1, never 'failed', never a
+        # spend, never the zombie fence's 'fenced' (a live claimant's
+        # park is not a zombie's).
+        assert [r["status"] for r in ledgers] == ["awaited"], ledgers
         assert [int(r["attempt"]) for r in ledgers] == [1], ledgers
 
         replacement = await _spawn_pod(conn, pg_dsn, schema, log_dir, "c4-park-replacement")
@@ -492,9 +492,10 @@ async def test_park_before_ack_kill_preserves_marker_and_promotes_once(
         intent = await _intent_row(pool, schema, flow_id)
         assert intent["handled"] == intent["wake"], intent
         ledgers = await _source_ledger(pool, schema, flow_id)
-        statuses = [r["status"] for r in ledgers]
-        assert statuses[0] in ("awaited", "fenced"), ledgers
-        assert statuses[-1] == "succeeded", ledgers
+        # THE RECOVERY'S OWN PAIR: the preserved 'awaited' rest beside the
+        # resumed claim's own succeeded row (the new epoch's own row — the
+        # parked attempt's record is never overwritten).
+        assert [r["status"] for r in ledgers] == ["awaited", "succeeded"], ledgers
         assert [int(r["attempt"]) for r in ledgers] == [1, 1], ledgers
         counts = await _flow_counts(pool, schema, flow_id)
         assert counts["failed"] == 0, counts

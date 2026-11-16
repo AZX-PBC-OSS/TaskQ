@@ -58,6 +58,31 @@ def _folded_statements(schema: str) -> list[str]:
     return split_statements(migration.render(schema))
 
 
+#: The handshake's PER-BACKEND, PER-RELATION half-probes (C6): each half is
+#: one backend HOLDING its own table's lock while WAITING (granted=f) on the
+#: OTHER table's — the migration half holds wf_step_ledger and waits on
+#: jobs; the writer half holds jobs and waits on wf_step_ledger.
+_MIGRATION_HALF_SQL = """SELECT
+    count(*) FILTER (WHERE l.locktype = 'relation' AND NOT l.granted
+                     AND c.relname = 'jobs' AND a.datname = current_database()) AS waiters,
+    count(*) FILTER (WHERE l.locktype = 'relation' AND l.granted
+                     AND c.relname = 'wf_step_ledger' AND a.datname = current_database()) AS holders
+FROM pg_locks l
+JOIN pg_class c ON c.oid = l.relation
+JOIN pg_stat_activity a ON a.pid = l.pid
+"""
+
+_WRITER_HALF_SQL = """SELECT
+    count(*) FILTER (WHERE l.locktype = 'relation' AND NOT l.granted
+                     AND c.relname = 'wf_step_ledger' AND a.datname = current_database()) AS waiters,
+    count(*) FILTER (WHERE l.locktype = 'relation' AND l.granted
+                     AND c.relname = 'jobs' AND a.datname = current_database()) AS holders
+FROM pg_locks l
+JOIN pg_class c ON c.oid = l.relation
+JOIN pg_stat_activity a ON a.pid = l.pid
+"""
+
+
 def _whole_object_set(schema: str) -> dict[str, Any]:
     """The §2.1 whole-object-set catalog probe (one row of facts)."""
     return {
@@ -84,7 +109,7 @@ async def _catalog_facts(conn: Any, schema: str) -> dict[str, Any]:
     """Every probe is absence-tolerant (the LOST-migration branch reads the
     pre-fold shape, where the post-fold relations do not exist): a missing
     relation reads as None, the same face a missing column gets."""
-    facts: dict[str, Any] = {}
+    facts: dict[str, Any] = {"schema": schema}
     for name, sql in _whole_object_set(schema).items():
         try:
             facts[name] = await conn.fetchval(sql)
@@ -95,19 +120,44 @@ async def _catalog_facts(conn: Any, schema: str) -> dict[str, Any]:
     return facts
 
 
+def _normalized_indexdef(text: str) -> str:
+    """The exact-definition comparison's normal form (the capability
+    preflight's own: whitespace collapsed, quote characters removed)."""
+    return " ".join(text.replace('"', "").split())
+
+
 def _post_fold_complete(facts: dict[str, Any]) -> bool:
+    """The EXACT catalog check (C6/D4's own law): the three indexes compare
+    FULL-EQUALITY against the declared exact definitions (PostgreSQL's own
+    ``pg_get_indexdef`` output format, normalized) — a substring check
+    accepted a wrong five-expression arbiter (the 42P10 claim death) and a
+    wrong same-name park index (the Seq Scan probe)."""
+    from taskq.workflows._capability import (
+        _LEDGER_ARBITER_INDEXDEF,
+        _PARK_IDX_INDEXDEF,
+        _PENDING_IDX_INDEXDEF,
+    )
+
+    schema_token = facts["schema"]
     arbiter = facts["arbiter"] or ""
     pending = facts["pending_idx"] or ""
     park = facts["park_idx"] or ""
+    want_arbiter = _normalized_indexdef(
+        _LEDGER_ARBITER_INDEXDEF.replace("{schema}", f'"{schema_token}"')
+    )
+    want_pending = _normalized_indexdef(
+        _PENDING_IDX_INDEXDEF.replace("{schema}", f'"{schema_token}"')
+    )
+    want_park = _normalized_indexdef(_PARK_IDX_INDEXDEF.replace("{schema}", f'"{schema_token}"'))
     return bool(
         facts["epoch_col"] == 1
-        and "claim_epoch" in arbiter
+        and _normalized_indexdef(arbiter) == want_arbiter
         and facts["capacity_cols"] == 4
         and facts["rotation_row"] is not None
-        and "wake_generation > handled_generation" in pending
+        and _normalized_indexdef(pending) == want_pending
         and facts["guard_fn"] == 1
         and facts["guard_trig"] == 1
-        and "consume_budget" in park
+        and _normalized_indexdef(park) == want_park
     )
 
 
@@ -178,10 +228,12 @@ async def test_migration_deadlock_handshake_is_victim_agnostic(pg_dsn: str) -> N
         migration_waiting = False
         polls = 0
         while polls < int(_DEADLOCK_TIMEOUT_S / 0.02):
-            # The migration's own half: it holds the ledger and waits on
-            # jobs (any ungranted lock while the apply task runs).
-            ungranted = await locks_conn.fetchval("SELECT count(*) FROM pg_locks WHERE NOT granted")
-            if ungranted and int(ungranted) >= 1:
+            # The migration's own half, PER-BACKEND AND PER-RELATION (C6):
+            # a backend HOLDING a wf_step_ledger lock and WAITING (granted=f)
+            # on a jobs lock — never "any ungranted lock anywhere" (a pair of
+            # unrelated waits on a busy database satisfied that count).
+            row = await locks_conn.fetchrow(_MIGRATION_HALF_SQL.format(schema=schema))
+            if row is not None and int(row["holders"]) >= 1 and int(row["waiters"]) >= 1:
                 migration_waiting = True
                 break
             polls += 1
@@ -193,12 +245,24 @@ async def test_migration_deadlock_handshake_is_victim_agnostic(pg_dsn: str) -> N
         writer_task = asyncio.create_task(writer_side())
         sides = asyncio.gather(apply_task, writer_task)
 
-        # THE CYCLE: BOTH backends report granted=f before either timer.
+        # THE CYCLE: BOTH backends report granted=f, per-backend and
+        # per-relation (C6): the migration backend holds the ledger and
+        # waits on jobs; the writer holds jobs and waits on the ledger —
+        # two DISTINCT pids, each half verified by its own locks, never a
+        # bare ungranted count that unrelated waits could satisfy.
         handshake_formed = False
         polls = 0
         while polls < int(_DEADLOCK_TIMEOUT_S / 0.02):
-            ungranted = await locks_conn.fetchval("SELECT count(*) FROM pg_locks WHERE NOT granted")
-            if ungranted and int(ungranted) >= 2:
+            mig = await locks_conn.fetchrow(_MIGRATION_HALF_SQL.format(schema=schema))
+            writer = await locks_conn.fetchrow(_WRITER_HALF_SQL.format(schema=schema))
+            if (
+                mig is not None
+                and int(mig["holders"]) >= 1
+                and int(mig["waiters"]) >= 1
+                and writer is not None
+                and int(writer["holders"]) >= 1
+                and int(writer["waiters"]) >= 1
+            ):
                 handshake_formed = True
                 break
             polls += 1

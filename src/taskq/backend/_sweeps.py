@@ -817,7 +817,12 @@ UPDATE "{schema}".jobs j
 SET status = 'failed'::"{schema}".job_status,
     finished_at = clock_timestamp(),
     error_class = '{deadline_exceeded_class}',
-    error_message = '{deadline_message}'
+    error_message = '{deadline_message}',
+    -- THE TERMINAL REMOVES THE RESERVATION KEY (§2.4): no key survives a
+    -- terminal row for re-arm — a deadline-terminal reserved row would
+    -- otherwise keep charging its width against the run's derived
+    -- capacity forever.
+    metadata = metadata - 'wf_emit_reservation'
 FROM snap
 WHERE j.id = snap.id
 RETURNING j.id, snap.prev_status, j.attempt, j.started_at, j.actor,

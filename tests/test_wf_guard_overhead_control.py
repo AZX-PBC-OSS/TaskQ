@@ -109,6 +109,18 @@ async def _reset_rows(pg_dsn: str, schema: str, batch_size: int) -> None:
         await conn.close()
 
 
+async def _truncate_population(pg_dsn: str, schema: str) -> None:
+    """A fresh population per shape: every dynamic row gone (the shapes are
+    the contract's identical populations, never a cumulative top-up)."""
+    import asyncpg
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(f'TRUNCATE TABLE "{schema}".jobs CASCADE')
+    finally:
+        await conn.close()
+
+
 @pytest.mark.integration
 @pytest.mark.load_sensitive
 async def test_shipped_guard_overhead_through_the_real_sweep(pg_dsn: str) -> None:
@@ -130,8 +142,23 @@ async def test_shipped_guard_overhead_through_the_real_sweep(pg_dsn: str) -> Non
         await conn.close()
 
         for shape in _SHAPES:
+            # FRESH POPULATION PER SHAPE (C5's control-15 fix): the shapes
+            # are the contract's IDENTICAL populations — the 10k arm must
+            # hold exactly 10,000 rows and the 50k arm exactly 50,000, not
+            # the cumulative 11k/61k a same-schema top-up produces.
+            await _truncate_population(pg_dsn, base_schema)
+            await _truncate_population(pg_dsn, guard_schema)
             await _seed_vanilla_scheduled(pg_dsn, base_schema, shape)
             await _seed_vanilla_scheduled(pg_dsn, guard_schema, shape)
+            # THE POPULATION IS THE SHAPE (asserted, not assumed): the
+            # identical populations are the contract's own basis.
+            for schema_name in (base_schema, guard_schema):
+                conn = await asyncpg.connect(pg_dsn)
+                try:
+                    n = await conn.fetchval(f'SELECT count(*) FROM "{schema_name}".jobs')
+                finally:
+                    await conn.close()
+                assert int(n) == shape, (schema_name, shape, n)
             base_samples: list[float] = []
             guard_samples: list[float] = []
             # One discarded warmup per shape.

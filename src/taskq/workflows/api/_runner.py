@@ -782,8 +782,30 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         observed from real rows, never from elapsed time."""
         await self._refuse_guarded_direct_run(flow_id)
         if self._emit_capacity:
-            from taskq.workflows._emit import wake_emit_backpressure
+            from taskq.workflows._emit import (
+                EmitCapacityCorruptionError,
+                ensure_emit_capacity,
+                wake_emit_backpressure,
+            )
 
+            # THE ADOPTION (§2.1): an existing active run from an older
+            # binary may lack its capacity record; this drive's initial
+            # backfill is the first new-binary bounded claim's doorway —
+            # stamp the record once from the validated compiled bound,
+            # under the live root's own lock, and read the stored bound
+            # back (a mismatch is corruption, never an update). A record
+            # the run already has is untouched (the stamp is a no-op
+            # probe); the drain below then finds its intent row.
+            async with self.pool.acquire() as conn, conn.transaction():
+                root_id = await conn.fetchval(self.wsql.emit_root_lock, flow_id)
+                if root_id is None:
+                    raise EmitCapacityCorruptionError(
+                        f"the bounded run {flow_id} has no live root row at "
+                        "its adoption — the __flow__ row is missing (fail-closed)"
+                    )
+                await ensure_emit_capacity(
+                    conn, self.wsql, flow_id=flow_id, bound=int(self.compiled.max_in_flight)
+                )
             await wake_emit_backpressure(self.pool, self.wsql, flow_id=flow_id)
         for _ in range(max_ticks):
             if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):

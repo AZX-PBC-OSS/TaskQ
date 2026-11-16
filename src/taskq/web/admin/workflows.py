@@ -68,6 +68,21 @@ logger = structlog.get_logger("taskq.web.admin.workflows")
 #: when the cap bit).
 _RUNS_PAGE_SIZE = 200
 
+
+def _park_predicate() -> str:
+    """The shared ``P(j)`` predicate (the workflows package's own scalar
+    renderer, the §7 law's one authoritative spelling), imported lazily —
+    the admin module must not couple every page load to the workflows
+    package (the module-scope import the law's pin had caught). The
+    renderer's output carries the doubled-brace .format convention; as a
+    ``format`` VALUE (not part of the template) the braces collapse here —
+    the same collapse the bundle's render pass applies."""
+    from taskq.workflows._sql_finalize import park_predicate as _pp
+    _wf_emit_park_predicate = _pp
+
+    return _wf_emit_park_predicate("j").replace("{{", "{").replace("}}", "}")
+
+
 _RUNS_SQL = (
     "SELECT r.id, r.actor, r.status, r.created_at, r.finished_at, r.cancel_requested_at, "
     "r.metadata->>'workflow' AS workflow, "
@@ -90,15 +105,16 @@ _RUNS_SQL = (
     "d.deferring, d.next_fire, d.parked, d.snooze_count "
     'FROM "{schema}".jobs r '
     "LEFT JOIN LATERAL ("
-    "    SELECT count(*) FILTER (WHERE j.metadata->'wf_emit_backpressure'->>'version' IS NULL) AS deferring, "
-    "           min(j.scheduled_at) FILTER (WHERE j.metadata->'wf_emit_backpressure'->>'version' IS NULL) AS next_fire, "
-    "           count(*) FILTER (WHERE ("
-    '               j.metadata @> \'{{"blocking_reason":"backpressure"}}\'::jsonb'
-    '               AND j.metadata @> \'{{"wf_deferral":{{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}}}\'::jsonb'
-    '               AND j.metadata @> \'{{"wf_emit_backpressure":{{"version":1}}}}\'::jsonb'
-    "               AND j.step_key IS NOT NULL AND j.step_key <> '__flow__'"
-    "               AND j.metadata ? 'flow_id'"
-    "           )) AS parked, "
+    # THE PARK EXCLUSION IS THE SHARED P(j) PREDICATE (§7 rule 4, D8): a
+    # row the exact-park law owns is excluded from the generic
+    # deferring/next-fire aggregates (park time displays separately as
+    # `parked`), keyed on the MARKER — never on the wf_emit_backpressure
+    # blob's presence, which a non-park reserved row (a re-pended
+    # reserved source) also carries and whose live deferral must render
+    # honestly.
+    "    SELECT count(*) FILTER (WHERE NOT ({park_predicate})) AS deferring, "
+    "           min(j.scheduled_at) FILTER (WHERE NOT ({park_predicate})) AS next_fire, "
+    "           count(*) FILTER (WHERE ({park_predicate})) AS parked, "
     "           max(j.snooze_count) AS snooze_count "
     '    FROM "{schema}".jobs j '
     "    WHERE (j.metadata->>'flow_id')::uuid = r.id AND j.metadata ? 'flow_id' "
@@ -250,7 +266,10 @@ def register(router: APIRouter) -> None:
         rows: list[asyncpg.Record] = []
         async with pool.acquire() as conn:
             try:
-                rows = await conn.fetch(_RUNS_SQL.format(schema=schema), _RUNS_PAGE_SIZE)
+                rows = await conn.fetch(
+                    _RUNS_SQL.format(schema=schema, park_predicate=_park_predicate()),
+                    _RUNS_PAGE_SIZE,
+                )
             except UndefinedTableError:
                 logger.debug("workflow-tables-missing")
                 installed = False

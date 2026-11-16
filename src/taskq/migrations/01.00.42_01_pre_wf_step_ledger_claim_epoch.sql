@@ -105,13 +105,20 @@
 --     exclusive, but READS PROCEED (only ACCESS EXCLUSIVE blocks an
 --     ordinary SELECT). Its standalone acquisition could queue behind an
 --     in-flight write transaction, with subsequent writers queueing behind
---     the waiting trigger — but because it follows the SHARE park-index
---     build in the same transaction, its grant is IMMEDIATE: every mode
---     conflicting with SHARE ROW EXCLUSIVE also conflicts with the
---     already-held SHARE. The jobs-side apply outage is therefore ONE
---     write-block window from SHARE acquisition through COMMIT (including
---     its acquisition queue wait), with reads proceeding throughout; there
---     is NO second read-blocking trigger window.
+--     the waiting trigger. Because it follows the SHARE park-index build
+--     in the same transaction, its grant is IMMEDIATE AGAINST WRITERS:
+--     every mode conflicting with SHARE ROW EXCLUSIVE also conflicts with
+--     the already-held SHARE. It is NOT immediate against a CONCURRENT
+--     READER holding SHARE on jobs (for example LOCK TABLE ... IN SHARE
+--     MODE): this migration's own SHARE is compatible with that reader,
+--     while the trigger's SHARE ROW EXCLUSIVE conflicts with it, so the
+--     trigger install queues behind a long-lived SHARE reader (measured on
+--     PostgreSQL 18.6) and writers queue behind the waiting trigger. The
+--     jobs-side apply outage is therefore ONE write-block window from
+--     SHARE acquisition through COMMIT (including its acquisition queue
+--     wait, which a concurrent SHARE reader can extend), with reads
+--     proceeding throughout; there is NO second read-blocking trigger
+--     window.
 --
 -- THE DEADLOCK RULE (both outcomes, victim-agnostic)
 -- ---------------------------------------------------------------

@@ -20,27 +20,122 @@ from typing import Final
 #: never compact.
 FANIN_FAILURES_BYTE_CAP: Final[int] = 64 * 1024
 
+
 #: the bounded collect's join row carries the ``__truncated__`` count in its
 #: metadata (``wf_collect_truncated``) alongside the envelope's own markers —
 #: the decode unwraps the envelope at the consumer's typed boundary (the
 #: declared ``list[...]`` arrives), so the count must surface where the reads
 #: decide, never be swallowed by the unwrap.
+def park_predicate(alias: str) -> str:
+    """THE SHARED ``P(a)`` PREDICATE (§7's one authoritative spelling) — the
+    public seam for the product's own read surfaces (the admin's runs list)
+    that must key their park exclusions on the SAME predicate the engine
+    uses, never a re-spelled copy (the drift the red team named). The
+    private alias remains the bundle renderers' own name."""
+    return _wf_emit_park_predicate(alias)
+
+
+def _wf_emit_park_predicate(alias: str) -> str:
+    """The one shared exact-park predicate ``P(a)`` (the representation's own
+    identity): the marker, never a timestamp, is the discriminator.
+    ``scheduled_at`` is deliberately absent from park identity — it stores
+    the park instant and is never a due date. Every park-scoped statement
+    renders this one definition with its own alias; there is no second
+    spelling to drift. The jsonb literals carry the doubled-brace render
+    convention (the bundle's collapse pass un-doubles them)."""
+    return (
+        "{a}.status = 'scheduled'\n"
+        '  AND {a}.metadata @> \'{{"blocking_reason":"backpressure"}}\'::jsonb\n'
+        '  AND {a}.metadata @> \'{{"wf_deferral":'
+        '{{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}}}\'::jsonb\n'
+        '  AND {a}.metadata @> \'{{"wf_emit_backpressure":{{"version":1}}}}\'::jsonb\n'
+        "  AND {a}.step_key IS NOT NULL\n"
+        "  AND {a}.step_key <> '__flow__'\n"
+        "  AND {a}.metadata ? 'flow_id'"
+    ).replace("{a}", alias)
+
+
+def _wf_emit_validated_park_width(alias: str) -> str:
+    """The shared inline scalar ``validated_park_width(a)``: NULL when the row
+    is not an exact park; otherwise only the validated positive-or-zero
+    ``wf_emit_backpressure.page_width``. Malformed values refuse (the
+    row-dependent arm — a uuid-text cast cannot constant-fold) rather than
+    coerce; constant raise arms such as ``1/0`` are forbidden because
+    PostgreSQL folds them at plan time."""
+    a = alias
+    width_text = f"{a}.metadata->'wf_emit_backpressure'->>'page_width'"
+    return (
+        "CASE WHEN NOT (" + _wf_emit_park_predicate(a) + ")\n"
+        "     THEN NULL\n"
+        f"     WHEN jsonb_typeof({a}.metadata->'wf_emit_backpressure'->'page_width') = 'number'\n"
+        f"          AND {width_text} ~ '^[0-9]+$'\n"
+        f"     THEN ({width_text})::bigint\n"
+        f"     ELSE ({a}.id::text)::integer\n"
+        "END"
+    )
+
+
+def _wf_emit_validated_marker_bound(alias: str) -> str:
+    """The shared inline scalar validator for the exact-park marker's own
+    ``bound`` (a positive integer). Row-dependent fail-closed arm."""
+    a = alias
+    bound_text = f"{a}.metadata->'wf_emit_backpressure'->>'bound'"
+    return (
+        "CASE WHEN NOT (" + _wf_emit_park_predicate(a) + ")\n"
+        "     THEN NULL\n"
+        f"     WHEN jsonb_typeof({a}.metadata->'wf_emit_backpressure'->'bound') = 'number'\n"
+        f"          AND {bound_text} ~ '^[1-9][0-9]*$'\n"
+        f"     THEN ({bound_text})::bigint\n"
+        f"     ELSE ({a}.id::text)::integer\n"
+        "END"
+    )
+
+
+def _wf_emit_validated_reservation_width(alias: str) -> str:
+    """The shared inline scalar ``validated_reservation_width(a)``: NULL when
+    the reservation key is absent; otherwise exactly the two-key object
+    ``{"version":1,"width":W}`` with validated positive-or-zero integer
+    width. Unknown keys, wrong types, null, bool, float, negative widths, and
+    version drift fail closed; no reservation is valid on an exact park."""
+    a = alias
+    res = f"{a}.metadata->'wf_emit_reservation'"
+    return (
+        f"CASE WHEN NOT ({a}.metadata ? 'wf_emit_reservation')\n"
+        "     THEN NULL\n"
+        "     WHEN (" + _wf_emit_park_predicate(a) + ")\n"
+        "          -- No reservation is valid on an exact park.\n"
+        f"          OR jsonb_typeof({res}) <> 'object'\n"
+        f"          OR ({res}) - '{{\"version\",\"width\"}}'::text[] <> '{{}}'::jsonb\n"
+        f"          OR jsonb_typeof({res}->'version') <> 'number'\n"
+        f"          OR ({res}->>'version') <> '1'\n"
+        f"          OR jsonb_typeof({res}->'width') <> 'number'\n"
+        f"          OR ({res}->>'width') !~ '^[0-9]+$'\n"
+        f"     THEN ({a}.id::text)::integer\n"
+        f"     ELSE ({res}->>'width')::bigint\n"
+        "END"
+    )
+
+
 COLLECT_TRUNCATION_RECEIPT_SQL = """\
 UPDATE {schema}.jobs
 SET metadata = metadata || $2::jsonb
 WHERE id = $1
 """
 
-TERMINAL_MARK_SQL = """\
+TERMINAL_MARK_SQL = (
+    """\
 -- THE RESERVATION CAPTURE (§2.4): the winning row's OLD reservation fact is
 -- captured in its own CTE before the terminal UPDATE removes the key — the
--- diagnostics count only captured winners, never an already-converted row
--- and never a Python pre-read.
+-- VALIDATED old width (the shared validated_reservation_width scalar: NULL
+-- when absent, fail-closed on a malformed key), never a raw unvalidated
+-- blob — and the diagnostics count only captured winners, never an
+-- already-converted row and never a Python pre-read.
 WITH target AS (
     SELECT j.id,
            (j.metadata ? 'wf_emit_reservation') AS had_reservation,
-           CASE WHEN j.metadata ? 'wf_emit_reservation'
-                THEN j.metadata->'wf_emit_reservation' END AS old_reservation
+           """
+    + _wf_emit_validated_reservation_width("j")
+    + """ AS old_reservation
     FROM {schema}.jobs j
     WHERE j.id = $1
 ), upd AS (
@@ -132,6 +227,7 @@ SELECT upd.id, upd.status, upd.attempt, upd.payload, upd.trace_id,
 FROM upd
 JOIN target t ON t.id = upd.id
 """
+)
 
 
 # tx2's guarded decrement: one atomic statement, the decrement owned
@@ -353,87 +449,6 @@ RETURNING id
 """
 
 
-def _wf_emit_park_predicate(alias: str) -> str:
-    """The one shared exact-park predicate ``P(a)`` (the representation's own
-    identity): the marker, never a timestamp, is the discriminator.
-    ``scheduled_at`` is deliberately absent from park identity — it stores
-    the park instant and is never a due date. Every park-scoped statement
-    renders this one definition with its own alias; there is no second
-    spelling to drift. The jsonb literals carry the doubled-brace render
-    convention (the bundle's collapse pass un-doubles them)."""
-    return (
-        "{a}.status = 'scheduled'\n"
-        '  AND {a}.metadata @> \'{{"blocking_reason":"backpressure"}}\'::jsonb\n'
-        '  AND {a}.metadata @> \'{{"wf_deferral":'
-        '{{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}}}\'::jsonb\n'
-        '  AND {a}.metadata @> \'{{"wf_emit_backpressure":{{"version":1}}}}\'::jsonb\n'
-        "  AND {a}.step_key IS NOT NULL\n"
-        "  AND {a}.step_key <> '__flow__'\n"
-        "  AND {a}.metadata ? 'flow_id'"
-    ).replace("{a}", alias)
-
-
-def _wf_emit_validated_park_width(alias: str) -> str:
-    """The shared inline scalar ``validated_park_width(a)``: NULL when the row
-    is not an exact park; otherwise only the validated positive-or-zero
-    ``wf_emit_backpressure.page_width``. Malformed values refuse (the
-    row-dependent arm — a uuid-text cast cannot constant-fold) rather than
-    coerce; constant raise arms such as ``1/0`` are forbidden because
-    PostgreSQL folds them at plan time."""
-    a = alias
-    width_text = f"{a}.metadata->'wf_emit_backpressure'->>'page_width'"
-    return (
-        "CASE WHEN NOT (" + _wf_emit_park_predicate(a) + ")\n"
-        "     THEN NULL\n"
-        f"     WHEN jsonb_typeof({a}.metadata->'wf_emit_backpressure'->'page_width') = 'number'\n"
-        f"          AND {width_text} ~ '^[0-9]+$'\n"
-        f"     THEN ({width_text})::bigint\n"
-        f"     ELSE ({a}.id::text)::integer\n"
-        "END"
-    )
-
-
-def _wf_emit_validated_marker_bound(alias: str) -> str:
-    """The shared inline scalar validator for the exact-park marker's own
-    ``bound`` (a positive integer). Row-dependent fail-closed arm."""
-    a = alias
-    bound_text = f"{a}.metadata->'wf_emit_backpressure'->>'bound'"
-    return (
-        "CASE WHEN NOT (" + _wf_emit_park_predicate(a) + ")\n"
-        "     THEN NULL\n"
-        f"     WHEN jsonb_typeof({a}.metadata->'wf_emit_backpressure'->'bound') = 'number'\n"
-        f"          AND {bound_text} ~ '^[1-9][0-9]*$'\n"
-        f"     THEN ({bound_text})::bigint\n"
-        f"     ELSE ({a}.id::text)::integer\n"
-        "END"
-    )
-
-
-def _wf_emit_validated_reservation_width(alias: str) -> str:
-    """The shared inline scalar ``validated_reservation_width(a)``: NULL when
-    the reservation key is absent; otherwise exactly the two-key object
-    ``{"version":1,"width":W}`` with validated positive-or-zero integer
-    width. Unknown keys, wrong types, null, bool, float, negative widths, and
-    version drift fail closed; no reservation is valid on an exact park."""
-    a = alias
-    res = f"{a}.metadata->'wf_emit_reservation'"
-    return (
-        f"CASE WHEN NOT ({a}.metadata ? 'wf_emit_reservation')\n"
-        "     THEN NULL\n"
-        "     WHEN (" + _wf_emit_park_predicate(a) + ")\n"
-        "          -- No reservation is valid on an exact park.\n"
-        f"          OR jsonb_typeof({res}) <> 'object'\n"
-        f"          OR ({res}) - '{{\"version\",\"width\"}}'::text[] <> '{{}}'::jsonb\n"
-        f"          OR jsonb_typeof({res}->'version') <> 'number'\n"
-        f"          OR ({res}->>'version') <> '1'\n"
-        f"          OR jsonb_typeof({res}->'width') <> 'number'\n"
-        f"          OR ({res}->>'width') !~ '^[0-9]+$'\n"
-        f"     THEN ({a}.id::text)::integer\n"
-        f"     ELSE ({res}->>'width')::bigint\n"
-        "END"
-    )
-
-
 #: The derived observation — the sole capacity authority and the folded home
 #: of the legacy in-flight count. The status leg is HOISTED outside the
 #: aggregate so the scan stays on ``jobs_wf_flow_nodes_idx`` (its required
@@ -561,24 +576,50 @@ WF_EMIT_ROTATION_READ_SQL = """\
 SELECT after_flow_id FROM {schema}.wf_emit_intent_rotation WHERE id = true
 """
 
+#: The rotation is committed independently of the per-flow work. The
+#: write is an UPSERT: a schema whose singleton row was truncated (the
+#: per-test reset's own law) re-seeds it on the first write, and the
+#: read tolerates the missing row (NULL → the zero-UUID start).
 WF_EMIT_ROTATION_WRITE_SQL = """\
-UPDATE {schema}.wf_emit_intent_rotation
+INSERT INTO {schema}.wf_emit_intent_rotation (id, after_flow_id)
+VALUES (true, $1::uuid)
+ON CONFLICT (id) DO UPDATE
 SET after_flow_id = $1::uuid
-WHERE id = true
 """
 
-#: The bounded exact-marker sweep's selection: visits only the
-#: ``jobs_wf_emit_park_idx`` partial index, derives just the marked bounded
-#: flows, and stops when the index result is empty. It is never a
-#: parked-estate seq scan or a due-time wake.
+#: The bounded exact-marker sweep's selection (D7): a KEYSET rotation over
+#: the ``jobs_wf_emit_park_idx`` partial index — the distinct marked flow
+#: ids that still lack their required intent record, ordered by flow id,
+#: at most 100 per call, continuing after ``$1`` (the caller's persisted
+#: cursor). It is never a parked-estate seq scan or a due-time wake. The
+#: per-flow width/bound validation lives in the caller's ISOLATED per-flow
+#: repair transaction (a malformed marker poisons only its own flow's
+#: repair, with a bounded diagnostic, and the rest repair on) — the
+#: selection itself aggregates nothing and can never abort on one row's
+#: malformed width.
 WF_EMIT_MARKER_SWEEP_SQL = (
-    "SELECT (j.metadata->>'flow_id')::uuid AS flow_id,\n"
-    "       min(" + _wf_emit_validated_park_width("j") + ") AS min_waiting_width,\n"
-    "       min(" + _wf_emit_validated_marker_bound("j") + ") AS bound\n"
+    "SELECT DISTINCT (j.metadata->>'flow_id')::uuid AS flow_id\n"
     "FROM {schema}.jobs AS j\n"
     "WHERE " + _wf_emit_park_predicate("j") + "\n"
-    "GROUP BY (j.metadata->>'flow_id')::uuid\n"
+    "  AND (j.metadata->>'flow_id')::uuid > $1::uuid\n"
+    "  AND NOT EXISTS (\n"
+    "      SELECT 1 FROM {schema}.wf_emit_capacity c\n"
+    "      WHERE c.flow_id = (j.metadata->>'flow_id')::uuid\n"
+    "  )\n"
+    "ORDER BY flow_id\n"
     "LIMIT 100\n"
+)
+
+#: The isolated per-flow repair's own bound read (D7): the flow's marker
+#: bound through the validated scalar — a malformed marker bound raises
+#: (row-dependent) inside the flow's own repair transaction, quarantining
+#: the poison to that flow's bounded diagnostic.
+WF_EMIT_MARKER_FLOW_BOUND_SQL = (
+    "SELECT " + _wf_emit_validated_marker_bound("j") + " AS bound\n"
+    "FROM {schema}.jobs AS j\n"
+    "WHERE (j.metadata->>'flow_id')::uuid = $1::uuid\n"
+    "  AND " + _wf_emit_park_predicate("j") + "\n"
+    "LIMIT 1\n"
 )
 
 #: The loud non-drainage refusal: on the committed terminal-root proof (a
@@ -640,6 +681,24 @@ WF_NOT_DRAINING_FENCE_SQL = (
 
 EMIT_ADMISSION_LOCK_SQL = """\
 SELECT pg_advisory_xact_lock(hashtext($1::text))
+"""
+
+#: THE LIVE ROOT LOCK (§3.1's canonical order, D1): every drain chunk's
+#: transaction locks the run's LIVE root row — ``step_key='__flow__'``
+#: — before the intent row and any candidate CAS. The root-failure and
+#: maintenance seats (the failure cascade's ``flow_failed`` update and
+#: ``WORKFLOW_ROOT_MAINTAIN_SQL``'s ``FOR UPDATE`` roots scan) hold this
+#: same row lock, so the drain and the root-failure fence can no longer
+#: interleave: a maintenance pass either runs before the drain (the
+#: §5.4 fence fences the still-parked source) or after it (the promoted
+#: source is unresolved live work and the root legitimately does not
+#: finalize). Without this lock the fence's park re-evaluation could
+#: lose the race to the promotion CAS and strand a pending reserved
+#: source under a terminal root forever.
+EMIT_ROOT_LOCK_SQL = """\
+SELECT id FROM {schema}.jobs
+WHERE id = $1::uuid AND step_key = '__flow__'
+FOR UPDATE
 """
 
 # A dedicated ordinary-capacity park, intentionally separate from
@@ -889,7 +948,11 @@ peers AS (
     SET status = 'cancelled',
         finished_at = clock_timestamp(),
         error_class = $3::text,
-        metadata = p.metadata || $4::jsonb
+        -- THE TERMINAL REMOVES THE RESERVATION KEY (§2.4): the peer
+        -- cancel's terminal removes any held page-width reservation in
+        -- the same winning statement (the cancel-origin marker still
+        -- rides the same metadata write).
+        metadata = (p.metadata - 'wf_emit_reservation') || $4::jsonb
     FROM edges e
     JOIN {schema}.wf_edge sib ON sib.child_id = e.child_id
     WHERE p.id = sib.parent_id

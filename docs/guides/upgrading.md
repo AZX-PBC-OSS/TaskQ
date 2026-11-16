@@ -163,6 +163,14 @@ worker metadata or use queue membership as an upgrade assertion.
 
 Apply the one PRE file 01.00.42_01_pre_wf_step_ledger_claim_epoch.sql after the 01.00.38 + existing 01.00.41 files and before corrected bounded-emit/executor binaries; it installs the derived-capacity intent/rotation records, exact-park guard/indexes, and claim-epoch arbiter in one migration transaction.
 
+**Storage cost (§10.7):** the intent record is one `wf_emit_capacity` row
+per bounded run (four typed columns plus its CHECK constraints; the
+pending-generation partial index covers only rows with a pending wake) and
+one singleton rotation row total — the record's retention lifetime is the
+run's own: the leader's capacity-retention arm removes a run's record
+exactly when the run's own rows were retained away, and never while any
+row of the run still exists.
+
 The folded file's lock profile (one migration transaction; the cross-table
 order is `wf_step_ledger` BEFORE `jobs`):
 
@@ -175,10 +183,15 @@ order is `wf_step_ledger` BEFORE `jobs`):
 - On `jobs`: the non-CONCURRENT `jobs_wf_emit_park_idx` build takes `SHARE`
   (writes block, reads proceed), and the guard-trigger install — last —
   takes `SHARE ROW EXCLUSIVE` (writes block, reads proceed; its grant is
-  immediate because every conflicting mode also conflicts with the
-  already-held `SHARE`). The jobs-side apply outage is ONE write-block
-  window from SHARE acquisition through COMMIT; there is no second
-  read-blocking window and ordinary SELECTs proceed throughout.
+  immediate against writers because every conflicting mode also conflicts
+  with the already-held `SHARE`, but it can queue behind a concurrent
+  reader holding `SHARE` on `jobs` — this migration's own `SHARE` is
+  compatible with that reader while the trigger's `SHARE ROW EXCLUSIVE`
+  conflicts with it, measured on PostgreSQL 18.6). The jobs-side apply
+  outage is ONE write-block window from SHARE acquisition through COMMIT
+  (its acquisition wait can be extended by a concurrent `SHARE` reader);
+  there is no second read-blocking window and ordinary SELECTs proceed
+  throughout.
 
 Drain the producer first (stop new bounded-flow production/emission), then
 the full writer-role drain: old maintenance leaders, direct producers and

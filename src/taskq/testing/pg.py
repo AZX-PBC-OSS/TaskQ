@@ -132,6 +132,14 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
     # the row through its own upsert (the job_events_prune_state
     # precedent's reset contract).
     "wf_rootless_sweep_state",
+    # The 42_01 capacity/rotation records are mutable test state like the
+    # rootless cursors: a capacity row or a rotation cursor advanced by
+    # one test must not leak into the next test's counts or walk.
+    # Truncating the rotation drops its seeded singleton; the rotation
+    # write re-seeds it through its own upsert (the rootless cursors'
+    # reset contract).
+    "wf_emit_capacity",
+    "wf_emit_intent_rotation",
     "reservation_slots",
     "rate_limit_window_entries",
     "rate_limit_buckets",
@@ -215,6 +223,22 @@ async def truncate_schema(conn: _Conn, schema: str) -> None:
     for table in _TRUNCATE_TABLES:
         await conn.execute(f'TRUNCATE TABLE "{schema}"."{table}" CASCADE')
     await _reset_triggers(conn, schema)
+    # The 42_01 rotation singleton is migration-seeded state (its
+    # truncation is this reset's own completeness — the capacity records
+    # above are mutable test state). The preflight's whole-object-set
+    # check refuses until the row exists, so the reset restores it here
+    # (the rootless cursors' own reset contract: the migration seeds the
+    # rows, the truncate drops them, the reset/walk re-seed). Guarded on
+    # the table's existence: a pre-42_01 schema has none.
+    exists = await conn.fetchval(
+        "SELECT to_regclass($1) IS NOT NULL",
+        f'"{schema}".wf_emit_intent_rotation',
+    )
+    if exists:
+        await conn.execute(
+            f'INSERT INTO "{schema}".wf_emit_intent_rotation (id) VALUES (true) '  # noqa: S608  # Why: the validated test schema identifier; every value is a literal.
+            "ON CONFLICT (id) DO NOTHING"
+        )
 
 
 async def seed_actors(

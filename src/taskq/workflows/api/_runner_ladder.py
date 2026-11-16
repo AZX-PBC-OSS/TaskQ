@@ -133,7 +133,11 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     """
     from taskq.exceptions import ReservedTimerNamespaceError
     from taskq.workflows._childflow import ChildFlowLostError, SpawnDepthExceededError
-    from taskq.workflows._emit import MapIndexExhaustedError, PageDivergedError
+    from taskq.workflows._emit import (
+        EmitReservationExceededError,
+        MapIndexExhaustedError,
+        PageDivergedError,
+    )
     from taskq.workflows._progress import ProgressRefusedError
     from taskq.workflows.api._runner_errors import VanishedNodeError
     from taskq.workflows.definitions import FanInBoundExceededError
@@ -141,6 +145,16 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     deterministic: tuple[type[BaseException], ...] = (
         ProgressRefusedError,
         PageDivergedError,
+        # THE RESERVED GRANT VIOLATION (§2.5): a reserved replay that
+        # presents a wider page than its stored reservation grants was
+        # never granted the excess — re-running the same body re-presents
+        # the same page and re-raises on every attempt (a retry budget
+        # spent on it is the record's lie). The named deterministic
+        # grant-violation route terminalizes on the FIRST violation with
+        # the reservation key removed in the same winning terminal
+        # statement (§2.4's engine terminal mark), never a laddered
+        # transient.
+        EmitReservationExceededError,
         MapIndexExhaustedError,
         FanInBoundExceededError,
         # E17 — the reserved-timer-prefix mint refusal: the payload

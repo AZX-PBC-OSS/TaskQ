@@ -274,6 +274,11 @@ def test_the_deferral_label_renders_a_parked_source_without_a_fire_time() -> Non
         snooze_count=0,
         scheduled_at=datetime(2026, 11, 15, 9, 30, 0, tzinfo=UTC),
         deferral={"signal": "EmitBackpressure", "consume_budget": False, "attempt": 0},
+        # THE REAL PARKED ROW'S SHAPE: the park's marker carries
+        # blocking_reason 'backpressure' — the D8 law's own discriminator
+        # (a row without it is a non-park reserved row and renders the
+        # honest deferred face, never the park face).
+        blocking_reason="backpressure",
     )
     label = parked.deferral_label
     assert label is not None, "a parked source sits on a live deferral and renders its label"
@@ -288,6 +293,32 @@ def test_the_deferral_label_renders_a_parked_source_without_a_fire_time() -> Non
     )
     assert "EmitBackpressure" in label, (
         f"the parked label names the signal that parked the row, got {label!r}"
+    )
+
+    # THE NON-PARK ARM (D8): a row carrying the deferral SIGNAL but not
+    # the park's marker (blocking_reason unset — the re-pended reserved
+    # source's real shape) renders the HONEST deferred face with next
+    # fire from its own real due time — never the park label, never
+    # hidden.
+    repended = RunNode(
+        key="source",
+        status="scheduled",
+        attempt=1,
+        snooze_count=0,
+        scheduled_at=datetime(2026, 11, 15, 9, 30, 0, tzinfo=UTC),
+        deferral={"signal": "EmitBackpressure", "consume_budget": False, "attempt": 1},
+        blocking_reason=None,
+    )
+    repended_label = repended.deferral_label
+    assert repended_label is not None, "a non-park reserved row's live deferral renders"
+    assert "deferred (backpressure)" not in repended_label, (
+        f"a non-park row must never render the park label, got {repended_label!r}"
+    )
+    assert "parked at" not in repended_label, (
+        f"a non-park row must never claim a park instant, got {repended_label!r}"
+    )
+    assert "next fire 2026-11-15 09:30:00+00:00" in repended_label, (
+        f"the non-park row's next fire comes from its own due time, got {repended_label!r}"
     )
     # The timer deferral beside it keeps its next-fire face (the opposite
     # direction: the parked branch must not have eaten the timed shape).

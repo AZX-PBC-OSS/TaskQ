@@ -525,7 +525,11 @@ EXIT_SKIP_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
 SET status = 'succeeded',
     result = $2::jsonb,
-    finished_at = clock_timestamp()
+    finished_at = clock_timestamp(),
+    -- THE TERMINAL REMOVES THE RESERVATION KEY (§2.4): the early Exit's
+    -- skip-terminal removes any held page-width reservation in the same
+    -- winning statement — no key survives a terminal row for re-arm.
+    metadata = metadata - 'wf_emit_reservation'
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
   AND step_key = ANY($3)

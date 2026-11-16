@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast as _ast
 import re
+import textwrap as _textwrap
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,14 @@ import pytest
 
 from taskq.backend._protocol import JobId
 from taskq.workflows._sql import WorkflowSql
+
+
+class DocsFenceSyntaxError(AssertionError):
+    """A docs Python fence that fails the import grammar — RED, never
+    silently skipped (C1's fail-closed disposition; the bounded
+    diagnostic carries the virtual path and the fence's syntax
+    location)."""
+
 
 pytestmark = pytest.mark.integration
 
@@ -215,30 +224,50 @@ def _collect_doc_names(corpus: list[tuple[str, str]]) -> set[str]:
     names of parenthesized/plain `from taskq.workflows import ...`
     statements parsed with the import grammar (comments removed; `# noqa:
     E402` and `# Why:` tokens skipped so neither can become a false
-    import)."""
+    import).
+
+    FAIL-CLOSED ON AN UNPARSEABLE FENCE (C1): a Python fence that fails
+    `ast.parse` raises :class:`DocsFenceSyntaxError` with the virtual
+    path and the fence's syntax location — a broken fence is RED, never
+    silently skipped and never a regex/token fallback."""
     names: set[str] = set()
     # Capitalized names only: the scan's subject is the documented catchable
     # CLASS surface; private modules and lowercase function references are
-    # not `__all__` members and are not import-surface claims.
+    # not `__all__` members and are not import-surface claims. The fence
+    # regex matches every `python`-labelled fence (with or without an
+    # annotation suffix) INCLUDING blockquote-embedded ones (a quoted
+    # fence is still a documented import surface) — its lines are
+    # un-quoted before the parse.
     qualified = re.compile(r"`taskq\.workflows\.([A-Z][A-Za-z0-9_]*)`")
-    for _path, text in corpus:
+    fences = re.compile(r"(?:^|\n)[ ]*(?:> ?)?```python[^\n]*\n(.*?)```", re.S)
+    for path, text in corpus:
         names.update(qualified.findall(text))
-        for block in re.findall(r"```python\n(.*?)```", text, re.S):
+        for block in fences.findall(text):
             lines = []
             for line in block.split("\n"):
+                # A blockquote-embedded fence's own quote prefix.
+                cleaned_line = re.sub(r"^> ?", "", line)
                 # Explicitly skip the two comment tokens so neither `E402`
                 # nor `Why:` can become a false import; the REST of the line
                 # survives (a trailing `)` must not be lost).
-                cleaned_line = line
                 for token in ("# noqa: E402", "# Why:"):
                     if token in cleaned_line:
                         cleaned_line = cleaned_line.split(token)[0]
                 lines.append(cleaned_line)
-            cleaned = "\n".join(lines)
+            # A fence inside an indented markdown context (a list item's
+            # excerpt) carries the context's common leading indentation —
+            # dedent before the parse (an honestly INDENTED python
+            # fragment parses; a genuinely broken one still reds).
+            cleaned = _textwrap.dedent("\n".join(lines))
             try:
                 tree = _ast.parse(cleaned)
-            except SyntaxError:
-                continue
+            except SyntaxError as exc:
+                raise DocsFenceSyntaxError(
+                    f"the docs' Python fence at {path!r} does not parse "
+                    f"(line {exc.lineno}, offset {exc.offset}): {exc.msg} — "
+                    "a docs fence that fails the import grammar is red, never "
+                    "silently skipped and never fallen back to token collection"
+                ) from exc
             for node in _ast.walk(tree):
                 if isinstance(node, _ast.ImportFrom) and node.module == "taskq.workflows":
                     for alias in node.names:
@@ -250,13 +279,34 @@ def _collect_doc_names(corpus: list[tuple[str, str]]) -> set[str]:
 def test_docs_surface_scan_rejects_missing_and_finds_qualified_error() -> None:
     """The collector resolves every documented name against
     `taskq.workflows.__all__`; an in-memory negative corpus with an
-    undocumented name reds; the guides teach the new catchable class in its
-    fully qualified form."""
+    undocumented name REDS THE RESOLUTION (the missing-check itself runs
+    on the negative corpus — the must-red arm is live, never inert); an
+    unparseable fence is red (fail-closed, with the bounded diagnostic);
+    the guides teach the new catchable class in its fully qualified
+    form."""
     import taskq.workflows as wf_surface
 
+    # THE NEGATIVE CORPUS'S OWN RESOLUTION RUNS: the collector collects
+    # the undocumented name, the resolution against __all__ reports it
+    # MISSING, and the surface really lacks it — the must-red arm
+    # executes, never just the name-collection.
     negative = [("v.md", "Catch `taskq.workflows.DocsOnlyMissingError`.")]
-    assert _collect_doc_names(negative) == {"DocsOnlyMissingError"}
+    collected_negative = _collect_doc_names(negative)
+    assert collected_negative == {"DocsOnlyMissingError"}
+    missing_negative = sorted(name for name in collected_negative if name not in wf_surface.__all__)
+    assert missing_negative == ["DocsOnlyMissingError"], missing_negative
     assert not hasattr(wf_surface, "DocsOnlyMissingError")
+
+    # THE UNPARSEABLE FENCE IS RED (fail-closed, never skipped): the
+    # bounded diagnostic names the virtual path and the syntax location.
+    broken = [
+        (
+            "virtual/broken.md",
+            "```python\nfrom taskq.workflows import (\n    DocsOnlyMissingError\n```",
+        )
+    ]
+    with pytest.raises(DocsFenceSyntaxError, match="virtual/broken\\.md"):
+        _collect_doc_names(broken)
 
     positive = [
         (

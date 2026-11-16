@@ -148,32 +148,65 @@ async def create_guarded_flow(
 #: -set test — never a single-key or to_regclass-only check).
 _EMIT_OBJECTS_OK: Final[set[str]] = set()
 
-#: The folded arbiter's exact five-expression definition (the §2.1 catalog
-#: fingerprint the preflight's `pg_get_indexdef` comparison requires).
+
+def reset_emit_capability_cache(schema: str | None = None) -> None:
+    """Invalidate the per-schema capability verdict (D4's negative
+    controls' own seam, and the maintenance/migration paths' honest
+    re-check): the cached OK is a process-lifetime fact about the
+    catalog's SHAPE, and a schema whose objects were replaced after the
+    first check must be re-verified rather than served the stale OK.
+    ``None`` clears every schema."""
+    if schema is None:
+        _EMIT_OBJECTS_OK.clear()
+    else:
+        _EMIT_OBJECTS_OK.discard(schema)
+
+
+#: The folded arbiter's EXACT definition (the §2.1 catalog fingerprint the
+#: preflight's ``pg_get_indexdef`` comparison requires): the five-expression
+#: claim arbiter, written in PostgreSQL's own ``pg_get_indexdef`` output
+#: format (measured on PostgreSQL 18.6) with only the schema token
+#: substituted. The comparison normalizes whitespace and quote characters
+#: on both sides and requires FULL equality — a five-name substring check
+#: accepted a wrong five-expression arbiter whose claim then failed 42P10.
 _LEDGER_ARBITER_INDEXDEF: Final[str] = (
     "CREATE UNIQUE INDEX wf_step_ledger_claim_uniq ON {schema}.wf_step_ledger "
-    "USING btree (flow_id, step_key, COALESCE(map_index, '-1'::integer), attempt, claim_epoch)"
+    "USING btree (flow_id, step_key, COALESCE((map_index)::integer, '-1'::integer), "
+    "attempt, claim_epoch)"
 )
 
-#: The exact-park partial index's required definition (the probe, candidate,
-#: and marker-sweep statements' own index).
+#: The exact-park partial index's REQUIRED definition (the probe, candidate,
+#: and marker-sweep statements' own index) — PostgreSQL's own
+#: ``pg_get_indexdef`` output format, full-equality compared. A substring
+#: check accepted a same-name wrong index whose probe then planned a Seq
+#: Scan on jobs.
 _PARK_IDX_INDEXDEF: Final[str] = (
     "CREATE INDEX jobs_wf_emit_park_idx ON {schema}.jobs USING btree "
-    "(((metadata->>'flow_id')::uuid), created_at, id) "
-    "WHERE status = 'scheduled'::\"{schema}\".job_status "
-    'AND (metadata @> \'{"blocking_reason":"backpressure"}\'::jsonb) '
-    'AND (metadata @> \'{"wf_deferral":{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}\'::jsonb) '
-    'AND (metadata @> \'{"wf_emit_backpressure":{"version":1}}\'::jsonb) '
+    "((((metadata ->> 'flow_id'::text))::uuid), created_at, id) "
+    "WHERE ((status = 'scheduled'::{schema}.job_status) "
+    'AND (metadata @> \'{"blocking_reason": "backpressure"}\'::jsonb) '
+    'AND (metadata @> \'{"wf_deferral": {"signal": "EmitBackpressure", '
+    '"attempt": 0, "consume_budget": false}}\'::jsonb) '
+    'AND (metadata @> \'{"wf_emit_backpressure": {"version": 1}}\'::jsonb) '
     "AND (step_key IS NOT NULL) "
     "AND (step_key <> '__flow__'::text) "
-    "AND (metadata ? 'flow_id')"
+    "AND (metadata ? 'flow_id'::text))"
 )
 
-#: The pending-generation partial index's required definition.
+#: The pending-generation partial index's REQUIRED definition (PostgreSQL's
+#: own ``pg_get_indexdef`` output format, full-equality compared).
 _PENDING_IDX_INDEXDEF: Final[str] = (
     "CREATE INDEX wf_emit_capacity_pending_idx ON {schema}.wf_emit_capacity "
     "USING btree (flow_id) WHERE (wake_generation > handled_generation)"
 )
+
+
+def _normalized_indexdef(text: str) -> str:
+    """The exact-definition comparison's normal form: whitespace runs
+    collapsed to single spaces and quote characters removed (PostgreSQL
+    quotes identifiers only when the schema's name requires it; the
+    declared constants carry the generic quoted shape)."""
+    return " ".join(text.replace('"', "").split())
 
 
 async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
@@ -209,23 +242,18 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     if epoch_col is None:
         raise _fail("wf_step_ledger.claim_epoch is missing")
 
-    # 2. the five-expression arbiter (pg_get_indexdef, exact expression set:
-    # every arbiter member present, claim_epoch among them).
+    # 2. the five-expression arbiter (pg_get_indexdef, EXACT definition
+    # equality — D4: a five-NAME substring check accepted a wrong
+    # five-expression arbiter whose claim then failed 42P10).
     arbiter = await conn.fetchval(
         "SELECT pg_get_indexdef(($1 || '.wf_step_ledger_claim_uniq')::regclass)", f'"{schema}"'
     )
-    if arbiter is None or not all(
-        member in arbiter
-        for member in (
-            "wf_step_ledger",
-            "flow_id",
-            "step_key",
-            "map_index",
-            "attempt",
-            "claim_epoch",
-        )
+    if arbiter is None or _normalized_indexdef(arbiter) != _normalized_indexdef(
+        _LEDGER_ARBITER_INDEXDEF.replace("{schema}", f'"{schema}"')
     ):
-        raise _fail("wf_step_ledger_claim_uniq lacks the five-expression claim_epoch arbiter")
+        raise _fail(
+            "wf_step_ledger_claim_uniq is not the exact five-expression claim_epoch arbiter"
+        )
 
     # 3. wf_emit_capacity's typed columns and CHECK constraints.
     cols = await conn.fetch(
@@ -259,13 +287,15 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     if rotation is None:
         raise _fail("wf_emit_intent_rotation's singleton row is missing")
 
-    # 5. the pending-generation index (exact definition).
+    # 5. the pending-generation index (EXACT definition equality — D4).
     pending = await conn.fetchval(
         "SELECT pg_get_indexdef(($1 || '.wf_emit_capacity_pending_idx')::regclass)",
         f'"{schema}"',
     )
-    if pending is None or "wake_generation > handled_generation" not in pending:
-        raise _fail("wf_emit_capacity_pending_idx is missing or mistyped")
+    if pending is None or _normalized_indexdef(pending) != _normalized_indexdef(
+        _PENDING_IDX_INDEXDEF.replace("{schema}", f'"{schema}"')
+    ):
+        raise _fail("wf_emit_capacity_pending_idx is not the exact pending-generation index")
 
     # 6. the guard function (pg_proc) and trigger (pg_trigger).
     fn = await conn.fetchval(
@@ -285,17 +315,16 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     if trig is None:
         raise _fail("the wf_emit_park_guard trigger is missing on jobs")
 
-    # 7. the exact-park partial index (exact definition via pg_get_indexdef).
+    # 7. the exact-park partial index (EXACT definition equality via
+    # pg_get_indexdef — D4: the substring check accepted a same-name
+    # wrong index whose probe then planned a Seq Scan on jobs).
     park_idx = await conn.fetchval(
         "SELECT pg_get_indexdef(($1 || '.jobs_wf_emit_park_idx')::regclass)",
         f'"{schema}"',
     )
-    if (
-        park_idx is None
-        or "created_at, id" not in park_idx
-        or "consume_budget" not in park_idx
-        or "blocking_reason" not in park_idx
+    if park_idx is None or _normalized_indexdef(park_idx) != _normalized_indexdef(
+        _PARK_IDX_INDEXDEF.replace("{schema}", f'"{schema}"')
     ):
-        raise _fail("jobs_wf_emit_park_idx is missing or does not match the exact-park predicate")
+        raise _fail("jobs_wf_emit_park_idx is not the exact-park partial index definition")
 
     _EMIT_OBJECTS_OK.add(schema)

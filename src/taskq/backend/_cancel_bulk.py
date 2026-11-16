@@ -397,7 +397,12 @@ async def _cancel_where(
         -- explanation. Row-only, like the single-job path, the event
         -- detail shape stays {{from_state, to_state}}.
         SET status = 'cancelled', finished_at = clock_timestamp(),
-            error_class = '{CANCEL_ORIGIN_PENDING}'
+            error_class = '{CANCEL_ORIGIN_PENDING}',
+            -- THE TERMINAL REMOVES THE RESERVATION KEY (§2.4): the bulk
+            -- cancel's terminal removes any held page-width reservation
+            -- in the same winning statement — no key survives a terminal
+            -- row for re-arm.
+            metadata = metadata - 'wf_emit_reservation'
         WHERE j.id = ANY ((SELECT ids FROM batch_ids)::uuid[])
           AND j.status IN ('pending', 'scheduled')
         RETURNING j.id

@@ -910,12 +910,19 @@ async def emit_batch(
                 # The bounded run's one-time adoption: existing active runs
                 # get their immutable bound record stamped at the first
                 # new-binary bounded claim (a no-op probe once stamped).
-                await conn.fetchval(wsql.emit_intent_stamp, flow_id, max_in_flight)
+                # THE STORED BOUND IS THE ADMISSION'S AUTHORITY (§2.1): the
+                # stamp reads the stored bound back and fails closed on a
+                # mismatch with the compiled declaration (a declaration
+                # change / deploy skew never widens a live run's bound) —
+                # the locked recheck compares against the STORED bound.
+                stored_bound = await ensure_emit_capacity(
+                    conn, wsql, flow_id=flow_id, bound=max_in_flight
+                )
                 inside = await observe_emit_capacity(
                     conn, wsql, flow_id=flow_id, source_id=source_id
                 )
                 inside_charge = inside.charge
-                if inside_charge + len(valid) > max_in_flight:
+                if inside_charge + len(valid) > stored_bound:
                     raise _AdmissionLostError
                 await _emit_tx(
                     conn,
@@ -976,20 +983,27 @@ async def wake_emit_backpressure(
     *,
     flow_id: JobId,
 ) -> EmitWakeResult:
-    """The one promotion primitive: a commit-acknowledged, run-targeted drain
-    of this flow's parked waiters (§1, §3.1, §6).
+    """The one promotion primitive: a commit-acknowledged, run-targeted
+    drain of this flow's parked waiters (§1, §3.1, §6).
 
-    Canonical root -> intent -> winning-nodes order per transaction: the
-    run's intent/admission advisory lock, the durable intent row, then the
-    candidate CAS. Each iteration runs one fresh shared observation (the
-    derived ``charge``) and the single authoritative candidate comparison —
-    the oldest FITTING waiter on real rows, never a cached head. A winning
-    CAS attaches the durable page-width reservation, removes the live marker
-    atomically, and emits the effective queue wake. At most
+    Canonical order per transaction: the run's intent/admission advisory
+    lock, the LIVE root row (``step_key='__flow__'``) ``FOR UPDATE``, the
+    durable intent row, then the winning-nodes CAS. The root lock
+    serializes the drain with the root-failure and maintenance seats
+    (which hold the same row lock): a root-finalize either runs before
+    the drain — the §5.4 fence fences the still-parked source — or after
+    it, where the promoted source is unresolved live work and the root
+    legitimately does not finalize; a terminal root can never be raced by
+    a promotion that then strands a reserved pending source under it.
+    Each iteration runs one fresh shared observation (the derived
+    ``charge``) and the single authoritative candidate comparison —
+    the oldest FITTING waiter on real rows, never a cached head. A
+    winning CAS attaches the durable page-width reservation, removes the
+    live marker atomically, and emits the effective queue wake. At most
     :data:`FLOW_DRAIN_MAX_WINS` winning CASes/notifications commit in one
-    transaction; a full chunk continues only into a fresh transaction whose
-    own first observation again returns a fitting candidate (progress is the
-    necessary condition for continuation).
+    transaction; a full chunk continues only into a fresh transaction
+    whose own first observation again returns a fitting candidate
+    (progress is the necessary condition for continuation).
 
     Completion is exactly a fresh observation returning no fitting
     candidate — only then does the same transaction set
@@ -1027,6 +1041,23 @@ async def wake_emit_backpressure(
                 chunk_pause_s = os.environ.get("TASKQ_TEST_DRAIN_CHUNK_PAUSE_S")
                 if chunk_pause_s:
                     await asyncio.sleep(float(chunk_pause_s))
+            # THE LIVE ROOT LOCK (§3.1's canonical order): the root row
+            # lock serializes this chunk with the root-failure and
+            # maintenance seats — a root-finalize cannot interleave
+            # between this transaction's observations and CASes, so a
+            # promoted source can never be stranded pending-with-
+            # reservation under a root that terminalized behind it.
+            root_row = await conn.fetchval(wsql.emit_root_lock, flow_id)
+            if root_row is None:
+                # The flow's root row is absent: not a live bounded run's
+                # drainable shape — nothing to drain and no intent to
+                # complete (the run's own records cannot exist without
+                # it). Fail closed: the caller's error path owns the
+                # already-committed state.
+                raise EmitCapacityCorruptionError(
+                    f"the bounded run {flow_id} has no live root row at its "
+                    "drain — the __flow__ row is missing (fail-closed)"
+                )
             intent = await conn.fetchrow(wsql.emit_intent_lock, flow_id)
             if intent is None:
                 raise EmitCapacityCorruptionError(
@@ -1150,36 +1181,94 @@ async def drain_pending_emit_intents(
     return offered
 
 
+#: The marker sweep's per-process rotation cursor (D7's bounded keyset):
+#: schema → the last visited flow id. Persistent for the leader process's
+#: lifetime; a leader restart re-walks from the start (the walk completes
+#: within ceil(N/100) + 1 selections and the repaired flows leave the
+#: selection through their created intent rows). The intent selection's
+#: own cursor is the durable §6 singleton; the sweep's is process-local
+#: because the sweep's authority (the exact marker) re-derives its whole
+#: work set from real rows every call — a restart loses only position,
+#: never work.
+_SWEEP_CURSORS: dict[str, str] = {}
+
+#: The marker sweep's per-call flow batch (the same 100-flow bound the
+#: global pending-intent selection owns).
+_SWEEP_BATCH = 100
+
+
 async def sweep_emit_markers(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
     """The bounded exact-marker recovery sweep (§5.3): visit only the
     ``jobs_wf_emit_park_idx`` partial index, derive just the marked bounded
-    flows, and repair a MISSING required intent — the one-time bound
-    adoption from the marker's own validated facts, then the §4.1 threshold
-    rule itself (the shared observation; a generation bump only when a
-    waiter NEWLY fits and no intent is pending). An empty index result —
-    or a flow whose parked waiter does not fit — ends the sweep's work:
-    there is no parked-estate scan, no source re-claim, no due-time wake,
-    and NO re-bump of an intent the drain already handled (that would be a
-    busy loop, not recovery)."""
-    async with pool.acquire() as conn, conn.transaction():
-        rows = await conn.fetch(wsql.emit_marker_sweep)
-        repaired = 0
-        for row in rows:
-            flow = JobId(row["flow_id"])
-            bound = row["bound"]
-            if type(bound) is not int or bound < 1:
-                raise EmitCapacityCorruptionError(
-                    f"the exact-marker sweep found flow {flow} with a malformed "
-                    f"stored bound ({bound!r})"
-                )
-            await ensure_emit_capacity(conn, wsql, flow_id=flow, bound=int(bound))
-            # The threshold rule, exactly as the terminal/park events run
-            # it: derive once; a non-fitting waiter never re-arms the
-            # intent the drain handled.
-            if await emit_capacity_event(
-                conn, wsql, flow_id=flow, probe=True, census_family="maintenance"
-            ):
-                repaired += 1
+    flows that still LACK their required intent record, and repair each in
+    its OWN transaction — the one-time bound adoption from the marker's
+    own validated facts, then the §4.1 threshold rule itself (the shared
+    observation; a generation bump only when a waiter NEWLY fits and no
+    intent is pending).
+
+    The selection is an ordered KEYSET rotation (D7): ``flow_id >
+    $after`` in ``ORDER BY flow_id`` order, at most 100 flows per call,
+    the caller's process-local cursor persisting the last visited flow;
+    an empty read wraps the cursor once. A full selection persists its
+    last flow id; a short selection resets to the start. A repaired flow
+    leaves the selection through its created intent row — the steady
+    state is an empty indexed read with zero per-flow work.
+
+    Each flow's repair is its OWN transaction: a malformed marker bound
+    or width poisons only its own flow — the flow is quarantined with a
+    bounded diagnostic and retried on a later selection, and every other
+    selected flow's repair commits. An empty index result ends the
+    sweep's work: there is no parked-estate scan, no source re-claim, no
+    due-time wake, and NO re-bump of an intent the drain already handled
+    (that would be a busy loop, not recovery)."""
+    after = _SWEEP_CURSORS.get(wsql.schema, str(_ZERO_UUID))
+    rows = await pool.fetch(wsql.emit_marker_sweep, after)
+    if not rows:
+        # An empty ordered read wraps the cursor immediately once (the
+        # §6 rotation's own semantics): the walk restarts on the next
+        # call, and this call performed zero per-flow work.
+        _SWEEP_CURSORS[wsql.schema] = str(_ZERO_UUID)
+        return 0
+    repaired = 0
+    for row in rows:
+        flow = JobId(row["flow_id"])
+        try:
+            async with pool.acquire() as conn, conn.transaction():
+                # The flow's own validated marker bound: a malformed
+                # marker raises HERE — inside this flow's own repair
+                # transaction — quarantining the poison to this flow.
+                raw_bound = await conn.fetchval(wsql.emit_marker_flow_bound, flow)
+                if raw_bound is None or type(raw_bound) is not int or raw_bound < 1:
+                    raise EmitCapacityCorruptionError(
+                        f"the exact-marker sweep found flow {flow} with a malformed "
+                        f"stored bound ({raw_bound!r})"
+                    )
+                await ensure_emit_capacity(conn, wsql, flow_id=flow, bound=int(raw_bound))
+                # The threshold rule, exactly as the terminal/park events
+                # run it: derive once; a non-fitting waiter never re-arms
+                # the intent the drain handled.
+                if await emit_capacity_event(
+                    conn, wsql, flow_id=flow, probe=True, census_family="maintenance"
+                ):
+                    repaired += 1
+        except Exception:
+            # One flow's malformed marker never aborts the others'
+            # repairs (D7's per-flow isolation): the bounded diagnostic
+            # stands in for the flow; it is retried on a later
+            # selection, never dropped.
+            logger.warning(
+                "wf.emit_marker_sweep_flow_failed",
+                flow_id=str(flow),
+                offered_anyway=True,
+            )
+    if len(rows) >= _SWEEP_BATCH:
+        # A full selection persists its last flow id as the rotation
+        # cursor even if a selected flow failed.
+        _SWEEP_CURSORS[wsql.schema] = str(rows[-1]["flow_id"])
+    else:
+        # A short selection resets the cursor to the start after its
+        # flows were offered (the §6 wrap shape).
+        _SWEEP_CURSORS[wsql.schema] = str(_ZERO_UUID)
     if repaired:
         logger.warning(
             "wf.emit_marker_sweep_repaired",

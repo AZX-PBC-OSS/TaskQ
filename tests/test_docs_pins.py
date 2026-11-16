@@ -264,3 +264,38 @@ def test_docs5_the_upgrading_guide_pins_the_folded_backpressure_train() -> None:
     # keys (parsed from the section's own file names).
     files = re.findall(r"01\.00\.\d+_\d+[a-z_]*\.sql", section)
     assert files == ["01.00.42_01_pre_wf_step_ledger_claim_epoch.sql"], files
+
+
+def test_docs6_author_facing_docs_never_publish_internal_capacity_vocabulary() -> None:
+    """§10.1's API-surface leak pin (D9): the internal capacity vocabulary —
+    the derived-charge token, the intent generations, the derived
+    minimum-waiter width, the internal table names, the rotation cursor,
+    and the validated scalar renderers — is not author-facing API and
+    must not be published in the author-facing docs (the emit
+    backpressure guide and the API reference). Architecture/upgrade
+    material is the documented home for the internal names and is out of
+    this pin's scope; a leak reds with the offending file and token."""
+    import re
+
+    banned = (
+        r"\bcharge\b",
+        r"\bmin_waiting_width\b",
+        r"\bwake_generation\b",
+        r"\bhandled_generation\b",
+        r"\bwf_emit_capacity\b",
+        r"\bwf_emit_intent_rotation\b",
+        r"\bvalidated_park_width\b",
+        r"\bvalidated_reservation_width\b",
+        r"\bafter_flow_id\b",
+    )
+    for doc in (_GUIDE, _API_REF):
+        text = doc.read_text()
+        for token in banned:
+            hits = [text[: match.start()].count("\n") + 1 for match in re.finditer(token, text)]
+            assert not hits, (
+                f"{doc.relative_to(_REPO)} publishes the internal capacity "
+                f"vocabulary {token!r} at line(s) {hits[:5]} — internal "
+                "table names, charge, generations, and min_waiting_width are "
+                "not author-facing API (§10.1); teach the author-facing "
+                "behaviour instead."
+            )

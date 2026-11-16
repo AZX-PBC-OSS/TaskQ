@@ -130,11 +130,11 @@ legacy default, and failure-boundary law is in
 `@app.workflow(name, ..., max_in_flight=N)` declares the run's whole-page
 materialization bound (`None` is the explicit unbounded; the unset default is
 1000). Every `ctx.emit_batch` call admits its WHOLE page against the run's
-derived charge — the other live rows plus their valid reservations — with the
-running source's own row excluded (`charge + page_width <= bound`): once
-outside the transaction, then again inside it under the run's
-intent/admission lock, so concurrent emitters of one run cannot both admit
-past the bound.
+real rows as they stand at the moment of the call — the other live rows plus
+their valid page-width reservations, with the running source's own row
+excluded — once outside the transaction, then again inside it under the
+run's intent/admission lock, so concurrent emitters of one run cannot both
+admit past the bound.
 
 When the page does not fit, `emit_batch` raises
 `taskq.workflows.EmitBackpressure` — a typed capacity control, not an error:
@@ -157,8 +157,10 @@ fallback — promotes the oldest fitting real waiter `pending` under the run's
 advisory lock and attaches a durable page-width RESERVATION, removing the
 marker atomically. A reserved replay may present fewer records than its
 reservation and may not present more: the excess raises the public
-`taskq.workflows.EmitReservationExceededError` (nothing written; the
-reserved source is fenced through the deterministic grant-violation route).
+`taskq.workflows.EmitReservationExceededError` — nothing is written, and
+the source terminalizes on the first violation through the deterministic
+grant-violation route (no retry budget spent), its reservation removed in
+the same winning terminal statement.
 That error is distinct from a genuine `PageDivergedError` — an idempotency
 arbiter collision whose remedy is a cursor re-sync; a width comparison never
 claims an arbiter collision. A parked source under a terminal root is never

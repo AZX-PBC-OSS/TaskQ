@@ -2473,9 +2473,7 @@ wait's outcome is the CLOSED UNION of the declared models joined with
 `Expired` — the CHECKER FORCES the fail-close arm. From the REAL
 example (`examples/deep_research.py`):
 
-```python no-exec — not executed: fragment, the body's spine — the
-REAL file is examples/deep_research.py (the demo's fake corpus + the
-loop wiring live there)
+```python no-exec — not executed: fragment, the body's spine
 outcome = await ctx.wait_signal(
     (ContinueApproval,),
     timeout_s=APPROVAL_TIMEOUT_S,  # the REAL default: 120.0
@@ -2490,6 +2488,9 @@ match outcome:
         # THE FAIL-CLOSE: nobody watching — finish with what you have.
         return Done(carry.finish_with_what_you_have())
 ```
+
+The REAL file is `examples/deep_research.py` (the demo's fake corpus + the
+loop wiring live there).
 
 The typed expiry is a RESULT the body matches: the run SUCCEEDS
 carrying the finish-with-what-you-have state — the user not watching
@@ -3213,12 +3214,12 @@ deferral and version-1 record) — never the timestamp — is the park's
 identity: `scheduled_at` is not a due date, is never an admin `next_fire`,
 and ordinary timers/holds/retries keep their own meaning.
 
-Capacity is DERIVED, never counted: there is no persisted charge, waiter
+Capacity is DERIVED, never counted: there is no persisted total, waiter
 count, cached head, or cached minimum width to drift. Every fit decision
-reads the run's real `jobs` rows (`charge = live rows + valid reservations`;
-admission is `charge + page_width <= bound` with the running source's own
-row excluded), so vanilla reclaim, cancel, deadline, and re-arm writers need
-no capacity bookkeeping.
+reads the run's real `jobs` rows at the moment it runs (the running
+source's own row excluded), so vanilla reclaim, cancel, deadline, and
+re-arm writers need no capacity bookkeeping. The run's `max_in_flight`
+bounds the outstanding materialized rows plus whole admitted pages.
 
 Wake is a threshold-created durable intent and an event-driven drain:
 
@@ -3230,10 +3231,12 @@ Wake is a threshold-created durable intent and an event-driven drain:
   advisory lock and attaches a durable page-width RESERVATION, so a woken
   source cannot be barged into another no-fit re-park. A replay may present
   fewer records than its reservation; it may not present more — the excess
-  raises the public `taskq.workflows.EmitReservationExceededError` (nothing
-  written; the reserved source is fenced). This is distinct from a genuine
-  `PageDivergedError` — the idempotency arbiter's collision names a cursor
-  re-sync remedy; a width mismatch never does;
+  raises the public `taskq.workflows.EmitReservationExceededError`: nothing
+  is written, and the source terminalizes on the first violation (the
+  deterministic grant-violation route — no retry budget spent) with its
+  reservation removed in the same winning terminal statement. This is
+  distinct from a genuine `PageDivergedError` — the idempotency arbiter's
+  collision names a cursor re-sync remedy; a width mismatch never does;
 - the maintenance leader drains durable intents from committed capacity
   notifications, leadership assumption, LISTEN reconnect backfill, and a
   bounded pending-intent fallback at its maintenance interval. Durable
