@@ -349,7 +349,8 @@ async def test_flow600_obies_the_200_win_ceiling_rotates_and_covers_fully(
             f"the frozen tx holds wf_emit_capacity row locks: {[tuple(r) for r in locks]}"
         )
         backend = await pool.fetchval(
-            "SELECT count(*) FROM pg_stat_activity WHERE pid = $1", frozen_pid
+            "SELECT count(*) FROM pg_stat_activity WHERE pid = $1 AND datname = current_database()",
+            frozen_pid,
         )
         assert int(backend) == 1, frozen_pid
         print(
