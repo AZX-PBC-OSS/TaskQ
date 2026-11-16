@@ -62,6 +62,8 @@ NOTIFY, are authority.
 
 from __future__ import annotations
 
+import asyncio
+import os
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -1009,6 +1011,22 @@ async def wake_emit_backpressure(
 
             await verify_emit_capacity_objects(conn, wsql.schema)
             await conn.execute(wsql.emit_admission_lock, str(flow_id))
+            # TEST-ONLY FAULT-INJECTION POINT (the kill-window control's
+            # mid-chunk seam, documented as test-only and never a
+            # production default): when the env is set AND a previous
+            # chunk of THIS invocation already committed its wins, the
+            # drain PAUSES here — inside the next chunk's transaction,
+            # holding the flow's ADMISSION lock (and ONLY it: every other
+            # drain arm queues behind it, while concurrent terminals'
+            # generation bumps proceed untouched) — after committed wins
+            # and with the generation still pending, so a control can
+            # SIGKILL this process in the exact mid-chunk state. The env
+            # is read per call and never cached; unset (every production
+            # process) the hook is absent and this is dead text.
+            if total > 0:
+                chunk_pause_s = os.environ.get("TASKQ_TEST_DRAIN_CHUNK_PAUSE_S")
+                if chunk_pause_s:
+                    await asyncio.sleep(float(chunk_pause_s))
             intent = await conn.fetchrow(wsql.emit_intent_lock, flow_id)
             if intent is None:
                 raise EmitCapacityCorruptionError(

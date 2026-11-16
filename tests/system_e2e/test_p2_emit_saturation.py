@@ -41,12 +41,6 @@ _SAMPLE_S: Final = 0.1  # 10 Hz production sampling; acceptance requires >=5 Hz 
 _QUEUES: Final = f"{sample.SOURCE_QUEUE},{sample.LEAF_QUEUE},{sample.SIBLING_QUEUE}"
 
 
-@pytest.fixture(scope="module")
-def log_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """The suite's own temp root: every worker log lands here, nowhere else."""
-    return tmp_path_factory.mktemp("p2-system-logs")
-
-
 def _document(raw: object) -> dict[str, Any]:
     value = json.loads(raw) if isinstance(raw, str) else raw
     assert isinstance(value, dict), type(value)
@@ -747,9 +741,10 @@ async def _healthy_assertions(
     # ACCRUE with elapsed time — the late half's count stays at the leaders'
     # own fixed cadence (the bounded recovery arms' disclosed slack), never
     # a minute-driven growth.
-    release_mid = release_at - (release_at - min(
-        (row["occurred_at"] for row in parked_probes), default=release_at
-    )) / 2
+    release_mid = (
+        release_at
+        - (release_at - min((row["occurred_at"] for row in parked_probes), default=release_at)) / 2
+    )
     early = [row for row in parked_probes if row["occurred_at"] < release_mid]
     late = [row for row in parked_probes if row["occurred_at"] >= release_mid]
     assert len(late) <= len(early) + 30, (
@@ -807,9 +802,7 @@ async def _healthy_assertions(
     # instances — the drain runs on the pods, not in this process.
     worker_logs_600 = {}
     for label in fleet:
-        path600 = (log_dir if log_dir is not None else Path("/dev/null")) / (
-            f"p2-system-{scenario}-{label}.worker.log"
-        )
+        path600 = log_dir / f"p2-system-{scenario}-{label}.worker.log"
         worker_logs_600[label] = await asyncio.to_thread(path600.read_text)
     census_total: dict[str, int] = {}
     census_by_pod: dict[str, dict[str, int]] = {}
@@ -860,8 +853,7 @@ async def _healthy_assertions(
         flush=True,
     )
     assert families_v <= facts["V_lane"], (
-        f"measured V {families_v} exceeds the pre-registered two-worker "
-        f"lane pin 60: {census_total}"
+        f"measured V {families_v} exceeds the pre-registered two-worker lane pin 60: {census_total}"
     )
     assert event_e <= event_bound, (
         f"E {event_e} > 2T + K {event_bound} — a hidden count/fallback "
@@ -916,9 +908,16 @@ async def test_two_os_workers_saturation_600_seconds_and_healthy_wake(
     V_lane = 19P + 18S + 4R + B + J + C = **60** equals V_general = 60.
     The red predicates: V_lane > V_general is red (impossible here —
     equality), and measured V > V_lane is red."""
-    P, S, R, B = 2, 1, 1, 0
+    # The lane's own family counts (the contract's own labels; the
+    # lowercase locals feed the pre-registered literals below).
+    p_workers, s_probe, r_recon, b_backfill = 2, 1, 1, 0
     pre_registration = {
-        "P": P, "S": S, "R": R, "B": B, "J": 0, "C": 0,
+        "P": p_workers,
+        "S": s_probe,
+        "R": r_recon,
+        "B": b_backfill,
+        "J": 0,
+        "C": 0,
         "admission_decisions <= P+K": 3,
         "source_body_claims <= 2P+2S+J+C": 6,
         "fitted_grants <= P+S": 3,
@@ -926,8 +925,8 @@ async def test_two_os_workers_saturation_600_seconds_and_healthy_wake(
         "flow_drains <= 3P+3S+R+B": 10,
         "global_drains <= 5P+5S+2R+2B": 10,
         "candidate_reads <= 4P+4S+R+B": 9,
-        "V_lane": 19 * P + 18 * S + 4 * R + B,
-        "V_general": 19 * P + 18 * S + 4 * R + 4 * B,
+        "V_lane": 19 * p_workers + 18 * s_probe + 4 * r_recon + b_backfill,
+        "V_general": 19 * p_workers + 18 * s_probe + 4 * r_recon + 4 * b_backfill,
     }
     assert pre_registration["V_lane"] == 60 and pre_registration["V_general"] == 60
     print("P2SAT-V-PRE-REGISTRATION " + json.dumps(pre_registration, sort_keys=True), flush=True)

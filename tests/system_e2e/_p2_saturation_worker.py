@@ -18,23 +18,28 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 import faulthandler
 import json
 import os
 import signal
 import sys
 from collections.abc import Awaitable, Callable
-from typing import Final
+from typing import Any, Final
 
 import asyncpg
 from pydantic import BaseModel
 
 from taskq import JobContext, actor
+from taskq._ids import new_uuid
 from taskq.settings import WorkerSettings
 from taskq.worker.run import _main
 from taskq.workflows import (
+    DONE,
     Chain,
+    EmitBackpressure,
     Promise,
+    Route,
     Step,
     StepContext,
     WorkflowApp,
@@ -245,6 +250,214 @@ async def stream_pages(ctx: StepContext) -> None:
 
 
 p2sat_app: Final = WorkflowApp()
+
+
+# ── the §9 control 4's own declarations (the pods resolve the flow's rows
+# through THIS entry's registry; a test-local WorkflowApp is invisible to
+# them) ────────────────────────────────────────────────────────────────────
+class C4Ok(enum.Enum):
+    OK = "ok"
+
+
+_C4_GATE_S: Final = 3.0
+
+
+async def _c4_screen(ctx: StepContext, item: object) -> C4Ok:
+    del item
+    # The page-0 children hold their slots for the gate's own span (the
+    # committed-intent window's precondition); the resumed page-1 child
+    # runs free.
+    if ctx.map_index is not None and ctx.map_index < 2:
+        await asyncio.sleep(_C4_GATE_S)
+    return C4Ok.OK
+
+
+async def _c4_source_body(ctx: Any) -> None:
+    cursor = await ctx.cursor()
+    start_page = int(cursor.get("page", -1)) + 1
+    pages = ([0, 1], [2])
+    for page in range(start_page, len(pages)):
+        await ctx.emit_batch(
+            [
+                chain_start(_C4_CHAIN, {"app_id": m}, map_index=m, trace_id=f"app-{m}")
+                for m in pages[page]
+            ],
+            cursor={"page": page},
+        )
+
+
+_C4_CHAIN: Final = Chain(
+    name=f"c4-{new_uuid()}",
+    start="screen",
+    queue=SOURCE_QUEUE,
+    steps={"screen": Step(body=_c4_screen, outcomes=C4Ok, route=Route({C4Ok.OK: DONE}))},
+)
+
+
+@p2sat_app.workflow("c4_kill_recovery_flow", queue=SOURCE_QUEUE, max_in_flight=2)
+def c4_kill_recovery_flow() -> Promise[object]:
+    return build(
+        chain_source(
+            _C4_CHAIN,
+            _c4_source_body,
+            key="source",
+            actor=_SOURCE_ACTOR,
+            max_attempts=2,
+            queue=SOURCE_QUEUE,
+        )
+    )
+
+
+async def _c4b_screen(ctx: StepContext, item: object) -> C4Ok:
+    del item
+    if ctx.map_index == 0:
+        await asyncio.sleep(_C4_GATE_S)
+    return C4Ok.OK
+
+
+async def _c4b_source_body(ctx: Any) -> None:
+    cursor = await ctx.cursor()
+    start_page = int(cursor.get("page", -1)) + 1
+    pages = ([0], [1])
+    for page in range(start_page, len(pages)):
+        await ctx.emit_batch(
+            [
+                chain_start(_C4B_CHAIN, {"app_id": m}, map_index=m, trace_id=f"app-{m}")
+                for m in pages[page]
+            ],
+            cursor={"page": page},
+        )
+
+
+_C4B_CHAIN: Final = Chain(
+    name=f"c4b-{new_uuid()}",
+    start="screen",
+    queue=SOURCE_QUEUE,
+    steps={"screen": Step(body=_c4b_screen, outcomes=C4Ok, route=Route({C4Ok.OK: DONE}))},
+)
+
+
+@p2sat_app.workflow("c4_park_kill_flow", queue=SOURCE_QUEUE, max_in_flight=1)
+def c4_park_kill_flow() -> Promise[object]:
+    return build(
+        chain_source(
+            _C4B_CHAIN,
+            _c4b_source_body,
+            key="source",
+            actor=_SOURCE_ACTOR,
+            max_attempts=2,
+            queue=SOURCE_QUEUE,
+        )
+    )
+
+
+# ── the §9 control 4's MID-CHUNK estate (the many-waiter flow): the
+# source emits CHUNK_ESTATE A-children at the flow's full bound; each A's
+# own body raises the product's own EmitBackpressure on its FIRST run
+# (the real body-seam park path — the runner's step-body catch), so every
+# A parks deterministically; the post-promotion re-run sees the A's own
+# gate row (the effect table) and completes. The gate rows are committed
+# autonomously by the body before the raise, so the park's rollback never
+# erases the discriminator. ────────────────────────────────────────────
+CHUNK_ESTATE: Final = 400
+
+
+async def _c4c_spawn(ctx: StepContext, item: object) -> C4Ok:
+    del item
+    # The FIRST run holds its claim briefly (the control's admission-lock
+    # seam lands in this window, before any park exists), then stamps the
+    # gate row (committed autonomously — the park's rollback never erases
+    # the discriminator) and parks through the product's own park path.
+    conn = await asyncpg.connect(os.environ["TASKQ_PG_DSN"])
+    try:
+        inserted = await conn.fetchval(
+            'INSERT INTO "'
+            + os.environ["TASKQ_SCHEMA_NAME"]
+            + '".p2sat_c4_gate (flow_id, map_index) VALUES ($1::uuid, $2) '
+            "ON CONFLICT DO NOTHING RETURNING 1",
+            str(ctx.flow_id),
+            int(ctx.map_index if ctx.map_index is not None else 0),
+        )
+    finally:
+        await conn.close()
+    if inserted is None:
+        # The re-run after the promotion: this A's gate row exists, so
+        # the estate's park window is over and this A completes.
+        return C4Ok.OK
+    await asyncio.sleep(2.0)
+    # The FIRST run: park this A through the product's own park path —
+    # the outstanding is this body's own honest read of the live estate.
+    conn2 = await asyncpg.connect(os.environ["TASKQ_PG_DSN"])
+    try:
+        outstanding = int(
+            await conn2.fetchval(
+                'SELECT count(*) FROM "'
+                + os.environ["TASKQ_SCHEMA_NAME"]
+                + "\".jobs WHERE (metadata->>'flow_id')::uuid = $1::uuid "
+                "AND status IN ('pending', 'running')",
+                str(ctx.flow_id),
+            )
+        )
+    finally:
+        await conn2.close()
+    raise EmitBackpressure(
+        page_width=1,
+        bound=CHUNK_ESTATE,  # this flow's own declared max_in_flight
+        outstanding=outstanding,
+    )
+
+
+_C4C_CHAIN: Final = Chain(
+    name=f"c4c-{new_uuid()}",
+    start="spawn",
+    queue=SOURCE_QUEUE,
+    steps={"spawn": Step(body=_c4c_spawn, outcomes=C4Ok, route=Route({C4Ok.OK: DONE}))},
+)
+
+
+async def _c4c_source_body(ctx: Any) -> None:
+    await ctx.emit_batch(
+        [
+            chain_start(_C4C_CHAIN, {"app_id": i}, map_index=i, trace_id=f"c4c-{i}")
+            for i in range(CHUNK_ESTATE)
+        ],
+        cursor={"page": 0},
+    )
+
+
+@p2sat_app.workflow("c4_chunk_flow", queue=SOURCE_QUEUE, max_in_flight=CHUNK_ESTATE)
+def c4_chunk_flow() -> Promise[object]:
+    return build(
+        chain_source(
+            _C4C_CHAIN,
+            _c4c_source_body,
+            key="source",
+            actor=_SOURCE_ACTOR,
+            max_attempts=2,
+            queue=SOURCE_QUEUE,
+        )
+    )
+
+
+async def _c4seed_source_body(ctx: Any) -> None:
+    """The seeded estate's own source: the estate's park rows are SEEDED
+    (the §9.2 "SEEDED, never engine-born" pattern), so the source's only
+    work is to terminalize."""
+    del ctx
+
+
+@p2sat_app.workflow("c4_seed_flow", queue=SOURCE_QUEUE, max_in_flight=CHUNK_ESTATE)
+def c4_seed_flow() -> Promise[object]:
+    return build(
+        chain_source(
+            _C4C_CHAIN,
+            _c4seed_source_body,
+            key="source",
+            actor=_SOURCE_ACTOR,
+            max_attempts=2,
+            queue=SOURCE_QUEUE,
+        )
+    )
 
 
 @p2sat_app.workflow(FLOW_NAME, queue=SOURCE_QUEUE, max_in_flight=PAGE_WIDTH)
