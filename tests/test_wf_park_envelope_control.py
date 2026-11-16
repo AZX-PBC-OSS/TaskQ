@@ -87,8 +87,15 @@ class _ParkArm:
             f'"{self._schema}".job_events CASCADE'
         )
 
-    async def seed(self, rows: list[tuple[str, int]]) -> None:
+    async def seed(
+        self, rows: list[tuple[str, int]], *, step_keys: list[str] | None = None
+    ) -> None:
+        """The pinned seed order; `step_keys` maps every row to its own
+        DECLARED chain source's step key (the declaration→durable-row
+        mapping rides the SEED — never an UPDATE pass, which would widen
+        the rows after ANALYZE and destroy the pinned layout)."""
         for index, (job_id, width) in enumerate(rows):
+            step_key = step_keys[index] if step_keys else f"src_{index:04d}"
             await self._conn.execute(
                 f'INSERT INTO "{self._schema}".jobs '
                 "(id, actor, queue, payload, status, max_attempts, retry_kind, "
@@ -96,7 +103,7 @@ class _ParkArm:
                 "VALUES ($1, 'a', 'q', '{}', 'scheduled', 3, 'transient', $2, "
                 "$3::jsonb, clock_timestamp(), clock_timestamp(), $4)",
                 uuid7_of(job_id),
-                f"src_{index:04d}",
+                step_key,
                 json.dumps(_park_meta(self._flow_id, width)),
                 self._flow_id,
             )
@@ -145,6 +152,52 @@ class _ParkArm:
         )
         document = json.loads(raw) if isinstance(raw, str) else raw
         return {"rows": rows, "document": document}
+
+    async def park_row_per_declared_source(self, step_keys: list[str]) -> list[int]:
+        """Exactly one CURRENT exact-park row per DECLARED source (the
+        declaration→durable-row mapping's own assert, run BEFORE the plan
+        checks): one row per key, each an exact §2.2 park."""
+        counts = []
+        for key in step_keys:
+            n = await self._conn.fetchval(
+                f"""SELECT count(*) FROM "{self._schema}".jobs
+                    WHERE step_key = $1
+                      AND (metadata->>'flow_id')::uuid = $2::uuid
+                      AND status = 'scheduled'
+                      AND metadata @> '{{"blocking_reason":"backpressure"}}'::jsonb""",
+                key,
+                self._flow_id,
+            )
+            counts.append(int(n or 0))
+        return counts
+
+    @staticmethod
+    def print_arm_plan(label: str, document: dict[str, Any], rows: list[Any]) -> None:
+        """The contract's own printing duty: the actual plan node names,
+        conditions, buffers, rows, and timings — printed, never buried."""
+        import time as _time
+
+        plan = document[0]["Plan"]
+        print(f"PLAN[{label}] execution_ms={plan.get('Actual Total Time')} "
+              f"rows={plan.get('Actual Rows')} loops={plan.get('Actual Loops')}", flush=True)
+        for node in _walk(plan, []):
+            name = node.get("Node Type")
+            index_name = node.get("Index Name")
+            cond = node.get("Index Cond")
+            removed = node.get("Rows Removed by Filter")
+            actual_rows = node.get("Actual Rows")
+            if index_name or removed is not None:
+                print(
+                    f"PLAN[{label}] node={name} index={index_name} "
+                    f"cond={str(cond)[:160]} rows={actual_rows} removed={removed}",
+                    flush=True,
+                )
+        buffers = sum(
+            (node.get("Shared Hit Blocks") or 0) + (node.get("Shared Read Blocks") or 0)
+            for node in _walk(plan, [])
+        )
+        print(f"PLAN[{label}] execution_buffers={buffers} result_rows={len(rows)}", flush=True)
+        del _time
 
 
 def new_uuid() -> Any:
@@ -219,6 +272,14 @@ async def test_newest_fit_and_oldest_fit_envelopes_and_declaration_mapping(
     assert MAX_FAN_IN_PER_JOIN == 1000
     _ = wf_schema
 
+    # THE DECLARATION→DURABLE-ROW MAPPING: every declared chain source's
+    # own step key owns EXACTLY ONE current exact-park row — asserted
+    # BEFORE the plan checks (the declaration-based `parked <= S` law's
+    # own basis; row-level seeding with an unproven declaration count is
+    # not sufficient).
+    declared_keys = sorted(compiled.nodes.keys())
+    assert len(declared_keys) >= _PARK_COUNT
+
     # The derivation record binds the fixture (checked in BEFORE first run).
     record = json.loads((Path(__file__).parent / "data" / "wf_emit_park_envelope.json").read_text())
     assert record["derivation_facts"]["park_heap_pages"] == 91
@@ -230,8 +291,20 @@ async def test_newest_fit_and_oldest_fit_envelopes_and_declaration_mapping(
 
     # ── NEWEST-FIT (parks-only, pinned contiguous order) ──
     await arm.reset()
-    await arm.seed([(jid, 100) for jid in arm.ids[:999]] + [(arm.ids[999], 1)])
+    mapping_keys = sorted(declared_keys)[:_PARK_COUNT]
+    await arm.seed(
+        [(jid, 100) for jid in arm.ids[:999]] + [(arm.ids[999], 1)],
+        step_keys=mapping_keys,
+    )
+    # THE MAPPING (declared key → its own durable row): exactly one
+    # current exact-park row per declared source, BEFORE the plan checks.
+    per_source = await arm.park_row_per_declared_source(mapping_keys)
+    assert all(n == 1 for n in per_source), (
+        "exactly one current exact-park row per declared source required; "
+        f"got {per_source[:10]}... (all-ones required)"
+    )
     result = await arm.run_candidate(charge=60, bound=100)
+    arm.print_arm_plan("newest-fit", result["document"], result["rows"])
     assert len(result["rows"]) == 1
     assert str(result["rows"][0]["id"]) == arm.ids[999], (
         "the newest W=1 park is the oldest FITTING waiter's answer"
@@ -253,8 +326,14 @@ async def test_newest_fit_and_oldest_fit_envelopes_and_declaration_mapping(
 
     # ── OLDEST-FIT (parks-only, pinned contiguous order) ──
     await arm.reset()
-    await arm.seed([(arm.ids[0], 1)] + [(jid, 100) for jid in arm.ids[1:]])
+    await arm.seed(
+        [(arm.ids[0], 1)] + [(jid, 100) for jid in arm.ids[1:]],
+        step_keys=mapping_keys,
+    )
+    per_source = await arm.park_row_per_declared_source(mapping_keys)
+    assert all(n == 1 for n in per_source), per_source[:10]
     result = await arm.run_candidate(charge=60, bound=100)
+    arm.print_arm_plan("oldest-fit", result["document"], result["rows"])
     assert len(result["rows"]) == 1
     assert str(result["rows"][0]["id"]) == arm.ids[0], "the oldest W=1 park is the answer"
     execution, _planning = _buffers(result["document"])
