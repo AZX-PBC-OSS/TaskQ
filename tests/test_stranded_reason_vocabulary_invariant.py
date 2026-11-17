@@ -10,59 +10,160 @@ _UNIVERSAL_VARIANTS, matched case-folded against every local unit),
 whole-detector parity/mirror claims, and the typed reason-set
 declarations. Three consecutive review rounds found the same defect
 class on further shipped surfaces; this invariant replaces hand
-enumeration with a maintained scanner:
+enumeration with a maintained scanner.
 
-* **semantic local units** — Markdown BLOCKS derived from the real
-  parser's token/line map (every paragraph, ATX and setext heading,
-  thematic break, list item at any depth, blockquote — lazy
-  continuation included —, fenced or indented code block at any
-  container depth, HTML block, and table, each at its own true line
-  span), the MkDocs CONTAINER bodies the docs build enables
-  (`!!!`/`???`/`===` admonition, details and tab bodies: the body is
-  dedented and re-parsed as markdown at a line offset, so each body
-  paragraph/list/fence is its own unit at its true line), plus the
-  additive refinements that survived nine review rounds (each fenced
-  line-comment line and each fence's `/* */` / `<!-- -->` block
-  comment, each table row, each HTML `<!-- -->` / Jinja `{# #}`
-  comment statement), YAML scalar values (parsed, at the composer's
-  exact node marks), YAML comment lines, HTML element runs (each
-  `<tr>` row / block element; a wrapped element stays one unit), AST
-  docstrings, contiguous comment blocks, and `Field(description=...)`
-  strings — never "a label occurs somewhere in the file", and never a
-  blank-line block folding sibling elements/items/quotes/comments into
-  one unit (a scoped sibling must not purify a gloss);
-* **four detection rules** — (1) the closed reason-set enumeration, (2)
-  the universal no-dispatch/no-touch claim, (3) the whole-detector
-  parity/mirror claim, (4) the structural closed enumeration (every
-  `Literal[...]`/tuple/list/set carrying the stranded reason labels);
-* **fail-closed parsing** — an unreadable file or a Python file that
-  fails `ast.parse` is RED, never skipped;
-* **a span-digest allowlist** — `path + normalized-span digest +
-  one-line reason`; an unlisted match is red; a vanished required path
-  or span is red (deleting text cannot silently erase an exception);
-* **self-referential fixtures constructed at runtime** — the negative
-  corpus is built from independently non-triggering fragments, so no
-  stored counterexample can exempt or poison the scan;
-* **a checked law, not an enumeration** — the unit model's own
-  structural properties are ASSERTED over every scanned file, so a
-  construct no round thought of cannot silently hide text: (1) LINE
-  COVERAGE — every non-blank line of a text-carrier file is owned by
-  at least one unit (for `.py`, the ownership form: every
-  tokenize-level STRING/COMMENT token — a Python file's only text
-  carriers — is owned by a unit); (2) DISJOINT-OR-CONTAINED — every
-  pair of a file's units is disjoint or one contains the other,
-  checked globally; (3) NO TRUNCATION — a unit's text is consistent
-  with its declared line span (the splitlines-truncation class). The
-  per-line markdown floor (every non-blank line no block owns is its
-  own unit — link-reference definitions, `>`-only separators, any
-  construct the model does not know) is what MAKES the coverage law
-  true; the law is what makes losing the floor red.
+THE SCAN — every file under src/, docs/ and tests/ carrying a .py, .md,
+.yml, .yaml or .html suffix is parsed into SEMANTIC LOCAL UNITS, every
+unit is matched against the four rules, and a match outside the
+span-digest allowlist is red. The units, per surface (each surface owns
+its text with its real grammar's parser):
 
-This test is the SOLE completeness authority for this class. Per-site
-red-first evidence (every corrected site's own old wording reverts and
-reds this scanner) lives in the correction report; a new occurrence
-anywhere in the scanned tree reds THIS test without waiting for another
-review to find it."""
+* .md — markdown-it's (a CommonMark block parser's) token/line map:
+  every paragraph, ATX and setext heading, thematic break, list item at
+  any depth, blockquote paragraph (lazy continuation included), fenced
+  or indented code block, raw HTML block and table row, each at its own
+  true line span; PLUS the MkDocs CONTAINER bodies the docs build
+  enables (the `!!!`/`???`/`===` admonition, details and tab bodies —
+  the renderer's own block-processor regexes and detab law,
+  `_container_marker` / `_container_body_end`), the body dedented and
+  re-parsed as markdown at a line offset, blockquote-prefixed
+  containers included (`> !!! note` is matched after the renderer's
+  blockquote clean law and gets the same body paragraph units as the
+  unquoted form); PLUS each fenced/indented code block's comment
+  statements — full-line (`--`/`//`/`#`/`%`/`;`) and trailing-after-
+  code line comments, and `/* */` / `<!-- -->` block comments as whole
+  statements; PLUS the per-line FLOOR: every non-blank line no unit
+  owns (a link-reference definition the parser consumes without a
+  token, a `>`-only separator, any construct the model does not know)
+  is its own unit, never folded. The markdown grid is the renderer's
+  own (`_renderer_lines`): newlines folded and every tab expanded to
+  the next 4-column tab stop — the renderer's NormalizeWhitespace — so
+  the detab slice removes the columns it claims.
+* .py — AST docstrings, string constants (a JoinedStr f-string's
+  literal parts joined into ONE unit), contiguous comment blocks, and
+  the rule-4 typed collection / `Literal[...]` source segments. For the
+  coverage law a Python file's text carriers are its tokenize-level
+  STRING/COMMENT tokens.
+* .yml/.yaml — parsed scalar values at the composer's exact node marks
+  (keys and values both), each comment line (full-line and trailing),
+  and the per-line floor.
+* .html — each element's OWN run (a leaf element is one unit — a
+  `<tr>` row, a `<span>` badge — a wrapped element stays ONE unit; a
+  container contributes start-tag + direct-text + end-tag runs while
+  each CHILD element is its own unit), every `<!-- -->` and `{# #}`
+  comment statement (a multi-line comment stays the one statement it
+  is), and the per-line floor for the text no element or comment owns.
+
+THE FOUR RULES, over every unit:
+
+1. CLOSED ENUMERATION — the unit defines the stranded reason family
+   with only the old dispatch conditions (the two-label set, the prose
+   two-member form, or the single-member definition); a corrected unit
+   carries `workflow_root_missing` or is expressly scoped.
+2. UNIVERSAL GLOSS — a never-dispatchable claim about the
+   detector/gauge population that its own occurrence does not waive
+   (the scoping bounds below).
+3. WHOLE-DETECTOR PARITY — a parity/mirror claim about the whole
+   detector that the unit does not narrow to the two
+   dispatch-invisible legs.
+4. STRUCTURAL CLOSED ENUMERATION — a `Literal[...]`/tuple/list/set
+   declaration carrying both old reason labels and lacking
+   `workflow_root_missing`.
+
+THE SCOPING PREDICATE'S BOUNDS. A scope MARKER is word-bounded and
+names the legs themselves: `dispatch-invisible`, `dispatch invisible`,
+`may dispatch`, `may be dispatched` (`_SCOPE_MARKER_RE`). A marker is
+genuine unless a NEGATOR (`_NEGATOR_RE`) sits in the marker's own
+sentence before it — the same SENTENCE, not a character window; the
+sentence grid splits after `.`, `!` and `?` only, so a scope binds
+across colons, semicolons and dashes — or a positive COUNTER-CLAIM
+(`_SCOPE_COUNTER_CLAIM_RE`) shares the marker's sentence, unless that
+sentence is the third leg's own definition (it names the third leg,
+whose own meaning is the row that CAN dispatch when served). Rule 2's
+occurrence is waived when its own sentence carries a genuine marker,
+or the occurrence is one reason's own true meaning: its subject is one
+reason's own rows (a label and its noun immediately before it), it is
+bound to one reason's label with no population subject between
+(`_label_bound`), or its own sentence is a foreign restricted subject
+with no detector mention (`_foreign_subject`). Rules 1, 3 and 4 are
+waived by a genuine marker anywhere in the unit (their claims bind to
+the unit's own scope statement).
+
+THE THREE STRUCTURAL LAWS, asserted over EVERY scanned file (a
+construct no round thought of cannot silently hide text):
+
+1. LINE COVERAGE — every non-blank line of a text-carrier file belongs
+   to at least one unit; for .py, every tokenize-level STRING/COMMENT
+   token's span is owned by a unit. The per-line floors make the
+   text-carrier form true by construction; the law makes losing a
+   floor red.
+2. LAMINAR SPANS — every PAIR of a file's units is disjoint, one
+   contains the other, or they touch at a shared boundary line,
+   decided by the open-interval stack over units sorted by (start,
+   longest first) — O(n log n) per file; the corpus test asserts
+   agreement with the brute-force all-pairs form on randomized inputs,
+   nested-crossing shapes included.
+3. NO TRUNCATION — a unit's text is consistent with its declared line
+   span: whole-line units carry exactly the file's own grid lines over
+   the span minus the container dedent; statement units are exact
+   substrings of their span; Python string units carry parsed values,
+   so their law is the span's existence plus the ownership law.
+
+THE ALLOWLIST — `path + normalized-span digest + one-line reason`: an
+unlisted match is red; a listed entry whose path or span vanishes is
+red (deleting text cannot silently erase an exception); a wildcard
+entry's file must still carry the class's vocabulary. Adding an entry
+carries the same independent review as prose policy.
+
+FAIL-CLOSED — an unreadable file, a .py that fails ast.parse,
+unreadable YAML, an unparseable template, a fence whose content-line
+count disagrees with its span, and a Markdown block token the unit
+model does not know are all RED with the path named, never a silent
+skip.
+
+DECLARED RESIDUALS — what a gloss could still hide, and why each is
+accepted:
+
+1. A gloss inside a fence's NON-COMMENT content (a string literal, a
+   code line) lives inside the fence's own coarse unit, whose single
+   sentence a sibling scoped comment's marker can waive. The comment
+   statements have their own units; the non-comment content does not.
+   Accepted: shipped fences' executable lines are code, not prose, and
+   every comment statement is its own unit.
+2. A gloss split across `+`-concatenated Python string constants hides
+   (each constant is its own unit and the variant spans the
+   concatenation); implicit concatenation folds in the AST and does
+   not hide. Accepted: shipped source is reviewed in diff, and the
+   corpus values are assembled at runtime from independently
+   non-triggering fragments while the module's regex/name constants
+   are fragment-joined in source — and the scan enforces the
+   discipline on itself, because this file is inside the scanned scope
+   (a stored triggering combination would red the tree-wide
+   invariant).
+3. A universal gloss in the same SENTENCE as a genuine scope marker —
+   set off only by a colon, semicolon, dash or parenthesis — is waived
+   (the sentence is the scoping predicate's granularity; the shipped
+   scope sentences bind their own glosses across them). A gloss in a
+   separate sentence is never waived (the round-10 F10-4 negative).
+4. The subject/label waivers are lexical: a population subject spelled
+   outside `_POPULATION_SUBJECT_RE`'s forms between a label and a
+   variant would waive it. Accepted: the forms enumerate the shipped
+   prose's own population subjects; a new spelling is a re-review, not
+   a silence.
+5. A quoted container's prefix is the renderer's clean law
+   (` {0,3}> ?` per level): a tab inside a blockquote prefix is not
+   stripped, and such a line degrades to the floor — still covered,
+   never hidden.
+6. Sentence splitting is mechanical: an abbreviation ("e.g.") inside a
+   scope sentence splits it, which can only SEPARATE a claim from its
+   scope — more reds, never fewer.
+
+This test is the SOLE completeness authority for this class, over the
+scan scope stated above (a surface outside those roots and suffixes is
+out of scope by declaration). Per-site red-first evidence (every
+corrected site's own old wording reverts and reds this scanner) lives
+in the correction report; a new occurrence anywhere in that scanned
+scope reds THIS test without waiting for another review to find it."""
 
 from __future__ import annotations
 
