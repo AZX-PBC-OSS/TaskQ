@@ -42,8 +42,10 @@ its text with its real grammar's parser):
   the detab slice removes the columns it claims.
 * .py — AST docstrings, string constants (a JoinedStr f-string's
   literal parts joined into ONE unit), each comment line its own unit
-  (tokenize ends every comment line with an NL, so two adjacent
-  comment lines are sibling units, never folded), and
+  (tokenize follows every comment token with a non-COMMENT token — an
+  NL after a full-line comment, a NEWLINE after a trailing one — and
+  the unit block flushes on that next token, so two adjacent comment
+  lines are sibling units, never folded), and
   the rule-4 typed collection / `Literal[...]` source segments. For the
   coverage law a Python file's text carriers are its tokenize-level
   STRING/COMMENT tokens.
@@ -99,10 +101,14 @@ restricted subject with no detector mention (`_foreign_subject`). Rules 1, 3 and
 bind to the unit's own scope statement).
 
 THE THREE STRUCTURAL LAWS, asserted over EVERY scanned file. Together
-they put every non-blank line inside some unit, keep unit spans
-laminar, and keep unit text truthful — so a construct no round thought
-of cannot live OUTSIDE the units (what a unit's own interior waives is
-the scoping predicate's declared business: the residuals below):
+they put every non-blank line of a text-carrier surface inside some
+unit — for .py the law is TOKEN ownership, not line coverage (every
+tokenize-level STRING/COMMENT token's span is owned by a unit; code
+lines are not text carriers and are outside the units) — keep unit
+spans laminar, and keep unit text truthful — so a construct no round
+thought of cannot live OUTSIDE the units (what a unit's own interior
+waives is the scoping predicate's declared business: the residuals
+below):
 
 1. LINE COVERAGE — every non-blank line of a text-carrier file belongs
    to at least one unit; for .py, every tokenize-level STRING/COMMENT
@@ -1563,8 +1569,10 @@ def _html_units(path: str, text: str, line_offset: int = 0, dedent: int = 0) -> 
 
 
 def _python_units(path: str, text: str, tree: ast.Module) -> Iterator[Unit]:
-    """AST docstrings, each comment line its own unit (tokenize ends
-    every comment line with an NL, so two adjacent comment lines are
+    """AST docstrings, each comment line its own unit (tokenize follows
+    every comment token with a non-COMMENT token — an NL after a
+    full-line comment, a NEWLINE after a trailing one — and the unit
+    block flushes on that next token, so two adjacent comment lines are
     sibling units, never folded), `Field(description=...)`
     strings, and the typed collection literals (rule 4's own units). A
     docstring is ONE unit: the AST walk sees the same Constant as both
