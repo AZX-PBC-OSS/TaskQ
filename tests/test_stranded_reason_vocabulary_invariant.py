@@ -13,9 +13,13 @@ class on further shipped surfaces; this invariant replaces hand
 enumeration with a maintained scanner:
 
 * **semantic local units** — Markdown paragraphs/table rows, YAML scalar
-  values (parsed and folded), AST docstrings, contiguous comment blocks,
-  and `Field(description=...)` strings — never "a label occurs somewhere
-  in the file";
+  values (parsed and folded), YAML comment lines, HTML element runs (each
+  `<tr>` row / block element; a wrapped element stays one unit), HTML
+  `<!-- -->` and Jinja/Tera `{# #}` comment statements, AST docstrings,
+  contiguous comment blocks, and `Field(description=...)` strings — never
+  "a label occurs somewhere in the file", and never a blank-line block
+  folding sibling elements/comments into one unit (a scoped sibling must
+  not purify a gloss);
 * **four detection rules** — (1) the closed reason-set enumeration, (2)
   the universal no-dispatch/no-touch claim, (3) the whole-detector
   parity/mirror claim, (4) the structural closed enumeration (every
@@ -38,11 +42,13 @@ review to find it."""
 from __future__ import annotations
 
 import ast
+import bisect
 import hashlib
 import json as _json
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Final
 
@@ -95,6 +101,13 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "6c980c36d6e92dcc6b9b254f9db31546d3119affaf4c41f271266d0113484986",
         "src/taskq/web/templates/_partials/queue_table.html",
         "the queue badge tooltip's own sanctioned two-leg text (layer-6 table B: the tooltip exactly describes the two legs its SQL counts)",
+    ),
+    (
+        "c842b501aea0bfaf6804636b11729bb9cd432f4344c82095d225fa6d63d4df1f",
+        "src/taskq/web/templates/_partials/queue_table.html",
+        "the SAME sanctioned two-leg tooltip, as its own `<span>` element unit "
+        "carries it (the round-6 M-1 element units re-derived the digest; a "
+        "wording touch still re-reviews the span)",
     ),
     (
         "afa336cda95c34edb17f682d4800764144a449a63e0a331897d896c6d7232cf1",
@@ -498,6 +511,171 @@ def _yaml_scalar_units(path: str, text: str) -> Iterator[Unit]:
             yield Unit(path, "yaml", first_line, first_line + len(scalar.splitlines()) - 1, scalar)
 
 
+def _yaml_comment_units(path: str, text: str) -> Iterator[Unit]:
+    """YAML comment units — each comment is its own unit, at the line the
+    language scopes it to (a YAML comment runs to end of line, so
+    adjacent `#` lines are SIBLING statements, never folded: a scoped
+    sibling must not purify a gloss line — the round-6 M-1 defeat folded
+    two adjacent comment lines into one blank-line block and the gloss
+    stayed green). Full-line and trailing comments both get their own
+    unit; a `#` inside a quoted scalar may be over-taken as a comment —
+    an extra unit can only add a red, never hide one, and the scalar
+    itself stays its own parsed unit either way."""
+    for idx, line in enumerate(text.splitlines(), start=1):
+        match = re.search(r"(?:(?<=\s)|^)#", line)
+        if match is not None:
+            yield Unit(path, "yaml-comment", idx, idx, line[match.start() :].strip())
+
+
+#: The HTML void elements — a start tag for one of these is a complete
+#: element (no end tag exists to close it).
+_HTML_VOID_ELEMENTS: Final = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+
+
+class _HTMLTemplateParser(HTMLParser):
+    """Collects element and comment token offsets from a template. Tolerant
+    of the Jinja statement grammar the HTML grammar sees as text (`{% %}` /
+    `{{ }}` ride the surrounding units); never rejects template markup."""
+
+    def __init__(self, line_starts: list[int]) -> None:
+        super().__init__(convert_charrefs=False)
+        self._line_starts = line_starts
+        self.tokens: list[tuple[str, int, str]] = []
+
+    def _offset(self) -> int:
+        line, col = self.getpos()
+        return self._line_starts[line - 1] + col
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.tokens.append(("start", self._offset(), tag))
+
+    def handle_endtag(self, tag: str) -> None:
+        self.tokens.append(("end", self._offset(), tag))
+
+    def handle_comment(self, data: str) -> None:
+        self.tokens.append(("comment", self._offset(), data))
+
+
+def _html_units(path: str, text: str) -> Iterator[Unit]:
+    """HTML/Jinja/Tera template units — the ruling's "templates and UI
+    text" surface. Each element's OWN run is a unit: a leaf element is
+    one unit (a `<tr>` row, a `<span>` badge — a wrapped element stays
+    ONE unit, never fragmented), and a container contributes its own
+    runs (its start tag + direct text, the text between child elements,
+    its end tag) while each CHILD element is its own unit — so sibling
+    elements are separate units and a scoping marker in one can never
+    purify a sibling's gloss (the round-6 M-1 defeat folded two adjacent
+    `<tr>` rows into one blank-line block and the gloss stayed green).
+    Every `<!-- -->` HTML comment and every `{# ... #}` Jinja/Tera
+    comment is its own unit, a multi-line comment staying the one
+    statement it is. The blank-line markdown fallback is kept
+    additively for the text the element grammar does not own (Jinja
+    statements, a template's bare text) — the element units ADD
+    granularity and can never remove a red."""
+    line_starts = [0] + [match.end() for match in re.finditer("\n", text)]
+
+    def line_of(offset: int) -> int:
+        return bisect.bisect_right(line_starts, offset)
+
+    parser = _HTMLTemplateParser(line_starts)
+    try:
+        parser.feed(text)
+        parser.close()
+    except AssertionError as exc:  # fail closed: an unparseable template is red
+        raise AssertionError(f"{path}: unparseable HTML ({exc})") from exc
+
+    # Element spans with implied ends: a repeated start tag implies the
+    # end of the previous open one; an end tag closes every element open
+    # above its match; EOF closes the rest.
+    boundaries = sorted({offset for _kind, offset, _tag in parser.tokens} | {len(text)})
+    open_stack: list[tuple[str, int]] = []
+    elements: list[tuple[int, int]] = []
+
+    def next_boundary_after(offset: int) -> int:
+        return boundaries[bisect.bisect_right(boundaries, offset)]
+
+    for kind, offset, tag in parser.tokens:
+        if kind == "start":
+            if tag in _HTML_VOID_ELEMENTS:
+                elements.append((offset, next_boundary_after(offset)))
+                continue
+            if any(open_tag == tag for open_tag, _ in open_stack):
+                while open_stack:
+                    open_tag, open_start = open_stack.pop()
+                    elements.append((open_start, offset))
+                    if open_tag == tag:
+                        break
+            open_stack.append((tag, offset))
+        elif kind == "end":
+            depth = next((i for i, (open_tag, _) in enumerate(open_stack) if open_tag == tag), None)
+            if depth is None:
+                continue  # a stray end tag closes nothing
+            while len(open_stack) > depth:
+                _open_tag, open_start = open_stack.pop()
+                elements.append((open_start, offset))
+    for _open_tag, open_start in open_stack:
+        elements.append((open_start, len(text)))
+
+    # The non-overlapping own-runs: each element's span minus its direct
+    # children's spans.
+    elements.sort(key=lambda span: (span[0], -span[1]))
+    children: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    ancestors: list[tuple[int, int]] = []
+    for span in elements:
+        while ancestors and ancestors[-1][1] <= span[0]:
+            ancestors.pop()
+        if ancestors:
+            children.setdefault(ancestors[-1], []).append(span)
+        ancestors.append(span)
+    for start, end in elements:
+        cursor = start
+        for child_start, child_end in children.get((start, end), ()):
+            if child_start > cursor:
+                yield Unit(
+                    path,
+                    "html-element",
+                    line_of(cursor),
+                    line_of(child_start),
+                    text[cursor:child_start],
+                )
+            cursor = max(cursor, child_end)
+        if cursor < end:
+            yield Unit(path, "html-element", line_of(cursor), line_of(end), text[cursor:end])
+
+    # The comment statements (exact raw spans).
+    for kind, offset, _data in parser.tokens:
+        if kind != "comment" or not text.startswith("<!--", offset):
+            continue
+        close = text.find("-->", offset + 4)
+        end = len(text) if close == -1 else close + 3
+        yield Unit(path, "html-comment", line_of(offset), line_of(end), text[offset:end])
+    for match in re.finditer(r"\{#.*?#\}", text, re.DOTALL):
+        yield Unit(
+            path,
+            "template-comment",
+            line_of(match.start()),
+            line_of(match.end()),
+            match.group(),
+        )
+
+
 def _python_units(path: str, text: str, tree: ast.Module) -> Iterator[Unit]:
     """AST docstrings, contiguous comment blocks, `Field(description=...)`
     strings, and the typed collection literals (rule 4's own units)."""
@@ -719,12 +897,19 @@ def _units_for(rel: str, raw: str) -> list[Unit]:
     """The file's semantic units (the scan's own dispatch, shared with
     the anti-rot law so a digest's live-span match is computed over the
     SAME units the scan matches). Fail-closed: a .py file that does not
-    parse raises, and unreadable YAML raises — never a silent skip."""
+    parse raises, unreadable YAML raises, an unparseable template
+    raises — never a silent skip."""
     if rel.endswith(".py"):
         tree = ast.parse(raw)
         return list(_python_units(rel, raw, tree))
     if rel.endswith((".yml", ".yaml")):
-        return list(_yaml_scalar_units(rel, raw)) + list(_markdown_units(rel, raw))
+        return (
+            list(_yaml_scalar_units(rel, raw))
+            + list(_yaml_comment_units(rel, raw))
+            + list(_markdown_units(rel, raw))
+        )
+    if rel.endswith(".html"):
+        return list(_html_units(rel, raw)) + list(_markdown_units(rel, raw))
     return list(_markdown_units(rel, raw))
 
 
@@ -990,15 +1175,10 @@ frag_unserved = "unserved_" + "queue"
 def _corpus_units(virtual_path: str, text: str) -> list[Unit]:
     """The scanner's own unit builder, callable on a caller-supplied
     corpus (the fixtures' shape) — nothing under docs/ or src/ is ever
-    created, edited, or removed."""
-    if virtual_path.endswith(".py"):
-        tree = ast.parse(text)
-        return list(_python_units(virtual_path, text, tree))
-    if virtual_path.endswith((".yml", ".yaml")):
-        return list(_yaml_scalar_units(virtual_path, text)) + list(
-            _markdown_units(virtual_path, text)
-        )
-    return list(_markdown_units(virtual_path, text))
+    created, edited, or removed. It IS the scan's own dispatch
+    (`_units_for`), so a fixture exercises the same unit model the
+    tree-wide scan uses — never a shadow re-implementation."""
+    return _units_for(virtual_path, text)
 
 
 def _corpus_matches(virtual_path: str, text: str) -> list[str]:
@@ -1265,3 +1445,115 @@ def test_table_rows_are_their_own_units_a_laundered_gloss_reds() -> None:
     assert not _corpus_matches("virtual/table-open-clean.md", corrected_open_table), (
         "the corrected no-trailing-pipe table's rows each pass on their own words"
     )
+
+
+def test_html_rows_and_yaml_comments_are_their_own_units() -> None:
+    """Round-6 M-1: the `.html` and YAML surfaces get the ruling's own
+    semantic units — an HTML element/row and a comment statement are
+    their own units, never blank-line-block folds — so DeepSeek's two
+    executed defeats can no longer stay green by folding: two ADJACENT
+    `<tr>` rows (the workers.html attack) and two ADJACENT YAML comment
+    lines (the contrib rules.yaml attack) each red ALONE, and the
+    blank-line-separated variants stay red. Honesty: a single multi-line
+    element/comment that is genuinely one statement remains ONE unit (a
+    wrapped sentence is never fragmented into meaningless pieces), and a
+    scoping marker cannot leak across sibling elements. Every corpus
+    value is assembled at runtime from independently non-triggering
+    fragments (the module's own law)."""
+    # ── the executed workers.html defeat: two ADJACENT <tr> rows ────────
+    scoped_row = (
+        "<tr><td>workflow_root_missing</td><td>the two dispatch-invisible legs are scoped</td></tr>"
+    )
+    gloss_row = (
+        "<tr><td>"
+        + frag_reasons
+        + "</td><td>The stranded detector: pending/scheduled rows "
+        + "can never "
+        + "dispatch.</td></tr>"
+    )
+    adjacent = "<table>\n" + scoped_row + "\n" + gloss_row + "\n</table>"
+    assert _corpus_matches("virtual/tr-adjacent.html", adjacent) == ["universal-no-dispatch"], (
+        "the gloss row must red the scanner EVEN WHEN the adjacent row carries "
+        "the scoping marker — an element row is its own unit"
+    )
+    separated = "<table>\n" + scoped_row + "\n\n" + gloss_row + "\n</table>"
+    assert _corpus_matches("virtual/tr-separated.html", separated), (
+        "the blank-line-separated variant stays red"
+    )
+    assert _corpus_matches("virtual/tr-alone.html", gloss_row), (
+        "the gloss row reds ALONE (its own unit, no sibling context)"
+    )
+    # The units themselves: the two rows are separate element units — the
+    # marker never leaks across them.
+    row_units = [
+        unit
+        for unit in _corpus_units("virtual/tr-adjacent.html", adjacent)
+        if unit.kind == "html-element" and unit.text.startswith("<tr>")
+    ]
+    assert len(row_units) == 2, [unit.text for unit in row_units]
+
+    # ── the executed rules.yaml defeat: two ADJACENT comment lines ──────
+    scoped_comment = "# the scoped read covers the two dispatch-invisible legs"
+    gloss_comment = "# the stranded gauge: rows that " + "can never " + "dispatch"
+    yaml_adjacent = "alert: probe\n" + scoped_comment + "\n" + gloss_comment + "\n"
+    assert _corpus_matches("virtual/comments-adjacent.yaml", yaml_adjacent) == [
+        "universal-no-dispatch"
+    ], (
+        "the gloss comment must red the scanner EVEN WHEN the adjacent comment "
+        "line carries the scoping marker — a YAML comment line is its own unit"
+    )
+    yaml_separated = "alert: probe\n" + scoped_comment + "\n\n" + gloss_comment + "\n"
+    assert _corpus_matches("virtual/comments-separated.yaml", yaml_separated), (
+        "the blank-line-separated variant stays red"
+    )
+    assert _corpus_matches("virtual/comments-alone.yaml", gloss_comment), (
+        "the gloss comment reds ALONE"
+    )
+
+    # ── honesty: a multi-line comment is genuinely ONE unit ────────────
+    wrapped_comment = (
+        "<!-- the stranded gauge's own note,\n   still one comment statement -->\n<td>plain</td>"
+    )
+    comment_units = [
+        unit
+        for unit in _corpus_units("virtual/comment-multiline.html", wrapped_comment)
+        if unit.kind == "html-comment"
+    ]
+    assert len(comment_units) == 1, [unit.text for unit in comment_units]
+    assert "still one comment statement" in comment_units[0].text
+    jinja_comment = (
+        "{# the stranded gauge's own note,\n   still one template comment #}\n<td>plain</td>"
+    )
+    template_units = [
+        unit
+        for unit in _corpus_units("virtual/comment-jinja.html", jinja_comment)
+        if unit.kind == "template-comment"
+    ]
+    assert len(template_units) == 1, [unit.text for unit in template_units]
+    assert "still one template comment" in template_units[0].text
+    # ... and a multi-line comment carrying the gloss reds as its own unit.
+    gloss_comment_doc = (
+        "<!-- the stranded gauge: rows that " + "can never " + "dispatch,\n"
+        "   wrapped across two lines -->\n"
+        "<td>plain</td>"
+    )
+    assert _corpus_matches("virtual/comment-gloss.html", gloss_comment_doc), (
+        "a multi-line comment carrying the gloss reds as its own unit"
+    )
+
+    # ── honesty: a wrapped sentence inside one element stays ONE unit ───
+    wrapped_row = (
+        "<table>\n"
+        "<tr>\n"
+        "  <td>the stranded gauge's own\n"
+        "  wrapped sentence is one statement</td>\n"
+        "</tr>\n"
+        "</table>"
+    )
+    cell_units = [
+        unit
+        for unit in _corpus_units("virtual/tr-wrapped.html", wrapped_row)
+        if unit.kind == "html-element" and unit.text.startswith("<td>")
+    ]
+    assert len(cell_units) == 1, [unit.text for unit in cell_units]
+    assert "wrapped sentence is one statement" in cell_units[0].text
