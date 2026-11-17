@@ -18,6 +18,8 @@ import asyncpg
 from taskq._sql_render import render as shared_render
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
+from taskq.workflows._sql_claim import current_claim_join
+from taskq.workflows._sql_finalize import validated_reservation_width
 from taskq.workflows._sql_status import absorbed_exists
 from taskq.workflows.api._runner_defer import WORKFLOW_CANCELLED_CLASS
 
@@ -386,14 +388,29 @@ UPDATE {schema}.jobs SET status = 'running' WHERE id = $1 AND status = 'pending'
 """
 
 CANCEL_ROOT_SQL_TEMPLATE = """
-WITH flipped AS (
+-- THE PRE-UPDATE CAPTURE (A9.4's truthful old state): the target CTE
+-- locks the root row (FOR UPDATE) and captures its ACTUAL pre-update
+-- status before the flip — the event's from_state is the row's own
+-- prior state (a pending root records 'pending', a running root
+-- 'running'), never a hardcoded value. The lock is the old-state race's
+-- own control (B-1): whichever writer locks first establishes the
+-- transition; the other captures the committed winner state afterwards.
+-- The root UPDATE itself remains the seat's first row lock and the
+-- cancel's linearization point (root-before-nodes).
+WITH target AS (
+    SELECT j.id, j.status::text AS from_state
+    FROM {schema}.jobs AS j
+    WHERE j.id = $1
+      AND j.status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+    FOR UPDATE
+), flipped AS (
     UPDATE {schema}.jobs SET status = 'cancelled',
         error_class = '{wf_cancelled_class}',
         error_message = $2,
         finished_at = clock_timestamp()
-    WHERE id = $1
-      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
-    RETURNING id, status::text AS to_state
+    FROM target
+    WHERE {schema}.jobs.id = target.id
+    RETURNING {schema}.jobs.id, status::text AS to_state, target.from_state
 ), evt AS (
     -- THE AUDIT LEG (the operator's march's battery finding): the
     -- cancel's flip IS a mutation — the events reader gets the
@@ -401,15 +418,46 @@ WITH flipped AS (
     -- terminal row's OWN event here).
     INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
     SELECT f.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', 'running', 'to_state', f.to_state,
+           jsonb_build_object('from_state', f.from_state, 'to_state', f.to_state,
                               'error_class', '{wf_cancelled_class}')
     FROM flipped f
 )
 SELECT id FROM flipped
 """
 
+
+#: The runner templates' render path does not collapse braces (their own
+#: jsonb literals are single-braced), while `_sql_finalize`'s shared
+#: fragments are written in that module's doubled-brace convention (its
+#: render collapses). A fragment moved across the seam is re-braced here,
+#: once, with the convention named — the runner's own literals are
+#: untouched.
+def _rebrace(fragment: str) -> str:
+    return fragment.replace("{{", "{").replace("}}", "}")
+
+
 CANCEL_NODES_SQL_TEMPLATE = """
-WITH flipped AS (
+-- THE PRE-UPDATE CAPTURE (A9.4's truthful old state + B-1's old-state
+-- race control): the target CTE locks each candidate row (FOR UPDATE —
+-- whichever writer locks first establishes the transition; the other
+-- captures the committed winner state) and captures its ACTUAL
+-- pre-update status and its validated old page-width reservation (the
+-- §2.4 semantics: NULL when absent, fail-closed on a malformed key) —
+-- the event's from_state and the additive released-width detail are the
+-- row's own facts, never post-update reads.
+WITH targets AS (
+    SELECT j.id,
+           j.status::text AS from_state,
+           {wf_emit_validated_reservation_width}
+    FROM {schema}.jobs AS j
+    WHERE (j.metadata->>'flow_id')::uuid = $1
+      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+      -- A materialized terminal effect owns an independent ordinary policy.
+      -- Its committed intent has already been granted this one physical job;
+      -- later run cancellation must not revoke that durable obligation.
+      AND NOT metadata ? 'wf_after_terminal_effect'
+    FOR UPDATE
+), flipped AS (
     UPDATE {schema}.jobs
     SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
         finished_at = CASE WHEN status = 'running' THEN finished_at ELSE clock_timestamp() END,
@@ -419,47 +467,40 @@ WITH flipped AS (
         metadata = CASE WHEN status = 'running'
                         THEN metadata || '{"cancel_phase": "cooperative"}'::jsonb
                         ELSE (metadata - 'wf_emit_reservation') || '{"cancel_phase": "cooperative"}'::jsonb END
-    WHERE (metadata->>'flow_id')::uuid = $1
-      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
-      -- A materialized terminal effect owns an independent ordinary policy.
-      -- Its committed intent has already been granted this one physical job;
-      -- later run cancellation must not revoke that durable obligation.
-      AND NOT metadata ? 'wf_after_terminal_effect'
-    RETURNING id, (status::text) AS to_state
+    FROM targets AS t
+    WHERE {schema}.jobs.id = t.id
+    RETURNING {schema}.jobs.id, (status::text) AS to_state, t.from_state,
+              t.released_emit_reservation_width
 ), current_claim AS (
-    -- The operator-owned CURRENT-CLAIM resolution (under this statement's
-    -- root/node locks): each flipped row's current ledger row carries the
-    -- job's OWN id, its attempt, and its persisted claim_epoch in a
-    -- still-nonterminal status. The one refunded shape — the capacity
-    -- park (attempt 0, the epoch preserved, the park's own stamps) —
-    -- still resolves its prior positive claim: that epoch has exactly
-    -- one claim under the new-epoch regime, so the epoch leg alone is
-    -- exact for it. A never-claimed pending node has no current ledger
-    -- and needs none.
-    SELECT f.id AS job_id, l.id AS ledger_id, l.updated_at AS claimed_at
+    -- THE CURRENT-CLAIM RESOLUTION (the ONE shared association core —
+    -- `_sql_claim.current_claim_join`: job_id + the CURRENT claim_epoch +
+    -- the exact step_key + the null-safe map_index; NO attempt-equality
+    -- leg — every non-consuming release (an ordinary Snooze, a legacy
+    -- non-consuming RetryAfter, a hold, a worker refund, the capacity
+    -- park) refunds the job's DISPLAYED ordinal below the recorded
+    -- claim's attempt while the current epoch stands, so an attempt leg
+    -- would resolve zero rows and leave the current claim unfenced — and
+    -- no park-metadata test: the epoch already identifies the current
+    -- claim across every refund representation). The caller appends the
+    -- disposition's own status domain (the nonterminal
+    -- running/awaited/crashed claims). The captured ledger id + pre-update
+    -- instant are the exact fence; the captured attempt is a
+    -- NON-NARROWING recorded fact (the audit's optional claim_attempt
+    -- detail), never an association leg. A never-claimed pending row has
+    -- no current claim and needs none (LEFT-joined at the event).
+    SELECT f.id AS job_id, l.id AS ledger_id, l.updated_at AS claimed_at,
+           l.attempt AS claim_attempt
     FROM flipped AS f
     JOIN {schema}.jobs AS j ON j.id = f.id
     JOIN {schema}.wf_step_ledger AS l
-      ON l.job_id = j.id
-      AND l.claim_epoch = j.claim_epoch
-      AND (
-        l.attempt = j.attempt
-        OR (
-          j.attempt = 0
-          AND j.metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
-        )
-      )
+      ON {current_claim_join}
      AND l.status IN ('running', 'awaited', 'crashed')
     WHERE f.to_state = 'cancelled'
 ), fenced_ledger AS (
-    -- A parked source has refunded jobs.attempt to zero; its current ledger
-    -- claim remains the prior physical attempt. Resolve the CURRENT claim
-    -- by its EXACT physical identity — the job's own id + attempt + the
-    -- job's PERSISTED claim_epoch — and fence it by its actual row id AND
-    -- its captured instant (the same id+instant law every terminal/fence
-    -- writer obeys). No flow-identity-only match (it would rest ALL
-    -- nonterminal epochs — the parked 'awaited' history included), no
-    -- epoch-less attempt match, no ORDER BY ... latest ambiguity.
+    -- The exact writer fence: ONLY the captured current row (its own id +
+    -- its pre-update instant) changes; older epochs, sibling ctx.substep
+    -- rows, map siblings, and terminal history are byte-for-byte
+    -- untouched.
     UPDATE {schema}.wf_step_ledger AS l
     SET status = 'fenced', error_class = '{wf_cancelled_class}',
         updated_at = clock_timestamp()
@@ -470,16 +511,31 @@ WITH flipped AS (
 ), evt AS (
     -- THE AUDIT LEG: only the rows THIS statement actually
     -- terminalised (a running row's cooperative phase-1 keeps it
-    -- running — its own terminal write carries its event).
+    -- running — its own terminal write carries its event). The winner
+    -- set owns the event cardinality INDEPENDENTLY of any ledger match
+    -- (a never-claimed pending winner still records its event — the
+    -- optional LEFT association adds the non-narrowing claim_attempt
+    -- detail when a current claim exists and omits it through
+    -- jsonb_strip_nulls when none does). Detail is the union of the
+    -- captured old state and the additive F10/B-2 fields.
     INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
     SELECT f.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', 'pending', 'to_state', f.to_state,
-                              'error_class', '{wf_cancelled_class}')
-    FROM flipped f
+           jsonb_strip_nulls(jsonb_build_object(
+               'from_state', f.from_state,
+               'to_state', f.to_state,
+               'error_class', '{wf_cancelled_class}',
+               'claim_attempt', c.claim_attempt,
+               'released_emit_reservation_width', f.released_emit_reservation_width
+           ))
+    FROM flipped AS f
+    LEFT JOIN current_claim AS c ON c.job_id = f.id
     WHERE f.to_state = 'cancelled'
 )
 SELECT count(*) FROM flipped
-"""
+""".replace("{current_claim_join}", current_claim_join("j", "l")).replace(
+    "{wf_emit_validated_reservation_width}",
+    _rebrace(validated_reservation_width("j")) + " AS released_emit_reservation_width",
+)
 
 TERMINAL_RESULT_SQL_TEMPLATE = """
 SELECT r.status AS run_status,

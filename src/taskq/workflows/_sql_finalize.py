@@ -37,6 +37,18 @@ def park_predicate(alias: str) -> str:
     return _wf_emit_park_predicate(alias)
 
 
+def validated_reservation_width(alias: str) -> str:
+    """THE SHARED VALIDATED OLD-WIDTH RENDERER (§2.4's capture semantics)
+    — the public seam beside :func:`park_predicate` for the statement
+    templates that capture a winner's old reservation width (the cancel
+    seats' additive ``released_emit_reservation_width`` event detail):
+    NULL when the key is absent, the validated positive-or-zero width
+    otherwise, and the row-dependent fail-closed arm on a malformed key —
+    the same expression the terminal mark captures, never a re-spelled
+    copy."""
+    return _wf_emit_validated_reservation_width(alias)
+
+
 def _wf_emit_park_predicate(alias: str) -> str:
     """The one shared exact-park predicate ``P(a)`` (the representation's own
     identity): the marker, never a timestamp, is the discriminator.
@@ -928,15 +940,34 @@ SELECT id, status FROM {schema}.jobs WHERE id = $1
 #     outcome reads the same way whichever path produced it) + the
 #     structured record in metadata.peer_cancel
 #     ({by: 'peer_failure', cascade_from: <the failed node>});
-#   * the workflow → failed (§17.2's cascade): the flow root's flip, the
-#     linearization point every flow-status leg then reads.
+#   * THE COMPLETE PEER TERMINAL TRANSITION (R4/A9.4): one root-ordered
+#     atomic transition per actual peer winner — the job terminal, the
+#     reservation removal, the winner's EXACT current-claim ledger fence
+#     (the ONE shared association core, status domain running/awaited/
+#     crashed, then the captured ledger id + pre-update instant), and
+#     exactly one ordinary job_events state_change with the winner's
+#     captured pre-update from_state, the peer-failure cause, and the
+#     additive non-narrowing claim_attempt / released-width details. The
+#     later worker finalization is never needed to complete this
+#     audit/fence; a never-claimed pending peer still terminalises,
+#     removes its reservation, and writes its event (the winner set owns
+#     the event cardinality, never the ledger match); no ledger row is
+#     fabricated; stale/already-terminal non-winners, older epochs,
+#     sibling ctx.substep rows, map siblings, and terminal history are
+#     untouched.
+#   * the workflow → failed: the SEPARATE gated statement
+#     (`WF_FLOW_FAILED_GATED_SQL`, N1's fresh-snapshot gate) — this
+#     statement's blocked stamp and peer cancellation are NOT conditional
+#     on the root flip, and the §5.4 fence is.
+#
+# The root row lock is the CALLER's entry lock (R2/A9.2) — this
+# statement's own acquisitions (the blocked join rows, then the peer
+# rows) follow it, never precede it.
 #
 # Every write is guarded: the block only join-wait rows not already
-# stamped; the cancel only pending/scheduled/running rows; the flow flip
-# only a non-terminal root and only when the cascade actually blocked a
-# join (no fail_closed edge → no cascade → the collect-only failure never
-# touches the flow). A re-run of this statement after a rolled-back tx is
-# idempotent — a fenced/terminal state updates nothing.
+# stamped; the cancel only pending/scheduled/running rows. A re-run of
+# this statement after a rolled-back tx is idempotent — a fenced/terminal
+# state updates nothing.
 FAIL_CLOSED_CASCADE_SQL = """\
 WITH edges AS (
     SELECT e.child_id
@@ -955,6 +986,30 @@ blocked AS (
       AND NOT j.metadata @> '{{"blocking_reason": "failed_parent"}}'::jsonb
     RETURNING j.id
 ),
+peer_targets AS (
+    -- THE PRE-UPDATE CAPTURE (the same law the cancel templates obey):
+    -- the winner's actual pre-update status and its validated old
+    -- page-width reservation, locked (FOR UPDATE) — the event's
+    -- from_state is the row's own prior state, never a post-update read.
+    -- The winner set is the joins' OTHER parents (EXISTS — a peer
+    -- parented to two blocked joins appears exactly once, never
+    -- duplicated into a second event), not join-wait themselves.
+    SELECT p.id,
+           p.status::text AS from_state,
+           {wf_emit_validated_reservation_width}
+    FROM {schema}.jobs p
+    WHERE p.id <> $1::uuid
+      AND p.status IN ('pending', 'scheduled', 'running')
+      AND NOT (p.deps_pending > 0
+               AND p.metadata @> '{{"blocking_reason": "join"}}'::jsonb)
+      AND EXISTS (
+          SELECT 1
+          FROM {schema}.wf_edge sib
+          WHERE sib.parent_id = p.id
+            AND sib.child_id IN (SELECT child_id FROM edges)
+      )
+    FOR UPDATE
+),
 peers AS (
     UPDATE {schema}.jobs p
     SET status = 'cancelled',
@@ -965,18 +1020,69 @@ peers AS (
         -- the same winning statement (the cancel-origin marker still
         -- rides the same metadata write).
         metadata = (p.metadata - 'wf_emit_reservation') || $4::jsonb
-    FROM edges e
-    JOIN {schema}.wf_edge sib ON sib.child_id = e.child_id
-    WHERE p.id = sib.parent_id
-      AND p.id <> $1::uuid
-      AND p.status IN ('pending', 'scheduled', 'running')
-      AND NOT (p.deps_pending > 0
-               AND p.metadata @> '{{"blocking_reason": "join"}}'::jsonb)
-    RETURNING p.id
+    FROM peer_targets pt
+    WHERE p.id = pt.id
+    RETURNING p.id, pt.from_state, pt.released_emit_reservation_width
+),
+current_claim AS (
+    -- THE ONE SHARED ASSOCIATION CORE (`_sql_claim.current_claim_join`):
+    -- job_id + the CURRENT claim_epoch + the exact step_key + the
+    -- null-safe map_index — no attempt-equality leg (every non-consuming
+    -- release refunds the displayed ordinal below the recorded claim's
+    -- attempt while the current epoch stands) and no park-metadata test
+    -- (the epoch identifies the current claim across every refund
+    -- representation) — with this disposition's own nonterminal status
+    -- domain. The captured ledger id + pre-update instant are the exact
+    -- fence; the captured attempt is a NON-NARROWING recorded fact.
+    SELECT f.id AS job_id, l.id AS ledger_id, l.updated_at AS claimed_at,
+           l.attempt AS claim_attempt
+    FROM peers AS f
+    JOIN {schema}.jobs AS j ON j.id = f.id
+    JOIN {schema}.wf_step_ledger AS l
+      ON {current_claim_join}
+     AND l.status IN ('running', 'awaited', 'crashed')
+),
+fenced_ledger AS (
+    -- The exact writer fence: ONLY the captured current row (its own id +
+    -- its pre-update instant) changes to `fenced`; older epochs, sibling
+    -- substeps, map siblings, and terminal history are byte-for-byte
+    -- untouched.
+    UPDATE {schema}.wf_step_ledger AS l
+    SET status = 'fenced', error_class = $3::text,
+        updated_at = clock_timestamp()
+    FROM current_claim AS c
+    WHERE l.id = c.ledger_id
+      AND l.updated_at = c.claimed_at
+    RETURNING l.id
+), evt AS (
+    -- THE AUDIT LEG: exactly one state_change per ACTUAL peer winner,
+    -- driven from the peers winner set (never through an inner join to
+    -- current_claim — a never-claimed pending peer still records its
+    -- event), with the captured pre-update from_state, the peer-failure
+    -- cause, and the optional non-narrowing details under
+    -- jsonb_strip_nulls (a valid zero width stays visible; an absent
+    -- current claim omits its field).
+    INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
+    SELECT f.id, clock_timestamp(), 'state_change',
+           jsonb_strip_nulls(jsonb_build_object(
+               'from_state', f.from_state,
+               'to_state', 'cancelled',
+               'error_class', $3::text,
+               'peer_cancel', jsonb_build_object(
+                   'by', 'peer_failure', 'cascade_from', $1::uuid::text
+               ),
+               'claim_attempt', c.claim_attempt,
+               'released_emit_reservation_width', f.released_emit_reservation_width
+           ))
+    FROM peers AS f
+    LEFT JOIN current_claim AS c ON c.job_id = f.id
 )
 SELECT (SELECT count(*) FROM blocked) AS blocked,
        (SELECT count(*) FROM peers) AS peers_cancelled
-"""
+""".replace("{current_claim_join}", current_claim_join("j", "l")).replace(
+    "{wf_emit_validated_reservation_width}",
+    validated_reservation_width("p") + " AS released_emit_reservation_width",
+)
 
 #: THE ROOT'S OWN GATED FAILURE (N1): its own statement — its own fresh
 #: snapshot, taken after the root lock's grant — so the unresolved-live
