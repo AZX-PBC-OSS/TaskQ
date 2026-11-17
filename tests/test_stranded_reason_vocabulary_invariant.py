@@ -41,7 +41,9 @@ its text with its real grammar's parser):
   the next 4-column tab stop — the renderer's NormalizeWhitespace — so
   the detab slice removes the columns it claims.
 * .py — AST docstrings, string constants (a JoinedStr f-string's
-  literal parts joined into ONE unit), contiguous comment blocks, and
+  literal parts joined into ONE unit), each comment line its own unit
+  (tokenize ends every comment line with an NL, so two adjacent
+  comment lines are sibling units, never folded), and
   the rule-4 typed collection / `Literal[...]` source segments. For the
   coverage law a Python file's text carriers are its tokenize-level
   STRING/COMMENT tokens.
@@ -154,13 +156,19 @@ accepted:
 3. A universal gloss in the same SENTENCE as a genuine scope marker —
    set off only by a colon, semicolon, dash or parenthesis — is waived
    (the sentence is the scoping predicate's granularity; the shipped
-   scope sentences bind their own glosses across them). A gloss in a
-   separate sentence is never waived (the round-10 F10-4 negative).
-4. The subject/label waivers are lexical: a population subject spelled
-   outside `_POPULATION_SUBJECT_RE`'s forms between a label and a
-   variant would waive it. Accepted: the forms enumerate the shipped
-   prose's own population subjects; a new spelling is a re-review, not
-   a silence.
+   scope sentences bind their own glosses across them). A MARKER in a
+   separate sentence never waives the gloss — the waiver binds to the
+   gloss's own sentence (the round-10 F10-4 negative); the gloss's own
+   sentence can still waive it by subject or label (residual 4).
+4. The subject/label waivers are lexical. The round-11 F11-2 position
+   gap is closed: a population subject anywhere in the sentence before
+   the occurrence defeats them (the label's own unclosed parenthetical
+   is the one exception — the label is then the claim's subject), so
+   "all stranded entries like <label> rows <universal>" reds. What
+   remains is the SPELLING gap: a population subject spelled outside
+   `_POPULATION_SUBJECT_RE`'s forms ("every stranded entry …") would
+   still waive. Accepted: the forms enumerate the shipped prose's own
+   population subjects; a new spelling is a re-review, not a silence.
 5. A quoted container's prefix is the renderer's clean law
    (` {0,3}> ?` per level): a tab inside a blockquote prefix is not
    stripped, and such a line degrades to the floor — still covered,
@@ -174,7 +182,9 @@ scan scope stated above (a surface outside those roots and suffixes is
 out of scope by declaration). Per-site red-first evidence (every
 corrected site's own old wording reverts and reds this scanner) lives
 in the correction report; a new occurrence anywhere in that scanned
-scope reds THIS test without waiting for another review to find it."""
+scope reds THIS test without waiting for another review to find it —
+unless it hides inside a declared residual above, which is exactly
+what those six paragraphs enumerate."""
 
 from __future__ import annotations
 
@@ -1511,7 +1521,9 @@ def _html_units(path: str, text: str, line_offset: int = 0, dedent: int = 0) -> 
 
 
 def _python_units(path: str, text: str, tree: ast.Module) -> Iterator[Unit]:
-    """AST docstrings, contiguous comment blocks, `Field(description=...)`
+    """AST docstrings, each comment line its own unit (tokenize ends
+    every comment line with an NL, so two adjacent comment lines are
+    sibling units, never folded), `Field(description=...)`
     strings, and the typed collection literals (rule 4's own units). A
     docstring is ONE unit: the AST walk sees the same Constant as both
     the docstring and a string constant, so the duplicate `string` unit
@@ -1605,7 +1617,10 @@ def _python_units(path: str, text: str, tree: ast.Module) -> Iterator[Unit]:
         or (unit.start_line, unit.end_line, unit.text) not in docstring_spans
     )
 
-    # Contiguous comment blocks (the AST carries comments only via tokenize).
+    # Each comment LINE is its own unit (the AST carries comments only
+    # via tokenize; every COMMENT token is followed by an NL/NEWLINE,
+    # which flushes the one-comment block — two adjacent comment lines
+    # are sibling units, never folded).
     import io
     import tokenize
 
@@ -2004,7 +2019,9 @@ def _scan(base: Path | None = None) -> list[tuple[str, Unit, str]]:
 # Round 9's lesson: a unit model maintained by PER-CONSTRUCT enumeration
 # is always one construct short (nine rounds of defeats). These laws are
 # the model's checked properties — asserted over EVERY scanned file, so
-# a construct no round thought of cannot silently hide text. Each law
+# a construct no round thought of cannot leave its text OUTSIDE the
+# units (what a unit's own interior waives is the scoping predicate's
+# declared business: the module docstring's residuals). Each law
 # returns human-readable violations; `test_unit_model_laws_hold_...`
 # asserts them empty over the tree and `test_unit_model_laws_red_...`
 # proves each law reds on an injected violation.
@@ -3278,8 +3295,9 @@ def test_markdown_units_never_partially_overlap() -> None:
 def test_unit_model_laws_hold_over_every_scanned_file() -> None:
     """The unit model's CHECKED LAWS over every scanned file (the
     round-9 ruling: replace per-construct enumeration with a checked
-    property, so a construct no round thought of cannot silently hide
-    text):
+    property, so a construct no round thought of cannot leave its text
+    outside the units — what a unit's own interior waives is the
+    scoping predicate's declared business):
 
     * LAW 1 line coverage — every non-blank line of a text-carrier file
       (`.md`/`.yml`/`.yaml`/`.html`) belongs to at least one unit; for
