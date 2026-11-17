@@ -3257,14 +3257,17 @@ Wake is a threshold-created durable intent and an event-driven drain:
 lease, heartbeat, or worker slot (a capacity reservation is not an execution
 reservation). An operator run cancel terminalizes the parked row
 `cancelled` and fences its exact ledger claim. A root that terminal-fails
-after a genuine child failure exhausted its declared retry policy — while a
-parked source still holds an un-emitted committed cursor — is the one
-durable proof that the run is provably not draining: the same failure
-transaction fences the parked source with durable
-`error_class='WorkflowNotDrainingError'` (a string value, not an importable
-class), the causal child/root ids on the record, and no logical-attempt or
-ladder spend. Healthy saturation, elapsed time, and nonterminal retries are
-never such proof.
+after a genuine child failure exhausted its declared retry policy — while
+an exact parked source still holds un-emitted work — is the one durable
+proof that the run is provably not draining; the exact park represents
+un-emitted resumable source work whether or not an `emit_cursor` key is
+present (a first-page park with no committed cursor is the same resumable
+obligation — the absent key means zero pages have committed, not that the
+park is empty). The same failure transaction fences the parked source with
+durable `error_class='WorkflowNotDrainingError'` (a string value, not an
+importable class), the causal child/root ids on the record, and no
+logical-attempt or ladder spend. Healthy saturation, elapsed time, and
+nonterminal retries are never such proof.
 
 **Reading the surfaces.** `has_live` prevents premature success before the
 parked suffix; `has_unresolved` permits failed-root completion. The admin

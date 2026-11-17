@@ -1300,9 +1300,13 @@ async def fence_not_draining_parked_sources(
     The proof condition is precise and durable: the root terminal
     ``failed`` has just been committed behind a genuine child failure that
     exhausted its declared retry policy (the caller owns that proof — the
-    cascade and the root-maintain failure arms are its two seats), while an
-    exact parked source of the flow still holds an un-emitted committed
-    cursor. The fence terminalizes every such parked source with
+    cascade seat is this function's own caller; the maintenance seat is
+    the migration's SQL function), while an exact parked source of the
+    flow still holds un-emitted work — INCLUDING a first-page park with
+    no committed ``emit_cursor`` (the absent key means zero pages have
+    committed and the default/initial cursor identifies the first page;
+    it does not make the park empty or abandonable). The fence
+    terminalizes every such parked source with
     ``WORKFLOW_NOT_DRAINING_CLASS``, the named reason, and the causal
     child/root ids; it spends no source logical attempt, creates no ladder
     retry, and never overwrites the child's genuine error. Returns the
@@ -1316,9 +1320,9 @@ async def fence_not_draining_parked_sources(
         (
             "the run is provably not draining: the root terminal 'failed' "
             "committed after the causal child failure exhausted its retry "
-            "policy, while this source still parks on an un-emitted "
-            "committed cursor (reason: "
-            "terminal_root_after_child_failure_exhaustion)"
+            "policy, while this source still holds un-emitted work "
+            "(including the first page when no cursor has committed; "
+            "reason: terminal_root_after_child_failure_exhaustion)"
         ),
         child_id,
     )

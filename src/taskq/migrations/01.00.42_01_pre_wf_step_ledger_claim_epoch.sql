@@ -196,15 +196,22 @@ COMMENT ON INDEX "{schema}".wf_emit_capacity_pending_idx IS
 -- THE §5.4 NON-DRAINAGE REFUSAL FUNCTION (the root-maintenance failure
 -- arm's server-side seat): on the committed terminal-root proof (the root
 -- terminal 'failed' behind a genuine child failure that exhausted its
--- declared retry policy, while an exact parked source still holds an
--- un-emitted committed cursor), the same transaction fences every such
+-- declared retry policy, while an exact parked source still holds
+-- un-emitted work — INCLUDING a first-page park with no committed
+-- emit_cursor (the absent key means zero pages have committed; the
+-- default/initial cursor identifies the first page — it does not make
+-- the park empty or abandonable)), the same transaction fences every such
 -- parked source with WORKFLOW_NOT_DRAINING_ERROR_CLASS, the named reason,
 -- and the causal child/root ids. No logical attempt is spent, no ladder
 -- retry is created, and the causal child's genuine error is never
 -- overwritten. The cascade seat (the engine's fail-closed path) calls the
 -- statement form directly with the child it knows; this function derives
 -- the causal child from the rows (the most recently failed exhausted
--- child).
+-- child). THE LEDGER FENCE IS THE SHARED CURRENT-CLAIM CORE (the
+-- _sql_claim.current_claim_join renderer's exact inline spelling — the
+-- parity control proves the two never drift): job + current epoch +
+-- step_key + null-safe map_index, status 'awaited' — never older epochs,
+-- sibling ctx.substep rows, map siblings, or terminal history.
 CREATE OR REPLACE FUNCTION "{schema}".fence_not_draining_parked(p_root uuid)
 RETURNS integer
 LANGUAGE plpgsql
@@ -232,7 +239,6 @@ BEGIN
           AND j.step_key IS NOT NULL
           AND j.step_key <> '__flow__'
           AND j.metadata ? 'flow_id'
-          AND j.metadata ? 'emit_cursor'
     ), fenced AS (
         UPDATE "{schema}".jobs AS j
         SET status = 'failed',
@@ -240,9 +246,9 @@ BEGIN
             error_class = 'WorkflowNotDrainingError',
             error_message = 'the run is provably not draining: the root terminal ''failed'' '
                             'committed after the causal child failure exhausted its retry '
-                            'policy, while this source still parks on an un-emitted '
-                            'committed cursor (reason: '
-                            'terminal_root_after_child_failure_exhaustion)',
+                            'policy, while this source still holds un-emitted work '
+                            '(including the first page when no cursor has committed; '
+                            'reason: terminal_root_after_child_failure_exhaustion)',
             metadata = (j.metadata - 'blocking_reason' - 'wf_emit_reservation')
                 || jsonb_build_object(
                     'wf_not_draining', jsonb_build_object(
@@ -255,7 +261,7 @@ BEGIN
                 )
         FROM parks
         WHERE j.id = parks.id
-        RETURNING j.id
+        RETURNING j.id, j.claim_epoch, j.step_key, j.map_index
     ), ledger AS (
         UPDATE "{schema}".wf_step_ledger AS l
         SET status = 'fenced',
@@ -263,6 +269,9 @@ BEGIN
             updated_at = clock_timestamp()
         FROM fenced
         WHERE l.job_id = fenced.id
+          AND l.claim_epoch = fenced.claim_epoch
+          AND l.step_key = fenced.step_key
+          AND l.map_index IS NOT DISTINCT FROM fenced.map_index
           AND l.status = 'awaited'
         RETURNING l.id
     ), evt AS (

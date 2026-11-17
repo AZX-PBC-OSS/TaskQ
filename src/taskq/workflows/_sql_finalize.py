@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Final
 
+from taskq.workflows._sql_claim import current_claim_join
+
 #: the collect's ``failures`` jsonb truncates here — over the cap the join row
 #: compacts to the bounded summary (the ``__truncated__`` marker + the ledger
 #: pointer); the full detail stays on the ledger/attempts. Sized to keep a
@@ -630,10 +632,16 @@ WF_EMIT_MARKER_FLOW_BOUND_SQL = (
 #: The loud non-drainage refusal: on the committed terminal-root proof (a
 #: genuine child failure exhausted its declared retry policy and the root
 #: terminal ``failed`` committed, while an exact parked source still holds
-#: an un-emitted committed cursor), the same failure-cascade transaction
-#: fences every such parked source. No logical attempt is spent, no ladder
-#: retry is created, and the causal child's genuine error is never
-#: overwritten.
+#: un-emitted work — INCLUDING a first-page park with no committed
+#: ``emit_cursor``: the absent key means zero pages have committed and the
+#: default/initial cursor identifies the first page; it does not make the
+#: park empty or abandonable), the same failure-cascade transaction fences
+#: every such parked source. No logical attempt is spent, no ladder retry
+#: is created, and the causal child's genuine error is never overwritten.
+#: The ledger fence is the EXACT current-claim association (the shared
+#: renderer: job + current epoch + step_key + null-safe map_index, status
+#: ``awaited``) — older epochs, sibling ``ctx.substep`` rows, map siblings,
+#: and terminal history are never rewritten.
 WF_NOT_DRAINING_FENCE_SQL = (
     "WITH parks AS (\n"
     "    SELECT j.id\n"
@@ -642,7 +650,6 @@ WF_NOT_DRAINING_FENCE_SQL = (
     "      AND "
     + _wf_emit_park_predicate("j")
     + "\n"  # Why: the shared predicate renderer is the module's own constant text; the schema token is the render's validated substitution.
-    "      AND j.metadata ? 'emit_cursor'\n"
     "), fenced AS (\n"
     "    UPDATE {schema}.jobs AS j\n"
     "    SET status = 'failed',\n"
@@ -661,14 +668,14 @@ WF_NOT_DRAINING_FENCE_SQL = (
     "            )\n"
     "    FROM parks\n"
     "    WHERE j.id = parks.id\n"
-    "    RETURNING j.id\n"
+    "    RETURNING j.id, j.claim_epoch, j.step_key, j.map_index\n"
     "), ledger AS (\n"
     "    UPDATE {schema}.wf_step_ledger AS l\n"
     "    SET status = 'fenced',\n"
     "        error_class = $2,\n"
     "        updated_at = clock_timestamp()\n"
     "    FROM fenced\n"
-    "    WHERE l.job_id = fenced.id\n"
+    "    WHERE " + current_claim_join("fenced", "l") + "\n"
     "      AND l.status = 'awaited'\n"
     "    RETURNING l.id\n"
     "), evt AS (\n"
