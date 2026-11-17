@@ -291,7 +291,22 @@ async def defer_row_law(
             # bump — one disposition owner).
             from taskq.workflows._emit import adopt_and_lock_emit_intent
 
-            await conn.fetchval(wsql.emit_root_lock, flow_id)
+            # THE MISSING ROOT FAILS CLOSED (round-4 NEW-7): the root row
+            # is this transaction's FIRST lock (the canonical order above)
+            # — and its absence is the same durable run-root corruption
+            # the failed-parent seat and the drain both raise at: a park
+            # committed without it would be a `scheduled` row that is
+            # unclaimable AND unpromotable forever (every promotion CAS
+            # and the marker sweep require the run's own root). The raise
+            # aborts THIS transaction before the intent adoption and the
+            # park write — nothing durable lands — and propagates as the
+            # exact typed corruption class (never a body-ladder retry,
+            # never an infra fault).
+            park_root_id = await conn.fetchval(wsql.emit_root_lock, flow_id)
+            if park_root_id is None:
+                from taskq.workflows.api._runner_errors import WorkflowRootMissingError
+
+                raise WorkflowRootMissingError(flow_id, job_id, seat="park")
             intent_facts = await adopt_and_lock_emit_intent(
                 conn, wsql, flow_id=flow_id, bound=backpressure.bound
             )

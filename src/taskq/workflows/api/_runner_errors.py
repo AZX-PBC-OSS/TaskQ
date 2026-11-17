@@ -65,12 +65,13 @@ class VanishedNodeError(WorkflowRunError):
 
 
 class WorkflowRootMissingError(WorkflowRunError):
-    """Durable run-root corruption during failed-parent propagation: the
-    flow's own ``__flow__`` root row is gone while one of its nodes
-    terminalized ``failed``. Raised at the failed-parent seat's ENTRY —
-    before any cascade, fan-in, decrement, fire, or outbox write — so the
-    transaction rolls back whole and the already-committed tx1 child
-    terminal stands untouched.
+    """Durable run-root corruption: the flow's own ``__flow__`` root row
+    is gone while one of its nodes needs it. Raised at the root-ordered
+    seats' ENTRY — the failed-parent propagation's seat (before any
+    cascade, fan-in, decrement, fire, or outbox write) and the capacity
+    park's seat (before any intent adoption or park write) — so the
+    transaction rolls back whole and the already-committed state stands
+    untouched.
 
     This is control-plane data corruption, never an author/body-resolution
     error and never a capacity fault: it is not converted into a
@@ -80,11 +81,12 @@ class WorkflowRootMissingError(WorkflowRunError):
     release arm owns it there). The remedy is the runbook's
     restore-or-quarantine recovery, not a worker knob."""
 
-    def __init__(self, flow_id: object, parent_id: object) -> None:
+    def __init__(self, flow_id: object, parent_id: object, seat: str = "failed-parent") -> None:
         self.flow_id = flow_id
         self.parent_id = parent_id
+        self.seat = seat
         super().__init__(
             f"run {flow_id}'s __flow__ root row is missing while its node "
-            f"{parent_id} terminalized failed (durable run-root corruption; "
-            "the failed-parent transaction rolled back without any write)"
+            f"{parent_id} reached the {seat} seat (durable run-root corruption; "
+            "the transaction rolled back without any write)"
         )

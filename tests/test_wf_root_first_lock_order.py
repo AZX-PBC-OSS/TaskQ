@@ -619,3 +619,90 @@ async def test_park_locks_root_and_intent_before_the_park_write(
         for holder in holders:
             await holder.close()
         await poller.close()
+
+
+async def test_missing_root_park_seat_fails_closed_before_the_durable_park(
+    wf_conn: Any, wf_schema: str, wf_pool: Any
+) -> None:
+    """Round-4 NEW-7: the park seat's own missing-root fail-closed. The
+    root row is the park transaction's FIRST lock (the canonical order
+    the phases control proves); when it is GONE the seat raises the same
+    typed corruption class as the failed-parent seat and the drain —
+    BEFORE the intent adoption and the park write. A `scheduled` park
+    committed without the root would be unclaimable AND unpromotable
+    forever (every promotion CAS and the marker sweep require the run's
+    own root), which is exactly what the canonical order forbids. The
+    raise aborts the transaction: the source row, its ledger claim, the
+    capacity record, and the event stream are byte-identical."""
+    from datetime import timedelta
+
+    from taskq.workflows._emit import EmitBackpressure
+    from taskq.workflows.api._runner_defer import defer_row_law
+    from taskq.workflows.api._runner_errors import WorkflowRootMissingError
+
+    flow_id, source_id, ledger_id, claimed_at = await _seed_park_order_estate(wf_conn, wf_schema)
+    await wf_conn.execute(f'DELETE FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
+    source_before = await wf_conn.fetchrow(
+        f'SELECT * FROM "{wf_schema}".jobs WHERE id = $1', source_id
+    )
+    ledger_before = await wf_conn.fetchrow(
+        f'SELECT * FROM "{wf_schema}".wf_step_ledger WHERE id = $1', ledger_id
+    )
+    capacity_before = await wf_conn.fetchrow(
+        f'SELECT * FROM "{wf_schema}".wf_emit_capacity WHERE flow_id = $1::uuid', flow_id
+    )
+    events_before = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".job_events WHERE job_id = $1', source_id
+    )
+
+    with pytest.raises(WorkflowRootMissingError) as exc_info:
+        await defer_row_law(
+            wf_pool,
+            render_workflow_sql(wf_schema),
+            job_id=JobId(source_id),
+            worker_id=JobId(source_id),
+            delay=timedelta(0),
+            attempt=1,
+            claim_epoch=1,
+            disposition="emit_backpressure",
+            signal_name="EmitBackpressure",
+            ledger_id=JobId(ledger_id),
+            ledger_claimed_at=claimed_at,
+            backpressure=EmitBackpressure(page_width=2, bound=2, outstanding=1),
+            source_logical_attempt=1,
+            flow_id=JobId(flow_id),
+        )
+    raised = exc_info.value
+    assert type(raised) is WorkflowRootMissingError, type(raised).__name__
+    assert raised.seat == "park", raised.seat
+    assert str(flow_id) in str(raised) and source_id in str(raised), str(raised)
+
+    # NOTHING DURABLE LANDED: the transaction rolled back whole — the
+    # source row (still running under its claim, no park marker), the
+    # ledger claim (never rested 'awaited'), the capacity record (no
+    # adoption write), and the event stream are byte-identical.
+    source_after = await wf_conn.fetchrow(
+        f'SELECT * FROM "{wf_schema}".jobs WHERE id = $1', source_id
+    )
+    ledger_after = await wf_conn.fetchrow(
+        f'SELECT * FROM "{wf_schema}".wf_step_ledger WHERE id = $1', ledger_id
+    )
+    capacity_after = await wf_conn.fetchrow(
+        f'SELECT * FROM "{wf_schema}".wf_emit_capacity WHERE flow_id = $1::uuid', flow_id
+    )
+    events_after = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".job_events WHERE job_id = $1', source_id
+    )
+    assert source_after is not None and ledger_before is not None
+    assert dict(source_after) == dict(source_before), (
+        "the park transaction rolled back — the source row is byte-identical"
+    )
+    assert ledger_after is not None and dict(ledger_after) == dict(ledger_before), (
+        "the ledger claim is byte-identical — the park never rested it 'awaited'"
+    )
+    assert (
+        capacity_after is not None
+        and capacity_before is not None
+        and dict(capacity_after) == dict(capacity_before)
+    ), "the capacity record is byte-identical — no adoption write"
+    assert int(events_after) == int(events_before), "no park event"
