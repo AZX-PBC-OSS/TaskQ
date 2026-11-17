@@ -118,14 +118,14 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "the doctor's own findings prose (the no-stored-row subject's true never-dispatches gloss) and the queue-diagnostics table — subject-scoped non-defects",
     ),
     (
-        "370218acd0a4e53989a2242a89424be88436cb5cfc374aa7d65bdef061094a0b",
+        "a74123c4e98e61863450a38f5b96a18c825c305725d0ab70b5e18a43aec96785",
         "docs/guides/configuration.md",
-        "the env table's one-paragraph unit: the corrected stranded row carries all three labels; the other rows are subject-scoped settings prose",
+        "the liveness env row's own subject (the unserved arm's liveness dependency, named instrumentally) — not a reason-set enumeration",
     ),
     (
-        "7c74a3a7951cd165ebbc592ffdf6a8cc7abd7e76127e66dacc155263c8938b16",
+        "f84ee18a7c76d0f8af384f67b08bf3c6c5e20dd9a9be3ad75e159d3dfd02201e",
         "docs/guides/insights.md",
-        "the scaling-signal table's own subjects (utilization/saturation diagnostics) — the stranded mention is the unserved split, subject-scoped",
+        "the starved-from-zero diagnostics row's own subjects (the depth/utilization/live-workers split) — the stranded mention is the unserved split, subject-scoped",
     ),
     (
         "e79bf9ddb640dab45c1f48c109b054a59deec6d3efac55474ad589b7e3e2a175",
@@ -208,9 +208,9 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "the deadline sweep's own never-dispatched statement (expired pending jobs past schedule_to_close) — the deadline subject, not the gauge's reason set",
     ),
     (
-        "3d52e49478c32a5fa8af4463c19d518d4262c0fb82ff73273a1ad9a4cc8d6da9",
+        "92620b0d08dd0f15b25e36b084c243b5aeea2549497c41913b731070576dd5ba",
         "docs/guides/troubleshooting.md",
-        "the queue-diagnostics cause table's own subjects (the no-worker/wrong-queue/registry causes) — not the gauge's reason set",
+        "the stranded-jobs cause row's own subject-scoped text (the no-actor-config cause as the troubleshooting table states it)",
     ),
     (
         "20493d11e1625e96eca5973ee5136980574c9fb18d2358cf81238d859564e90e",
@@ -387,26 +387,45 @@ _REQUIRED_HOMES: tuple[tuple[str, tuple[str, ...], str], ...] = (
 
 
 def _markdown_units(path: str, text: str) -> Iterator[Unit]:
-    """Markdown paragraphs and table rows (the semantic local units)."""
+    """Markdown paragraphs AND table rows (the semantic local units) —
+    each table ROW is its own unit. The blank-line block splitter alone
+    made an ENTIRE table one unit, so one row's scoping marker purified a
+    sibling row's universal gloss (the round-4 NEW-4 attack: a two-member
+    gloss row laundered inside a table whose other row carried the
+    marker). Header/separator rows are their own units too — they carry
+    no detector vocabulary and the rules never fire on them, but their
+    spans stay addressable for the allowlist's digest law."""
     lines = text.splitlines()
-    paragraph: list[tuple[int, str]] = []
-    for idx, line in enumerate(lines, start=1):
-        if line.strip():
-            paragraph.append((idx, line))
-            continue
-        if paragraph:
-            yield Unit(
-                path,
-                "markdown",
-                paragraph[0][0],
-                paragraph[-1][0],
-                "\n".join(t for _, t in paragraph),
-            )
-            paragraph = []
-    if paragraph:
-        yield Unit(
-            path, "markdown", paragraph[0][0], paragraph[-1][0], "\n".join(t for _, t in paragraph)
+
+    def unit_for(block: list[tuple[int, str]]) -> Unit:
+        return Unit(
+            path,
+            "markdown",
+            block[0][0],
+            block[-1][0],
+            "\n".join(t for _, t in block),
         )
+
+    block: list[tuple[int, str]] = []
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped:
+            if block:
+                yield unit_for(block)
+                block = []
+            continue
+        # A TABLE ROW is one unit: the pipe-delimited line, alone. The
+        # row's own words are the row's own meaning — never a sibling
+        # row's marker.
+        if stripped.startswith("|") and stripped.endswith("|"):
+            if block:
+                yield unit_for(block)
+                block = []
+            yield Unit(path, "markdown", idx, idx, stripped)
+            continue
+        block.append((idx, line))
+    if block:
+        yield unit_for(block)
 
 
 def _yaml_scalar_units(path: str, text: str) -> Iterator[Unit]:
@@ -910,3 +929,38 @@ def test_new_occurrence_reds_without_review() -> None:
         "workflow_root_missing's run-scoped meaning).",
     )
     assert not _corpus_matches("virtual/regression.md", corrected)
+
+
+def test_table_rows_are_their_own_units_a_laundered_gloss_reds() -> None:
+    """Round-4 NEW-4: the invariant launders a gloss inside a Markdown
+    table when the unit splitter treats the WHOLE table as one unit —
+    DeepSeek inserted a two-member/universal-gloss row into a table whose
+    SIBLING row carried the scoping marker and the invariant stayed
+    green. Each row is its own unit now: the gloss row reds ALONE, the
+    marker row never purifies it, and the fully-corrected table
+    passes."""
+    header = "| Reason | Meaning |"
+    separator = "| --- | --- |"
+    # The ATTACK: one corrected (scoped) row + one universal-gloss row.
+    gloss_row = "| no_actor_config | these rows can never dispatch |"
+    marker_row = (
+        "| workflow_root_missing | the run cannot progress because its "
+        "__flow__ root is gone (the dispatch-invisible rows are a separate "
+        "class) |"
+    )
+    attacked_table = "\n".join((header, separator, marker_row, gloss_row))
+    assert _corpus_matches("virtual/table-gloss.md", attacked_table), (
+        "the gloss row must red the scanner EVEN WHEN a sibling row "
+        "carries the scoping marker — a table row is its own unit"
+    )
+    # The gloss row reds ALONE (the row's own unit, no sibling context).
+    assert _corpus_matches("virtual/row-alone.md", gloss_row)
+    # The fully-corrected table passes (every row's own meaning is clean).
+    corrected_gloss_row = (
+        "| no_actor_config | invisible to every dispatch round — the "
+        "two dispatch-invisible legs, scoped |"
+    )
+    corrected_table = "\n".join((header, separator, marker_row, corrected_gloss_row))
+    assert not _corpus_matches("virtual/table-clean.md", corrected_table), (
+        "the corrected table's rows each pass on their own words"
+    )
