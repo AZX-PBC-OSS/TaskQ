@@ -788,3 +788,76 @@ async def test_cancelled_parked_peer_is_never_failed_a_second_time(
     )
     assert int(events_after) == int(events_before), "no second disposition event"
     _ = wf_pool, wf_sql
+
+
+async def test_python_statement_fences_the_no_cursor_first_page_park(
+    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+) -> None:
+    """Round-4 NEW-3: the PYTHON statement's own no-cursor branch. The
+    decoys control drives the Python statement over a cursor-BEARING
+    park only, and the real-runner control's park can be healed by the
+    OTHER seat — so restoring `AND j.metadata ? 'emit_cursor'` in
+    `WF_NOT_DRAINING_FENCE_SQL` left 42 tests green. This control drives
+    the Python statement (the cascade seat) ALONE over a FIRST-PAGE
+    (no committed `emit_cursor`) park and asserts the fence's own
+    outcome: the source takes the exact disposition, its current awaited
+    claim fences, and one event records the truthful transition."""
+    from taskq.workflows._emit import fence_not_draining_parked_sources
+    from taskq.workflows.engine import render_workflow_sql
+
+    flow_id = await _seed_flow_root(wf_conn, wf_schema, status="failed")
+    source_id = await _seed_parked_source(
+        wf_conn, wf_schema, flow_id, cursor=False, step_key="source"
+    )
+    # THE ABSENT KEY IS THE SHAPE UNDER TEST: zero pages have committed.
+    meta_raw = await wf_conn.fetchval(
+        f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', source_id
+    )
+    meta = _json.loads(meta_raw) if isinstance(meta_raw, str) else dict(meta_raw)
+    assert "emit_cursor" not in meta, meta
+
+    current_ledger = await _seed_awaited_ledger(
+        wf_conn,
+        wf_schema,
+        flow_id,
+        source_id,
+        step_key="source",
+        map_index=None,
+        attempt=1,
+        claim_epoch=2,
+    )
+
+    fenced = await fence_not_draining_parked_sources(
+        wf_conn,
+        render_workflow_sql(wf_schema),
+        flow_id=JobId(flow_id),
+        child_id=JobId(source_id),
+        child_step_key="screen",
+    )
+    assert int(fenced) == 1, (
+        f"the Python statement fences the no-cursor first-page park: {fenced}"
+    )
+    source_row = await wf_conn.fetchrow(
+        f"""SELECT status::text AS status, error_class, metadata->'wf_not_draining' AS refusal
+            FROM "{wf_schema}".jobs WHERE id = $1""",
+        source_id,
+    )
+    assert source_row is not None
+    assert source_row["status"] == "failed", dict(source_row)
+    assert source_row["error_class"] == WORKFLOW_NOT_DRAINING_CLASS, dict(source_row)
+    refusal = source_row["refusal"]
+    refusal = _json.loads(refusal) if isinstance(refusal, str) else dict(refusal or {})
+    assert refusal.get("reason") == "terminal_root_after_child_failure_exhaustion", refusal
+    ledger_row = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".wf_step_ledger WHERE id = $1',
+        current_ledger,
+    )
+    assert ledger_row == "fenced", ledger_row
+    events = await wf_conn.fetchval(
+        f"""SELECT count(*) FROM "{wf_schema}".job_events
+            WHERE job_id = $1 AND kind = 'state_change'
+              AND detail->>'error_class' = $2""",
+        source_id,
+        WORKFLOW_NOT_DRAINING_CLASS,
+    )
+    assert int(events) == 1, events
