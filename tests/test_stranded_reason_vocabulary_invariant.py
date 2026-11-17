@@ -571,42 +571,78 @@ _DETAILS_MARKER: Final = re.compile(
 _TAB_MARKER: Final = re.compile(r"^(\s*)={3}(?:\+!|!\+|\+|!)? +\"(.*?)\" *(?:$)")
 
 
-def _container_marker(line: str) -> int | None:
-    """The line's container-marker indent in columns, or None. A tab
-    counts as four columns (the renderer's `tab_length`). A marker inside
-    a fenced/indented code block or a raw HTML block never reaches here —
+#: The blockquote prefix the renderer's own blockquote processor
+#: strips — `BlockQuoteProcessor.RE = ^[ ]{0,3}>[ ]?(.*)` applied per
+#: line and per nesting level (`clean` strips `>` and at most one
+#: space; a `>`-only line cleans to the empty string).
+_QUOTE_PREFIX: Final = re.compile(r"(?: {0,3}> ?)+")
+
+
+def _indent_columns(text: str) -> int:
+    """The leading-whitespace run's width in columns on the renderer's
+    tab-expanded grid (every character one column)."""
+    return len(text) - len(text.lstrip(" "))
+
+
+def _container_marker(line: str) -> tuple[int, int] | None:
+    """The line's (blockquote-prefix columns, container-marker indent)
+    in columns, or None. The marker regexes are the RENDERER'S OWN
+    block-processor regexes — `markdown/extensions/admonition.py` `RE`,
+    `pymdownx/details.py` `START`, `pymdownx/tabbed.py` `START` —
+    anchored on the line the way the renderer sees it, which for a
+    blockquote-prefixed container (`> !!! note`) is AFTER the
+    blockquote processor's clean step (`_QUOTE_PREFIX`) — the renderer
+    strips the prefix per line and re-runs the block processors on the
+    cleaned chunk, so a quoted marker IS a container at its cleaned
+    column (the round-10 F10-2 defect: the quoted form was not a
+    container at all and its body folded). A marker inside a
+    fenced/indented code block or a raw HTML block never reaches here —
     `_markdown_units` only scans non-opaque lines — which is the
     renderer's own behaviour too (a `!!!` line inside code is code)."""
     match = _ADMONITION_MARKER.match(line) or _DETAILS_MARKER.match(line) or _TAB_MARKER.match(line)
+    if match is not None:
+        return 0, _indent_columns(match.group(1))
+    quote = _QUOTE_PREFIX.match(line)
+    if quote is None:
+        return None
+    cleaned = line[quote.end() :]
+    match = (
+        _ADMONITION_MARKER.match(cleaned)
+        or _DETAILS_MARKER.match(cleaned)
+        or _TAB_MARKER.match(cleaned)
+    )
     if match is None:
         return None
-    column = 0
-    for char in match.group(1):
-        column += 4 if char == "\t" else 1
-    return column
+    return len(quote.group()), _indent_columns(match.group(1))
 
 
-def _container_body_end(lines: list[str], marker_index: int, column: int) -> int:
+def _container_body_end(
+    lines: list[str], marker_index: int, column: int, quote_columns: int = 0
+) -> int:
     """The renderer's detab body law: the body is every line after the
     marker that is blank or indented >= column + 4, across blank lines,
     ending at the first non-blank line indented less (that line is the
-    renderer's `theRest` — ordinary blocks again)."""
+    renderer's `theRest` — ordinary blocks again). For a
+    blockquote-prefixed container the law runs on the CLEANED lines —
+    the renderer strips the blockquote prefix per line
+    (`BlockQuoteProcessor.clean`: a `>`-only line becomes the empty
+    string, `^[ ]{0,3}>[ ]?` loses one level, anything else passes
+    through as a lazy line) and re-runs the block processors on the
+    cleaned chunk, so a `>`-only separator line is a blank body line
+    and the body law crosses it."""
     content_column = column + 4
     index = marker_index + 1
     while index < len(lines):
         line = lines[index]
-        if not line.strip():
+        if quote_columns:
+            quote = _QUOTE_PREFIX.match(line)
+            cleaned = line[quote.end() :] if quote is not None else line
+        else:
+            cleaned = line
+        if not cleaned.strip():
             index += 1
             continue
-        indent = 0
-        for char in line:
-            if char == " ":
-                indent += 1
-            elif char == "\t":
-                indent += 4
-            else:
-                break
-        if indent < content_column:
+        if _indent_columns(cleaned) < content_column:
             break
         index += 1
     return index
@@ -672,11 +708,16 @@ def _markdown_units(
     map (quoting a fence cannot defeat them — D9-3), with `/* ... */`
     and `<!-- ... -->` block comments as whole-statement units (D9-4).
 
-    Known boundary, stated: a blockquote-prefixed admonition
-    (`> !!! note`) is scanned at the blockquote's own paragraph
-    granularity — which splits at the same places the renderer's
-    admonition body paragraphs do (blank lines and `>`-only separator
-    lines); no shipped doc carries one. And an unclosed fence runs to
+    A blockquote-prefixed container (`> !!! note`) IS a container: the
+    marker is matched after the renderer's blockquote clean law
+    (`_QUOTE_PREFIX`) and the same body law runs on the cleaned lines,
+    so the quoted form gets the same body paragraph units as the
+    unquoted form (the round-10 F10-2 defect: the quoted body was left
+    at the blockquote's paragraph granularity and ONE unit folded its
+    two body paragraphs, which the renderer renders as two `<p>`s).
+    A `>`-only separator line inside a body is a FLOOR unit (its own
+    line, `markdown-text`) — the body law crosses it as the renderer's
+    blank-line block separator does. And an unclosed fence runs to
     end of file — in the RENDERER too (CommonMark), so the model is
     renderer-faithful; the swallowed text stays inside the fence's own
     unit, where the rules still evaluate it."""
@@ -688,32 +729,37 @@ def _markdown_units(
     index = 0
     while index < len(lines):
         line_no = index + 1
-        marker_column = None if _line_in_spans(line_no, opaque) else _container_marker(lines[index])
-        if marker_column is None:
+        marker = None if _line_in_spans(line_no, opaque) else _container_marker(lines[index])
+        if marker is None:
             index += 1
             continue
-        body_end = _container_body_end(lines, index, marker_column)
+        quote_columns, marker_column = marker
+        body_end = _container_body_end(lines, index, marker_column, quote_columns)
         if index > run_start:
             run_text = "\n".join(lines[run_start:index])
             units.extend(_markdown_run_units(path, run_text, run_start + _line_offset, _dedent))
         # The marker line is its own unit (the container's title
         # statement — the renderer renders it as the admonition-title
-        # paragraph).
+        # paragraph). Its text is the line as the container's own
+        # grammar sees it: the blockquote prefix cleaned away, and the
+        # unit's dedent carries the columns the law must strip from the
+        # file's raw line to reconstruct it.
         units.append(
             Unit(
                 path,
                 "markdown",
                 line_no + _line_offset,
                 line_no + _line_offset,
-                lines[index],
-                _dedent,
+                lines[index][quote_columns:],
+                _dedent + quote_columns,
             )
         )
-        # The body: dedent by column + 4 (the renderer's detab), re-parse
-        # as markdown at the body's own line offset.
+        # The body: dedent by the container's content column (the
+        # renderer's detab) past the blockquote prefix, re-parse as
+        # markdown at the body's own line offset.
         content_column = marker_column + 4
         body_text = "\n".join(
-            "" if not line.strip() else line[content_column:]
+            "" if not line.strip() else line[quote_columns + content_column :]
             for line in lines[index + 1 : body_end]
         )
         units.extend(
@@ -721,7 +767,7 @@ def _markdown_units(
                 path,
                 body_text,
                 _line_offset=index + 1 + _line_offset,
-                _dedent=_dedent + content_column,
+                _dedent=_dedent + quote_columns + content_column,
             )
         )
         index = body_end
@@ -3116,6 +3162,95 @@ def test_container_body_dedent_is_the_renderer_column_slice() -> None:
             "virtual/tab-nested.md", doc) if u.kind == "markdown"])
         == []
     )
+
+
+def test_quoted_containers_get_their_own_body_paragraphs() -> None:
+    """Round-10 F10-2: a blockquote-prefixed container (`> !!! note`)
+    was not a container at all — the scanner left it at the
+    blockquote's own paragraph granularity, and ONE unit folded the
+    container's body paragraphs, which the renderer renders as separate
+    `<p>`s of the admonition div (it strips the blockquote prefix per
+    line, re-runs the block processors on the cleaned chunk, and the
+    admonition's detab law splits the body). A scoped first paragraph
+    purified a universal gloss in the second. The model now matches the
+    marker after the renderer's blockquote clean law and runs the same
+    body law on the cleaned lines — for `!!!`, `???` and `===` alike —
+    so the quoted form gets the same body paragraph units as the
+    unquoted form, and the `>`-only separator line stays a floor unit.
+    The end-to-end face drives the REAL `_scan` over a runtime corpus:
+    the gloss in the second body paragraph is an unallowlisted failure
+    naming the file. Every gloss value is assembled at runtime from
+    independently non-triggering fragments (the module's own law)."""
+    scoped = "The two dispatch-invisible legs are scoped"
+    gloss = "The stranded gauge: rows that " + "can never " + "be dispatched"
+    for name, marker in (
+        ("quoted-admonition", '!!! note "T"'),
+        ("quoted-details", '??? note "T"'),
+        ("quoted-tab", '=== "T"'),
+    ):
+        doc = f"> {marker}\n>\n>     {scoped}.\n>\n>     {gloss}.\n"
+        assert _corpus_matches(f"virtual/{name}.md", doc) == ["universal-no-dispatch"], (
+            f"the {marker} gloss in the quoted container's SECOND body "
+            "paragraph must red — the renderer renders it as the "
+            "admonition's own second <p>"
+        )
+        units = [
+            unit
+            for unit in _corpus_units(f"virtual/{name}.md", doc)
+            if unit.kind == "markdown" and "can never" in unit.text
+        ]
+        assert len(units) == 1 and units[0].start_line == 5, [
+            (unit.start_line, unit.end_line, unit.text[:40]) for unit in units
+        ]
+        # The `>`-only separator line is its own floor unit — coverage
+        # never depends on the container swallowing it.
+        floor = [unit for unit in _corpus_units(f"virtual/{name}.md", doc) if unit.kind == "markdown-text"]
+        assert [unit.start_line for unit in floor] == [2, 4], [
+            (unit.start_line, unit.text) for unit in floor
+        ]
+    # The corrected quoted form passes (each body paragraph its own words).
+    corrected = (
+        '> !!! note "T"\n'
+        ">\n"
+        ">     The read is scoped to the two dispatch-invisible legs.\n"
+        ">\n"
+        ">     The gauge's rows are scoped to the two dispatch-invisible\n"
+        ">     legs plus the run-scoped class.\n"
+    )
+    assert not _corpus_matches("virtual/quoted-clean.md", corrected)
+    # End to end through the REAL scanner entry point over a runtime
+    # corpus (nothing under the real docs/, src/ or tests/ is created):
+    # the quoted container's second-paragraph gloss is a failure naming
+    # the file, while the same gloss unquoted is caught the same way —
+    # the quoted form no longer hides.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for scan_root in SCAN_ROOTS:
+            (root / scan_root).mkdir()
+        quoted = root / "docs" / "quoted.md"
+        quoted.write_text(
+            '> !!! note "T"\n'
+            ">\n"
+            ">     The two dispatch-invisible legs are scoped.\n"
+            ">\n"
+            ">     " + gloss + ".\n",
+            encoding="utf-8",
+        )
+        failures = _scan(root)
+        assert any(
+            path == "docs/quoted.md" and rule == "universal-no-dispatch" for rule, _unit, path in failures
+        ), failures
+        unquoted = root / "docs" / "quoted.md"
+        unquoted.write_text(
+            '!!! note "T"\n\nThe two dispatch-invisible legs are scoped.\n\n' + gloss + ".\n",
+            encoding="utf-8",
+        )
+        failures = _scan(root)
+        assert any(
+            path == "docs/quoted.md" and rule == "universal-no-dispatch" for rule, _unit, path in failures
+        ), failures
 
 
 def test_container_bodies_are_markdown_at_their_own_lines() -> None:
