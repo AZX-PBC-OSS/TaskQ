@@ -259,29 +259,14 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "the doctor's roll-up SQL's own two dispatch-invisible count columns (the f-string's rendered text is one JoinedStr unit — this entry replaces the old per-chunk digests; the unit's span is the WHOLE f-string literal, wider than any one interpolation chunk it replaced)",
     ),
     (
-        "613caf5bb80e71cffbc7b8efcc1a58686ce43e0345a231cd6475a8d7d75faa97",
-        "src/taskq/settings.py",
-        "the ADMIN_WORKER_LIVENESS description is the liveness window's own subject (which arms read the liveness edge), not a reason-set enumeration",
-    ),
-    (
         "c842b501aea0bfaf6804636b11729bb9cd432f4344c82095d225fa6d63d4df1f",
         "src/taskq/web/templates/_partials/queue_table.html",
         "the queue badge tooltip's own sanctioned two-leg text (layer-6 table B: the tooltip exactly describes the two legs its SQL counts), as its own `<span>` element unit; the old markdown-floor span of the same text is pruned — the template floor is no longer a markdown pass",
     ),
     (
-        "afa336cda95c34edb17f682d4800764144a449a63e0a331897d896c6d7232cf1",
-        "docs/guides/admin-ui.md",
-        "the Live Workers column's own subject is the liveness read's agreement across surfaces, not a reason enumeration",
-    ),
-    (
         "cb4f430adf27cd1a6369112810469205a9779f187ecd2752941998609ffe1eae",
         "docs/guides/observability.md",
         "the alert inventory list item (the shipped rules' names), not a reason enumeration",
-    ),
-    (
-        "a74123c4e98e61863450a38f5b96a18c825c305725d0ab70b5e18a43aec96785",
-        "docs/guides/configuration.md",
-        "the liveness env row's own subject (the unserved arm's liveness dependency, named instrumentally) — not a reason-set enumeration",
     ),
     (
         "f84ee18a7c76d0f8af384f67b08bf3c6c5e20dd9a9be3ad75e159d3dfd02201e",
@@ -292,21 +277,6 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "533d0eb32c11748e7d8b4a472bd0c329583d00f54d18b92f7c68fcbe9391de4c",
         "docs/guides/ops.md",
         "the ops deadline/queue-bootstrap row's own subject (the deadline sweep's own condition), not the gauge's reason set",
-    ),
-    (
-        "0760aec62348f6ebe393eaca4ddbb933c6297a5b5f06ce9375ac2e2ccc7e521e",
-        "docs/guides/runbooks.md",
-        "the TaskQQueueUnserved section's own remedy step — the sibling alert's subject",
-    ),
-    (
-        "5efac33f8077342ca5f87425e8d7e0098910b134b293cd0357a5bce3f6feebc3",
-        "docs/guides/testing.md",
-        "the fake runner's run-until-drained refusal is about its own registration/stub mechanism, not the leader gauge (the admonition body is its own paragraph unit under the container model — the span is NARROWER than the old blank-line block, which also swallowed the `!!! note` marker line above the paragraph; the marker line is its own unit now)",
-    ),
-    (
-        "20493d11e1625e96eca5973ee5136980574c9fb18d2358cf81238d859564e90e",
-        "docs/guides/troubleshooting.md",
-        "actor/queue diagnostic topics, subject-scoped",
     ),
     (
         "ee5f1b5acac1c47524c539d61d3f44a43d9989a1ca782bebfb7621940be1a4d2",
@@ -324,29 +294,29 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "the real-worker probe's own scenario list (its own subjects: unserved queue / missing actor_config probes)",
     ),
     (
-        "a760c9fd925e0b3f12ecb88dfed39f74551ddc0c5846aeef6b95ce467f0189e3",
-        "tests/attack_wf_engine_windows.py",
-        "the attack docstring's own subject (the crash-window wire shapes; the never-dispatched mention is the reclaimed-row subject)",
-    ),
-    (
         "8e7a46427c8ca1fb5692e8515e7e60128d0eca72d5e9a013330c8af26ca76369",
         "tests/test_cli_doctor.py",
         "the doctor's own stated purpose quotes — the two-leg subject's true never-dispatches gloss",
     ),
     (
-        "b8b56507674d9401f3512e278fef2a41c2ae86b6927b52246c68d9d50532358d",
-        "tests/test_cli_doctor.py",
-        "the doctor's own stated purpose quotes — the two-leg subject's true never-dispatches gloss",
-    ),
-    (
-        "baa47ee27942bfc46fbe5acf46d0f74bdf7668c26ab0ad135f2e69ac71120e15",
-        "tests/test_ops_liveness_boundary_contract.py",
-        "the liveness-boundary contract's own subject (where the liveness edge sits), not a reason enumeration",
-    ),
-    (
         "64753e245ef4e48e4df1540cbee5a54f22b43cd12abaf4422b2e5b7ed75cfad4",
         "tests/test_prometheus_metrics_review.py",
         "the sanctioned two-label subset regression fixture (layer-6 table A: kept as a subset control with separate third-reason coverage)",
+    ),
+    (
+        "5efac33f8077342ca5f87425e8d7e0098910b134b293cd0357a5bce3f6feebc3",
+        "docs/guides/testing.md",
+        "the fake runner's run-until-drained refusal is about its own registration/stub mechanism, not the leader gauge (the admonition body is its own paragraph unit under the container model — the span is NARROWER than the old blank-line block, which also swallowed the `!!! note` marker line above the paragraph; the marker line is its own unit now)",
+    ),
+    (
+        "92620b0d08dd0f15b25e36b084c243b5aeea2549497c41913b731070576dd5ba",
+        "docs/guides/troubleshooting.md",
+        "the stranded-jobs cause row's own subject-scoped text (the no-actor-config cause as the troubleshooting table states it)",
+    ),
+    (
+        "415e5bac0cf540817600e9f34c21f3a4b249cc51339738d795f488609e62d136",
+        "tests/test_reclaim_indefinite_deadline_handoff_attack.py",
+        "the reclaim/deadline handoff attack's own subject (the schedule_to_close window's mechanics), not the gauge's reason set",
     ),
     (
         "1e12b6af12f97722719f6951216b9ca88f65688aef21e736ddb1ee8c220bc969",
@@ -362,21 +332,6 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "24dc01ee8d8cf49c4e8567edb46d107d042aa31d762fc9b257a973f9d5e9d3f0",
         "docs/guides/retries.md",
         "the deadline sweep's own never-dispatched list item (expired pending jobs past schedule_to_close) — the deadline subject, not the gauge's reason set",
-    ),
-    (
-        "92620b0d08dd0f15b25e36b084c243b5aeea2549497c41913b731070576dd5ba",
-        "docs/guides/troubleshooting.md",
-        "the stranded-jobs cause row's own subject-scoped text (the no-actor-config cause as the troubleshooting table states it)",
-    ),
-    (
-        "415e5bac0cf540817600e9f34c21f3a4b249cc51339738d795f488609e62d136",
-        "tests/test_reclaim_indefinite_deadline_handoff_attack.py",
-        "the reclaim/deadline handoff attack's own subject (the schedule_to_close window's mechanics), not the gauge's reason set",
-    ),
-    (
-        "e87f29ddaa41713888e7171064ca02f591694db688381f60cc04f1bcdbd26c6d",
-        "src/taskq/_doctor.py",
-        "the doctor's own reported finding line (the no-actor-config subject's true never-dispatches output text; the rendered f-string is one unit)",
     ),
 )
 
@@ -2348,11 +2303,15 @@ def _allowlist_rotations(
     * a span-digest entry's digest matches a LIVE unit of the file's
       CURRENT text (an edited or deleted span is a violation — deleting
       or rewording text cannot silently erase an exception);
+    * that live unit still FIRES at least one rule (round-12 D12-5): a
+      live-but-not-firing entry is a STALE SUPPRESSION — it hides
+      nothing today but silently suppresses a future widened rule on
+      the same span; prune the entry or re-justify the wording;
     * a wildcard entry's file still CARRIES the class's vocabulary (an
       emptied exception is a stale one).
 
     Returns one human-readable violation per defect; empty = every
-    entry is live."""
+    entry is live and firing."""
     violations: list[str] = []
     for digest, allowed_path, reason in entries:
         if not reason or len(reason.splitlines()) != 1:
@@ -2377,11 +2336,20 @@ def _allowlist_rotations(
         except (SyntaxError, AssertionError) as exc:
             violations.append(f"{allowed_path}: the file does not parse (fail-closed): {exc}")
             continue
-        if not any(unit.span_digest == digest for unit in units):
+        live = [unit for unit in units if unit.span_digest == digest]
+        if not live:
             violations.append(
                 f"{allowed_path}: the allowlisted span's digest matches NO live unit "
                 f"({digest}) — the span was edited or deleted; re-derive or prune "
                 "the entry"
+            )
+            continue
+        if not any(rule(unit) for unit in live for _name, rule in RULES):
+            violations.append(
+                f"{allowed_path}: the allowlisted span's LIVE unit fires NO rule "
+                f"({digest}) — the exception suppresses nothing; a stale suppression "
+                "waiting to hide a widened rule; prune the entry or re-justify "
+                "the wording"
             )
     return violations
 
@@ -2462,6 +2430,31 @@ def test_allowlist_defeats_red_the_anti_rot_law() -> None:
         ),
     )
     assert any("STALE" in v and "virtual/oracle.md" in v for v in violations), violations
+
+    # DEFEAT (c) — the round-12 D12-5 law: a LIVE-BUT-NOT-FIRING span.
+    # The entry's digest matches a live unit, but no rule fires on it
+    # any more (the wording was corrected without pruning the
+    # exception) — a stale suppression, and a violation of the
+    # strengthened law. The positive above doubles as this conjunct's
+    # clean control: the guide paragraph fires closed-enumeration, so
+    # `== []` already asserts the firing conjunct holds for a justified
+    # entry.
+    scoped_text = (
+        "# A guide\n\n"
+        "The stranded detector is scoped to the two dispatch-invisible legs.\n"
+    )
+    scoped_units = list(_markdown_units("virtual/scoped.md", scoped_text))
+    scoped_unit = next(u for u in scoped_units if "stranded" in u.text)
+    assert not any(rule(scoped_unit) for _n, rule in RULES), (
+        "the defeat fixture's span must be live but NOT fire (the stale-suppression shape)"
+    )
+    scoped_entries: tuple[tuple[str, str, str], ...] = (
+        (scoped_unit.span_digest, "virtual/scoped.md", "the fixture's stale exception"),
+    )
+    violations = _allowlist_rotations(
+        scoped_entries, file_text=lambda rel: scoped_text if rel == "virtual/scoped.md" else None
+    )
+    assert any("fires NO rule" in v and "virtual/scoped.md" in v for v in violations), violations
 
 
 def test_allowlist_paths_exist_and_spans_are_justified() -> None:
@@ -3315,9 +3308,22 @@ def test_span_digest_is_total_on_lone_surrogates() -> None:
     digests = [unit.span_digest for unit in surrogate_units]  # must not raise
     assert all(len(digest) == 64 and int(digest, 16) >= 0 for digest in digests)
     # End to end through the anti-rot law: an entry derived from the
-    # surrogate unit's digest verifies live against the same file.
+    # surrogate unit's digest verifies live against the same file. The
+    # strengthened law (round-12 D12-5) also demands the entry's live
+    # unit FIRE a rule; the surrogate string is an exception-redaction
+    # fixture and fires none, so the law's honest verdict for this
+    # synthetic entry is exactly ONE stale-suppression violation — and
+    # that verdict still proves the D8-5 property end to end: it is
+    # reachable only because the digest matched its live unit (a digest
+    # miss would have reported "matches NO live unit" instead, and a
+    # non-total digest would have raised above).
     entries = ((digests[0], surrogate_file, "the surrogate digest is total"),)
-    assert _allowlist_rotations(entries, file_text=lambda _rel: raw) == []
+    violations = _allowlist_rotations(entries, file_text=lambda _rel: raw)
+    assert (
+        len(violations) == 1
+        and "fires NO rule" in violations[0]
+        and surrogate_file in violations[0]
+    ), violations
 
 
 def test_markdown_units_never_partially_overlap() -> None:
