@@ -1660,32 +1660,39 @@ def _py_text_ownership_violations(rel: str, raw: str, units: list[Unit]) -> list
 
 
 def _overlap_violations(rel: str, units: list[Unit]) -> list[str]:
-    """LAW 2 — disjoint-or-contained, GLOBALLY: every pair of a file's
-    units is either disjoint, one contains the other, or they TOUCH at
-    a shared boundary line (an element own-run ends mid-line where the
-    next run begins — the .html/.md element model's own granularity; a
-    touch is not a crossing). A unit that begins STRICTLY INSIDE the
-    running maximum end and ends beyond it is a real crossing — caught
-    whatever the distance (the round-9 D9-8 defect: the overlap test
-    only checked ADJACENT pairs). The check is the exact interval-sweep
-    form of that all-pairs law — units sorted by (start, longest first);
-    O(n log n) over the tree's 300k units; the corpus test asserts the
-    sweep agrees with the brute-force all-pairs form on small inputs."""
+    """LAW 2 — laminar: every PAIR of a file's units is either disjoint,
+    one contains the other, or they TOUCH at a shared boundary line (an
+    element own-run ends mid-line where the next run begins — the
+    .html/.md element model's own granularity; a touch is not a
+    crossing). This is the all-pairs property, and it is decided by the
+    standard open-interval STACK over units sorted by (start, longest
+    first): when a unit begins, every unit still open began at or
+    before it, so if the new unit ends beyond the innermost open unit
+    it crosses THAT unit — a pair the running-maximum sweep never
+    compared (the round-10 F10-1 defect: two units both contained in a
+    third crossed each other and the sweep reported the family clean;
+    the round-8 adjacent check caught one such shape and the sweep
+    caught none of the three). Popping is amortized O(n) over the
+    O(n log n) sort, so the check stays linearithmic in each file's
+    unit count; the corpus test asserts agreement with the brute-force
+    all-pairs form on randomized inputs, including nested-crossing
+    shapes."""
     ordered = sorted(units, key=lambda unit: (unit.start_line, -unit.end_line))
     violations: list[str] = []
-    max_end = 0
-    max_owner: tuple[int, int] | None = None
+    stack: list[tuple[int, int]] = []  # the open units, innermost last
     for unit in ordered:
-        if unit.start_line < max_end and unit.end_line > max_end:
-            owner = f"{max_owner[0]}-{max_owner[1]}" if max_owner else "?"
+        start, end = unit.start_line, unit.end_line
+        while stack and stack[-1][1] <= start:
+            # Closed before this unit begins (a shared boundary line is
+            # the touch case — not a crossing).
+            stack.pop()
+        if stack and end > stack[-1][1]:
+            owner = f"{stack[-1][0]}-{stack[-1][1]}"
             violations.append(
-                f"{rel}: {owner} partially overlaps "
-                f"{unit.start_line}-{unit.end_line} — a unit crossing a "
+                f"{rel}: {owner} partially overlaps {start}-{end} — a unit crossing a "
                 "construct boundary"
             )
-        if unit.end_line > max_end:
-            max_end = unit.end_line
-            max_owner = (unit.start_line, unit.end_line)
+        stack.append((start, end))
     return violations
 
 
@@ -2869,8 +2876,10 @@ def test_unit_model_laws_hold_over_every_scanned_file() -> None:
 
 def test_unit_model_laws_red_when_violated() -> None:
     """Each law REDS on an injected violation (runtime-constructed unit
-    lists — the tree is never touched), and the overlap sweep agrees
-    with the brute-force all-pairs form on small inputs."""
+    lists — the tree is never touched), and the laminar check agrees
+    with the brute-force all-pairs form on randomized inputs, including
+    the nested-crossing shapes the round-10 F10-1 defect showed the old
+    running-maximum sweep missing."""
     text = "first line has the scoping marker\nsecond line hides a gloss\n"
     # LAW 1: a line outside every unit reds, naming the file and line.
     units = [Unit("virtual/laws.md", "markdown", 1, 1, "first line has the scoping marker")]
@@ -2901,8 +2910,33 @@ def test_unit_model_laws_red_when_violated() -> None:
         )
         == []
     ), _overlap_violations("virtual/laws.md", [])
-    # ... and the sweep agrees with the brute-force all-pairs law.
+    # ... the F10-1 defeats RED: two units both contained in a third,
+    # crossing each other UNDER the container's end — the running-
+    # maximum sweep compared each unit only with the interval owning
+    # the maximum end and reported all three shapes clean.
+    under_max = [
+        Unit("virtual/laws.md", "markdown", 1, 10, "a" * 10),
+        Unit("virtual/laws.md", "markdown", 2, 6, "b" * 5),
+        Unit("virtual/laws.md", "markdown", 4, 8, "c" * 5),
+    ]
+    violations = _overlap_violations("virtual/laws.md", under_max)
+    assert any("2-6" in v and "4-8" in v for v in violations), violations
+    # ... and the round-8 adjacent-check shape reds too (the old sweep
+    # missed it as well).
+    round8 = [
+        Unit("virtual/laws.md", "markdown", 1, 10, "a" * 10),
+        Unit("virtual/laws.md", "markdown", 2, 6, "b" * 5),
+        Unit("virtual/laws.md", "markdown", 5, 7, "c" * 3),
+    ]
+    violations = _overlap_violations("virtual/laws.md", round8)
+    assert any("2-6" in v and "5-7" in v for v in violations), violations
+    # ... and the check agrees with the brute-force all-pairs law on
+    # randomized inputs — a seeded fuzz whose generator produces
+    # nested-crossing shapes (crossing pairs inside a containing unit)
+    # on purpose, plus fully random spans, so the agreement is evidence
+    # and not one hand-picked set.
     import itertools
+    import random
 
     def brute_force(units: list[Unit]) -> bool:
         for a, b in itertools.combinations(units, 2):
@@ -2915,11 +2949,41 @@ def test_unit_model_laws_red_when_violated() -> None:
                 return True
         return False
 
-    fuzz_units = [
-        Unit("virtual/laws.md", "markdown", start, start + offset, "text")
-        for start, offset in ((1, 0), (2, 2), (3, 0), (5, 1), (5, 3), (7, 0), (2, 5))
-    ]
-    assert bool(_overlap_violations("virtual/laws.md", fuzz_units)) == brute_force(fuzz_units)
+    def fuzz_family(rng: random.Random) -> list[Unit]:
+        units: list[Unit] = []
+        # A nest of containers, then crossing pairs INSIDE the
+        # innermost container (the under-max shape), at random depths.
+        open_start, open_end = 1, rng.randint(6, 20)
+        units.append(Unit("virtual/laws.md", "markdown", open_start, open_end, "outer"))
+        for _ in range(rng.randint(0, 3)):
+            inner_start = open_start + rng.randint(0, 2)
+            inner_end = open_end - rng.randint(0, 2)
+            if inner_start > inner_end:
+                break
+            units.append(Unit("virtual/laws.md", "markdown", inner_start, inner_end, "inner"))
+            open_start, open_end = inner_start, inner_end
+        for _ in range(rng.randint(1, 3)):
+            a_start = open_start + rng.randint(0, max(0, open_end - open_start - 2))
+            a_end = a_start + rng.randint(0, open_end - a_start)
+            b_start = open_start + rng.randint(0, max(0, open_end - open_start - 2))
+            b_end = b_start + rng.randint(0, open_end - b_start)
+            units.append(Unit("virtual/laws.md", "markdown", a_start, a_end, "a"))
+            units.append(Unit("virtual/laws.md", "markdown", b_start, b_end, "b"))
+        return units
+
+    rng = random.Random(20261117)
+    for _ in range(500):
+        family = fuzz_family(rng)
+        assert bool(_overlap_violations("virtual/laws.md", family)) == brute_force(family), [
+            (unit.start_line, unit.end_line) for unit in family
+        ]
+        loose = [
+            Unit("virtual/laws.md", "markdown", (start := rng.randint(1, 12)), start + rng.randint(0, 8), "t")
+            for _ in range(rng.randint(2, 7))
+        ]
+        assert bool(_overlap_violations("virtual/laws.md", loose)) == brute_force(loose), [
+            (unit.start_line, unit.end_line) for unit in loose
+        ]
 
     # LAW 3: a truncated unit reds (the D9-5 class: text lost relative
     # to its span).
