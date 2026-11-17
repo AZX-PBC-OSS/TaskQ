@@ -179,8 +179,9 @@ accepted:
    the last label's own unclosed parenthetical (`_label_bound`, the
    shipped alert descriptions' elliptical form) — is PAREN-BOUND, not
    subject-verified (round-12 D12-3): the code checks only that the
-   `(`/`)` counts after the last label are unequal and never that the
-   label is the claim's subject, so a sentence whose subject is the
+   `(` count after the last label EXCEEDS the `)` count (a close-heavy
+   unbalanced tail is not the exception — round-13 N13-6) and never
+   that the label is the claim's subject, so a sentence whose subject is the
    population and whose label is only mentioned — "All stranded
    entries, unlike <label> (<universal>." or "All stranded entries
    share the <label> defect (so they are <universal>." — hides the
@@ -191,10 +192,14 @@ accepted:
    exception false-reds exactly those two spans — executed), and a
    lexical check that the label is the claim's subject would hand-tune
    to the shipped wording; a population subject INSIDE the
-   parenthetical still defeats the waiver. What remains beyond that is
-   the SPELLING gap: a population subject spelled outside
-   `_POPULATION_SUBJECT_RE`'s forms ("every stranded entry …") would
-   still waive. Accepted: the forms enumerate the shipped prose's own
+   parenthetical still defeats the waiver — and that red is the
+   exception's WIDENING tripwire, pinned as a control (round-13
+   N13-5): a widening mutant that drops the between-text check passes
+   every other corpus pin and the tree scan, so the inside-paren
+   control is the only thing that reds it. What remains
+   beyond that is the SPELLING gap: a population subject spelled
+   outside `_POPULATION_SUBJECT_RE`'s forms ("every stranded entry …")
+   would still waive. Accepted: the forms enumerate the shipped prose's own
    population subjects; a new spelling is a re-review, not a silence.
 5. A quoted container's prefix is the renderer's clean law
    (` {0,3}> ?` per level): a tab inside a blockquote prefix is not
@@ -1788,8 +1793,10 @@ def _label_bound(sentence: str, position: int) -> bool:
     own shape: the occurrence sits inside the last label's own
     UNCLOSED parenthetical. The round-12 D12-3 correction states that
     exception's true reach: it is PAREN-BOUND, not subject-verified —
-    the code checks only that the `(`/`)` counts after the last label
-    are unequal and never that the label is the claim's subject, so a
+    the code checks only that the `(` count after the last label
+    EXCEEDS the `)` count (a close-heavy unbalanced tail is not the
+    exception — round-13 N13-6) and never that the label is the
+    claim's subject, so a
     sentence whose subject is the population and whose label is only
     mentioned ("All stranded entries, unlike <label> (<universal>." —
     "All stranded entries share the <label> defect (so they are
@@ -1801,7 +1808,11 @@ def _label_bound(sentence: str, position: int) -> bool:
     spans) — and a lexical check that the label is the claim's subject
     would hand-tune to the shipped wording. A population subject INSIDE
     that parenthetical still defeats the waiver (the between-text check
-    runs first — a gloss inside the label's own parentheses reds)."""
+    runs first — a gloss inside the label's own parentheses reds).
+    Round-13 N13-5 pins that red as the exception's WIDENING tripwire:
+    a widening mutant that drops the between-text check passes every
+    other corpus pin and the tree scan, so the inside-parenthetical
+    corpus control is the only thing that reds it."""
     head = sentence[:position]
     labels = list(re.finditer("no_actor_config|unserved_" + "queue|no actor_config", head))
     if not labels:
@@ -4389,10 +4400,14 @@ def test_scoping_requires_a_genuine_scope() -> None:
     # exception's ACCEPTED reach, declared in residual 4 ────────────────
     # The exception is PAREN-BOUND, not subject-verified: a sentence
     # whose subject is the population and whose label is only mentioned
-    # hides the same way. These three shapes PIN that accepted reach —
-    # they are green, and any change to the exception (narrowing OR
-    # widening) turns them and the shipped alert descriptions' shared
-    # mechanism into a re-review tripwire.
+    # hides the same way. These three shapes PIN that accepted reach as
+    # the NARROWING tripwire (round-13 N13-5 corrected the old claim):
+    # narrowing the exception reds them and false-reds exactly the two
+    # shipped alert-description spans. WIDENING leaves them green —
+    # executed: a drop-the-between-text-check widening mutant passes
+    # every corpus pin and the tree scan (0 failures) — so the widening
+    # direction is pinned separately by the inside-parenthetical
+    # control below.
     for name, shape in (
         (
             "unlike",
@@ -4416,6 +4431,26 @@ def test_scoping_requires_a_genuine_scope() -> None:
             "exception's reach moved; re-declare residual 4 and re-review "
             "the shipped alert descriptions' elliptical form"
         )
+
+    # ── the round-13 N13-5 widening pin: the inside-parenthetical gloss
+    # REDS ──────────────────────────────────────────────────────────────
+    # A population subject INSIDE the label's own unclosed parenthetical
+    # defeats the exception (the between-text check runs first —
+    # `_label_bound`'s declared law). This is the WIDENING direction's
+    # only tripwire: a mutant dropping the between-text check passes
+    # every corpus pin above and the tree scan (0 failures) while
+    # flipping this shape green — the assertion below is what reds it.
+    inside_paren_population = (
+        "All stranded entries, unlike " + frag_unserved + " (these rows " + frag_universal + "."
+    )
+    assert _corpus_matches(
+        "virtual/label-bound-inside-paren-population.md", inside_paren_population
+    ) == ["universal-no-dispatch"], (
+        "a population subject inside the label's own parenthetical must "
+        "defeat the exception — the widening tripwire (round-13 N13-5); "
+        "if this greens, the between-text population check was dropped "
+        "or weakened and the exception's documented reach grew"
+    )
 
     # ... but the third leg's OWN definition (the shipped prose's shape:
     # the unit names workflow_root_missing and says its row CAN dispatch
