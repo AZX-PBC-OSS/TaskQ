@@ -39,10 +39,10 @@ from __future__ import annotations
 import ast
 import hashlib
 import json as _json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -679,6 +679,19 @@ def _iter_scan_files() -> Iterator[Path]:
             yield path
 
 
+def _units_for(rel: str, raw: str) -> list[Unit]:
+    """The file's semantic units (the scan's own dispatch, shared with
+    the anti-rot law so a digest's live-span match is computed over the
+    SAME units the scan matches). Fail-closed: a .py file that does not
+    parse raises, and unreadable YAML raises — never a silent skip."""
+    if rel.endswith(".py"):
+        tree = ast.parse(raw)
+        return list(_python_units(rel, raw, tree))
+    if rel.endswith((".yml", ".yaml")):
+        return list(_yaml_scalar_units(rel, raw)) + list(_markdown_units(rel, raw))
+    return list(_markdown_units(rel, raw))
+
+
 def _allowlisted(path: str, unit: Unit) -> bool:
     for digest, allowed_path, _reason in ALLOWLIST:
         if path != allowed_path:
@@ -700,16 +713,10 @@ def _scan() -> list[tuple[str, Unit, str]]:
             raw = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError) as exc:
             pytest.fail(f"{rel}: unreadable file — the scan fails closed: {exc}")
-        if path.suffix == ".py":
-            try:
-                tree = ast.parse(raw)
-            except SyntaxError as exc:
-                pytest.fail(f"{rel}: ast.parse failed — the scan fails closed: {exc}")
-            units = list(_python_units(rel, raw, tree))
-        elif path.suffix in (".yml", ".yaml"):
-            units = list(_yaml_scalar_units(rel, raw)) + list(_markdown_units(rel, raw))
-        else:
-            units = list(_markdown_units(rel, raw))
+        try:
+            units = _units_for(rel, raw)
+        except SyntaxError as exc:
+            pytest.fail(f"{rel}: ast.parse failed — the scan fails closed: {exc}")
         for unit in units:
             for rule_name, rule in RULES:
                 if rule(unit):
@@ -764,20 +771,164 @@ def test_required_vocabulary_homes_carry_the_third_reason() -> None:
             )
 
 
+#: The class's own vocabulary: a WHOLE-FILE (wildcard) exception exists
+#: only while its file still carries the class's words — an emptied
+#: exception is a stale one (the round-4 NEW-5 defeat: DeepSeek emptied
+#: the frozen oracle and the invariant passed both). The spellings are
+#: the class's own surfaces: the snake_case reason labels, the hyphenated
+#: release/log spellings, the typed corruption class, and the family's
+#: own name.
+_WILDCARD_VOCABULARY: Final[tuple[str, ...]] = (
+    "no_actor_config",
+    "unserved_queue",
+    "workflow_root_missing",
+    "workflow-root-missing",
+    "WorkflowRootMissingError",
+    "stranded",
+)
+
+
+def _allowlist_rotations(
+    entries: tuple[tuple[str, str, str], ...],
+    *,
+    file_text: Callable[[str], str | None],
+) -> list[str]:
+    """The allowlist's anti-rot law (round-4 NEW-5), driveable on any
+    (entries, reader) pair so the defeats are runtime-constructed
+    fixtures and never tree mutations. Every entry must remain JUSTIFIED
+    against the LIVE text:
+
+    * the path exists (a missing path is a violation);
+    * a span-digest entry's digest matches a LIVE unit of the file's
+      CURRENT text (an edited or deleted span is a violation — deleting
+      or rewording text cannot silently erase an exception);
+    * a wildcard entry's file still CARRIES the class's vocabulary (an
+      emptied exception is a stale one).
+
+    Returns one human-readable violation per defect; empty = every
+    entry is live."""
+    violations: list[str] = []
+    for digest, allowed_path, reason in entries:
+        if not reason or len(reason.splitlines()) != 1:
+            violations.append(f"{allowed_path}: the entry's reason is not one line: {reason!r}")
+            continue
+        raw = file_text(allowed_path)
+        if raw is None:
+            violations.append(
+                f"{allowed_path}: the allowlisted path vanished ({digest}) — deleting "
+                "text cannot silently erase an exception; prune or re-justify the entry"
+            )
+            continue
+        if digest == "*":
+            if not any(word in raw for word in _WILDCARD_VOCABULARY):
+                violations.append(
+                    f"{allowed_path}: the whole-file exception is STALE — the file "
+                    "no longer carries the class's vocabulary; prune the entry"
+                )
+            continue
+        try:
+            units = _units_for(allowed_path, raw)
+        except (SyntaxError, AssertionError) as exc:
+            violations.append(f"{allowed_path}: the file does not parse (fail-closed): {exc}")
+            continue
+        if not any(unit.span_digest == digest for unit in units):
+            violations.append(
+                f"{allowed_path}: the allowlisted span's digest matches NO live unit "
+                f"({digest}) — the span was edited or deleted; re-derive or prune "
+                "the entry"
+            )
+    return violations
+
+
+def test_allowlist_defeats_red_the_anti_rot_law() -> None:
+    """Round-4 NEW-5's defeats, runtime-constructed (the tree is never
+    touched): (a) a NEUTRALISED SPAN — an allowlisted digest whose span's
+    text was edited no longer matches a live unit and reds, and a
+    vanished PATH reds; (b) an EMPTIED WHOLE-FILE exception — the
+    wildcard entry whose file lost the class's vocabulary reds. Each
+    defeat's positive (the same entries against the live text) is
+    asserted clean, so the reds are the law's own and not a broken
+    fixture."""
+    # A violating paragraph the way the shipped tree carries one: the
+    # unit's digest is computed by the REAL Unit over the REAL unit
+    # builder's output.
+    live_text = (
+        "# A guide\n\n"
+        "The stranded detector's reasons are no_actor_config and "
+        "unserved_queue — that is the whole set.\n"
+    )
+    units = list(_markdown_units("virtual/guide.md", live_text))
+    # The heading and the paragraph are separate units; the SANCTIONED
+    # span is the paragraph that carries the match.
+    assert len(units) == 2, [u.text for u in units]
+    violating = next(u for u in units if "stranded" in u.text)
+    span_digest = violating.span_digest
+
+    entries: tuple[tuple[str, str, str], ...] = (
+        (span_digest, "virtual/guide.md", "the fixture's own sanctioned span"),
+        ("*", "virtual/oracle.md", "the fixture's own whole-file exception"),
+    )
+
+    def _live_reader(rel: str) -> str | None:
+        return {
+            "virtual/guide.md": live_text,
+            "virtual/oracle.md": "the oracle's own text mentions stranded rows: no_actor_config",
+        }.get(rel)
+
+    # THE POSITIVE: both entries are live against the un-edited text.
+    assert _allowlist_rotations(entries, file_text=_live_reader) == []
+
+    # DEFEAT (a1): the span NEUTRALISED — the guide's paragraph is
+    # reworded; the digest matches no live unit and the entry reds.
+    def _edited_reader(rel: str) -> str | None:
+        if rel == "virtual/guide.md":
+            return live_text.replace(
+                "that is the whole set.", "is scoped to the two dispatch-invisible legs."
+            )
+        return _live_reader(rel)
+
+    violations = _allowlist_rotations(entries, file_text=_edited_reader)
+    assert any("matches NO live unit" in v and "virtual/guide.md" in v for v in violations), (
+        violations
+    )
+
+    # DEFEAT (a2): the span VANISHED with its path — the reader answers
+    # None and the entry reds.
+    violations = _allowlist_rotations(
+        entries, file_text=lambda rel: _live_reader(rel) if rel != "virtual/guide.md" else None
+    )
+    assert any("path vanished" in v and "virtual/guide.md" in v for v in violations), violations
+
+    # DEFEAT (b): the WHOLE-FILE exception EMPTIED — the oracle loses the
+    # class's vocabulary and the wildcard entry reds.
+    violations = _allowlist_rotations(
+        entries,
+        file_text=lambda rel: (
+            _live_reader(rel) if rel != "virtual/oracle.md" else "an unrelated file's text"
+        ),
+    )
+    assert any("STALE" in v and "virtual/oracle.md" in v for v in violations), violations
+
+
 def test_allowlist_paths_exist_and_spans_are_justified() -> None:
-    """The allowlist's own anti-rot law: every entry's path exists; a
-    wildcard entry's file must still CONTAIN the class's vocabulary (an
-    empty exception is a stale one); every entry carries a one-line
-    reason."""
-    for _digest, allowed_path, reason in ALLOWLIST:
-        assert reason and len(reason.splitlines()) == 1, allowed_path
-        path = REPO_ROOT / allowed_path
-        assert path.exists(), (
-            f"the allowlisted span's path vanished ({allowed_path}) — deleting "
-            "text cannot silently erase an exception; prune or re-justify the entry"
-        )
-    # The frozen oracle's existence is load-bearing (the differential gate's
-    # own reference).
+    """The allowlist's own anti-rot law, driven against the LIVE tree:
+    every entry's path exists; every span-digest entry's digest matches a
+    LIVE unit of the current text (an edited or deleted span is red); a
+    wildcard entry's file still carries the class's vocabulary (an empty
+    exception is a stale one); every entry carries a one-line reason.
+    The defeats are runtime-constructed fixtures below — they prove THIS
+    helper reds, never a re-implementation."""
+    violations = _allowlist_rotations(
+        ALLOWLIST,
+        file_text=lambda rel: (
+            (REPO_ROOT / rel).read_text(encoding="utf-8") if (REPO_ROOT / rel).exists() else None
+        ),
+    )
+    assert not violations, "the allowlist's anti-rot law found rotated entries:\n" + "\n".join(
+        f"  - {v}" for v in violations
+    )
+    # The frozen oracle's existence is load-bearing (the differential
+    # gate's own reference).
     assert (REPO_ROOT / "tests/_audit_vendor/_old_leader_sweeps.py").exists()
 
 
