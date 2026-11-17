@@ -267,6 +267,8 @@ async def defer_row_law(
                     "emit backpressure requires the validated current source logical "
                     "attempt and ledger id/claim instant"
                 )
+            if flow_id is None:
+                raise ValueError("the emit park's event rule requires the run's flow id")
             # Every numeric fact came from actual admission/the P0 carrier.
             # Validate exact integers again at this persistence seam; no JSON
             # coercion or malformed descriptor can become durable park state.
@@ -279,6 +281,20 @@ async def defer_row_law(
                 raise ValueError("emit-backpressure admission facts must be non-negative ints")
             if backpressure.bound < 1:
                 raise ValueError("emit-backpressure bound must be positive")
+            # THE CANONICAL PARK ORDER (R2/A9.2): the flow root's row lock
+            # first (the drain and the root-failure seats hold this same
+            # row — the park can never interleave a peer-row lock ahead of
+            # it), then the intent record's adoption + lock, THEN the park
+            # UPDATE. The observation/generation decision runs only after
+            # the write and includes the newly parked row (the split's own
+            # phases: one adoption, one write, one observation, one census
+            # bump — one disposition owner).
+            from taskq.workflows._emit import adopt_and_lock_emit_intent
+
+            await conn.fetchval(wsql.emit_root_lock, flow_id)
+            intent_facts = await adopt_and_lock_emit_intent(
+                conn, wsql, flow_id=flow_id, bound=backpressure.bound
+            )
             verdict = await conn.fetchrow(
                 render_sql(EMIT_BACKPRESSURE_PARK_SQL, wsql.schema),
                 job_id,
@@ -294,19 +310,21 @@ async def defer_row_law(
             )
             if verdict is not None and verdict["verdict"] == "parked":
                 # THE PARK'S OWN EVENT (§4.1 rule 4) — in this same
-                # transaction: no preceding existence probe (the committed
-                # exact park already proves the marker-positive case), and
-                # exactly one shared observation INCLUDING the park's own
-                # row, because removing the source's live row can make an
-                # older waiter fit. The bound record's one-time adoption
-                # rides the same transaction.
-                from taskq.workflows._emit import emit_capacity_event, ensure_emit_capacity
+                # transaction, AFTER the park write: no preceding existence
+                # probe (the committed exact park already proves the
+                # marker-positive case), and exactly one shared observation
+                # INCLUDING the park's own row, because removing the
+                # source's live row can make an older waiter fit. The
+                # intent row is already locked (the adopt/lock phase).
+                from taskq.workflows._emit import emit_capacity_event_locked
 
-                if flow_id is None:
-                    raise ValueError("the emit park's event rule requires the run's flow id")
-                await ensure_emit_capacity(conn, wsql, flow_id=flow_id, bound=backpressure.bound)
-                park_intent_created = await emit_capacity_event(
-                    conn, wsql, flow_id=flow_id, probe=False
+                park_intent_created = await emit_capacity_event_locked(
+                    conn,
+                    wsql,
+                    flow_id=flow_id,
+                    probe=False,
+                    census_family="lane",
+                    intent=intent_facts,
                 )
         else:
             try:

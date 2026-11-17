@@ -196,8 +196,13 @@ GROUP BY p.id, p.step_key
 # → the root 'succeeded' (the run completed; an absorbed failure derives
 # through its parent — B2's clause). The cancel flip and the direct cascade own
 # their own legs (the linearization points); this heals the windows. Bounded:
-# the roots batch (FOR UPDATE SKIP LOCKED, LIMIT $2), and the per-root node
-# scan rides jobs_wf_flow_nodes_idx (01.00.26_02) — never a seq scan. The rows
+# the roots batch (FOR UPDATE SKIP LOCKED, LIMIT $2) — THE LOCK-ORDER
+# EXEMPTION (A9.2's named list, the real reason): SKIP LOCKED never queues
+# behind a root a drain/cascade transaction already holds (contended roots
+# are deferred to a later pass), so this seat cannot form a root/drain
+# cycle and takes no separate admission serialization — and the per-root
+# node scan rides jobs_wf_flow_nodes_idx (01.00.26_02) — never a seq scan.
+# The rows
 # are truth, the root row is a cache: the maintenance leg derives the root's
 # terminal state from the node rows — the same reconstruction the debug view
 # uses — and finalizes the root in the same tx when the derivation is terminal

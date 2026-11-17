@@ -652,6 +652,21 @@ async def _resolve_failed_parent(
     ErrorInfo envelope (the engine constructs it through the typed door —
     the bound constants apply here too, never re-spelled SQL-side).
     """
+    # THE CANONICAL ROOT-FIRST ORDER (R2/A9.2): the exact flow root row is
+    # this transaction's FIRST row lock — before the cascade's blocked
+    # stamp, before the peer cancellation, before any node or fan-in
+    # write. The drain holds this same root while it walks root → intent
+    # → candidate CAS; a peer/park update acquired ahead of the root is
+    # the demonstrated 40P01 cycle (the drain holds the root and waits on
+    # the park row while the cascade holds the park row and waits on the
+    # root). A missing root is loud corruption: the raise aborts this tx2
+    # before ANY write (the committed tx1 child terminal stands), the
+    # error is never a body-ladder retry and never an infra fault.
+    root_id = await conn.fetchval(wsql.emit_root_lock, flow_id)
+    if root_id is None:
+        from taskq.workflows.api._runner_errors import WorkflowRootMissingError
+
+        raise WorkflowRootMissingError(flow_id, parent_id)
     # the fail-closed CASCADE — the record names the failed parent: the block
     # stamp (metadata.failed_parent), the peer-cancel record (the cancel-origin
     # marker + metadata.peer_cancel.cascade_from), and the flow's own failure
@@ -678,22 +693,21 @@ async def _resolve_failed_parent(
     # transaction), the §5.4 fence MUST NOT fire: its own proof ("the root
     # terminal 'failed' has just committed") is false here, and fencing the
     # parked source under a live run would strand the run's own continuation.
-    # THE ROOT'S OWN LOCK + THE GATED FAILURE (N1): the failure's own
-    # decision is its OWN statement — its own fresh snapshot, taken after
-    # the root lock's grant — so the unresolved-live gate decides from the
-    # rows as they stand NOW (a promotion the drain committed while this
-    # transaction waited on the root is visible; deciding from the wait's
-    # own stale snapshot is the strand's own mechanism).
+    # THE ROOT'S OWN LOCK IS THIS TRANSACTION'S ENTRY LOCK (R2/A9.2) — the
+    # gated failure stays its OWN statement after the grant, so its fresh
+    # READ COMMITTED snapshot decides from the rows as they stand NOW (a
+    # promotion the drain committed while this transaction waited on the
+    # root is visible; deciding from the wait's own stale snapshot is the
+    # strand's own mechanism). No second lock-acquisition CTE exists: the
+    # entry lock is the one root-lock owner here.
     flow_actually_failed = False
     if cascade_row is not None and int(cascade_row["blocked"]) >= 1:
-        root_id = await conn.fetchval(wsql.emit_root_lock, flow_id)
-        if root_id is not None:
-            failed_row = await conn.fetchrow(
-                wsql.flow_failed_gated,
-                flow_id,
-                CANCEL_ORIGIN_PEER_FAILURE,
-            )
-            flow_actually_failed = failed_row is not None and int(failed_row["flow_failed"]) == 1
+        failed_row = await conn.fetchrow(
+            wsql.flow_failed_gated,
+            flow_id,
+            CANCEL_ORIGIN_PEER_FAILURE,
+        )
+        flow_actually_failed = failed_row is not None and int(failed_row["flow_failed"]) == 1
     # THE §5.4 NON-DRAINAGE REFUSAL — in this same failure-cascade
     # transaction, ONLY when this statement's own root finalize actually
     # committed: the root terminal `failed` behind this child's exhausted

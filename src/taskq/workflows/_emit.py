@@ -477,15 +477,18 @@ async def emit_capacity_event(
     missing_ok: bool = False,
     census_family: str = "lane",
 ) -> bool:
-    """The §4.1 terminal/park event rule, run in the caller's transaction
+    """The §4.1 terminal event rule, run in the caller's transaction
     under the canonical root -> intent -> winning-nodes order.
 
     ``probe=True`` (a terminal event) executes the one indexed exact-marker
     existence probe first: a zero-row probe performs no count, no width
     query, no candidate scan, no notification, and no promotion.
-    ``probe=False`` (a park event) skips the probe — the committed exact
-    park already proves the marker-positive case — and runs exactly one
-    shared observation including the park's own row.
+    ``probe=False`` is the park event's own shape — the park seat does not
+    call THIS function (its phases are split: the park adopts and locks
+    the intent BEFORE its write and observes after, see
+    :func:`adopt_and_lock_emit_intent` + :func:`emit_capacity_event_locked`);
+    this function retains the combined form for the terminal/sweep seats
+    and keeps the exact same observation and generation authority.
 
     Returns the one-bit ``intent_created`` result: True only when this event
     crossed the threshold (a waiter newly fits, no intent was pending) and
@@ -513,7 +516,61 @@ async def emit_capacity_event(
             f"the bounded run {flow_id} has no capacity record at its "
             "terminal/park event — the bound stamp is missing (fail-closed)"
         )
-    bound, wake_generation, handled_generation = _intent_generation(intent)
+    return await emit_capacity_event_locked(
+        conn,
+        wsql,
+        flow_id=flow_id,
+        probe=probe,
+        census_family=census_family,
+        intent=_intent_generation(intent),
+    )
+
+
+async def adopt_and_lock_emit_intent(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    bound: int,
+) -> tuple[int, int, int]:
+    """The park seat's ADOPT/LOCK phase (A9.2): the §2.1 whole-object-set
+    preflight, the bound record's one-time adoption, then the intent row's
+    own ``FOR UPDATE`` — the park UPDATE's preceding serialization point.
+    Returns the locked row's validated ``(bound, wake, handled)`` facts for
+    the caller's observe/decide phase. One intent authority: the adoption
+    and the lock are this module's existing primitive split across two
+    calls, never a second stamp or a second generation owner."""
+    from taskq.workflows._capability import verify_emit_capacity_objects
+
+    await verify_emit_capacity_objects(conn, wsql.schema)
+    await ensure_emit_capacity(conn, wsql, flow_id=flow_id, bound=bound)
+    intent = await conn.fetchrow(wsql.emit_intent_lock, flow_id)
+    if intent is None:
+        raise EmitCapacityCorruptionError(
+            f"the bounded run {flow_id} has no capacity record at its park "
+            "seat's adopt/lock phase — the bound stamp is missing (fail-closed)"
+        )
+    return _intent_generation(intent)
+
+
+async def emit_capacity_event_locked(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    probe: bool,
+    census_family: str,
+    intent: tuple[int, int, int],
+) -> bool:
+    """The OBSERVE/DECIDE phase against the caller's already-locked intent
+    row (A9.2's park phase split): the census's own bump point, the one
+    shared observation, and the threshold's generation decision. The park
+    seat runs this AFTER its park write, so the observation includes the
+    newly parked row (its own row is in the observation and excluded from
+    the live charge). Exactly one census bump point and one generation
+    decision per committed park/terminal event — never duplicated across
+    the split phases."""
+    bound, wake_generation, handled_generation = intent
     if not probe:
         # The park's own event (§4.1 rule 4): the park IS the K family's
         # admission decision and its one observation.
@@ -1224,7 +1281,15 @@ async def sweep_emit_markers(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
     selected flow's repair commits. An empty index result ends the
     sweep's work: there is no parked-estate scan, no source re-claim, no
     due-time wake, and NO re-bump of an intent the drain already handled
-    (that would be a busy loop, not recovery)."""
+    (that would be a busy loop, not recovery).
+
+    THE LOCK-ORDER EXEMPTION (A9.2's named list, the real reason): this
+    seat takes NO root lock. Its per-flow transaction reads the marker
+    and bound without ``FOR UPDATE`` and adopts/locks only the flow's
+    single intent row — it never queues a root holder behind work it
+    already owns, so a root lock would be pure serialization with the
+    drain/cascade seats and no cycle to prevent. Contended intent rows
+    defer to a later selection."""
     after = _SWEEP_CURSORS.get(wsql.schema, str(_ZERO_UUID))
     async with pool.acquire() as conn:
         rows = await conn.fetch(wsql.emit_marker_sweep, after)

@@ -986,16 +986,25 @@ SELECT (SELECT count(*) FROM blocked) AS blocked,
 #: unresolved node (a promoted pending source, a running node) withholds
 #: the root's failure; the maintenance's later pass owns the finalize once
 #: the live work rests.
+#: THE ROOT'S OWN GATED FAILURE (N1): its own statement — its own fresh
+#: snapshot, taken after the root lock's grant — so the unresolved-live
+#: gate decides from the ROWS AS THEY STAND NOW (a promotion the drain
+#: committed while this transaction waited on the root is visible). The
+#: maintenance seat's own law, applied at the cascade seat: a live
+#: unresolved node (a promoted pending source, a running node) withholds
+#: the root's failure; the maintenance's later pass owns the finalize once
+#: the live work rests. The root ROW LOCK itself is the caller's ENTRY
+#: lock (R2/A9.2 — `_resolve_failed_parent` takes `emit_root_lock` before
+#: the cascade; the maintenance seat's roots scan holds it per row): this
+#: statement deliberately carries NO second lock-acquisition CTE — one
+#: root-lock owner per transaction, never two.
 WF_FLOW_FAILED_GATED_SQL = """\
-WITH flow_locked AS (
-    SELECT f.id FROM {schema}.jobs f WHERE f.id = $1::uuid FOR UPDATE
-),
-failed AS (
+WITH failed AS (
     UPDATE {schema}.jobs f
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = $2::text
-    WHERE f.id = (SELECT id FROM flow_locked)
+    WHERE f.id = $1::uuid
       AND f.status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
       AND NOT EXISTS (
           SELECT 1 FROM {schema}.jobs n

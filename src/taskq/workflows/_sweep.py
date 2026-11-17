@@ -158,6 +158,17 @@ async def sweep_join_rederive(
     locks are held until the fire arm + outbox rows commit, so the fire's
     re-derivation of the firable set is deterministic.
 
+    THE LOCK-ORDER EXEMPTION (A9.2's named list, the real reason): this
+    seat acquires its join rows with ``FOR UPDATE SKIP LOCKED`` — it
+    NEVER waits on a contended row, so it cannot form a root/drain cycle
+    through its own lock acquisition, and it therefore needs no root
+    lock ahead of them. The nested root-maintenance call in this same
+    transaction also selects its roots ``FOR UPDATE SKIP LOCKED`` (a
+    root already held by a drain/cascade transaction is skipped, never
+    queued behind). Contended nodes/roots defer to a later bounded pass;
+    reducer bodies remain inside this transaction with no new root
+    serialization.
+
     The fired join's reducer body resolves durably — from the registered
     definition of the workflow stamped on the flow root's
     metadata (every process carries the same definitions; the healer is
