@@ -44,7 +44,6 @@ from __future__ import annotations
 import ast
 import bisect
 import hashlib
-import json as _json
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -882,10 +881,10 @@ RULES = (
 # ── the scan ────────────────────────────────────────────────────────────
 
 
-def _iter_scan_files() -> Iterator[Path]:
+def _iter_scan_files(base: Path) -> Iterator[Path]:
     for root in SCAN_ROOTS:
-        base = REPO_ROOT / root
-        for path in sorted(base.rglob("*")):
+        base_dir = base / root
+        for path in sorted(base_dir.rglob("*")):
             if not path.is_file():
                 continue
             if path.suffix not in SCAN_SUFFIXES:
@@ -924,12 +923,16 @@ def _allowlisted(path: str, unit: Unit) -> bool:
     return False
 
 
-def _scan() -> list[tuple[str, Unit, str]]:
+def _scan(base: Path | None = None) -> list[tuple[str, Unit, str]]:
     """The full scan: every unit x every rule; the unlisted matches are
-    the failures. Fail-closed on unreadable files and parse errors."""
+    the failures. Fail-closed on unreadable files and parse errors.
+    `base` relocates the scan to a caller-supplied corpus root (the
+    fail-closed control's runtime fixtures — nothing under the real
+    docs/, src/ or tests/ is ever created); the default scans the tree."""
+    root = REPO_ROOT if base is None else base
     failures: list[tuple[str, Unit, str]] = []
-    for path in _iter_files():
-        rel = str(path.relative_to(REPO_ROOT))
+    for path in _iter_scan_files(root):
+        rel = str(path.relative_to(root))
         try:
             raw = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError) as exc:
@@ -945,10 +948,6 @@ def _scan() -> list[tuple[str, Unit, str]]:
                         continue
                     failures.append((rule_name, unit, rel))
     return failures
-
-
-def _iter_files() -> Iterator[Path]:
-    yield from _iter_scan_files()
 
 
 # ── the invariant itself ────────────────────────────────────────────────
@@ -1338,19 +1337,46 @@ def test_positive_corpus_all_three_and_scoped_forms_pass() -> None:
     assert not _corpus_matches("virtual/positive.py", py_positive)
 
 
-def test_parser_fails_closed_on_unreadable_and_unparseable() -> None:
-    """The fail-closed disposition itself cannot regress: an unparseable
-    Python unit is RED (with the location), never skipped — the corpus's
-    own syntax error surfaces as the scan's failure."""
+def test_parser_fails_closed_on_unreadable_and_unparseable(tmp_path: Path) -> None:
+    """The fail-closed disposition itself cannot regress, driven through
+    the REAL scanner entry point (`_scan`, the same function the
+    tree-wide invariant calls) over a runtime corpus — nothing under the
+    real docs/, src/ or tests/ is ever created. A file that cannot be
+    read or parsed is RED with the path NAMED, never skipped; a clean
+    corpus scans empty (the positive control, so the reds are the
+    fail-closed law's own and not a broken fixture)."""
+    # The cheap face first: the broken module's syntax error is real.
     broken = "def broken(:\n    pass\n"
     with pytest.raises(SyntaxError):
         ast.parse(broken)
-    # And the scanner's own allowlist rejects an empty reason.
-    with pytest.raises(AssertionError):
-        # A locally-built allowlist entry with an empty reason is itself red.
-        entry_reason = ""
-        assert entry_reason and len(entry_reason.splitlines()) == 1, "the reason"
-    _ = _json
+    for root in SCAN_ROOTS:
+        (tmp_path / root).mkdir()
+    (tmp_path / "src" / "clean.py").write_text("x = 1\n", encoding="utf-8")
+    assert _scan(tmp_path) == [], "a clean corpus must scan empty"
+
+    # (a) an unparseable .py: the scan fails closed, naming the path.
+    (tmp_path / "src" / "clean.py").unlink()
+    (tmp_path / "src" / "broken.py").write_text(broken, encoding="utf-8")
+    with pytest.raises(pytest.fail.Exception) as unparseable:
+        _scan(tmp_path)
+    assert "src/broken.py" in str(unparseable.value)
+    assert "fails closed" in str(unparseable.value)
+    (tmp_path / "src" / "broken.py").unlink()
+
+    # (b) an unreadable YAML: the YAML dispatch fails closed, naming the
+    # path (the AssertionError surfaces through the scan).
+    (tmp_path / "src" / "broken.yaml").write_text("alert: [unclosed\n", encoding="utf-8")
+    with pytest.raises(AssertionError) as unreadable_yaml:
+        _scan(tmp_path)
+    assert "src/broken.yaml" in str(unreadable_yaml.value)
+    (tmp_path / "src" / "broken.yaml").unlink()
+
+    # (c) an undecodable file: the read fails closed, naming the path.
+    (tmp_path / "docs" / "binary.md").write_bytes(b"\xff\xfe\x00broken")
+    with pytest.raises(pytest.fail.Exception) as unreadable:
+        _scan(tmp_path)
+    assert "docs/binary.md" in str(unreadable.value)
+    assert "unreadable file" in str(unreadable.value)
 
 
 def test_new_occurrence_reds_without_review() -> None:
