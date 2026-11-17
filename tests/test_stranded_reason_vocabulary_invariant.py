@@ -133,9 +133,12 @@ below):
 
 THE ALLOWLIST — `path + normalized-span digest + one-line reason`: an
 unlisted match is red; a listed entry whose path or span vanishes is
-red (deleting text cannot silently erase an exception); a wildcard
-entry's file must still carry the class's vocabulary. Adding an entry
-carries the same independent review as prose policy.
+red (deleting text cannot silently erase an exception); a listed
+entry's live unit must still FIRE at least one rule — a live-but-not-
+firing entry is a STALE SUPPRESSION, hiding nothing today while
+silently suppressing a future widened rule on the same span; a
+wildcard entry's file must still carry the class's vocabulary. Adding
+an entry carries the same independent review as prose policy.
 
 FAIL-CLOSED — an unreadable file, a .py that fails ast.parse,
 unreadable YAML, an unparseable template, a fence whose content-line
