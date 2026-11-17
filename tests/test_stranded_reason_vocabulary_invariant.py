@@ -522,6 +522,28 @@ def _split_lines(text: str) -> list[str]:
     return _normalize_newlines(text).split("\n")
 
 
+#: The renderer's `tab_length` (Python-Markdown's default): the tab-stop
+#: interval its NormalizeWhitespace preprocessor expands every tab to
+#: before any block processor runs.
+_TAB_LENGTH: Final = 4
+
+
+def _renderer_lines(raw: str) -> list[str]:
+    """The RENDERER's own line grid for markdown: LF-only lines
+    (`_split_lines`) with every tab expanded to the next `_TAB_LENGTH`
+    tab stop — Python-Markdown's NormalizeWhitespace preprocessor
+    (`source.expandtabs(tab_length)`) runs before any block processor,
+    so on the renderer's grid every character is exactly one column and
+    the container detab law's slice (`line[content_column:]`) removes
+    the columns it claims. The round-10 F10-5 defect: the model sliced
+    the RAW line by characters while the detab law counted a tab as
+    four columns — a tab-indented body line's text was mangled and the
+    no-truncation law shared the slice, so it could not see the mangle.
+    The markdown model and the law now share THIS grid; `expandtabs` is
+    idempotent, so the recursion re-expands nothing."""
+    return [line.expandtabs(_TAB_LENGTH) for line in _split_lines(raw)]
+
+
 #: The MkDocs CONTAINER grammars the docs build enables (`mkdocs.yml`:
 #: `admonition`, `pymdownx.details`, `pymdownx.tabbed`). markdown-it has
 #: no admonition/tab extension — a container's body parses as ONE
@@ -658,8 +680,8 @@ def _markdown_units(
     end of file — in the RENDERER too (CommonMark), so the model is
     renderer-faithful; the swallowed text stays inside the fence's own
     unit, where the rules still evaluate it."""
-    lines = _split_lines(text)
-    tokens = _MD_PARSER.parse(text)
+    lines = _renderer_lines(text)
+    tokens = _MD_PARSER.parse("\n".join(lines))
     opaque = _opaque_line_spans(tokens, path)
     units: list[Unit] = []
     run_start = 0
@@ -729,8 +751,10 @@ def _markdown_run_units(path: str, text: str, line_offset: int, dedent: int = 0)
     """One non-container run's units: the run's own parse (the parser's
     token map is correct for a run that contains no container marker),
     offset to the run's absolute lines, carrying the run's cumulative
-    container dedent."""
-    lines = _split_lines(text)
+    container dedent. The run's lines come from the renderer's
+    tab-expanded grid (`_renderer_lines` — idempotent on the already
+    expanded run text the container recursion passes down)."""
+    lines = _renderer_lines(text)
     for block in _markdown_block_tree(_MD_PARSER.parse(text)):
         yield from _markdown_block_units(path, lines, block, line_offset, dedent)
 
@@ -1710,8 +1734,10 @@ def _truncation_violations(rel: str, raw: str, units: list[Unit]) -> list[str]:
     substring of the file; Python string/docstring units carry PARSED
     values (escapes resolved — their value may hold more lines than the
     source span), so their law is the span's existence plus the
-    ownership law."""
-    lines = _split_lines(raw)
+    ownership law. The markdown surface's reconstruction runs on the
+    renderer's own tab-expanded grid — the grid the model built the
+    units from."""
+    lines = _renderer_lines(raw) if rel.endswith(".md") else _split_lines(raw)
     violations: list[str] = []
     for unit in units:
         if unit.start_line < 1 or unit.end_line > len(lines) or unit.start_line > unit.end_line:
@@ -3052,6 +3078,44 @@ def test_hidden_text_inside_unsplit_characters_is_covered() -> None:
         # gloss's half-line was outside every unit — the pre-fix red is
         # preserved in the round-9 evidence logs).
         assert _coverage_violations("virtual/unsplit.md", text, list(units)) == []
+
+
+def test_container_body_dedent_is_the_renderer_column_slice() -> None:
+    """Round-10 F10-5: the container body's dedent was a CHARACTER slice
+    of the raw line while the renderer's detab law counts a tab as four
+    COLUMNS (its NormalizeWhitespace preprocessor expands every tab to
+    the next 4-column tab stop before any block processor runs) — a
+    tab-indented body line's text was mangled: under an 8-column
+    content boundary, a `stranded rows` line's universal tail sliced
+    mid-variant (the detector mention AND the `can never …` tail both
+    broken by the slice), the gloss hidden, and the no-truncation law
+    SHARED the slice so it could not see the mangle. The model and the
+    law now run on the renderer's own tab-expanded grid
+    (`_renderer_lines`): the tab-indented body line keeps its text, the
+    gloss fires at its own unit, and the law's reconstruction
+    agrees."""
+    doc = (
+        '!!! note "T"\n'
+        '\t!!! note "T2"\n'
+        "\t\t\t" + "stranded rows " + "can never " + "dispatch\n"
+    )
+    assert _corpus_matches("virtual/tab-nested.md", doc) == ["universal-no-dispatch"], (
+        "the tab-indented body line's gloss must fire — the renderer "
+        "expands the tabs, so the detab slice keeps the whole line's text"
+    )
+    units = [unit for unit in _corpus_units("virtual/tab-nested.md", doc) if "stranded" in unit.text]
+    assert len(units) == 1 and (units[0].start_line, units[0].end_line) == (3, 3), [
+        (unit.start_line, unit.end_line, unit.text[:50]) for unit in units
+    ]
+    assert "can never dispatch" in units[0].text
+    # The no-truncation law reconstructs the SAME text from the raw line
+    # minus the declared dedent (8 columns = the inner container's
+    # content boundary) — the law sees the real slice now.
+    assert (
+        _truncation_violations("virtual/tab-nested.md", doc, [u for u in _corpus_units(
+            "virtual/tab-nested.md", doc) if u.kind == "markdown"])
+        == []
+    )
 
 
 def test_container_bodies_are_markdown_at_their_own_lines() -> None:
