@@ -39,6 +39,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json as _json
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -386,6 +387,38 @@ _REQUIRED_HOMES: tuple[tuple[str, tuple[str, ...], str], ...] = (
 )
 
 
+#: An UNESCAPED pipe — GFM treats ``\|`` as a literal pipe, never a cell
+#: boundary, so the row detector splits on this pattern only.
+_UNESCAPED_PIPE: Final = re.compile(r"(?<!\\)\|")
+
+#: One delimiter-row cell: optional colons around one or more dashes.
+_DASH_CELL: Final = re.compile(r":?-+:?")
+
+
+def _has_unescaped_pipe(stripped: str) -> bool:
+    return _UNESCAPED_PIPE.search(stripped) is not None
+
+
+def _is_table_separator(stripped: str) -> bool:
+    """A GFM delimiter row: dash cells (with optional colons) separated by
+    unescaped pipes, with or without the outer pipes themselves."""
+    if not _has_unescaped_pipe(stripped):
+        # A pipe-less dash run is a thematic break or a setext underline,
+        # never a table's delimiter row (a single-column table's header
+        # could not carry the pipe a row unit requires anyway).
+        return False
+    cells = _UNESCAPED_PIPE.split(stripped)
+    seen_dash = False
+    for position, cell in enumerate(cells):
+        text = cell.strip()
+        if text == "" and position in (0, len(cells) - 1):
+            continue  # an omitted outer pipe's empty cell
+        if _DASH_CELL.fullmatch(text) is None:
+            return False
+        seen_dash = True
+    return seen_dash
+
+
 def _markdown_units(path: str, text: str) -> Iterator[Unit]:
     """Markdown paragraphs AND table rows (the semantic local units) —
     each table ROW is its own unit. The blank-line block splitter alone
@@ -394,7 +427,14 @@ def _markdown_units(path: str, text: str) -> Iterator[Unit]:
     gloss row laundered inside a table whose other row carried the
     marker). Header/separator rows are their own units too — they carry
     no detector vocabulary and the rules never fire on them, but their
-    spans stay addressable for the allowlist's digest law."""
+    spans stay addressable for the allowlist's digest law. The outer
+    pipes are OPTIONAL (the round-5 F-2 attack): GFM and Python-Markdown
+    both accept a pipe-delimited row without its leading and/or trailing
+    delimiter, so demanding both outer pipes folded a no-trailing-pipe
+    gloss row into the paragraph block, where its sibling row's scoping
+    marker (the same no-trailing-pipe shape) purified it. A row is any
+    line carrying an unescaped pipe in a TABLE CONTEXT — a preceding
+    header+separator pair, or the same contiguous run."""
     lines = text.splitlines()
 
     def unit_for(block: list[tuple[int, str]]) -> Unit:
@@ -407,23 +447,28 @@ def _markdown_units(path: str, text: str) -> Iterator[Unit]:
         )
 
     block: list[tuple[int, str]] = []
+    in_table = False  # the previous non-blank line was a table row/separator
     for idx, line in enumerate(lines, start=1):
         stripped = line.strip()
         if not stripped:
             if block:
                 yield unit_for(block)
                 block = []
+            in_table = False
             continue
-        # A TABLE ROW is one unit: the pipe-delimited line, alone. The
-        # row's own words are the row's own meaning — never a sibling
-        # row's marker.
-        if stripped.startswith("|") and stripped.endswith("|"):
+        following = lines[idx].strip() if idx < len(lines) else ""
+        is_row = _has_unescaped_pipe(stripped) and (
+            in_table or _is_table_separator(following)
+        )
+        if is_row:
             if block:
                 yield unit_for(block)
                 block = []
             yield Unit(path, "markdown", idx, idx, stripped)
+            in_table = True
             continue
         block.append((idx, line))
+        in_table = False
     if block:
         yield unit_for(block)
 
@@ -935,6 +980,14 @@ def test_allowlist_paths_exist_and_spans_are_justified() -> None:
 # ── the runtime-constructed self-referential fixtures ───────────────────
 
 
+#: The corpus's own label fragments — each piece independently
+#: non-triggering (the module docstring's runtime-construction law: no
+#: stored constant carries a marker-and-rule combination, so the
+#: scanner's own fixtures can never exempt or poison the scan).
+frag_reasons = "no_actor_" + "config"
+frag_unserved = "unserved_" + "queue"
+
+
 def _corpus_units(virtual_path: str, text: str) -> list[Unit]:
     """The scanner's own unit builder, callable on a caller-supplied
     corpus (the fixtures' shape) — nothing under docs/ or src/ is ever
@@ -1114,4 +1167,46 @@ def test_table_rows_are_their_own_units_a_laundered_gloss_reds() -> None:
     corrected_table = "\n".join((header, separator, marker_row, corrected_gloss_row))
     assert not _corpus_matches("virtual/table-clean.md", corrected_table), (
         "the corrected table's rows each pass on their own words"
+    )
+    # Round-5 F-2: the SAME laundering through the outer pipes' omission —
+    # GFM/Python-Markdown accept a pipe-delimited row without its trailing
+    # (and/or leading) delimiter, so demanding both outer pipes folded the
+    # no-trailing-pipe rows into ONE paragraph block and the scoped
+    # sibling's marker purified the gloss row again (the shipped-tree
+    # attack: two such rows in observability.md's own metric table left
+    # the tree-wide invariant green).
+    open_scoped_row = (
+        "| workflow_root_missing | the run cannot progress because its "
+        "__flow__ root is gone (the dispatch-invisible rows are a separate "
+        "class)"
+    )
+    open_gloss_row = "| " + frag_reasons + " | these rows " + "can never " + "be dispatched"
+    attacked_open_table = "\n".join((header, separator, open_scoped_row, open_gloss_row))
+    assert _corpus_matches("virtual/table-open-gloss.md", attacked_open_table), (
+        "the no-trailing-pipe gloss row must red the scanner EVEN WHEN its "
+        "no-trailing-pipe sibling carries the scoping marker — a pipe-"
+        "delimited row is its own unit with or without the outer pipes"
+    )
+    assert _corpus_matches("virtual/row-open-alone.md", open_gloss_row), (
+        "the no-trailing-pipe gloss row reds ALONE (its own unit, no "
+        "sibling context)"
+    )
+    # The leading pipe may be omitted too (the delimiter row's own shape
+    # admits it): the row is still its own unit.
+    bare_gloss_row = frag_reasons + " | these rows can never be " + "dispatched"
+    attacked_bare_table = "\n".join((header, separator, marker_row, bare_gloss_row))
+    assert _corpus_matches("virtual/table-bare-gloss.md", attacked_bare_table), (
+        "a no-leading-pipe gloss row in a table run is its own unit and reds"
+    )
+    # And the fully-corrected no-trailing-pipe table passes.
+    corrected_open_row = (
+        "| no_actor_config | invisible to every dispatch round — the "
+        "two dispatch-invisible legs, scoped"
+    )
+    corrected_open_table = "\n".join(
+        (header, separator, open_scoped_row, corrected_open_row)
+    )
+    assert not _corpus_matches("virtual/table-open-clean.md", corrected_open_table), (
+        "the corrected no-trailing-pipe table's rows each pass on their own "
+        "words"
     )
