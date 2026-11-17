@@ -1237,12 +1237,22 @@ def test_negative_corpus_unscoped_variants_red() -> None:
         + "# the closed reason set of the stranded "
         + "detector"
     )
+    # The unscoped PARITY claim (the doctor/queue-roll-up class): the
+    # same non-triggering fragment discipline — the rule-3 trigger is
+    # itself assembled from pieces, so no stored constant carries it.
+    frag_parity = "same " + "computation"
+    legacy_parity = (
+        "The doctor's queue roll-up asks the stranded gauge the "
+        + frag_parity
+        + " the leader tick asks, unscoped."
+    )
     for name, text in (
         ("legacy-two-labels", legacy_two_labels),
         ("legacy-prose", legacy_prose),
         ("legacy-single", legacy_single),
         ("legacy-typed", legacy_typed),
         ("universal-gloss", f"The stranded gauge: rows that {frag_dispatch}."),
+        ("unscoped-parity", legacy_parity),
     ):
         hits = _corpus_matches(f"virtual/{name}.md", text)
         assert hits, f"the negative corpus's {name} must red the scanner"
@@ -1276,6 +1286,10 @@ def test_negative_corpus_unscoped_variants_red() -> None:
         "structural-closed-enumeration",
         "structural-closed-enumeration",
     ]
+    # The parity value's own exact signature: the `whole-detector-parity`
+    # rule family is exercised by the corpus — deleting the rule family
+    # reds HERE (it can no longer be deleted without a red).
+    assert _corpus_matches("virtual/parity.md", legacy_parity) == ["whole-detector-parity"]
 
 
 def test_positive_corpus_all_three_and_scoped_forms_pass() -> None:
