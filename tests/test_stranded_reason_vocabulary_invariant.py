@@ -2440,8 +2440,7 @@ def test_allowlist_defeats_red_the_anti_rot_law() -> None:
     # `== []` already asserts the firing conjunct holds for a justified
     # entry.
     scoped_text = (
-        "# A guide\n\n"
-        "The stranded detector is scoped to the two dispatch-invisible legs.\n"
+        "# A guide\n\nThe stranded detector is scoped to the two dispatch-invisible legs.\n"
     )
     scoped_units = list(_markdown_units("virtual/scoped.md", scoped_text))
     scoped_unit = next(u for u in scoped_units if "stranded" in u.text)
@@ -4318,9 +4317,9 @@ def test_scoping_requires_a_genuine_scope() -> None:
         ("metric-gauge", "The taskq_jobs_stranded gauge: " + frag_universal + "."),
         ("table-row", "| `stranded-jobs detector` | " + frag_universal + " |"),
     ):
-        assert _corpus_matches(f"virtual/mention-{name}.md", shape) == [
-            "universal-no-dispatch"
-        ], f"the family's own {name} spelling is a detector mention"
+        assert _corpus_matches(f"virtual/mention-{name}.md", shape) == ["universal-no-dispatch"], (
+            f"the family's own {name} spelling is a detector mention"
+        )
 
     # ── the round-12 D12-3 pins: the label-bound parenthetical
     # exception's ACCEPTED reach, declared in residual 4 ────────────────
@@ -4333,11 +4332,7 @@ def test_scoping_requires_a_genuine_scope() -> None:
     for name, shape in (
         (
             "unlike",
-            "All stranded entries, unlike "
-            + frag_unserved
-            + " ("
-            + frag_universal
-            + ".",
+            "All stranded entries, unlike " + frag_unserved + " (" + frag_universal + ".",
         ),
         (
             "defect",
@@ -4349,11 +4344,7 @@ def test_scoping_requires_a_genuine_scope() -> None:
         ),
         (
             "never-dispatched",
-            "All stranded entries, unlike "
-            + frag_unserved
-            + " ("
-            + frag_forever
-            + ".",
+            "All stranded entries, unlike " + frag_unserved + " (" + frag_forever + ".",
         ),
     ):
         assert not _corpus_matches(f"virtual/label-bound-{name}.md", shape), (
