@@ -91,7 +91,9 @@ one reason's label with no population subject between the label and
 the occurrence, and a population subject anywhere earlier in the
 sentence defeats it too unless the occurrence sits inside the last
 label's own unclosed parenthetical (`_label_bound` — the shipped alert
-descriptions' elliptical form), or its own sentence is a foreign
+descriptions' elliptical form; the exception is paren-bound and does
+not verify that the label is the claim's subject — residual 4), or its
+own sentence is a foreign
 restricted subject with no detector mention (`_foreign_subject`). Rules 1, 3 and
 4 are waived by a genuine marker anywhere in the unit (their claims
 bind to the unit's own scope statement).
@@ -162,10 +164,25 @@ accepted:
    sentence can still waive it by subject or label (residual 4).
 4. The subject/label waivers are lexical. The round-11 F11-2 position
    gap is closed: a population subject anywhere in the sentence before
-   the occurrence defeats them (the label's own unclosed parenthetical
-   is the one exception — the label is then the claim's subject), so
-   "all stranded entries like <label> rows <universal>" reds. What
-   remains is the SPELLING gap: a population subject spelled outside
+   the occurrence defeats them, so "all stranded entries like <label>
+   rows <universal>" reds. The one exception — the occurrence inside
+   the last label's own unclosed parenthetical (`_label_bound`, the
+   shipped alert descriptions' elliptical form) — is PAREN-BOUND, not
+   subject-verified (round-12 D12-3): the code checks only that the
+   `(`/`)` counts after the last label are unequal and never that the
+   label is the claim's subject, so a sentence whose subject is the
+   population and whose label is only mentioned — "All stranded
+   entries, unlike <label> (<universal>." or "All stranded entries
+   share the <label> defect (so they are <universal>." — hides the
+   same way; the three shapes are pinned as the accepted controls in
+   `test_scoping_requires_a_genuine_scope`. Accepted: the exception's
+   only shipped users are the two alert descriptions' parentheticals,
+   where the parenthetical IS each label's own meaning (deleting the
+   exception false-reds exactly those two spans — executed), and a
+   lexical check that the label is the claim's subject would hand-tune
+   to the shipped wording; a population subject INSIDE the
+   parenthetical still defeats the waiver. What remains beyond that is
+   the SPELLING gap: a population subject spelled outside
    `_POPULATION_SUBJECT_RE`'s forms ("every stranded entry …") would
    still waive. Accepted: the forms enumerate the shipped prose's own
    population subjects; a new spelling is a re-review, not a silence.
@@ -453,8 +470,8 @@ _SENTENCE_BOUNDARY: Final = re.compile(r"(?<=[.!?])\s+")
 #: subject — `_subject_scoped` requires no population subject anywhere
 #: in the sentence before the occurrence, and `_label_bound` requires
 #: it too unless the occurrence sits inside the last label's own
-#: unclosed parenthetical (the label is then the claim's subject — the
-#: shipped alert descriptions' elliptical form).
+#: unclosed parenthetical (the exception is paren-bound and does not
+#: verify subjecthood — the round-12 D12-3 declaration, residual 4).
 _SUBJECT_SCOPED_TAIL: Final = re.compile(
     r"(?:no_actor_config|unserved_" + "queue|no actor_config)"
     r"\s+(?:rows?|jobs?|entries?|sources?|items?)\s*$"
@@ -467,8 +484,10 @@ _SUBJECT_SCOPED_TAIL: Final = re.compile(
 #: position-independent (round-11 F11-2): the WHOLE sentence before an
 #: occurrence defeats the subject/label waivers, not only the text
 #: between the last label and the claim — the label's own unclosed
-#: parenthetical is the one exception (`_label_bound`), where the
-#: label itself is the claim's subject.
+#: parenthetical is the one exception (`_label_bound`), and that
+#: exception is paren-bound, not subject-verified (round-12 D12-3:
+#: residual 4 — a contrast that merely names the label hides the same
+#: way, pinned as accepted).
 _POPULATION_SUBJECT_RE: Final = re.compile(
     r"(?<![\w-])(?:(?:these|those|all|such)\s+(?:stranded\s+)?(?:rows?|jobs?|entries?)"
     r"|pending/scheduled"
@@ -1772,12 +1791,22 @@ def _label_bound(sentence: str, position: int) -> bool:
     subject anywhere in the sentence before the occurrence therefore
     defeats the waiver too — with one exception, the shipped framing's
     own shape: the occurrence sits inside the last label's own
-    UNCLOSED parenthetical (the shipped descriptions frame the
-    population once, give each label, and put the label's own
-    "<universal>" inside its parentheses), where the label itself is
-    the claim's subject. A population subject INSIDE that parenthetical
-    still defeats the waiver (the between-text check runs first — a
-    gloss inside the label's own parentheses reds)."""
+    UNCLOSED parenthetical. The round-12 D12-3 correction states that
+    exception's true reach: it is PAREN-BOUND, not subject-verified —
+    the code checks only that the `(`/`)` counts after the last label
+    are unequal and never that the label is the claim's subject, so a
+    sentence whose subject is the population and whose label is only
+    mentioned ("All stranded entries, unlike <label> (<universal>." —
+    "All stranded entries share the <label> defect (so they are
+    <universal>.") hides the same way; those three shapes are pinned
+    as the accepted controls (residual 4). Accepted because the
+    exception's only shipped users are the two alert descriptions'
+    parentheticals — where the parenthetical IS each label's own
+    meaning (deleting the exception false-reds exactly those two
+    spans) — and a lexical check that the label is the claim's subject
+    would hand-tune to the shipped wording. A population subject INSIDE
+    that parenthetical still defeats the waiver (the between-text check
+    runs first — a gloss inside the label's own parentheses reds)."""
     head = sentence[:position]
     labels = list(re.finditer("no_actor_config|unserved_" + "queue|no actor_config", head))
     if not labels:
@@ -4274,6 +4303,46 @@ def test_scoping_requires_a_genuine_scope() -> None:
         assert _corpus_matches(f"virtual/mention-{name}.md", shape) == [
             "universal-no-dispatch"
         ], f"the family's own {name} spelling is a detector mention"
+
+    # ── the round-12 D12-3 pins: the label-bound parenthetical
+    # exception's ACCEPTED reach, declared in residual 4 ────────────────
+    # The exception is PAREN-BOUND, not subject-verified: a sentence
+    # whose subject is the population and whose label is only mentioned
+    # hides the same way. These three shapes PIN that accepted reach —
+    # they are green, and any change to the exception (narrowing OR
+    # widening) turns them and the shipped alert descriptions' shared
+    # mechanism into a re-review tripwire.
+    for name, shape in (
+        (
+            "unlike",
+            "All stranded entries, unlike "
+            + frag_unserved
+            + " ("
+            + frag_universal
+            + ".",
+        ),
+        (
+            "defect",
+            "All stranded entries share the "
+            + frag_unserved
+            + " defect (so they are "
+            + frag_universal
+            + ".",
+        ),
+        (
+            "never-dispatched",
+            "All stranded entries, unlike "
+            + frag_unserved
+            + " ("
+            + frag_forever
+            + ".",
+        ),
+    ):
+        assert not _corpus_matches(f"virtual/label-bound-{name}.md", shape), (
+            f"the D12-3 accepted pin ({name}) changed — the parenthetical "
+            "exception's reach moved; re-declare residual 4 and re-review "
+            "the shipped alert descriptions' elliptical form"
+        )
 
     # ... but the third leg's OWN definition (the shipped prose's shape:
     # the unit names workflow_root_missing and says its row CAN dispatch
