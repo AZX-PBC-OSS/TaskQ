@@ -3016,6 +3016,10 @@ def test_markdown_structural_siblings_are_their_own_units() -> None:
     fence_units = _corpus_units("virtual/fence-two.md", two_fences)
     two_fence_units = [u for u in fence_units if u.text.count("```") >= 1]
     assert len(two_fence_units) == 2, [unit.text for unit in fence_units]
+    # The exact total: two fence units plus the two `SELECT n;` per-line
+    # over-take units the no-whitespace marker scan adds — an unexpected
+    # unit has no place to hide.
+    assert len(fence_units) == 4, [unit.text for unit in fence_units]
     prose_then_fence = (
         "The dispatch-invisible legs are scoped.\n" + "```sql\n" + gloss_comment + "\n```"
     )
