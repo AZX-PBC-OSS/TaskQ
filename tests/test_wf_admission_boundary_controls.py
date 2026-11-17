@@ -1080,14 +1080,78 @@ async def test_bare_tick_never_scans_the_parked_estate(
     )
     assert int(parked_after) == int(parked_before)
 
-    # THE B TERM: the drive's own initial backfill is the drive's FIRST
-    # drain (exactly one flow drain on the fresh drive's first act, the
-    # same primitive the arms call).
+    # THE B TERM (F7): the DRIVE'S OWN initial backfill is its FIRST
+    # drain — a fresh real runner's ORCHESTRATION-ONLY drive (it executes
+    # nothing, so no child terminal can cross a threshold inside this
+    # arm), with the existing non-fitting park present, increments
+    # flow_drains EXACTLY ONCE before its first tick, with NO
+    # harness-invoked wake call. (Removing _runner.py's initial backfill
+    # reds this arm.)
     _rc()
     pre2 = COUNTERS.snapshot()
-    from taskq.workflows._emit import wake_emit_backpressure
-
-    wake = await wake_emit_backpressure(wf_pool, wf_sql, flow_id=flow_id)
-    _ = wake
+    fresh_runner = FlowRunner(app.get(name), wf_pool, wf_schema)
+    fresh_verdict = await fresh_runner.drive(flow_id, tick=0.05, max_ticks=1, execute=False)
+    _ = fresh_verdict
     post2 = COUNTERS.snapshot()
-    assert post2["flow_drains"] - pre2["flow_drains"] == 1, (pre2, post2)
+    assert post2["flow_drains"] - pre2["flow_drains"] == 1, (
+        pre2,
+        post2,
+        "the drive's own initial backfill is the B term's one drain — no "
+        "harness wake call exists in this arm",
+    )
+
+    # THE TERMINAL ROUTE'S ONE-BIT DRAIN (F7): the fresh drive executes
+    # the two seeded children through the REAL terminal door; only the
+    # SECOND child's terminal crosses the threshold (the first leaves a
+    # live peer holding charge) — its FinalizeResult.intent_created=True
+    # drives the runner's OWN post-commit `_drain_created_intent` exactly
+    # once: the flow_drains family is the B backfill + that ONE crossing
+    # drain, and exactly ONE promotion (the resulting reservation) is
+    # granted. A False bit causes no call.
+    children = await wf_conn.fetch(
+        f"""SELECT id FROM "{wf_schema}".jobs
+            WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key = 'screen'
+              AND status = 'pending' ORDER BY id""",
+        flow_id,
+    )
+    assert len(children) == 2, [dict(r) for r in children]
+    _ = children
+    _rc()
+    pre3 = COUNTERS.snapshot()
+    verdict3 = await fresh_runner.drive(flow_id, tick=0.05, max_ticks=2)
+    _ = verdict3
+    post3 = COUNTERS.snapshot()
+    assert post3["flow_drains"] - pre3["flow_drains"] == 2, (
+        pre3,
+        post3,
+        "exactly two drains: the drive's own B backfill + the ONE crossing "
+        "terminal's post-commit intent_created drain",
+    )
+    assert post3["fitted_grants"] - pre3["fitted_grants"] == 1, (
+        pre3,
+        post3,
+        "exactly one promotion (the crossing's resulting reservation)",
+    )
+    # The drain's own completion law: the intent is HANDLED (the drain's
+    # fresh observation returned no fitting candidate — the replay's own
+    # claim may still be pending under the bounded max_ticks).
+    intent_row = await wf_conn.fetchrow(
+        f'SELECT wake_generation, handled_generation FROM "{wf_schema}".wf_emit_capacity '
+        "WHERE flow_id = $1::uuid",
+        flow_id,
+    )
+    assert intent_row is not None
+    assert int(intent_row["handled_generation"]) == int(intent_row["wake_generation"]) == 1, dict(
+        intent_row
+    )
+    meta_final = await _source_meta(wf_conn, wf_schema, source_id)
+    assert "wf_emit_reservation" not in meta_final, (
+        meta_final,
+        "the replay converted the promotion's reservation",
+    )
+    # THE FALSE BIT: no call, no drain.
+    _rc()
+    pre4 = COUNTERS.snapshot()
+    await runner._drain_created_intent(flow_id, False)
+    post4 = COUNTERS.snapshot()
+    assert post4 == pre4, (pre4, post4)

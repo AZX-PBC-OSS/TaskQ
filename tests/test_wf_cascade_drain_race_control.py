@@ -41,6 +41,7 @@ root), releases the holder, and awaits both. The assertions:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json as _json
 from typing import Any
 
@@ -182,31 +183,39 @@ async def _run_real_cascade_seat(conn: Any, wsql: Any, flow_id: str) -> None:
 async def test_cascade_never_strands_a_promoted_reserved_source(
     wf_conn: Any, wf_schema: str, wf_pool: Any, module_pg_schema: Any
 ) -> None:
-    """The real drain and the real failure cascade race over the real
-    estate; the strand may never form through the second root-failure
-    seat."""
+    """THE DRAIN-WINS ORDER (forced, and the only order this topology's
+    lock queue can produce with the park row held first): the real drain
+    and the real failure cascade race over the real estate; the
+    promotion commits, the unresolved-live gate withholds the root's
+    failure, and the strand never forms. The cascade-wins order is the
+    separately forced test below."""
     wsql = render_workflow_sql(wf_schema)
     flow_id, source_id = await _seed_cascade_estate(wf_conn, wf_schema)
 
     holder = await asyncpg.connect(module_pg_schema.pg_dsn)
-    blocker_tx = holder.transaction()
-    await blocker_tx.start()
-    held = await holder.fetchval(
-        f'SELECT id FROM "{wf_schema}".jobs WHERE id = $1::uuid FOR UPDATE', source_id
-    )
-    assert held is not None
-
-    # THE DRAIN FIRST: its chunk transaction takes the live root's lock
-    # and blocks at its candidate CAS on the held park row — THE
-    # CASCADE (started after) blocks at `flow_failed` on the drain-held
-    # root. This is the executed counterexample's own order (the
-    # promotion must be able to commit before the cascade's decision).
-    from taskq.workflows._emit import COUNTERS
-
-    pre_census = COUNTERS.snapshot()
-    drain_task = asyncio.create_task(wake_emit_backpressure(wf_pool, wsql, flow_id=JobId(flow_id)))
     poller = await asyncpg.connect(module_pg_schema.pg_dsn)
+    drain_task: asyncio.Task[Any] | None = None
+    cascade_task: asyncio.Task[Any] | None = None
     try:
+        blocker_tx = holder.transaction()
+        await blocker_tx.start()
+        held = await holder.fetchval(
+            f'SELECT id FROM "{wf_schema}".jobs WHERE id = $1::uuid FOR UPDATE', source_id
+        )
+        assert held is not None
+
+        # THE DRAIN FIRST: its chunk transaction takes the live root's lock
+        # and blocks at its candidate CAS on the held park row — THE
+        # CASCADE (started after) blocks at its ENTRY root lock on the
+        # drain-held root (the R2/A9.2 canonical order). This is the
+        # drain-wins forced order (the promotion must be able to commit
+        # before the cascade's decision).
+        from taskq.workflows._emit import COUNTERS
+
+        pre_census = COUNTERS.snapshot()
+        drain_task = asyncio.create_task(
+            wake_emit_backpressure(wf_pool, wsql, flow_id=JobId(flow_id))
+        )
         deadline = asyncio.get_running_loop().time() + 30.0
         while asyncio.get_running_loop().time() < deadline:
             census_now = COUNTERS.snapshot()
@@ -218,89 +227,188 @@ async def test_cascade_never_strands_a_promoted_reserved_source(
             await asyncio.sleep(0.01)
         else:
             pytest.fail("the drain never reached its blocked CAS")
-    finally:
-        await poller.close()
 
-    cascade_task = asyncio.create_task(_run_real_cascade_seat(wf_conn, wsql, flow_id))
-    await asyncio.sleep(0.5)  # the cascade is queued at the drain-held root
-    await blocker_tx.commit()
+        cascade_task = asyncio.create_task(_run_real_cascade_seat(wf_conn, wsql, flow_id))
+        # One yield so the cascade task's own first statement (its ENTRY
+        # root lock) queues on the drain-held root — the queue's formation
+        # is the census + the release's own resolution, never a sleep.
+        await asyncio.sleep(0)
+        await blocker_tx.commit()
 
-    drain = await drain_task
-    cascade = await cascade_task
+        drain = await asyncio.wait_for(drain_task, 30)
+        await asyncio.wait_for(cascade_task, 30)
 
-    # THE REAL SEAT'S OWN RECEIPT: the cascade's own counters (the
-    # blocked joins, the peer cancels, the root finalize's own
-    # gated outcome) — read back from the cascade's own function's
-    # recorded facts.
-    cascade = await wf_conn.fetchrow(
-        f"""SELECT
-              (SELECT count(*)::int FROM "{wf_schema}".jobs
-               WHERE (metadata->>'flow_id')::uuid = $1::uuid
-                 AND metadata ? 'failed_parent') AS blocked,
-              (SELECT count(*)::int FROM "{wf_schema}".jobs
-               WHERE id = $1::uuid AND status = 'failed') AS flow_failed""",
-        flow_id,
-    )
-    assert cascade is not None
+        # THE DRAIN-WINS ASSERTIONS (the exact order this test forces):
+        # the promotion committed (the source is `pending` with its
+        # reservation) and the unresolved-live gate withheld the root's
+        # failure — the run continues.
+        root_status = await wf_conn.fetchval(
+            f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1::uuid', flow_id
+        )
+        fenced = await wf_conn.fetchval(
+            f"""SELECT count(*) FROM "{wf_schema}".jobs
+                WHERE (metadata->>'flow_id')::uuid = $1::uuid
+                  AND error_class = 'WorkflowNotDrainingError'""",
+            flow_id,
+        )
+        src = await wf_conn.fetchrow(
+            f'SELECT status::text AS status, metadata FROM "{wf_schema}".jobs WHERE id = $1::uuid',
+            source_id,
+        )
+        assert src is not None
+        src_status = src["status"]
+        src_meta = (
+            _json.loads(src["metadata"])
+            if isinstance(src["metadata"], str)
+            else dict(src["metadata"])
+        )
+        assert root_status is not None
 
-    # THE TWO SERIAL ORDERS (both are the no-strand law):
-    # * the CASCADE wins the root: its own root finalize committed AND its
-    #   same-tx fence fenced the still-parked source (the source is
-    #   `failed` with the fence's own record, the key removed);
-    # * the DRAIN wins the root: the promotion committed (the source is
-    #   `pending` with its reservation) and the unresolved-live gate
-    #   withheld the cascade's root failure (`flow_failed = 0`) — the run
-    #   continues.
-    # THE STRAND — root `failed` beside a `pending` source still holding
-    # its reservation with `fenced = 0` — is the red in both directions.
-    root_status = await wf_conn.fetchval(
-        f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1::uuid', flow_id
-    )
-    fenced = await wf_conn.fetchval(
-        f"""SELECT count(*) FROM "{wf_schema}".jobs
-            WHERE (metadata->>'flow_id')::uuid = $1::uuid
-              AND error_class = 'WorkflowNotDrainingError'""",
-        flow_id,
-    )
-    src = await wf_conn.fetchrow(
-        f'SELECT status::text AS status, metadata FROM "{wf_schema}".jobs WHERE id = $1::uuid',
-        source_id,
-    )
-    assert src is not None
-    src_status = src["status"]
-    src_meta = (
-        _json.loads(src["metadata"]) if isinstance(src["metadata"], str) else dict(src["metadata"])
-    )
-    assert root_status is not None
-
-    if root_status == "failed":
-        # THE CASCADE-WINS ORDER: the fence must have done its own job.
-        assert int(cascade["flow_failed"]) == 1, dict(cascade)
-        assert src_status == "failed", (src_status, dict(cascade))
-        assert int(fenced) == 1, fenced
-        assert "wf_emit_reservation" not in src_meta, src_meta
-        assert "wf_not_draining" in src_meta, src_meta
-    else:
-        # THE DRAIN-WINS ORDER: the promotion committed; the
-        # unresolved-live gate withheld the root's failure.
+        # THE DRAIN-WINS ORDER'S OWN LAW (no unreachable conditional).
         assert drain.promoted == 1, drain
-        assert int(cascade["flow_failed"]) == 0, dict(cascade)
-        assert int(cascade["blocked"]) == 1, dict(cascade)
         assert root_status == "running", root_status
-        assert int(fenced) == 0, fenced
         assert src_status == "pending", src_status
         assert src_meta.get("wf_emit_reservation") == {"version": 1, "width": 2}, src_meta
+        assert int(fenced) == 0, fenced
 
-    # THE STRAND: never, in either order.
-    assert not (
-        root_status == "failed"
-        and src_status == "pending"
-        and "wf_emit_reservation" in src_meta
-        and int(fenced) == 0
-    ), {
-        "root": root_status,
-        "source": src_status,
-        "reservation": src_meta.get("wf_emit_reservation"),
-        "fenced": fenced,
-        "cascade": dict(cascade) if cascade is not None else None,
-    }
+        # THE STRAND: never.
+        assert not (
+            root_status == "failed"
+            and src_status == "pending"
+            and "wf_emit_reservation" in src_meta
+            and int(fenced) == 0
+        ), {
+            "root": root_status,
+            "source": src_status,
+            "reservation": src_meta.get("wf_emit_reservation"),
+            "fenced": fenced,
+        }
+    finally:
+        # DETERMINISTIC RESOURCE OWNERSHIP (F8): every task reaped, the
+        # blocker's own transaction rolled back, every owned connection
+        # closed — on success and failure alike (a database drop at
+        # module teardown is not connection ownership).
+        for task in (drain_task, cascade_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+        with contextlib.suppress(Exception):
+            await holder.execute("ROLLBACK")
+        await holder.close()
+        await poller.close()
+
+
+async def test_cascade_wins_fences_the_still_parked_source(
+    wf_conn: Any, wf_schema: str, wf_pool: Any, module_pg_schema: Any
+) -> None:
+    """THE CASCADE-WINS ORDER (separately forced): the cascade takes the
+    ENTRY root lock first; its §5.4 fence queues on the held park row
+    (keyed to the blocker's own xid); the drain queues behind the
+    cascade-held root. On release the fence wins: the still-parked source
+    receives its lawful terminal disposition/event/ledger fence, and the
+    later drain promotes ZERO (the intent completes with no fitting
+    candidate)."""
+    wsql = render_workflow_sql(wf_schema)
+    flow_id, source_id = await _seed_cascade_estate(wf_conn, wf_schema)
+
+    holder = await asyncpg.connect(module_pg_schema.pg_dsn)
+    poller = await asyncpg.connect(module_pg_schema.pg_dsn)
+    drain_task: asyncio.Task[Any] | None = None
+    cascade_task: asyncio.Task[Any] | None = None
+    try:
+        blocker_tx = holder.transaction()
+        await blocker_tx.start()
+        held = await holder.fetchval(
+            f'SELECT id FROM "{wf_schema}".jobs WHERE id = $1::uuid FOR UPDATE', source_id
+        )
+        assert held is not None
+        holder_xid = str(await holder.fetchval("SELECT pg_current_xact_id()::xid::text"))
+
+        from taskq.workflows._emit import COUNTERS
+
+        pre_census = COUNTERS.snapshot()
+
+        # THE CASCADE FIRST: its ENTRY root lock is free — it grants, the
+        # cascade statement stamps the blocked join, the gated root
+        # failure commits, and the §5.4 fence QUEUES on the held park row
+        # (keyed to the blocker's own xid).
+        cascade_task = asyncio.create_task(_run_real_cascade_seat(wf_conn, wsql, flow_id))
+        keyed_sql = """
+        SELECT DISTINCT l.pid
+        FROM pg_locks l
+        WHERE l.locktype = 'transactionid'
+          AND NOT l.granted
+          AND l.transactionid::text = $1
+          AND l.pid <> pg_backend_pid()
+        """
+        deadline = asyncio.get_running_loop().time() + 30.0
+        while asyncio.get_running_loop().time() < deadline:
+            rows = await poller.fetch(keyed_sql, holder_xid)
+            if rows:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            pytest.fail("the cascade's §5.4 fence never queued on the held park row")
+
+        # THE DRAIN SECOND: it queues behind the cascade-held root (its
+        # own flow_drains bump is its first statement's fact).
+        drain_task = asyncio.create_task(
+            wake_emit_backpressure(wf_pool, wsql, flow_id=JobId(flow_id))
+        )
+        while asyncio.get_running_loop().time() < deadline:
+            census_now = COUNTERS.snapshot()
+            if census_now["flow_drains"] > pre_census["flow_drains"]:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("the drain never started its chunk")
+
+        await blocker_tx.commit()
+        drain = await asyncio.wait_for(drain_task, 30)
+        await asyncio.wait_for(cascade_task, 30)
+
+        # THE CASCADE-WINS ORDER'S OWN LAW: the still-parked source took
+        # the §5.4 disposition (the fence won the park row), the root
+        # failed, and the later drain promoted ZERO.
+        root_status = await wf_conn.fetchval(
+            f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1::uuid', flow_id
+        )
+        assert root_status == "failed", root_status
+        src = await wf_conn.fetchrow(
+            f"""SELECT status::text AS status, error_class, metadata
+                FROM "{wf_schema}".jobs WHERE id = $1::uuid""",
+            source_id,
+        )
+        assert src is not None
+        assert src["status"] == "failed", dict(src)
+        assert src["error_class"] == "WorkflowNotDrainingError", dict(src)
+        src_meta = (
+            _json.loads(src["metadata"])
+            if isinstance(src["metadata"], str)
+            else dict(src["metadata"])
+        )
+        assert "wf_not_draining" in src_meta, src_meta
+        assert "wf_emit_reservation" not in src_meta, src_meta
+        assert drain.promoted == 0, drain
+        # The intent handled (the drain's fresh observation returned no
+        # fitting candidate).
+        intent_row = await wf_conn.fetchrow(
+            f'SELECT wake_generation, handled_generation FROM "{wf_schema}".wf_emit_capacity '
+            "WHERE flow_id = $1::uuid",
+            flow_id,
+        )
+        assert intent_row is not None
+        assert int(intent_row["handled_generation"]) == int(intent_row["wake_generation"]), dict(
+            intent_row
+        )
+    finally:
+        for task in (drain_task, cascade_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+        with contextlib.suppress(Exception):
+            await holder.execute("ROLLBACK")
+        await holder.close()
+        await poller.close()

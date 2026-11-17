@@ -881,15 +881,26 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
 
         await _wait_for(_done, 0.5, 300, "the two-worker lane never completed the run")
 
-        # THE MEASUREMENT: each pod's own census snapshot (its periodic
-        # WARNING line), summed — the fleet's own operation instances. A
-        # follower that never ran an operation has no census line and
-        # contributes zero (legal: the leadership's own arms are the
-        # leader's; the R=1 term IS its assumption's own count). THE
-        # MEASUREMENT MUST EXIST (N8): at least one pod logged a census,
-        # and the measured V is at least the estate's own structural
-        # minimum — the flow's P=2 admissions — a vacuous zero-V pass is
-        # itself red.
+        # THE MEASUREMENT READS THE GUARANTEED FINAL SNAPSHOT (F5): the
+        # pods are STOPPED AND REAPED FIRST — the worker's own `finally`
+        # writes its final census snapshot at shutdown — and only then
+        # are the logs read. Reading the periodic 10 s line while the
+        # pods are still running can false-red a healthy lane (the run
+        # completing between ticks leaves the last periodic line without
+        # the second admission).
+        for pod in pods:
+            await _stop(pod)
+
+        # THE MEASUREMENT: each pod's FINAL census snapshot (its last
+        # line, written by the shutdown's own finally), summed — the
+        # fleet's own operation instances. A follower that never ran an
+        # operation has no census line and contributes zero (legal: the
+        # leadership's own arms are the leader's; the R=1 term IS its
+        # assumption's own count). THE MEASUREMENT MUST EXIST (N8): at
+        # least one pod logged a census, the FINAL line exists for every
+        # pod that logged at all, and it is LATER than (cumulatively at
+        # least) every periodic line used as diagnostic history — a
+        # vacuous zero-V pass is itself red.
         total: dict[str, int] = {}
         for pod in pods:
             pod_log = Path(pod.log_path)
@@ -897,12 +908,20 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
             lines = [ln for ln in content.splitlines() if '"p2sat-census"' in ln]
             if not lines:
                 continue
-            census = {
-                key: int(value)
-                for key, value in _json.loads(lines[-1]).items()
-                if type(value) is int
-            }
-            for key, value in census.items():
+            snapshots = [
+                {key: int(value) for key, value in _json.loads(ln).items() if type(value) is int}
+                for ln in lines
+            ]
+            final = snapshots[-1]
+            # The final line is LATER than every periodic line: the
+            # counts are cumulative, so the final dominates every
+            # earlier snapshot in every family.
+            for earlier in snapshots[:-1]:
+                assert all(final.get(key, 0) >= value for key, value in earlier.items()), (
+                    "the pod's final census snapshot must dominate every "
+                    f"periodic line (the cumulative law): {earlier} -> {final}"
+                )
+            for key, value in final.items():
                 total[key] = total.get(key, 0) + value
         assert total, (
             "no pod logged its own census snapshot — the control must "

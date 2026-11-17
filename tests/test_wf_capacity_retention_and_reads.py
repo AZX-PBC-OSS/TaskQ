@@ -317,18 +317,35 @@ async def test_vanilla_deadline_release_wake_is_never_lost_by_the_marker_sweep(
 
 
 async def test_handled_intent_never_rebumps_while_pending_no_busy_loop(
-    wf_conn: Any, wf_schema: str, wf_pool: Any
+    wf_conn: Any, wf_schema: str, wf_pool: Any, monkeypatch: Any
 ) -> None:
     """The no-busy-loop law over the N3 selection: a marked flow whose
     intent is PENDING (the drain's own to observe) is never selected, and
     a handled-but-not-fitting flow is re-observed at the maintenance
-    interval WITHOUT a re-bump — two consecutive sweeps move the
-    generations zero times."""
+    interval WITHOUT a re-bump — two consecutive sweeps each perform
+    EXACTLY ONE real observation of the handled flow (the REAL
+    `observe_emit_capacity`, counted by flow) and zero for the pending
+    flow; the generations never move."""
+    import taskq.workflows._emit as emit_mod
     from taskq.workflows._emit import _SWEEP_CURSORS, sweep_emit_markers
 
     wsql = _wsql(wf_schema)
+
+    # THE REAL OBSERVATION, counted per flow: the delegate calls the real
+    # function (the SQL is never replaced) and records which flow was
+    # observed.
+    real_observe = emit_mod.observe_emit_capacity
+    observations: dict[str, int] = {}
+
+    async def _counting_observe(conn: Any, w: Any, *, flow_id: Any, **kwargs: Any) -> Any:
+        observations[str(flow_id)] = observations.get(str(flow_id), 0) + 1
+        return await real_observe(conn, w, flow_id=flow_id, **kwargs)
+
+    monkeypatch.setattr(emit_mod, "observe_emit_capacity", _counting_observe)
+
     # The PENDING case: the intent's wake > handled — the drain's own;
-    # the sweep never selects it.
+    # the sweep never selects it (ZERO marker-repair observations, the
+    # generations stay (1, 0)).
     pending_flow = await _seed_marked_flow(wf_conn, wf_schema, width=5, bound=10, with_intent=True)
     await wf_conn.execute(
         f'UPDATE "{wf_schema}".wf_emit_capacity SET wake_generation = 1 WHERE flow_id = $1::uuid',
@@ -337,6 +354,7 @@ async def test_handled_intent_never_rebumps_while_pending_no_busy_loop(
     _SWEEP_CURSORS.pop(wf_schema, None)
     repaired = await sweep_emit_markers(wf_pool, wsql)
     assert repaired == 0, repaired
+    assert observations.get(pending_flow, 0) == 0, observations
     intent = await wf_conn.fetchrow(
         f'SELECT wake_generation, handled_generation FROM "{wf_schema}".wf_emit_capacity '
         "WHERE flow_id = $1::uuid",
@@ -376,6 +394,8 @@ async def test_handled_intent_never_rebumps_while_pending_no_busy_loop(
     _SWEEP_CURSORS.pop(wf_schema, None)
     for _ in range(2):
         await sweep_emit_markers(wf_pool, wsql)
+    # EXACTLY ONE real observation per sweep, across the two sweeps.
+    assert observations.get(handled_flow, 0) == 2, observations
     intent2 = await wf_conn.fetchrow(
         f'SELECT wake_generation, handled_generation FROM "{wf_schema}".wf_emit_capacity '
         "WHERE flow_id = $1::uuid",
@@ -385,6 +405,9 @@ async def test_handled_intent_never_rebumps_while_pending_no_busy_loop(
         int(intent2["wake_generation"]),
         int(intent2["handled_generation"]),
     ) == (1, 1), intent2
+    # The selection, not another test, makes these pass: the pending flow
+    # was never selected even though it was marked.
+    assert observations.get(pending_flow, 0) == 0, observations
     _SWEEP_CURSORS.pop(wf_schema, None)
 
 
