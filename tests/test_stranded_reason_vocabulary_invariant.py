@@ -5,7 +5,8 @@ stranded-reason prose/value class — never another hand-maintained list
 of sites.
 
 The class: closed reason-set enumerations of the stranded detector, the
-universal "can never dispatch / no dispatch or deadline touch" gloss,
+universal never-dispatchable gloss (the exact variant spellings are
+_UNIVERSAL_VARIANTS, matched case-folded against every local unit),
 whole-detector parity/mirror claims, and the typed reason-set
 declarations. Three consecutive review rounds found the same defect
 class on further shipped surfaces; this invariant replaces hand
@@ -59,21 +60,13 @@ SCAN_SUFFIXES = {".py", ".md", ".yml", ".yaml", ".html"}
 #: an exception; adding one carries the same independent review as prose
 #: policy).
 ALLOWLIST: tuple[tuple[str, str, str], ...] = (
-    # ── the whole-file entries (the ruling's own whole-file class) ──────
+    # ── the whole-file entry (the ruling's own whole-file class: the
+    # frozen vendor oracle, and ONLY it — a generic file-wide exclusion
+    # for any other file is forbidden) ──────────────────────────────────
     (
         "*",
         "tests/_audit_vendor/_old_leader_sweeps.py",
         "the frozen differential oracle — never current operator text; no edit authorized; its required existence is asserted",
-    ),
-    (
-        "*",
-        "tests/test_stranded_reason_vocabulary_invariant.py",
-        "the invariant's own scanner and its runtime-constructed corpus carry the labels by construction",
-    ),
-    (
-        "*",
-        "tests/test_wf_root_missing_control.py",
-        "this correction's own control file: the root-missing mechanism's own names appear in the assertions and the docstring",
     ),
     # ── the span-digest entries (generated from the triaged scan; the
     # anti-rot law: a wording touch re-derives the digest and re-reviews
@@ -457,9 +450,7 @@ def _markdown_units(path: str, text: str) -> Iterator[Unit]:
             in_table = False
             continue
         following = lines[idx].strip() if idx < len(lines) else ""
-        is_row = _has_unescaped_pipe(stripped) and (
-            in_table or _is_table_separator(following)
-        )
+        is_row = _has_unescaped_pipe(stripped) and (in_table or _is_table_separator(following))
         if is_row:
             if block:
                 yield unit_for(block)
@@ -645,8 +636,8 @@ def rule_closed_enumeration(unit: Unit) -> bool:
             "the stranded detector",
             "stranded-jobs detector",
             "that is the whole",
-            "can never dispatch",
-            "can never be dispatched",
+            "can never " + "dispatch",
+            "can never be " + "dispatched",
             "that cannot make progress",
             "jobs that can never",
             "rows that can never",
@@ -896,11 +887,17 @@ def test_allowlist_defeats_red_the_anti_rot_law() -> None:
     fixture."""
     # A violating paragraph the way the shipped tree carries one: the
     # unit's digest is computed by the REAL Unit over the REAL unit
-    # builder's output.
+    # builder's output. The violating text is assembled at runtime from
+    # independently non-triggering fragments (the module docstring's own
+    # law) — no stored constant carries the full legacy combination.
     live_text = (
         "# A guide\n\n"
-        "The stranded detector's reasons are no_actor_config and "
-        "unserved_queue — that is the whole set.\n"
+        "The stranded detector's reasons are "
+        + frag_reasons
+        + " and "
+        + frag_unserved
+        + " — that is the "
+        + "whole set.\n"
     )
     units = list(_markdown_units("virtual/guide.md", live_text))
     # The heading and the paragraph are separate units; the SANCTIONED
@@ -917,7 +914,9 @@ def test_allowlist_defeats_red_the_anti_rot_law() -> None:
     def _live_reader(rel: str) -> str | None:
         return {
             "virtual/guide.md": live_text,
-            "virtual/oracle.md": "the oracle's own text mentions stranded rows: no_actor_config",
+            "virtual/oracle.md": (
+                "the oracle's own text mentions " + "stranded rows: " + frag_reasons
+            ),
         }.get(rel)
 
     # THE POSITIVE: both entries are live against the un-edited text.
@@ -1019,21 +1018,44 @@ def test_negative_corpus_unscoped_variants_red() -> None:
     The fragments are constructed at runtime from independently
     non-triggering pieces."""
     # Independently non-triggering fragments (never a stored
-    # counterexample).
+    # counterexample). Every legacy corpus string below is assembled at
+    # runtime from pieces none of which carries a marker-and-rule
+    # combination — the module docstring's own runtime-construction law:
+    # the scanner's stored constants must never be their own counter-
+    # examples (the pre-fix literals were, hidden by the file's own
+    # wildcard — the round-5 F-1 removal).
     frag_actor = "the " + "actor has no " + "actor_config row, so"
     frag_queue = " the queue has " + "no live worker"
     frag_dispatch = "can never be " + "dispatched"
     legacy_two_labels = (
-        "The stranded detector's reasons are no_actor_config and "
-        "unserved_queue — that is the whole set."
+        "The stranded detector's reasons are "
+        + frag_reasons
+        + " and "
+        + frag_unserved
+        + " — that is the "
+        + "whole set."
     )
-    legacy_prose = f"Pending/scheduled jobs that can never dispatch: {frag_actor} dispatch never sees the rows;{frag_queue} subscribed. Neither dispatch nor the deadline sweep will ever touch these rows."
+    legacy_prose = (
+        "Pending/scheduled jobs that can never "
+        + "dispatch: "
+        + frag_actor
+        + " dispatch never sees the rows;"
+        + frag_queue
+        + " subscribed. Neither dispatch nor the deadline sweep will ever touch these rows."
+    )
     legacy_single = (
-        "The stranded-jobs check runs for pending jobs whose actor has no actor_config row."
+        "The stranded-jobs check runs for pending jobs "
+        + "whose actor has no "
+        + "actor_config row."
     )
     legacy_typed = (
-        "type StrandedReason = Literal['no_actor_config', 'unserved_queue'] "
-        "# the closed reason set of the stranded detector"
+        "type StrandedReason = Literal['"
+        + frag_reasons
+        + "', '"
+        + frag_unserved
+        + "'] "
+        + "# the closed reason set of the stranded "
+        + "detector"
     )
     for name, text in (
         ("legacy-two-labels", legacy_two_labels),
@@ -1045,13 +1067,35 @@ def test_negative_corpus_unscoped_variants_red() -> None:
         hits = _corpus_matches(f"virtual/{name}.md", text)
         assert hits, f"the negative corpus's {name} must red the scanner"
 
-    # The typed closed enumeration's PYTHON face.
+    # The typed closed enumeration's PYTHON face (assembled from the same
+    # non-triggering fragments).
     py_negative = (
         "from typing import Literal\n"
-        "type StrandedReason = Literal['no_actor_config', 'unserved_queue']\n"
+        "type StrandedReason = Literal['" + frag_reasons + "', '" + frag_unserved + "']\n"
         '"""The stranded detector\'s own closed reason set."""\n'
     )
     assert _corpus_matches("virtual/negative.py", py_negative)
+    # The assembled values are the EXACT legacy strings the class is
+    # about — the fragmentation may never dilute the corpus. The pin is
+    # each value's own rule signature (which rules fire, in RULES order)
+    # — exact, yet storing no legacy combination as a constant.
+    assert _corpus_matches("virtual/two.md", legacy_two_labels) == [
+        "closed-enumeration",
+        "structural-closed-enumeration",
+    ]
+    assert _corpus_matches("virtual/prose.md", legacy_prose) == [
+        "closed-enumeration",
+        "universal-no-dispatch",
+    ]
+    assert _corpus_matches("virtual/single.md", legacy_single) == ["closed-enumeration"]
+    assert _corpus_matches("virtual/typed.md", legacy_typed) == [
+        "closed-enumeration",
+        "structural-closed-enumeration",
+    ]
+    assert _corpus_matches("virtual/negative.py", py_negative) == [
+        "structural-closed-enumeration",
+        "structural-closed-enumeration",
+    ]
 
 
 def test_positive_corpus_all_three_and_scoped_forms_pass() -> None:
@@ -1121,18 +1165,31 @@ def test_new_occurrence_reds_without_review() -> None:
     invariant — the corpus shape proves the mechanism end to end (the
     same text passes when corrected, reds when the old wording returns)."""
     occurrence = (
-        "The stranded detector: pending/scheduled jobs that can never be "
-        "dispatched (no_actor_config, unserved_queue)."
+        "The stranded detector: "
+        + "pending/scheduled jobs that "
+        + "can never be dispatched ("
+        + frag_reasons
+        + ", "
+        + frag_unserved
+        + ")."
     )
     assert _corpus_matches("virtual/regression.md", occurrence), (
         "the legacy wording must red the scanner the moment it returns"
     )
+    occurrence_tail = "can never be dispatched (" + frag_reasons + ", " + frag_unserved + ")."
     corrected = occurrence.replace(
-        "can never be dispatched (no_actor_config, unserved_queue).",
+        occurrence_tail,
         "cannot make progress (the two dispatch-invisible reasons, plus "
         "workflow_root_missing's run-scoped meaning).",
     )
     assert not _corpus_matches("virtual/regression.md", corrected)
+    # The assembled value is the EXACT legacy wording, pinned by its own
+    # rule signature (no legacy combination stored as a constant).
+    assert _corpus_matches("virtual/regression.md", occurrence) == [
+        "closed-enumeration",
+        "universal-no-dispatch",
+        "structural-closed-enumeration",
+    ]
 
 
 def test_table_rows_are_their_own_units_a_laundered_gloss_reds() -> None:
@@ -1145,8 +1202,10 @@ def test_table_rows_are_their_own_units_a_laundered_gloss_reds() -> None:
     passes."""
     header = "| Reason | Meaning |"
     separator = "| --- | --- |"
-    # The ATTACK: one corrected (scoped) row + one universal-gloss row.
-    gloss_row = "| no_actor_config | these rows can never dispatch |"
+    # The ATTACK: one corrected (scoped) row + one universal-gloss row
+    # (the gloss row assembled from non-triggering fragments — the
+    # module's own runtime-construction law).
+    gloss_row = "| " + frag_reasons + " | these rows " + "can never " + "dispatch |"
     marker_row = (
         "| workflow_root_missing | the run cannot progress because its "
         "__flow__ root is gone (the dispatch-invisible rows are a separate "
@@ -1188,8 +1247,7 @@ def test_table_rows_are_their_own_units_a_laundered_gloss_reds() -> None:
         "delimited row is its own unit with or without the outer pipes"
     )
     assert _corpus_matches("virtual/row-open-alone.md", open_gloss_row), (
-        "the no-trailing-pipe gloss row reds ALONE (its own unit, no "
-        "sibling context)"
+        "the no-trailing-pipe gloss row reds ALONE (its own unit, no sibling context)"
     )
     # The leading pipe may be omitted too (the delimiter row's own shape
     # admits it): the row is still its own unit.
@@ -1203,10 +1261,7 @@ def test_table_rows_are_their_own_units_a_laundered_gloss_reds() -> None:
         "| no_actor_config | invisible to every dispatch round — the "
         "two dispatch-invisible legs, scoped"
     )
-    corrected_open_table = "\n".join(
-        (header, separator, open_scoped_row, corrected_open_row)
-    )
+    corrected_open_table = "\n".join((header, separator, open_scoped_row, corrected_open_row))
     assert not _corpus_matches("virtual/table-open-clean.md", corrected_open_table), (
-        "the corrected no-trailing-pipe table's rows each pass on their own "
-        "words"
+        "the corrected no-trailing-pipe table's rows each pass on their own words"
     )
