@@ -130,7 +130,12 @@ from taskq.workflows.api._runner_errors import (
     WorkflowRunError,
 )
 from taskq.workflows.api._runner_exit import ExitOps
-from taskq.workflows.api._runner_ladder import LadderOps, is_infra_fault
+from taskq.workflows.api._runner_ladder import (
+    LadderOps,
+    _deterministic_classes,
+    find_embedded_exception,
+    is_infra_fault,
+)
 from taskq.workflows.api._runner_loop import LoopOps
 from taskq.workflows.api._sql_runner import (
     CLAIMABLE_NODES_SQL_TEMPLATE,
@@ -1694,6 +1699,30 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # the final flush is bounded and best-effort — it can cost
             # freshness, never the ladder's correctness.
             await emitter.aclose()
+            # THE EMBEDDED CONTROL SIGNAL (R3/A9.3): a grouped/wrapped
+            # deterministic authoring failure keeps its N2 precedence (the
+            # ladder's own classification below re-finds it), and otherwise
+            # an `EmitBackpressure` leaf carried by an `ExceptionGroup` or
+            # an explicit `__cause__` is the SAME control signal as the
+            # direct catch above — the park door receives the ACTUAL leaf
+            # object (its validated page/bound/outstanding facts), the
+            # exact same close/park/post-commit path, never the generic
+            # ladder's three-attempt burn of the identical page. An
+            # exception with no such leaf follows the old generic route.
+            from taskq.workflows._emit import EmitBackpressure as _EmitBackpressure
+
+            if find_embedded_exception(exc, _deterministic_classes()) is None:
+                embedded_bp = find_embedded_exception(exc, (_EmitBackpressure,))
+                if embedded_bp is not None:
+                    return await self._defer_step(
+                        flow_id,
+                        row,
+                        attempt,
+                        ledger_id,
+                        embedded_bp,
+                        claim_epoch=claim_epoch,
+                        ledger_claimed_at=ledger_claimed_at,
+                    )
             route = await self._ladder_or_fail(
                 flow_id,
                 row,

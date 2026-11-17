@@ -120,28 +120,51 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
     )
 
 
-def _find_deterministic_leaf(exc: BaseException) -> str | None:
-    """The FIRST deterministic leaf's own class name, walking groups and
-    `__cause__` chains (the seen-set bounds the walk against cycles);
-    None when nothing deterministic is carried."""
-    classes = _deterministic_classes()
+def find_embedded_exception[T: BaseException](
+    exc: BaseException,
+    classes: tuple[type[T], ...],
+) -> T | None:
+    """The ONE typed, private, cycle-bounded embedded-leaf finder (R3/A9.3)
+    — shared by the deterministic classification and the backpressure door.
 
-    def _walk(candidate: BaseException, seen: frozenset[int]) -> str | None:
+    Contract: match the CURRENT object before descent; traverse
+    ``BaseExceptionGroup.exceptions`` left-to-right recursively; then
+    traverse the explicit ``__cause__`` chain; one identity ``seen`` set
+    for the whole traversal (a cycle or a shared subgroup can neither
+    loop nor blow the stack). Implicit ``__context__`` is NEVER
+    traversed — a previously handled control exception hiding in context
+    is not this body's outcome. Returns the ACTUAL first matching
+    exception object — never a class name recreation — so the caller's
+    disposition carries the leaf's own validated facts (the
+    ``EmitBackpressure``'s page/bound/outstanding, the deterministic
+    refusal's own identity); ``None`` when no leaf matches."""
+    seen: set[int] = {id(exc)}
+
+    def _walk(candidate: BaseException) -> T | None:
         if isinstance(candidate, classes):
-            return type(candidate).__name__
+            return candidate
         if isinstance(candidate, BaseExceptionGroup):
-            leaves = cast("tuple[BaseException, ...]", candidate.exceptions)
-            for leaf in leaves:
-                found = _walk(leaf, seen)
+            for leaf in cast("tuple[BaseException, ...]", candidate.exceptions):
+                if id(leaf) in seen:
+                    continue
+                seen.add(id(leaf))
+                found = _walk(leaf)
                 if found is not None:
                     return found
-            return None
         cause = candidate.__cause__
-        if cause is None or id(cause) in seen:
-            return None
-        return _walk(cause, seen | {id(cause)})
+        if cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            return _walk(cause)
+        return None
 
-    return _walk(exc, frozenset({id(exc)}))
+    return _walk(exc)
+
+
+def _find_deterministic_leaf(exc: BaseException) -> str | None:
+    """The FIRST deterministic leaf's own class name (the shared walker's
+    deterministic face); None when nothing deterministic is carried."""
+    leaf = find_embedded_exception(exc, _deterministic_classes())
+    return type(leaf).__name__ if leaf is not None else None
 
 
 def _deterministic_error_class(exc: BaseException) -> str:
