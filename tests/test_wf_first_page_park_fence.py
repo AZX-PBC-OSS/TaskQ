@@ -236,6 +236,7 @@ async def test_first_page_no_cursor_park_is_fenced_when_the_root_fails(
     # Drive: A's first claim → the first page refuses → A parks with NO
     # cursor. B and C claim and run — B exhausts.
     a_status = ""
+    a_row = None
     for _ in range(30):
         await runner.tick(flow_id)
         a_row = await wf_conn.fetchrow(
@@ -299,10 +300,11 @@ async def test_first_page_no_cursor_park_is_fenced_when_the_root_fails(
     # attempt through the real ladder; the maintenance seat (the drive's
     # own rederive pass) finalizes the root and the §5.4 fence — the SQL
     # function seat — runs in that same transaction.
-    root = await wf_conn.fetchval(
-        f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1::uuid', flow_id
-    )
+    root: str | None = None
     for _ in range(60):
+        root = await wf_conn.fetchval(
+            f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1::uuid', flow_id
+        )
         if root == "failed":
             break
         await runner.tick(flow_id)
@@ -651,6 +653,7 @@ async def test_healthy_first_page_park_completes_its_first_page_exactly_once(
         await ensure_emit_capacity(conn, wf_sql, flow_id=JobId(str(flow_id)), bound=2)
     wake = await wake_emit_backpressure(wf_pool, wf_sql, flow_id=JobId(str(flow_id)))
     assert wake.promoted == 1, wake
+    root = ""
     for _ in range(60):
         await runner.tick(flow_id)
         root = await wf_conn.fetchval(

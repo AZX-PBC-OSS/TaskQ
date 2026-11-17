@@ -79,9 +79,7 @@ async def _run_form(wf_pool: Any, wf_schema: str, wf_conn: Any, form: str) -> di
     """One form's full scenario: the first refusal parks (or — the
     pre-fix embedded defect — ladders), then the release + replay
     recovers exactly once. Returns the observed facts."""
-    from taskq.retry import RetryPolicy
-    from taskq.workflows import Step, WorkflowApp, build
-    from taskq.workflows._policy import ExecutionPolicy, RetrySpec
+    from taskq.workflows import WorkflowApp, build
     from taskq.workflows.api._graph import chain_source
     from taskq.workflows.chain import chain_start
 
@@ -138,11 +136,6 @@ async def _run_form(wf_pool: Any, wf_schema: str, wf_conn: Any, form: str) -> di
             return
         raise AssertionError(f"unknown form {form}")
 
-    async def _policy() -> ExecutionPolicy:
-        return ExecutionPolicy(
-            retry=RetryPolicy(max_attempts=3)  # type: ignore[arg-call]
-        )
-
     # THE LIVE COMPETITOR: one ordinary due-scheduled row of the same
     # flow (charge 1) so the first page (W=2) cannot fit under bound 2 —
     # the refusal is real, never staged; its terminal is the release.
@@ -153,17 +146,8 @@ async def _run_form(wf_pool: Any, wf_schema: str, wf_conn: Any, form: str) -> di
 
     @app.workflow(name, max_in_flight=2)
     def r3_flow() -> object:
-        return build(
-            chain_source(
-                chain,
-                source_body,
-                key="source",
-                max_attempts=3,
-                policy=_policy() if False else None,
-            )
-        )
+        return build(chain_source(chain, source_body, key="source", max_attempts=3))
 
-    _ = Step, RetrySpec, _json
     runner = FlowRunner(app.get(name), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     source_id = await wf_conn.fetchval(
@@ -171,6 +155,8 @@ async def _run_form(wf_pool: Any, wf_schema: str, wf_conn: Any, form: str) -> di
             WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key = 'source'""",
         flow_id,
     )
+    assert source_id is not None
+    root = ""
     decoy_id = str(new_uuid())
     await wf_conn.execute(
         f"""INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, status,
@@ -246,6 +232,7 @@ async def _run_form(wf_pool: Any, wf_schema: str, wf_conn: Any, form: str) -> di
         await ensure_emit_capacity(conn, wsql, flow_id=flow_id, bound=2)
     wake = await wake_emit_backpressure(wf_pool, wsql, flow_id=flow_id)
     facts["promoted"] = wake.promoted
+    root: str | None = None
     for _ in range(80):
         await runner.tick(flow_id)
         root = await wf_conn.fetchval(

@@ -926,9 +926,9 @@ async def test_stranded_jobs_loop_warns_for_pending_without_actor_config() -> No
             "no_actor_config_cnt": 7,
             "unserved_queue_cnt": 0,
             "unserved_queues": [],
-        "workflow_root_missing_cnt": 0,
-        "root_missing_flow_ids": [],
-}
+            "workflow_root_missing_cnt": 0,
+            "root_missing_flow_ids": [],
+        }
     ]
     conn = FakeConn(fetch_rows=rows)
     pool = FakePool(conn=conn)
@@ -992,9 +992,9 @@ async def test_stranded_jobs_loop_skips_when_not_leader(monkeypatch: Any) -> Non
                 "no_actor_config_cnt": 1,
                 "unserved_queue_cnt": 0,
                 "unserved_queues": [],
-            "workflow_root_missing_cnt": 0,
-            "root_missing_flow_ids": [],
-}
+                "workflow_root_missing_cnt": 0,
+                "root_missing_flow_ids": [],
+            }
         ]
     )
     pool = FakePool(conn=conn)

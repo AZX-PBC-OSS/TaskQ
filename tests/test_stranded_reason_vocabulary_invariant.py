@@ -243,10 +243,6 @@ class Unit:
         return hashlib.sha256(normalized.encode()).hexdigest()
 
 
-def _is_reason_label(token: str) -> bool:
-    return token in ("no_actor_config", "unserved_queue", "workflow_root_missing")
-
-
 #: The universal-gloss variants (rule 2) — with the scoping phrases that
 #: make a unit PASS.
 _UNIVERSAL_VARIANTS = (
@@ -454,11 +450,12 @@ def _python_units(path: str, text: str, tree: ast.Module) -> Iterator[Unit]:
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             doc = ast.get_docstring(node, clean=False)
             if doc:
-                first = (
-                    node.body[0].lineno
+                doc_node = (
+                    node.body[0]
                     if getattr(node, "body", None) and isinstance(node.body[0], ast.Expr)
-                    else node.lineno
+                    else None
                 )
+                first = doc_node.lineno if doc_node is not None else getattr(node, "lineno", 1)
                 yield Unit(path, "docstring", first, first + len(doc.splitlines()) - 1, doc)
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             # Every string constant is a unit (Field(description=...) strings

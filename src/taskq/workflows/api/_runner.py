@@ -132,8 +132,8 @@ from taskq.workflows.api._runner_errors import (
 from taskq.workflows.api._runner_exit import ExitOps
 from taskq.workflows.api._runner_ladder import (
     LadderOps,
-    _deterministic_classes,
     find_embedded_exception,
+    is_deterministic_authoring_failure,
     is_infra_fault,
 )
 from taskq.workflows.api._runner_loop import LoopOps
@@ -1711,7 +1711,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # exception with no such leaf follows the old generic route.
             from taskq.workflows._emit import EmitBackpressure as _EmitBackpressure
 
-            if find_embedded_exception(exc, _deterministic_classes()) is None:
+            if not is_deterministic_authoring_failure(exc):
                 embedded_bp = find_embedded_exception(exc, (_EmitBackpressure,))
                 if embedded_bp is not None:
                     return await self._defer_step(
