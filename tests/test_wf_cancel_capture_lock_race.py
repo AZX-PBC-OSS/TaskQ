@@ -17,8 +17,16 @@ supplies NO `pg_locks` row for a granted row lock. The keyed marker is
 the waiter's UNGRANTED `transactionid` entry whose `transactionid::text`
 equals the HOLDER's own `pg_current_xact_id()::xid::text` (the `::xid`
 conversion before `::text` is mandatory — the raw xid8 text diverges
-after wrap) and whose pid is the distinct cancel backend.
-`pg_stat_activity.wait_event_type='Lock'` is corroboration only. A
+after wrap). The gate keys on the WRITER's xid and excludes the
+poller's own pid; it deliberately does NOT pre-bind the cancel
+backend's pid, because the cancel connection's pid does not exist
+until the verb acquires its backend connection — the waiter pid is
+the gate's OUTPUT (the corroboration's target), and it is the distinct
+cancel backend by construction: the scenario's only other backend that
+can contend the writer's transaction-id lock is the cancel itself.
+`pg_stat_activity.wait_event_type='Lock'` is corroboration only,
+observed within the SAME single bounded deadline as the gate (the
+bound's remaining budget — never a second bound). A
 `locktype='tuple'` entry may appear where the interleaving produces one
 and is acceptable; it is never required and never the gate."""
 
@@ -131,9 +139,15 @@ async def test_cancel_capture_lock_wins_the_old_state_race(
             )
         )
 
-        # THE KEYED HANDSHAKE (bounded; never a sleep-as-evidence): the
-        # cancel backend's ungranted transactionid entry keyed to the
-        # WRITER's xid.
+        # THE KEYED HANDSHAKE (bounded; never a sleep-as-evidence): a
+        # foreign backend's UNGRANTED transactionid entry keyed to the
+        # WRITER's xid. The gate does not pre-bind the cancel backend's
+        # pid — the verb's connection (hence its pid) does not exist
+        # until the task acquires it — so the waiter pid is the gate's
+        # OUTPUT, and it is the cancel backend by construction: the
+        # scenario's only other backend contending the writer's
+        # transaction-id lock is the cancel itself (the poller's own pid
+        # is excluded).
         sql = """
         SELECT DISTINCT l.pid, a.wait_event_type
         FROM pg_locks l
@@ -145,6 +159,10 @@ async def test_cancel_capture_lock_wins_the_old_state_race(
           AND a.datname = current_database()
         """
         loop = asyncio.get_running_loop()
+        # ONE stated bound (round-5 F-4): the gate and its corroboration
+        # share this single deadline — the control's worst case is the
+        # bound ONCE, never a gate bound plus a second corroboration
+        # bound.
         end = loop.time() + 20.0
         waiter_pids: list[int] = []
         while loop.time() < end:
@@ -159,14 +177,13 @@ async def test_cancel_capture_lock_wins_the_old_state_race(
             "handshake is its evidence"
         )
         # Corroboration only: the waiter's wait_event_type is 'Lock' —
-        # observed within the same bound, never demanded in the same
-        # snapshot as the gate (PostgreSQL queues the ungranted pg_locks
-        # row before the wait-event latch is set; the two views are
-        # sampled at their own instants — the flake the round-5
-        # correction caught).
-        deadline2 = asyncio.get_running_loop().time() + 20.0
+        # observed within the SAME single bound (the deadline's remaining
+        # budget), never demanded in the same snapshot as the gate
+        # (PostgreSQL queues the ungranted pg_locks row before the
+        # wait-event latch is set; the two views are sampled at their own
+        # instants — the flake the round-5 correction caught).
         corroborated = False
-        while asyncio.get_running_loop().time() < deadline2:
+        while loop.time() < end:
             wet_rows = await poller.fetch(
                 """SELECT pid, wait_event_type FROM pg_stat_activity
                    WHERE pid = ANY($1::int[])
