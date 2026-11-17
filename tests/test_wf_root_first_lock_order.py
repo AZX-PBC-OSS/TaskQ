@@ -66,7 +66,16 @@ async def _wait_for_keyed_blocked_state(
     row row (an ordinary row lock's ownership lives in the tuple header;
     PostgreSQL supplies no `pg_locks` row for it). Corroboration only:
     the waiters' `pg_stat_activity.wait_event_type='Lock'`. Never a
-    count, never a datname-scoped predicate, never a sleep."""
+    count, never a datname-scoped predicate, never a sleep.
+
+    THE TWO VIEWS ARE SAMPLED AT THEIR OWN INSTANTS (the flake the
+    round-5 correction caught, 2/6 solo runs): PostgreSQL queues the
+    waiter's ungranted `pg_locks` row BEFORE it sets the wait-event
+    latch, so ONE joint snapshot can see the keyed entry with the waiter
+    still reading non-Lock. The GATE is the keyed entry (the ruling's own
+    law: `pg_locks`, never `wait_event`); the corroboration is observed
+    for the SAME pid within the SAME bound — each leg at its own instant,
+    never a joint-instant demand."""
     sql = """
     SELECT DISTINCT l.pid, a.wait_event_type
     FROM pg_locks l
@@ -79,17 +88,28 @@ async def _wait_for_keyed_blocked_state(
     """
     loop = asyncio.get_running_loop()
     end = loop.time() + deadline_s
+    saw_keyed: list[int] = []
     while loop.time() < end:
         rows = await observer.fetch(sql, holder_xid)
         pids = [int(r["pid"]) for r in rows]
         if len(pids) >= min_waiters:
+            saw_keyed = pids
             corroborated = [
                 pid
                 for pid, wet in ((int(r["pid"]), r["wait_event_type"]) for r in rows)
                 if wet == "Lock"
             ]
-            return pids, corroborated  # type: ignore[return-value]
+            if len(corroborated) >= min_waiters:
+                return pids, corroborated  # type: ignore[return-value]
         await asyncio.sleep(0.02)
+    if saw_keyed:
+        raise _HandshakeTimeoutError(
+            f"the keyed waiter(s) {saw_keyed} never corroborated "
+            f"wait_event_type='Lock' within {deadline_s}s (holder xid={holder_xid}): "
+            "the keyed pg_locks entry is the gate and it appeared; the "
+            "corroboration's own observation is red — a waiter queued on an "
+            "ungranted transactionid lock shows Lock while it waits"
+        )
     raise _HandshakeTimeoutError(
         f"no keyed blocked state within {deadline_s}s: holder xid={holder_xid}, "
         f"required {min_waiters} distinct ungranted transactionid waiters"

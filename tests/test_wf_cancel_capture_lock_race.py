@@ -158,16 +158,25 @@ async def test_cancel_capture_lock_wins_the_old_state_race(
             "target capture's lock is the serialization point and the "
             "handshake is its evidence"
         )
-        # Corroboration only: the waiter's wait_event_type is 'Lock'.
-        corroborated = all(
-            r["wait_event_type"] == "Lock"
-            for r in await poller.fetch(
+        # Corroboration only: the waiter's wait_event_type is 'Lock' —
+        # observed within the same bound, never demanded in the same
+        # snapshot as the gate (PostgreSQL queues the ungranted pg_locks
+        # row before the wait-event latch is set; the two views are
+        # sampled at their own instants — the flake the round-5
+        # correction caught).
+        deadline2 = asyncio.get_running_loop().time() + 20.0
+        corroborated = False
+        while asyncio.get_running_loop().time() < deadline2:
+            wet_rows = await poller.fetch(
                 """SELECT pid, wait_event_type FROM pg_stat_activity
                    WHERE pid = ANY($1::int[])
                      AND datname = current_database()""",
                 waiter_pids,
             )
-        )
+            if wet_rows and all(r["wait_event_type"] == "Lock" for r in wet_rows):
+                corroborated = True
+                break
+            await asyncio.sleep(0.02)
         assert corroborated, "the queued cancel backend's wait_event_type corroborates"
 
         # THE COMMIT — only after the keyed blocked state was observed.
