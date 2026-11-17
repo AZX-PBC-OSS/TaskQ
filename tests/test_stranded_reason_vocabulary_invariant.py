@@ -502,6 +502,16 @@ _SENTENCE_MENTION_RE: Final = re.compile(
     r"|taskq_jobs_stranded)(?![\w-])"
 )
 
+#: The PRONOUN SUBJECTS (the anaphoric refusal): a pronoun anywhere in
+#: the head binds back to the unit's subject and never waives —
+#: POSITION-INDEPENDENT (round-12 D12-2: the old check anchored the
+#: pronoun to the head's end with `\s*$`, so the anaphora hid mid-head —
+#: "They themselves <universal>" / "They in turn <universal>" waived
+#: while "They <universal>" reds). The list is the operative pronoun
+#: set; a new pronoun spelling is a re-review, not a silence (the same
+#: declared-spelling-gap discipline as residual 4).
+_PRONOUN_SUBJECT_RE: Final = re.compile(r"\b(?:they|it|these|those|all|such|them)\b")
+
 #: A positive counter-claim in the same unit defeats the scope (the
 #: round-9 D9-6 contrast defeat: "… can never dispatch; jobs on a
 #: served queue can dispatch normally" — the contrast clause contradicts
@@ -1787,13 +1797,16 @@ def _foreign_subject(sentence: str, position: int) -> bool:
     <universal> because it has no registered stub/config is a strictly
     worse failure mode" is that sentence's own restricted subject, not
     a gloss on the gauge. A pronoun or population subject binds back to
-    the unit's subject and never waives."""
+    the unit's subject and never waives — the pronoun refusal is
+    POSITION-INDEPENDENT (`_PRONOUN_SUBJECT_RE` anywhere in the head;
+    the round-12 D12-2 defect anchored it to the head's end, so the
+    mid-head anaphora "They themselves <universal>" waived)."""
     if _SENTENCE_MENTION_RE.search(sentence) is not None:
         return False
     head = sentence[:position].strip()
     if not head:
         return False
-    if re.search(r"\b(?:they|it|these|those|all|such|them)\s*$", head):
+    if _PRONOUN_SUBJECT_RE.search(head):
         return False
     return not _POPULATION_SUBJECT_RE.search(head)
 
@@ -4184,6 +4197,18 @@ def test_scoping_requires_a_genuine_scope() -> None:
     assert _corpus_matches("virtual/scope-anaphoric.md", anaphoric) == ["universal-no-dispatch"], (
         "a pronoun subject binds back to the unit's own subject"
     )
+    # ... and the anaphoric refusal is POSITION-INDEPENDENT (round-12
+    # D12-2): the old check anchored the pronoun to the head's end, so a
+    # mid-head pronoun ("They themselves …", "They in turn …") hid the
+    # anaphora. Both shapes REDS.
+    pronoun_mid = "The stranded detector. They themselves " + "can never " + "dispatch."
+    assert _corpus_matches("virtual/scope-pronoun-mid.md", pronoun_mid) == [
+        "universal-no-dispatch"
+    ], "a mid-head pronoun still binds back to the unit's own subject"
+    pronoun_phrase = "The stranded detector. They in turn " + "can never " + "dispatch."
+    assert _corpus_matches("virtual/scope-pronoun-phrase.md", pronoun_phrase) == [
+        "universal-no-dispatch"
+    ], "a pronoun before a trailing phrase still binds back"
     # ── the round-11 F11-2 defeats ──────────────────────────────────────
     # A population subject EARLIER in the sentence is the claim's
     # subject — the label+noun tail after it does not make the claim
