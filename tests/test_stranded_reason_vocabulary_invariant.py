@@ -496,12 +496,23 @@ _LEAF_TOKENS: Final = frozenset(
 )
 
 #: A line-comment token inside a fenced or indented code block:
-#: SQL/Lua `--`, C++/JS `//`, or shell/YAML/Python `#`. A line comment
-#: runs to end of line, so adjacent comment lines inside a code block
-#: are SIBLING statements, never folded (the same law the YAML comment
-#: units encode). Block comments (`/* ... */`, `<!-- ... -->`) are
-#: whole-statement units of their own (`_code_comment_units`).
-_FENCE_COMMENT_PREFIXES: Final = ("--", "//", "#")
+#: SQL/Lua `--`, C++/JS `//`, shell/YAML/Python `#`, LaTeX/Matlab `%`,
+#: or Lisp `;`. A line comment runs to end of line, so adjacent comment
+#: lines inside a code block are SIBLING statements, never folded (the
+#: same law the YAML comment units encode). Block comments
+#: (`/* ... */`, `<!-- ... -->`) are whole-statement units of their own
+#: (`_code_comment_units`).
+_FENCE_COMMENT_PREFIXES: Final = ("--", "//", "#", "%", ";")
+
+#: A TRAILING line comment inside a fenced/indented code block: the
+#: comment marker preceded by whitespace — "SELECT 1;  -- <gloss>".
+#: The round-10 F10-3 defect: only full-line comments got units, so a
+#: trailing gloss had no unit of its own and a sibling scoped comment
+#: purified it (the fence's own coarse unit carried both). An
+#: over-taken marker (a `//` inside a URL, a `#` in a string) can only
+#: ADD a unit — an extra unit can only add a red, never hide one — and
+#: the fence's own unit still carries the whole content.
+_TRAILING_COMMENT_START: Final = re.compile(r"(?<=\s)(?:--|//|#|%|;)")
 
 
 def _normalize_newlines(text: str) -> str:
@@ -905,7 +916,11 @@ def _code_comment_units(
     never removes it, so a quoted fence's comment lines had no units and
     its adjacent comment pair folded back into one unit — quoting a
     fence re-opened round-7's defeat). A line comment runs to end of
-    line: each comment LINE is its own unit. A `/* ... */` or
+    line: each comment LINE is its own unit — a FULL-LINE comment
+    (`--`, `//`, `#`, `%`, `;`) and a TRAILING comment after code
+    (`SELECT 1;  -- <gloss>`; the round-10 F10-3 defect left the
+    trailing form inside the fence's coarse unit, where a sibling
+    scoped comment purified it) alike. A `/* ... */` or
     `<!-- ... -->` block comment is ONE statement: the whole statement
     is its own unit, a multi-line comment staying the one unit it is
     (the round-9 D9-4 defeat: only line-comment prefixes were known, so
@@ -951,8 +966,14 @@ def _code_comment_units(
             dedent,
         )
     for index, content_line in enumerate(content_lines):
-        if not content_line.strip().startswith(_FENCE_COMMENT_PREFIXES):
-            continue
+        stripped = content_line.strip()
+        if not stripped.startswith(_FENCE_COMMENT_PREFIXES):
+            # A TRAILING comment (text after the code prefix) is its own
+            # statement too — the round-10 F10-3 defect left it inside
+            # the fence's coarse unit, where a sibling scoped comment
+            # purified it.
+            if _TRAILING_COMMENT_START.search(content_line) is None:
+                continue
         raw_index = first_content + index - line_offset
         yield Unit(
             path,
@@ -3475,22 +3496,41 @@ def test_quoted_fence_comment_lines_are_their_own_units() -> None:
     ), [(unit.start_line, unit.end_line, unit.text[:50]) for unit in comment_units]
     # The shipped quoted fences (sso.md's dockerfile fence,
     # managed-identities.md's python fence): a quoted fence is modeled at
-    # its own true span — the prefix mapping cannot crash or lose it.
+    # its own true span — the prefix mapping cannot crash or lose it —
+    # and its comment lines are their own units (the dockerfile's
+    # trailing `#` comment included; the round-10 F10-3 model).
     sso_raw = (REPO_ROOT / "docs/guides/sso.md").read_text(encoding="utf-8")
-    sso_units = _markdown_units("docs/guides/sso.md", sso_raw)
+    sso_units = list(_markdown_units("docs/guides/sso.md", sso_raw))
     dockerfile_fences = [
-        unit for unit in sso_units if unit.kind == "markdown" and "FROM taskq-worker" in unit.text
+        unit
+        for unit in sso_units
+        if unit.kind == "markdown"
+        and unit.text.lstrip("> ").startswith("```dockerfile")
+        and "FROM taskq-worker" in unit.text
     ]
     assert (
         len(dockerfile_fences) == 1
         and dockerfile_fences[0].start_line < dockerfile_fences[0].end_line
     ), [(u.start_line, u.end_line, u.text[:60]) for u in sso_units if u.kind == "markdown"]
+    sso_comment_units = [
+        unit
+        for unit in sso_units
+        if unit.kind == "markdown"
+        and unit.start_line == unit.end_line
+        and _TRAILING_COMMENT_START.search(unit.text) is not None
+        and "Dockerfile" in unit.text
+    ]
+    assert len(sso_comment_units) == 1 and sso_comment_units[0].start_line > dockerfile_fences[0].start_line, [
+        (u.start_line, u.end_line, u.text[:60]) for u in sso_comment_units
+    ]
     managed_raw = (REPO_ROOT / "docs/guides/managed-identities.md").read_text(encoding="utf-8")
     managed_units = _markdown_units("docs/guides/managed-identities.md", managed_raw)
     redis_fences = [
         unit
         for unit in managed_units
-        if unit.kind == "markdown" and "ExponentialBackoff" in unit.text
+        if unit.kind == "markdown"
+        and unit.text.lstrip("> ").startswith("```")
+        and "ExponentialBackoff" in unit.text
     ]
     assert len(redis_fences) == 1 and redis_fences[0].start_line < redis_fences[0].end_line, [
         (u.start_line, u.end_line, u.text[:60]) for u in managed_units if u.kind == "markdown"
@@ -3543,6 +3583,68 @@ def test_fence_block_comments_are_their_own_units() -> None:
     assert _corpus_matches("virtual/fence-html-comment.md", html_fence), (
         "a `<!-- -->` gloss inside a fence reds as its own unit"
     )
+
+
+def test_trailing_and_other_prefix_fence_comments_are_their_own_units() -> None:
+    """Round-10 F10-3: `_code_comment_units` gave a unit only to a
+    comment line the comment marker STARTS — a TRAILING comment
+    (`SELECT 1;  -- <gloss>`) had no unit of its own, so a scoped
+    LEADING comment plus a trailing gloss stayed green (the fence's own
+    coarse unit carried both, and the sibling's marker purified the
+    gloss); and the `%`/`;` line-comment prefixes (LaTeX/Matlab, Lisp)
+    were not recognised at all. A trailing comment's unit is the
+    comment's own line; an over-taken marker (a `//` inside a URL) can
+    only add a unit, never hide one. Every gloss value is assembled at
+    runtime from independently non-triggering fragments (the module's
+    own law)."""
+    scoped_comment = "-- scoped to the two dispatch-invisible legs only"
+    gloss = "the stranded gauge: rows that " + "can never " + "dispatch"
+    # The executed defeat: a scoped LEADING comment plus a TRAILING gloss.
+    fence = (
+        "```sql\n" + scoped_comment + "\nSELECT 1;  -- " + gloss + "\n```\n"
+    )
+    assert _corpus_matches("virtual/fence-trailing-gloss.md", fence) == [
+        "universal-no-dispatch"
+    ], "the trailing gloss must red EVEN WHEN the leading comment carries the scoping marker"
+    comment_units = [
+        unit
+        for unit in _corpus_units("virtual/fence-trailing-gloss.md", fence)
+        if unit.kind == "markdown"
+        and unit.start_line == unit.end_line
+        and (
+            unit.text.strip().startswith(_FENCE_COMMENT_PREFIXES)
+            or _TRAILING_COMMENT_START.search(unit.text) is not None
+        )
+    ]
+    assert len(comment_units) == 2, [unit.text for unit in comment_units]
+    trailing = [unit for unit in comment_units if "SELECT" in unit.text]
+    assert len(trailing) == 1 and (trailing[0].start_line, trailing[0].end_line) == (3, 3), [
+        (unit.start_line, unit.end_line, unit.text[:50]) for unit in comment_units
+    ]
+    # ... and the corrected fence (the trailing comment scoped in its
+    # own words) passes.
+    corrected = (
+        "```sql\n"
+        + scoped_comment
+        + "\nSELECT 1;  -- scoped to the two dispatch-invisible legs only\n```\n"
+    )
+    assert not _corpus_matches("virtual/fence-trailing-clean.md", corrected)
+    # The `%` and `;` line-comment prefixes: a gloss comment line in
+    # each REDS ALONE, and a scoped sibling never purifies it.
+    for prefix in ("%", ";"):
+        gloss_fence = (
+            f"```text\n{prefix} " + gloss + "\n"
+            f"{prefix} scoped to the two dispatch-invisible legs only\nSELECT 1;\n```\n"
+        )
+        assert _corpus_matches(f"virtual/fence-{prefix}-gloss.md", gloss_fence) == [
+            "universal-no-dispatch"
+        ], f"a '{prefix}'-comment gloss line must red EVEN WHEN its sibling carries the marker"
+        units = [
+            unit
+            for unit in _corpus_units(f"virtual/fence-{prefix}-gloss.md", gloss_fence)
+            if unit.text.strip().startswith(prefix)
+        ]
+        assert len(units) == 2, [unit.text[:50] for unit in units]
 
 
 def test_scoping_requires_a_genuine_scope() -> None:
