@@ -483,10 +483,23 @@ _POPULATION_SUBJECT_RE: Final = re.compile(
 #: specific (non-anaphoric, non-population) subject, is that sentence's
 #: own restricted subject — "an actor that can never be dispatched
 #: because it has no registered stub/config is a strictly worse failure
-#: mode" — not a gloss on the gauge.
+#: mode" — not a gloss on the gauge. The family's OWN canonical
+#: spellings are mentions too (round-12 D12-1): `stranded-jobs` (the
+#: shipped docs' hyphenated spelling) and the metric name
+#: `taskq_jobs_stranded`. The old alternative list ended at bare
+#: `stranded`, so the `(?![\w-])` lookahead rejected the hyphen and the
+#: lookbehind rejected the underscore — a universal gloss about the
+#: family in its own canonical spelling was treated as a foreign
+#: restricted subject and waived. The alternatives stay word-bounded on
+#: both ends, so a hyphenated or underscored compound beyond the name
+#: (`stranded-jobs-no-actor-config`, `stranded-jobs-workflow-root-
+#: missing`, `taskq_jobs_stranded_total`, `unstranded`, `non-stranded`)
+#: still does not match.
 _SENTENCE_MENTION_RE: Final = re.compile(
-    r"(?<![\w-])(?:stranded|no_actor_config|unserved_queue|workflow_root_missing"
-    r"|pending/scheduled)(?![\w-])"
+    r"(?<![\w-])(?:stranded(?:-jobs)?"
+    r"|no_actor_config|unserved_queue|workflow_root_missing"
+    r"|pending/scheduled"
+    r"|taskq_jobs_stranded)(?![\w-])"
 )
 
 #: A positive counter-claim in the same unit defeats the scope (the
@@ -2432,6 +2445,8 @@ def test_allowlist_paths_exist_and_spans_are_justified() -> None:
 #: scanner's own fixtures can never exempt or poison the scan).
 frag_reasons = "no_actor_" + "config"
 frag_unserved = "unserved_" + "queue"
+frag_universal = "permanently " + "undispatchable"
+frag_forever = "never " + "dispatched"
 
 
 def _corpus_units(virtual_path: str, text: str) -> list[Unit]:
@@ -4215,6 +4230,25 @@ def test_scoping_requires_a_genuine_scope() -> None:
     assert not _corpus_matches("virtual/scope-foreign-subject.md", foreign), (
         "a foreign restricted subject is not a gloss on the gauge"
     )
+
+    # ── the round-12 D12-1 defeats: the family's OWN canonical spellings
+    # are detector mentions ──────────────────────────────────────────────
+    # The old sentence-mention list ended at bare `stranded`, so the
+    # `(?![\w-])` lookahead rejected the hyphen and the lookbehind
+    # rejected the underscore: a universal gloss in the family's own
+    # canonical spelling (`stranded-jobs`, the `taskq_jobs_stranded`
+    # metric) was treated as a foreign restricted subject and waived.
+    # Every spelling REDS, the space-spelled control included.
+    for name, shape in (
+        ("space", "The stranded jobs detector: " + frag_universal + "."),
+        ("hyphen-detector", "The stranded-jobs detector: " + frag_universal + "."),
+        ("hyphen-gauge", "The stranded-jobs gauge: " + frag_universal + "."),
+        ("metric-gauge", "The taskq_jobs_stranded gauge: " + frag_universal + "."),
+        ("table-row", "| `stranded-jobs detector` | " + frag_universal + " |"),
+    ):
+        assert _corpus_matches(f"virtual/mention-{name}.md", shape) == [
+            "universal-no-dispatch"
+        ], f"the family's own {name} spelling is a detector mention"
 
     # ... but the third leg's OWN definition (the shipped prose's shape:
     # the unit names workflow_root_missing and says its row CAN dispatch
