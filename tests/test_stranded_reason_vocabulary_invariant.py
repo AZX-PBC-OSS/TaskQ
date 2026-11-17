@@ -31,7 +31,8 @@ its text with its real grammar's parser):
   blockquote clean law and gets the same body paragraph units as the
   unquoted form); PLUS each fenced/indented code block's comment
   statements — full-line (`--`/`//`/`#`/`%`/`;`) and trailing-after-
-  code line comments, and `/* */` / `<!-- -->` block comments as whole
+  code line comments (the marker needs NO preceding whitespace:
+  `SELECT 1;-- x` is a comment statement too), and `/* */` / `<!-- -->` block comments as whole
   statements; PLUS the per-line FLOOR: every non-blank line no unit
   owns (a link-reference definition the parser consumes without a
   token, a `>`-only separator, any construct the model does not know)
@@ -129,7 +130,10 @@ accepted:
    sentence a sibling scoped comment's marker can waive. The comment
    statements have their own units; the non-comment content does not.
    Accepted: shipped fences' executable lines are code, not prose, and
-   every comment statement is its own unit.
+   every line a scanned comment marker touches — full-line or
+   trailing, with or without preceding whitespace — is its own unit,
+   and the `/* */` / `<!-- -->` block comments are whole-statement
+   units (the marker scan's own law, `_code_comment_units`).
 2. A gloss split across `+`-concatenated Python string constants hides
    (each constant is its own unit and the variant spans the
    concatenation); implicit concatenation folds in the AST and does
@@ -695,15 +699,22 @@ _LEAF_TOKENS: Final = frozenset(
 #: (`_code_comment_units`).
 _FENCE_COMMENT_PREFIXES: Final = ("--", "//", "#", "%", ";")
 
-#: A TRAILING line comment inside a fenced/indented code block: the
-#: comment marker preceded by whitespace — "SELECT 1;  -- <gloss>".
-#: The round-10 F10-3 defect: only full-line comments got units, so a
-#: trailing gloss had no unit of its own and a sibling scoped comment
-#: purified it (the fence's own coarse unit carried both). An
+#: A TRAILING line comment inside a fenced/indented code block: a
+#: comment marker ANYWHERE in the line — "SELECT 1;  -- <gloss>" and
+#: "SELECT 1;-- <gloss>" alike. The round-10 F10-3 defect: only
+#: full-line comments got units, so a trailing gloss had no unit of its
+#: own and a sibling scoped comment purified it (the fence's own coarse
+#: unit carried both). The round-11 F11-1 defect: the old lookbehind
+#: required whitespace before the marker, but `--` begins a SQL/Lua
+#: line comment with NO preceding-whitespace requirement (`SELECT
+#: 1;-- x` is valid SQL), and the same holds for `#` in Python, `//`
+#: in the C family, `%` in LaTeX and `;` in Lisp — so a no-space
+#: trailing gloss got no unit and was purified the same way. An
 #: over-taken marker (a `//` inside a URL, a `#` in a string) can only
-#: ADD a unit — an extra unit can only add a red, never hide one — and
-#: the fence's own unit still carries the whole content.
-_TRAILING_COMMENT_START: Final = re.compile(r"(?<=\s)(?:--|//|#|%|;)")
+#: ADD a unit — an extra unit can only add a red, never hide one,
+#: because the fence's own coarse unit is emitted unconditionally and
+#: still carries the whole content.
+_TRAILING_COMMENT_START: Final = re.compile(r"--|//|#|%|;")
 
 
 def _normalize_newlines(text: str) -> str:
@@ -1109,9 +1120,11 @@ def _code_comment_units(
     fence re-opened round-7's defeat). A line comment runs to end of
     line: each comment LINE is its own unit — a FULL-LINE comment
     (`--`, `//`, `#`, `%`, `;`) and a TRAILING comment after code
-    (`SELECT 1;  -- <gloss>`; the round-10 F10-3 defect left the
-    trailing form inside the fence's coarse unit, where a sibling
-    scoped comment purified it) alike. A `/* ... */` or
+    (`SELECT 1;  -- <gloss>` and `SELECT 1;-- <gloss>` alike — the
+    marker needs no preceding whitespace; the round-10 F10-3 defect
+    left the trailing form inside the fence's coarse unit, where a
+    sibling scoped comment purified it, and the round-11 F11-1 defect
+    left the no-whitespace form there the same way) alike. A `/* ... */` or
     `<!-- ... -->` block comment is ONE statement: the whole statement
     is its own unit, a multi-line comment staying the one unit it is
     (the round-9 D9-4 defeat: only line-comment prefixes were known, so
@@ -2796,10 +2809,12 @@ def test_markdown_structural_siblings_are_their_own_units() -> None:
     `> gloss` pair, and the troubleshooting.md adjacent-comment-in-fence
     insertion each red AT THE GLOSS'S OWN UNIT. Honesty: a wrapped
     paragraph, a list item's own continuation lines, and a single fenced
-    block's content stay the ONE unit they are (a statement is never
-    fragmented into meaningless pieces). Every gloss value is assembled
-    at runtime from independently non-triggering fragments (the module's
-    own law)."""
+    block's non-comment content stay the ONE unit they are (a statement
+    is never fragmented into meaningless pieces; a fence's own
+    comment-statement lines carry additional per-line units — the
+    marker scan's over-take, which can only add reds). Every gloss value
+    is assembled at runtime from independently non-triggering fragments
+    (the module's own law)."""
     # ── the executed architecture.md defeat: a gloss list item inserted
     # into a tight list whose sibling item carries the scoping ───────────
     scoped_item = (
@@ -2921,10 +2936,21 @@ def test_markdown_structural_siblings_are_their_own_units() -> None:
     # (the prose's own scoping marker cannot purify the fence's gloss).
     plain_fence = "```sql\nSELECT a\nFROM b\nWHERE c > d;\n```"
     plain_units = _corpus_units("virtual/fence-plain.md", plain_fence)
-    assert len(plain_units) == 1, [unit.text for unit in plain_units]
+    fence_unit = [u for u in plain_units if "```" in u.text]
+    assert len(fence_unit) == 1, [unit.text for unit in plain_units]
+    # The trailing `;` is a scanned comment marker wherever it sits, so
+    # the statement's last line ALSO carries a per-line comment-statement
+    # unit (the no-whitespace marker scan's over-take: an extra unit can
+    # only add a red, never hide one — the fence's own unit still carries
+    # the whole content).
+    overtake = [u for u in plain_units if u.text.strip() == "WHERE c > d;"]
+    assert len(overtake) == 1 and (overtake[0].start_line, overtake[0].end_line) == (4, 4), [
+        unit.text for unit in plain_units
+    ]
     two_fences = "```sql\nSELECT 1;\n```\n```sql\nSELECT 2;\n```"
     fence_units = _corpus_units("virtual/fence-two.md", two_fences)
-    assert len(fence_units) == 2, [unit.text for unit in fence_units]
+    two_fence_units = [u for u in fence_units if u.text.count("```") >= 1]
+    assert len(two_fence_units) == 2, [unit.text for unit in fence_units]
     prose_then_fence = (
         "The dispatch-invisible legs are scoped.\n" + "```sql\n" + gloss_comment + "\n```"
     )
@@ -3014,11 +3040,23 @@ def test_indented_fences_inside_containers_are_their_own_units() -> None:
         "the gloss's own unit is its own comment line inside the fence"
     )
     # The code block itself is its own unit at its own span — never merged
-    # with the `!!! tip` paragraph line above it.
-    code_units = [u for u in admonition_units if "SELECT 1" in u.text]
+    # with the `!!! tip` paragraph line above it. (The bare `SELECT 1;`
+    # line now carries a per-line comment-statement unit of its own — a
+    # `;` is a scanned comment marker wherever it sits, so the filter
+    # selects the FENCE unit by its own fence text.)
+    code_units = [u for u in admonition_units if u.text.count("```") >= 1 and "SELECT 1" in u.text]
     assert len(code_units) == 1 and (code_units[0].start_line, code_units[0].end_line) == (3, 7), [
         unit.text for unit in admonition_units
     ]
+    select_units = [u for u in admonition_units if u.text.strip() == "SELECT 1;"]
+    assert len(select_units) == 1 and (select_units[0].start_line, select_units[0].end_line) == (
+        6,
+        6,
+    ), (
+        "the bare `SELECT 1;` line's own comment-statement unit is the "
+        "over-take the no-whitespace marker scan adds — an extra unit can "
+        "only add a red, never hide one"
+    )
 
 
 def test_lazy_continuation_belongs_to_its_paragraph() -> None:
@@ -3866,7 +3904,9 @@ def test_trailing_and_other_prefix_fence_comments_are_their_own_units() -> None:
     gloss); and the `%`/`;` line-comment prefixes (LaTeX/Matlab, Lisp)
     were not recognised at all. A trailing comment's unit is the
     comment's own line; an over-taken marker (a `//` inside a URL) can
-    only add a unit, never hide one. Every gloss value is assembled at
+    only add a unit, never hide one. The round-11 F11-1 correction: the
+    marker needs NO preceding whitespace (`SELECT 1;-- <gloss>` is a
+    comment statement too). Every gloss value is assembled at
     runtime from independently non-triggering fragments (the module's
     own law)."""
     scoped_comment = "-- scoped to the two dispatch-invisible legs only"
@@ -3915,6 +3955,34 @@ def test_trailing_and_other_prefix_fence_comments_are_their_own_units() -> None:
             if unit.text.strip().startswith(prefix)
         ]
         assert len(units) == 2, [unit.text[:50] for unit in units]
+
+    # ── the round-11 F11-1 defeats ──────────────────────────────────────
+    # A comment marker with NO whitespace before it is still a comment
+    # start: `SELECT 1;-- <gloss>` is valid SQL (`--` begins a line
+    # comment with no preceding-whitespace requirement), and the same
+    # holds for `#` in Python, `//` in the C family, `%` in LaTeX and
+    # `;` in Lisp. Each no-space trailing form gets a unit of its own
+    # whose own sentence carries no marker, so it REDS even when a
+    # scoped sibling comment precedes it; the corrected no-space
+    # trailing comment passes.
+    for code, marker in (
+        ("SELECT 1;", "--"),
+        ("x = 1;", "%"),
+        ("echo done;", "#"),
+        ("int x = 1;", "//"),
+    ):
+        defeat = "```text\n" + scoped_comment + "\n" + code + marker + " " + gloss + "\n```\n"
+        assert _corpus_matches("virtual/fence-nospace-trailing.md", defeat) == [
+            "universal-no-dispatch"
+        ], (
+            f"a no-whitespace trailing '{marker}' gloss must red EVEN WHEN the scoped sibling precedes it"
+        )
+        corrected = (
+            "```text\n" + code + marker + " scoped to the two dispatch-invisible legs only\n```\n"
+        )
+        assert not _corpus_matches("virtual/fence-nospace-clean.md", corrected), (
+            f"a corrected no-whitespace trailing '{marker}' comment must pass"
+        )
 
 
 def test_scoping_requires_a_genuine_scope() -> None:
