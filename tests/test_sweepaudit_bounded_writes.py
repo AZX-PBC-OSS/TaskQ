@@ -638,8 +638,9 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "FROM parks",
         "the §5.4 non-drainage refusal: its write set is the exact-park "
         "winner PKs captured by the parks CTE (the indexed exact-marker "
-        "probe of ONE terminal flow with an un-emitted committed cursor) — "
-        "a keyed family, never an estate scan",
+        "probe of ONE terminal flow, over every exact park still holding "
+        "un-emitted work — including the first page when no cursor has "
+        "committed) — a keyed family, never an estate scan",
     ),
 }
 

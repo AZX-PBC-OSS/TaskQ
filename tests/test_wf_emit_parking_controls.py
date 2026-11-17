@@ -856,8 +856,9 @@ async def test_failed_root_keeps_parked_source_resolved_and_inert(
         )
         # BEHAVIOR SUPERSESSION (the contract's §5.4): the failed root
         # behind this child's EXHAUSTED retry policy, with the source's
-        # un-emitted committed cursor still parked, is the proven
-        # non-drainage shape — the SAME failure transaction fenced the
+        # exact park still holding un-emitted work (including the first
+        # page when no cursor has committed), is the proven non-drainage
+        # shape — the SAME failure transaction fenced the
         # source (the old law left it live-parked resolved; that law is
         # superseded). The fence is the refusal: the named durable class,
         # the reason, the causal ids, no ledger 'failed' ladder charge.

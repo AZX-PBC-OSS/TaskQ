@@ -1,9 +1,10 @@
 """The §5.4 non-drainage refusal control: the refusal fires ONLY on the
 committed durable proof — a genuine child failure exhausted its declared
 retry policy AND the root terminal ``failed`` committed, while an exact
-parked source still holds an un-emitted committed cursor. Healthy
-saturation, elapsed time, park counts, and nonterminal retries never
-trigger it."""
+parked source still represents un-emitted work (including the first page
+when no cursor has committed — the absent key means zero pages have
+committed, not that the park is empty). Healthy saturation, elapsed time,
+park counts, and nonterminal retries never trigger it."""
 
 from __future__ import annotations
 
