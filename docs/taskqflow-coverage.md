@@ -355,7 +355,14 @@ all, the cell says so.*
     detector surfaces the fleet that cannot run the run. Old runs
     finish on the definitions that produced them (Temporal's Pinned
     semantics), new runs get the new digest — and the rows-only shape
-    still needs no replay test, because there is no replay.
+    still needs no replay test, because there is no replay. THIS IS A
+    PROPOSAL — do not confuse it with the SHIPPED missing-root reason:
+    `released_reason='workflow-root-missing'` is ACTUAL bounded
+    deployment-corruption handling today (a run whose own `__flow__`
+    root row is gone gets the worker's one bounded budget-free release;
+    the stranded detector's `workflow_root_missing` reason witnesses the
+    run's surviving rows; the runbook owns the
+    restore-or-quarantine remedy).
 
 ## The fill state
 

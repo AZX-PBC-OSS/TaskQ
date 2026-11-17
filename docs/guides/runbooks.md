@@ -793,11 +793,11 @@ Do not fix this by raising `TASKQ_LOCK_LEASE` alone when the cause is a blocked 
 
 ## TaskQStrandedJobs
 
-**What fired.** `taskq_jobs_stranded > 0` for 5 minutes: pending/scheduled jobs that can never be dispatched, with the reason on the label. `reason="no_actor_config"`: the actor has no `actor_config` row (deregistered with `taskq actor-config deregister`, or never registered by any worker), so the dispatch CTE, which derives its candidates from `actor_config`, never sees the rows. `reason="unserved_queue"`: the queue dispatch routes the actor on (the actor's current assignment for a re-pended row, the row's own queue otherwise) has no live worker subscribed. Neither dispatch nor the deadline sweep will ever touch these rows.
+**What fired.** `taskq_jobs_stranded > 0` for 5 minutes: pending/scheduled jobs that cannot make progress, with the reason on the label. `reason="no_actor_config"`: the actor has no `actor_config` row (deregistered with `taskq actor-config deregister`, or never registered by any worker), so the dispatch CTE, which derives its candidates from `actor_config`, never sees the rows. `reason="unserved_queue"`: the queue dispatch routes the actor on (the actor's current assignment for a re-pended row, the row's own queue otherwise) has no live worker subscribed. These two reasons are dispatch-invisible: neither dispatch nor the deadline sweep will ever touch such rows. `reason="workflow_root_missing"` is a different class of fault — control-plane data corruption, not a routing condition: the rows are workflow nodes whose own run has lost its `__flow__` root row. Such a row CAN dispatch and be bounded-consumed when its actor config and effective routing queue are otherwise served; what can never progress is the RUN — every surviving node of a root-less flow is stranded work, and no worker knob repairs it.
 
 **How to confirm.**
 
-- Metric: `taskq_jobs_stranded` by `actor, reason`; sampled by the leader every `TASKQ_STRANDED_JOBS_INTERVAL`; the `stranded-jobs-no-actor-config` / `stranded-jobs-unserved-queue` log events carry the same counts, and the second names the queues.
+- Metric: `taskq_jobs_stranded` by `actor, reason`; sampled by the leader every `TASKQ_STRANDED_JOBS_INTERVAL`; the `stranded-jobs-no-actor-config` / `stranded-jobs-unserved-queue` / `stranded-jobs-workflow-root-missing` log events carry the same counts — the second names the queues, the third names up to 10 affected run ids (lexicographic, bounded).
 - Database:
 
   ```sql
@@ -806,13 +806,26 @@ Do not fix this by raising `TASKQ_LOCK_LEASE` alone when the cause is a blocked 
   WHERE j.status IN ('pending', 'scheduled')
     AND NOT EXISTS (SELECT 1 FROM taskq.actor_config ac WHERE ac.actor = j.actor)
   GROUP BY j.actor;
+
+  -- workflow_root_missing: workflow nodes whose run's own __flow__ root row is gone
+  SELECT (j.metadata->>'flow_id') AS flow_id, count(*)
+  FROM taskq.jobs j
+  WHERE j.status IN ('pending', 'scheduled')
+    AND j.step_key IS NOT NULL AND j.step_key <> '__flow__'
+    AND j.metadata ? 'flow_id'
+    AND j.metadata->>'flow_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    AND NOT EXISTS (
+      SELECT 1 FROM taskq.jobs root
+      WHERE root.id = (j.metadata->>'flow_id')::uuid AND root.step_key = '__flow__')
+  GROUP BY 1;
   ```
 
 **How to remediate.**
 
 1. `no_actor_config`: run a worker that registers the actor (registration writes the row at boot), or, if the actor is gone for good, cancel the rows (`JobsClient.cancel_where(JobFilter(actor=...))`, `taskq job cancel-where`, or the embedded admin UI's cancel action) so they stop counting.
 2. `unserved_queue`: follow [TaskQQueueUnserved](#taskqqueueunserved): subscribe a live worker to the named queue, or move the actor's assignment with `taskq actor-config move-queue`.
-3. Confirm recovery: the series clears on the next detector tick (an empty reading is published, not a frozen last value) and the `stranded-jobs-cleared` event logs.
+3. `workflow_root_missing` (control-plane recovery, never a worker knob): restore the exact missing `__flow__` root row and its original flow identity through a validated database recovery/restore procedure after stopping the affected writers, and investigate the destructive path that dropped it. If faithful restoration is impossible, explicitly quarantine/remove the orphaned surviving rows under an application-reviewed recovery plan (row-scoped `JobsClient.cancel_where(JobFilter(metadata_flow_id=...))` / `taskq job cancel-where` against the selected survivors) and recreate the work as a NEW run. Actor registration, `TASKQ_QUEUES`, and queue moves do not repair the run. Per-run cancellation is NOT the cleanup mechanism here: `taskq flows cancel <run_id>` flips the root row first and returns early (a no-op) when the root is missing — it never touches the surviving nodes.
+4. Confirm recovery: the series clears on the next detector tick (an empty reading is published, not a frozen last value) and the `stranded-jobs-cleared` event logs. A row released from the root-missing class may still carry a latent dispatch-invisible condition — the same detector's next tick reports any remaining `no_actor_config`/`unserved_queue` reason.
 
 ---
 

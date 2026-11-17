@@ -1,10 +1,15 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 """Adversarial review attacks on the stranded-jobs detector's blind spots.
 
-The detector's entire predicate is ``status IN ('pending','scheduled') and
-not EXISTS (actor_config row)`` (src/taskq/worker/_leader_sweeps.py:1228-1236)
-- it keys on actor_config presence only. Two permanently-undispatchable
-strand shapes are invisible to it:
+THIS FILE ATTACKS THE HISTORICAL BASE PREDICATE — the actor-only detector
+(``status IN ('pending','scheduled') and not EXISTS (actor_config row)``,
+src/taskq/worker/_leader_sweeps.py at the pre-correction revision) — not
+today's entire predicate. The shipped detector now also carries the
+run-scoped `workflow_root_missing` leg (a workflow node whose run has lost
+its own `__flow__` root row — a row that MAY dispatch, unlike the
+dispatch-invisible class these probes exercise). Two
+permanently-undispatchable — dispatch-invisible — strand shapes were
+invisible to the actor-only base:
 
 * (i) a pending row WITH actor_config on a queue no worker serves: dispatch's
   candidates lateral annihilates it (``j2.queue = sq.queue_name``,
@@ -203,9 +208,13 @@ async def _seed_strand_shapes(conn: asyncpg.Connection, schema: str) -> tuple[UU
 async def test_stranded_detector_sees_both_strand_shapes(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The detector must count both strand shapes. Today it counts only the
-    deleted-actor_config shape - a pending row WITH actor_config on an
-    unserved queue is invisible to the gauge."""
+    """The detector must count both dispatch-invisible strand shapes. The
+    HISTORICAL BASE under attack counted only the deleted-actor_config
+    shape - a pending row WITH actor_config on an unserved queue was
+    invisible to the gauge. (This file's probes are scoped to the
+    dispatch-invisible class; the detector's run-scoped
+    workflow_root_missing leg is the separately controlled third
+    shape.)"""
     schema = f"torp_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
     pool: asyncpg.Pool | None = None

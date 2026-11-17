@@ -263,9 +263,12 @@ async def test_flow1_doctor_ignores_stale_worker_row(
     worker-liveness window the leader sweep applies.
 
     cli.md documents doctor's unserved arm as "pending/scheduled jobs routed
-    to a queue no LIVE worker serves" and says it is "the same computation
-    the leader's stranded-jobs sweep runs every minute, issued here on
-    demand". The leader's sweep (``_leader_sweeps.py``) filters worker rows
+    to a queue no LIVE worker serves" and (in the current prose) scopes the
+    "same computation" claim to the detector's two dispatch-invisible legs
+    — this file's historical defect pin is about THAT pair: the leader's
+    sweep (``_leader_sweeps.py``) filters worker rows
+    by ``last_seen_at`` inside the liveness window - its own comment says a
+    dead-but-unswept worker row "must not count as serving the queue". The leader's sweep (``_leader_sweeps.py``) filters worker rows
     by ``last_seen_at`` inside the liveness window - its own comment says a
     dead-but-unswept worker row "must not count as serving the queue".
     Doctor's copy did not carry that filter, so a stale worker row hid an

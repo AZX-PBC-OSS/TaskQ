@@ -899,7 +899,20 @@ whose stamped name resolves to nothing (the
 definitions not imported anywhere — a deployment defect, or a hand-crafted
 row) parks at the snooze cadence budget-free, `released_reason=
 'workflow-body-unresolvable'`, the stranded-jobs detector the witness —
-LOUD, never a silent wedge.
+LOUD, never a silent wedge. The MISSING RUN ROOT is a different failure
+with its own class: when a node's run has lost its own `__flow__` root
+row (control-plane data corruption — never a body-resolution fault), the
+failed-parent seat raises the typed `WorkflowRootMissingError` BEFORE any
+propagation write (the transaction rolls back; the already-committed
+child terminal stands), the fleet-claimed executor passes it through
+UNWRAPPED, and the worker's own release arm attempts ONE bounded
+budget-free 10-second release with `released_reason=
+'workflow-root-missing'` and the `dispatch-workflow-root-missing` log.
+Against the committed tx1 child terminal that release fence reads back
+`noop` — the terminal is preserved byte-identically, never rescheduled.
+The stranded detector's `workflow_root_missing` reason is the witness on
+the run's surviving rows; the remedy is the runbook's
+restore-or-quarantine recovery, never a worker knob.
 
 ### THE WORKFLOW-ONLY WORKER — how the worker imports definitions
 

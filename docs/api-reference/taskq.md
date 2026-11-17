@@ -40,7 +40,12 @@ ways. Mixing them up is the most common integration bug:
 worker declares is enqueued successfully and then parked at the snooze
 cadence (`released_reason: "actor-not-found"`, budget-free, surfaced by
 the stranded-jobs detector) — check the actor spelling and
-`taskq job show` before looking at queues or capacity.
+`taskq job show` before looking at queues or capacity. The other
+release reason beside it: `released_reason: "workflow-root-missing"` —
+a workflow row whose RUN has lost its own `__flow__` root row (control-
+plane data corruption) gets the same bounded budget-free release, but
+actor spelling and registration checks do not repair it: the remedy is
+the stranded-jobs runbook's restore-or-quarantine recovery.
 
 The full exception taxonomy — every class, its fields, and its remedy — is
 indexed on the [Exceptions API reference](exceptions.md); the retry engine's
