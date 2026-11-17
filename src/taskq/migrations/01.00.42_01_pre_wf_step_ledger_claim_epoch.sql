@@ -204,29 +204,32 @@ COMMENT ON INDEX "{schema}".wf_emit_capacity_pending_idx IS
 -- parked source with WORKFLOW_NOT_DRAINING_ERROR_CLASS, the named reason,
 -- and the causal child/root ids. No logical attempt is spent, no ladder
 -- retry is created, and the causal child's genuine error is never
--- overwritten. The cascade seat (the engine's fail-closed path) calls the
--- statement form directly with the child it knows; this function derives
--- the causal child from the rows (the most recently failed exhausted
--- child). THE LEDGER FENCE IS THE SHARED CURRENT-CLAIM CORE (the
--- _sql_claim.current_claim_join renderer's exact inline spelling — the
--- parity control proves the two never drift): job + current epoch +
--- step_key + null-safe map_index, status 'awaited' — never older epochs,
--- sibling ctx.substep rows, map siblings, or terminal history.
-CREATE OR REPLACE FUNCTION "{schema}".fence_not_draining_parked(p_root uuid)
+-- overwritten. THE CAUSAL CHILD IS AN EXPLICIT ARGUMENT (F11): the
+-- maintenance seat derives it from the SAME current failed/crashed/
+-- abandoned nonabsorbed node rows that proved the root's failure (the
+-- shared absorbed_exists predicate) and passes it here; the function
+-- FAILS CLOSED when called for a failed-root proof with no such id
+-- (never a NULL-child refusal record). The cascade seat passes the
+-- actual exhausted parent. THE LEDGER FENCE IS THE SHARED CURRENT-CLAIM
+-- CORE (the _sql_claim.current_claim_join renderer's exact inline
+-- spelling — the parity control proves the two never drift): job +
+-- current epoch + step_key + null-safe map_index, status 'awaited' —
+-- never older epochs, sibling ctx.substep rows, map siblings, or
+-- terminal history.
+CREATE OR REPLACE FUNCTION "{schema}".fence_not_draining_parked(p_root uuid, p_child uuid)
 RETURNS integer
 LANGUAGE plpgsql
 AS $fence$
 DECLARE
-    v_child uuid;
     v_fenced integer;
 BEGIN
-    SELECT l.job_id INTO v_child
-    FROM "{schema}".wf_step_ledger l
-    WHERE l.flow_id = p_root
-      AND l.status = 'failed'
-      AND l.job_id IS NOT NULL
-    ORDER BY l.updated_at DESC, l.id DESC
-    LIMIT 1;
+    IF p_child IS NULL THEN
+        RAISE EXCEPTION
+            'fence_not_draining_parked called for a failed-root proof with no causal child id (flow %) — the maintenance derivation must name the actual current nonabsorbed failed node',
+            p_root
+            USING ERRCODE = 'WF003',
+                  HINT = 'the causal child comes from the same current-node derivation that proved root failure, never from ledger recency';
+    END IF;
 
     WITH parks AS (
         SELECT j.id
@@ -254,7 +257,7 @@ BEGIN
                     'wf_not_draining', jsonb_build_object(
                         'reason', 'terminal_root_after_child_failure_exhaustion',
                         'root_id', p_root,
-                        'child_id', v_child,
+                        'child_id', p_child,
                         'at', to_char(clock_timestamp() AT TIME ZONE 'UTC',
                                       'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
                     )

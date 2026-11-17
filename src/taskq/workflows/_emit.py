@@ -1272,8 +1272,16 @@ async def sweep_emit_markers(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
     the caller's process-local cursor persisting the last visited flow;
     an empty read wraps the cursor once. A full selection persists its
     last flow id; a short selection resets to the start. A repaired flow
-    leaves the selection through its created intent row — the steady
-    state is an empty indexed read with zero per-flow work.
+    leaves the selection through its created intent row.
+
+    The SELECTION's re-observation law (N3, the maintenance cadence): a
+    handled-but-not-fitting marked flow (its intent exists with
+    ``wake = handled``) is RE-OBSERVED at each maintenance interval —
+    exactly one real observation per sweep, no re-bump of its
+    generations — so the steady state is NOT an empty read for every
+    flow: a flow whose parked waiter still cannot fit keeps its single
+    per-sweep observation until the rows change. Only the handled/pending
+    rules stated in the selection's own SQL may be claimed of it.
 
     Each flow's repair is its OWN transaction: a malformed marker bound
     or width poisons only its own flow — the flow is quarantined with a

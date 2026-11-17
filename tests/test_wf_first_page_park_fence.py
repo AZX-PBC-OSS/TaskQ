@@ -490,7 +490,8 @@ async def test_fence_spares_substep_map_and_older_epoch_decoys_both_forms(
             )
         else:
             fenced = await wf_conn.fetchval(
-                f'SELECT "{wf_schema}".fence_not_draining_parked($1::uuid)', flow_id
+                f'SELECT "{wf_schema}".fence_not_draining_parked($1::uuid, $1::uuid)',
+                flow_id,
             )
         assert int(fenced) == 1, (form, fenced)
 
@@ -700,10 +701,16 @@ def test_migration_function_fences_the_same_current_claim_core() -> None:
     assert rendered in WF_NOT_DRAINING_FENCE_SQL
 
     # The migration function's INLINE spelling: every leg, the same
-    # aliases, and no emitted-cursor gate anywhere in the function.
+    # aliases, the EXPLICIT causal-child argument (F11) with its own
+    # fail-closed null refusal, and no emitted-cursor gate anywhere in
+    # the function.
     migration = next(Path("src/taskq/migrations").glob("01.00.42_01_*.sql"))
     function_sql = migration.read_text()
-    fence_body = function_sql.split("fence_not_draining_parked(p_root uuid)", 1)[1]
+    assert "fence_not_draining_parked(p_root uuid, p_child uuid)" in function_sql
+    fence_body = function_sql.split("fence_not_draining_parked(p_root uuid, p_child uuid)", 1)[1]
+    assert "p_child IS NULL" in fence_body, (
+        "the explicit child id fails closed when the failed-root proof has none"
+    )
     assert "j.metadata ? 'emit_cursor'" not in fence_body, (
         "the §5.4 fence owns EVERY exact park — the cursor gate must not exist"
     )

@@ -242,6 +242,19 @@ per_flow AS (
     + absorbed_exists("n")
     + """
            ) AS has_failed,
+           -- THE CAUSAL CHILD (F11): the ACTUAL current non-root node that
+           -- made has_failed true — the same failed/crashed/abandoned AND
+           -- NOT-absorbed rows the failure predicate reads, deterministically
+           -- ordered (the freshest finish, then the id) — never the latest
+           -- failed LEDGER attempt (an old failed attempt whose job later
+           -- succeeded, or a crashed/abandoned terminal with no failed
+           -- ledger row, named the wrong child). The §5.4 fence's causal
+           -- record is the node rows' own truth.
+           (array_agg(n.id ORDER BY n.finished_at DESC NULLS LAST, n.id DESC)
+               FILTER (WHERE n.status IN ('failed', 'crashed', 'abandoned')
+                       AND NOT """
+    + absorbed_exists("n")
+    + """))[1] AS failure_cause_id,
            -- THE FAILED ARM'S LIVENESS (derived against the state machine's
            -- totality table): live UNRESOLVED work holds
            -- a failing run — a RUNNING row (the reclaim arms' ONLY
@@ -310,7 +323,8 @@ maintained AS (
           OR NOT COALESCE(pf.has_live, true)
       )
     RETURNING f.id, f.status::text AS to_state,
-          CASE WHEN pf.has_failed THEN 1 ELSE 0 END AS failed_root
+          CASE WHEN pf.has_failed THEN 1 ELSE 0 END AS failed_root,
+          pf.failure_cause_id
 ),
 -- THE AUDIT ROW RIDES THE DERIVATION (the deploy matrix's audit fix):
 -- the root's terminal is a mutation like any other — the events reader
@@ -332,7 +346,7 @@ evt AS (
 -- source (the refusal's causal proof is the root's own failed terminal
 -- behind the exhausted child failure the derivation saw).
 not_draining AS (
-    SELECT {schema}.fence_not_draining_parked(maintained.id) AS fenced
+    SELECT {schema}.fence_not_draining_parked(maintained.id, maintained.failure_cause_id) AS fenced
     FROM maintained
     WHERE maintained.failed_root = 1
 )

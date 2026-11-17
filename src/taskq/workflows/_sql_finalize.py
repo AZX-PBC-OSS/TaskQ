@@ -226,6 +226,11 @@ att AS (
 ),
 -- THE STATE_CHANGE EVENT rides the same transaction (the audit trail's
 -- law: a terminal transition an events reader cannot see never happened).
+-- F10's PRODUCTION CONSUMER: the captured old reservation width rides the
+-- terminal's own event as the optional bounded
+-- `released_emit_reservation_width` detail (jsonb_strip_nulls omits it for
+-- a key-absent winner while a valid ZERO width stays visible) — the
+-- capture has a durable consumer, never a test-only echo.
 evt AS (
     INSERT INTO {schema}.job_events
     (job_id, occurred_at, kind, detail)
@@ -233,13 +238,14 @@ evt AS (
            jsonb_strip_nulls(jsonb_build_object('from_state', 'running',
                                                 'to_state', $2::text,
                                                 'worker_id', $8::text,
-                                                'error_class', $5::text))
+                                                'error_class', $5::text,
+                                                'released_emit_reservation_width',
+                                                t.old_reservation))
     FROM upd
+    JOIN target t ON t.id = upd.id
 )
-SELECT upd.id, upd.status, upd.attempt, upd.payload, upd.trace_id,
-       t.had_reservation, t.old_reservation
+SELECT upd.id, upd.status, upd.attempt, upd.payload, upd.trace_id
 FROM upd
-JOIN target t ON t.id = upd.id
 """
 )
 
@@ -603,18 +609,17 @@ SET after_flow_id = $1::uuid
 
 #: The bounded exact-marker sweep's selection (D7): a KEYSET rotation over
 #: the ``jobs_wf_emit_park_idx`` partial index — the distinct marked flow
-#: ids that still lack their required intent record, ordered by flow id,
+#: ids whose intent record is ABSENT (the omitted seat) or NOT PENDING
+#: (``wake = handled`` — a vanilla-writer release freed a live row and the
+#: parked waiter may now fit); an intent that is already PENDING is the
+#: drain arms' own to observe (never double-selected). Ordered by flow id,
 #: at most 100 per call, continuing after ``$1`` (the caller's persisted
 #: cursor). It is never a parked-estate seq scan or a due-time wake. The
 #: per-flow width/bound validation lives in the caller's ISOLATED per-flow
 #: repair transaction (a malformed marker poisons only its own flow's
 #: repair, with a bounded diagnostic, and the rest repair on) — the
 #: selection itself aggregates nothing and can never abort on one row's
-#: malformed width. THE SELECTION'S OWN LAW (N3): a marked flow is
-#: selected when its intent record is ABSENT (the omitted seat) OR NOT
-#: PENDING (``wake = handled`` — a vanilla-writer release freed a live
-#: row and the parked waiter may now fit); an intent that is already
-#: PENDING is the drain arms' own to observe (never double-selected).
+#: malformed width.
 WF_EMIT_MARKER_SWEEP_SQL = (
     "SELECT DISTINCT (j.metadata->>'flow_id')::uuid AS flow_id\n"
     "FROM {schema}.jobs AS j\n"

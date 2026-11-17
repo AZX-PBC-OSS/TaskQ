@@ -393,8 +393,12 @@ async def test_terminal_mixed_key_present_and_key_absent_winners(
     """§2.4's mixed-winner arm: one terminal statement over BOTH a
     key-present and a key-absent winner removes the key from exactly the
     winners that had one, charges exactly the captured widths, and never
-    double-accounts (the captured diagnostic is the statement's own
-    RETURNING, read here — the capture's consumer)."""
+    double-accounts. THE CAPTURE'S OWN PRODUCTION CONSUMER (F10): the
+    captured old width rides the terminal's OWN durable `job_events`
+    record as the optional bounded `released_emit_reservation_width`
+    detail (jsonb_strip_nulls omits it for the key-absent winner while a
+    valid ZERO width stays visible) — the Python-facing terminal SELECT
+    no longer carries the capture at all."""
     flow = JobId(new_uuid())
     with_key = await _seed_reserved(wf_conn, wf_schema, flow, "source", "running", width=7)
     without_key = JobId(new_uuid())
@@ -414,9 +418,7 @@ async def test_terminal_mixed_key_present_and_key_absent_winners(
 
     # THE ENGINE TERMINAL over both rows: the key-present winner loses its
     # key; the key-absent winner is unchanged; the charge moves exactly
-    # once. THE CAPTURE'S OWN CONSUMER (§2.4): the statement's RETURNING
-    # carries the captured had_reservation/old_reservation facts — the
-    # VALIDATED old width (never a raw blob) — read and asserted here.
+    # once. THE DURABLE EVENT DETAIL is the capture's own consumer.
     for job, had_key in ((with_key, True), (without_key, False)):
         captured = await wf_conn.fetchrow(
             wf_sql.terminal_mark,
@@ -432,11 +434,22 @@ async def test_terminal_mixed_key_present_and_key_absent_winners(
             1,
         )
         assert captured is not None, "the terminal mark's own fence matched"
-        assert bool(captured["had_reservation"]) is had_key, dict(captured)
+        # THE PYTHON SURFACE: the capture no longer rides the terminal
+        # SELECT at all (the columns are gone).
+        assert "had_reservation" not in captured, dict(captured)
+        assert "old_reservation" not in captured, dict(captured)
+        detail = await wf_conn.fetchrow(
+            f"""SELECT detail FROM "{wf_schema}".job_events
+                WHERE job_id = $1 AND kind = 'state_change'""",
+            job,
+        )
+        assert detail is not None
+        raw = detail["detail"]
+        doc = _json.loads(raw) if isinstance(raw, str) else dict(raw)
         if had_key:
-            assert int(captured["old_reservation"]) == 7, dict(captured)
+            assert int(doc["released_emit_reservation_width"]) == 7, doc
         else:
-            assert captured["old_reservation"] is None, dict(captured)
+            assert "released_emit_reservation_width" not in doc, doc
     live, reservations = await _observation(wf_conn, wf_sql, flow)
     assert (live, reservations) == (0, 0), "the charge moved exactly once, no double accounting"
     for job in (with_key, without_key):
