@@ -692,12 +692,21 @@ def test_migration_function_fences_the_same_current_claim_core() -> None:
     from taskq.workflows._sql_claim import current_claim_join
     from taskq.workflows._sql_finalize import WF_NOT_DRAINING_FENCE_SQL
 
-    rendered = current_claim_join("fenced", "l")
+    rendered = current_claim_join("fenced", "l", ("awaited",))
     assert "l.job_id = fenced.id" in rendered
     assert "l.claim_epoch = fenced.claim_epoch" in rendered
     assert "l.step_key = fenced.step_key" in rendered
     assert "l.map_index IS NOT DISTINCT FROM fenced.map_index" in rendered
-    assert "attempt" not in rendered, "the core never compares physical ordinals"
+    # The core never compares the physical ordinal as an ASSOCIATION leg
+    # (a refund lowers the job's displayed ordinal below the recorded
+    # claim's attempt — an attempt-equality leg resolves zero rows and
+    # unfences the current claim). The strict single-row maximality's
+    # (attempt, updated_at, id) tie-break is not an association leg: it
+    # orders rows that already associated (round-4 NEW-6's own law).
+    assert "attempt =" not in rendered, "the core never compares physical ordinals"
+    assert "NOT EXISTS" in rendered and "newer.attempt" in rendered, (
+        "the strict single-row maximality must be the renderer's own output"
+    )
     # The Python statement's own ledger CTE carries the rendered core (the
     # constant is assembled from the renderer, so the equality is the
     # drift-proof).
@@ -705,8 +714,9 @@ def test_migration_function_fences_the_same_current_claim_core() -> None:
 
     # The migration function's INLINE spelling: every leg, the same
     # aliases, the EXPLICIT causal-child argument (F11) with its own
-    # fail-closed null refusal, and no emitted-cursor gate anywhere in
-    # the function.
+    # fail-closed null refusal, the strict single-row maximality (the
+    # same probe, one spelling of the tie-break), and no emitted-cursor
+    # gate anywhere in the function.
     migration = next(Path("src/taskq/migrations").glob("01.00.42_01_*.sql"))
     function_sql = migration.read_text()
     assert "fence_not_draining_parked(p_root uuid, p_child uuid)" in function_sql
@@ -722,6 +732,12 @@ def test_migration_function_fences_the_same_current_claim_core() -> None:
     assert "l.step_key = fenced.step_key" in fence_body
     assert "l.map_index IS NOT DISTINCT FROM fenced.map_index" in fence_body
     assert "AND l.status = 'awaited'" in fence_body
+    assert "NOT EXISTS" in fence_body, (
+        "the migration's inline spelling carries the strict single-row "
+        "maximality — one winner can never fence two rows"
+    )
+    assert "(newer.attempt, newer.updated_at, newer.id)" in fence_body
+    assert "(l.attempt, l.updated_at, l.id)" in fence_body
 
 
 async def test_cancelled_parked_peer_is_never_failed_a_second_time(

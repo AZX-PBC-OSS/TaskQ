@@ -481,10 +481,15 @@ WITH targets AS (
     -- claim's attempt while the current epoch stands, so an attempt leg
     -- would resolve zero rows and leave the current claim unfenced — and
     -- no park-metadata test: the epoch already identifies the current
-    -- claim across every refund representation). The caller appends the
-    -- disposition's own status domain (the nonterminal
-    -- running/awaited/crashed claims). The captured ledger id + pre-update
-    -- instant are the exact fence; the captured attempt is a
+    -- claim across every refund representation). The renderer owns this
+    -- disposition's own nonterminal status domain AND the strict
+    -- single-row maximality: the ledger's arbiter makes
+    -- same-job/same-epoch/same-step/same-map rows with different attempts
+    -- distinct, so the maximality probe (highest attempt, then the latest
+    -- updated_at, then the highest id) is what makes ONE cancelled winner
+    -- unable to associate two rows — two fences and two events for one
+    -- winner is the defect the probe closes. The captured ledger id +
+    -- pre-update instant are the exact fence; the captured attempt is a
     -- NON-NARROWING recorded fact (the audit's optional claim_attempt
     -- detail), never an association leg. A never-claimed pending row has
     -- no current claim and needs none (LEFT-joined at the event).
@@ -494,7 +499,6 @@ WITH targets AS (
     JOIN {schema}.jobs AS j ON j.id = f.id
     JOIN {schema}.wf_step_ledger AS l
       ON {current_claim_join}
-     AND l.status IN ('running', 'awaited', 'crashed')
     WHERE f.to_state = 'cancelled'
 ), fenced_ledger AS (
     -- The exact writer fence: ONLY the captured current row (its own id +
@@ -532,7 +536,10 @@ WITH targets AS (
     WHERE f.to_state = 'cancelled'
 )
 SELECT count(*) FROM flipped
-""".replace("{current_claim_join}", current_claim_join("j", "l")).replace(
+""".replace(
+    "{current_claim_join}",
+    current_claim_join("j", "l", ("running", "awaited", "crashed")),
+).replace(
     "{wf_emit_validated_reservation_width}",
     _rebrace(validated_reservation_width("j")) + " AS released_emit_reservation_width",
 )

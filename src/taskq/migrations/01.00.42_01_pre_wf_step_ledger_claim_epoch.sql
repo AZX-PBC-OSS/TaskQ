@@ -276,6 +276,16 @@ BEGIN
           AND l.step_key = fenced.step_key
           AND l.map_index IS NOT DISTINCT FROM fenced.map_index
           AND l.status = 'awaited'
+          AND NOT EXISTS (
+              SELECT 1 FROM "{schema}".wf_step_ledger AS newer
+              WHERE newer.job_id = fenced.id
+                AND newer.claim_epoch = fenced.claim_epoch
+                AND newer.step_key = fenced.step_key
+                AND newer.map_index IS NOT DISTINCT FROM fenced.map_index
+                AND newer.status = 'awaited'
+                AND (newer.attempt, newer.updated_at, newer.id)
+                  > (l.attempt, l.updated_at, l.id)
+          )
         RETURNING l.id
     ), evt AS (
         INSERT INTO "{schema}".job_events (job_id, occurred_at, kind, detail)

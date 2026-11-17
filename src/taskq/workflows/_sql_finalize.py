@@ -657,8 +657,9 @@ WF_EMIT_MARKER_FLOW_BOUND_SQL = (
 #: is created, and the causal child's genuine error is never overwritten.
 #: The ledger fence is the EXACT current-claim association (the shared
 #: renderer: job + current epoch + step_key + null-safe map_index, status
-#: ``awaited``) — older epochs, sibling ``ctx.substep`` rows, map siblings,
-#: and terminal history are never rewritten.
+#: ``awaited``, and the strict single-row maximality — one winner can
+#: never fence two rows) — older epochs, sibling ``ctx.substep`` rows,
+#: map siblings, and terminal history are never rewritten.
 WF_NOT_DRAINING_FENCE_SQL = (
     "WITH parks AS (\n"
     "    SELECT j.id\n"
@@ -692,8 +693,7 @@ WF_NOT_DRAINING_FENCE_SQL = (
     "        error_class = $2,\n"
     "        updated_at = clock_timestamp()\n"
     "    FROM fenced\n"
-    "    WHERE " + current_claim_join("fenced", "l") + "\n"
-    "      AND l.status = 'awaited'\n"
+    "    WHERE " + current_claim_join("fenced", "l", ("awaited",)) + "\n"
     "    RETURNING l.id\n"
     "), evt AS (\n"
     "    INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)\n"
@@ -1037,15 +1037,20 @@ current_claim AS (
     -- attempt while the current epoch stands) and no park-metadata test
     -- (the epoch identifies the current claim across every refund
     -- representation) — with this disposition's own nonterminal status
-    -- domain. The captured ledger id + pre-update instant are the exact
-    -- fence; the captured attempt is a NON-NARROWING recorded fact.
+    -- domain AND the strict single-row maximality: the ledger's arbiter
+    -- makes same-job/same-epoch/same-step/same-map rows with different
+    -- attempts distinct, so the maximality probe (highest attempt, then
+    -- the latest updated_at, then the highest id) is what makes ONE job
+    -- winner unable to associate two rows — two fences and two events
+    -- for one winner is the defect the probe closes. The captured ledger
+    -- id + pre-update instant are the exact fence; the captured attempt
+    -- is a NON-NARROWING recorded fact.
     SELECT f.id AS job_id, l.id AS ledger_id, l.updated_at AS claimed_at,
            l.attempt AS claim_attempt
     FROM peers AS f
     JOIN {schema}.jobs AS j ON j.id = f.id
     JOIN {schema}.wf_step_ledger AS l
       ON {current_claim_join}
-     AND l.status IN ('running', 'awaited', 'crashed')
 ),
 fenced_ledger AS (
     -- The exact writer fence: ONLY the captured current row (its own id +
@@ -1084,7 +1089,9 @@ fenced_ledger AS (
 )
 SELECT (SELECT count(*) FROM blocked) AS blocked,
        (SELECT count(*) FROM peers) AS peers_cancelled
-""".replace("{current_claim_join}", current_claim_join("j", "l")).replace(
+""".replace(
+    "{current_claim_join}", current_claim_join("j", "l", ("running", "awaited", "crashed"))
+).replace(
     "{wf_emit_validated_reservation_width}",
     validated_reservation_width("p") + " AS released_emit_reservation_width",
 )

@@ -838,3 +838,142 @@ async def test_fail_closed_peer_cancel_is_a_complete_root_ordered_transition(
         before_obs,
         after_obs,
     )
+
+
+# ── NEW-6 (round 4): the strict single-row current-claim association ─────
+
+
+async def _seed_duplicate_attempt_estate(
+    conn: Any, schema: str, flow: JobId, step_key: str, *, status: str
+) -> tuple[JobId, str, str]:
+    """The round-4 estate: ONE job whose ledger carries TWO nonterminal
+    rows at the same (job, epoch, step, map) — the ledger's own arbiter
+    ``(flow_id, step_key, COALESCE(map_index,-1), attempt, claim_epoch)``
+    makes the two attempts physically distinct rows, so an association
+    without a single-row guarantee admits BOTH and one job winner would
+    write two fences and two events. The JOB row is non-running (phase 1
+    terminalizes it), its ledger rows carry *status* — the nonterminal
+    claim rows the disposition's own domain admits. Returns (job,
+    attempt1_id, attempt2_id)."""
+    job = await _seed_node(conn, schema, flow, step_key, status="pending")
+    first, second = new_uuid_str(), new_uuid_str()
+    for ledger_id, attempt in ((first, 1), (second, 2)):
+        await conn.execute(
+            f'INSERT INTO "{schema}".wf_step_ledger (id, flow_id, job_id, step_key, '
+            "map_index, attempt, claim_epoch, status, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, NULL, $5::int, 1, $6::text, "
+            "clock_timestamp(), clock_timestamp())",
+            ledger_id,
+            flow,
+            job,
+            step_key,
+            attempt,
+            status,
+        )
+    return job, first, second
+
+
+async def test_duplicate_attempt_estate_fences_exactly_one_row_and_writes_one_event(
+    wf_conn: Any, wf_schema: str, wf_sql: WorkflowSql
+) -> None:
+    """The current-claim association's single-row property is a property
+    of the SQL (round-4 NEW-6), never a protocol: the ledger's arbiter
+    makes same-job/same-epoch/same-step/same-map rows with different
+    attempts distinct, so the association's own strict single-row
+    maximality (the highest attempt, then the latest ``updated_at``, then
+    the highest ``id``) must admit exactly ONE row per job winner. Both
+    consumers of the shared renderer are driven: the real operator
+    cancel (the ``running/awaited/crashed`` domain) fences exactly one
+    row and writes exactly one event, and the §5.4 Python statement (the
+    parked ``awaited`` domain) fences exactly one row. The tie-break's
+    winner is the highest attempt — the newest claim of the arbiter's own
+    generation order."""
+    from taskq.workflows._emit import fence_not_draining_parked_sources
+    from taskq.workflows.api._sql_runner import CANCEL_NODES_SQL_TEMPLATE, render_sql
+    from taskq.workflows.engine import render_workflow_sql
+
+    # ARM 1 — the real operator cancel over the duplicate RUNNING estate:
+    # the job is phase-1 terminalizable (pending), its ledger carries two
+    # nonterminal `running` rows at the same arbiter generation.
+    flow = await _seed_flow_root(wf_conn, wf_schema)
+    job, first, second = await _seed_duplicate_attempt_estate(
+        wf_conn, wf_schema, flow, "dup_cancel_target", status="running"
+    )
+    events_before = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".job_events WHERE job_id = $1', job
+    )
+    await wf_conn.execute(render_sql(CANCEL_NODES_SQL_TEMPLATE, wf_schema), flow)
+
+    cancelled = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', job
+    )
+    assert cancelled == "cancelled", cancelled
+    fenced_rows = await wf_conn.fetch(
+        f"""SELECT id, attempt::int AS attempt, status::text AS status
+            FROM "{wf_schema}".wf_step_ledger WHERE id = ANY($1::uuid[]) ORDER BY attempt""",
+        [first, second],
+    )
+    by_attempt = {int(r["attempt"]): r["status"] for r in fenced_rows}
+    assert len(fenced_rows) == 2, [dict(r) for r in fenced_rows]
+    assert by_attempt[2] == "fenced", f"the tie-break's winner is the highest attempt: {by_attempt}"
+    assert by_attempt[1] == "running", (
+        f"exactly ONE row fences — the lower attempt's row is never a "
+        f"second fence for the same winner: {by_attempt}"
+    )
+    events_after = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".job_events WHERE job_id = $1', job
+    )
+    assert int(events_after) - int(events_before) == 1, (
+        f"one job winner writes exactly one cancel event, never two "
+        f"(before={events_before}, after={events_after})"
+    )
+
+    # ARM 2 — the §5.4 Python statement over the duplicate AWAITED estate.
+    fence_flow = await _seed_flow_root(wf_conn, wf_schema)
+    await wf_conn.execute(
+        f"""UPDATE "{wf_schema}".jobs SET status = 'failed',
+            error_class = 'UnabsorbedNodeFailure', finished_at = clock_timestamp()
+            WHERE id = $1""",
+        fence_flow,
+    )
+    parked, awaiting_first, awaiting_second = await _seed_duplicate_attempt_estate(
+        wf_conn, wf_schema, fence_flow, "dup_parked_source", status="awaited"
+    )
+    await wf_conn.execute(
+        f"""UPDATE "{wf_schema}".jobs SET status = 'scheduled', attempt = 0,
+            locked_by_worker = NULL, lock_expires_at = NULL, last_heartbeat_at = NULL,
+            metadata = metadata || $2::jsonb WHERE id = $1""",
+        parked,
+        _json.dumps(
+            {
+                "blocking_reason": "backpressure",
+                "wf_deferral": {
+                    "signal": "EmitBackpressure",
+                    "consume_budget": False,
+                    "attempt": 0,
+                },
+                "wf_emit_backpressure": {"version": 1, "page_width": 2, "bound": 2},
+                "wf_source_logical_attempt": 1,
+            }
+        ),
+    )
+    fenced_count = await fence_not_draining_parked_sources(
+        wf_conn,
+        render_workflow_sql(wf_schema),
+        flow_id=fence_flow,
+        child_id=JobId(parked),
+        child_step_key="dup_parked_source",
+    )
+    assert int(fenced_count) == 1, fenced_count
+    awaiting_rows = await wf_conn.fetch(
+        f"""SELECT id, attempt::int AS attempt, status::text AS status
+            FROM "{wf_schema}".wf_step_ledger WHERE id = ANY($1::uuid[]) ORDER BY attempt""",
+        [awaiting_first, awaiting_second],
+    )
+    awaited_by_attempt = {int(r["attempt"]): r["status"] for r in awaiting_rows}
+    assert awaited_by_attempt[2] == "fenced", (
+        f"the §5.4 fence's tie-break winner is the highest attempt: {awaited_by_attempt}"
+    )
+    assert awaited_by_attempt[1] == "awaited", (
+        f"exactly ONE awaited row fences for the parked winner: {awaited_by_attempt}"
+    )
