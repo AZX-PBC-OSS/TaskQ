@@ -882,14 +882,18 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
         await _wait_for(_done, 0.5, 300, "the two-worker lane never completed the run")
 
         # THE MEASUREMENT READS THE GUARANTEED FINAL SNAPSHOT (F5): the
-        # pods are STOPPED AND REAPED FIRST — the worker's own `finally`
-        # writes its final census snapshot at shutdown — and only then
-        # are the logs read. Reading the periodic 10 s line while the
-        # pods are still running can false-red a healthy lane (the run
-        # completing between ticks leaves the last periodic line without
-        # the second admission).
+        # pods are GRACEFULLY STOPPED (SIGTERM → the worker's own
+        # termination → its `finally` writes the final census snapshot)
+        # AND REAPED FIRST, and only then are the logs read. Reading the
+        # periodic 10 s line while the pods are still running can
+        # false-red a healthy lane (the run completing between ticks
+        # leaves the last periodic line without the second admission); a
+        # SIGKILL would prevent the finally from running at all — the
+        # graceful stop is the measurement's own precondition.
+        from tests.system_e2e._harness import graceful_stop as _graceful_stop
+
         for pod in pods:
-            await _stop(pod)
+            await asyncio.to_thread(_graceful_stop, pod)
 
         # THE MEASUREMENT: each pod's FINAL census snapshot (its last
         # line, written by the shutdown's own finally), summed — the

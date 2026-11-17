@@ -1333,25 +1333,32 @@ async def _healthy_terminal_common(
 
 
 @pytest.mark.timeout(240)
-async def test_sigkill_after_park_before_postcheck_converges_without_source_retry(
+async def test_sigkill_after_the_park_commit_converges_without_source_retry(
     pg_dsn: str, module_pg_schema: Any, log_dir: Path
 ) -> None:
-    """Hold the post-park root check, SIGKILL its process, and fail over."""
+    """SIGKILL the source's worker immediately after the park's own
+    commit and prove the failover converges with NO source-retry spend.
+
+    THE WINDOW (the canonical root-first order's own consequence, R2/A9.2):
+    the park transaction now takes the flow root's own row lock and the
+    capacity intent row BEFORE its park write — a pre-held blocker can no
+    longer sit between the park's commit and the worker's post-park
+    machinery without blocking the park itself (every one of the drain's
+    locks is also the park's). The kill therefore lands in the first
+    window that exists: immediately after the committed park, before any
+    leaf terminal or promotion has moved the estate. The test's own value
+    is the CONVERGENCE: the replacement re-claims the parked source
+    through the promotion, the logical attempt never moves, and the run
+    completes with exactly the graph's own children."""
     schema = module_pg_schema.schema_name
     scenario = "parkkill"
     pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=16)
     fleet: dict[str, WorkerProc] = {}
     flow_id: str | None = None
-    blocker: asyncpg.Connection | None = None
-    transaction: Transaction | None = None
     try:
         await _announce_environment(pool)
         await sample.initialize_sample(pool, schema=schema, scenario=scenario)
         flow_id = await _create_run(pool, schema, scenario)
-        blocker = await asyncpg.connect(pg_dsn)
-        transaction = blocker.transaction()
-        await transaction.start()
-        await blocker.fetchval(f'SELECT id FROM "{schema}".jobs WHERE id=$1 FOR UPDATE', flow_id)
         fleet["a"] = await _spawn_one(
             pool,
             pg_dsn,
@@ -1376,8 +1383,8 @@ async def test_sigkill_after_park_before_postcheck_converges_without_source_retr
             flow_id,
         )
         assert len(entries) == 1 and entries[0]["pid"] == fleet["a"].proc.pid
-        # The source park committed, and its owner is now blocked in the fresh
-        # post-park root check.  This is a real process kill in that window.
+        # THE PARK COMMITTED; the source's owner has not been needed since.
+        # This is a real process kill in the post-park window.
         fleet["a"].proc.kill()
         await asyncio.to_thread(fleet["a"].proc.wait, 10)
         assert fleet["a"].proc.returncode == -9
@@ -1385,10 +1392,6 @@ async def test_sigkill_after_park_before_postcheck_converges_without_source_retr
         # Spawn exactly one second/surviving real process after ownership died.
         fleet["b"] = await _spawn_one(pool, pg_dsn, schema, scenario, "b", log_dir=log_dir)
         await _release_children(pool, schema, scenario)
-        await transaction.commit()
-        transaction = None
-        await blocker.close()
-        blocker = None
         await _wait_for(
             pool,
             schema,
@@ -1424,10 +1427,6 @@ async def test_sigkill_after_park_before_postcheck_converges_without_source_retr
             _save(f"{scenario}-failure-state", await _flow_facts(pool, schema, flow_id))
         raise
     finally:
-        if transaction is not None:
-            await transaction.rollback()
-        if blocker is not None:
-            await blocker.close()
         await _release_children(pool, schema, scenario)
         await _stop_fleet(fleet)
         await pool.close()
