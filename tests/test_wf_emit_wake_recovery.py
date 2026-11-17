@@ -424,27 +424,67 @@ async def test_uncommitted_terminal_cannot_hide_from_both_commit_acknowledged_re
         child_gate.set()
         await asyncio.wait_for(delayed_pool.terminal_ready.wait(), _WAIT_S)
         allow_page_one.set()
-        parked = await _await_source_status(
-            wf_conn, wf_schema, flow_id, source_id, "source", _park_is_live, deadline_s=_WAIT_S
+        # THE SERIALIZED PARK (the canonical root-first order, R2/A9.2):
+        # the page-one admission refused while the second child's terminal
+        # was uncommitted, but the PARK TRANSACTION now queues at the flow
+        # root's own row lock — held by the delayed child's own tx1 — so
+        # the park CANNOT interleave with the uncommitted terminal: the
+        # old pre-commit lost-wake interleaving is impossible by
+        # construction, and the park's own observation never sees an
+        # uncommitted sibling.
+        keyed_sql = """
+        SELECT DISTINCT l.pid, l.transactionid::text AS holder_xid,
+               a.wait_event_type
+        FROM pg_locks l
+        JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE l.locktype = 'transactionid'
+          AND NOT l.granted
+          AND l.pid <> pg_backend_pid()
+          AND a.datname = current_database()
+        """
+        loop_deadline = asyncio.get_running_loop().time() + _WAIT_S
+        holder_xid = ""
+        while asyncio.get_running_loop().time() < loop_deadline:
+            waiters = await wf_conn.fetch(keyed_sql)
+            if waiters:
+                holder_xid = str(waiters[0]["holder_xid"])
+                break
+            await asyncio.sleep(_STATE_POLL_S)
+        else:
+            pytest.fail("the park never queued at the root the uncommitted terminal holds")
+        # THE HOLDER IS THE DELAYED CHILD'S OWN BACKEND: the keyed
+        # transactionid's GRANTED row names it, and its pid is distinct
+        # from this control connection's.
+        holder_rows = await wf_conn.fetch(
+            """SELECT pid FROM pg_locks
+               WHERE locktype = 'transactionid' AND granted
+                 AND transactionid::text = $1""",
+            holder_xid,
         )
-        assert _park_is_live(parked), parked
-        # Post-park recheck necessarily saw the still-uncommitted second child.
+        assert holder_rows, "the held root's own transaction must be the keyed holder"
+        # While queued, the park has written NOTHING: the source is still
+        # 'running' with no marker (the durable record cannot interleave).
+        parked_early = await wf_conn.fetchrow(
+            f'SELECT status::text AS status, metadata FROM "{wf_schema}".jobs WHERE id = $1',
+            source_id,
+        )
+        assert parked_early is not None
+        assert parked_early["status"] == "running", dict(parked_early)
+        assert "blocking_reason" not in _metadata(parked_early["metadata"]), dict(parked_early)
+        # THE RELEASE: the child's terminal commits; the park lands AFTER
+        # it and its own observation sees the COMMITTED terminal (charge
+        # zero) — the waiter fits, the intent is created, and the runner's
+        # own post-commit drain promotes the source.
+        delayed_pool.allow_commit.set()
         await asyncio.wait_for(source_task, _WAIT_S)
         final_child_status = await wf_conn.fetchval(
             f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', child_rows[1]["id"]
         )
-        assert final_child_status == "running"
-        delayed_pool.allow_commit.set()
+        assert final_child_status == "succeeded"
         await asyncio.gather(*child_tasks)
-        # The two events raced: the second child's terminal event may have
-        # probed BEFORE the park committed (its one-shot probe honestly saw
-        # no marker) — the omitted seat is the drive's own reconciliation
-        # backfill's to heal (§5.3). Either ordering is contract-legal; a
-        # premature promotion while the second child was uncommitted is not,
-        # and the assertions above already pinned that.
-        state_now = await _source_state(wf_conn, wf_schema, flow_id, source_id, "source")
-        if state_now["status"] != "pending":
-            assert await runner.drive(flow_id) in ("terminal", "held", "max_ticks")
+        # The parked-then-promoted source: the durable park committed (its
+        # own record) and the promotion woke it — the commit-acknowledged
+        # reads never lost the wake.
         woken = await _await_source_status(
             wf_conn,
             wf_schema,

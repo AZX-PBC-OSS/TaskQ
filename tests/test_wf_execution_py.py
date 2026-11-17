@@ -531,7 +531,8 @@ def _seam_stub(execute: Any) -> types.ModuleType:
 
     stub = types.ModuleType("wf-exec-seam-stub")
     stub.execute_flow_job = execute  # type: ignore[attr-defined]
-    stub.WorkflowBodyUnresolvableError = real.WorkflowBodyUnresolvableError  # type: ignore[attr-defined]
+    stub.WorkflowBodyUnresolvableError = real.WorkflowBodyUnresolvableError
+    stub.WorkflowRootMissingError = real.WorkflowRootMissingError  # type: ignore[attr-defined]
     return stub
 
 

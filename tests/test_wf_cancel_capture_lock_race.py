@@ -142,6 +142,7 @@ async def test_cancel_capture_lock_wins_the_old_state_race(
           AND NOT l.granted
           AND l.transactionid::text = $1
           AND l.pid <> pg_backend_pid()
+          AND a.datname = current_database()
         """
         loop = asyncio.get_running_loop()
         end = loop.time() + 20.0
@@ -162,7 +163,8 @@ async def test_cancel_capture_lock_wins_the_old_state_race(
             r["wait_event_type"] == "Lock"
             for r in await poller.fetch(
                 """SELECT pid, wait_event_type FROM pg_stat_activity
-                   WHERE pid = ANY($1::int[])""",
+                   WHERE pid = ANY($1::int[])
+                     AND datname = current_database()""",
                 waiter_pids,
             )
         )

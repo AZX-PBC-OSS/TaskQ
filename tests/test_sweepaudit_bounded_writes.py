@@ -356,11 +356,13 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "the join's declared fan-in, never the backlog",
     ),
     "WF_FLOW_FAILED_GATED_SQL": (
-        "WHERE f.id = (SELECT id FROM flow_locked)",
+        "WHERE f.id = $1::uuid",
         "the root's own gated failure (N1): ONE row — the flow root keyed "
-        "by its own primary key through the flow_locked CTE's FOR UPDATE "
-        "($1::uuid is the root id, not a backlog scan); the unresolved-live "
-        "gate only ever withholds, never widens",
+        "by its own primary key ($1::uuid is the root id, not a backlog "
+        "scan; the row LOCK is the caller's ENTRY lock, R2/A9.2 — the old "
+        "flow_locked lock CTE is gone, one root-lock owner per "
+        "transaction); the unresolved-live gate only ever withholds, "
+        "never widens",
     ),
     "COLLECT_FAN_IN_APPEND_SQL": (
         "WHERE j.id = $1",
@@ -418,14 +420,14 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     # isolated rows; no statement here scans by anything broader than its
     # own flow id).
     "CANCEL_NODES_SQL_TEMPLATE": (
-        "(metadata->>'flow_id')::uuid = $1",
+        "(j.metadata->>'flow_id')::uuid = $1",
         "the cancel cascade's node leg (the runner's and the id-addressed "
         "verbs' shared statement): its write set is ONE run's "
         "non-terminal rows — the compiled graph's node count, a "
         "definition-time constant",
     ),
     "CANCEL_ROOT_SQL_TEMPLATE": (
-        "WHERE id = $1",
+        "WHERE j.id = $1",
         "keyed single root row (the cancel's linearization flip; the "
         "runner's and the id-addressed verbs' shared statement)",
     ),

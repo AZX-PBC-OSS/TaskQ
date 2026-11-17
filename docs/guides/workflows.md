@@ -799,6 +799,18 @@ workflow tables' own rows, one setting per table:
 | `TASKQ_WORKFLOW_SIGNALS_RETENTION_PERIOD` (`wf_signals_retention`) | the `wf_signals` rows (holds and their resolutions) | `created_at` |
 | `TASKQ_WORKFLOW_NODE_PROGRESS_RETENTION_PERIOD` (`wf_node_progress_retention`) | the `wf_node_progress` rows | `updated_at` — a rootless row's flow is reached through the NODE's jobs row (`metadata.flow_id`; the table has no flow column) |
 
+**The direct-only lane's own history shape (the honest limitation):**
+these retention arms run in the LEADER's sweep registry — a fleet
+deployment's own maintenance. A DIRECT-ONLY deployment (no worker
+leader) has NO shipped automatic workflow-ledger/capacity retention
+driver: inner nonterminal claim history (a `ctx.substep`'s or loop
+iteration's own ledger rows beside the fenced outer claim) and
+terminal-aged capacity records can persist indefinitely there. They
+remain non-authoritative claim history — the current jobs/root rows
+decide every status — but nothing collects them until fleet-leader
+retention (or a maintenance program explicitly invoking the private
+primitives) runs. Terminal status alone invokes no cleanup.
+
 All five default to `timedelta(0)` = **OFF** — the deletion-sweep
 family's zero-means-off sentinel (negative values refuse at settings
 load) — but DELIBERATELY OPPOSITE to the outbox/step-cache precedents,

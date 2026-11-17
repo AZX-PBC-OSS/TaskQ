@@ -75,6 +75,7 @@ async def _wait_for_keyed_blocked_state(
       AND NOT l.granted
       AND l.transactionid::text = $1
       AND l.pid <> pg_backend_pid()
+      AND a.datname = current_database()
     """
     loop = asyncio.get_running_loop()
     end = loop.time() + deadline_s
@@ -597,11 +598,19 @@ async def test_park_locks_root_and_intent_before_the_park_write(
         )
         post3 = COUNTERS.snapshot()
         # The park's own event: one parks bump, one admission decision,
-        # and the OWN-ROW fit (the observation includes the newly parked
-        # row — min_waiting_width=2 fits the bound exactly — so the
-        # threshold crossed and ONE intent was created).
+        # ONE shared observation (never a double observation, never a
+        # pre-park observation), and the OWN-ROW fit (the observation
+        # includes the newly parked row — min_waiting_width=2 fits the
+        # bound exactly — so the threshold crossed and ONE intent was
+        # created).
         assert post3["parks"] == pre3["parks"] + 1, (pre3, post3)
         assert post3["admission_decisions"] == pre3["admission_decisions"] + 1, (pre3, post3)
+        assert post3["observations"] == pre3["observations"] + 1, (
+            pre3,
+            post3,
+            "exactly ONE shared observation per committed park decision "
+            "(a double observation and a pre-park observation are both red)",
+        )
         assert post3["new_intents"] == pre3["new_intents"] + 1, (
             "the park's own observation must include the newly parked row "
             "(the fit is the own-row width against the freed charge)"
