@@ -83,15 +83,22 @@ sentence is the third leg's own definition (it names the third leg,
 whose own meaning is the row that CAN dispatch when served). Rule 2's
 occurrence is waived when its own sentence carries a genuine marker,
 or the occurrence is one reason's own true meaning: its subject is one
-reason's own rows (a label and its noun immediately before it), it is
-bound to one reason's label with no population subject between
-(`_label_bound`), or its own sentence is a foreign restricted subject
-with no detector mention (`_foreign_subject`). Rules 1, 3 and 4 are
-waived by a genuine marker anywhere in the unit (their claims bind to
-the unit's own scope statement).
+reason's own rows (a label and its noun immediately before it, and no
+population subject anywhere in the sentence before it), it is bound to
+one reason's label with no population subject between the label and
+the occurrence, and a population subject anywhere earlier in the
+sentence defeats it too unless the occurrence sits inside the last
+label's own unclosed parenthetical (`_label_bound` — the shipped alert
+descriptions' elliptical form), or its own sentence is a foreign
+restricted subject with no detector mention (`_foreign_subject`). Rules 1, 3 and
+4 are waived by a genuine marker anywhere in the unit (their claims
+bind to the unit's own scope statement).
 
-THE THREE STRUCTURAL LAWS, asserted over EVERY scanned file (a
-construct no round thought of cannot silently hide text):
+THE THREE STRUCTURAL LAWS, asserted over EVERY scanned file. Together
+they put every non-blank line inside some unit, keep unit spans
+laminar, and keep unit text truthful — so a construct no round thought
+of cannot live OUTSIDE the units (what a unit's own interior waives is
+the scoping predicate's declared business: the residuals below):
 
 1. LINE COVERAGE — every non-blank line of a text-carrier file belongs
    to at least one unit; for .py, every tokenize-level STRING/COMMENT
@@ -430,7 +437,14 @@ _SENTENCE_BOUNDARY: Final = re.compile(r"(?<=[.!?])\s+")
 #: that reason's own true meaning, not a whole-population gloss. A
 #: label fragment earlier in the clause with a population subject in
 #: between (a table cell's label followed by "these rows") is the
-#: whole population and still reds.
+#: whole population and still reds. The tail alone is not the subject
+#: (round-11 F11-2): a population subject EARLIER in the same sentence
+#: ("all stranded entries like <label> rows …") is the claim's actual
+#: subject — `_subject_scoped` requires no population subject anywhere
+#: in the sentence before the occurrence, and `_label_bound` requires
+#: it too unless the occurrence sits inside the last label's own
+#: unclosed parenthetical (the label is then the claim's subject — the
+#: shipped alert descriptions' elliptical form).
 _SUBJECT_SCOPED_TAIL: Final = re.compile(
     r"(?:no_actor_config|unserved_" + "queue|no actor_config)"
     r"\s+(?:rows?|jobs?|entries?|sources?|items?)\s*$"
@@ -439,7 +453,12 @@ _SUBJECT_SCOPED_TAIL: Final = re.compile(
 #: The POPULATION SUBJECTS: a universal variant whose subject is the
 #: gauge's whole population never waives by label proximity, and an
 #: ANAPHORIC subject ("they can never dispatch") binds back to the
-#: unit's own subject — the two-sentence laundering shape.
+#: unit's own subject — the two-sentence laundering shape. The reach is
+#: position-independent (round-11 F11-2): the WHOLE sentence before an
+#: occurrence defeats the subject/label waivers, not only the text
+#: between the last label and the claim — the label's own unclosed
+#: parenthetical is the one exception (`_label_bound`), where the
+#: label itself is the claim's subject.
 _POPULATION_SUBJECT_RE: Final = re.compile(
     r"(?<![\w-])(?:(?:these|those|all|such)\s+(?:stranded\s+)?(?:rows?|jobs?|entries?)"
     r"|pending/scheduled"
@@ -1688,25 +1707,49 @@ def _sentence_scoped(sentence: str, claim_spans: list[tuple[int, int]] = ()) -> 
 
 def _subject_scoped(sentence: str, position: int) -> bool:
     """The claim occurrence at `position` is the predicate of a subject
-    that IS one reason's own rows (`_SUBJECT_SCOPED_TAIL`): the
-    reason's own true meaning, not a whole-population gloss."""
-    return _SUBJECT_SCOPED_TAIL.search(sentence[:position]) is not None
+    that IS one reason's own rows (`_SUBJECT_SCOPED_TAIL` immediately
+    before it) and the sentence before the occurrence carries no
+    population subject anywhere (`_POPULATION_SUBJECT_RE`). The
+    round-11 F11-2 defect checked the tail alone: "all stranded entries
+    like <label> rows …" matched the tail while the sentence's actual
+    subject was the population — a population subject anywhere in the
+    sentence before the occurrence is the claim's subject and defeats
+    the waiver."""
+    head = sentence[:position]
+    if _POPULATION_SUBJECT_RE.search(head) is not None:
+        return False
+    return _SUBJECT_SCOPED_TAIL.search(head) is not None
 
 
 def _label_bound(sentence: str, position: int) -> bool:
     """The occurrence is bound to ONE reason's own definition: a
     specific label occurs in the occurrence's sentence before it, with
-    no population subject between ("unserved_queue (the queue dispatch
-    routes the actor on has no live worker subscribed — likewise
-    <universal>)" — the shipped alert descriptions' elliptical
-    parenthetical). A population subject between the label and the
-    occurrence (a table cell's label followed by "these rows") is the
-    whole population and never waives."""
+    no population subject between the label and the occurrence
+    ("unserved_queue (the queue dispatch routes the actor on has no
+    live worker subscribed — likewise <universal>)" — the shipped
+    alert descriptions' elliptical parenthetical). The round-11 F11-2
+    defect checked only that between-text: a population subject BEFORE
+    the label ("all stranded entries like <label> rows <universal>")
+    was invisible and the whole-population gloss waived. A population
+    subject anywhere in the sentence before the occurrence therefore
+    defeats the waiver too — with one exception, the shipped framing's
+    own shape: the occurrence sits inside the last label's own
+    UNCLOSED parenthetical (the shipped descriptions frame the
+    population once, give each label, and put the label's own
+    "<universal>" inside its parentheses), where the label itself is
+    the claim's subject. A population subject INSIDE that parenthetical
+    still defeats the waiver (the between-text check runs first — a
+    gloss inside the label's own parentheses reds)."""
     head = sentence[:position]
     labels = list(re.finditer("no_actor_config|unserved_" + "queue|no actor_config", head))
     if not labels:
         return False
-    return _POPULATION_SUBJECT_RE.search(head[labels[-1].end() :]) is None
+    after = head[labels[-1].end() :]
+    if _POPULATION_SUBJECT_RE.search(after) is not None:
+        return False
+    if _POPULATION_SUBJECT_RE.search(head) is None:
+        return True
+    return after.count("(") > after.count(")")
 
 
 def _foreign_subject(sentence: str, position: int) -> bool:
@@ -1748,8 +1791,11 @@ def _claim_unwaived(
     sentence-local claim (rule 2's universal gloss) is waived only
     within the occurrence's OWN sentence (`_sentence_scoped`), or when
     the occurrence is one reason's own true meaning: its subject is
-    that reason's own rows (`_subject_scoped`), it is bound to one
-    reason's label with no population subject between
+    that reason's own rows with no population subject anywhere in the
+    sentence before it (`_subject_scoped`), it is bound to one reason's
+    label — no population subject between label and occurrence, and a
+    population subject anywhere earlier defeats it unless the
+    occurrence sits inside the last label's own unclosed parenthetical
     (`_label_bound`), or its own sentence is a foreign restricted
     subject (`_foreign_subject`)."""
     unit_scope = None if sentence_local else _unit_scoped(scope_text)
@@ -1803,9 +1849,11 @@ def rule_universal_no_dispatch(unit: Unit) -> bool:
     to the stranded detector/gauge that its own occurrence does not
     waive — the occurrence's own sentence must carry a genuine scope
     marker (`_sentence_scoped`), or the occurrence must be one reason's
-    own true meaning (its subject is that reason's own rows, it is
-    bound to one reason's label, or its sentence is a foreign
-    restricted subject)."""
+    own true meaning (its subject is that reason's own rows with no
+    population subject in the sentence before it, it is bound to one
+    reason's label with no population subject defeating it — the
+    label's own unclosed parenthetical excepted —, or its sentence is a
+    foreign restricted subject)."""
     if not _unit_mentions_detector(unit):
         return False
     return _claim_unwaived(
@@ -4099,6 +4147,42 @@ def test_scoping_requires_a_genuine_scope() -> None:
     assert _corpus_matches("virtual/scope-anaphoric.md", anaphoric) == ["universal-no-dispatch"], (
         "a pronoun subject binds back to the unit's own subject"
     )
+    # ── the round-11 F11-2 defeats ──────────────────────────────────────
+    # A population subject EARLIER in the sentence is the claim's
+    # subject — the label+noun tail after it does not make the claim
+    # one reason's own meaning. Each shape REDS.
+    population_earlier = (
+        "The stranded gauge. All stranded entries like "
+        + frag_reasons
+        + " rows "
+        + "can never "
+        + "dispatch."
+    )
+    assert _corpus_matches("virtual/scope-population-earlier.md", population_earlier) == [
+        "closed-enumeration",
+        "universal-no-dispatch",
+    ], "a population subject earlier in the sentence defeats the label waiver"
+    population_unlike = (
+        "These stranded entries unlike " + frag_reasons + " rows " + "can never " + "dispatch."
+    )
+    assert _corpus_matches("virtual/scope-population-unlike.md", population_unlike) == [
+        "closed-enumeration",
+        "universal-no-dispatch",
+    ], "'unlike' does not turn the population subject into one reason's rows"
+    population_not_like = (
+        "All stranded entries not like " + frag_reasons + " rows " + "can never " + "dispatch."
+    )
+    assert _corpus_matches("virtual/scope-population-not-like.md", population_not_like) == [
+        "closed-enumeration",
+        "universal-no-dispatch",
+    ], "'not like' does not defeat the population subject"
+    population_unserved = (
+        "All stranded entries like " + frag_unserved + " rows " + "can never " + "dispatch."
+    )
+    assert _corpus_matches("virtual/scope-population-unserved.md", population_unserved) == [
+        "closed-enumeration",
+        "universal-no-dispatch",
+    ], "the unserved label does not rescue a population subject"
     # ... and a foreign restricted subject with no detector mention in
     # its own sentence is that sentence's own subject — GREEN.
     foreign = (
