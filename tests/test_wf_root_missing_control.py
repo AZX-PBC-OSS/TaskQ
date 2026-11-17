@@ -459,8 +459,10 @@ async def test_worker_release_arm_attempts_the_bounded_noop_release(
     wf_conn: Any, wf_schema: str, module_pg_pool: Any, module_pg_schema: Any
 ) -> None:
     """The worker's own arm, over the REAL backend: the release attempt
-    names its reason with the bounded 10-second delay and the claim's
-    attempt/epoch; against the committed tx1 terminal the REAL fence
+    names its reason with the bounded 10-second delay and the SEEDED
+    claim's own attempt/epoch (epoch 1, the seeded lock owner — the
+    committed terminal alone fences the release); against the committed
+    tx1 terminal the REAL fence
     reads back `noop`; the WHOLE child row stays byte-identical with zero
     new attempt/event/ledger rows; the claim resolves; the loop moves
     on. The body-unresolvable and dispatch-flow-failed vocabulary never
@@ -556,7 +558,13 @@ async def test_worker_release_arm_attempts_the_bounded_noop_release(
         drain_failures=0,
     )
 
-    job = _real_row(child, flow_id)
+    # THE SEEDED CLAIM IDENTITY (round-5 F-3): the fabricated row must
+    # carry the SEEDED child's own claim identity — claim_epoch 1, the
+    # lock owner the seed bound — never a defaulting epoch 0. A
+    # mismatched identity would over-determine the release's `noop` (the
+    # fence's identity legs would refuse the call on their own) and the
+    # control would prove nothing about the committed terminal.
+    job = _real_row(child, flow_id, claim_epoch=1)
     witness = _real_row(new_uuid_str(), "", metadata={}, actor_name="wf")
     local_queue: asyncio.Queue[Any] = asyncio.Queue()
     await local_queue.put(job)
@@ -585,7 +593,12 @@ async def test_worker_release_arm_attempts_the_bounded_noop_release(
                     local_queue,
                     stop_event,
                     backend=real_backend,
-                    worker_id=JobId(new_uuid_str()),
+                    # THE SEEDED LOCK OWNER (round-5 F-3): the loop runs
+                    # under the identity the seed bound to the child's
+                    # lock, so the fence's worker leg matches the stored
+                    # row and the committed terminal is the ONLY leg that
+                    # can fence the release.
+                    worker_id=JobId(child),
                     registry=registry,
                     process_scope=process_scope,
                     thread_scope=thread_scope,
@@ -639,6 +652,21 @@ async def test_worker_release_arm_attempts_the_bounded_noop_release(
     assert call["metadata_update"] == {"released_reason": "workflow-root-missing"}, call
     assert call["attempt"] == job.attempt and call["claim_epoch"] == job.claim_epoch, call
     assert call["result"] == "noop", call
+    # THE FENCE IS THE TERMINAL (round-5 F-3): the call carries the SEEDED
+    # claim identity (epoch 1) and the loop ran under the SEEDED lock
+    # owner, so every identity leg of the real fence matches the stored
+    # row — the `status = 'running'` conjunct is the ONLY leg that can
+    # refuse the release, and the `noop` is the committed terminal's own
+    # outcome, never an epoch-mismatch artifact (the pre-fix shape
+    # fabricated epoch 0 against the seeded epoch 1, over-determining the
+    # noop by the mismatch alone: false evidence).
+    assert job.claim_epoch == 1, job.claim_epoch
+    assert after["claim_epoch"] == job.claim_epoch, (
+        after["claim_epoch"],
+        job.claim_epoch,
+    )
+    assert after["attempt"] == job.attempt, (after["attempt"], job.attempt)
+    assert str(call["args"][1]) == str(after["locked_by_worker"]), call
     # THE VOCABULARY: the distinct root-missing log; never the
     # body-unresolvable or dispatch-flow-failed owners.
     events = [e["event"] for e in captured if "event" in e]
