@@ -188,9 +188,11 @@ an exact park is a state of one durable source row), so the candidate
 fit scan is `Theta(parked) <= Theta(S)`. The derived-capacity observation
 is hoisted (`Theta(live + parked)`, terminal history never scanned); the
 per-terminal exact-marker probe is one indexed zero-row read on
-non-crossing terminals. The proven non-drainage refusal (a committed
-terminal root behind an exhausted child failure with an un-emitted
-parked cursor) is exported only as the durable
+non-crossing terminals. The proven non-drainage refusal (a committed terminal root behind an
+exhausted child failure, with an exact parked source still holding
+un-emitted work — including the first page when no cursor has committed;
+the absent key means zero pages have committed, not that the park is
+empty) is exported only as the durable
 `error_class='WorkflowNotDrainingError'` string and the
 `taskq.workflows.wf_not_draining` metric counter — never as an
 importable class.

@@ -341,10 +341,12 @@ evt AS (
 ),
 -- THE §5.4 NON-DRAINAGE FENCE (the derivation's failure arm's second
 -- seat): a root this maintenance leg just terminal-failed, while an exact
--- parked source still holds an un-emitted committed cursor, is the proven
--- non-drainage shape — the same transaction fences every such parked
--- source (the refusal's causal proof is the root's own failed terminal
--- behind the exhausted child failure the derivation saw).
+-- parked source still holds un-emitted work (including the first page
+-- when no cursor has committed — the absent key means zero pages have
+-- committed, not that the park is empty), is the proven non-drainage
+-- shape — the same transaction fences every such parked source (the
+-- refusal's causal proof is the root's own failed terminal behind the
+-- exhausted child failure the derivation saw).
 not_draining AS (
     SELECT {schema}.fence_not_draining_parked(maintained.id, maintained.failure_cause_id) AS fenced
     FROM maintained

@@ -305,9 +305,11 @@ cannot describe its own death."""
 WORKFLOW_NOT_DRAINING_CLASS: Final[str] = "WorkflowNotDrainingError"
 """``error_class`` the durable non-drainage refusal stamps (§5.4): a
 genuine child failure exhausted its declared retry policy AND the root
-terminal ``failed`` committed, while an exact parked source still holds an
-un-emitted committed cursor — the committed proof that the run is provably
-not draining. This is a durable string value only: it is deliberately NOT
+terminal ``failed`` committed, while an exact parked source still
+represents un-emitted work — INCLUDING the first page when no cursor has
+committed (the absent key means zero pages have committed, not that the
+park is empty) — the committed proof that the run is provably not
+draining. This is a durable string value only: it is deliberately NOT
 a Python class, is never raised into an author frame, and is not an
 attribute of :mod:`taskq.workflows`. Neither a duration nor a wait count
 participates in the proof."""

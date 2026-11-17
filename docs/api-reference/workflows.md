@@ -167,9 +167,12 @@ claims an arbiter collision. A parked source under a terminal root is never
 re-armed; an operator cancel terminalizes and fences it. Real failures (body
 errors, diverged cursors, poisoned pages) are unaffected and still consume
 the ladder. A committed terminal-root failure after a genuine child failure
-exhausted its retry policy — with an un-emitted parked cursor — fences the
-parked source with durable `error_class='WorkflowNotDrainingError'` (a
-string value, not an importable class). The admin surface renders a parked
+exhausted its retry policy — while an exact parked source still holds
+un-emitted work, including the first page when no cursor has committed
+(the absent key means zero pages have committed, not that the park is
+empty) — fences the parked source with durable
+`error_class='WorkflowNotDrainingError'` (a string value, not an
+importable class). The admin surface renders a parked
 source as scheduled with the backpressure marker — `deferred (backpressure)`
 with the park time as the parked-at time, never a next fire — and never as a
 failure.

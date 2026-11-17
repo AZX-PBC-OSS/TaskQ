@@ -111,7 +111,9 @@ _not_draining_counter = get_meter().create_counter(
     name="taskq.workflows.wf_not_draining",
     unit="{refusal}",
     description="The proven non-drainage refusals (the committed terminal-root "
-    "proof behind an exhausted child failure, with an un-emitted parked cursor).",
+    "proof behind an exhausted child failure, with an exact parked source "
+    "still holding un-emitted work — including the first page when no "
+    "cursor has committed).",
 )
 
 

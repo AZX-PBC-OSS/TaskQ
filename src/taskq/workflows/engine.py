@@ -711,10 +711,11 @@ async def _resolve_failed_parent(
     # THE §5.4 NON-DRAINAGE REFUSAL — in this same failure-cascade
     # transaction, ONLY when this statement's own root finalize actually
     # committed: the root terminal `failed` behind this child's exhausted
-    # failure. An exact parked source still holding an un-emitted committed
-    # cursor is the one durable proof that the run is provably not draining;
-    # the fence ends it (no logical attempt spent, no ladder retry, the
-    # child's genuine error untouched).
+    # failure. An exact parked source still holding un-emitted work —
+    # INCLUDING the first page when no cursor has committed — is the one
+    # durable proof that the run is provably not draining; the fence ends
+    # it (no logical attempt spent, no ladder retry, the child's genuine
+    # error untouched).
     if flow_actually_failed:
         from taskq.workflows._emit import fence_not_draining_parked_sources
 

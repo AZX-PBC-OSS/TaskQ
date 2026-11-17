@@ -299,7 +299,9 @@ async def sweep_join_rederive(
                 name="taskq.workflows.wf_not_draining",
                 unit="{refusal}",
                 description="The proven non-drainage refusals (the committed terminal-root "
-                "proof behind an exhausted child failure, with an un-emitted parked cursor).",
+                "proof behind an exhausted child failure, with an exact parked source "
+                "still holding un-emitted work — including the first page when no "
+                "cursor has committed).",
             )
             _not_draining.add(int(maintain["not_draining_fenced"]))
             logger.warning(
