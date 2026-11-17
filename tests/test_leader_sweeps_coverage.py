@@ -926,7 +926,9 @@ async def test_stranded_jobs_loop_warns_for_pending_without_actor_config() -> No
             "no_actor_config_cnt": 7,
             "unserved_queue_cnt": 0,
             "unserved_queues": [],
-        }
+        "workflow_root_missing_cnt": 0,
+        "root_missing_flow_ids": [],
+}
     ]
     conn = FakeConn(fetch_rows=rows)
     pool = FakePool(conn=conn)
@@ -990,7 +992,9 @@ async def test_stranded_jobs_loop_skips_when_not_leader(monkeypatch: Any) -> Non
                 "no_actor_config_cnt": 1,
                 "unserved_queue_cnt": 0,
                 "unserved_queues": [],
-            }
+            "workflow_root_missing_cnt": 0,
+            "root_missing_flow_ids": [],
+}
         ]
     )
     pool = FakePool(conn=conn)
@@ -1222,6 +1226,11 @@ def _stranded_row(
         "no_actor_config_cnt": no_config,
         "unserved_queue_cnt": unserved,
         "unserved_queues": queues or [],
+        # The third leg's own keys (the detector SQL's new columns): the
+        # two-reason fixtures exercise the dispatch-invisible subset —
+        # root-missing zero by default.
+        "workflow_root_missing_cnt": 0,
+        "root_missing_flow_ids": [],
     }
 
 

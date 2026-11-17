@@ -61,7 +61,7 @@ from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.workflows._policy import FiniteReservationCohort
 from taskq.workflows.api._app import CompiledWorkflow
-from taskq.workflows.api._runner_errors import WorkflowRunError
+from taskq.workflows.api._runner_errors import WorkflowRootMissingError, WorkflowRunError
 from taskq.workflows.api._sql_runner import render_sql
 
 if TYPE_CHECKING:
@@ -1158,16 +1158,28 @@ async def execute_flow_job(
             claim_epoch=job.claim_epoch,
             run_priority=run_priority,
         )
+    except WorkflowRootMissingError:
+        # THE ROOT-MISSING PASS-THROUGH (A9.2): durable run-root corruption
+        # is never a body-resolution failure — the tx2 already rolled back
+        # (nothing was written), the committed tx1 child terminal stands,
+        # and the worker's own bounded release arm owns the disposition.
+        # Wrapping it here would misdiagnose the corruption as a missing
+        # step key and snooze it under the wrong reason forever.
+        raise
     except WorkflowRunError as exc:
-        # the unresolvable step's parking shape: a step key this process's
-        # graph does not carry (the root marker row, a version-skewed step)
-        # raised the runner's WorkflowRunError — which escaped the door and
-        # killed the worker (the whole fleet died with it, every live run of
-        # the estate stalled behind the corpse). The runner's own ladder owns
-        # execution failures; only the resolution failure escapes, and that one
-        # is the parking's shape — translate it, the caller's defined
-        # snooze/release handles it (the loud, budget- free parking, never a
-        # crash).
+        # the deterministic WorkflowRunError refusals' own bounded route: a
+        # step key this process's graph does not carry (a version-skewed
+        # step, the root marker row), the loop drivers' iteration-bound and
+        # ledger-identity refusals, the loop-carry contract — every one is
+        # DETERMINISTIC (a retry re-refuses), so the defined disposition is
+        # the budget-free body-unresolvable parking this translation feeds
+        # (worker/run.py's sibling release arm), never the generic
+        # dispatch-flow-failed owner (whose recovery is claim resolution +
+        # reconcile/refund/reclaim — an unbounded claim→fail→refund cycle
+        # for a deterministic refusal) and never an infra fault. The
+        # runner's own ladder owns execution failures; only the resolution
+        # failures escape. The root-missing corruption above is the ONE
+        # exception: it passes through unwrapped to its own arm.
         raise WorkflowBodyUnresolvableError(
             f"row {job.id}'s step {read['step_key']!r} is unresolvable in this process: {exc}"
         ) from exc

@@ -1549,6 +1549,49 @@ async def di_consumer_loop(
                             else None
                         ),
                     )
+                except _flow_seam.WorkflowRootMissingError:
+                    # THE ROOT-MISSING RELEASE (A9.2): durable run-root
+                    # corruption — the run's own __flow__ row is gone, so
+                    # the run can never progress; this ROW may still
+                    # dispatch and be bounded-consumed, but re-running it
+                    # cannot help until the root is restored. The defined
+                    # disposition is ONE bounded budget-free release at
+                    # the documented delay with its own reason/log —
+                    # never the body-unresolvable vocabulary (this is not
+                    # a body-resolution failure) and never the generic
+                    # dispatch-flow-failed owner (whose refund/reclaim
+                    # recovery would loop a deterministic corruption).
+                    # The stranded-jobs detector's workflow_root_missing
+                    # leg is the witness.
+                    _consumer_log.error(
+                        "dispatch-workflow-root-missing",
+                        job_id=str(job.id),
+                        actor=job.actor,
+                        flow_id=str(job.metadata.get("flow_id")),
+                    )
+                    try:
+                        _root_missing_release = await backend.mark_snoozed(
+                            job.id,
+                            worker_id,
+                            timedelta(seconds=10),
+                            metadata_update={"released_reason": "workflow-root-missing"},
+                            attempt=job.attempt,
+                            claim_epoch=job.claim_epoch,
+                        )
+                    except Exception:
+                        _consumer_log.exception(
+                            "dispatch-workflow-root-missing-release-failed",
+                            job_id=str(job.id),
+                        )
+                        deps.disowned_jobs.add(job.id)
+                    else:
+                        if _root_missing_release == "noop":
+                            _consumer_log.debug(
+                                "dispatch-workflow-root-missing-release-noop",
+                                job_id=str(job.id),
+                            )
+                    deps.active_jobs.resolve_claim(job.id, _claim)
+                    continue
                 except _flow_seam.WorkflowBodyUnresolvableError:
                     # a stamped workflow name no process carries, a
                     # hand-crafted row. the same defined parking an

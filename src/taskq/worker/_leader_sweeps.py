@@ -2819,26 +2819,40 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
 
 
 async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
-    """Periodically surface pending/scheduled jobs that can never dispatch.
+    """Periodically surface pending/scheduled jobs that cannot make
+    progress, with the reason each carries.
 
-    Two strand shapes, one gauge (actor -> stranded row count):
+    Three strand shapes, one gauge (actor -> stranded row count):
 
-    - **no actor_config row**: dispatch derives its candidate set from
-      ``per_actor_capacity``, which is ``FROM actor_config``, so a row
-      whose actor has no config row is invisible to every dispatch round.
-    - **unserved queue**: dispatch probes only the queues in the
-      dispatching worker's subscription (the candidates lateral's
-      ``j2.queue = sq.queue_name`` annihilates every other pair), so a
-      row on a queue no registered worker serves is invisible fleet-wide
-      while its actor_config row exists and no deadline can fail it.
-      The queue tested is the one dispatch would actually route on, which
-      for a re-pended row (``pending`` with ``started_at`` set) is its
-      actor's stored assignment rather than the label the row carries ,
-      that label survives only as an audit trail of where the row was
-      first placed. Testing the label instead reports healthy for exactly
-      the strand a queue move leaves behind when the target queue's
-      consumers were never started: the rows are pending and due, and
-      every label-keyed surface names a queue the fleet does serve.
+    - **no actor_config row** (dispatch-invisible): dispatch derives its
+      candidate set from ``per_actor_capacity``, which is ``FROM
+      actor_config``, so a row whose actor has no config row is invisible
+      to every dispatch round — no dispatch round and no deadline sweep
+      will ever touch it.
+    - **unserved queue** (dispatch-invisible): dispatch probes only the
+      queues in the dispatching worker's subscription (the candidates
+      lateral's ``j2.queue = sq.queue_name`` annihilates every other
+      pair), so a row on a queue no registered worker serves is invisible
+      fleet-wide while its actor_config row exists and no deadline can
+      fail it. The queue tested is the one dispatch would actually route
+      on, which for a re-pended row (``pending`` with ``started_at`` set)
+      is its actor's stored assignment rather than the label the row
+      carries, that label survives only as an audit trail of where the
+      row was first placed. Testing the label instead reports healthy for
+      exactly the strand a queue move leaves behind when the target
+      queue's consumers were never started: the rows are pending and due,
+      and every label-keyed surface names a queue the fleet does serve.
+    - **workflow_root_missing** (qualified meaning — NOT dispatch
+      -invisible): a workflow node whose run's own ``__flow__`` root row
+      is gone. The row CAN dispatch and be bounded-consumed when its
+      actor config and effective routing queue are otherwise served;
+      what cannot progress is the RUN — every remaining node of a root
+      -less flow is stranded work. This is control-plane data corruption
+      (restore the exact missing root, or quarantine the orphaned rows
+      and recreate the run — see the runbook); actor registration and
+      queue moves do not repair it. Root-missing takes PRECEDENCE for a
+      row that also carries a dispatch-invisible condition: one row owns
+      one reason, never a double count.
 
     The unserved-queue predicate is fleet-wide by construction: the
     ``workers`` table carries every registered worker's subscription, and
@@ -2878,6 +2892,11 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     # reads. "Serves" means a live worker subscribes to the queue: a
     # dead-but-unswept worker row would otherwise hide an unserved queue
     # for the whole stale-worker sweep window.
+    # THE THIRD LEG'S PRECEDENCE is the statement's own: a root-missing
+    # row classifies ONLY as workflow_root_missing (one row, one reason),
+    # so this exclusivity comment describes the TWO DISPATCH-INVISIBLE
+    # legs; the root-missing leg is the global precedence rule above
+    # them.
     _stranded_sql = """\
     SELECT s.actor,
            count(*) AS cnt,
@@ -2886,12 +2905,25 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
            coalesce(
              array_agg(DISTINCT s.routing_queue) FILTER (WHERE s.unserved_queue),
              ARRAY[]::text[]
-           ) AS unserved_queues
+           ) AS unserved_queues,
+           count(*) FILTER (WHERE s.workflow_root_missing) AS workflow_root_missing_cnt,
+           coalesce(
+             (array_agg(DISTINCT s.flow_id ORDER BY s.flow_id)
+                FILTER (WHERE s.workflow_root_missing AND s.flow_id IS NOT NULL))[1:10],
+             ARRAY[]::text[]
+           ) AS root_missing_flow_ids
     FROM (
         SELECT r.actor,
                r.routing_queue,
-               r.no_actor_config,
-               NOT r.no_actor_config
+               -- THE PRECEDENCE (one row owns one reason): a
+               -- root-missing row classifies ONLY as workflow_root_missing
+               -- — the surviving flow can make no progress regardless of
+               -- its routing, so the row never double-counts in the
+               -- dispatch-invisible categories.
+               r.no_actor_config_raw AND NOT r.workflow_root_missing
+                 AS no_actor_config,
+               NOT r.no_actor_config_raw
+                 AND NOT r.workflow_root_missing
                  AND NOT EXISTS (
                    SELECT 1 FROM "{schema}".workers w
                    WHERE r.routing_queue = ANY(w.queues)
@@ -2902,7 +2934,9 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                      -- every sampler follows; the window is the admin UI's
                      -- own liveness setting.
                      AND w.last_seen_at > statement_timestamp() - make_interval(secs => $1)
-                 ) AS unserved_queue
+                 ) AS unserved_queue,
+               r.workflow_root_missing,
+               r.flow_id
         FROM (
             SELECT j.actor,
                    -- The queue dispatch routes on: the actor's stored
@@ -2914,13 +2948,40 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                      AS routing_queue,
                    NOT EXISTS (
                      SELECT 1 FROM "{schema}".actor_config ac2 WHERE ac2.actor = j.actor
-                   ) AS no_actor_config
+                   ) AS no_actor_config_raw,
+                   -- THE ROOT-MISSING LEG (the third strand shape): a
+                   -- workflow node whose run's own __flow__ root row is
+                   -- GONE. The cast is fail-isolated (the guard precedes
+                   -- the cast, and malformed/absent data returns false
+                   -- for THIS leg only — it never aborts the tick nor
+                   -- hides the two dispatch legs): the flow_id must be
+                   -- present and a syntactic uuid BEFORE the ::uuid cast
+                   -- is attempted.
+                   CASE WHEN j.step_key IS NOT NULL
+                         AND j.step_key <> '__flow__'
+                         AND j.metadata ? 'flow_id'
+                         AND j.metadata->>'flow_id' ~*
+                             '^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}$'
+                        THEN NOT EXISTS (
+                            SELECT 1 FROM "{schema}".jobs AS root
+                            WHERE root.id = (j.metadata->>'flow_id')::uuid
+                              AND root.step_key = '__flow__'
+                        )
+                        ELSE false
+                   END AS workflow_root_missing,
+                   CASE WHEN j.step_key IS NOT NULL
+                         AND j.step_key <> '__flow__'
+                         AND j.metadata ? 'flow_id'
+                         AND j.metadata->>'flow_id' ~*
+                             '^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}$'
+                        THEN j.metadata->>'flow_id'
+                   END AS flow_id
             FROM "{schema}".jobs j
             LEFT JOIN "{schema}".actor_config ac ON ac.actor = j.actor
             WHERE j.status IN ('pending', 'scheduled')
         ) r
     ) s
-    WHERE s.no_actor_config OR s.unserved_queue
+    WHERE s.no_actor_config OR s.unserved_queue OR s.workflow_root_missing
     GROUP BY s.actor
     """
 
@@ -2976,6 +3037,9 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
         # actor -> (no-actor-config rows, unserved-queue rows, unserved
         # queue names), the per-shape facts the warning events report.
         shapes: dict[str, tuple[int, int, list[str]]] = {}
+        # actor -> (root-missing rows, the bounded lexicographic flow ids)
+        # — the third shape's own facts, read from the same row pass.
+        root_missing_shapes: dict[str, tuple[int, list[str]]] = {}
         # (actor, reason) -> rows: the gauge's own shape, so a series says
         # which condition held.
         by_reason: dict[tuple[str, StrandedReason], int] = {}
@@ -2989,6 +3053,10 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                 by_reason[(actor, "no_actor_config")] = no_config_cnt
             if unserved_cnt:
                 by_reason[(actor, "unserved_queue")] = unserved_cnt
+            root_missing_cnt = int(row["workflow_root_missing_cnt"])
+            if root_missing_cnt:
+                by_reason[(actor, "workflow_root_missing")] = root_missing_cnt
+                root_missing_shapes[actor] = (root_missing_cnt, list(row["root_missing_flow_ids"]))
 
         # Always publish the gauge, including the empty case: an operator needs
         # to see the condition persist, grow, and clear. A log line at onset
@@ -3027,6 +3095,23 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                         actor=actor,
                         pending_count=unserved_cnt,
                         queues=unserved_queues,
+                        first_seen=previous is None,
+                    )
+                root_missing_cnt, root_missing_flow_ids = root_missing_shapes.get(actor, (0, []))
+                if root_missing_cnt:
+                    # Why its own event: the remediation is control-plane
+                    # recovery (restore the missing root, or quarantine the
+                    # orphans and recreate the run — the runbook's plan),
+                    # never actor registration or a queue move. The bounded
+                    # flow-id detail (at most 10, lexicographic — the SQL's
+                    # own slice) names the affected runs; the ids are log
+                    # detail, never metric labels.
+                    log.warning(
+                        "stranded-jobs-workflow-root-missing",
+                        kind="stranded_jobs_workflow_root_missing",
+                        actor=actor,
+                        pending_count=root_missing_cnt,
+                        flow_ids=root_missing_flow_ids,
                         first_seen=previous is None,
                     )
 
