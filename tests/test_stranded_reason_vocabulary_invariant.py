@@ -1627,65 +1627,6 @@ def _unit_mentions_detector(unit: Unit) -> bool:
     )
 
 
-def rule_closed_enumeration(unit: Unit) -> bool:
-    """Rule 1: the unit DEFINES the stranded reason family but supplies
-    only the old dispatch conditions — the two-label closed set, the
-    prose two-member form, OR the single-member definition (the
-    settings-description class: defining the entire check by no-config
-    alone is the same defect; the rule never requires the word 'two').
-    A corrected unit either includes `workflow_root_missing` and its
-    distinct meaning, or expressly says it is limited to the
-    dispatch-invisible subset."""
-    if not _unit_mentions_detector(unit):
-        return False
-    lowered = _lowered(unit)
-    if "workflow_root_missing" in lowered:
-        return False
-    if _expressly_scoped(unit):
-        return False
-    mentions_old = (
-        "no_actor_config" in lowered
-        or "no actor_config" in lowered
-        or "unserved_queue" in lowered
-        or "unserved" in lowered
-        or "no live worker" in lowered
-    )
-    if not mentions_old:
-        return False
-    # THE DEFINING FRAMING: the unit presents itself as the family's own
-    # definition (the whole set, the check's meaning, the gauge's
-    # population) — one old condition plus this framing is the closed
-    # enumeration.
-    defining = any(
-        phrase in lowered
-        for phrase in (
-            "the whole set",
-            "the entire",
-            "the reason set",
-            "the closed reason",
-            "reasons are",
-            "reason is",
-            "the stranded-jobs check",
-            "the stranded jobs check",
-            "stranded-jobs check",
-            "stranded-jobs (",
-            "stranded jobs (",
-            "the stranded-jobs detector",
-            "the stranded detector",
-            "stranded-jobs detector",
-            "that is the whole",
-            "can never " + "dispatch",
-            "can never be " + "dispatched",
-            "that cannot make progress",
-            "jobs that can never",
-            "rows that can never",
-            "stranded jobs",
-            "stranded rows",
-        )
-    )
-    return defining
-
-
 def _scope_text(unit: Unit) -> str:
     """The scope predicate's own normalized form: case-folded, backticks
     and emphasis runs removed, whitespace collapsed — so ``**not**
