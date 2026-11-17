@@ -17,10 +17,15 @@ enumeration with a maintained scanner:
   thematic break, list item at any depth, blockquote — lazy
   continuation included —, fenced or indented code block at any
   container depth, HTML block, and table, each at its own true line
-  span), plus the additive refinements that survived eight review
-  rounds (each fenced line-comment line, each table row, each HTML
-  `<!-- -->` / Jinja `{# #}` comment statement), YAML scalar values
-  (parsed and folded), YAML comment lines, HTML element runs (each
+  span), the MkDocs CONTAINER bodies the docs build enables
+  (`!!!`/`???`/`===` admonition, details and tab bodies: the body is
+  dedented and re-parsed as markdown at a line offset, so each body
+  paragraph/list/fence is its own unit at its true line), plus the
+  additive refinements that survived nine review rounds (each fenced
+  line-comment line and each fence's `/* */` / `<!-- -->` block
+  comment, each table row, each HTML `<!-- -->` / Jinja `{# #}`
+  comment statement), YAML scalar values (parsed, at the composer's
+  exact node marks), YAML comment lines, HTML element runs (each
   `<tr>` row / block element; a wrapped element stays one unit), AST
   docstrings, contiguous comment blocks, and `Field(description=...)`
   strings — never "a label occurs somewhere in the file", and never a
@@ -37,7 +42,21 @@ enumeration with a maintained scanner:
   or span is red (deleting text cannot silently erase an exception);
 * **self-referential fixtures constructed at runtime** — the negative
   corpus is built from independently non-triggering fragments, so no
-  stored counterexample can exempt or poison the scan.
+  stored counterexample can exempt or poison the scan;
+* **a checked law, not an enumeration** — the unit model's own
+  structural properties are ASSERTED over every scanned file, so a
+  construct no round thought of cannot silently hide text: (1) LINE
+  COVERAGE — every non-blank line of a text-carrier file is owned by
+  at least one unit (for `.py`, the ownership form: every
+  tokenize-level STRING/COMMENT token — a Python file's only text
+  carriers — is owned by a unit); (2) DISJOINT-OR-CONTAINED — every
+  pair of a file's units is disjoint or one contains the other,
+  checked globally; (3) NO TRUNCATION — a unit's text is consistent
+  with its declared line span (the splitlines-truncation class). The
+  per-line markdown floor (every non-blank line no block owns is its
+  own unit — link-reference definitions, `>`-only separators, any
+  construct the model does not know) is what MAKES the coverage law
+  true; the law is what makes losing the floor red.
 
 This test is the SOLE completeness authority for this class. Per-site
 red-first evidence (every corrected site's own old wording reverts and
@@ -90,14 +109,9 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "actor-deregistration/missing-row prose about its own subject — not the gauge's reason set",
     ),
     (
-        "426ccb43bc4ca1c9e8dfa5f819c1570e36e86d9ce007288605e5d7c3cc24a547",
+        "1344835a0369814f2ccc987d2e649d91466df4896750b4acce5ceca38dbf4bd1",
         "src/taskq/cli.py",
-        "the doctor's scoped mirror comment: the two dispatch-invisible legs named AS a subset",
-    ),
-    (
-        "7b7d2746db5efe91544f5f7e2e48fe5d06431c7bd730d350418bc3c2254bf2cf",
-        "src/taskq/cli.py",
-        "the doctor's scoped mirror comment: the two dispatch-invisible legs named AS a subset",
+        "the doctor's roll-up SQL's own two dispatch-invisible count columns (the f-string's rendered text is one unit — the two chunk digests this entry replaces were the same SQL's interpolation chunks)",
     ),
     (
         "613caf5bb80e71cffbc7b8efcc1a58686ce43e0345a231cd6475a8d7d75faa97",
@@ -140,9 +154,9 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "the TaskQQueueUnserved section's own remedy step — the sibling alert's subject",
     ),
     (
-        "eba6473c5b0c4f05523bc97b2afe7a432176aa5b44e93bbbc654561a412dd7b0",
+        "5efac33f8077342ca5f87425e8d7e0098910b134b293cd0357a5bce3f6feebc3",
         "docs/guides/testing.md",
-        "the fake runner's run-until-drained refusal is about its own registration/stub mechanism, not the leader gauge",
+        "the fake runner's run-until-drained refusal is about its own registration/stub mechanism, not the leader gauge (the admonition body is its own paragraph unit under the container model — same text, true span)",
     ),
     (
         "20493d11e1625e96eca5973ee5136980574c9fb18d2358cf81238d859564e90e",
@@ -219,6 +233,11 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "tests/test_reclaim_indefinite_deadline_handoff_attack.py",
         "the reclaim/deadline handoff attack's own subject (the schedule_to_close window's mechanics), not the gauge's reason set",
     ),
+    (
+        "e87f29ddaa41713888e7171064ca02f591694db688381f60cc04f1bcdbd26c6d",
+        "src/taskq/_doctor.py",
+        "the doctor's own reported finding line (the no-actor-config subject's true never-dispatches output text; the rendered f-string is one unit)",
+    ),
 )
 
 # ── the match units ─────────────────────────────────────────────────────
@@ -226,13 +245,20 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
 
 @dataclass(frozen=True)
 class Unit:
-    """One semantic local unit: the text, its location, its source span."""
+    """One semantic local unit: the text, its location, its source span.
+
+    `dedent` is the container indentation the text was read past (the
+    renderer's detab): a container body's units carry text dedented by
+    the container's content column, so the no-truncation law
+    reconstructs the expected text from the file's own raw lines minus
+    exactly this many leading columns. Top-level units carry 0."""
 
     path: str
     kind: str
     start_line: int
     end_line: int
     text: str
+    dedent: int = 0
 
     @property
     def span_digest(self) -> str:
@@ -258,17 +284,65 @@ _UNIVERSAL_VARIANTS = (
     "no dispatch or deadline",
     "no dispatch round and no deadline sweep",
 )
-_SCOPED_MARKERS = (
-    "dispatch-invisible",
-    "dispatch invisible",
-    "two dispatch",
-    "two dispatch-invisible legs",
-    "only the two",
-    "scoped to",
-    "may dispatch",
-    "can dispatch",
-    "may be dispatched",
-    "not dispatch-invisible",
+
+#: The scoping markers as a BOUNDED form (round-9 D9-6: the old list was
+#: matched by naive substring, so "two dispatch" matched "two
+#: dispatchers" and a negation waives rule 2). Word-bounded, matched
+#: against the scope-normalized text (`_scope_text`).
+_SCOPE_MARKER_RE: Final = re.compile(
+    r"(?<![\w-])"
+    r"(?:dispatch-invisible"
+    r"|dispatch invisible"
+    r"|two dispatch(?!e)"
+    r"|only the two"
+    r"|scoped to"
+    r"|may dispatch"
+    r"|may be dispatched)"
+    r"(?![\w-])"
+)
+
+#: A scope marker is NOT a scope when a negation tail immediately
+#: precedes it (round-9 D9-6's negation defeats: "are **not**
+#: dispatch-invisible: they can never dispatch", "not only the two
+#: dispatch-invisible legs — these rows can never dispatch") or when it
+#: reads as its inverse ("never scoped", "cannot be scoped").
+_NEGATION_TAIL: Final = re.compile(
+    r"(?:\bnot(?:\s+only)?(?:\s+the)?(?:\s+two)?"
+    r"|never"
+    r"|cannot\s+be"
+    r"|can't\s+be"
+    r"|isn't"
+    r"|aren't)[\s,]*$"
+)
+
+#: The negation window: how far back a negator may sit from the marker
+#: it kills ("not only the two " is 17 characters).
+_NEGATION_WINDOW: Final = 20
+
+#: A positive counter-claim in the same unit defeats the scope (the
+#: round-9 D9-6 contrast defeat: "… can never dispatch; jobs on a
+#: served queue can dispatch normally" — the contrast clause contradicts
+#: the universal claim instead of scoping it) — UNLESS the unit names
+#: the third leg itself, whose OWN definition is the row that CAN
+#: dispatch when served (the shipped `_leader_sweeps.py` docstring and
+#: runbooks prose: "reason=workflow_root_missing … Such a row CAN
+#: dispatch and be bounded-consumed"); without the third leg's name the
+#: counter-claim is a contradiction, with it the unit is the reason
+#: set's own three-meaning statement.
+_SCOPE_COUNTER_CLAIM_RE: Final = re.compile(
+    r"(?<![\w-])(?:can dispatch"
+    r"|dispatch(?:es)? normally"
+    r"|is dispatchable"
+    r"|are dispatchable)(?![\w-])"
+)
+_THIRD_LEG_NAMES: Final = (
+    "workflow_root_missing",
+    "workflow-root-missing",
+    "workflowrootmissingerror",
+    "workflow root missing",
+    "the third leg",
+    "the third reason",
+    "the third meaning",
 )
 
 #: The parity/mirror claim variants (rule 3) — a whole-detector claim that
@@ -425,47 +499,240 @@ _LEAF_TOKENS: Final = frozenset(
 #: SQL/Lua `--`, C++/JS `//`, or shell/YAML/Python `#`. A line comment
 #: runs to end of line, so adjacent comment lines inside a code block
 #: are SIBLING statements, never folded (the same law the YAML comment
-#: units encode).
+#: units encode). Block comments (`/* ... */`, `<!-- ... -->`) are
+#: whole-statement units of their own (`_code_comment_units`).
 _FENCE_COMMENT_PREFIXES: Final = ("--", "//", "#")
 
 
-def _markdown_units(path: str, text: str) -> Iterator[Unit]:
-    """Markdown BLOCK units from the real parser's token/line map. The
-    previous hand-rolled machines (blank-line blocks, then round-7's
-    structural siblings) folded a new construct on every round — the
-    round-8 D8-1 defeat was a fence indented to a list item's (or an
-    MkDocs admonition's) content column, which no longer looked like a
-    fence, so its body folded into the enclosing paragraph and a scoped
-    SQL comment inside it purified the prose universal gloss. The
-    boundaries are now the PARSER's (`_MD_PARSER` — one mechanism, the
-    CommonMark block grammar's own):
+def _normalize_newlines(text: str) -> str:
+    """The parser's line grid: CR/CRLF folded to LF. Every line index in
+    this module is a LF index (the round-9 D9-5 defeat: `str.splitlines`
+    also splits on \\v, \\f, \\x85, U+2028 and U+2029, which markdown-it
+    treats as CONTENT, so a unit's text truncated and text hid outside
+    every unit)."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
-    * every leaf block is ONE unit at the parser's own span — a
-      paragraph, a heading (ATX or setext), a thematic break, a fenced
-      or indented code block, an HTML block. A fence inside a list item
-      or an admonition is a fence no matter its indentation (D8-1); a
-      setext heading or thematic break separates its neighbours (D8-3);
-      a lazy-continuation line belongs to its own paragraph, so
-      corrected text cannot false-red (D8-2);
-    * containers (blockquotes, the list machinery at any depth) are
-      NEVER units themselves — their leaf blocks are — so a container's
-      span can never fold a scoped sibling into a gloss;
-    * a table is emitted PER ROW across the parser's own table span
-      (the round-4 law), header and delimiter rows included as units;
-    * the additive refinements stay: each fenced/indented line-comment
-      line is ALSO its own unit (an extra unit can only add a red,
-      never hide one).
 
-    The hand-rolled splitter is REMOVED, not weakened: the blank-line
-    block, list-marker, blockquote-prefix, fence-delimiter and
-    table-separator regexes each owned a piece of the block grammar and
-    each was the defect of a round. What replaces them is strictly
-    stronger — the parser's own map is total over the block grammar
-    (every construct above is covered by a ground-truthed token map)
-    where the regexes were an open enumeration."""
-    lines = text.splitlines()
+def _split_lines(text: str) -> list[str]:
+    """The file's lines on the parser's own grid — split on "\\n" ONLY
+    (`str.splitlines` splits on eight more characters; D9-5). A trailing
+    newline yields a final empty string, which is blank and therefore
+    never a unit's text; the line COUNT agrees with markdown-it's and
+    PyYAML's line numbers."""
+    return _normalize_newlines(text).split("\n")
+
+
+#: The MkDocs CONTAINER grammars the docs build enables (`mkdocs.yml`:
+#: `admonition`, `pymdownx.details`, `pymdownx.tabbed`). markdown-it has
+#: no admonition/tab extension — a container's body parses as ONE
+#: indented code block (or a paragraph's lazy continuation), so its
+#: paragraphs fold into a single unit (the round-9 D9-1 regression:
+#: docs/guides/actors.md's two body paragraphs became unit 145-160 and a
+#: scoped paragraph purified a universal gloss; the docs carry 84
+#: admonitions, 27 with a code block inside, 17 with multi-paragraph
+#: bodies). The marker patterns below are the RENDERER'S OWN
+#: block-processor regexes — `markdown/extensions/admonition.py` `RE`,
+#: `pymdownx/details.py` `START`, `pymdownx/tabbed.py` `START` —
+#: re-anchored per line with the container's indent captured; the body
+#: law is the renderer's `BlockProcessor.detab`: every line after the
+#: marker that is blank or indented >= marker column + 4, across blank
+#: lines, ending at the first non-blank line indented less (the
+#: renderer's `theRest`). The body is DEDENTED by column + 4 and
+#: re-parsed as markdown at a line offset — the renderer's own
+#: `parseChunk(div, block)` — so a body paragraph, list or fence is its
+#: own unit at its true line, and a scoped sibling inside a container
+#: can never purify a gloss sibling.
+_ADMONITION_MARKER: Final = re.compile(r"^(\s*)!!! ?([\w\-]+(?: +[\w\-]+)*)(?: +\"(.*?)\")? *(?:$)")
+_DETAILS_MARKER: Final = re.compile(
+    r"^(\s*)\?{3}(\+)? ?(?:([\w\-]+(?: +[\w\-]+)*?)?(?: +\"(.*?)\")|([\w\-]+(?: +[\w\-]+)*?)) *(?:$)"
+)
+_TAB_MARKER: Final = re.compile(r"^(\s*)={3}(?:\+!|!\+|\+|!)? +\"(.*?)\" *(?:$)")
+
+
+def _container_marker(line: str) -> int | None:
+    """The line's container-marker indent in columns, or None. A tab
+    counts as four columns (the renderer's `tab_length`). A marker inside
+    a fenced/indented code block or a raw HTML block never reaches here —
+    `_markdown_units` only scans non-opaque lines — which is the
+    renderer's own behaviour too (a `!!!` line inside code is code)."""
+    match = _ADMONITION_MARKER.match(line) or _DETAILS_MARKER.match(line) or _TAB_MARKER.match(line)
+    if match is None:
+        return None
+    column = 0
+    for char in match.group(1):
+        column += 4 if char == "\t" else 1
+    return column
+
+
+def _container_body_end(lines: list[str], marker_index: int, column: int) -> int:
+    """The renderer's detab body law: the body is every line after the
+    marker that is blank or indented >= column + 4, across blank lines,
+    ending at the first non-blank line indented less (that line is the
+    renderer's `theRest` — ordinary blocks again)."""
+    content_column = column + 4
+    index = marker_index + 1
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip():
+            index += 1
+            continue
+        indent = 0
+        for char in line:
+            if char == " ":
+                indent += 1
+            elif char == "\t":
+                indent += 4
+            else:
+                break
+        if indent < content_column:
+            break
+        index += 1
+    return index
+
+
+def _opaque_line_spans(tokens: list[Token], path: str) -> list[tuple[int, int]]:
+    """The merged 1-based inclusive line spans of the tokens whose
+    content is LITERAL — fenced/indented code and raw HTML blocks. A
+    `!!!`/`???`/`===` line inside one is code text, never a container
+    marker (the renderer agrees: its admonition regex only matches
+    block-start lines, and code processors claim those lines first)."""
+    spans: list[tuple[int, int]] = []
+    for token in tokens:
+        if token.type in ("fence", "code_block", "html_block"):
+            start, end = _span_lines(token, path)
+            spans.append((start, end))
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _line_in_spans(line: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= line <= end for start, end in spans)
+
+
+def _markdown_units(
+    path: str, text: str, _line_offset: int = 0, _dedent: int = 0
+) -> Iterator[Unit]:
+    """Markdown BLOCK units from the real parser's token/line map, plus
+    the MkDocs container bodies the parser cannot see, plus the per-line
+    floor. The previous hand-rolled machines (blank-line blocks, then
+    round-7's structural siblings) folded a new construct on every
+    round; round 8 drove the block boundaries from markdown-it's token
+    map and round 9 still found the fold — markdown-it has NO MkDocs
+    admonition/tab extension, so a `!!! tip` body parsed as one
+    `code_block` and two prose paragraphs became one unit (D9-1). The
+    model is now three mechanisms, each total over its own grammar:
+
+    * **blocks** — every leaf block is ONE unit at the parser's own
+      span (paragraph, heading ATX/setext, thematic break, fenced or
+      indented code block, HTML block); containers are never units
+      (their leaf blocks are); tables emit per-row units;
+    * **containers** — the docs build's `!!!`/`???`/`===` bodies are
+      dedented and RE-PARSED as markdown at a line offset (the
+      renderer's own detab law, `_container_body_end`); a marker inside
+      a fenced/indented code block or a raw HTML block is code text,
+      never a container (`_opaque_line_spans`);
+    * **the floor** — every non-blank line no unit owns (a link-
+      reference definition the parser consumes without a token, a
+      `>`-only separator, any construct the model does not know) is its
+      OWN per-line unit, never folded: the mechanism that makes the
+      line-coverage law true. A construct the model does not know can
+      no longer hide text — it degrades to per-line scanning.
+
+    The additive refinements stay: each fenced/indented code block's
+    comment statements are their own units, derived from the parser's
+    de-prefixed `token.content` mapped back through the token's line
+    map (quoting a fence cannot defeat them — D9-3), with `/* ... */`
+    and `<!-- ... -->` block comments as whole-statement units (D9-4).
+
+    Known boundary, stated: a blockquote-prefixed admonition
+    (`> !!! note`) is scanned at the blockquote's own paragraph
+    granularity — which splits at the same places the renderer's
+    admonition body paragraphs do (blank lines and `>`-only separator
+    lines); no shipped doc carries one. And an unclosed fence runs to
+    end of file — in the RENDERER too (CommonMark), so the model is
+    renderer-faithful; the swallowed text stays inside the fence's own
+    unit, where the rules still evaluate it."""
+    lines = _split_lines(text)
+    tokens = _MD_PARSER.parse(text)
+    opaque = _opaque_line_spans(tokens, path)
+    units: list[Unit] = []
+    run_start = 0
+    index = 0
+    while index < len(lines):
+        line_no = index + 1
+        marker_column = None if _line_in_spans(line_no, opaque) else _container_marker(lines[index])
+        if marker_column is None:
+            index += 1
+            continue
+        body_end = _container_body_end(lines, index, marker_column)
+        if index > run_start:
+            run_text = "\n".join(lines[run_start:index])
+            units.extend(_markdown_run_units(path, run_text, run_start + _line_offset, _dedent))
+        # The marker line is its own unit (the container's title
+        # statement — the renderer renders it as the admonition-title
+        # paragraph).
+        units.append(
+            Unit(
+                path,
+                "markdown",
+                line_no + _line_offset,
+                line_no + _line_offset,
+                lines[index],
+                _dedent,
+            )
+        )
+        # The body: dedent by column + 4 (the renderer's detab), re-parse
+        # as markdown at the body's own line offset.
+        content_column = marker_column + 4
+        body_text = "\n".join(
+            "" if not line.strip() else line[content_column:]
+            for line in lines[index + 1 : body_end]
+        )
+        units.extend(
+            _markdown_units(
+                path,
+                body_text,
+                _line_offset=index + 1 + _line_offset,
+                _dedent=_dedent + content_column,
+            )
+        )
+        index = body_end
+        run_start = index
+    if run_start < len(lines):
+        run_text = "\n".join(lines[run_start:])
+        units.extend(_markdown_run_units(path, run_text, run_start + _line_offset, _dedent))
+    # The per-line floor: the coverage law's own mechanism.
+    covered: set[int] = set()
+    for unit in units:
+        covered.update(range(unit.start_line, unit.end_line + 1))
+    for number, line in enumerate(lines, 1):
+        if number + _line_offset not in covered and line.strip():
+            units.append(
+                Unit(
+                    path,
+                    "markdown-text",
+                    number + _line_offset,
+                    number + _line_offset,
+                    line.strip(),
+                )
+            )
+    yield from units
+
+
+def _markdown_run_units(path: str, text: str, line_offset: int, dedent: int = 0) -> Iterator[Unit]:
+    """One non-container run's units: the run's own parse (the parser's
+    token map is correct for a run that contains no container marker),
+    offset to the run's absolute lines, carrying the run's cumulative
+    container dedent."""
+    lines = _split_lines(text)
     for block in _markdown_block_tree(_MD_PARSER.parse(text)):
-        yield from _markdown_block_units(path, lines, block)
+        yield from _markdown_block_units(path, lines, block, line_offset, dedent)
 
 
 @dataclass
@@ -507,83 +774,185 @@ def _span_lines(token: Token, path: str) -> tuple[int, int]:
     return token.map[0] + 1, token.map[1]
 
 
-def _markdown_block_units(path: str, lines: list[str], block: _Block) -> Iterator[Unit]:
+def _markdown_block_units(
+    path: str, lines: list[str], block: _Block, line_offset: int = 0, dedent: int = 0
+) -> Iterator[Unit]:
     """One parsed block's units: containers recurse into their children
-    (a container is never a unit), the table is emitted per row, and
-    every other leaf block is one unit at the parser's own span — with
-    the code blocks' line-comments added as their own units."""
+    (a container is never a unit), the table is emitted per row, every
+    other leaf block is one unit at the parser's own span — with the
+    code blocks' comment statements and the HTML blocks' element runs
+    added as their own units."""
     token = block.token
     if token.type in _CONTAINER_TOKENS:
         for child in block.children:
-            yield from _markdown_block_units(path, lines, child)
+            yield from _markdown_block_units(path, lines, child, line_offset, dedent)
         return
     start, end = _span_lines(token, path)
+    start += line_offset
+    end += line_offset
     if token.type == "table_open":
-        yield from _table_row_units(path, lines, start, end)
+        yield from _table_row_units(path, lines, start, end, line_offset, dedent)
+        return
+    if token.type == "html_block":
+        # The .md html_block gets the .html element/comment model INSTEAD
+        # of a whole-span unit (round-9 D9-2: ONE html_block token folded
+        # sibling `<tr>` rows and sibling wrapped comments; the element
+        # model separates them — a whole-span unit here would fold them
+        # again).
+        span_text = "\n".join(lines[start - 1 - line_offset : end - line_offset])
+        yield from _html_units(path, span_text, line_offset=start - 1, dedent=dedent)
         return
     if token.type not in _LEAF_TOKENS:
         raise AssertionError(
             f"{path}: the parser emitted block token {token.type!r} the unit model "
             "does not know — fail closed, never folded"
         )
-    yield Unit(path, "markdown", start, end, "\n".join(lines[start - 1 : end]))
+    yield Unit(
+        path,
+        "markdown",
+        start,
+        end,
+        "\n".join(lines[start - 1 - line_offset : end - line_offset]),
+        dedent,
+    )
     if token.type in ("fence", "code_block"):
-        for idx in range(start, end + 1):
-            raw = lines[idx - 1]
-            if raw.strip().startswith(_FENCE_COMMENT_PREFIXES):
-                yield Unit(path, "markdown", idx, idx, raw)
+        yield from _code_comment_units(path, lines, token, start, end, line_offset, dedent)
 
 
-def _table_row_units(path: str, lines: list[str], start: int, end: int) -> Iterator[Unit]:
+def _code_comment_units(
+    path: str,
+    lines: list[str],
+    token: Token,
+    start: int,
+    end: int,
+    line_offset: int,
+    dedent: int = 0,
+) -> Iterator[Unit]:
+    """The comment statements INSIDE a fenced or indented code block,
+    detected on the parser's own DE-PREFIXED `token.content` and mapped
+    back through the token's line map (the round-9 D9-3 defeat: the raw
+    lines inside a blockquote still carry the `> ` prefix, `.strip()`
+    never removes it, so a quoted fence's comment lines had no units and
+    its adjacent comment pair folded back into one unit — quoting a
+    fence re-opened round-7's defeat). A line comment runs to end of
+    line: each comment LINE is its own unit. A `/* ... */` or
+    `<!-- ... -->` block comment is ONE statement: the whole statement
+    is its own unit, a multi-line comment staying the one unit it is
+    (the round-9 D9-4 defeat: only line-comment prefixes were known, so
+    a block-comment gloss beside a scoped line comment had no unit).
+    The unit's text is the file's own raw lines over the mapped span
+    (prefixes and indents included — they never hide a match)."""
+    content_lines = token.content.split("\n")
+    if content_lines[-1] == "":
+        content_lines.pop()
+    span_lines = end - start + 1
+    if token.type == "fence":
+        # A closed fence's span is opening + content + closing; an
+        # unclosed fence has no closing line. Any other shape fails
+        # closed.
+        if len(content_lines) in (span_lines - 2, span_lines - 1):
+            first_content = start + 1
+        else:
+            raise AssertionError(
+                f"{path}: the fence's content has {len(content_lines)} lines for "
+                f"span {start}-{end} — fail closed, never guessed"
+            )
+    else:  # indented code block: every span line is a content line
+        if len(content_lines) != span_lines:
+            raise AssertionError(
+                f"{path}: the indented code block's content has "
+                f"{len(content_lines)} lines for span {start}-{end} — fail closed"
+            )
+        first_content = start
+    # Block comments first: whole statements, mapped through the content
+    # line numbers (a multi-line comment stays ONE unit).
+    content = token.content
+    for match in re.finditer(r"/\*.*?\*/|<!--.*?-->", content, re.DOTALL):
+        first_line = content.count("\n", 0, match.start())
+        last_line = content.count("\n", 0, match.end())
+        rel_lo = first_content + first_line - line_offset
+        rel_hi = first_content + last_line - line_offset
+        yield Unit(
+            path,
+            "markdown",
+            first_content + first_line,
+            first_content + last_line,
+            "\n".join(lines[rel_lo - 1 : rel_hi]),
+            dedent,
+        )
+    for index, content_line in enumerate(content_lines):
+        if not content_line.strip().startswith(_FENCE_COMMENT_PREFIXES):
+            continue
+        raw_index = first_content + index - line_offset
+        yield Unit(
+            path,
+            "markdown",
+            first_content + index,
+            first_content + index,
+            lines[raw_index - 1],
+            dedent,
+        )
+
+
+def _table_row_units(
+    path: str,
+    lines: list[str],
+    start: int,
+    end: int,
+    line_offset: int = 0,
+    dedent: int = 0,
+) -> Iterator[Unit]:
     """Every line of the parser's own table span is its own row unit
     (the round-4 law). The delimiter row and the header are units too —
     they carry no detector vocabulary and the rules never fire on them,
     but their spans stay addressable for the allowlist's digest law."""
     for idx in range(start, end + 1):
-        text = lines[idx - 1].strip()
+        text = lines[idx - 1 - line_offset].strip()
         if text:
-            yield Unit(path, "markdown", idx, idx, text)
+            yield Unit(path, "markdown", idx, idx, text, dedent)
 
 
 def _yaml_scalar_units(path: str, text: str) -> Iterator[Unit]:
-    """YAML scalar values (parsed; the folded text is one unit)."""
+    """YAML scalar units at the COMPOSER'S OWN node marks (parsed; the
+    exact line span of every scalar, keys and values both). The previous
+    heuristic searched for the scalar's first 40 characters and reported
+    the scalar at whatever line it first matched — usually wrong for a
+    folded scalar, leaving the folded body's lines outside every unit
+    (the round-9 D9-7 defeat: 718 non-blank lines across the two alert
+    files). A folded scalar's span is the composer's own `start_mark` /
+    `end_mark`; a block scalar ending at a line's column 0 ends on the
+    PREVIOUS line."""
     try:
         import yaml
     except ImportError:  # pragma: no cover - the dependency ships with the test env
         return
     try:
-        docs = list(yaml.safe_load_all(text))
+        documents = list(yaml.compose_all(text))
     except Exception as exc:
         # Fail closed: an unreadable YAML is red, never skipped.
         raise AssertionError(f"{path}: unreadable YAML ({exc})") from exc
-    lines = text.splitlines()
+    line_count = len(_split_lines(text))
 
-    def _walk(node: Any) -> Iterator[str]:
-        if isinstance(node, dict):
+    def walk(node: Any) -> Iterator[Any]:
+        if isinstance(node, yaml.MappingNode):
             # The KEYS are scalars too — a key is a string the YAML
             # grammar parses, and a gloss carried in a key is just as
-            # much a statement as one in a value (with the old markdown
-            # floor dropped, the parsed scalars are the only units a
-            # key's text gets).
-            for key, value in node.items():
-                if isinstance(key, str):
-                    yield key
-                yield from _walk(value)
-        elif isinstance(node, list):
-            for value in node:
-                yield from _walk(value)
-        elif isinstance(node, str):
+            # much a statement as one in a value.
+            for key, value in node.value:
+                yield from walk(key)
+                yield from walk(value)
+        elif isinstance(node, yaml.SequenceNode):
+            for value in node.value:
+                yield from walk(value)
+        else:
             yield node
 
-    for doc in docs:
-        for scalar in _walk(doc):
-            # The unit's span: the folded scalar's own text (the location
-            # is the file's whole scalar; the digest is the folded text's).
-            first_line = next(
-                (i for i, line in enumerate(lines, 1) if scalar.splitlines()[0][:40] in line),
-                1,
-            )
-            yield Unit(path, "yaml", first_line, first_line + len(scalar.splitlines()) - 1, scalar)
+    for node in (walked for document in documents for walked in walk(document)):
+        if not isinstance(node, yaml.ScalarNode) or not isinstance(node.value, str):
+            continue
+        start_line = node.start_mark.line + 1
+        end_line = node.end_mark.line + 1 if node.end_mark.column > 0 else node.end_mark.line
+        yield Unit(path, "yaml", start_line, min(end_line, line_count), node.value)
 
 
 def _yaml_comment_units(path: str, text: str) -> Iterator[Unit]:
@@ -596,7 +965,7 @@ def _yaml_comment_units(path: str, text: str) -> Iterator[Unit]:
     unit; a `#` inside a quoted scalar may be over-taken as a comment —
     an extra unit can only add a red, never hide one, and the scalar
     itself stays its own parsed unit either way."""
-    for idx, line in enumerate(text.splitlines(), start=1):
+    for idx, line in enumerate(_split_lines(text), start=1):
         match = re.search(r"(?:(?<=\s)|^)#", line)
         if match is not None:
             yield Unit(path, "yaml-comment", idx, idx, line[match.start() :].strip())
@@ -648,7 +1017,9 @@ class _HTMLTemplateParser(HTMLParser):
         self.tokens.append(("comment", self._offset(), data))
 
 
-def _comment_statement_units(path: str, text: str) -> Iterator[Unit]:
+def _comment_statement_units(
+    path: str, text: str, line_offset: int = 0, dedent: int = 0
+) -> Iterator[Unit]:
     """The comment STATEMENTS of a template/markup text: every
     `<!-- -->` HTML comment and every `{# ... #}` Jinja/Tera comment is
     its own unit, a multi-line comment staying the one statement it is
@@ -658,7 +1029,7 @@ def _comment_statement_units(path: str, text: str) -> Iterator[Unit]:
     line_starts = [0] + [match.end() for match in re.finditer("\n", text)]
 
     def line_of(offset: int) -> int:
-        return bisect.bisect_right(line_starts, offset)
+        return bisect.bisect_right(line_starts, offset) + line_offset
 
     parser = _HTMLTemplateParser(line_starts)
     try:
@@ -673,7 +1044,7 @@ def _comment_statement_units(path: str, text: str) -> Iterator[Unit]:
             continue
         close = text.find("-->", offset + 4)
         end = len(text) if close == -1 else close + 3
-        yield Unit(path, "html-comment", line_of(offset), line_of(end), text[offset:end])
+        yield Unit(path, "html-comment", line_of(offset), line_of(end), text[offset:end], dedent)
     for match in re.finditer(r"\{#.*?#\}", text, re.DOTALL):
         yield Unit(
             path,
@@ -681,10 +1052,11 @@ def _comment_statement_units(path: str, text: str) -> Iterator[Unit]:
             line_of(match.start()),
             line_of(match.end()),
             match.group(),
+            dedent,
         )
 
 
-def _html_units(path: str, text: str) -> Iterator[Unit]:
+def _html_units(path: str, text: str, line_offset: int = 0, dedent: int = 0) -> Iterator[Unit]:
     """HTML/Jinja/Tera template units — the ruling's "templates and UI
     text" surface. Each element's OWN run is a unit: a leaf element is
     one unit (a `<tr>` row, a `<span>` badge — a wrapped element stays
@@ -702,11 +1074,13 @@ def _html_units(path: str, text: str) -> Iterator[Unit]:
     template text into one unit (a template is not markdown; the fold
     was the laundering shape this model exists to prevent), so the
     floor is now the element/comment grammar's own gap coverage, line
-    by line, never folded."""
+    by line, never folded. `line_offset` relocates every unit to the
+    span's absolute lines (the .md html_block call — the round-9
+    D9-2 defeat)."""
     line_starts = [0] + [match.end() for match in re.finditer("\n", text)]
 
     def line_of(offset: int) -> int:
-        return bisect.bisect_right(line_starts, offset)
+        return bisect.bisect_right(line_starts, offset) + line_offset
 
     parser = _HTMLTemplateParser(line_starts)
     try:
@@ -714,6 +1088,20 @@ def _html_units(path: str, text: str) -> Iterator[Unit]:
         parser.close()
     except AssertionError as exc:  # fail closed: an unparseable template is red
         raise AssertionError(f"{path}: unparseable HTML ({exc})") from exc
+
+    # The Jinja/Tera comment regions: the HTML grammar sees a tag INSIDE
+    # a `{# ... #}` comment (`an empty <i> ...`) as a REAL element, which
+    # split the surrounding own-runs and crossed the comment's own unit
+    # (the shipped _base.html carries exactly that). A token inside a
+    # Jinja comment region is comment TEXT, never an element token.
+    jinja_regions = [
+        (match.start(), match.end()) for match in re.finditer(r"\{#.*?#\}", text, re.DOTALL)
+    ]
+
+    def in_jinja_region(offset: int) -> bool:
+        return any(start <= offset < end for start, end in jinja_regions)
+
+    parser.tokens = [token for token in parser.tokens if not in_jinja_region(token[1])]
 
     # Element spans with implied ends: a repeated start tag implies the
     # end of the previous open one; an end tag closes every element open
@@ -770,14 +1158,22 @@ def _html_units(path: str, text: str) -> Iterator[Unit]:
                         line_of(cursor),
                         line_of(child_start),
                         text[cursor:child_start],
+                        dedent,
                     )
                 )
             cursor = max(cursor, child_end)
         if cursor < end:
             units.append(
-                Unit(path, "html-element", line_of(cursor), line_of(end), text[cursor:end])
+                Unit(
+                    path,
+                    "html-element",
+                    line_of(cursor),
+                    line_of(end),
+                    text[cursor:end],
+                    dedent,
+                )
             )
-    units.extend(_comment_statement_units(path, text))
+    units.extend(_comment_statement_units(path, text, line_offset, dedent))
 
     # The gap floor: every line no element own-run and no comment
     # statement owns is its own template-statement unit — per LINE,
@@ -785,15 +1181,41 @@ def _html_units(path: str, text: str) -> Iterator[Unit]:
     covered: set[int] = set()
     for unit in units:
         covered.update(range(unit.start_line, unit.end_line + 1))
-    for idx, line in enumerate(text.splitlines(), start=1):
-        if idx not in covered and line.strip():
-            units.append(Unit(path, "html-text", idx, idx, line.strip()))
+    for idx, line in enumerate(_split_lines(text), start=1):
+        if idx + line_offset not in covered and line.strip():
+            units.append(
+                Unit(
+                    path,
+                    "html-text",
+                    idx + line_offset,
+                    idx + line_offset,
+                    line.strip(),
+                    dedent,
+                )
+            )
     yield from units
 
 
 def _python_units(path: str, text: str, tree: ast.Module) -> Iterator[Unit]:
     """AST docstrings, contiguous comment blocks, `Field(description=...)`
-    strings, and the typed collection literals (rule 4's own units)."""
+    strings, and the typed collection literals (rule 4's own units). A
+    docstring is ONE unit: the AST walk sees the same Constant as both
+    the docstring and a string constant, so the duplicate `string` unit
+    (identical span and text) is dropped — the round-9 D9-8 defect had
+    every docstring reported twice."""
+    units: list[Unit] = []
+    # The f-string parts: a JoinedStr's inner Constants report PEP-701
+    # concat-spanning positions that PARTIALLY OVERLAP at line
+    # granularity (adjacent chunks share the boundary line). The
+    # f-string's literal text is ONE unit instead — the resolved parts
+    # joined — carrying the same words the chunk units gave, without the
+    # boundary artifacts.
+    joined_part_ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            for part in node.values:
+                if isinstance(part, ast.Constant):
+                    joined_part_ids.add(id(part))
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             doc = ast.get_docstring(node, clean=False)
@@ -803,16 +1225,49 @@ def _python_units(path: str, text: str, tree: ast.Module) -> Iterator[Unit]:
                     if getattr(node, "body", None) and isinstance(node.body[0], ast.Expr)
                     else None
                 )
+                # The docstring unit's span is the DOC NODE'S OWN SOURCE
+                # span (the value's splitlines count drops a trailing
+                # empty line, which under-covered the closing-quotes
+                # line and partially overlapped the string unit's own
+                # span).
                 first = doc_node.lineno if doc_node is not None else getattr(node, "lineno", 1)
-                yield Unit(path, "docstring", first, first + len(doc.splitlines()) - 1, doc)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                last = (doc_node.end_lineno or first) if doc_node is not None else first
+                units.append(Unit(path, "docstring", first, last, doc))
+        if isinstance(node, ast.JoinedStr):
+            parts = [
+                part.value
+                for part in node.values
+                if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            ]
+            literal = "".join(parts)
+            units.append(
+                Unit(
+                    path,
+                    "string",
+                    node.lineno,
+                    node.end_lineno or node.lineno,
+                    literal,
+                )
+            )
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            if id(node) in joined_part_ids:
+                continue
             # Every string constant is a unit (Field(description=...) strings
             # included — the constant arm catches them; no parent chain is
-            # needed and the AST is walked without parent linking).
+            # needed and the AST is walked without parent linking). A BYTES
+            # literal is a text carrier too (the tokenize STRING token the
+            # ownership law pins): its text is decoded leniently.
+            value = (
+                node.value
+                if isinstance(node.value, str)
+                else node.value.decode("utf-8", "backslashreplace")
+            )
             if node.lineno == node.end_lineno:
-                yield Unit(path, "string", node.lineno, node.lineno, node.value)
+                units.append(Unit(path, "string", node.lineno, node.lineno, value))
             else:
-                yield Unit(path, "string", node.lineno, node.end_lineno or node.lineno, node.value)
+                units.append(
+                    Unit(path, "string", node.lineno, node.end_lineno or node.lineno, value)
+                )
         # Rule 4's structural enumerations: Literal[...] subscripts and
         # tuple/list/set literals whose elements are the reason labels.
         if (
@@ -821,10 +1276,20 @@ def _python_units(path: str, text: str, tree: ast.Module) -> Iterator[Unit]:
             and node.value.id == "Literal"
         ):
             seg = ast.get_source_segment(text, node) or ""
-            yield Unit(path, "literal-type", node.lineno, node.end_lineno or node.lineno, seg)
+            units.append(
+                Unit(path, "literal-type", node.lineno, node.end_lineno or node.lineno, seg)
+            )
         if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
             seg = ast.get_source_segment(text, node) or ""
-            yield Unit(path, "collection", node.lineno, node.end_lineno or node.lineno, seg)
+            units.append(Unit(path, "collection", node.lineno, node.end_lineno or node.lineno, seg))
+
+    docstring_spans = {(u.start_line, u.end_line, u.text) for u in units if u.kind == "docstring"}
+    yield from (
+        unit
+        for unit in units
+        if unit.kind != "string"
+        or (unit.start_line, unit.end_line, unit.text) not in docstring_spans
+    )
 
     # Contiguous comment blocks (the AST carries comments only via tokenize).
     import io
@@ -941,9 +1406,38 @@ def rule_closed_enumeration(unit: Unit) -> bool:
     return defining
 
 
+def _scope_text(unit: Unit) -> str:
+    """The scope predicate's own normalized form: case-folded, backticks
+    and emphasis runs removed, whitespace collapsed — so ``**not**
+    dispatch-invisible`` negates exactly like its plain form (markdown
+    emphasis must never decide a scope)."""
+    return re.sub(r"\s+", " ", _lowered(unit).replace("*", ""))
+
+
 def _expressly_scoped(unit: Unit) -> bool:
-    lowered = _lowered(unit)
-    return any(marker in lowered for marker in _SCOPED_MARKERS)
+    """The unit genuinely scopes the claim to the no-config/unserved
+    legs (round-9 D9-6: this was a naive substring test over
+    `_SCOPED_MARKERS`, and a NEGATION or a CONTRAST waived rule 2 —
+    "…are not dispatch-invisible: they can never dispatch" carried the
+    marker "not dispatch-invisible" and passed; "two dispatch" matched
+    "two dispatchers"). A unit is scoped only when a scoping marker
+    occurs OUTSIDE a negation tail (the immediately preceding window
+    carries no negator) and the unit carries no positive counter-claim
+    — unless the unit names the third leg itself, whose own definition
+    is the row that CAN dispatch when served."""
+    scope_text = _scope_text(unit)
+    matches = list(_SCOPE_MARKER_RE.finditer(scope_text))
+    if not matches:
+        return False
+    for match in matches:
+        window = scope_text[max(0, match.start() - _NEGATION_WINDOW) : match.start()]
+        if _NEGATION_TAIL.search(window) is not None:
+            continue
+        contradicted = _SCOPE_COUNTER_CLAIM_RE.search(scope_text) is not None and not any(
+            name in scope_text for name in _THIRD_LEG_NAMES
+        )
+        return not contradicted
+    return False
 
 
 def rule_universal_no_dispatch(unit: Unit) -> bool:
@@ -1013,24 +1507,49 @@ def _units_for(rel: str, raw: str) -> list[Unit]:
     the anti-rot law so a digest's live-span match is computed over the
     SAME units the scan matches). Each surface owns its text with its
     real grammar's parser: a `.py` file the AST, a `.yml`/`.yaml` file
-    the YAML parse (scalar keys and values, comment lines), an `.html`
-    file the element/comment grammar plus a no-fold per-line floor for
-    the template text no element or comment owns, a `.md` file the
-    Markdown block parser's token/line map. The old markdown floors on
-    `.html`/`.yaml` are gone: template text is not markdown, and the
-    floor's paragraphs folded non-blank template text into one unit —
-    the laundering shape this model exists to prevent. Fail-closed: a
-    .py file that does not parse raises, unreadable YAML raises, an
-    unparseable template raises, and a Markdown block token the unit
-    model does not know raises — never a silent skip."""
+    the YAML composer's node marks (scalar keys and values, comment
+    lines, plus the per-line floor), an `.html` file the element/comment
+    grammar plus a no-fold per-line floor for the template text no
+    element or comment owns, a `.md` file the Markdown block parser's
+    token/line map plus the MkDocs container bodies and the per-line
+    floor. The old markdown floors on `.html`/`.yaml` are gone: template
+    text is not markdown, and the floor's paragraphs folded non-blank
+    template text into one unit — the laundering shape this model exists
+    to prevent. The floor itself is now every text-carrier surface's OWN
+    gap coverage — per line, never folded — so the line-coverage law
+    (`_coverage_violations`) holds by construction and is checked.
+    Fail-closed: a .py file that does not parse raises, unreadable YAML
+    raises, an unparseable template raises, and a Markdown block token
+    the unit model does not know raises — never a silent skip."""
     if rel.endswith(".py"):
         tree = ast.parse(raw)
         return list(_python_units(rel, raw, tree))
     if rel.endswith((".yml", ".yaml")):
-        return list(_yaml_scalar_units(rel, raw)) + list(_yaml_comment_units(rel, raw))
+        units = list(_yaml_scalar_units(rel, raw)) + list(_yaml_comment_units(rel, raw))
+        units.extend(_line_floor_units(rel, raw, units, kind="yaml-text"))
+        return units
     if rel.endswith(".html"):
         return list(_html_units(rel, raw))
     return list(_markdown_units(rel, raw))
+
+
+def _line_floor_units(rel: str, raw: str, units: list[Unit], kind: str) -> list[Unit]:
+    """The per-line FLOOR: every non-blank line of the text no existing
+    unit owns is its own unit, never folded — the mechanism that makes
+    the line-coverage law true for a text-carrier surface (the .md
+    link-reference definitions the parser consumes without a token and
+    the `>`-only separators were outside every unit — the round-9 D9-8
+    defeat; the .yaml folded-scalar lines were outside every unit —
+    D9-7). An extra unit can only add a red, never hide one."""
+    lines = _split_lines(raw)
+    covered: set[int] = set()
+    for unit in units:
+        covered.update(range(unit.start_line, unit.end_line + 1))
+    return [
+        Unit(rel, kind, number, number, line.strip())
+        for number, line in enumerate(lines, 1)
+        if number not in covered and line.strip()
+    ]
 
 
 def _allowlisted(path: str, unit: Unit) -> bool:
@@ -1069,6 +1588,194 @@ def _scan(base: Path | None = None) -> list[tuple[str, Unit, str]]:
                         continue
                     failures.append((rule_name, unit, rel))
     return failures
+
+
+# ── the unit model's structural laws ────────────────────────────────────
+#
+# Round 9's lesson: a unit model maintained by PER-CONSTRUCT enumeration
+# is always one construct short (nine rounds of defeats). These laws are
+# the model's checked properties — asserted over EVERY scanned file, so
+# a construct no round thought of cannot silently hide text. Each law
+# returns human-readable violations; `test_unit_model_laws_hold_...`
+# asserts them empty over the tree and `test_unit_model_laws_red_...`
+# proves each law reds on an injected violation.
+
+
+def _coverage_violations(rel: str, raw: str, units: list[Unit]) -> list[str]:
+    """LAW 1 — line coverage: every non-blank line of a text-carrier
+    file (`.md`, `.yml`, `.yaml`, `.html`) belongs to at least one unit.
+    For a `.py` file the law is the OWNERSHIP form
+    (`_py_text_ownership_violations`): a Python file's only text
+    carriers are its string literals and comments (code tokens carry no
+    prose for these rules to match), so the law pins every
+    tokenize-level STRING/COMMENT token to a unit instead of pinning
+    code lines. The per-line floors are what make the text-carrier form
+    true; this law is what makes losing a floor red."""
+    if rel.endswith(".py"):
+        return _py_text_ownership_violations(rel, raw, units)
+    lines = _split_lines(raw)
+    covered: set[int] = set()
+    for unit in units:
+        covered.update(range(unit.start_line, unit.end_line + 1))
+    return [
+        f"{rel}:{number}: non-blank line outside every unit: {lines[number - 1][:80]!r}"
+        for number, line in enumerate(lines, 1)
+        if line.strip() and number not in covered
+    ]
+
+
+def _py_text_ownership_violations(rel: str, raw: str, units: list[Unit]) -> list[str]:
+    """LAW 1's Python face: every tokenize-level STRING and COMMENT
+    token's span is owned by at least one unit (the AST surfaces are the
+    closed text-carrier set of a Python file)."""
+    import io
+    import tokenize
+
+    # Units sorted by start with a running max end: a token span
+    # (start <= end) is owned iff some unit starting at or before it
+    # reaches at least its end — the bisected running maximum answers
+    # that in O(log n).
+    ordered = sorted((u.start_line, u.end_line) for u in units)
+    starts = [start for start, _end in ordered]
+    running_max: list[int] = []
+    best = 0
+    for _start, end in ordered:
+        best = max(best, end)
+        running_max.append(best)
+
+    def owned(start: int, end: int) -> bool:
+        index = bisect.bisect_right(starts, start)
+        return index > 0 and running_max[index - 1] >= end
+
+    violations: list[str] = []
+    for token in tokenize.generate_tokens(io.StringIO(raw).readline):
+        if token.type not in (tokenize.STRING, tokenize.COMMENT):
+            continue
+        if not owned(token.start[0], token.end[0]):
+            violations.append(
+                f"{rel}:{token.start[0]}-{token.end[0]}: a "
+                f"{tokenize.tok_name[token.type]} token is outside every unit"
+            )
+    return violations
+
+
+def _overlap_violations(rel: str, units: list[Unit]) -> list[str]:
+    """LAW 2 — disjoint-or-contained, GLOBALLY: every pair of a file's
+    units is either disjoint, one contains the other, or they TOUCH at
+    a shared boundary line (an element own-run ends mid-line where the
+    next run begins — the .html/.md element model's own granularity; a
+    touch is not a crossing). A unit that begins STRICTLY INSIDE the
+    running maximum end and ends beyond it is a real crossing — caught
+    whatever the distance (the round-9 D9-8 defect: the overlap test
+    only checked ADJACENT pairs). The check is the exact interval-sweep
+    form of that all-pairs law — units sorted by (start, longest first);
+    O(n log n) over the tree's 300k units; the corpus test asserts the
+    sweep agrees with the brute-force all-pairs form on small inputs."""
+    ordered = sorted(units, key=lambda unit: (unit.start_line, -unit.end_line))
+    violations: list[str] = []
+    max_end = 0
+    max_owner: tuple[int, int] | None = None
+    for unit in ordered:
+        if unit.start_line < max_end and unit.end_line > max_end:
+            owner = f"{max_owner[0]}-{max_owner[1]}" if max_owner else "?"
+            violations.append(
+                f"{rel}: {owner} partially overlaps "
+                f"{unit.start_line}-{unit.end_line} — a unit crossing a "
+                "construct boundary"
+            )
+        if unit.end_line > max_end:
+            max_end = unit.end_line
+            max_owner = (unit.start_line, unit.end_line)
+    return violations
+
+
+_TRUNCATION_SUBSTRING_KINDS: Final = frozenset(
+    {"html-element", "html-comment", "template-comment", "collection", "literal-type", "comment"}
+)
+
+
+def _truncation_violations(rel: str, raw: str, units: list[Unit]) -> list[str]:
+    """LAW 3 — no truncation: a unit's text is consistent with its
+    declared line span (the round-9 D9-5 defeat: splitting the file on
+    `str.splitlines`' extra characters truncated a unit's text and hid
+    text outside every unit). Whole-line units carry EXACTLY the file's
+    own raw lines over their span; statement units carry an exact
+    substring of the file; Python string/docstring units carry PARSED
+    values (escapes resolved — their value may hold more lines than the
+    source span), so their law is the span's existence plus the
+    ownership law."""
+    lines = _split_lines(raw)
+    violations: list[str] = []
+    for unit in units:
+        if unit.start_line < 1 or unit.end_line > len(lines) or unit.start_line > unit.end_line:
+            violations.append(
+                f"{rel}:{unit.start_line}-{unit.end_line}: span outside the "
+                f"file's {len(lines)} lines"
+            )
+            continue
+        span_text = "\n".join(lines[unit.start_line - 1 : unit.end_line])
+        if unit.kind in _TRUNCATION_SUBSTRING_KINDS:
+            # A statement unit's text is an exact substring of its own
+            # span's text — reconstructed from the file's raw lines minus
+            # the unit's container dedent (a container body's units carry
+            # the dedented text the renderer parses).
+            span_dedented = "\n".join(
+                "" if not ln.strip() else ln[getattr(unit, "dedent", 0) :]
+                for ln in lines[unit.start_line - 1 : unit.end_line]
+            )
+            if unit.text not in span_dedented:
+                violations.append(
+                    f"{rel}:{unit.start_line}-{unit.end_line}: a {unit.kind} "
+                    "unit's text is not a substring of its own span"
+                )
+            continue
+        if unit.kind == "yaml":
+            # The parsed (folded) value must OCCUR in its own span: the
+            # value's first non-empty line is one of the span's lines,
+            # stripped.
+            first = next((ln for ln in unit.text.splitlines() if ln.strip()), "")
+            if first.strip() not in " ".join(
+                ln.strip() for ln in lines[unit.start_line - 1 : unit.end_line]
+            ):
+                violations.append(
+                    f"{rel}:{unit.start_line}-{unit.end_line}: a yaml unit's "
+                    f"parsed value does not occur in its span: {unit.text[:80]!r}"
+                )
+            continue
+        if rel.endswith(".py"):
+            # A parsed string value may hold more lines than its source
+            # span (escape sequences); the span's existence is the law
+            # here (checked above), ownership is law 1.
+            continue
+        if unit.kind == "markdown":
+            expected_lines = [
+                "" if not ln.strip() else ln[getattr(unit, "dedent", 0) :]
+                for ln in lines[unit.start_line - 1 : unit.end_line]
+            ]
+            expected = "\n".join(expected_lines)
+            truncated = (
+                unit.text != expected
+                if unit.end_line > unit.start_line
+                else unit.text not in (expected, expected.strip())
+            )
+            if truncated:
+                violations.append(
+                    f"{rel}:{unit.start_line}-{unit.end_line}: a markdown "
+                    "unit's text is not exactly the file's own raw lines minus "
+                    f"its container dedent ({getattr(unit, 'dedent', 0)})"
+                )
+            continue
+        if unit.end_line > unit.start_line:
+            if unit.text != span_text:
+                violations.append(
+                    f"{rel}:{unit.start_line}-{unit.end_line}: a multi-line "
+                    "unit's text is not exactly the file's own raw lines"
+                )
+        elif unit.text not in (span_text, span_text.strip()):
+            violations.append(
+                f"{rel}:{unit.start_line}: a single-line unit's text is not its own line"
+            )
+    return violations
 
 
 # ── the invariant itself ────────────────────────────────────────────────
@@ -2082,18 +2789,16 @@ def test_span_digest_is_total_on_lone_surrogates() -> None:
 
 def test_markdown_units_never_partially_overlap() -> None:
     """The unit model's stability law, driven over every shipped file
-    that carries markdown units and over the corpus shapes: two markdown
-    units of one file are either DISJOINT or one CONTAINS the other (a
-    refinement inside its own statement's span — a fenced block's
-    line-comment units, a table's per-row units). A PARTIAL overlap
-    would be a unit crossing a construct boundary — double-reporting
-    one statement and fragmenting another. The shipped docs' block
-    tokens are also pinned to the modelled closed set: the parser
-    growing a block construct the model does not know fails closed in
-    `_markdown_block_units`, and this pin fails closed FIRST if the
-    shipped tree already uses one."""
-    import itertools
-
+    that carries markdown units and over the corpus shapes: the markdown
+    units' text integrity and pairwise overlap are delegated to the
+    module's own STRUCTURAL LAWS (`_truncation_violations` — a unit's
+    text is exactly the file's own raw lines minus its container dedent
+    — and `_overlap_violations` — the GLOBAL disjoint-or-contained law,
+    every pair, not merely adjacent pairs, which was the round-9 D9-8
+    defect). The shipped docs' block tokens are also pinned to the
+    modelled closed set: the parser growing a block construct the model
+    does not know fails closed in `_markdown_block_units`, and this pin
+    fails closed FIRST if the shipped tree already uses one."""
     modelled = (
         _CONTAINER_TOKENS
         | _LEAF_TOKENS
@@ -2106,26 +2811,8 @@ def test_markdown_units_never_partially_overlap() -> None:
 
     def check(rel: str, raw: str) -> None:
         units = [unit for unit in _units_for(rel, raw) if unit.kind == "markdown"]
-        raw_lines = raw.splitlines()
-        for unit in units:
-            if unit.end_line > unit.start_line:
-                assert unit.text == "\n".join(raw_lines[unit.start_line - 1 : unit.end_line]), (
-                    f"{rel}:{unit.start_line}-{unit.end_line}: a multi-line unit's "
-                    "text is exactly the file's own raw lines (a parser span)"
-                )
-            else:
-                raw_line = raw_lines[unit.start_line - 1]
-                assert unit.text in (raw_line, raw_line.strip()), (
-                    f"{rel}:{unit.start_line}: a single-line unit's text is its own line"
-                )
-        ordered = sorted(units, key=lambda u: (u.start_line, -u.end_line))
-        for prev, nxt in itertools.pairwise(ordered):
-            if nxt.start_line <= prev.end_line:
-                assert nxt.end_line <= prev.end_line, (
-                    f"{rel}: {prev.start_line}-{prev.end_line} partially overlaps "
-                    f"{nxt.start_line}-{nxt.end_line} — a unit crossing a "
-                    "construct boundary"
-                )
+        violations = _truncation_violations(rel, raw, units) + _overlap_violations(rel, units)
+        assert not violations, f"{rel}:\n" + "\n".join(f"  {v}" for v in violations)
         for token in _MD_PARSER.parse(raw):
             if token.nesting == -1:
                 continue
@@ -2143,3 +2830,546 @@ def test_markdown_units_never_partially_overlap() -> None:
     check("virtual/item-fence.md", "1. item\n    ```sql\n    SELECT 1;\n    ```")
     check("virtual/setext-gloss.md", "scoped.\n---\ngloss")
     check("virtual/md-comments-adjacent.md", "<!-- scoped -->\n<!-- gloss -->")
+
+
+def test_unit_model_laws_hold_over_every_scanned_file() -> None:
+    """The unit model's CHECKED LAWS over every scanned file (the
+    round-9 ruling: replace per-construct enumeration with a checked
+    property, so a construct no round thought of cannot silently hide
+    text):
+
+    * LAW 1 line coverage — every non-blank line of a text-carrier file
+      (`.md`/`.yml`/`.yaml`/`.html`) belongs to at least one unit; for
+      `.py`, every tokenize-level STRING/COMMENT token (a Python file's
+      only text carriers) is owned by a unit;
+    * LAW 2 disjoint-or-contained — every pair of a file's units is
+      disjoint or one contains the other, checked GLOBALLY;
+    * LAW 3 no truncation — a unit's text is consistent with its
+      declared line span (exactly the raw lines minus the container
+      dedent; an exact substring for statement units; the parsed value
+      occurring in its span for YAML).
+
+    The per-line floors (markdown-text / yaml-text / html-text) are what
+    make LAW 1 true; this test is what makes losing a floor — or any
+    other model regression that hides text — red."""
+    files = 0
+    for path in _iter_scan_files(REPO_ROOT):
+        rel = str(path.relative_to(REPO_ROOT))
+        raw = path.read_text(encoding="utf-8")
+        units = _units_for(rel, raw)
+        violations = (
+            _coverage_violations(rel, raw, units)
+            + _overlap_violations(rel, units)
+            + _truncation_violations(rel, raw, units)
+        )
+        assert not violations, f"{rel}:\n" + "\n".join(f"  {v}" for v in violations)
+        files += 1
+    assert files > 1000, f"the laws ran over {files} files — the scan scope collapsed?"
+
+
+def test_unit_model_laws_red_when_violated() -> None:
+    """Each law REDS on an injected violation (runtime-constructed unit
+    lists — the tree is never touched), and the overlap sweep agrees
+    with the brute-force all-pairs form on small inputs."""
+    text = "first line has the scoping marker\nsecond line hides a gloss\n"
+    # LAW 1: a line outside every unit reds, naming the file and line.
+    units = [Unit("virtual/laws.md", "markdown", 1, 1, "first line has the scoping marker")]
+    violations = _coverage_violations("virtual/laws.md", text, units)
+    assert any("virtual/laws.md:2" in v for v in violations), violations
+
+    # ... and the same units against a fully-covered text are clean.
+    assert _coverage_violations("virtual/laws.md", "only one line\n", units) == [], (
+        _coverage_violations("virtual/laws.md", "only one line\n", units)
+    )
+
+    # LAW 2: a partial overlap reds (unit A crosses unit B's boundary).
+    overlapping = [
+        Unit("virtual/laws.md", "markdown", 1, 3, "a\nb\nc"),
+        Unit("virtual/laws.md", "markdown", 2, 4, "b\nc\nd"),
+    ]
+    violations = _overlap_violations("virtual/laws.md", overlapping)
+    assert any("1-3" in v and "2-4" in v for v in violations), violations
+    # ... contained and disjoint shapes are clean.
+    assert (
+        _overlap_violations(
+            "virtual/laws.md",
+            [
+                Unit("virtual/laws.md", "markdown", 1, 4, "a\nb\nc\nd"),
+                Unit("virtual/laws.md", "markdown", 2, 3, "b\nc"),
+                Unit("virtual/laws.md", "markdown", 6, 7, "e\nf"),
+            ],
+        )
+        == []
+    ), _overlap_violations("virtual/laws.md", [])
+    # ... and the sweep agrees with the brute-force all-pairs law.
+    import itertools
+
+    def brute_force(units: list[Unit]) -> bool:
+        for a, b in itertools.combinations(units, 2):
+            overlap = not (a.end_line < b.start_line or b.end_line < a.start_line)
+            contains = (a.start_line <= b.start_line and b.end_line <= a.end_line) or (
+                b.start_line <= a.start_line and a.end_line <= b.end_line
+            )
+            touch = a.start_line == b.end_line or b.start_line == a.end_line
+            if overlap and not contains and not touch:
+                return True
+        return False
+
+    fuzz_units = [
+        Unit("virtual/laws.md", "markdown", start, start + offset, "text")
+        for start, offset in ((1, 0), (2, 2), (3, 0), (5, 1), (5, 3), (7, 0), (2, 5))
+    ]
+    assert bool(_overlap_violations("virtual/laws.md", fuzz_units)) == brute_force(fuzz_units)
+
+    # LAW 3: a truncated unit reds (the D9-5 class: text lost relative
+    # to its span).
+    truncated = [Unit("virtual/laws.md", "markdown", 1, 2, "first line has the scoping marker")]
+    violations = _truncation_violations("virtual/laws.md", text, truncated)
+    assert any("1-2" in v for v in violations), violations
+    # ... a container-dedent unit is exactly the raw lines minus its
+    # dedent — every non-blank line loses the dedent's leading columns
+    # (the renderer's detab applies per line; the law reconstructs, not
+    # merely compares).
+    assert (
+        _truncation_violations(
+            "virtual/laws.md",
+            text,
+            [
+                Unit(
+                    "virtual/laws.md",
+                    "markdown",
+                    1,
+                    2,
+                    "irst line has the scoping marker\necond line hides a gloss",
+                    1,
+                )
+            ],
+        )
+        == []
+    )
+    # ... and a yaml unit whose parsed value is foreign to its span reds.
+    yaml_text = "key: the shipped value\n"
+    yaml_units = [Unit("virtual/laws.yaml", "yaml", 1, 1, "a foreign folded value")]
+    assert any(
+        "does not occur" in v
+        for v in _truncation_violations("virtual/laws.yaml", yaml_text, yaml_units)
+    )
+    assert (
+        _truncation_violations(
+            "virtual/laws.yaml",
+            yaml_text,
+            [Unit("virtual/laws.yaml", "yaml", 1, 1, "the shipped value")],
+        )
+        == []
+    )
+
+
+def test_hidden_text_inside_unsplit_characters_is_covered() -> None:
+    """Round-9 D9-5's own class: `str.splitlines` splits on \\v, \\f,
+    \\x85, U+2028 and U+2029 — the parser does not. The unit model now
+    splits on "\\n" ONLY (`_split_lines`), so a paragraph line carrying
+    one of those characters keeps its WHOLE text inside the paragraph's
+    own unit — no text hides outside every unit — and the file's line
+    grid agrees with the parser's (the coverage law holds where the old
+    model left a non-blank line outside every unit)."""
+    scoped_line = "The dispatch-invisible legs are scoped."
+    gloss = "The stranded gauge: rows that " + "can never " + "be dispatched."
+    for separator in ("\x0c", "\x0b", "\x85", "", ""):
+        text = f"{scoped_line}{separator}{gloss}.\n"
+        units = _corpus_units("virtual/unsplit.md", text)
+        # The parser sees ONE line and ONE paragraph; the model's line
+        # grid agrees, and the paragraph's unit carries the WHOLE line —
+        # the gloss is inside a unit, never outside one.
+        assert len(units) == 1, [unit.text for unit in units]
+        assert (units[0].start_line, units[0].end_line) == (1, 1)
+        assert gloss in units[0].text
+        assert separator in units[0].text
+        # The coverage law holds (under the old splitlines grid the
+        # gloss's half-line was outside every unit — the pre-fix red is
+        # preserved in the round-9 evidence logs).
+        assert _coverage_violations("virtual/unsplit.md", text, list(units)) == []
+
+
+def test_container_bodies_are_markdown_at_their_own_lines() -> None:
+    """Round-9 D9-1: markdown-it has no MkDocs admonition/tab extension,
+    so a `!!!`/`???`/`===` container's body parsed as ONE indented code
+    block (or a paragraph's lazy continuation) — two prose paragraphs in
+    a body became ONE unit, and a scoped paragraph purified a universal
+    gloss (executed on the shipped observability.md `!!! tip` and on
+    docs/guides/actors.md, whose two body paragraphs the round-7
+    splitter kept separate and the round-8 model folded into 145-160).
+    The container split applies the RENDERER'S OWN law (`detab`: every
+    line after the marker that is blank or indented >= column + 4,
+    across blank lines): the body is dedented and re-parsed as markdown
+    at a line offset, so each body paragraph/list/fence is its own unit
+    at its true line span. A marker inside a fenced/indented code block
+    or a raw HTML block is code text, never a container. Every gloss
+    value is assembled at runtime from independently non-triggering
+    fragments (the module's own law)."""
+    scoped = "The two dispatch-invisible legs are scoped, so a damper can over-dispatch"
+    gloss = "The stranded gauge: rows that " + "can never " + "be dispatched"
+
+    # ── the executed D9-1 shape: an admonition body with two prose
+    # paragraphs (blank line between) ────────────────────────────────────
+    admonition = f'!!! danger "Only a reservation is strict."\n\n    {scoped}.\n\n    {gloss}.\n'
+    assert _corpus_matches("virtual/admonition-prose.md", admonition) == [
+        "universal-no-dispatch"
+    ], (
+        "the gloss paragraph must red AT ITS OWN PARAGRAPH even when the "
+        "scoped paragraph shares the admonition body"
+    )
+    units = _corpus_units("virtual/admonition-prose.md", admonition)
+    markdown_units = [unit for unit in units if unit.kind == "markdown"]
+    gloss_units = [unit for unit in markdown_units if "can never" in unit.text]
+    assert len(gloss_units) == 1, [unit.text for unit in markdown_units]
+    assert (gloss_units[0].start_line, gloss_units[0].end_line) == (5, 5), [
+        (unit.start_line, unit.end_line, unit.text[:40]) for unit in markdown_units
+    ]
+    scoped_units = [unit for unit in markdown_units if "dispatch-invisible" in unit.text]
+    assert len(scoped_units) == 1 and scoped_units[0].start_line == 3, [
+        (unit.start_line, unit.end_line, unit.text[:40]) for unit in markdown_units
+    ]
+    # The two body paragraphs are SEPARATE units — neither can purify
+    # the other.
+    assert gloss_units[0].start_line != scoped_units[0].start_line
+    # ... and the corrected body (each paragraph its own words) passes.
+    corrected = (
+        '!!! danger "Only a reservation is strict."\n'
+        "\n"
+        "    The read is scoped to the two dispatch-invisible legs, so a\n"
+        "    damper can over-dispatch.\n"
+        "\n"
+        "    The gauge's rows are scoped to the two dispatch-invisible\n"
+        "    legs plus the run-scoped class.\n"
+    )
+    assert not _corpus_matches("virtual/admonition-prose-clean.md", corrected)
+
+    # ── the tabbed shape (`=== "T"`) splits the same way ────────────────
+    tabbed = f'=== "Tab one"\n\n    {scoped}.\n\n    {gloss}.\n'
+    assert _corpus_matches("virtual/tab-prose.md", tabbed) == ["universal-no-dispatch"]
+    tab_units = [
+        unit
+        for unit in _corpus_units("virtual/tab-prose.md", tabbed)
+        if unit.kind == "markdown" and "can never" in unit.text
+    ]
+    assert len(tab_units) == 1 and tab_units[0].start_line == 5
+
+    # ── the details shape (`??? note`) ──────────────────────────────────
+    details = f'??? note "Collapsible"\n\n    {gloss}.\n'
+    assert _corpus_matches("virtual/details-prose.md", details) == ["universal-no-dispatch"]
+
+    # ── a marker inside a fence is CODE, never a container ──────────────
+    fenced_marker = (
+        '```markdown\n!!! note "an example, not a container"\n    the fence\'s own body text\n```\n'
+    )
+    fence_units = _corpus_units("virtual/fenced-marker.md", fenced_marker)
+    assert len(fence_units) == 1, [unit.text for unit in fence_units]
+    assert (fence_units[0].start_line, fence_units[0].end_line) == (1, 4), [
+        (unit.start_line, unit.end_line, unit.text[:40]) for unit in fence_units
+    ]
+
+    # ... and inside an INDENTED CODE BLOCK at top level too.
+    indented_marker = '    !!! note "also code"\n        not a container\n'
+    indented_units = _corpus_units("virtual/indented-marker.md", indented_marker)
+    assert len(indented_units) == 1 and indented_units[0].kind == "markdown", [
+        unit.text for unit in indented_units
+    ]
+
+    # ── a NESTED container: the body re-parses recursively ──────────────
+    nested = f'!!! note "outer"\n\n    !!! note "inner"\n        {gloss}\n'
+    assert _corpus_matches("virtual/admonition-nested.md", nested) == ["universal-no-dispatch"]
+    nested_units = [
+        unit
+        for unit in _corpus_units("virtual/admonition-nested.md", nested)
+        if unit.kind == "markdown" and "can never" in unit.text
+    ]
+    assert len(nested_units) == 1 and nested_units[0].start_line == 4, [
+        (unit.start_line, unit.end_line, unit.text[:40])
+        for unit in _corpus_units("virtual/admonition-nested.md", nested)
+    ]
+
+
+def test_shipped_container_bodies_are_their_own_paragraphs() -> None:
+    """The shipped-tree faces of D9-1: the actors.md admonition's body
+    paragraphs are SEPARATE units again (the round-8 regression folded
+    145-160 into one code block; the round-7 splitter had them as two),
+    and the observability.md `!!! tip` body's fence is its own unit at
+    its own true span. Read-only over the real files."""
+    raw = (REPO_ROOT / "docs/guides/actors.md").read_text(encoding="utf-8")
+    units = [
+        unit for unit in _markdown_units("docs/guides/actors.md", raw) if unit.kind == "markdown"
+    ]
+    identity = [
+        unit for unit in units if unit.text.startswith("**`identity_key` does not fix this.**")
+    ]
+    singleton = [
+        unit
+        for unit in units
+        if unit.text.startswith("**`singleton=True` is a different guarantee")
+    ]
+    assert len(identity) == 1 and len(singleton) == 1, [
+        (unit.start_line, unit.end_line, unit.text[:60]) for unit in units
+    ]
+    # The two paragraphs are separate units at their own true spans —
+    # neither contains the other (the differential against the round-8
+    # fold is preserved in the round-9 evidence logs).
+    assert identity[0].end_line < singleton[0].start_line, (
+        f"the admonition body's paragraphs folded: identity "
+        f"{identity[0].start_line}-{identity[0].end_line}, singleton "
+        f"{singleton[0].start_line}-{singleton[0].end_line}"
+    )
+
+    obs_raw = (REPO_ROOT / "docs/guides/observability.md").read_text(encoding="utf-8")
+    obs_units = [
+        unit
+        for unit in _markdown_units("docs/guides/observability.md", obs_raw)
+        if unit.kind == "markdown"
+    ]
+    tip_units = [
+        unit for unit in obs_units if unit.text.startswith('!!! tip "Which job is starving?')
+    ]
+    assert len(tip_units) == 1, [(u.start_line, u.end_line) for u in obs_units]
+    # The admonition's body fence is its OWN unit — never merged with the
+    # marker line above it.
+    fence_units = [unit for unit in obs_units if "SELECT" in unit.text and "```" in unit.text]
+    assert len(fence_units) == 1 and fence_units[0].start_line > tip_units[0].start_line, [
+        (u.start_line, u.end_line, u.text[:60]) for u in obs_units
+    ]
+
+
+def test_md_html_block_siblings_are_their_own_units() -> None:
+    """Round-9 D9-2: a `.md` file's `html_block` gets the same element/
+    comment model the `.html` surface gives — ONE html_block token
+    folded sibling `<tr>` rows and sibling wrapped `<!-- -->` comments
+    into one unit (latent on the shipped docs, which carry no raw HTML
+    table; the build enables `md_in_html`). The gloss sibling reds ALONE
+    at its own element unit. Every gloss value is assembled at runtime
+    from independently non-triggering fragments (the module's own
+    law)."""
+    scoped_row = "<tr><td>The two dispatch-invisible legs are scoped</td></tr>"
+    gloss_row = (
+        "<tr><td>"
+        + frag_reasons
+        + "</td><td>The stranded gauge: rows that "
+        + "can never "
+        + "dispatch.</td></tr>"
+    )
+    table = "<table>\n" + scoped_row + "\n" + gloss_row + "\n</table>\n"
+    assert _corpus_matches("virtual/md-table.md", table) == ["universal-no-dispatch"], (
+        "the gloss row must red EVEN WHEN the sibling row carries the "
+        "scoping marker — a .md html_block's sibling elements are their "
+        "own units"
+    )
+    row_units = [
+        unit
+        for unit in _corpus_units("virtual/md-table.md", table)
+        if unit.kind == "html-element" and unit.text.startswith("<tr>")
+    ]
+    assert len(row_units) == 2, [unit.text for unit in row_units]
+
+    scoped_comment = "<!-- the scoped read covers the two dispatch-invisible legs -->"
+    gloss_comment = "<!-- the stranded gauge: rows that " + "can never " + "be dispatched -->"
+    div = "<div>\n" + scoped_comment + "\n" + gloss_comment + "\n</div>\n"
+    assert _corpus_matches("virtual/md-div.md", div) == ["universal-no-dispatch"], (
+        "the wrapped gloss comment must red EVEN WHEN the sibling comment "
+        "carries the scoping marker"
+    )
+    comment_units = [
+        unit for unit in _corpus_units("virtual/md-div.md", div) if unit.kind == "html-comment"
+    ]
+    assert len(comment_units) == 2, [unit.text for unit in comment_units]
+
+
+def test_quoted_fence_comment_lines_are_their_own_units() -> None:
+    """Round-9 D9-3: a fence inside a blockquote — the raw lines carry
+    the `> ` prefix, `.strip()` never removes it, so the per-line
+    comment refinement was DEAD inside blockquotes and quoting a fence
+    re-opened round-7's adjacent-comment defeat (two shipped files
+    carry quoted fences: sso.md's dockerfile fence and
+    managed-identities.md's python fence). The comment units now come
+    from the parser's DE-PREFIXED `token.content` mapped back through
+    the token's line map — quoting cannot defeat them. Every gloss
+    value is assembled at runtime from independently non-triggering
+    fragments (the module's own law)."""
+    gloss_comment = "-- the stranded gauge: rows that " + "can never " + "be dispatched"
+    scoped_comment = "-- scoped to the two dispatch-invisible legs only"
+    quoted = "> ```sql\n> " + gloss_comment + "\n> " + scoped_comment + "\n> SELECT 1;\n> ```\n"
+    assert _corpus_matches("virtual/quoted-fence.md", quoted) == ["universal-no-dispatch"], (
+        "the quoted fence's gloss comment must red EVEN WHEN the adjacent "
+        "comment line carries the scoping marker — the blockquote prefix "
+        "cannot defeat the comment units"
+    )
+    comment_units = [
+        unit
+        for unit in _corpus_units("virtual/quoted-fence.md", quoted)
+        if unit.text.lstrip("> ").strip().startswith("--")
+    ]
+    assert len(comment_units) == 2, [unit.text for unit in comment_units]
+    gloss_units = [unit for unit in comment_units if "can never" in unit.text]
+    assert len(gloss_units) == 1 and (gloss_units[0].start_line, gloss_units[0].end_line) == (
+        2,
+        2,
+    ), [(unit.start_line, unit.end_line, unit.text[:50]) for unit in comment_units]
+    # The shipped quoted fences (sso.md's dockerfile fence,
+    # managed-identities.md's python fence): a quoted fence is modeled at
+    # its own true span — the prefix mapping cannot crash or lose it.
+    sso_raw = (REPO_ROOT / "docs/guides/sso.md").read_text(encoding="utf-8")
+    sso_units = _markdown_units("docs/guides/sso.md", sso_raw)
+    dockerfile_fences = [
+        unit for unit in sso_units if unit.kind == "markdown" and "FROM taskq-worker" in unit.text
+    ]
+    assert (
+        len(dockerfile_fences) == 1
+        and dockerfile_fences[0].start_line < dockerfile_fences[0].end_line
+    ), [(u.start_line, u.end_line, u.text[:60]) for u in sso_units if u.kind == "markdown"]
+    managed_raw = (REPO_ROOT / "docs/guides/managed-identities.md").read_text(encoding="utf-8")
+    managed_units = _markdown_units("docs/guides/managed-identities.md", managed_raw)
+    redis_fences = [
+        unit
+        for unit in managed_units
+        if unit.kind == "markdown" and "ExponentialBackoff" in unit.text
+    ]
+    assert len(redis_fences) == 1 and redis_fences[0].start_line < redis_fences[0].end_line, [
+        (u.start_line, u.end_line, u.text[:60]) for u in managed_units if u.kind == "markdown"
+    ]
+
+
+def test_fence_block_comments_are_their_own_units() -> None:
+    """Round-9 D9-4: `_FENCE_COMMENT_PREFIXES` only knew line comments —
+    a `/* ... */` or `<!-- ... -->` block comment inside a fence got no
+    unit and could be purified by a sibling scoped line comment. A block
+    comment is ONE statement: the whole statement is its own unit (a
+    multi-line comment stays the one unit it is). Every gloss value is
+    assembled at runtime from independently non-triggering fragments
+    (the module's own law)."""
+    scoped_comment = "-- scoped to the two dispatch-invisible legs only"
+    gloss = "the stranded gauge: rows that " + "can never " + "dispatch"
+    fence = "```sql\n" + scoped_comment + "\n/* " + gloss + " */\nSELECT 1;\n```\n"
+    assert _corpus_matches("virtual/fence-block-comment.md", fence) == ["universal-no-dispatch"], (
+        "the block-comment gloss must red EVEN WHEN the sibling line "
+        "comment carries the scoping marker — a block comment is its own "
+        "unit"
+    )
+    block_units = [
+        unit
+        for unit in _corpus_units("virtual/fence-block-comment.md", fence)
+        if unit.text.strip().startswith("/*")
+    ]
+    assert len(block_units) == 1 and (block_units[0].start_line, block_units[0].end_line) == (
+        3,
+        3,
+    ), [(unit.start_line, unit.end_line, unit.text[:60]) for unit in block_units]
+
+    # A multi-line block comment stays ONE unit and still reds.
+    multiline = "```sql\n/* " + gloss + ",\n   wrapped across two lines */\nSELECT 1;\n```\n"
+    multiline_units = [
+        unit
+        for unit in _corpus_units("virtual/fence-block-multiline.md", multiline)
+        if unit.text.strip().startswith("/*")
+    ]
+    assert len(multiline_units) == 1, [unit.text for unit in multiline_units]
+    assert (multiline_units[0].start_line, multiline_units[0].end_line) == (2, 3)
+    assert _corpus_matches("virtual/fence-block-multiline.md", multiline), (
+        "a multi-line block comment carrying the gloss reds as its own unit"
+    )
+
+    # An HTML block comment inside an html fence too.
+    html_fence = (
+        "```html\n<!-- " + gloss + " -->\n<p>scoped to the two dispatch-invisible legs</p>\n```\n"
+    )
+    assert _corpus_matches("virtual/fence-html-comment.md", html_fence), (
+        "a `<!-- -->` gloss inside a fence reds as its own unit"
+    )
+
+
+def test_scoping_requires_a_genuine_scope() -> None:
+    """Round-9 D9-6: the scoping test was a naive substring match over
+    `_SCOPED_MARKERS`, so a NEGATION or a CONTRAST waived rule 2 —
+    "…are **not** dispatch-invisible: they can never dispatch" carried
+    the marker "not dispatch-invisible" and passed; "not only the two
+    dispatch-invisible legs" carried "only the two"; "…can never
+    dispatch; jobs on a served queue can dispatch normally" carried
+    "can dispatch"; and "two dispatch" matched "two dispatchers". The
+    predicate is now a real scope check: word-bounded markers, a marker
+    preceded by a negation tail is not a scope, and a positive
+    counter-claim in the unit defeats the scope. Every corpus value is
+    assembled at runtime from independently non-triggering fragments
+    (the module's own law)."""
+    # The four executed negation/contrast defeats — each REDS.
+    negated_marker = (
+        "The stranded gauge's rows are "
+        + "not "
+        + "dispatch-"
+        + "invisible: they "
+        + "can never "
+        + "dispatch."
+    )
+    assert _corpus_matches("virtual/scope-negated.md", negated_marker) == [
+        "universal-no-dispatch"
+    ], "a negated marker is not a scope"
+    not_only = (
+        "The stranded detector's pending/scheduled rows are "
+        + "not only the two "
+        + "dispatch-invisible legs — these rows "
+        + "can never "
+        + "dispatch."
+    )
+    assert _corpus_matches("virtual/scope-not-only.md", not_only) == ["universal-no-dispatch"], (
+        "a 'not only' contrast is not a scope"
+    )
+    contrast = (
+        "The stranded gauge: rows on an unserved queue "
+        + "can never "
+        + "dispatch; jobs on a served queue "
+        + "can dispatch"
+        + " normally."
+    )
+    assert _corpus_matches("virtual/scope-contrast.md", contrast) == [
+        "closed-enumeration",
+        "universal-no-dispatch",
+    ], "a positive counter-claim contradicts the universal claim instead of scoping it"
+    # ... but the third leg's OWN definition (the shipped prose's shape:
+    # the unit names workflow_root_missing and says its row CAN dispatch
+    # when served) is the reason set's own statement — green.
+    third_leg_definition = (
+        '`reason="workflow_root_missing"` is a different class of fault: '
+        "the two dispatch-invisible reasons never touch such rows. Such a "
+        "row " + "can dispatch" + " and be bounded-consumed when its actor config and effective "
+        "routing queue are otherwise served."
+    )
+    assert not _corpus_matches("virtual/scope-third-leg.md", third_leg_definition), (
+        "the third leg's own can-dispatch definition must not false-red"
+    )
+    two_dispatchers = (
+        "The two dispatchers share the gauge; the stranded detector's rows "
+        + "can never "
+        + "dispatch."
+    )
+    assert _corpus_matches("virtual/scope-two-dispatchers.md", two_dispatchers) == [
+        "universal-no-dispatch"
+    ], "'two dispatch' must not match 'two dispatchers'"
+
+    # The genuine scoped forms stay green.
+    genuine = (
+        "The gauge's rows are scoped to "
+        + "the two dispatch-invisible legs"
+        + " ("
+        + frag_reasons
+        + " and "
+        + frag_unserved
+        + ") only."
+    )
+    assert not _corpus_matches("virtual/scope-genuine.md", genuine), (
+        "the genuine scoped form must not false-red"
+    )
+    may_dispatch = (
+        "The stranded detector's reason set: "
+        + frag_reasons
+        + " (the row is invisible to every dispatch round), "
+        + frag_unserved
+        + " (likewise dispatch-invisible), and workflow_root_missing (the "
+        "row may dispatch and run when served)."
+    )
+    assert not _corpus_matches("virtual/scope-may-dispatch.md", may_dispatch), (
+        "the third leg's own may-dispatch definition is a genuine scope"
+    )
