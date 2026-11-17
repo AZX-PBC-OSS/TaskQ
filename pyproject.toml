@@ -1001,6 +1001,13 @@ dev = [
     "hypothesis>=6.157.1",
     "itsdangerous>=2.2.0",
     "jsonschema>=4.26.0",
+    # The stranded-reason vocabulary invariant's markdown units are driven
+    # by markdown-it-py's block token/line map (the tests import it
+    # directly, so it is declared here rather than ridden transitively);
+    # the floor matches the locked version the scanner's spans are
+    # derived from. The docs BUILD's parser stays Python-Markdown via
+    # mkdocs below — that parser exposes no line map to drive spans from.
+    "markdown-it-py>=4.2.0",
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=1.0.6",
