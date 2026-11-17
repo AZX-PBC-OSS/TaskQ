@@ -111,7 +111,7 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (
         "1344835a0369814f2ccc987d2e649d91466df4896750b4acce5ceca38dbf4bd1",
         "src/taskq/cli.py",
-        "the doctor's roll-up SQL's own two dispatch-invisible count columns (the f-string's rendered text is one unit — the two chunk digests this entry replaces were the same SQL's interpolation chunks)",
+        "the doctor's roll-up SQL's own two dispatch-invisible count columns (the f-string's rendered text is one JoinedStr unit — this entry replaces the old per-chunk digests; the unit's span is the WHOLE f-string literal, wider than any one interpolation chunk it replaced)",
     ),
     (
         "613caf5bb80e71cffbc7b8efcc1a58686ce43e0345a231cd6475a8d7d75faa97",
@@ -156,7 +156,7 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (
         "5efac33f8077342ca5f87425e8d7e0098910b134b293cd0357a5bce3f6feebc3",
         "docs/guides/testing.md",
-        "the fake runner's run-until-drained refusal is about its own registration/stub mechanism, not the leader gauge (the admonition body is its own paragraph unit under the container model — same text, true span)",
+        "the fake runner's run-until-drained refusal is about its own registration/stub mechanism, not the leader gauge (the admonition body is its own paragraph unit under the container model — the span is NARROWER than the old blank-line block, which also swallowed the `!!! note` marker line above the paragraph; the marker line is its own unit now)",
     ),
     (
         "20493d11e1625e96eca5973ee5136980574c9fb18d2358cf81238d859564e90e",
@@ -220,11 +220,6 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "92620b0d08dd0f15b25e36b084c243b5aeea2549497c41913b731070576dd5ba",
-        "docs/guides/troubleshooting.md",
-        "the stranded-jobs cause row's own subject-scoped text (the no-actor-config cause as the troubleshooting table states it)",
-    ),
-    (
-        "20493d11e1625e96eca5973ee5136980574c9fb18d2358cf81238d859564e90e",
         "docs/guides/troubleshooting.md",
         "the stranded-jobs cause row's own subject-scoped text (the no-actor-config cause as the troubleshooting table states it)",
     ),
