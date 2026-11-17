@@ -3077,6 +3077,10 @@ def test_markdown_structural_siblings_are_their_own_units() -> None:
     assert len(overtake) == 1 and (overtake[0].start_line, overtake[0].end_line) == (4, 4), [
         unit.text for unit in plain_units
     ]
+    # The exact total: the fence unit plus the one per-line over-take
+    # unit — a third unexpected unit has no place to hide (the same pin
+    # the two-fences arm below carries).
+    assert len(plain_units) == 2, [unit.text for unit in plain_units]
     two_fences = "```sql\nSELECT 1;\n```\n```sql\nSELECT 2;\n```"
     fence_units = _corpus_units("virtual/fence-two.md", two_fences)
     two_fence_units = [u for u in fence_units if u.text.count("```") >= 1]
