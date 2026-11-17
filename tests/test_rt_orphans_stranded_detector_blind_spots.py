@@ -213,8 +213,11 @@ async def test_stranded_detector_sees_both_strand_shapes(
     shape - a pending row WITH actor_config on an unserved queue was
     invisible to the gauge. (This file's probes are scoped to the
     dispatch-invisible class; the detector's run-scoped
-    workflow_root_missing leg is the separately controlled third
-    shape.)"""
+    workflow_root_missing leg is the third shape, behaviourally
+    controlled in THIS file by
+    `test_stranded_detector_third_leg_root_missing_precedence_and_isolation`
+    below - the real tick, the real gauge entry, and the real warning
+    event.)"""
     schema = f"torp_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
     pool: asyncpg.Pool | None = None
@@ -735,6 +738,234 @@ async def test_queue_depth_loop_samples_live_workers_per_queue(
         assert depths and depths[-1] == {_NO_WORKER_QUEUE: 1}
         assert live and live[-1] == {"default": 2, "reports": 1}, (
             f"the dead worker's {_NO_WORKER_QUEUE!r} subscription must not count; got {live[-1]!r}"
+        )
+    finally:
+        if pool is not None:
+            await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+# ── The third leg: workflow_root_missing — one real tick, the full ──────
+# ── reason set, the precedence, and the malformed-value isolation ────────
+
+
+_ACTOR_MALFORMED = "rm_malformed_flow_actor"
+_ACTOR_ABSENT = "rm_absent_flow_actor"
+_ACTOR_RM_NOCONFIG = "rm_rootmissing_noconfig_actor"
+_ACTOR_RM_UNSERVED = "rm_rootmissing_unserved_actor"
+_ACTOR_NOCONFIG = "rm_plain_noconfig_actor"
+_ACTOR_UNSERVED = "rm_plain_unserved_actor"
+_ACTOR_PRESENT = "rm_present_root_actor"
+_RM_SERVED_QUEUE = "rm-served-queue"
+
+
+async def _seed_third_leg_estate(conn: asyncpg.Connection, schema: str) -> dict[str, str]:
+    """The full estate, one row per classification (each its own actor so
+    the reason set is exact):
+
+    * malformed flow_id (a workflow-shaped row whose ``flow_id`` is not a
+      uuid): the cast guard must ISOLATE it — this leg false for it, the
+      two dispatch legs still evaluated (its actor has no config: the
+      row classifies no_actor_config and the tick NEVER aborts);
+    * absent flow_id (no metadata key): this leg false, the row healthy
+      (config present, queue served);
+    * valid-missing-root A: actor has NO config — root-missing takes
+      PRECEDENCE (only workflow_root_missing, never a double count);
+    * valid-missing-root B: actor has config but the routing queue is
+      unserved — same precedence direction;
+    * an ordinary no_actor_config row and an ordinary unserved_queue row
+      (the two existing legs, un-degraded);
+    * a workflow row whose root IS present (the negative direction: a
+      served workflow row never enters the new leg)."""
+    await conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
+        _ACTOR_PRESENT,
+        _RM_SERVED_QUEUE,
+    )
+    await conn.executemany(
+        f'INSERT INTO "{schema}".workers (id, hostname, pid, queues, last_seen_at) '
+        "VALUES ($1, 'rm-host', 1, $2, clock_timestamp())",
+        [(new_uuid(), [_RM_SERVED_QUEUE])],
+    )
+
+    async def _node(
+        actor: str, queue: str, metadata: dict[str, object], *, with_config: bool
+    ) -> str:
+        if with_config:
+            await conn.execute(
+                f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
+                actor,
+                queue,
+            )
+        job_id = str(new_uuid())
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
+            "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) "
+            "VALUES ($1, $2, $3, '{}'::jsonb, 3, 'transient', 'pending', 'screen', "
+            "$4::jsonb, $5, clock_timestamp())",
+            job_id,
+            actor,
+            queue,
+            _json.dumps(metadata),
+            # THE FAIRNESS COHORT (jobs_wf_fairness_cohort_check): a row
+            # carrying the flow link holds its flow id as the cohort key —
+            # exactly the metadata value, whatever it spells.
+            str(metadata.get("flow_id")) if "flow_id" in metadata else None,
+        )
+        return job_id
+
+    # NOTE: _json is not imported in this module's header — the local import
+    # below keeps the helper self-contained.
+    import json as _json  # Why: the seeded estate's own encoder.
+
+    ids: dict[str, str] = {}
+    # THE MALFORMED VALUE: a persisted row whose flow_id text is not a
+    # uuid. The workflow expression index (01.00.26_02) refuses such a
+    # link on a workflow-SHAPED row (step_key non-null) at insert — the
+    # corrupt estate the guard owns is the legacy/vanilla-shape row
+    # (step_key NULL), whose pending/scheduled scan an UNGUARDED cast
+    # would still evaluate. The guard's own step_key clause isolates it;
+    # the row classifies by the dispatch legs (no config here) and the
+    # tick never aborts.
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) VALUES "
+        "($1, $2, $3, '{}'::jsonb, 3, 'transient', 'pending', NULL, "
+        "$4::jsonb, $4->>'flow_id', clock_timestamp())",
+        str(new_uuid()),
+        _ACTOR_MALFORMED,
+        "default",
+        _json.dumps({"flow_id": "not-a-uuid"}),
+    )
+    ids["malformed"] = "seeded"
+    ids["absent"] = await _node(
+        _ACTOR_ABSENT,
+        _RM_SERVED_QUEUE,
+        {},
+        with_config=True,
+    )
+    missing_flow = str(new_uuid())
+    ids["missing_flow"] = missing_flow
+    ids["rm_noconfig"] = await _node(
+        _ACTOR_RM_NOCONFIG,
+        "default",
+        {"flow_id": missing_flow},
+        with_config=False,
+    )
+    ids["rm_unserved"] = await _node(
+        _ACTOR_RM_UNSERVED,
+        # an UNSERVED queue: under the correct precedence this row
+        # classifies ONLY workflow_root_missing (the unserved arm's own
+        # NOT-root-missing leg suppresses it); the precedence inversion
+        # would ALSO report the genuinely-unserved queue — the double
+        # count the control reds on.
+        "rm-nobody-serves-rootmissing",
+        {"flow_id": missing_flow},
+        with_config=True,
+    )
+    ids["plain_noconfig"] = await _node(_ACTOR_NOCONFIG, "default", {}, with_config=False)
+    ids["plain_unserved"] = await _node(
+        _ACTOR_UNSERVED, "rm-nobody-serves", {}, with_config=True
+    )
+    # THE PRESENT ROOT (the negative direction): a served workflow row
+    # whose flow's own __flow__ root row EXISTS never enters the new leg.
+    root_id = str(new_uuid())
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
+        "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) VALUES "
+        "($1, $2, $3, '{}'::jsonb, 3, 'transient', 'running', '__flow__', "
+        "$4::jsonb, $4::text, clock_timestamp())",
+        root_id,
+        _ACTOR_PRESENT,
+        _RM_SERVED_QUEUE,
+        _json.dumps({"flow_id": root_id}),
+    )
+    ids["present_root_node"] = await _node(
+        _ACTOR_PRESENT,
+        _RM_SERVED_QUEUE,
+        {"flow_id": root_id},
+        with_config=False,  # the actor's config row was seeded upfront
+    )
+    return ids
+
+
+async def test_stranded_detector_third_leg_root_missing_precedence_and_isolation(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-4 NEW-2: the detector's third leg has a BEHAVIOURAL control —
+    one real detector tick over a real PostgreSQL estate carrying every
+    classification beside the two existing legs:
+
+    * the tick SUCCEEDS (a malformed ``flow_id`` value is isolated by the
+      guard BEFORE the uuid cast — the tick never aborts, and the two
+      dispatch legs still classify their own rows);
+    * the COMPLETE expected reason set (every row owns exactly one
+      reason): the malformed row classifies no_actor_config (this leg
+      false for it), the absent-flow row and the present-root workflow
+      row classify NOTHING, and BOTH root-missing rows classify ONLY
+      ``workflow_root_missing`` — the precedence over a coexisting
+      no-config or unserved condition, so one row never double-counts;
+    * the ``workflow_root_missing`` GAUGE entry and the
+      ``stranded-jobs-workflow-root-missing`` WARNING event, with the
+      bounded lexicographic flow-id detail naming the affected runs."""
+    schema = f"trml_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        ids = await _seed_third_leg_estate(conn, schema)
+
+        pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+        gauge, events = await _run_detector(pg_dsn, pool, schema, monkeypatch)
+
+        # THE TICK SUCCEEDED: a malformed flow_id never aborted the query.
+        query_failures = [e for e in events if e.get("event") == "stranded-jobs-query-failed"]
+        assert query_failures == [], (
+            f"the malformed flow_id value must be isolated by the cast guard — "
+            f"the tick never aborts: {query_failures}"
+        )
+
+        # THE COMPLETE REASON SET — every row owns exactly one reason.
+        assert _last_by_reason[0] == {
+            (_ACTOR_MALFORMED, "no_actor_config"): 1,
+            (_ACTOR_NOCONFIG, "no_actor_config"): 1,
+            (_ACTOR_UNSERVED, "unserved_queue"): 1,
+            (_ACTOR_RM_NOCONFIG, "workflow_root_missing"): 1,
+            (_ACTOR_RM_UNSERVED, "workflow_root_missing"): 1,
+        }, (
+            f"the exact reason set: the malformed flow_id row isolates to "
+            f"no_actor_config, the absent-flow and present-root rows enter "
+            f"nothing, and BOTH root-missing rows classify ONLY "
+            f"workflow_root_missing (the precedence — never a double "
+            f"count); published {_last_by_reason[0]!r}"
+        )
+        # THE GAUGE ENTRY (the reason's own (actor, count) face).
+        assert gauge.get(_ACTOR_RM_NOCONFIG) == 1 and gauge.get(_ACTOR_RM_UNSERVED) == 1, gauge
+        assert _ACTOR_ABSENT not in gauge and _ACTOR_PRESENT not in gauge, gauge
+
+        # THE WARNING EVENT: its own kind, the bounded flow-id detail
+        # naming the affected runs.
+        warnings = [
+            e
+            for e in events
+            if e.get("event") == "stranded-jobs-workflow-root-missing"
+        ]
+        by_actor = {e.get("actor"): e for e in warnings}
+        assert set(by_actor) == {_ACTOR_RM_NOCONFIG, _ACTOR_RM_UNSERVED}, (
+            f"the root-missing warning fires for exactly the root-missing "
+            f"actors: {warnings}"
+        )
+        for actor in (_ACTOR_RM_NOCONFIG, _ACTOR_RM_UNSERVED):
+            event = by_actor[actor]
+            assert event.get("pending_count") == 1, event
+        missing_flow = ids["missing_flow"]
+        assert set(by_actor[_ACTOR_RM_NOCONFIG].get("flow_ids") or []) == {missing_flow}, (
+            by_actor[_ACTOR_RM_NOCONFIG]
+        )
+        assert set(by_actor[_ACTOR_RM_UNSERVED].get("flow_ids") or []) == {missing_flow}, (
+            by_actor[_ACTOR_RM_UNSERVED]
         )
     finally:
         if pool is not None:
