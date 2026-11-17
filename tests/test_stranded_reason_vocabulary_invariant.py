@@ -12,14 +12,18 @@ declarations. Three consecutive review rounds found the same defect
 class on further shipped surfaces; this invariant replaces hand
 enumeration with a maintained scanner:
 
-* **semantic local units** — Markdown paragraphs/table rows, YAML scalar
-  values (parsed and folded), YAML comment lines, HTML element runs (each
-  `<tr>` row / block element; a wrapped element stays one unit), HTML
-  `<!-- -->` and Jinja/Tera `{# #}` comment statements, AST docstrings,
-  contiguous comment blocks, and `Field(description=...)` strings — never
-  "a label occurs somewhere in the file", and never a blank-line block
-  folding sibling elements/comments into one unit (a scoped sibling must
-  not purify a gloss);
+* **semantic local units** — Markdown STRUCTURAL siblings (each tight
+  list item at its own marker, each blockquote paragraph, each fenced
+  block with each fenced line-comment line, each table row; a wrapped
+  paragraph, a list item's own continuation lines and a single fenced
+  block's content stay the one statement they are), YAML scalar
+  values (parsed and folded), YAML comment lines, HTML element runs
+  (each `<tr>` row / block element; a wrapped element stays one unit),
+  HTML `<!-- -->` and Jinja/Tera `{# #}` comment statements, AST
+  docstrings, contiguous comment blocks, and `Field(description=...)`
+  strings — never "a label occurs somewhere in the file", and never a
+  blank-line block folding sibling elements/items/quotes/comments into
+  one unit (a scoped sibling must not purify a gloss);
 * **four detection rules** — (1) the closed reason-set enumeration, (2)
   the universal no-dispatch/no-touch claim, (3) the whole-detector
   parity/mirror claim, (4) the structural closed enumeration (every
@@ -114,14 +118,9 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "the Live Workers column's own subject is the liveness read's agreement across surfaces, not a reason enumeration",
     ),
     (
-        "2995b9f3579d7badc8323638dbad86532fe1cdcaec2ec994e91540537b8ca8b2",
-        "docs/guides/cli.md",
-        "the doctor's own findings prose (the no-stored-row subject's true never-dispatches gloss) and the queue-diagnostics table — subject-scoped non-defects",
-    ),
-    (
-        "3549517cafb7b6a201439204c5b33f9baae5f706862c1c074083204d22f191f4",
-        "docs/guides/cli.md",
-        "the doctor's own findings prose (the no-stored-row subject's true never-dispatches gloss) and the queue-diagnostics table — subject-scoped non-defects",
+        "cb4f430adf27cd1a6369112810469205a9779f187ecd2752941998609ffe1eae",
+        "docs/guides/observability.md",
+        "the alert inventory list item (the shipped rules' names), not a reason enumeration",
     ),
     (
         "a74123c4e98e61863450a38f5b96a18c825c305725d0ab70b5e18a43aec96785",
@@ -134,19 +133,14 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "the starved-from-zero diagnostics row's own subjects (the depth/utilization/live-workers split) — the stranded mention is the unserved split, subject-scoped",
     ),
     (
-        "e79bf9ddb640dab45c1f48c109b054a59deec6d3efac55474ad589b7e3e2a175",
-        "docs/guides/observability.md",
-        "the alert inventory paragraph (the shipped rules' names), not a reason enumeration",
-    ),
-    (
         "533d0eb32c11748e7d8b4a472bd0c329583d00f54d18b92f7c68fcbe9391de4c",
         "docs/guides/ops.md",
         "the ops deadline/queue-bootstrap row's own subject (the deadline sweep's own condition), not the gauge's reason set",
     ),
     (
-        "f070a3f0316c84eafc8d8f62538026ea71fc3f2a6d7fef9b3b46be76b1a89fbf",
+        "0760aec62348f6ebe393eaca4ddbb933c6297a5b5f06ce9375ac2e2ccc7e521e",
         "docs/guides/runbooks.md",
-        "the TaskQQueueUnserved section's own remedy steps — the sibling alert's subject",
+        "the TaskQQueueUnserved section's own remedy step — the sibling alert's subject",
     ),
     (
         "eba6473c5b0c4f05523bc97b2afe7a432176aa5b44e93bbbc654561a412dd7b0",
@@ -209,9 +203,9 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "the queue badge tooltip's own sanctioned two-leg text asserted by the page pin",
     ),
     (
-        "e4e6387a7d9fe72c228caf77d1fdc43e6d6e9268d744fc827fc7001c631b2d11",
+        "24dc01ee8d8cf49c4e8567edb46d107d042aa31d762fc9b257a973f9d5e9d3f0",
         "docs/guides/retries.md",
-        "the deadline sweep's own never-dispatched statement (expired pending jobs past schedule_to_close) — the deadline subject, not the gauge's reason set",
+        "the deadline sweep's own never-dispatched list item (expired pending jobs past schedule_to_close) — the deadline subject, not the gauge's reason set",
     ),
     (
         "92620b0d08dd0f15b25e36b084c243b5aeea2549497c41913b731070576dd5ba",
@@ -424,56 +418,242 @@ def _is_table_separator(stripped: str) -> bool:
     return seen_dash
 
 
+#: A list item marker: `-`, `*`, `+`, `N.` or `N)` followed by item
+#: whitespace. The match's end offset is the item's content column (the
+#: minimum indentation of the item's own continuation lines).
+_LIST_MARKER: Final = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+#: A blockquote prefix: one or more `>` markers, each optionally followed
+#: by one space, after up to three leading spaces.
+_QUOTE_PREFIX: Final = re.compile(r"^ {0,3}(?:>\s?)+")
+
+#: A fenced-block delimiter: up to three leading spaces, optionally
+#: preceded by blockquote markers (a fence inside a blockquote), then
+#: three or more backticks or tildes. The OPENING fence may carry an info
+#: string (GFM: a backtick fence's info string may not itself contain a
+#: backtick); the CLOSING fence is the delimiter alone.
+_FENCE_DELIMITER: Final = re.compile(r"^ {0,3}(?:>\s*)*(`{3,}|~{3,})(.*)$")
+
+#: A line-comment token inside a fenced block: SQL/Lua `--`, C++/JS `//`,
+#: or shell/YAML/Python `#`. A line comment runs to end of line, so
+#: adjacent comment lines inside a fence are SIBLING statements, never
+#: folded (the same law the YAML comment units encode).
+_FENCE_COMMENT_PREFIXES: Final = ("--", "//", "#")
+
+
+def _fence_delim(raw: str, open_char: str | None, open_len: int) -> tuple[str, str, int] | None:
+    """Classify one line against the fence state: `("open", char, length)`,
+    `("close", char, length)`, or None (an ordinary line — inside an open
+    fence every look-alike is content)."""
+    match = _FENCE_DELIMITER.match(raw)
+    if match is None:
+        return None
+    run, info = match.group(1), match.group(2)
+    char, length = run[0], len(run)
+    if open_char is not None:
+        if char == open_char and length >= open_len and info.strip() == "":
+            return ("close", char, length)
+        return None  # any other delimiter look-alike is fence content
+    if char == "`" and "`" in info:
+        return None  # GFM: a backtick fence's info string may not contain a backtick
+    return ("open", char, length)
+
+
 def _markdown_units(path: str, text: str) -> Iterator[Unit]:
-    """Markdown paragraphs AND table rows (the semantic local units) —
-    each table ROW is its own unit. The blank-line block splitter alone
-    made an ENTIRE table one unit, so one row's scoping marker purified a
-    sibling row's universal gloss (the round-4 NEW-4 attack: a two-member
-    gloss row laundered inside a table whose other row carried the
-    marker). Header/separator rows are their own units too — they carry
-    no detector vocabulary and the rules never fire on them, but their
-    spans stay addressable for the allowlist's digest law. The outer
-    pipes are OPTIONAL (the round-5 F-2 attack): GFM and Python-Markdown
-    both accept a pipe-delimited row without its leading and/or trailing
-    delimiter, so demanding both outer pipes folded a no-trailing-pipe
-    gloss row into the paragraph block, where its sibling row's scoping
-    marker (the same no-trailing-pipe shape) purified it. A row is any
+    """Markdown STRUCTURAL units (the semantic local units). The
+    blank-line block splitter alone folded STRUCTURAL SIBLINGS into one
+    unit, so a scoping marker in one sibling purified a universal gloss
+    in another — the defect the round-4 NEW-4 attack demonstrated for
+    table rows and the round-6 M-1 attack for HTML elements and YAML
+    comment lines, and the round-7 N-1 attack demonstrated for the
+    surface family that carries most of the docs: TIGHT LISTS, BLOCKQUOTE
+    PARAGRAPHS, and FENCED BLOCKS. The units are now:
+
+    * every TIGHT LIST ITEM is its own unit — a list marker (`-`, `*`,
+      `+`, `N.`, `N)`) starts a unit at its own indentation, nested
+      markers included (each nested item its own unit), and the item's
+      own continuation lines stay with it (a wrapped item is one
+      statement). A line the item cannot own (indented below the item's
+      content column) is its own paragraph unit — a line a sibling could
+      purify is never folded into it;
+    * every BLOCKQUOTE PARAGRAPH is its own unit — a `>`-only separator
+      line becomes the inner blank that starts the next unit, and `>>`
+      nesting is stripped before the inner text is split by THIS SAME
+      STRUCTURE, so a list or paragraph inside a quote splits the same
+      way;
+    * every FENCED BLOCK is its own unit — the delimiters and the
+      fence's inner content never merge with the surrounding prose, two
+      adjacent fences are separate units, and every LINE-COMMENT line
+      inside a fence is ALSO its own unit (additive, like the HTML
+      element units: an extra unit can only add a red, never hide one),
+      so sibling comment statements can never fold. The fence's
+      non-comment content stays the one statement it is;
+    * table rows keep their round-4 per-row units, and a plain wrapped
+      paragraph stays the one unit it is.
+
+    The structural split REPLACES the blank-line block — a tight list is
+    no longer ALSO one coarse unit, because the coarse unit was the
+    laundering vector. Fence delimiters and table header/separator rows
+    carry no detector vocabulary and the rules never fire on them, but
+    their spans stay addressable for the allowlist's digest law. The
+    outer pipes remain OPTIONAL (the round-5 F-2 attack): a row is any
     line carrying an unescaped pipe in a TABLE CONTEXT — a preceding
     header+separator pair, or the same contiguous run."""
-    lines = text.splitlines()
+    yield from _markdown_block_units(path, list(enumerate(text.splitlines(), start=1)))
 
-    def unit_for(block: list[tuple[int, str]]) -> Unit:
-        return Unit(
-            path,
-            "markdown",
-            block[0][0],
-            block[-1][0],
-            "\n".join(t for _, t in block),
-        )
 
-    block: list[tuple[int, str]] = []
+def _markdown_block_units(path: str, lines: list[tuple[int, str]]) -> Iterator[Unit]:
+    """One markdown nesting level: fenced blocks first (document-level,
+    quote-marker-tolerant delimiters), then blockquote runs (recursed on
+    their inner text), then the flat paragraph/list/table machine over
+    the remaining runs."""
+    segments: list[tuple[bool, list[tuple[int, str]]]] = []
+    open_char: str | None = None
+    open_len = 0
+    for lineno, raw in lines:
+        delim = _fence_delim(raw, open_char, open_len)
+        if open_char is not None:
+            segments[-1][1].append((lineno, raw))
+            if delim is not None:
+                open_char = None
+            continue
+        if delim is not None:
+            open_char, open_len = delim[1], delim[2]
+            segments.append((True, [(lineno, raw)]))
+            continue
+        if segments and not segments[-1][0]:
+            segments[-1][1].append((lineno, raw))
+        else:
+            segments.append((False, [(lineno, raw)]))
+    for is_fence, segment in segments:
+        if is_fence:
+            yield from _fence_units(path, segment)
+        else:
+            yield from _quote_or_prose_units(path, segment)
+
+
+def _fence_units(path: str, segment: list[tuple[int, str]]) -> Iterator[Unit]:
+    """The fenced block's own units: the WHOLE fence (delimiters and
+    inner content — a single fenced block's content is the one statement
+    it is, never merged with the surrounding prose, two adjacent fences
+    separate), plus — additively — each line-comment line inside it as
+    its own unit."""
+    yield Unit(
+        path,
+        "markdown",
+        segment[0][0],
+        segment[-1][0],
+        "\n".join(raw for _, raw in segment),
+    )
+    first = _FENCE_DELIMITER.match(segment[0][1])
+    open_char = first.group(1)[0] if first else "`"
+    open_len = len(first.group(1)) if first else 3
+    closed = len(segment) > 1 and _fence_delim(segment[-1][1], open_char, open_len) is not None
+    body = segment[1:-1] if closed else segment[1:]
+    for lineno, raw in body:
+        if raw.strip().startswith(_FENCE_COMMENT_PREFIXES):
+            yield Unit(path, "markdown", lineno, lineno, raw)
+
+
+def _quote_or_prose_units(path: str, segment: list[tuple[int, str]]) -> Iterator[Unit]:
+    """Split a prose segment into blockquote runs and plain runs. A
+    non-blank, non-marker line directly after a quote line is the GFM
+    lazy continuation of the quote paragraph and stays in the run; every
+    other non-quote line starts or joins the plain run."""
+    runs: list[tuple[bool, list[tuple[int, str]]]] = []
+    in_quote = False
+    for lineno, raw in segment:
+        if _QUOTE_PREFIX.match(raw) is not None:
+            if in_quote:
+                runs[-1][1].append((lineno, raw))
+            else:
+                runs.append((True, [(lineno, raw)]))
+            in_quote = True
+            continue
+        if in_quote and raw.strip() and _LIST_MARKER.match(raw) is None:
+            runs[-1][1].append((lineno, raw))  # the lazy continuation
+            continue
+        in_quote = False
+        if runs and not runs[-1][0]:
+            runs[-1][1].append((lineno, raw))
+        else:
+            runs.append((False, [(lineno, raw)]))
+    for is_quote, run in runs:
+        if is_quote:
+            inner: list[tuple[int, str]] = []
+            for lineno, raw in run:
+                match = _QUOTE_PREFIX.match(raw)
+                inner.append((lineno, raw[match.end() :] if match else raw))
+            yield from _markdown_block_units(path, inner)
+        else:
+            yield from _flat_prose_units(path, run)
+
+
+def _flat_prose_units(path: str, segment: list[tuple[int, str]]) -> Iterator[Unit]:
+    """The flat machine: table rows stay per-row units (the round-4
+    law), every tight list item is its own unit (nested markers
+    included; continuation lines indented to the item's content column
+    stay with the item), and the remaining blank-line blocks are the
+    paragraphs they are. A plain line indented below the open item's
+    content column ends the item and starts a paragraph — it is never
+    folded into a sibling item's unit."""
+    lines = [raw for _, raw in segment]
+    units: list[Unit] = []
+    para: list[tuple[int, str]] = []
+    item: list[tuple[int, str]] = []
+    item_indent = 0
     in_table = False  # the previous non-blank line was a table row/separator
-    for idx, line in enumerate(lines, start=1):
+
+    def emit(block: list[tuple[int, str]]) -> None:
+        if block:
+            units.append(
+                Unit(
+                    path,
+                    "markdown",
+                    block[0][0],
+                    block[-1][0],
+                    "\n".join(t for _, t in block),
+                )
+            )
+
+    for pos, (idx, line) in enumerate(segment):
         stripped = line.strip()
         if not stripped:
-            if block:
-                yield unit_for(block)
-                block = []
+            emit(para)
+            para = []
+            emit(item)
+            item = []
             in_table = False
             continue
-        following = lines[idx].strip() if idx < len(lines) else ""
+        following = lines[pos + 1].strip() if pos + 1 < len(lines) else ""
         is_row = _has_unescaped_pipe(stripped) and (in_table or _is_table_separator(following))
         if is_row:
-            if block:
-                yield unit_for(block)
-                block = []
-            yield Unit(path, "markdown", idx, idx, stripped)
+            emit(para)
+            para = []
+            emit(item)
+            item = []
+            units.append(Unit(path, "markdown", idx, idx, stripped))
             in_table = True
             continue
-        block.append((idx, line))
+        marker = _LIST_MARKER.match(line)
+        if marker is not None:
+            emit(para)
+            para = []
+            emit(item)
+            item = [(idx, line)]
+            item_indent = marker.end()
+            in_table = False
+            continue
         in_table = False
-    if block:
-        yield unit_for(block)
+        if item and len(line) - len(line.lstrip()) >= item_indent:
+            item.append((idx, line))
+            continue
+        emit(item)
+        item = []
+        para.append((idx, line))
+    emit(para)
+    emit(item)
+    yield from units
 
 
 def _yaml_scalar_units(path: str, text: str) -> Iterator[Unit]:
@@ -1597,3 +1777,155 @@ def test_html_rows_and_yaml_comments_are_their_own_units() -> None:
     ]
     assert len(cell_units) == 1, [unit.text for unit in cell_units]
     assert "wrapped sentence is one statement" in cell_units[0].text
+
+
+def test_markdown_structural_siblings_are_their_own_units() -> None:
+    """Round-7 N-1: the Markdown surface gets the ruling's own structural
+    units — each TIGHT LIST ITEM (nested markers included), each
+    BLOCKQUOTE PARAGRAPH (a `>`-only separator line breaks it; `>>`
+    nesting included), and each FENCED BLOCK (never merged with the
+    surrounding prose; two adjacent fences separate; each fenced
+    line-comment line its own unit) — so the four executed defeats can no
+    longer stay green by folding: the architecture.md list-item
+    insertion, the scoped+gloss bullet pair, the `> scoped` / `>` /
+    `> gloss` pair, and the troubleshooting.md adjacent-comment-in-fence
+    insertion each red AT THE GLOSS'S OWN UNIT. Honesty: a wrapped
+    paragraph, a list item's own continuation lines, and a single fenced
+    block's content stay the ONE unit they are (a statement is never
+    fragmented into meaningless pieces). Every gloss value is assembled
+    at runtime from independently non-triggering fragments (the module's
+    own law)."""
+    # ── the executed architecture.md defeat: a gloss list item inserted
+    # into a tight list whose sibling item carries the scoping ───────────
+    scoped_item = (
+        "11. **Stranded-jobs detector**: runs every 60 s. Warns about "
+        "pending/scheduled rows that cannot make progress, with three "
+        "meanings: `" + frag_reasons + "` (the row is invisible to every "
+        "dispatch round), `" + frag_unserved + "` (likewise never "
+        "dispatched), and `workflow_root_missing` (the row may dispatch "
+        "and run; the runbook owns the remedy)."
+    )
+    gloss_item = (
+        "12. **Stranded rows**: The stranded gauge: rows that " + "can never " + "be dispatched."
+    )
+    attacked_list = scoped_item + "\n" + gloss_item
+    assert _corpus_matches("virtual/list-gloss.md", attacked_list) == ["universal-no-dispatch"], (
+        "the gloss item must red the scanner EVEN WHEN the sibling item "
+        "carries the scoping markers — a tight list item is its own unit"
+    )
+    assert _corpus_matches("virtual/list-gloss-separated.md", scoped_item + "\n\n" + gloss_item), (
+        "the blank-line-separated variant stays red"
+    )
+    assert _corpus_matches("virtual/list-gloss-alone.md", gloss_item), (
+        "the gloss item reds ALONE (its own unit, no sibling context)"
+    )
+    # The units themselves: the two items are separate units — the
+    # sibling's markers never leak across them.
+    item_units = [
+        unit
+        for unit in _corpus_units("virtual/list-gloss.md", attacked_list)
+        if unit.text.lstrip().startswith(("11.", "12."))
+    ]
+    assert len(item_units) == 2, [unit.text for unit in item_units]
+    # The fully-corrected item passes on its own words.
+    corrected_item = (
+        "12. **Stranded rows**: the rows the gauge reports are scoped to "
+        "the two dispatch-invisible legs, plus workflow_root_missing's "
+        "run-scoped class."
+    )
+    assert not _corpus_matches("virtual/list-clean.md", scoped_item + "\n" + corrected_item), (
+        "the corrected list's items each pass on their own words"
+    )
+    # A NESTED marker is its own unit too: the parent's scoping cannot
+    # purify a nested gloss.
+    nested_gloss = "    - The stranded gauge: rows that " + "can never " + "be dispatched."
+    attacked_nested = scoped_item + "\n" + nested_gloss
+    assert _corpus_matches("virtual/list-nested-gloss.md", attacked_nested) == [
+        "universal-no-dispatch"
+    ], "a nested list item is its own unit — the parent's markers never purify it"
+    nested_units = [
+        unit
+        for unit in _corpus_units("virtual/list-nested-gloss.md", attacked_nested)
+        if unit.text.lstrip().startswith(("11.", "-"))
+    ]
+    assert len(nested_units) == 2, [unit.text for unit in nested_units]
+
+    # ── the executed scoped+gloss bullet pair (a tight bullet list) ──────
+    scoped_bullet = (
+        "- The dispatch-invisible legs: " + frag_reasons + " and " + frag_unserved + " are scoped."
+    )
+    gloss_bullet = "- The stranded gauge: rows that " + "can never " + "be dispatched."
+    assert _corpus_matches("virtual/bullet-pair.md", scoped_bullet + "\n" + gloss_bullet) == [
+        "universal-no-dispatch"
+    ], "the gloss bullet must red EVEN WHEN the adjacent bullet carries the marker"
+    assert _corpus_matches("virtual/bullet-separated.md", scoped_bullet + "\n\n" + gloss_bullet), (
+        "the blank-line-separated variant stays red"
+    )
+
+    # ── the executed blockquote defeat: `> scoped` / `>` / `> gloss` ─────
+    scoped_quote = (
+        "> The dispatch-invisible legs: " + frag_reasons + " and " + frag_unserved + " are scoped."
+    )
+    gloss_quote = "> The stranded gauge: rows that " + "can never " + "be dispatched."
+    quote_pair = scoped_quote + "\n>\n" + gloss_quote
+    assert _corpus_matches("virtual/quote-pair.md", quote_pair) == ["universal-no-dispatch"], (
+        "the gloss quote paragraph must red the scanner EVEN WHEN the "
+        "sibling paragraph carries the scoping marker — a `>`-only "
+        "separator line breaks the paragraph into the next unit"
+    )
+    # The two paragraphs are separate units — and the `>>` nested form too.
+    quote_units = [
+        unit
+        for unit in _corpus_units("virtual/quote-pair.md", quote_pair)
+        if "dispatch-invisible" in unit.text or "can never" in unit.text
+    ]
+    assert len(quote_units) == 2, [unit.text for unit in quote_units]
+    nested_quote_pair = quote_pair.replace("> ", ">> ")
+    assert _corpus_matches("virtual/quote-nested-pair.md", nested_quote_pair) == [
+        "universal-no-dispatch"
+    ], "the `>>`-nested blockquote's paragraphs split the same way"
+
+    # ── the executed troubleshooting.md defeat: two ADJACENT `--` comment
+    # lines at the top of the shipped sql fence ──────────────────────────
+    gloss_comment = "-- the stranded gauge: rows that " + "can never " + "dispatch"
+    scoped_comment = "-- scoped to the two dispatch-invisible legs only"
+    fence_adjacent = "```sql\n" + gloss_comment + "\n" + scoped_comment + "\nSELECT 1;\n```"
+    assert _corpus_matches("virtual/fence-comments-adjacent.md", fence_adjacent) == [
+        "universal-no-dispatch"
+    ], (
+        "the gloss fence comment must red the scanner EVEN WHEN the adjacent "
+        "comment line carries the scoping marker — a fence's line-comment "
+        "line is its own unit"
+    )
+    comment_units = [
+        unit
+        for unit in _corpus_units("virtual/fence-comments-adjacent.md", fence_adjacent)
+        if unit.text.strip().startswith("--")
+    ]
+    assert len(comment_units) == 2, [unit.text for unit in comment_units]
+    assert _corpus_matches(
+        "virtual/fence-comments-separated.md",
+        "```sql\n" + gloss_comment + "\n\n" + scoped_comment + "\n```",
+    ), "the blank-line-separated variant stays red"
+    assert _corpus_matches("virtual/fence-comment-alone.md", gloss_comment), (
+        "the gloss fence comment reds ALONE"
+    )
+    # Honesty: a single fenced block's non-comment content is the ONE
+    # statement it is (delimiters included), two adjacent fences are
+    # separate units, and a fence never merges with the surrounding prose
+    # (the prose's own scoping marker cannot purify the fence's gloss).
+    plain_fence = "```sql\nSELECT a\nFROM b\nWHERE c > d;\n```"
+    plain_units = _corpus_units("virtual/fence-plain.md", plain_fence)
+    assert len(plain_units) == 1, [unit.text for unit in plain_units]
+    two_fences = "```sql\nSELECT 1;\n```\n```sql\nSELECT 2;\n```"
+    fence_units = _corpus_units("virtual/fence-two.md", two_fences)
+    assert len(fence_units) == 2, [unit.text for unit in fence_units]
+    prose_then_fence = (
+        "The dispatch-invisible legs are scoped.\n" + "```sql\n" + gloss_comment + "\n```"
+    )
+    prose_fence_units = _corpus_units("virtual/fence-prose-gloss.md", prose_then_fence)
+    firing_units = [unit for unit in prose_fence_units if any(rule(unit) for _n, rule in RULES)]
+    assert any(unit.text.strip() == gloss_comment for unit in firing_units), (
+        "a fence never merges with its surrounding prose — the prose's marker "
+        f"cannot purify the fence's gloss comment's own unit: {[u.text for u in firing_units]}"
+    )
