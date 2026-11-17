@@ -285,50 +285,95 @@ _UNIVERSAL_VARIANTS = (
     "no dispatch round and no deadline sweep",
 )
 
-#: The scoping markers as a BOUNDED form (round-9 D9-6: the old list was
-#: matched by naive substring, so "two dispatch" matched "two
-#: dispatchers" and a negation waives rule 2). Word-bounded, matched
-#: against the scope-normalized text (`_scope_text`).
+#: The scoping markers as a BOUNDED form (round-9 D9-6; round-10
+#: F10-4): word-bounded, matched against the scope-normalized text
+#: (`_scope_text`), and each alternative NAMES the two
+#: dispatch-invisible legs themselves. The round-10 defect: the loose
+#: alternative `two dispatch(?!e)` matched "The two dispatch queues
+#: are `default` and `bulk`" — a sentence naming the dispatcher
+#: pools, not the legs — and that marker waived a universal gloss in
+#: another sentence of the same unit.
 _SCOPE_MARKER_RE: Final = re.compile(
     r"(?<![\w-])"
     r"(?:dispatch-invisible"
     r"|dispatch invisible"
-    r"|two dispatch(?!e)"
-    r"|only the two"
-    r"|scoped to"
     r"|may dispatch"
     r"|may be dispatched)"
     r"(?![\w-])"
 )
 
-#: A scope marker is NOT a scope when a negation tail immediately
-#: precedes it (round-9 D9-6's negation defeats: "are **not**
-#: dispatch-invisible: they can never dispatch", "not only the two
-#: dispatch-invisible legs — these rows can never dispatch") or when it
-#: reads as its inverse ("never scoped", "cannot be scoped").
-_NEGATION_TAIL: Final = re.compile(
-    r"(?:\bnot(?:\s+only)?(?:\s+the)?(?:\s+two)?"
-    r"|never"
-    r"|cannot\s+be"
-    r"|can't\s+be"
-    r"|isn't"
-    r"|aren't)[\s,]*$"
+#: A scope marker is NOT a scope when a NEGATOR sits in its own
+#: sentence before it (round-10 F10-4: negation is clause-bounded —
+#: the same sentence, not a 20-character window; "…are not in any
+#: sense at all what anyone would call dispatch-invisible: they can
+#: never dispatch" put the negator outside the old window and passed).
+_NEGATOR_RE: Final = re.compile(
+    r"\b(?:not|never|neither|nor|without|cannot|can't|won't|isn't|aren't|n't)\b"
 )
 
-#: The negation window: how far back a negator may sit from the marker
-#: it kills ("not only the two " is 17 characters).
-_NEGATION_WINDOW: Final = 20
+#: The sentence grid the scope predicate runs on (`_scope_text`'s
+#: normalized text, split after sentence-ending punctuation ONLY — a
+#: period, `!` or `?` followed by whitespace). Colons, semicolons and
+#: dashes are NOT boundaries: the shipped scope sentences bind their
+#: claims across them ("These two reasons are dispatch-invisible:
+#: neither dispatch nor the deadline sweep will ever touch such
+#: rows."; a parenthetical's semicolon must not amputate the sentence
+#: from its own scope). A marker waives a UNIVERSAL occurrence only
+#: within the occurrence's OWN sentence (round-10 F10-4: unit-level
+#: scoping let a scope sentence waive a universal sentence three
+#: sentences later); rules 1/3/4 are unit-level.
+_SENTENCE_BOUNDARY: Final = re.compile(r"(?<=[.!?])\s+")
+
+#: The truthful SUBJECT-SCOPED form (round-10 F10-4's false positive):
+#: a universal variant whose grammatical subject is ONE reason's own
+#: rows — a label and its noun immediately before the variant — is
+#: that reason's own true meaning, not a whole-population gloss. A
+#: label fragment earlier in the clause with a population subject in
+#: between (a table cell's label followed by "these rows") is the
+#: whole population and still reds.
+_SUBJECT_SCOPED_TAIL: Final = re.compile(
+    r"(?:no_actor_config|unserved_" + "queue|no actor_config)"
+    r"\s+(?:rows?|jobs?|entries?|sources?|items?)\s*$"
+)
+
+#: The POPULATION SUBJECTS: a universal variant whose subject is the
+#: gauge's whole population never waives by label proximity, and an
+#: ANAPHORIC subject ("they can never dispatch") binds back to the
+#: unit's own subject — the two-sentence laundering shape.
+_POPULATION_SUBJECT_RE: Final = re.compile(
+    r"(?<![\w-])(?:(?:these|those|all|such)\s+(?:stranded\s+)?(?:rows?|jobs?|entries?)"
+    r"|pending/scheduled"
+    r"|stranded rows"
+    r"|stranded jobs"
+    r"|rows? that"
+    r"|jobs? that)(?![\w-])"
+)
+
+#: The sentence-local DETECTOR mention: a universal variant whose own
+#: sentence does not speak about the detector family at all, with a
+#: specific (non-anaphoric, non-population) subject, is that sentence's
+#: own restricted subject — "an actor that can never be dispatched
+#: because it has no registered stub/config is a strictly worse failure
+#: mode" — not a gloss on the gauge.
+_SENTENCE_MENTION_RE: Final = re.compile(
+    r"(?<![\w-])(?:stranded|no_actor_config|unserved_queue|workflow_root_missing"
+    r"|pending/scheduled)(?![\w-])"
+)
 
 #: A positive counter-claim in the same unit defeats the scope (the
 #: round-9 D9-6 contrast defeat: "… can never dispatch; jobs on a
 #: served queue can dispatch normally" — the contrast clause contradicts
-#: the universal claim instead of scoping it) — UNLESS the unit names
-#: the third leg itself, whose OWN definition is the row that CAN
+#: the universal claim instead of scoping it) — UNLESS the
+#: counter-claim's own sentence is the third leg's definition, which
+#: names the third leg itself, whose OWN meaning is the row that CAN
 #: dispatch when served (the shipped `_leader_sweeps.py` docstring and
 #: runbooks prose: "reason=workflow_root_missing … Such a row CAN
-#: dispatch and be bounded-consumed"); without the third leg's name the
-#: counter-claim is a contradiction, with it the unit is the reason
-#: set's own three-meaning statement.
+#: dispatch and be bounded-consumed"). The waiver is sentence-bound —
+#: it rescues a counter-claim inside the third leg's own definition
+#: sentence and nothing else; a universal gloss in ANOTHER sentence of
+#: the same unit still reds (the round-10 F10-4 negative: a unit that
+#: names the third leg, states the scope, and then adds a
+#: whole-population universal sentence).
 _SCOPE_COUNTER_CLAIM_RE: Final = re.compile(
     r"(?<![\w-])(?:can dispatch"
     r"|dispatch(?:es)? normally"
@@ -357,6 +402,54 @@ _PARITY_VARIANTS = (
     "detector's shape",
     "the whole detector",
     "the entire detector",
+)
+
+#: The rule-1/2/3 claim patterns, compiled word-bounded so a variant
+#: can never match inside a longer word (and so `_claim_unwaived` can
+#: report each occurrence's own position within its sentence). The
+#: DEFINING phrases name the family's own framing vocabulary: a bare
+#: detector mention ("the stranded-jobs detector surfaces it") is not
+#: a definition — the detector-name forms are defining only in the
+#: possessive-family-noun or appositive form ("the stranded detector's
+#: rows:", "the stranded-jobs detector:").
+_DEFINING_PHRASES = (
+    "the whole set",
+    "the entire",
+    "the reason set",
+    "the closed reason",
+    "reasons are",
+    "reason is",
+    "the stranded-jobs check",
+    "the stranded jobs check",
+    "stranded-jobs check",
+    "stranded-jobs (",
+    "stranded jobs (",
+    "that is the whole",
+    "can never " + "dispatch",
+    "can never be " + "dispatched",
+    "that cannot make progress",
+    "jobs that can never",
+    "rows that can never",
+    "stranded jobs",
+    "stranded rows",
+)
+_DEFINING_DETECTOR_FORMS: Final = (
+    r"the\s+stranded(?:-jobs)?\s+detector(?:'s)?\s+(?:own\s+)?"
+    r"(?:reason|meaning|shape|check|population|rows?|jobs?|conditions?|set|class|gauge)s?\b",
+    r"the\s+stranded(?:-jobs)?\s+detector\s*[:—-]",
+)
+_DEFINING_RE: Final = re.compile(
+    r"(?<![\w-])(?:"
+    + "|".join(re.escape(phrase) for phrase in _DEFINING_PHRASES)
+    + "|"
+    + "|".join(_DEFINING_DETECTOR_FORMS)
+    + r")(?![\w-])"
+)
+_UNIVERSAL_RE: Final = re.compile(
+    r"(?<![\w-])(?:" + "|".join(re.escape(variant) for variant in _UNIVERSAL_VARIANTS) + r")(?![\w-])"
+)
+_PARITY_RE: Final = re.compile(
+    r"(?<![\w-])(?:" + "|".join(re.escape(variant) for variant in _PARITY_VARIANTS) + r")(?![\w-])"
 )
 
 #: The REQUIRED VOCABULARY HOMES (the positive-presence pin): every home
@@ -1505,53 +1598,179 @@ def _scope_text(unit: Unit) -> str:
     return re.sub(r"\s+", " ", _lowered(unit).replace("*", ""))
 
 
-def _expressly_scoped(unit: Unit) -> bool:
-    """The unit genuinely scopes the claim to the no-config/unserved
-    legs (round-9 D9-6: this was a naive substring test over
-    `_SCOPED_MARKERS`, and a NEGATION or a CONTRAST waived rule 2 —
-    "…are not dispatch-invisible: they can never dispatch" carried the
-    marker "not dispatch-invisible" and passed; "two dispatch" matched
-    "two dispatchers"). A unit is scoped only when a scoping marker
-    occurs OUTSIDE a negation tail (the immediately preceding window
-    carries no negator) and the unit carries no positive counter-claim
-    — unless the unit names the third leg itself, whose own definition
-    is the row that CAN dispatch when served."""
-    scope_text = _scope_text(unit)
-    matches = list(_SCOPE_MARKER_RE.finditer(scope_text))
-    if not matches:
-        return False
-    for match in matches:
-        window = scope_text[max(0, match.start() - _NEGATION_WINDOW) : match.start()]
-        if _NEGATION_TAIL.search(window) is not None:
+def _sentences(scope_text: str) -> list[str]:
+    """The scope text's sentence segments (`_SENTENCE_BOUNDARY`) — the
+    granularity a scope marker, a negator, or a counter-claim binds
+    within."""
+    return [sentence for sentence in _SENTENCE_BOUNDARY.split(scope_text) if sentence.strip()]
+
+
+def _sentence_scoped(sentence: str, claim_spans: list[tuple[int, int]] = ()) -> bool:
+    """The sentence carries a GENUINE scope marker: a marker is
+    word-bounded and names the dispatch-invisible legs (`_SCOPE_MARKER_RE`),
+    a negator in the same sentence before it kills it (`_NEGATOR_RE` —
+    clause-bounded negation; a negator INSIDE a claim occurrence is the
+    claim's own words — the "never" of "can never be dispatched" — and
+    never a negation of the scope), and a positive counter-claim in the
+    same sentence contradicts it — unless that sentence is the third
+    leg's own definition, which names the third leg itself
+    (`_THIRD_LEG_NAMES`): its can-dispatch clause is the third leg's OWN
+    meaning, not a contradiction of the scope. The waiver is
+    sentence-bound and rescues nothing else: a universal gloss in
+    another sentence of the same unit finds no genuine marker in its
+    own sentence and reds."""
+    for match in _SCOPE_MARKER_RE.finditer(sentence):
+        head = sentence[: match.start()]
+        if any(
+            not any(cs <= neg.start() < ce for cs, ce in claim_spans)
+            for neg in _NEGATOR_RE.finditer(head)
+        ):
             continue
-        contradicted = _SCOPE_COUNTER_CLAIM_RE.search(scope_text) is not None and not any(
-            name in scope_text for name in _THIRD_LEG_NAMES
-        )
-        return not contradicted
+        if (
+            _SCOPE_COUNTER_CLAIM_RE.search(sentence) is not None
+            and not any(name in sentence for name in _THIRD_LEG_NAMES)
+        ):
+            continue
+        return True
     return False
+
+
+def _subject_scoped(sentence: str, position: int) -> bool:
+    """The claim occurrence at `position` is the predicate of a subject
+    that IS one reason's own rows (`_SUBJECT_SCOPED_TAIL`): the
+    reason's own true meaning, not a whole-population gloss."""
+    return _SUBJECT_SCOPED_TAIL.search(sentence[:position]) is not None
+
+
+def _label_bound(sentence: str, position: int) -> bool:
+    """The occurrence is bound to ONE reason's own definition: a
+    specific label occurs in the occurrence's sentence before it, with
+    no population subject between ("unserved_queue (the queue dispatch
+    routes the actor on has no live worker subscribed — likewise
+    <universal>)" — the shipped alert descriptions' elliptical
+    parenthetical). A population subject between the label and the
+    occurrence (a table cell's label followed by "these rows") is the
+    whole population and never waives."""
+    head = sentence[:position]
+    labels = list(re.finditer("no_actor_config|unserved_" + "queue|no actor_config", head))
+    if not labels:
+        return False
+    return _POPULATION_SUBJECT_RE.search(head[labels[-1].end() :]) is None
+
+
+def _foreign_subject(sentence: str, position: int) -> bool:
+    """The occurrence's own sentence does not speak about the detector
+    family at all (`_SENTENCE_MENTION_RE`) and its subject is specific —
+    not empty, anaphoric, or a population subject: "an actor that
+    <universal> because it has no registered stub/config is a strictly
+    worse failure mode" is that sentence's own restricted subject, not
+    a gloss on the gauge. A pronoun or population subject binds back to
+    the unit's subject and never waives."""
+    if _SENTENCE_MENTION_RE.search(sentence) is not None:
+        return False
+    head = sentence[:position].strip()
+    if not head:
+        return False
+    if re.search(r"\b(?:they|it|these|those|all|such|them)\s*$", head):
+        return False
+    if _POPULATION_SUBJECT_RE.search(head):
+        return False
+    return True
+
+
+def _unit_scoped(scope_text: str) -> bool:
+    """Whether ANY sentence of the unit carries a genuine scope marker
+    (rules 1/3/4's reach: their claims — a family definition, a
+    parity/mirror claim, a typed declaration — bind to the unit's own
+    scope statement)."""
+    return any(_sentence_scoped(sentence) for sentence in _sentences(scope_text))
+
+
+def _claim_unwaived(
+    scope_text: str,
+    pattern: re.Pattern[str],
+    *,
+    subject_waiver: bool = False,
+    sentence_local: bool = False,
+) -> bool:
+    """Whether the claim pattern has at least one occurrence its own
+    text does not waive. Unit-level claims (rules 1/3) are waived by a
+    genuine scope marker anywhere in the unit (`_unit_scoped`); a
+    sentence-local claim (rule 2's universal gloss) is waived only
+    within the occurrence's OWN sentence (`_sentence_scoped`), or when
+    the occurrence is one reason's own true meaning: its subject is
+    that reason's own rows (`_subject_scoped`), it is bound to one
+    reason's label with no population subject between
+    (`_label_bound`), or its own sentence is a foreign restricted
+    subject (`_foreign_subject`)."""
+    unit_scope = None if sentence_local else _unit_scoped(scope_text)
+    if unit_scope:
+        return False
+    for sentence in _sentences(scope_text):
+        claim_spans = [match.span() for match in pattern.finditer(sentence)]
+        sentence_scope = _sentence_scoped(sentence, claim_spans) if sentence_local else False
+        for match in pattern.finditer(sentence):
+            if sentence_scope:
+                continue
+            if subject_waiver and _subject_scoped(sentence, match.start()):
+                continue
+            if sentence_local and _label_bound(sentence, match.start()):
+                continue
+            if sentence_local and _foreign_subject(sentence, match.start()):
+                continue
+            return True
+    return False
+
+
+def rule_closed_enumeration(unit: Unit) -> bool:
+    """Rule 1: the unit DEFINES the stranded reason family but supplies
+    only the old dispatch conditions — the two-label closed set, the
+    prose two-member form, OR the single-member definition (the
+    settings-description class: defining the entire check by no-config
+    alone is the same defect; the rule never requires the word 'two').
+    A corrected unit either includes `workflow_root_missing` and its
+    distinct meaning, or its defining claim is expressly scoped (a
+    genuine scope statement in the unit, or the defining claim's own
+    subject is one reason's rows)."""
+    if not _unit_mentions_detector(unit):
+        return False
+    lowered = _lowered(unit)
+    if "workflow_root_missing" in lowered:
+        return False
+    mentions_old = (
+        "no_actor_config" in lowered
+        or "no actor_config" in lowered
+        or "unserved_queue" in lowered
+        or "unserved" in lowered
+        or "no live worker" in lowered
+    )
+    if not mentions_old:
+        return False
+    return _claim_unwaived(_scope_text(unit), _DEFINING_RE, subject_waiver=True)
 
 
 def rule_universal_no_dispatch(unit: Unit) -> bool:
     """Rule 2: a universal no-dispatch/no-touch/invisible claim attached
-    to the stranded detector/gauge that the same local unit does not
-    expressly scope to the dispatch-invisible legs."""
+    to the stranded detector/gauge that its own occurrence does not
+    waive — the occurrence's own sentence must carry a genuine scope
+    marker (`_sentence_scoped`), or the occurrence must be one reason's
+    own true meaning (its subject is that reason's own rows, it is
+    bound to one reason's label, or its sentence is a foreign
+    restricted subject)."""
     if not _unit_mentions_detector(unit):
         return False
-    lowered = _lowered(unit)
-    if not any(variant in lowered for variant in _UNIVERSAL_VARIANTS):
-        return False
-    return not _expressly_scoped(unit)
+    return _claim_unwaived(
+        _scope_text(unit), _UNIVERSAL_RE, subject_waiver=True, sentence_local=True
+    )
 
 
 def rule_whole_detector_parity(unit: Unit) -> bool:
-    """Rule 3: a whole-detector parity/mirror claim that the unit does not
-    expressly narrow to the two dispatch-invisible legs."""
+    """Rule 3: a whole-detector parity/mirror claim that the unit does
+    not narrow to the two dispatch-invisible legs anywhere in its own
+    text (a parity claim binds to the unit's scope statement)."""
     if not _unit_mentions_detector(unit):
         return False
-    lowered = _lowered(unit)
-    if not any(variant in lowered for variant in _PARITY_VARIANTS):
-        return False
-    return not _expressly_scoped(unit)
+    return _claim_unwaived(_scope_text(unit), _PARITY_RE)
 
 
 def rule_structural_closed_enumeration(unit: Unit) -> bool:
@@ -1568,7 +1787,9 @@ def rule_structural_closed_enumeration(unit: Unit) -> bool:
     has_labels = "no_actor_config" in text and "unserved_queue" in text
     if not has_labels:
         return False
-    return not _expressly_scoped(unit)
+    # The declaration is one statement; its scope is any genuine scope
+    # sentence the unit carries.
+    return not _unit_scoped(_scope_text(unit))
 
 
 RULES = (
@@ -3648,17 +3869,26 @@ def test_trailing_and_other_prefix_fence_comments_are_their_own_units() -> None:
 
 
 def test_scoping_requires_a_genuine_scope() -> None:
-    """Round-9 D9-6: the scoping test was a naive substring match over
-    `_SCOPED_MARKERS`, so a NEGATION or a CONTRAST waived rule 2 —
-    "…are **not** dispatch-invisible: they can never dispatch" carried
-    the marker "not dispatch-invisible" and passed; "not only the two
-    dispatch-invisible legs" carried "only the two"; "…can never
-    dispatch; jobs on a served queue can dispatch normally" carried
-    "can dispatch"; and "two dispatch" matched "two dispatchers". The
-    predicate is now a real scope check: word-bounded markers, a marker
-    preceded by a negation tail is not a scope, and a positive
-    counter-claim in the unit defeats the scope. Every corpus value is
-    assembled at runtime from independently non-triggering fragments
+    """Round-9 D9-6 + round-10 F10-4: the scoping test was a naive
+    substring match over `_SCOPED_MARKERS`, so a NEGATION or a CONTRAST
+    waived rule 2 — "…are **not** dispatch-invisible: they can never
+    dispatch" carried the marker "not dispatch-invisible" and passed;
+    "not only the two dispatch-invisible legs" carried "only the two";
+    "…can never dispatch; jobs on a served queue can dispatch
+    normally" carried "can dispatch"; and "two dispatch" matched "two
+    dispatchers". The predicate is now a real scope check:
+    word-bounded markers that NAME the dispatch-invisible legs (so "The
+    two dispatch queues are `default` and `bulk`" is not a scope), a
+    negator anywhere in the marker's own SENTENCE kills it (clause-
+    bounded — the old 20-character window let "not in any sense at all
+    what anyone would call dispatch-invisible" pass), a scope sentence
+    waives a UNIVERSAL occurrence only within its own sentence (the
+    third-leg naming may rescue a counter-claim only inside the third
+    leg's own definition sentence — the launder that names the third
+    leg, states the scope, then adds a whole-population universal
+    sentence REDS), and the truthful SUBJECT-SCOPED form (one reason's
+    own rows as the claim's own subject) is green. Every corpus value
+    is assembled at runtime from independently non-triggering fragments
     (the module's own law)."""
     # The four executed negation/contrast defeats — each REDS.
     negated_marker = (
@@ -3693,6 +3923,78 @@ def test_scoping_requires_a_genuine_scope() -> None:
         "closed-enumeration",
         "universal-no-dispatch",
     ], "a positive counter-claim contradicts the universal claim instead of scoping it"
+    two_dispatchers = (
+        "The two dispatchers share the gauge; the stranded detector's rows "
+        + "can never "
+        + "dispatch."
+    )
+    assert _corpus_matches("virtual/scope-two-dispatchers.md", two_dispatchers) == [
+        "universal-no-dispatch"
+    ], "'two dispatch' must not match 'two dispatchers'"
+
+    # ── the round-10 F10-4 defeats ──────────────────────────────────────
+    # (a) "two dispatch" is not a scope marker: naming the dispatcher
+    # pools is not scoping the legs — the universal gloss REDS.
+    dispatch_queues = (
+        "The doctor prints the count. The stranded rows "
+        + "can never "
+        + "dispatch. The two dispatch queues are `default` and `bulk`."
+    )
+    assert _corpus_matches("virtual/scope-dispatch-queues.md", dispatch_queues) == [
+        "universal-no-dispatch"
+    ], "naming the two dispatch QUEUES is not a scope"
+    # (b) the negator outside the old 20-character window: clause-bounded
+    # negation kills the marker — REDS.
+    far_negator = (
+        "The stranded rows are not in any sense at all what anyone would "
+        + "call dispatch-invisible: they "
+        + "can never "
+        + "dispatch."
+    )
+    assert _corpus_matches("virtual/scope-far-negator.md", far_negator) == [
+        "universal-no-dispatch"
+    ], "a negator in the marker's own sentence is not out of reach"
+    # (c) the third-leg WAIVER cannot launder: naming the third leg and
+    # stating the scope does not waive a whole-population universal
+    # sentence — REDS.
+    launder = (
+        "The third leg is workflow_root_missing. The two dispatch-invisible "
+        "legs are scoped. All stranded rows "
+        + "can never "
+        + "dispatch."
+    )
+    assert _corpus_matches("virtual/scope-third-leg-launder.md", launder) == [
+        "universal-no-dispatch"
+    ], "the third leg's name waives only its own definition sentence's counter-claim"
+    # (d) the truthful SUBJECT-SCOPED form is GREEN (the round-10 false
+    # positive): the claim's own subject is one reason's own rows.
+    subject_scoped = "The stranded gauge: " + frag_reasons + " rows can never dispatch."
+    assert not _corpus_matches("virtual/scope-subject-scoped.md", subject_scoped), (
+        "one reason's own rows as the claim's own subject is that reason's true meaning"
+    )
+    # ... the population subject between the label and the variant never
+    # waives (the table-cell shape), and the anaphoric two-sentence form
+    # binds back to the unit's subject — both REDS.
+    population_between = "| " + frag_reasons + " | these rows can never dispatch |"
+    assert _corpus_matches("virtual/scope-population-between.md", population_between) == [
+        "closed-enumeration",
+        "universal-no-dispatch",
+    ], "a population subject between the label and the variant is the whole population"
+    anaphoric = "The gauge's rows are stranded. They " + "can never " + "dispatch."
+    assert _corpus_matches("virtual/scope-anaphoric.md", anaphoric) == [
+        "universal-no-dispatch"
+    ], "a pronoun subject binds back to the unit's own subject"
+    # ... and a foreign restricted subject with no detector mention in
+    # its own sentence is that sentence's own subject — GREEN.
+    foreign = (
+        "An actor that can never be dispatched because it has no "
+        "registered stub/config is a strictly worse failure mode than one "
+        "that dispatches and then immediately errors."
+    )
+    assert not _corpus_matches("virtual/scope-foreign-subject.md", foreign), (
+        "a foreign restricted subject is not a gloss on the gauge"
+    )
+
     # ... but the third leg's OWN definition (the shipped prose's shape:
     # the unit names workflow_root_missing and says its row CAN dispatch
     # when served) is the reason set's own statement — green.
@@ -3705,14 +4007,6 @@ def test_scoping_requires_a_genuine_scope() -> None:
     assert not _corpus_matches("virtual/scope-third-leg.md", third_leg_definition), (
         "the third leg's own can-dispatch definition must not false-red"
     )
-    two_dispatchers = (
-        "The two dispatchers share the gauge; the stranded detector's rows "
-        + "can never "
-        + "dispatch."
-    )
-    assert _corpus_matches("virtual/scope-two-dispatchers.md", two_dispatchers) == [
-        "universal-no-dispatch"
-    ], "'two dispatch' must not match 'two dispatchers'"
 
     # The genuine scoped forms stay green.
     genuine = (
@@ -3737,4 +4031,14 @@ def test_scoping_requires_a_genuine_scope() -> None:
     )
     assert not _corpus_matches("virtual/scope-may-dispatch.md", may_dispatch), (
         "the third leg's own may-dispatch definition is a genuine scope"
+    )
+    # The scope binding across the colon and the parenthetical's
+    # semicolon (the shipped scope sentences' own shapes) stays green:
+    # a variant in the scope's own sentence-bound span is waived.
+    colon_bound = (
+        "These two reasons are dispatch-invisible: neither dispatch nor "
+        "the deadline sweep will ever touch such rows."
+    )
+    assert not _corpus_matches("virtual/scope-colon-bound.md", colon_bound), (
+        "the scope binds across its own colon — the shipped runbook sentence"
     )
