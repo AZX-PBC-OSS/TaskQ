@@ -542,7 +542,9 @@ _DEFINING_RE: Final = re.compile(
     + r")(?![\w-])"
 )
 _UNIVERSAL_RE: Final = re.compile(
-    r"(?<![\w-])(?:" + "|".join(re.escape(variant) for variant in _UNIVERSAL_VARIANTS) + r")(?![\w-])"
+    r"(?<![\w-])(?:"
+    + "|".join(re.escape(variant) for variant in _UNIVERSAL_VARIANTS)
+    + r")(?![\w-])"
 )
 _PARITY_RE: Final = re.compile(
     r"(?<![\w-])(?:" + "|".join(re.escape(variant) for variant in _PARITY_VARIANTS) + r")(?![\w-])"
@@ -1156,13 +1158,13 @@ def _code_comment_units(
         )
     for index, content_line in enumerate(content_lines):
         stripped = content_line.strip()
-        if not stripped.startswith(_FENCE_COMMENT_PREFIXES):
-            # A TRAILING comment (text after the code prefix) is its own
-            # statement too — the round-10 F10-3 defect left it inside
-            # the fence's coarse unit, where a sibling scoped comment
-            # purified it.
-            if _TRAILING_COMMENT_START.search(content_line) is None:
-                continue
+        # A TRAILING comment (text after the code prefix) is its own
+        # statement too — the round-10 F10-3 defect left it inside the
+        # fence's coarse unit, where a sibling scoped comment purified it.
+        if not stripped.startswith(_FENCE_COMMENT_PREFIXES) and (
+            _TRAILING_COMMENT_START.search(content_line) is None
+        ):
+            continue
         raw_index = first_content + index - line_offset
         yield Unit(
             path,
@@ -1663,9 +1665,8 @@ def _sentence_scoped(sentence: str, claim_spans: list[tuple[int, int]] = ()) -> 
             for neg in _NEGATOR_RE.finditer(head)
         ):
             continue
-        if (
-            _SCOPE_COUNTER_CLAIM_RE.search(sentence) is not None
-            and not any(name in sentence for name in _THIRD_LEG_NAMES)
+        if _SCOPE_COUNTER_CLAIM_RE.search(sentence) is not None and not any(
+            name in sentence for name in _THIRD_LEG_NAMES
         ):
             continue
         return True
@@ -1710,9 +1711,7 @@ def _foreign_subject(sentence: str, position: int) -> bool:
         return False
     if re.search(r"\b(?:they|it|these|those|all|such|them)\s*$", head):
         return False
-    if _POPULATION_SUBJECT_RE.search(head):
-        return False
-    return True
+    return not _POPULATION_SUBJECT_RE.search(head)
 
 
 def _unit_scoped(scope_text: str) -> bool:
@@ -3322,14 +3321,21 @@ def test_unit_model_laws_red_when_violated() -> None:
             units.append(Unit("virtual/laws.md", "markdown", b_start, b_end, "b"))
         return units
 
-    rng = random.Random(20261117)
+    # Why: reproducible fuzz schedules, not cryptography.
+    rng = random.Random(20261117)  # noqa: S311
     for _ in range(500):
         family = fuzz_family(rng)
         assert bool(_overlap_violations("virtual/laws.md", family)) == brute_force(family), [
             (unit.start_line, unit.end_line) for unit in family
         ]
         loose = [
-            Unit("virtual/laws.md", "markdown", (start := rng.randint(1, 12)), start + rng.randint(0, 8), "t")
+            Unit(
+                "virtual/laws.md",
+                "markdown",
+                (start := rng.randint(1, 12)),
+                start + rng.randint(0, 8),
+                "t",
+            )
             for _ in range(rng.randint(2, 7))
         ]
         assert bool(_overlap_violations("virtual/laws.md", loose)) == brute_force(loose), [
@@ -3419,16 +3425,14 @@ def test_container_body_dedent_is_the_renderer_column_slice() -> None:
     (`_renderer_lines`): the tab-indented body line keeps its text, the
     gloss fires at its own unit, and the law's reconstruction
     agrees."""
-    doc = (
-        '!!! note "T"\n'
-        '\t!!! note "T2"\n'
-        "\t\t\t" + "stranded rows " + "can never " + "dispatch\n"
-    )
+    doc = '!!! note "T"\n\t!!! note "T2"\n\t\t\t' + "stranded rows " + "can never " + "dispatch\n"
     assert _corpus_matches("virtual/tab-nested.md", doc) == ["universal-no-dispatch"], (
         "the tab-indented body line's gloss must fire — the renderer "
         "expands the tabs, so the detab slice keeps the whole line's text"
     )
-    units = [unit for unit in _corpus_units("virtual/tab-nested.md", doc) if "stranded" in unit.text]
+    units = [
+        unit for unit in _corpus_units("virtual/tab-nested.md", doc) if "stranded" in unit.text
+    ]
     assert len(units) == 1 and (units[0].start_line, units[0].end_line) == (3, 3), [
         (unit.start_line, unit.end_line, unit.text[:50]) for unit in units
     ]
@@ -3437,8 +3441,11 @@ def test_container_body_dedent_is_the_renderer_column_slice() -> None:
     # minus the declared dedent (8 columns = the inner container's
     # content boundary) — the law sees the real slice now.
     assert (
-        _truncation_violations("virtual/tab-nested.md", doc, [u for u in _corpus_units(
-            "virtual/tab-nested.md", doc) if u.kind == "markdown"])
+        _truncation_violations(
+            "virtual/tab-nested.md",
+            doc,
+            [u for u in _corpus_units("virtual/tab-nested.md", doc) if u.kind == "markdown"],
+        )
         == []
     )
 
@@ -3483,7 +3490,11 @@ def test_quoted_containers_get_their_own_body_paragraphs() -> None:
         ]
         # The `>`-only separator line is its own floor unit — coverage
         # never depends on the container swallowing it.
-        floor = [unit for unit in _corpus_units(f"virtual/{name}.md", doc) if unit.kind == "markdown-text"]
+        floor = [
+            unit
+            for unit in _corpus_units(f"virtual/{name}.md", doc)
+            if unit.kind == "markdown-text"
+        ]
         assert [unit.start_line for unit in floor] == [2, 4], [
             (unit.start_line, unit.text) for unit in floor
         ]
@@ -3519,7 +3530,8 @@ def test_quoted_containers_get_their_own_body_paragraphs() -> None:
         )
         failures = _scan(root)
         assert any(
-            path == "docs/quoted.md" and rule == "universal-no-dispatch" for rule, _unit, path in failures
+            path == "docs/quoted.md" and rule == "universal-no-dispatch"
+            for rule, _unit, path in failures
         ), failures
         unquoted = root / "docs" / "quoted.md"
         unquoted.write_text(
@@ -3528,7 +3540,8 @@ def test_quoted_containers_get_their_own_body_paragraphs() -> None:
         )
         failures = _scan(root)
         assert any(
-            path == "docs/quoted.md" and rule == "universal-no-dispatch" for rule, _unit, path in failures
+            path == "docs/quoted.md" and rule == "universal-no-dispatch"
+            for rule, _unit, path in failures
         ), failures
 
 
@@ -3778,9 +3791,10 @@ def test_quoted_fence_comment_lines_are_their_own_units() -> None:
         and _TRAILING_COMMENT_START.search(unit.text) is not None
         and "Dockerfile" in unit.text
     ]
-    assert len(sso_comment_units) == 1 and sso_comment_units[0].start_line > dockerfile_fences[0].start_line, [
-        (u.start_line, u.end_line, u.text[:60]) for u in sso_comment_units
-    ]
+    assert (
+        len(sso_comment_units) == 1
+        and sso_comment_units[0].start_line > dockerfile_fences[0].start_line
+    ), [(u.start_line, u.end_line, u.text[:60]) for u in sso_comment_units]
     managed_raw = (REPO_ROOT / "docs/guides/managed-identities.md").read_text(encoding="utf-8")
     managed_units = _markdown_units("docs/guides/managed-identities.md", managed_raw)
     redis_fences = [
@@ -3858,12 +3872,10 @@ def test_trailing_and_other_prefix_fence_comments_are_their_own_units() -> None:
     scoped_comment = "-- scoped to the two dispatch-invisible legs only"
     gloss = "the stranded gauge: rows that " + "can never " + "dispatch"
     # The executed defeat: a scoped LEADING comment plus a TRAILING gloss.
-    fence = (
-        "```sql\n" + scoped_comment + "\nSELECT 1;  -- " + gloss + "\n```\n"
+    fence = "```sql\n" + scoped_comment + "\nSELECT 1;  -- " + gloss + "\n```\n"
+    assert _corpus_matches("virtual/fence-trailing-gloss.md", fence) == ["universal-no-dispatch"], (
+        "the trailing gloss must red EVEN WHEN the leading comment carries the scoping marker"
     )
-    assert _corpus_matches("virtual/fence-trailing-gloss.md", fence) == [
-        "universal-no-dispatch"
-    ], "the trailing gloss must red EVEN WHEN the leading comment carries the scoping marker"
     comment_units = [
         unit
         for unit in _corpus_units("virtual/fence-trailing-gloss.md", fence)
@@ -3996,9 +4008,7 @@ def test_scoping_requires_a_genuine_scope() -> None:
     # sentence — REDS.
     launder = (
         "The third leg is workflow_root_missing. The two dispatch-invisible "
-        "legs are scoped. All stranded rows "
-        + "can never "
-        + "dispatch."
+        "legs are scoped. All stranded rows " + "can never " + "dispatch."
     )
     assert _corpus_matches("virtual/scope-third-leg-launder.md", launder) == [
         "universal-no-dispatch"
@@ -4018,9 +4028,9 @@ def test_scoping_requires_a_genuine_scope() -> None:
         "universal-no-dispatch",
     ], "a population subject between the label and the variant is the whole population"
     anaphoric = "The gauge's rows are stranded. They " + "can never " + "dispatch."
-    assert _corpus_matches("virtual/scope-anaphoric.md", anaphoric) == [
-        "universal-no-dispatch"
-    ], "a pronoun subject binds back to the unit's own subject"
+    assert _corpus_matches("virtual/scope-anaphoric.md", anaphoric) == ["universal-no-dispatch"], (
+        "a pronoun subject binds back to the unit's own subject"
+    )
     # ... and a foreign restricted subject with no detector mention in
     # its own sentence is that sentence's own subject — GREEN.
     foreign = (
