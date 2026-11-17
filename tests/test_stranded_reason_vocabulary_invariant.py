@@ -203,6 +203,18 @@ accepted:
 6. Sentence splitting is mechanical: an abbreviation ("e.g.") inside a
    scope sentence splits it, which can only SEPARATE a claim from its
    scope — more reds, never fewer.
+7. The foreign-subject refusal is lexical too: the pronoun set
+   (`_PRONOUN_SUBJECT_RE`) is the anaphoric paradigm — third-person
+   personal/possessive/reflexive (they/them/their/theirs/themselves,
+   it/its/itself), first-person plural (we/us/our/ours/ourselves) and
+   demonstratives (these/those/all/such); round-13 N13-1 widened it
+   from the seven-word set after the possessive/reflexive/plural
+   forms were demonstrated hiding ("Their rows <universal>.", "The
+   gauge itself <universal>.", "We <universal>."). A pronoun spelled
+   outside the set would still waive. Accepted: the set enumerates
+   the shipped prose's own anaphoric subjects (the tree-wide scan
+   stays green over it — no shipped sentence needed a declared
+   exception); a new pronoun spelling is a re-review, not a silence.
 
 This test is the SOLE completeness authority for this class, over the
 scan scope stated above (a surface outside those roots and suffixes is
@@ -211,7 +223,7 @@ corrected site's own old wording reverts and reds this scanner) lives
 in the correction report; a new occurrence anywhere in that scanned
 scope reds THIS test without waiting for another review to find it —
 unless it hides inside a declared residual above, which is exactly
-what those six paragraphs enumerate."""
+what those seven paragraphs enumerate."""
 
 from __future__ import annotations
 
@@ -491,10 +503,24 @@ _SENTENCE_MENTION_RE: Final = re.compile(
 #: POSITION-INDEPENDENT (round-12 D12-2: the old check anchored the
 #: pronoun to the head's end with `\s*$`, so the anaphora hid mid-head —
 #: "They themselves <universal>" / "They in turn <universal>" waived
-#: while "They <universal>" reds). The list is the operative pronoun
-#: set; a new pronoun spelling is a re-review, not a silence (the same
+#: while "They <universal>" reds). The set is the ANAPHORIC PARADIGM —
+#: the third-person personal/possessive/reflexive forms
+#: (they/them/their/theirs/themselves, it/its/itself), the
+#: first-person-plural voice the docs' own "we" sentences bind back
+#: through (we/us/our/ours/ourselves), and the demonstratives
+#: (these/those/all/such). Round-13 N13-1 widened it from the
+#: seven-word set after the possessive/reflexive/plural forms were
+#: demonstrated hiding ("Their rows <universal>.", "The gauge itself
+#: <universal>.", "We <universal>."); the tree-wide scan stays green
+#: over the widened set. A new pronoun
+#: spelling is a re-review, not a silence (the same
 #: declared-spelling-gap discipline as residual 4).
-_PRONOUN_SUBJECT_RE: Final = re.compile(r"\b(?:they|it|these|those|all|such|them)\b")
+_PRONOUN_SUBJECT_RE: Final = re.compile(
+    r"\b(?:they|them|their|theirs|themselves"
+    r"|it|its|itself"
+    r"|we|us|our|ours|ourselves"
+    r"|these|those|all|such)\b"
+)
 
 #: A positive counter-claim in the same unit defeats the scope (the
 #: round-9 D9-6 contrast defeat: "… can never dispatch; jobs on a
@@ -1794,11 +1820,15 @@ def _foreign_subject(sentence: str, position: int) -> bool:
     not empty, anaphoric, or a population subject: "an actor that
     <universal> because it has no registered stub/config is a strictly
     worse failure mode" is that sentence's own restricted subject, not
-    a gloss on the gauge. A pronoun or population subject binds back to
-    the unit's subject and never waives — the pronoun refusal is
-    POSITION-INDEPENDENT (`_PRONOUN_SUBJECT_RE` anywhere in the head;
-    the round-12 D12-2 defect anchored it to the head's end, so the
-    mid-head anaphora "They themselves <universal>" waived)."""
+    a gloss on the gauge. A pronoun in `_PRONOUN_SUBJECT_RE`'s set (the
+    anaphoric paradigm: third-person personal/possessive/reflexive,
+    first-person plural, demonstratives — round-13 N13-1 widened the
+    set after their/its/itself/theirs/we/us/our/ours/ourselves/
+    themselves were demonstrated hiding) or population subject binds
+    back to the unit's subject and never waives — the pronoun refusal
+    is POSITION-INDEPENDENT (`_PRONOUN_SUBJECT_RE` anywhere in the
+    head; the round-12 D12-2 defect anchored it to the head's end, so
+    the mid-head anaphora "They themselves <universal>" waived)."""
     if _SENTENCE_MENTION_RE.search(sentence) is not None:
         return False
     head = sentence[:position].strip()
@@ -4261,6 +4291,34 @@ def test_scoping_requires_a_genuine_scope() -> None:
     assert _corpus_matches("virtual/scope-pronoun-phrase.md", pronoun_phrase) == [
         "universal-no-dispatch"
     ], "a pronoun before a trailing phrase still binds back"
+    # ── the round-13 N13-1 defeats: the FULL anaphoric paradigm ─────────
+    # The possessive/reflexive/plural pronoun forms bind back to the
+    # unit's subject exactly like they/it/them — the gloss's own
+    # sentence has no detector mention, so only the pronoun refusal
+    # stops the hide. Each shape REDS. The set is declared in
+    # `_PRONOUN_SUBJECT_RE` and residual 7; every new form has its own
+    # control here.
+    for name, shape in (
+        ("their", "The stranded detector's rows wait. Their rows " + frag_forever + "."),
+        ("its", "The stranded detector's rows wait. Its rows " + frag_forever + "."),
+        ("itself", "The stranded detector's rows wait. The gauge itself " + frag_forever + "."),
+        ("theirs", "The stranded detector's rows wait. Theirs " + frag_forever + "."),
+        ("we", "The stranded detector's rows wait. We never " + "dispatched the backlog."),
+        ("us", "The stranded detector's rows wait. For us the rows stay " + frag_forever + "."),
+        ("our", "The stranded detector's rows wait. Our rows " + frag_forever + "."),
+        ("ours", "The stranded detector's rows wait. Ours " + frag_forever + "."),
+        (
+            "ourselves",
+            "The stranded detector's rows wait. We ourselves never " + "dispatched the backlog.",
+        ),
+        (
+            "themselves",
+            "The stranded detector's rows wait. The rows themselves " + frag_forever + ".",
+        ),
+    ):
+        assert _corpus_matches(f"virtual/pronoun-{name}.md", shape) == ["universal-no-dispatch"], (
+            f"the anaphoric pronoun {name!r} still binds back to the unit's own subject"
+        )
     # ── the round-11 F11-2 defeats ──────────────────────────────────────
     # A population subject EARLIER in the sentence is the claim's
     # subject — the label+noun tail after it does not make the claim
