@@ -358,9 +358,7 @@ async def test_node_retry_rearm_strips_key_and_restores_claimability(
     )
     # THE INPUT: the terminal row carrying a STALE key (the mixed-version /
     # foreign-writer shape the defensive strip is written for).
-    stale = await wf_conn.fetchrow(
-        f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', job
-    )
+    stale = await wf_conn.fetchrow(f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', job)
     assert stale is not None and "wf_emit_reservation" in _meta(stale["metadata"])
 
     matched = await wf_conn.fetchval(
@@ -385,9 +383,7 @@ async def test_node_retry_rearm_strips_key_and_restores_claimability(
     assert obs is not None and (int(obs["live_rows"]), int(obs["reservations"])) == (1, 0), obs
     # THE CLAIMABILITY: the real node claim claims the re-armed row.
     worker = JobId(new_uuid())
-    claimed = await wf_conn.fetchrow(
-        render_sql(NODE_CLAIM_SQL_TEMPLATE, wf_schema), job, worker
-    )
+    claimed = await wf_conn.fetchrow(render_sql(NODE_CLAIM_SQL_TEMPLATE, wf_schema), job, worker)
     assert claimed is not None, "the node-retry re-armed row is claimable"
 
 
@@ -400,9 +396,7 @@ async def test_terminal_mixed_key_present_and_key_absent_winners(
     double-accounts (the captured diagnostic is the statement's own
     RETURNING, read here — the capture's consumer)."""
     flow = JobId(new_uuid())
-    with_key = await _seed_reserved(
-        wf_conn, wf_schema, flow, "source", "running", width=7
-    )
+    with_key = await _seed_reserved(wf_conn, wf_schema, flow, "source", "running", width=7)
     without_key = JobId(new_uuid())
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs '

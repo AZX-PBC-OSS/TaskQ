@@ -300,9 +300,7 @@ async def test_holds_joins_and_cancelled_roots_read_the_same_on_every_surface(
     # due schedule's own row (the hold, the join, and the future schedule
     # are not claimable; the cancelled root's rows are unclaimable
     # through the terminal-flow fence).
-    countable = await wf_conn.fetch(
-        render_sql(CLAIMABLE_NODES_SQL_TEMPLATE, wf_schema), flow_sched
-    )
+    countable = await wf_conn.fetch(render_sql(CLAIMABLE_NODES_SQL_TEMPLATE, wf_schema), flow_sched)
     assert len(countable) == 1, [dict(r) for r in countable]
     for other in (flow_hold, flow_join, flow_cancelled):
         none_countable = await wf_conn.fetch(

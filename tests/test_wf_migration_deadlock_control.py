@@ -309,15 +309,11 @@ async def test_migration_deadlock_handshake_is_victim_agnostic(pg_dsn: str) -> N
             ):
                 # THE TWO HALVES' OWN BACKENDS ARE DISTINCT (one cycle,
                 # two pids).
-                mig_pids = await locks_conn.fetch(
-                    _MIGRATION_HALF_PIDS_SQL.format(schema=schema)
-                )
-                writer_pids = await locks_conn.fetch(
-                    _WRITER_HALF_PIDS_SQL.format(schema=schema)
-                )
-                if {
-                    int(r["pid"]) for r in mig_pids
-                }.isdisjoint({int(r["pid"]) for r in writer_pids}):
+                mig_pids = await locks_conn.fetch(_MIGRATION_HALF_PIDS_SQL.format(schema=schema))
+                writer_pids = await locks_conn.fetch(_WRITER_HALF_PIDS_SQL.format(schema=schema))
+                if {int(r["pid"]) for r in mig_pids}.isdisjoint(
+                    {int(r["pid"]) for r in writer_pids}
+                ):
                     handshake_formed = True
                     break
             polls += 1

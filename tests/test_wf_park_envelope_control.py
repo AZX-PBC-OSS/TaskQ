@@ -178,8 +178,11 @@ class _ParkArm:
         import time as _time
 
         plan = document[0]["Plan"]
-        print(f"PLAN[{label}] execution_ms={plan.get('Actual Total Time')} "
-              f"rows={plan.get('Actual Rows')} loops={plan.get('Actual Loops')}", flush=True)
+        print(
+            f"PLAN[{label}] execution_ms={plan.get('Actual Total Time')} "
+            f"rows={plan.get('Actual Rows')} loops={plan.get('Actual Loops')}",
+            flush=True,
+        )
         for node in _walk(plan, []):
             name = node.get("Node Type")
             index_name = node.get("Index Name")
@@ -282,13 +285,10 @@ async def test_newest_fit_and_oldest_fit_envelopes_and_declaration_mapping(
     # carries the gather join; taking sorted(nodes.keys())[:1000] mapped
     # the join and dropped a real declared source).
     declared_keys = sorted(
-        key
-        for key, node in compiled.nodes.items()
-        if getattr(node, "kind", None) == "chain_source"
+        key for key, node in compiled.nodes.items() if getattr(node, "kind", None) == "chain_source"
     )
     assert len(declared_keys) == _PARK_COUNT == 1000, (
-        f"the declared chain sources' own keys must be exactly S=1000; "
-        f"got {len(declared_keys)}"
+        f"the declared chain sources' own keys must be exactly S=1000; got {len(declared_keys)}"
     )
 
     # The derivation record binds the fixture (checked in BEFORE first run).

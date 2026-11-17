@@ -980,9 +980,7 @@ async def test_grouped_deterministic_error_terminals_on_the_first_violation(
     )
     failed_rows = [r for r in ledgers if r["status"] == "failed"]
     assert len(failed_rows) == 1, [(r["a"], r["status"], r["error_class"]) for r in ledgers]
-    assert "EmitReservationExceededError" in (failed_rows[0]["error_class"] or ""), (
-        failed_rows[0]
-    )
+    assert "EmitReservationExceededError" in (failed_rows[0]["error_class"] or ""), failed_rows[0]
     assert int(failed_rows[0]["a"]) == 1
     meta = await _source_meta(wf_conn, wf_schema, source_id)
     assert "wf_emit_reservation" not in meta, meta

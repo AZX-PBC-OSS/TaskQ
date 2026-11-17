@@ -31,6 +31,7 @@ Implements the token-bucket algorithm. The bucket starts full; tokens drain on e
 from taskq.ratelimit import TokenBucket
 from datetime import timedelta
 
+
 class TokenBucket:
     def __init__(
         self,
@@ -108,6 +109,7 @@ Implements a sliding-window rate limiter. Two algorithms are available via the `
 ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 from taskq.ratelimit import SlidingWindow
 from datetime import timedelta
+
 
 class SlidingWindow:
     def __init__(
@@ -199,6 +201,7 @@ Controls how many jobs can hold a resource simultaneously using pre-allocated sl
 ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
 from taskq.ratelimit import ConcurrencyReservation
 from datetime import timedelta
+
 
 class ConcurrencyReservation:
     def __init__(

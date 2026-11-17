@@ -251,7 +251,6 @@ async def test_raising_gated_hook_cannot_prevent_the_drain_arms(
     await deps.notify_conn.close()
 
 
-
 # ── N6: the two fail-closed HOST MUTANTS, in-tree ──────────────────────────
 
 
@@ -293,10 +292,11 @@ def _mutant_host_cross_channel_wake(
 
 
 @pytest.mark.parametrize(
-    ("mutant", "fault"), (
+    ("mutant", "fault"),
+    (
         (_mutant_host_wake_only_channels0, "omission"),
         (_mutant_host_cross_channel_wake, "substitution"),
-    )
+    ),
 )
 async def test_fail_closed_host_mutants_show_their_own_fault_signature(
     module_pg_schema: Any, mutant: Any, fault: str
@@ -339,11 +339,8 @@ async def test_fail_closed_host_mutants_show_their_own_fault_signature(
         # The SUBSTITUTION's own signature: the delivery happened (the
         # total callback), but NEVER under the capacity channel's own
         # name — every delivered wake carried another entry's channel.
-        assert drained.is_set(), (
-            "the total callback's own delivery cannot be prevented"
-        )
+        assert drained.is_set(), "the total callback's own delivery cannot be prevented"
         assert wake_log, "the mutant host delivered its substituted wakes"
         assert wf_emit_capacity_channel(schema) not in wake_log, (
-            f"the substituted host never delivers the capacity channel's "
-            f"own wake: {wake_log}"
+            f"the substituted host never delivers the capacity channel's own wake: {wake_log}"
         )

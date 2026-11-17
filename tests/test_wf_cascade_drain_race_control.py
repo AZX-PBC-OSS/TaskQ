@@ -204,9 +204,7 @@ async def test_cascade_never_strands_a_promoted_reserved_source(
     from taskq.workflows._emit import COUNTERS
 
     pre_census = COUNTERS.snapshot()
-    drain_task = asyncio.create_task(
-        wake_emit_backpressure(wf_pool, wsql, flow_id=JobId(flow_id))
-    )
+    drain_task = asyncio.create_task(wake_emit_backpressure(wf_pool, wsql, flow_id=JobId(flow_id)))
     poller = await asyncpg.connect(module_pg_schema.pg_dsn)
     try:
         deadline = asyncio.get_running_loop().time() + 30.0
@@ -270,8 +268,8 @@ async def test_cascade_never_strands_a_promoted_reserved_source(
     )
     assert src is not None
     src_status = src["status"]
-    src_meta = _json.loads(src["metadata"]) if isinstance(src["metadata"], str) else dict(
-        src["metadata"]
+    src_meta = (
+        _json.loads(src["metadata"]) if isinstance(src["metadata"], str) else dict(src["metadata"])
     )
     assert root_status is not None
 
