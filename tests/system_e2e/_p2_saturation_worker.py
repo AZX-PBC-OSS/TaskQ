@@ -833,10 +833,14 @@ async def _run() -> int:
         )
     finally:
         census_task.cancel()
-        # The final snapshot at return (the loop's own 10s cadence may miss
-        # the tail's arms).
+        # The FINAL snapshot at return (the loop's own 10s cadence may
+        # miss the tail's arms): the `final=True` field is the reader's
+        # own discriminator — the control asserts this line EXISTS for
+        # every pod and reads IT (never a periodic line) as the pod's
+        # census.
         structlog.get_logger("p2sat.census").warning(
             "p2sat-census",
+            final=True,
             **{key: int(value) for key, value in COUNTERS.snapshot().items()},
         )
     return code

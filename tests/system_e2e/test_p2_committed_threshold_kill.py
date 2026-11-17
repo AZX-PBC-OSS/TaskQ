@@ -908,10 +908,19 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
             lines = [ln for ln in content.splitlines() if '"p2sat-census"' in ln]
             if not lines:
                 continue
+            docs = [_json.loads(ln) for ln in lines]
             snapshots = [
-                {key: int(value) for key, value in _json.loads(ln).items() if type(value) is int}
-                for ln in lines
+                {key: int(value) for key, value in doc.items() if type(value) is int}
+                for doc in docs
             ]
+            # THE GUARANTEED FINAL LINE (F5): the pod's own shutdown
+            # `finally` writes its snapshot with `final=True` — the LAST
+            # census line MUST be that final one (a suppressed final is
+            # red: reading only a periodic line is the false measurement).
+            assert docs[-1].get("final") is True, (
+                "the pod's last census line is not its own final snapshot "
+                f"(the shutdown's finally must have written it): {docs[-1]}"
+            )
             final = snapshots[-1]
             # The final line is LATER than every periodic line: the
             # counts are cumulative, so the final dominates every
@@ -922,7 +931,8 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
                     f"periodic line (the cumulative law): {earlier} -> {final}"
                 )
             for key, value in final.items():
-                total[key] = total.get(key, 0) + value
+                if key != "final":
+                    total[key] = total.get(key, 0) + value
         assert total, (
             "no pod logged its own census snapshot — the control must "
             "measure the fleet's own operation instances, never pass on "
