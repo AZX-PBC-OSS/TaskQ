@@ -865,9 +865,7 @@ async def _seed_third_leg_estate(conn: asyncpg.Connection, schema: str) -> dict[
         with_config=True,
     )
     ids["plain_noconfig"] = await _node(_ACTOR_NOCONFIG, "default", {}, with_config=False)
-    ids["plain_unserved"] = await _node(
-        _ACTOR_UNSERVED, "rm-nobody-serves", {}, with_config=True
-    )
+    ids["plain_unserved"] = await _node(_ACTOR_UNSERVED, "rm-nobody-serves", {}, with_config=True)
     # THE PRESENT ROOT (the negative direction): a served workflow row
     # whose flow's own __flow__ root row EXISTS never enters the new leg.
     root_id = str(new_uuid())
@@ -947,26 +945,21 @@ async def test_stranded_detector_third_leg_root_missing_precedence_and_isolation
 
         # THE WARNING EVENT: its own kind, the bounded flow-id detail
         # naming the affected runs.
-        warnings = [
-            e
-            for e in events
-            if e.get("event") == "stranded-jobs-workflow-root-missing"
-        ]
+        warnings = [e for e in events if e.get("event") == "stranded-jobs-workflow-root-missing"]
         by_actor = {e.get("actor"): e for e in warnings}
         assert set(by_actor) == {_ACTOR_RM_NOCONFIG, _ACTOR_RM_UNSERVED}, (
-            f"the root-missing warning fires for exactly the root-missing "
-            f"actors: {warnings}"
+            f"the root-missing warning fires for exactly the root-missing actors: {warnings}"
         )
         for actor in (_ACTOR_RM_NOCONFIG, _ACTOR_RM_UNSERVED):
             event = by_actor[actor]
             assert event.get("pending_count") == 1, event
         missing_flow = ids["missing_flow"]
-        assert set(by_actor[_ACTOR_RM_NOCONFIG].get("flow_ids") or []) == {missing_flow}, (
-            by_actor[_ACTOR_RM_NOCONFIG]
-        )
-        assert set(by_actor[_ACTOR_RM_UNSERVED].get("flow_ids") or []) == {missing_flow}, (
-            by_actor[_ACTOR_RM_UNSERVED]
-        )
+        assert set(by_actor[_ACTOR_RM_NOCONFIG].get("flow_ids") or []) == {missing_flow}, by_actor[
+            _ACTOR_RM_NOCONFIG
+        ]
+        assert set(by_actor[_ACTOR_RM_UNSERVED].get("flow_ids") or []) == {missing_flow}, by_actor[
+            _ACTOR_RM_UNSERVED
+        ]
     finally:
         if pool is not None:
             await pool.close()

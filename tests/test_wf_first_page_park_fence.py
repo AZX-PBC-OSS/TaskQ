@@ -834,9 +834,7 @@ async def test_python_statement_fences_the_no_cursor_first_page_park(
         child_id=JobId(source_id),
         child_step_key="screen",
     )
-    assert int(fenced) == 1, (
-        f"the Python statement fences the no-cursor first-page park: {fenced}"
-    )
+    assert int(fenced) == 1, f"the Python statement fences the no-cursor first-page park: {fenced}"
     source_row = await wf_conn.fetchrow(
         f"""SELECT status::text AS status, error_class, metadata->'wf_not_draining' AS refusal
             FROM "{wf_schema}".jobs WHERE id = $1""",
