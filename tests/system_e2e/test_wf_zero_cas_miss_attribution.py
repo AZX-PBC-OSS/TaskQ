@@ -216,10 +216,32 @@ async def _race_phase(
         deadline = asyncio.get_running_loop().time() + 30.0
         while asyncio.get_running_loop().time() < deadline:
             census_now = COUNTERS.snapshot()
+            # The waiter count is DATABASE-scoped, the same discipline the
+            # hygiene gate imposes on every test-side pg_stat_activity read:
+            # pg_locks is cluster-wide too, and the invocation's one shared
+            # Postgres container hosts every xdist worker's per-module
+            # database, so an unscoped count satisfies itself with another
+            # database's waiter (a false pass or a false red under xdist).
+            # The scope is the waiting BACKEND's database
+            # (a.datname = current_database()), not the lock tag's: the
+            # ungranted transactionid row — this handshake's own shape —
+            # carries database = NULL on PG 18.6 (the tag names a
+            # process-local xid, not a database object), so a tag-side
+            # predicate like database = (SELECT oid FROM pg_database WHERE
+            # datname = current_database()) drops this control's own waiter,
+            # and a foreign database's transactionid waiter is
+            # indistinguishable from ours by tag alone. A row-lock wait is
+            # necessarily intra-database (holder and waiter contend on the
+            # same row), so the waiting backend's datname IS the lock's
+            # database for both counted locktypes. Shared-object locks
+            # (database = 0) are neither counted locktype and not a shape
+            # this control's two tasks can produce.
             waiters = await poller.fetchrow(
-                """SELECT count(*) FILTER (WHERE locktype = 'transactionid') AS txw,
-                          count(*) FILTER (WHERE locktype = 'tuple') AS tuplew
-                   FROM pg_locks WHERE NOT granted"""
+                """SELECT count(*) FILTER (WHERE l.locktype = 'transactionid') AS txw,
+                          count(*) FILTER (WHERE l.locktype = 'tuple') AS tuplew
+                   FROM pg_locks AS l
+                   JOIN pg_stat_activity AS a ON a.pid = l.pid
+                   WHERE NOT l.granted AND a.datname = current_database()"""
             )
             if (
                 census_now["flow_drains"] > pre_census["flow_drains"]
