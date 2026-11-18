@@ -75,13 +75,13 @@ def _park_meta(flow_id: str, *, width: int, bound: int) -> dict[str, Any]:
     }
 
 
-async def _seed_miss_estate(conn: asyncpg.Connection, schema: str) -> tuple[str, str, str]:
+async def _seed_miss_estate(pool: asyncpg.Pool, schema: str) -> tuple[str, str, str]:
     """The miss's estate: a running root, the parked source (its cursor
     un-moved), one SUCCEEDED child (the spent charge), one LIVE pending
     child, and a PENDING intent (wake=1, handled=0) — the parked source
     FITS (1 live + 1 <= 2)."""
     flow_id = str(new_uuid())
-    await conn.execute(
+    await pool.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key) "
         "VALUES ($1, 'flow', 'default', '{}', 3, 'transient', 'running', "
@@ -91,7 +91,7 @@ async def _seed_miss_estate(conn: asyncpg.Connection, schema: str) -> tuple[str,
         f"flow:{flow_id}",
     )
     source_id = str(new_uuid())
-    await conn.execute(
+    await pool.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, status, attempt, '
         "max_attempts, retry_kind, step_key, metadata, scheduled_at, created_at, "
         "fairness_key, assignment_routed, idempotency_scope, idempotency_key) "
@@ -103,7 +103,7 @@ async def _seed_miss_estate(conn: asyncpg.Connection, schema: str) -> tuple[str,
         f"wf:{flow_id}:source",
     )
     spent = str(new_uuid())
-    await conn.execute(
+    await pool.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, status, attempt, '
         "max_attempts, retry_kind, step_key, map_index, metadata, finished_at, "
         "created_at, fairness_key, parent_id, idempotency_scope, idempotency_key) "
@@ -117,7 +117,7 @@ async def _seed_miss_estate(conn: asyncpg.Connection, schema: str) -> tuple[str,
         f"wf:{flow_id}:emit:0:screen",
     )
     live_child = str(new_uuid())
-    await conn.execute(
+    await pool.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, status, attempt, '
         "max_attempts, retry_kind, step_key, map_index, metadata, created_at, "
         "fairness_key, parent_id, idempotency_scope, idempotency_key) "
@@ -129,7 +129,7 @@ async def _seed_miss_estate(conn: asyncpg.Connection, schema: str) -> tuple[str,
         source_id,
         f"wf:{flow_id}:emit:1:screen",
     )
-    await conn.execute(
+    await pool.execute(
         f'INSERT INTO "{schema}".wf_emit_capacity '
         "(flow_id, bound, wake_generation, handled_generation) "
         "VALUES ($1::uuid, 2, 1, 0)",

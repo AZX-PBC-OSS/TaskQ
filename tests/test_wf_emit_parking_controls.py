@@ -77,6 +77,8 @@ from taskq.workflows.chain import DONE, Route
 from tests._wf_fixtures import seed_join
 
 if TYPE_CHECKING:
+    from asyncpg.pool import PoolConnectionProxy
+
     from taskq.workflows._sql import WorkflowSql
 
 
@@ -246,13 +248,19 @@ def _park_deferrals(metadata: dict[str, Any]) -> int:
 
 
 async def _source_state(
-    conn: asyncpg.Connection,
+    conn: asyncpg.Connection | PoolConnectionProxy[asyncpg.Record],
     schema: str,
     flow_id: JobId,
     source_id: JobId,
     source_key: str,
 ) -> dict[str, Any]:
-    """Read the complete source row/ledger/root fact set for diagnostics."""
+    """Read the complete source row/ledger/root fact set for diagnostics.
+
+    ``conn`` is the union the asyncpg stubs declare for the two surfaces
+    that hand a connection over: a standalone ``asyncpg.connect()``
+    ``Connection`` and a pool acquisition's ``PoolConnectionProxy`` — the
+    helper is diagnostic-only and reads through whichever the caller
+    owns."""
     row = await conn.fetchrow(
         f"SELECT status::text AS status, scheduled_at, attempt, claim_epoch, "
         "locked_by_worker, lock_expires_at, last_heartbeat_at, snooze_count, "

@@ -49,6 +49,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+from asyncpg.pool import PoolConnectionProxy
 
 from taskq.constants import (
     events_channel,
@@ -102,7 +103,12 @@ JournalEntry = tuple[str, ...]
 
 
 def _recording(entry_cb: Any, journal: list[JournalEntry]) -> Any:
-    def _cb(conn: asyncpg.Connection, pid: int, ch: str, payload: str) -> None:
+    def _cb(
+        conn: asyncpg.Connection | PoolConnectionProxy[asyncpg.Record],
+        pid: int,
+        ch: str,
+        payload: object,
+    ) -> None:
         # THE INVOKED CHANNEL, not the entry's own: a host that delivers
         # a wake carrying ANOTHER entry's channel (the cross-channel
         # mutant) is visible here as a substituted pair. The identity is
@@ -147,7 +153,12 @@ def _registry(schema: str, backend: Any, journal: list[JournalEntry]) -> list[_N
     through."""
     cap_cb = _make_wf_emit_capacity_callback(backend)
 
-    def own_cb(conn: asyncpg.Connection, pid: int, ch: str, payload: str) -> None:
+    def own_cb(
+        conn: asyncpg.Connection | PoolConnectionProxy[asyncpg.Record],
+        pid: int,
+        ch: str,
+        payload: object,
+    ) -> None:
         del conn, pid, ch, payload
 
     entries = [
@@ -351,7 +362,12 @@ async def test_raising_gated_hook_cannot_prevent_the_drain_arms(
     drained = asyncio.Event()
     backend._wf_emit_capacity_subscribers.add(drained)
 
-    def raising_hook(conn: asyncpg.Connection, pid: int, ch: str, payload: str) -> None:
+    def raising_hook(
+        conn: asyncpg.Connection | PoolConnectionProxy[asyncpg.Record],
+        pid: int,
+        ch: str,
+        payload: object,
+    ) -> None:
         # TOTAL: the event first, then the raising bookkeeping.
         for event in list(backend._wf_emit_capacity_subscribers):
             event.set()
@@ -397,7 +413,7 @@ def _mutant_host_wake_only_channels0(
     async def _reconnect() -> None:
         for entry in channels:
             await conn.execute(f'LISTEN "{entry.channel}"')
-            await conn.add_listener(entry.channel, entry.callback)
+            await conn.add_listener(entry.channel, entry.callback)  # pyright: ignore[reportArgumentType]  # Why: entry.callback is the product registry's declared shape (Callable[[Connection, int, str, str], None]); the asyncpg stub's _Listener union is the over-narrow-stub friction the product itself ignores at notify.py's own add_listener sites.
         wake_log.append(channels[0].channel)
         channels[0].callback(conn, 0, channels[0].channel, "")
 
@@ -414,7 +430,7 @@ def _mutant_host_cross_channel_wake(
     async def _reconnect() -> None:
         for entry in channels:
             await conn.execute(f'LISTEN "{entry.channel}"')
-            await conn.add_listener(entry.channel, entry.callback)
+            await conn.add_listener(entry.channel, entry.callback)  # pyright: ignore[reportArgumentType]  # Why: entry.callback is the product registry's declared shape (Callable[[Connection, int, str, str], None]); the asyncpg stub's _Listener union is the over-narrow-stub friction the product itself ignores at notify.py's own add_listener sites.
         for entry in channels:
             if entry.reconnect_backfill:
                 wake_log.append(channels[0].channel)
