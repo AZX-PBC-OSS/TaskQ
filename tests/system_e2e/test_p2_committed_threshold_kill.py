@@ -889,12 +889,13 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
     """§4.2 control 3's healthy two-OS-worker lane: two real OS workers,
     the two-page/one-source healthy flow (P=2, S=1), the initial
     leadership assumption counted (R=1, no direct runner: B=0), no
-    failures (J=C=0). The pre-registration prints 60 versus 60 BEFORE
-    execution; the pods' own census snapshots (the WARNING-level
+    failures (J=C=0). The pre-registration prints the standalone
+    acceptance caps — 60 lane against 60 general — BEFORE execution;
+    the pods' own census snapshots (the WARNING-level
     ``p2sat-census`` lines) are the measurement — the fleet's V is the
     SUM of the pods' own operation instances. The red predicates: the
-    measured V exceeding the lane pin 60 (and V_lane > V_general is
-    impossible here — equality)."""
+    measured V exceeding the lane acceptance cap 60 (and V_lane >
+    V_general is impossible here — equality)."""
     from taskq.workflows import FlowRunner
 
     schema = module_pg_schema.schema_name
