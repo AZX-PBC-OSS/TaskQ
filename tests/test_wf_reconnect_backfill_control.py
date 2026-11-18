@@ -413,7 +413,7 @@ def _mutant_host_wake_only_channels0(
     async def _reconnect() -> None:
         for entry in channels:
             await conn.execute(f'LISTEN "{entry.channel}"')
-            await conn.add_listener(entry.channel, entry.callback)  # pyright: ignore[reportArgumentType]  # Why: entry.callback is the product registry's declared shape (Callable[[Connection, int, str, str], None]); the asyncpg stub's _Listener union is the over-narrow-stub friction the product itself ignores at notify.py's own add_listener sites.
+            await conn.add_listener(entry.channel, entry.callback)  # pyright: ignore[reportArgumentType]  # Why: entry.callback is the product registry's declared shape (Callable[[Connection, int, str, str], None]); the asyncpg stub's _Listener union is the over-narrow-stub friction the product itself ignores at its own add_listener sites (src/taskq/worker/notify.py:524 and :793).
         wake_log.append(channels[0].channel)
         channels[0].callback(conn, 0, channels[0].channel, "")
 
@@ -430,7 +430,7 @@ def _mutant_host_cross_channel_wake(
     async def _reconnect() -> None:
         for entry in channels:
             await conn.execute(f'LISTEN "{entry.channel}"')
-            await conn.add_listener(entry.channel, entry.callback)  # pyright: ignore[reportArgumentType]  # Why: entry.callback is the product registry's declared shape (Callable[[Connection, int, str, str], None]); the asyncpg stub's _Listener union is the over-narrow-stub friction the product itself ignores at notify.py's own add_listener sites.
+            await conn.add_listener(entry.channel, entry.callback)  # pyright: ignore[reportArgumentType]  # Why: entry.callback is the product registry's declared shape (Callable[[Connection, int, str, str], None]); the asyncpg stub's _Listener union is the over-narrow-stub friction the product itself ignores at its own add_listener sites (src/taskq/worker/notify.py:524 and :793).
         for entry in channels:
             if entry.reconnect_backfill:
                 wake_log.append(channels[0].channel)
