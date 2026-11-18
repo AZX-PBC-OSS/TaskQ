@@ -212,7 +212,7 @@ accepted:
    scope sentence splits it, which can only SEPARATE a claim from its
    scope — more reds, never fewer.
 7. The foreign-subject refusal is lexical too: the pronoun set
-   (`_PRONOUN_SUBJECT_RE`) is the anaphoric paradigm — third-person
+   (`_PRONOUN_SUBJECT_RE`) is the anaphoric pronoun set — third-person
    personal/possessive/reflexive (they/them/their/theirs/themselves,
    it/its/itself), first-person plural (we/us/our/ours/ourselves) and
    demonstratives (these/those/all/such); round-13 N13-1 widened it
@@ -511,7 +511,8 @@ _SENTENCE_MENTION_RE: Final = re.compile(
 #: POSITION-INDEPENDENT (round-12 D12-2: the old check anchored the
 #: pronoun to the head's end with `\s*$`, so the anaphora hid mid-head —
 #: "They themselves <universal>" / "They in turn <universal>" waived
-#: while "They <universal>" reds). The set is the ANAPHORIC PARADIGM —
+#: while "They <universal>" reds). The set is the ANAPHORIC PRONOUN
+#: SET —
 #: the third-person personal/possessive/reflexive forms
 #: (they/them/their/theirs/themselves, it/its/itself), the
 #: first-person-plural voice the docs' own "we" sentences bind back
@@ -1835,7 +1836,7 @@ def _foreign_subject(sentence: str, position: int) -> bool:
     <universal> because it has no registered stub/config is a strictly
     worse failure mode" is that sentence's own restricted subject, not
     a gloss on the gauge. A pronoun in `_PRONOUN_SUBJECT_RE`'s set (the
-    anaphoric paradigm: third-person personal/possessive/reflexive,
+    anaphoric pronoun set: third-person personal/possessive/reflexive,
     first-person plural, demonstratives — round-13 N13-1 widened the
     set after their/its/itself/theirs/we/us/our/ours/ourselves/
     themselves were demonstrated hiding) or population subject binds
@@ -4305,7 +4306,7 @@ def test_scoping_requires_a_genuine_scope() -> None:
     assert _corpus_matches("virtual/scope-pronoun-phrase.md", pronoun_phrase) == [
         "universal-no-dispatch"
     ], "a pronoun before a trailing phrase still binds back"
-    # ── the round-13 N13-1 defeats: the FULL anaphoric paradigm ─────────
+    # ── the round-13 N13-1 defeats: the FULL anaphoric pronoun set ──────
     # The possessive/reflexive/plural pronoun forms bind back to the
     # unit's subject exactly like they/it/them — the gloss's own
     # sentence has no detector mention, so only the pronoun refusal
