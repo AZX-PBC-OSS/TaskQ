@@ -101,6 +101,7 @@ nav:
       - The Scenario Grounds: guides/scenario-grounds.md
       - Jobs & Clients: guides/jobs-clients.md
       - Workers: guides/workers.md
+      - Sweeps: guides/sweeps.md
       - Rate Limiting: guides/rate-limiting.md
       - Retries: guides/retries.md
       - Workflows (DAG Engine): guides/workflows.md
