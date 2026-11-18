@@ -217,9 +217,9 @@ class TestRuntimeCheckable:
 
 
 class TestMethodCount:
-    def test_exactly_fifty_one_public_members(self) -> None:
+    def test_exactly_fifty_two_public_members(self) -> None:
         public = [m for m in dir(Backend) if not m.startswith("_")]
-        assert len(public) == 51, f"Expected 51 public members, got {len(public)}: {public}"
+        assert len(public) == 52, f"Expected 52 public members, got {len(public)}: {public}"
 
     def test_all_member_names_present(self) -> None:
         expected = {
@@ -260,6 +260,7 @@ class TestMethodCount:
             "subscribe_wake",
             "subscribe_cancel_wake",
             "subscribe_leader_wake",
+            "subscribe_wf_emit_capacity",
             "create_schedule",
             "list_schedules",
             "update_schedule",

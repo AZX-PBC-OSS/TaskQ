@@ -2605,6 +2605,14 @@ class Backend(Protocol):
         """
         ...
 
+    def subscribe_wf_emit_capacity(self) -> AsyncContextManager[asyncio.Event]:
+        """Yield the event accelerated by emit-capacity NOTIFYs.
+
+        Delivery is a hint only: durable pending intents and the bounded
+        maintenance selection remain the correctness authority.
+        """
+        ...
+
     # ── Schedule crud ────────────────────────────────────────────────────
     async def create_schedule(self, args: ScheduleCreateArgs) -> ScheduleRecord: ...
 

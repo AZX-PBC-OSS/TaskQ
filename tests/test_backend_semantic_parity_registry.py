@@ -147,6 +147,11 @@ _NO_SEMANTIC_SURFACE: dict[str, str] = {
     "subscribe_wake": "notification plumbing; returns no rows",
     "subscribe_cancel_wake": "notification plumbing; returns no rows",
     "subscribe_leader_wake": "notification plumbing; returns no rows",
+    "subscribe_wf_emit_capacity": (
+        "notification plumbing; returns no rows (the emit-capacity NOTIFY "
+        "seam's subscription: a hinted event whose durable pending intents "
+        "and bounded maintenance selection remain the correctness authority)"
+    ),
 }
 
 

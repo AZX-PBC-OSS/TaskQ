@@ -2368,15 +2368,7 @@ class MaintenanceLeader:
         diagnostic and the loop resumes waiting (the event is level
         -cleared, so a failing drain cannot spin); the periodic fallback
         owns the retry."""
-        subscribe = getattr(self._backend, "subscribe_wf_emit_capacity", None)
-        if not callable(subscribe):
-            log.warning(
-                "wf-emit-capacity-subscribe-missing",
-                kind="wf_emit_capacity_subscribe_missing",
-            )
-            return
-        cm = cast("contextlib.AbstractAsyncContextManager[asyncio.Event]", subscribe())
-        async with cm as event:
+        async with self._backend.subscribe_wf_emit_capacity() as event:
             # Leadership assumption (the R term's initial reconciliation).
             try:
                 await self._wf_emit_capacity_drain_once()
