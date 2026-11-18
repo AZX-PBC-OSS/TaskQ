@@ -88,8 +88,12 @@ def rehydrate_carry(declared: object, raw: object, *, committed: bool) -> object
     ``committed`` is the carry's PROVENANCE, supplied by the driver per
     face — the seed's gate, not a value property: the row read derives
     it from the iteration counter the atomic advance owns (the advance
-    writes ``carry`` and ``iteration`` in one statement, so iteration 0
-    ⟺ nothing committed); the memo replay (the recorded feedback) and
+    writes ``carry`` and ``iteration`` in one statement, and only the
+    driver's own init/advance under the claim fence writes that pair,
+    so iteration 0 ⟺ nothing has been committed TO THE ROW — a recorded
+    iteration terminal the advance never reached (the crash window) is
+    still a commit, which is why the memo replay below supplies ``True``
+    regardless); the memo replay (the recorded feedback) and
     the in-memory ``Refine`` (the feedback the advance is about to
     write) are commits by construction. A body owns neither write and
     cannot mark its own feedback as a seed.
@@ -97,11 +101,13 @@ def rehydrate_carry(declared: object, raw: object, *, committed: bool) -> object
     * declared ``None`` — the untyped contract: the raw value passes
       (the pre-typed-loop face is unchanged).
     * the PRE-FIRST-CARRY seed (a declared type, raw ``None``,
-      ``committed=False``) — no carry has been committed yet, so
-      ``None`` passes through as ``None``: the type-only declaration's
-      documented initial (``carry_type=`` with no model ``initial=``,
-      the driver's iteration-0 seed) and a resume before any ``Refine``
-      committed one both land here.
+      ``committed=False``) — nothing has been committed to the row yet
+      (and no memo replay hit: a recorded terminal the advance never
+      reached is a commit and overrides this face), so ``None`` passes
+      through as ``None``: the type-only declaration's documented
+      initial (``carry_type=`` with no model ``initial=``, the driver's
+      iteration-0 seed) and a resume before any advance committed one
+      to the row both land here.
     * a COMMITTED ``None`` (a declared model or dict, raw ``None``,
       ``committed=True``) — the LOUD refusal: a committed carry of no
       shape is the same silent type change this seam refuses (a body's

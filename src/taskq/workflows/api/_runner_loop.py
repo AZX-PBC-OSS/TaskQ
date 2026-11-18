@@ -429,10 +429,14 @@ class LoopOps(_LoopHost):
         carry: object = meta_doc.get("carry")
         # the carry's PROVENANCE (rehydrate_carry's ``committed`` flag —
         # the seed's gate): the row's carry and iteration are written by
-        # the SAME atomic statement (the init or the advance), so
-        # iteration == 0 means no ``Refine`` has ever committed — the
-        # carry is the init's seed; iteration >= 1 means the carry is
-        # the last advance's committed value. A body owns neither write.
+        # the SAME atomic statement (the init or the advance) — and by
+        # nothing else, the driver's own init/advance under the claim
+        # fence — so iteration == 0 means no advance has committed a
+        # carry TO THE ROW (the carry is the init's seed); iteration >= 1
+        # means the carry is the last advance's committed value. A
+        # recorded iteration terminal the advance never reached (the
+        # crash window's memo) is still a commit — the memo replay below
+        # supplies ``True`` itself. A body owns neither write.
         carry_committed = iteration > 0
 
         max_wall = 10_000  # the driver's own bound (a hang is a defect with no stack)
@@ -562,12 +566,12 @@ class LoopOps(_LoopHost):
                 # in-memory Refine (idempotent). A dict is never the body's
                 # carry when a type is declared. The ``committed`` flag is the
                 # seed's gate, tracked per face above: the PRE-FIRST-CARRY seed
-                # passes through as ``None`` (no carry committed yet), while a
-                # COMMITTED ``None`` — a ``Refine(None)`` — refuses loudly here
-                # against a declared model/dict, exactly as any other
-                # wrong-typed carry. (before the body boundary: a contract
-                # refusal is the declaration's bug — the machinery's own loud
-                # error, never a body failure to absorb.)
+                # passes through as ``None`` (nothing committed to the row
+                # yet), while a COMMITTED ``None`` — a ``Refine(None)`` —
+                # refuses loudly here against a declared model/dict, exactly
+                # as any other wrong-typed carry. (before the body boundary: a
+                # contract refusal is the declaration's bug — the machinery's
+                # own loud error, never a body failure to absorb.)
                 carry = rehydrate_carry(spec.carry_type, carry, committed=carry_committed)
                 try:
                     # a loop body declaring one param beyond (ctx, carry)
