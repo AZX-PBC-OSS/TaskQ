@@ -220,7 +220,9 @@ class TestParkPredicateParity:
 
         mig = _migration_text()
         parks = _extract_fence_parks_predicate(mig)
-        assert _canon_doubled(parks) == _canon(f"{_EXPECTED_FLOW_FILTER} AND {emit_park_predicate('j')}"), parks
+        assert _canon_doubled(parks) == _canon(
+            f"{_EXPECTED_FLOW_FILTER} AND {emit_park_predicate('j')}"
+        ), parks
         index_where = _extract_partial_index_predicate(mig)
         assert _canon_doubled(index_where) == _canon(emit_park_predicate("")), index_where
         trigger_if = _extract_trigger_if_predicate(mig)

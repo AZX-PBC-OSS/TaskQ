@@ -241,9 +241,7 @@ def test_rotation_bound_is_one_constant_across_sql_and_python() -> None:
     assert wsql.emit_pending_intents.endswith(f"LIMIT {WF_EMIT_ROTATION_BATCH}\n"), (
         wsql.emit_pending_intents
     )
-    assert f"LIMIT {WF_EMIT_ROTATION_BATCH}\n" in WF_EMIT_MARKER_SWEEP_SQL, (
-        WF_EMIT_MARKER_SWEEP_SQL
-    )
+    assert f"LIMIT {WF_EMIT_ROTATION_BATCH}\n" in WF_EMIT_MARKER_SWEEP_SQL, WF_EMIT_MARKER_SWEEP_SQL
     # No second literal spelling of the bound survives in the drain module.
     from pathlib import Path
 

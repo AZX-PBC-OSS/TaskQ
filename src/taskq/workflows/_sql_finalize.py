@@ -583,13 +583,17 @@ WF_EMIT_ROTATION_BATCH: Final[int] = 100
 #: short indexed read (the pending-generation partial index), ordered,
 #: rotated by the persistent ``after_flow_id`` cursor, and holding no row
 #: lock past the read.
-WF_EMIT_PENDING_INTENTS_SQL = """\
+WF_EMIT_PENDING_INTENTS_SQL = (
+    """\
 SELECT flow_id, bound, wake_generation, handled_generation
 FROM {schema}.wf_emit_capacity
 WHERE wake_generation > handled_generation
   AND flow_id > $1::uuid
 ORDER BY flow_id
-LIMIT """ + str(WF_EMIT_ROTATION_BATCH) + "\n"
+LIMIT """
+    + str(WF_EMIT_ROTATION_BATCH)
+    + "\n"
+)
 
 #: The fairness rotation's singleton: one row, one ``after_flow_id``, never
 #: growing with run cardinality.

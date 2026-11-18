@@ -871,9 +871,7 @@ RETURNING j.id, snap.prev_status"""
 #: The shared renderer's marker core, encoded for this module's
 #: `.format(schema=...)` convention (the collapse un-doubles it) — one
 #: predicate definition, never a second spelling.
-_SWEEP_3_SQL = _SWEEP_3_BODY.replace(
-    "{wf_park_core}", double_braces(emit_park_marker_core(""))
-)
+_SWEEP_3_SQL = _SWEEP_3_BODY.replace("{wf_park_core}", double_braces(emit_park_marker_core("")))
 
 _SWEEP_4_SQL = """\
 -- Bounded batch + MATERIALIZED + the STABLE-bound ORDER BY on
