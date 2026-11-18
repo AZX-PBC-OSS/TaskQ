@@ -26,7 +26,10 @@ The same estate with the drain post-COMMIT: the seat returns and commits
 its terminals in well under a second.
 
 This control pins the fixed law on real PostgreSQL end to end, fails
-closed on a hang (a bounded wait that REDS — it never hangs the lane), and
+closed on a hang (a bounded wait that REDS — it never hangs the lane; the
+red samples and asserts the hang's own catalog fingerprint BEFORE
+cancelling the hung seats, because the cancellation would roll the
+transactions back and erase it), and
 asserts the exhaust's post-commit outcome is exactly the documented §5.4
 shape: the terminal root owns the parked row, so the promotion CAS refuses
 and the same primitive, called post-COMMIT, returns
@@ -109,18 +112,27 @@ async def _intent_facts(pool: asyncpg.Pool, schema: str, flow_id: JobId) -> dict
 async def _schema_activity(pool: asyncpg.Pool, schema: str) -> dict[str, list[dict[str, Any]]]:
     """This schema's own lock/transaction account from the real catalogs.
 
-    Scoped to THIS schema so a parallel xdist worker's unrelated
-    transactions cannot flake the assertion: an idle-in-transaction pid
-    counts only when it holds a lock on one of this schema's relations,
-    and a waiting lock counts only when the waiting query names this
-    schema (the transactionid wait the defect produces has no relation of
-    its own — the waiting query text is its carrier)."""
+    Two scope layers. ``a.datname = current_database()`` is the DATABASE
+    scope: ``pg_stat_activity`` is cluster-wide, and the invocation's one
+    shared Postgres container hosts every xdist worker's per-module
+    database, so an unscoped read counts backends this run has no
+    relationship with (the suite's hygiene gate
+    ``test_pg_stat_activity_queries_are_scoped_to_the_current_database``
+    requires the database scope on every test-side read). The schema and
+    pid predicates are then the ROW identity within this database: an
+    idle-in-transaction pid counts only when it holds a lock on one of
+    this schema's relations, and a waiting lock counts only when the
+    waiting query text names this schema (the transactionid wait the
+    defect produces has no relation of its own — the waiting query text
+    is its carrier, so its LIKE is a CONTAINS match on the
+    schema-qualified name, not an anchored prefix)."""
     idle = await pool.fetch(
         """SELECT a.pid, a.state, a.wait_event_type,
                   EXTRACT(EPOCH FROM (now() - a.xact_start))::numeric(10,2)
                     AS xact_age_s
            FROM pg_stat_activity AS a
            WHERE a.state = 'idle in transaction'
+             AND a.datname = current_database()
              AND a.pid <> pg_backend_pid()
              AND EXISTS (
                  SELECT 1 FROM pg_locks AS l
@@ -135,9 +147,10 @@ async def _schema_activity(pool: asyncpg.Pool, schema: str) -> dict[str, list[di
            FROM pg_locks AS l
            JOIN pg_stat_activity AS a ON a.pid = l.pid
            WHERE NOT l.granted
+             AND a.datname = current_database()
              AND a.pid <> pg_backend_pid()
              AND a.query LIKE $1""",
-        f"{schema}.%",
+        f"%{schema}.%",
     )
     return {
         "idle_in_transaction": [dict(r) for r in idle],
@@ -258,18 +271,36 @@ async def test_fail_policy_exhaust_drains_after_commit_with_a_live_parked_waiter
 
         # ── the exhaust: the loop's cap fires the fail-policy seat ──
         exhaust_started = asyncio.get_running_loop().time()
-        try:
-            gathered = await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True), timeout=_EXHAUST_BOUND_S
+        done, pending = await asyncio.wait(tasks, timeout=_EXHAUST_BOUND_S)
+        if pending:
+            # THE HANG IS LIVE: the seats still hold their open exhaust
+            # transactions. Sample the catalogs NOW — before cancelling
+            # anything — because cancelling the tasks rolls their
+            # transactions back and erases the defect's fingerprint (a
+            # post-cancellation sample reads empty, and the post-run
+            # residue assertion below is then vacuous on this path). The
+            # red therefore carries the hang's OWN catalog evidence: the
+            # idle-in-transaction holder of this schema's rows plus the
+            # ungranted transactionid waiter, asserted present so a decayed
+            # detection arm is named as such instead of printing an empty
+            # fingerprint.
+            hang_activity = await _schema_activity(wf_pool, wf_schema)
+            hang_rows = await _rows(wf_pool, wf_schema, flow_id)
+            assert hang_activity["idle_in_transaction"] and hang_activity["waiting_locks"], (
+                "the live hang's catalog fingerprint is empty — the "
+                "detection arms cannot see the defect they exist to "
+                f"report: {hang_activity}"
             )
-        except TimeoutError:
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
             raise AssertionError(
                 "THE FAIL-POLICY EXHAUST DID NOT COMPLETE within "
                 f"{_EXHAUST_BOUND_S}s — the drain is waiting on the row locks "
                 "its own open exhaust transaction holds (the in-transaction "
-                f"self-wait). rows={await _rows(wf_pool, wf_schema, flow_id)} "
-                f"activity={await _schema_activity(wf_pool, wf_schema)}"
+                f"self-wait). rows={hang_rows} activity={hang_activity}"
             ) from None
+        gathered = [t.exception() for t in done]
         seat_elapsed_s = asyncio.get_running_loop().time() - exhaust_started
 
         # No hung task and no tick exception afterwards.
@@ -311,9 +342,11 @@ async def test_fail_policy_exhaust_drains_after_commit_with_a_live_parked_waiter
         assert isinstance(result, EmitWakeResult)
         assert (result.promoted, result.intent_completed, result.missed) == (0, False, True), result
 
-        # Nothing is left idle in transaction and no lock wait survives —
-        # the defect's catalog fingerprint (an idle-in-transaction holder of
-        # this schema's rows plus a transactionid waiter) is absent.
+        # The COMPLETED seat leaves no residue: nothing is left idle in
+        # transaction and no lock wait survives the run. (This is the green
+        # direction only — on the red path the hang's own fingerprint is
+        # sampled and asserted pre-cancellation above, before the task
+        # cancellation can erase it.)
         activity = await _schema_activity(wf_pool, wf_schema)
         assert not activity["idle_in_transaction"], activity
         assert not activity["waiting_locks"], activity
