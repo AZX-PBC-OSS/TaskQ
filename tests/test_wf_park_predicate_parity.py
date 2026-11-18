@@ -9,7 +9,12 @@ SQL (the frozen ``01.00.42_01`` migration, not an edit target) necessarily
 inlines its own forms; THIS control owns that boundary with written-literal
 expected spans, canonicalised for whitespace and the doubled-brace
 encoding only — never read back from the migration and never generated
-from the same span on both sides.
+from the same span on both sides. THE ONE-DESIGN NOTE (the correction
+layer's observation 2, carried here): the written-literal anchors bind the
+renderer's projections AND the migration/Python spans to the SAME
+literals — one design, not two — so the migration comparisons run through
+the renderer (a shared-leg mutation reds every migration comparison) while
+the renderer itself is anchored to the written literals by the first test.
 
 Bindings (C4 items 2-4):
 - complete ``P`` → the migration ``fence_not_draining_parks`` body's
