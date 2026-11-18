@@ -874,7 +874,10 @@ class TestRunbookRootMissingRemedy:
         — the ``:'flow_id'`` count and every ``psql`` token are unchanged,
         so the mutated SQL actually executes; the extractor's own guards
         cannot fire) pulls EVERY flow's orphans into the target set: the
-        honest battery reds on the untouched-decoy law."""
+        honest battery reds FIRST on the reviewed-target-set law — the
+        visibility result's job ids then carry every flow's orphans
+        (extra items in the reviewed set). The untouched-decoy law is
+        violated too, but the battery never reaches it."""
         doc = _RUNBOOKS.read_text(encoding="utf-8")  # noqa: ASYNC240  # Why: a single fast read of a repo doc in the control's setup; the file is local and tiny.
         raw = _extract_remedy_sql(doc)
         schema = module_pg_schema.schema_name
@@ -939,9 +942,13 @@ class TestRunbookRootMissingRemedy:
         module_pg_pool: asyncpg.Pool,
     ) -> None:
         """Removing an exact-claim association leg (the current-claim
-        CTE's own step_key leg — the sibling-substep fence) lets a
-        different substep/map row fence: the honest battery reds on the
-        only-exact-current-claims law. (The fence UPDATE's own
+        CTE's own step_key leg — the sibling-substep fence) lets the
+        sibling substep row associate as the scheduled winner's current
+        claim too, so that winner writes TWO events: the honest battery
+        reds FIRST on the one-visible-result-per-winner law — the
+        visibility result then carries four rows for the three reviewed
+        winners. The only-exact-current-claims law is violated too, but
+        the battery never reaches it. (The fence UPDATE's own
         ``l.updated_at = c.claimed_at`` leg is NOT this mutation: the
         ``l.id = c.ledger_id`` PK join already pins the row, so its
         removal is behaviourally inert — the exact-claim identity lives
