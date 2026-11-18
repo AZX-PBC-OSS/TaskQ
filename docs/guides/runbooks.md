@@ -824,7 +824,121 @@ Do not fix this by raising `TASKQ_LOCK_LEASE` alone when the cause is a blocked 
 
 1. `no_actor_config`: run a worker that registers the actor (registration writes the row at boot), or, if the actor is gone for good, cancel the rows (`JobsClient.cancel_where(JobFilter(actor=...))`, `taskq job cancel-where`, or the embedded admin UI's cancel action) so they stop counting.
 2. `unserved_queue`: follow [TaskQQueueUnserved](#taskqqueueunserved): subscribe a live worker to the named queue, or move the actor's assignment with `taskq actor-config move-queue`.
-3. `workflow_root_missing` (control-plane recovery, never a worker knob): restore the exact missing `__flow__` root row and its original flow identity through a validated database recovery/restore procedure after stopping the affected writers, and investigate the destructive path that dropped it. If faithful restoration is impossible, explicitly quarantine/remove the orphaned surviving rows under an application-reviewed recovery plan (row-scoped `JobsClient.cancel_where(JobFilter(metadata_flow_id=...))` / `taskq job cancel-where` against the selected survivors) and recreate the work as a NEW run. Actor registration, `TASKQ_QUEUES`, and queue moves do not repair the run. Per-run cancellation is NOT the cleanup mechanism here: `taskq flows cancel <run_id>` flips the root row first and returns early (a no-op) when the root is missing — it never touches the surviving nodes.
+3. `workflow_root_missing` (control-plane recovery, never a worker knob): restore the exact missing `__flow__` root row and its original flow identity through a validated database recovery/restore procedure after stopping the affected writers, and investigate the destructive path that dropped it. If faithful restoration is impossible, stop every writer for the affected run and have the application owner review the exact orphan set before any write. The following PostgreSQL recipe targets only non-root, nonterminal, non-after-terminal-effect rows whose `metadata->>'flow_id'` is the reviewed run id and whose `__flow__` root is still absent. It locks and prints the target set before mutation; **ROLL BACK if that set is not exactly the approved set**. It then terminalises those orphans as `cancelled`, fences only their exact current claims, and writes one state-change event per winner in the same transaction. The example assumes the default `taskq` schema and `psql`; for a non-default schema the application owner must review the schema-qualified names before running it. Substitute the reviewed UUID for `<reviewed-flow-uuid>`.
+
+    ```sql
+    \set flow_id '<reviewed-flow-uuid>'
+    BEGIN;
+    SET LOCAL lock_timeout = '5s';
+    SET LOCAL statement_timeout = '30s';
+
+    CREATE TEMP TABLE wf_orphan_quarantine (
+        job_id uuid PRIMARY KEY,
+        from_state text NOT NULL
+    ) ON COMMIT DROP;
+
+    INSERT INTO wf_orphan_quarantine (job_id, from_state)
+    SELECT j.id, j.status::text
+    FROM taskq.jobs AS j
+    WHERE j.metadata->>'flow_id' = :'flow_id'
+      AND j.step_key IS NOT NULL
+      AND j.step_key <> '__flow__'
+      AND j.status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
+      AND NOT j.metadata ? 'wf_after_terminal_effect'
+      AND NOT EXISTS (
+          SELECT 1 FROM taskq.jobs AS root
+          WHERE root.id = :'flow_id'::uuid AND root.step_key = '__flow__'
+      )
+    ORDER BY j.id
+    FOR UPDATE;
+
+    -- Review every id and state now. If this is not exactly the approved set: ROLLBACK.
+    SELECT job_id, from_state FROM wf_orphan_quarantine ORDER BY job_id;
+
+    WITH flipped AS (
+        UPDATE taskq.jobs AS j
+        SET status = 'cancelled',
+            finished_at = clock_timestamp(),
+            error_class = 'WorkflowCancelled',
+            error_message = 'orphaned workflow node quarantined after root loss; recreate as a new run',
+            metadata = j.metadata - 'wf_emit_reservation'
+        FROM wf_orphan_quarantine AS t
+        WHERE j.id = t.job_id
+          AND j.status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
+          AND NOT j.metadata ? 'wf_after_terminal_effect'
+          AND j.metadata->>'flow_id' = :'flow_id'
+          AND NOT EXISTS (
+              SELECT 1 FROM taskq.jobs AS root
+              WHERE root.id = :'flow_id'::uuid AND root.step_key = '__flow__'
+          )
+        RETURNING j.id, t.from_state, j.claim_epoch, j.step_key, j.map_index
+    ), current_claim AS (
+        SELECT f.id AS job_id, l.id AS ledger_id, l.updated_at AS claimed_at,
+               l.attempt AS claim_attempt
+        FROM flipped AS f
+        JOIN taskq.wf_step_ledger AS l
+          ON l.job_id = f.id
+         AND l.claim_epoch = f.claim_epoch
+         AND l.step_key = f.step_key
+         AND l.map_index IS NOT DISTINCT FROM f.map_index
+        WHERE l.status IN ('running','awaited','crashed')
+          AND NOT EXISTS (
+              SELECT 1 FROM taskq.wf_step_ledger AS newer
+              WHERE newer.job_id = f.id
+                AND newer.claim_epoch = f.claim_epoch
+                AND newer.step_key = f.step_key
+                AND newer.map_index IS NOT DISTINCT FROM f.map_index
+                AND newer.status IN ('running','awaited','crashed')
+                AND (newer.attempt, newer.updated_at, newer.id)
+                  > (l.attempt, l.updated_at, l.id)
+          )
+    ), fenced AS (
+        UPDATE taskq.wf_step_ledger AS l
+        SET status = 'fenced', error_class = 'WorkflowCancelled',
+            updated_at = clock_timestamp()
+        FROM current_claim AS c
+        WHERE l.id = c.ledger_id AND l.updated_at = c.claimed_at
+        RETURNING l.id, l.job_id, l.attempt AS claim_attempt
+    ), written AS (
+        INSERT INTO taskq.job_events (job_id, occurred_at, kind, detail)
+        SELECT f.id, clock_timestamp(), 'state_change',
+               jsonb_strip_nulls(jsonb_build_object(
+                   'from_state', f.from_state,
+                   'to_state', 'cancelled',
+                   'error_class', 'WorkflowCancelled',
+                   'reason', 'workflow_root_missing_quarantine',
+                   'claim_attempt', c.claim_attempt
+               ))
+        FROM flipped AS f
+        LEFT JOIN current_claim AS c ON c.job_id = f.id
+        RETURNING job_id, detail
+    )
+    -- One visible result per reviewed winner. Do not COMMIT a half-recovery.
+    SELECT w.job_id,
+           w.detail ? 'claim_attempt' AS had_current_claim,
+           NOT (w.detail ? 'claim_attempt') OR EXISTS (
+               SELECT 1 FROM fenced AS f
+               WHERE f.job_id = w.job_id
+                 AND f.claim_attempt = (w.detail->>'claim_attempt')::integer
+           ) AS fenced
+    FROM written AS w
+    ORDER BY w.job_id;
+
+    -- Commit only if every reviewed id is now cancelled and no target remains active.
+    SELECT t.job_id, j.status
+    FROM wf_orphan_quarantine AS t
+    JOIN taskq.jobs AS j ON j.id = t.job_id
+    ORDER BY t.job_id;
+    COMMIT;
+    ```
+
+    Any missing id or non-`cancelled` status means the recovery did not cover the approved set: ROLLBACK rather than issuing a second unreviewed write. This recipe must not touch a root row, another flow or child flow, terminal history, a materialised after-terminal effect, older-epoch or sibling substep/map ledger history, unrelated current claims, `job_attempts`, or the capacity and rotation records. Those records remain forensic evidence. Recreate replacement work as a new run; do not resurrect orphaned bodies under the missing flow id. Confirm the root-missing detector is clear on its next tick and then resolve any independently reported no-actor/unserved condition.
+
+    `fenced` must be true for every row whose `had_current_claim` is true and the row count must equal the reviewed set; any disagreement is a half-recovery — ROLLBACK and report it, never COMMIT.
+
+    This SQL remedy does not implement the product's cooperative phase-1 cancellation: it hard-terminalises a selected `running` row, whereas shipped cancellation leaves that row `running`. That is safe **only because every writer for the run is stopped**. A body still executing under a missed stop can commit external effects after its row is cancelled, and its own ledger terminal write will then refuse against the fenced claim. Lease columns, `attempt`, and the park marker keys remain as forensic evidence; the residue is inert because every lease-consuming maintenance arm is `status='running'`-gated and exact-park identity is `status='scheduled'`-gated.
+
+    Actor registration, `TASKQ_QUEUES`, and queue moves do not repair the run. Per-run cancellation is NOT the cleanup mechanism here: `taskq flows cancel <run_id>` flips the root row first and then refuses loudly with a non-zero exit when the root is missing — it never touches the surviving nodes.
 4. Confirm recovery: the series clears on the next detector tick (an empty reading is published, not a frozen last value) and the `stranded-jobs-cleared` event logs. A row released from the root-missing class may still carry a latent dispatch-invisible condition — the same detector's next tick reports any remaining `no_actor_config`/`unserved_queue` reason.
 
 ---
