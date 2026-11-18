@@ -394,9 +394,16 @@ async def test_committed_threshold_survives_kill_and_recovers_on_second_pid(
         # TERMINAL flow at the sweep cadence — the preserved 'awaited'
         # rest is its subject the moment the run's root derives terminal
         # (the pin-15 rows-alone law), which is exactly the race this
-        # read must not run. Here the reaper's precondition (a terminal
-        # root) cannot yet exist, so the 'awaited' status is guaranteed,
-        # not raced.
+        # read must not run. The claim this read rests on, stated
+        # exactly: the window is STRUCTURALLY PINNED by the live child —
+        # the root cannot terminalize while a child is live, so the
+        # reaper's precondition (a terminal root) cannot arise while the
+        # pin holds — and, within that pin, the child's 3 s gate makes
+        # the two reads practically certain to land inside it (a 50 ms
+        # poll cadence; two single-statement reads). It is not
+        # deadline-guaranteed: a stall longer than the gate's remaining
+        # span (>3 s between the source's success and this read) is the
+        # named residual that could still lose to the reaper.
         async def _resumed() -> bool:
             row = await _source_row(pool, schema, flow_id)
             return row["status"] == "succeeded"
@@ -571,9 +578,16 @@ async def test_park_before_ack_kill_preserves_marker_and_promotes_once(
         # TERMINAL flow at the sweep cadence — the preserved 'awaited'
         # rest is its subject the moment the run's root derives terminal
         # (the pin-15 rows-alone law), which is exactly the race the
-        # lane red exposed. Here the reaper's precondition (a terminal
-        # root) cannot yet exist, so the 'awaited' status is guaranteed,
-        # not raced.
+        # lane red exposed. The claim this read rests on, stated
+        # exactly: the window is STRUCTURALLY PINNED by the live child —
+        # the root cannot terminalize while a child is live, so the
+        # reaper's precondition (a terminal root) cannot arise while the
+        # pin holds — and, within that pin, the child's 3 s gate makes
+        # the two reads practically certain to land inside it (a 50 ms
+        # poll cadence; two single-statement reads). It is not
+        # deadline-guaranteed: a stall longer than the gate's remaining
+        # span (>3 s between the source's success and this read) is the
+        # named residual that could still lose to the reaper.
         async def _resumed() -> bool:
             row = await _source_row(pool, schema, flow_id)
             return row["status"] == "succeeded"
