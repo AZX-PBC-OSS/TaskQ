@@ -50,12 +50,12 @@ THE DETERMINISTIC SEAMS (no sleeping and hoping):
   the process; the replacement PID recovers from the DURABLE intent with
   no notification participating.
 
-THE MANY-WAITER ESTATE (the mid-chunk arm's flow): the source emits 400
-A-children at the flow's full bound; each A's own body emits ONE trivial
-D record, so while the estate is live every A's emit refuses at the
-pre-check and every A parks — with the drains held by the admission-lock
-seam the parked estate accumulates past the 200-win chunk ceiling, and
-the released drain MUST chunk.
+THE MANY-WAITER ESTATE (the mid-chunk arm's flow): 400 park rows are
+SEEDED at the flow's constructible bound — ``waiters * (1 + W)`` = 800
+with W=1, the app's own declared ``max_in_flight`` and every seeded
+marker/intent bound — so a 201st candidate still fits at the 200-win
+chunk ceiling: the released drain MUST chunk (chunk 1 commits 200 wins,
+the generation stays pending, and chunk 2 opens under it).
 
 THE R PRE-REGISTRATION (printed before execution, never changed after
 observation): the victim pod's initial leadership assumption R=1 and the
@@ -631,6 +631,33 @@ async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
 ) -> None:
     """The mid-chunk window over the seeded 400-waiter estate.
 
+    THE ESTATE'S OWN PREMISE (the constructible bound, the flow_600
+    precedent): 400 waiters at width W=1 with the constructible bound
+    ``waiters * (1 + W)`` = 800 — the app's own declared
+    ``max_in_flight`` and every seeded marker/intent bound. The bound
+    must leave a 201st candidate FITTING at the 200-win ceiling (the
+    200th win's own charge is the live source plus 200 promoted rows
+    with reservations): then the ceiling transaction commits its 200
+    wins, leaves the generation pending, and opens chunk 2 — the
+    freeze/kill window the control exists to test actually exists. A
+    tighter bound (the estate's original 400) exhausts admission right
+    after the 200th win, so the drain's final observation finds no
+    fitting candidate and completes the invocation in ONE transaction —
+    the freeze never lands and the control reds on its own premise, not
+    on the product.
+
+    THE INTENT IS SEEDED PENDING (wake 5 > handled 2, bound 800): the
+    pod's leadership backfill is the drain's FIRST and only racing arm.
+    With an engine-created intent the source's own terminal event fires
+    the terminal route's drain trigger CONCURRENTLY with the backfill,
+    and the second arm's chunk 1 consumes the unpromoted half within a
+    second of the first arm's chunk 1 — the 200-parked state is a
+    sub-second transient no poll can observe. Seeding the intent
+    pending makes the source's terminal event a no-op (the intent is
+    already pending — nothing created, nothing notified), the freeze
+    plateau at exactly 200 parked rows lasts as long as the hook
+    sleeps, and the control observes it.
+
     The estate's park rows are SEEDED, never engine-born (the §9.2
     pattern: the complete §2.2 metadata as exact literal values, no other
     keys), so the estate exists COMPLETE before any pod boots — no park
@@ -669,9 +696,41 @@ async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
         )
 
         # THE SEEDED ESTATE: 400 exact-§2.2 park rows (width 1, bound
-        # 400, deferrals 1, wakes 0) + their gate rows + the pending
-        # intent record (bound 400, wake 1, handled 0).
+        # 800 = the constructible waiters*(1+W), deferrals 1, wakes 0) +
+        # their gate rows + THE PENDING INTENT RECORD, SEEDED PENDING
+        # (bound 800 — the app's own declared max_in_flight — wake 5 >
+        # handled 2). Seeding the intent PENDING is the premise that
+        # makes the freeze plateau observable: the estate is COMPLETE
+        # before any pod boots (no park race, no trigger cascade), the
+        # pod's leadership backfill is the drain's first arm, and the
+        # source's own terminal event creates NO second intent (the
+        # intent is already pending), so the terminal route's own drain
+        # trigger never fires a second concurrent drain that would race
+        # the first arm's chunk 2 and consume the unpromoted half
+        # before the freeze could be observed. The 201st candidate fits
+        # at the 200-win ceiling, so chunk 2 exists and the freeze/kill
+        # window lands there.
         deferred_at = "2026-11-15T09:30:00.123456Z"
+        chunk_bound = entry.CHUNK_ESTATE * 2
+        await pool.execute(
+            f'INSERT INTO "{schema}".wf_emit_capacity '
+            "(flow_id, bound, wake_generation, handled_generation) "
+            "VALUES ($1::uuid, $2, 5, 2) "
+            "ON CONFLICT (flow_id) DO UPDATE SET "
+            "wake_generation = 5, handled_generation = 2",
+            flow_id,
+            chunk_bound,
+        )
+        seeded_intent = await pool.fetchrow(
+            f"SELECT bound, wake_generation, handled_generation "
+            f'FROM "{schema}".wf_emit_capacity WHERE flow_id = $1::uuid',
+            flow_id,
+        )
+        assert seeded_intent is not None and (
+            int(seeded_intent["bound"]),
+            int(seeded_intent["wake_generation"]),
+            int(seeded_intent["handled_generation"]),
+        ) == (chunk_bound, 5, 2), dict(seeded_intent) if seeded_intent else None
         for i in range(400):
             meta = {
                 "flow_id": flow_id,
@@ -684,8 +743,8 @@ async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
                 "wf_emit_backpressure": {
                     "version": 1,
                     "page_width": 1,
-                    "bound": 400,
-                    "outstanding": 400,
+                    "bound": chunk_bound,
+                    "outstanding": chunk_bound,
                     "deferrals": 1,
                     "wakes": 0,
                     "deferred_at": deferred_at,

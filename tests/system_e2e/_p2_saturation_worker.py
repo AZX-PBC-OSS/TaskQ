@@ -567,7 +567,7 @@ def c4_flow600() -> Promise[object]:
     )
 
 
-@p2sat_app.workflow("c4_seed_flow", queue=SOURCE_QUEUE, max_in_flight=CHUNK_ESTATE)
+@p2sat_app.workflow("c4_seed_flow", queue=SOURCE_QUEUE, max_in_flight=CHUNK_ESTATE * 2)
 def c4_seed_flow() -> Promise[object]:
     return build(
         chain_source(
