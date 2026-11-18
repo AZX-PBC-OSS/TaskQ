@@ -257,8 +257,11 @@ def loop(
     from it (the instance carries its own type — no double declaration);
     an explicit ``carry_type=`` is for the type-only declaration (the
     initial carry is ``None`` and the body receives ``None`` until its
-    first ``Refine`` commits a carry — the pre-first-carry value passes
-    the contract unvalidated; only an actual carry is checked) or an
+    first ``Refine`` commits a carry — the pre-first-carry seed passes
+    the contract unvalidated, while every COMMITTED carry is validated
+    at each boundary — the advance, a resume, the memo replay — and a
+    committed ``None`` against a declared model/dict is the loud
+    ``LoopCarryContractError``, never a silent pass) or an
     honest override. A dict/list carry declares no model — the type
     check is skipped, never guessed (the old silent no-check is the
     named gap this split closes: the two meanings resolved by distant

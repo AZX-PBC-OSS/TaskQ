@@ -387,8 +387,11 @@ class LoopOps(_LoopHost):
         # subject). It is serialized through the codec (a model dumps to its
         # dict) and the declared type is re-applied at the read below (the
         # carry's typed contract — the body receives the declared type once a
-        # carry exists; the seeded ``None`` IS the pre-first-carry value and
-        # passes through as ``None`` until the first Refine commits one).
+        # carry is committed; the seeded ``None`` IS the pre-first-carry
+        # value and passes through as ``None`` until the first Refine commits
+        # one, while a COMMITTED ``None`` — a ``Refine(None)`` — is the loud
+        # refusal at the next boundary: the seed is the only None the
+        # contract passes).
         initial_carry: object = (
             jsonable(cast(object, spec.initial_carry)) if spec.initial_carry is not None else None
         )
@@ -424,6 +427,13 @@ class LoopOps(_LoopHost):
 
         iteration = int(str(meta_doc.get("iteration", 0)))
         carry: object = meta_doc.get("carry")
+        # the carry's PROVENANCE (rehydrate_carry's ``committed`` flag —
+        # the seed's gate): the row's carry and iteration are written by
+        # the SAME atomic statement (the init or the advance), so
+        # iteration == 0 means no ``Refine`` has ever committed — the
+        # carry is the init's seed; iteration >= 1 means the carry is
+        # the last advance's committed value. A body owns neither write.
+        carry_committed = iteration > 0
 
         max_wall = 10_000  # the driver's own bound (a hang is a defect with no stack)
         for _ in range(max_wall):
@@ -488,6 +498,10 @@ class LoopOps(_LoopHost):
                     )
                     return
                 carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
+                # the recorded feedback is the iteration's committed
+                # terminal (the ledger's truth) — never a seed: the
+                # re-hydrate at the next body invocation validates it.
+                carry_committed = True
             elif memo is not None and memo.status == "failed":
                 # The replay honors the recorded truth (the shape error's
                 # ledger rule): a failed iteration's terminal is the named
@@ -546,12 +560,15 @@ class LoopOps(_LoopHost):
                 # at iteration 0 (the init's dump), after every resume (the row
                 # read), on the memo replay (the recorded feedback), and on the
                 # in-memory Refine (idempotent). A dict is never the body's
-                # carry when a type is declared, and the pre-first-carry
-                # ``None`` passes through as ``None`` (no carry exists yet —
-                # only an actual carry is validated). (before the body
-                # boundary: a contract refusal is the declaration's bug — the
-                # machinery's own loud error, never a body failure to absorb.)
-                carry = rehydrate_carry(spec.carry_type, carry)
+                # carry when a type is declared. The ``committed`` flag is the
+                # seed's gate, tracked per face above: the PRE-FIRST-CARRY seed
+                # passes through as ``None`` (no carry committed yet), while a
+                # COMMITTED ``None`` — a ``Refine(None)`` — refuses loudly here
+                # against a declared model/dict, exactly as any other
+                # wrong-typed carry. (before the body boundary: a contract
+                # refusal is the declaration's bug — the machinery's own loud
+                # error, never a body failure to absorb.)
+                carry = rehydrate_carry(spec.carry_type, carry, committed=carry_committed)
                 try:
                     # a loop body declaring one param beyond (ctx, carry)
                     # receives the runner's bound instance — the same instance
@@ -665,6 +682,10 @@ class LoopOps(_LoopHost):
                     )
                     return
                 carry = cast(object, outcome.feedback)  # the walk's boundary
+                # the body's ``Refine`` is the committed carry the
+                # advance below writes — never a seed: the body cannot
+                # mark its own feedback as the pre-first-carry value.
+                carry_committed = True
 
             # the advance statement — the carry + the cap guard, one atomic
             # write . the claim identity's fence rides the statement: a zombie
