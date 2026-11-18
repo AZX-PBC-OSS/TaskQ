@@ -59,9 +59,7 @@ class _RecordingLoopProxy:
         self._real = real
         self._record = record
 
-    def create_task(
-        self, coro: Coroutine[Any, Any, object], **kwargs: Any
-    ) -> asyncio.Task[object]:
+    def create_task(self, coro: Coroutine[Any, Any, object], **kwargs: Any) -> asyncio.Task[object]:
         return self._record(coro, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
