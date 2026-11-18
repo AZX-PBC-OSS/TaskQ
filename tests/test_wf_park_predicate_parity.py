@@ -208,14 +208,23 @@ class TestParkPredicateParity:
 
     def test_migration_spells_are_the_renderer_forms(self) -> None:
         """The frozen migration's three catalog inlines are exactly the
-        bound renderer forms (C4 items 2-3), compared as exact spans."""
+        bound renderer forms (C4 items 2-3), compared as exact spans
+        through the shared renderer — so a mutation of any shared leg
+        reds every migration comparison (the written literals anchor the
+        renderer itself in the first test; the migration is never the
+        expected side's source)."""
+        from taskq.backend._sql_fragments import (
+            emit_park_marker_core,
+            emit_park_predicate,
+        )
+
         mig = _migration_text()
         parks = _extract_fence_parks_predicate(mig)
-        assert _canon_doubled(parks) == _canon(f"{_EXPECTED_FLOW_FILTER} AND {_EXPECTED_COMPLETE_J}"), parks
+        assert _canon_doubled(parks) == _canon(f"{_EXPECTED_FLOW_FILTER} AND {emit_park_predicate('j')}"), parks
         index_where = _extract_partial_index_predicate(mig)
-        assert _canon_doubled(index_where) == _canon(_EXPECTED_COMPLETE_UNQUALIFIED), index_where
+        assert _canon_doubled(index_where) == _canon(emit_park_predicate("")), index_where
         trigger_if = _extract_trigger_if_predicate(mig)
-        assert _canon_doubled(trigger_if) == _canon(_EXPECTED_CORE_OLD), trigger_if
+        assert _canon_doubled(trigger_if) == _canon(emit_park_marker_core("OLD")), trigger_if
 
     def test_trigger_when_clause_and_status_leg_binding(self) -> None:
         """The full written ``CREATE TRIGGER … WHEN`` clause is pinned and
