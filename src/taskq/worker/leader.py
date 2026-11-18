@@ -203,6 +203,57 @@ _LEADER_TRUST_MARGIN_SECS: Final[float] = 1.0
 #: invariant,.
 _PRE_LEASE_STALE_HEARTBEATS: Final[int] = 4
 
+#: Share of the cron iteration's deadline added for the tick's UNWIND.
+#: The managed transaction's ``__aexit__`` runs its ROLLBACK after the tick
+#: body's own scope has expired, where that scope will never cancel again
+#: - and against a stalled transport the ROLLBACK parks on asyncpg's pending
+#: statement cancellation, whose reply is exactly what the stall is
+#: holding, so the loop would park inside its own unwind with no timer at
+#: all, and the session (transaction, cron locks) outlives the stall. The
+#: share is ADDED to the iteration bound rather than carved out of the
+#: tick body's, because the body's deadline is the pot the factory-grant
+#: arithmetic inside tick_cron is sized from (its own write reserve,
+#: ``_TICK_WRITE_RESERVE_FRACTION``, lives inside that pot); carving the
+#: unwind out of it would starve a full-budget tick into the livelock that
+#: reserve exists to prevent. Whatever of the share the iteration actually
+#: spends is repaid from the loop's period at the bottom of the iteration,
+#: so the stamp-to-stamp gap stays inside the ``timeout + period``
+#: arithmetic the settings validator enforces at load time. The same
+#: fraction-of-the-tick-budget idiom cron_loop.py uses for its reserves.
+#: A healthy unwind needs a round trip or two; a slower one is cut, the
+#: state is recorded unknown, and the next iteration's repair converges it.
+#: The share is CAPPED at the loop's period, because the repayment below can
+#: buy back at most one period: a share wider than the period (any deadline
+#: above 10s at this fraction) widens the stamp-to-stamp gap past the
+#: ``timeout + period`` model the validator enforces, and detector 2 force-exits
+#: the worker mid-degradation - the failure the model exists to prevent. A
+#: round trip or two fits far inside a second at every deadline, so the cap
+#: costs the unwind nothing it needs.
+_CRON_TICK_UNWIND_FRACTION: Final[float] = 0.1
+
+#: The cron loop's 1.0s period - the most of an iteration the repayment at the
+#: bottom of the loop can buy back, and so the cap on the unwind share.
+_CRON_TICK_PERIOD_SECS: Final[float] = 1.0
+
+#: How many consecutive deferred repairs of the cron conn may fail before the
+#: loop gives up on the conn and hands leadership over. One failure class is a
+#: cut while the transport cannot answer: the first buys one retry for the
+#: transport to recover (the held reply clears asyncpg's pending-cancellation
+#: state and the very next repair converges), and a second consecutive one
+#: means no round trip can reach the conn at all - asyncpg parks every wire
+#: operation on the pending statement cancellation whose reply the stall is
+#: holding, and a cut of that park leaves a cancelled future that the next
+#: operation raises as a spurious CancelledError rather than parking again -
+#: so the only action left is terminate(), which needs no server reply. The
+#: other class is any other repair error (a closed conn, a conn without
+#: reset, a driver-side failure): the state is equally unknown, and a tick
+#: that appears to succeed on that conn can be a nested SAVEPOINT of the
+#: leaked transaction, so it counts too rather than being retried forever.
+#: At the shipped defaults (5s deadline, 1s period) two failures bound the
+#: leaked transaction's life to seconds instead of the process lifetime the
+#: production incident showed.
+_CRON_REPAIR_GIVE_UP_AFTER: Final[int] = 2
+
 #: Claim or take over the lease. Zero rows returned means the role is not
 #: this pod's to take, which is the ordinary follower state and not an error.
 #: Concurrent takers serialise on the singleton row, so the loser re-evaluates
@@ -1759,6 +1810,43 @@ class MaintenanceLeader:
                         _dbg("scheduled_wake_tick", "scheduled_wake_tick", rows, start)
             await asyncio.sleep(1.0)
 
+    def _terminate_unrepairable_cron_conn(
+        self, conn: asyncpg.Connection, *, consecutive: int
+    ) -> None:
+        """End a cron conn no round trip can repair, without awaiting.
+
+        Called only after the deferred repair failed twice consecutively. Two
+        classes reach it: a repair cut while the transport cannot answer (asyncpg
+        parks every wire operation on the pending statement cancellation whose
+        reply the stall is holding, so neither ``reset()`` nor a graceful close
+        can reach the conn), and any other repair error, where the transaction
+        state is equally unknown and a tick that appears to succeed on the conn
+        can be a nested SAVEPOINT of the leaked transaction. ``terminate()`` is
+        the one action that needs no server reply - Postgres rolls the
+        transaction back on disconnect, releasing whatever it holds, and asyncpg
+        fires the commit-gate termination listeners, so no armed commit-gate
+        entry outlives the session. Synchronous by necessity: one caller sits in
+        the deadline branch, outside the iteration's deadline scope, where an
+        await would have no timer at all and the just-expired scope will not
+        cancel again.
+
+        The DROP is deliberately not done here. ``_close_leader_owned_conns``
+        demotes, closes the monitor conn gracefully, and nulls both
+        attributes, and the loop reaches it through its own conn-state
+        branch: the next ``conn.transaction()`` on the terminated conn
+        raises ``InterfaceError`` synchronously. Keeping the demotion on
+        that path is what makes giving up recoverable - a demoted leader
+        can be re-elected, and the cron loop stays alive.
+        """
+        if not conn.is_closed():
+            conn.terminate()
+        log.warning(
+            "cron-conn-repair-escalated",
+            kind="cron_conn_repair_escalated",
+            worker_id=str(self._worker_id),
+            consecutive=consecutive,
+        )
+
     async def _cron_loop(self, shutdown: asyncio.Event) -> None:
         """Tick cron schedules every second when this worker is the leader.
 
@@ -1767,10 +1855,32 @@ class MaintenanceLeader:
         connection owned exclusively by this loop) and delegates to
         :func:`~taskq.worker.cron_loop.tick_cron`.
         ``CancelledError`` (a ``BaseException``) is not caught by
-        ``except Exception`` and propagates to the ``TaskGroup`` for
+        ``except Exception``; the handler below ends the conn when the
+        tick's transaction never entered, then re-raises so the
+        cancellation still unwinds the loop into the ``TaskGroup`` for
         clean shutdown.
         """
         guard = UnexpectedLoopErrorGuard("leader.cron")
+        # The conn whose transaction state a failure left unknown. A
+        # deadline or cancellation landing inside asyncpg's
+        # Transaction.start() records the top-level transaction on the conn
+        # BEFORE executing BEGIN and never clears it on failure, so the conn
+        # is left holding a server-side transaction nobody will end and a
+        # FAILED top-level transaction object every later tick would nest
+        # inside as a savepoint - nothing a tick writes could ever commit.
+        # Keyed to the connection object, not a bare flag: the election loop
+        # can rebuild ``_cron_conn`` (a credential reload), and a flag would
+        # survive the rebuild and reset a fresh, clean conn - dropping its
+        # LISTEN and RESET ALL-ing session GUCs a ``leader_conn_factory``
+        # setup hook may have set. The record dies with the conn it
+        # describes.
+        dirty_conn: asyncpg.Connection | None = None
+        # Consecutive deferred repairs that failed while the transport could
+        # not answer. Without this bound, a sustained stall holds the leaked
+        # transaction - and whatever it locked - for the process lifetime:
+        # every repair parks on the same pending cancellation and is cut by
+        # the same deadline (see _CRON_REPAIR_GIVE_UP_AFTER).
+        failed_repairs = 0
         while not shutdown.is_set():
             self._deps.liveness.tick("leader.cron", period=1.0)
             if not self._deps.leading():
@@ -1780,8 +1890,37 @@ class MaintenanceLeader:
             if conn is None:
                 await asyncio.sleep(1)
                 continue
+            if dirty_conn is not None and conn is not dirty_conn:
+                # A rebuilt conn is a different situation: the record and
+                # its count describe the old one.
+                dirty_conn = None
+                failed_repairs = 0
             start = time.monotonic()
+            tick_deadline = self._deps.settings.dispatcher_command_timeout
+            unwind_bound = min(tick_deadline * _CRON_TICK_UNWIND_FRACTION, _CRON_TICK_PERIOD_SECS)
+            # The iteration's bounds are ABSOLUTE loop times, taken once at
+            # the top: the tick's scope must expire at the iteration's
+            # nominal tick deadline no matter how long the deferred repair
+            # before it consumed, and always with the unwind share still
+            # left before the outer bound. Arming the tick scope with a
+            # fresh RELATIVE deadline after a slow repair would push its
+            # expiry past the outer bound, and the outer would cut the body
+            # with no live timer left for the unwind - the park the share
+            # exists to prevent, reachable without any help from the
+            # transport.
+            iteration_end = asyncio.get_running_loop().time() + tick_deadline + unwind_bound
             fired: int | None = None
+            # Whether the managed transaction's body was reached: entered
+            # means ``__aexit__`` runs on unwind and sends ROLLBACK, so the
+            # conn's state is known; not entered means unknown (see the
+            # CancelledError handler below).
+            tx_entered = False
+            # Whether the deferred repair was still in flight when this
+            # iteration's failure was classified. Only a failed REPAIR
+            # counts toward giving up: a cut tick after a completed or
+            # skipped repair is an ordinary timeout, which must never cost
+            # leadership on its own.
+            repair_in_flight = False
             try:
                 # Why one deadline for the whole tick: a tick is begin + N
                 # statements (one per due schedule, plus catch-up bursts) +
@@ -1790,19 +1929,147 @@ class MaintenanceLeader:
                 # degraded PG stretch one tick past the detector-2 budget
                 # and force-exit a healthy leader. asyncio.timeout raises
                 # the exact builtin TimeoutError, which the deadline-family
-                # branch below treats as retry-next-tick (the transaction
-                # rolls back bounded by the same command_timeout).
-                async with asyncio.timeout(self._deps.settings.dispatcher_command_timeout):
-                    async with conn.transaction():
-                        fired = await tick_cron(
-                            conn,
-                            self._deps.settings,
-                            self._backend,
-                            self._deps.settings.schema_name,
-                            self._worker_id,
-                            limit=self._deps.settings.cron_tick_limit,
-                            actor_policies=self._actor_policies,
-                        )
+                # branch below treats as retry-next-tick.
+                #
+                # Why TWO nested scopes: the managed transaction's __aexit__
+                # runs its ROLLBACK while this block unwinds - AFTER the
+                # tick's own scope expires, where no timer will cancel
+                # again - and a stalled transport parks that ROLLBACK on
+                # asyncpg's pending cancellation forever. The inner scope
+                # ends at the iteration's nominal tick deadline (the
+                # factory-grant arithmetic inside tick_cron is sized from
+                # it, and its own write reserve lives inside that pot), and
+                # the outer scope adds the unwind share beyond it, so a
+                # parked ROLLBACK is cut too. Whatever the iteration spends
+                # past the tick's deadline is repaid from the loop's period
+                # at the bottom of the iteration, so the stamp-to-stamp gap
+                # stays inside the timeout + period arithmetic the settings
+                # validator enforces at load time.
+                async with asyncio.timeout_at(iteration_end):
+                    if dirty_conn is not None:
+                        # Deferred repair: the previous failure left this
+                        # conn's transaction state unknown, so clear it
+                        # BEFORE the tick's transaction opens - never in the
+                        # failure handler itself, where an await has no
+                        # timer of its own. reset() is the only public
+                        # operation that clears both halves of the leaked
+                        # state: the FAILED top-level transaction object and
+                        # the server-side transaction (its reset query is
+                        # the same one the pool runs on every release; the
+                        # next tick's commit gate re-arms its LISTEN). One
+                        # residue worth naming: a ``leader_conn_factory``
+                        # setup hook that sets session GUCs has them reset
+                        # and not replayed - TaskQ itself sets none, and the
+                        # repair runs only after a failed tick, never on the
+                        # healthy path. Riding this scope adds nothing to
+                        # the worst-case iteration cost the settings
+                        # validator models. Unconditional, not gated on
+                        # is_in_transaction(): that signal reads only the
+                        # protocol state, so the case where BEGIN never
+                        # reached the server - only the client-side
+                        # transaction object is dirt - would skip the
+                        # repair and kill the next tick with
+                        # NoActiveSQLTransactionError.
+                        repair_in_flight = True
+                        try:
+                            await conn.reset()
+                        except asyncio.CancelledError:
+                            task = asyncio.current_task()
+                            if task is None or task.cancelling() > 0:
+                                # A real cancellation request - shutdown, or
+                                # this scope's own cut on its way to becoming
+                                # TimeoutError at the context manager's
+                                # exit. It must stay a cancellation.
+                                raise
+                            # A spurious CancelledError from asyncpg, not a
+                            # cancellation of this task: the previous
+                            # repair was cut while parked on the very reply
+                            # the stall is still holding, and asyncpg raises
+                            # that cancelled future at the next wire
+                            # operation instead of parking again. No round
+                            # trip can reach this conn - not even a graceful
+                            # close - until the held reply arrives, so this
+                            # is the second consecutive failed repair: end
+                            # the conn now, and let the tick's own
+                            # transaction() below surface the closed conn to
+                            # the conn-state branch, which drops it, demotes,
+                            # and hands leadership over through the loop's
+                            # own path. This iteration's deadline is still
+                            # fresh - the spurious cancel is raised
+                            # immediately - so that path costs it almost
+                            # nothing.
+                            self._terminate_unrepairable_cron_conn(
+                                conn, consecutive=failed_repairs + 1
+                            )
+                            dirty_conn = None
+                            failed_repairs = 0
+                        except Exception as exc:
+                            if type(exc) is TimeoutError or isinstance(
+                                exc, asyncpg.QueryCanceledError
+                            ):
+                                # Deadline family cut the repair itself (this
+                                # scope's timer, or the conn's own command
+                                # timeout): re-raise so the deadline branch
+                                # below records the cut and counts it.
+                                raise
+                            # Anything else (a closed conn, a conn without
+                            # reset, a driver-side error the deadline family
+                            # does not cover): report it and KEEP the record.
+                            # A tick that appears to succeed is not proof the
+                            # state is clean: with the leaked top-level
+                            # transaction still on the conn, the next
+                            # transaction() is a nested SAVEPOINT whose
+                            # RELEASE returns while nothing commits - the
+                            # incident itself, invisible to the tick's own
+                            # success. A dead conn still takes the conn-state
+                            # branch below on its InterfaceError. Count this
+                            # failure toward the same give-up bound as a cut:
+                            # at the limit the conn is terminated and the
+                            # next iteration's conn-state branch drops and
+                            # demotes, bounding the unknown state instead of
+                            # retrying it for the process's life.
+                            failed_repairs += 1
+                            log.warning(
+                                "cron-conn-repair-failed",
+                                kind="cron_conn_repair_failed",
+                                worker_id=str(self._worker_id),
+                                error=repr(exc),
+                                consecutive=failed_repairs,
+                            )
+                            if failed_repairs >= _CRON_REPAIR_GIVE_UP_AFTER:
+                                self._terminate_unrepairable_cron_conn(
+                                    conn, consecutive=failed_repairs
+                                )
+                                dirty_conn = None
+                                failed_repairs = 0
+                        else:
+                            log.info(
+                                "cron-conn-repaired",
+                                kind="cron_conn_repaired",
+                                worker_id=str(self._worker_id),
+                                consecutive=failed_repairs,
+                            )
+                            dirty_conn = None
+                            failed_repairs = 0
+                        repair_in_flight = False
+                    # The tick's own scope, ending at the iteration's nominal
+                    # tick deadline: the transaction's __aexit__ (the COMMIT
+                    # on success, the ROLLBACK on unwind) runs inside it, and
+                    # only a ROLLBACK outliving it falls to the outer scope's
+                    # unwind share - so a parked unwind is cut rather than
+                    # parking the loop with no timer left.
+                    async with asyncio.timeout_at(iteration_end - unwind_bound):
+                        async with conn.transaction():
+                            tx_entered = True
+                            fired = await tick_cron(
+                                conn,
+                                self._deps.settings,
+                                self._backend,
+                                self._deps.settings.schema_name,
+                                self._worker_id,
+                                limit=self._deps.settings.cron_tick_limit,
+                                actor_policies=self._actor_policies,
+                            )
                 guard.ok()
             except TRANSIENT_PG_ERRORS as exc:
                 # Why TRANSIENT_PG_ERRORS first: a hand-rolled isinstance
@@ -1813,12 +2080,19 @@ class MaintenanceLeader:
                 # consecutive ones kill the worker via the backstop guard.
                 if type(exc) is TimeoutError or isinstance(exc, asyncpg.QueryCanceledError):
                     # Deadline family (iteration deadline or server-side
-                    # cancel): the conn is provably responsive, because it
-                    # answered the cancel, or asyncpg has already terminated
-                    # it, which the next tick's transaction() surfaces as a
-                    # conn-state error below. Keep the conn and retry:
-                    # dropping it (and demoting) on every slow tick would
-                    # churn leadership during catch-up bursts.
+                    # cancel). Keep the conn and retry: dropping it (and
+                    # demoting) on every slow tick would churn leadership
+                    # during catch-up bursts. But a responsive socket is not
+                    # a known-clean transaction state: a cut landing inside
+                    # asyncpg's Transaction.start() leaves the conn holding
+                    # a server-side transaction nobody will end (the cancel
+                    # reaches an idle backend and is ignored) and a FAILED
+                    # top-level transaction object every later tick would
+                    # nest inside as a savepoint, so nothing a tick writes
+                    # could ever commit. Record the state as unknown against
+                    # this conn; the next iteration repairs it inside its
+                    # own fresh deadline, before the tick's transaction
+                    # opens.
                     #
                     # Why type(exc) is, not isinstance: TimeoutError is an
                     # OSError subclass, isinstance would also match raw
@@ -1826,12 +2100,40 @@ class MaintenanceLeader:
                     # command_timeout) must keep the conn, while a raw OSError
                     # (socket death) must drop it.
                     record_sweep_timeout("cron")
-                    log.warning(
-                        "cron-tick-timeout",
-                        kind="cron_tick_timeout",
-                        worker_id=str(self._worker_id),
-                        error=repr(exc),
-                    )
+                    if repair_in_flight:
+                        # The deadline cut the REPAIR, not the tick: the conn
+                        # is known-dirty and, while the transport stalls,
+                        # cannot be cleaned - asyncpg parks every wire
+                        # operation on the pending cancellation whose reply
+                        # is missing. Count it, and at the limit stop
+                        # waiting: terminate synchronously (no server reply
+                        # needed; Postgres rolls the transaction back on
+                        # disconnect, releasing whatever it holds) and leave
+                        # the drop to the next iteration, whose fresh budget
+                        # pays for the helper's bounded close of the monitor
+                        # conn. An await HERE would have no timer at all:
+                        # this handler sits outside the iteration scope, and
+                        # the just-expired one will not cancel again.
+                        failed_repairs += 1
+                        log.warning(
+                            "cron-conn-repair-cut",
+                            kind="cron_conn_repair_cut",
+                            worker_id=str(self._worker_id),
+                            error=repr(exc),
+                            consecutive=failed_repairs,
+                        )
+                        if failed_repairs >= _CRON_REPAIR_GIVE_UP_AFTER:
+                            self._terminate_unrepairable_cron_conn(conn, consecutive=failed_repairs)
+                            dirty_conn = None
+                            failed_repairs = 0
+                    else:
+                        dirty_conn = conn
+                        log.warning(
+                            "cron-tick-timeout",
+                            kind="cron_tick_timeout",
+                            worker_id=str(self._worker_id),
+                            error=repr(exc),
+                        )
                 elif isinstance(
                     exc, (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError)
                 ):
@@ -1851,7 +2153,12 @@ class MaintenanceLeader:
                     # or may not be dead, the next tick's transaction()
                     # will surface a conn-state error if it is, and the
                     # transaction rolls back for deadlock/serialization
-                    # leaving the conn usable.
+                    # leaving the conn usable. The transaction state is not
+                    # known either way - the failure may have landed inside
+                    # Transaction.start() exactly as the deadline family
+                    # can - so record it and let the next iteration's
+                    # repair verify the conn is clean before reuse.
+                    dirty_conn = conn
                     log.warning(
                         "cron-tick-transient",
                         kind="cron_tick_transient",
@@ -1873,6 +2180,36 @@ class MaintenanceLeader:
                     error=repr(exc),
                 )
                 guard.unexpected(exc)
+            except asyncio.CancelledError:
+                # A cancellation ends this loop (run()'s TaskGroup is
+                # unwinding); the classification branches above never see
+                # a BaseException. Whether the managed transaction was
+                # entered decides what is safe.
+                if not tx_entered:
+                    # The transaction never entered, so its state is
+                    # unknown, and no repair round trip can complete now:
+                    # every asyncpg wire operation - close() and the
+                    # ROLLBACK a reset would send alike - first awaits the
+                    # pending statement cancellation, and the reply that
+                    # resolves it is exactly what the cancellation left
+                    # outstanding. End the conn with the bounded helper
+                    # instead: the graceful attempt is expected to exhaust
+                    # its bound here (close parks on that same pending
+                    # cancellation) and terminate, and Postgres rolls the
+                    # transaction back on disconnect. teardown family: a
+                    # cancelled cron loop happens only while run()'s
+                    # TaskGroup unwinds, so an ordinary shutdown must not
+                    # page as a mid-run close.
+                    await close_conn_bounded(
+                        conn, "cron_conn", CLOSE_TIMEOUT_SECS, family="teardown"
+                    )
+                    # Identity guard (the helper's own rule): the await
+                    # above suspends, and only null if the attribute still
+                    # points at the conn we closed - run()'s teardown then
+                    # finds either a live conn to close or nothing to do.
+                    if self._cron_conn is conn:
+                        self._cron_conn = None
+                raise
             finally:
                 # fired is bound only when tick_cron returned; a timed-out
                 # tick records duration without a row sample (a 0-row sample
@@ -1881,7 +2218,14 @@ class MaintenanceLeader:
                 if fired is not None:
                     _metric_rows("cron", fired)
                     record_sweep_success("cron")
-            await asyncio.sleep(1)
+            # The loop's period, minus whatever the iteration spent PAST the
+            # tick's deadline (the unwind share a parked ROLLBACK consumed,
+            # cut by the outer scope): repaying it keeps the stamp-to-stamp
+            # gap inside the timeout + period arithmetic the settings
+            # validator enforces at load time. An iteration that never
+            # passes the deadline sleeps the full period, exactly as before.
+            period_overshoot = max(0.0, time.monotonic() - start - tick_deadline)
+            await asyncio.sleep(max(0.0, _CRON_TICK_PERIOD_SECS - period_overshoot))
 
     async def _sweep_loop(self, shutdown: asyncio.Event) -> None:
         await _sweep_loop(self._sweep_ctx, shutdown)

@@ -165,7 +165,8 @@ lifecycle INFO lines                   HAPPY       Once per process, not per
 ``watchdog-lag-thread-exited``         ANOMALY
 ``cron-tick-*`` (failed/timeout/       ANOMALY     The cron loop's failures
 ``transient/lock-contended``),                     and conn losses.
-``cron-conn-lost``,
+``cron-conn-*`` (lost/repaired/
+``repair-failed/-cut/-escalated``),
 ``cron-commit-gate-unavailable``,
 ``cron-fire-budget-deferred``,
 ``cron-schedule-drift``,
@@ -371,6 +372,10 @@ _ANOMALY_EVENTS: frozenset[str] = frozenset(
         "cron-tick-timeout",
         "cron-tick-transient",
         "cron-conn-lost",
+        "cron-conn-repaired",
+        "cron-conn-repair-failed",
+        "cron-conn-repair-cut",
+        "cron-conn-repair-escalated",
         "cron-tick-lock-contended",
         "cron-commit-gate-unavailable",
         "cron-fire-budget-deferred",
