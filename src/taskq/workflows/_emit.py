@@ -89,6 +89,7 @@ if TYPE_CHECKING:
 __all__ = [
     "EMIT_CURSOR_KEY",
     "EMIT_MAX_IN_FLIGHT_DEFAULT",
+    "NOT_DRAINING_COUNTER",
     "EmitBackpressure",
     "EmitCancelledError",
     "EmitCapacityObservation",
@@ -104,10 +105,13 @@ __all__ = [
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
-#: The §5.4 non-drainage refusal's own counter: the operator's alert keys on
-#: this, never on raw saturation counts (a healthy parked source never moves
-#: it).
-_not_draining_counter = get_meter().create_counter(
+#: The §5.4 non-drainage refusal's own counter — the ONE declaration (the
+#: maintenance seat imports this; two instruments with divergent attribute
+#: streams would silently split the operator's alert). The attribute
+#: contract is one truth: BOTH seats emit exactly ``error_class`` (always
+#: the WORKFLOW_NOT_DRAINING_CLASS constant), so an alert/dashboard
+#: filtering on it sees every refusal from either seat.
+NOT_DRAINING_COUNTER = get_meter().create_counter(
     name="taskq.workflows.wf_not_draining",
     unit="{refusal}",
     description="The proven non-drainage refusals (the committed terminal-root "
@@ -1252,15 +1256,23 @@ async def drain_pending_emit_intents(
             flow = JobId(intent_row["flow_id"])
             try:
                 await wake_emit_backpressure(pool, wsql, flow_id=flow)
-            except Exception:
+            except Exception as exc:
                 # One flow's failure never suppresses the rotation's
                 # advancement (§6): the bounded diagnostic stands in for the
                 # flow, later flows are still offered, and the failed flow's
-                # own pending intent is retried on a later selection.
+                # own pending intent is retried on a later selection. THE
+                # SIBLINGS' DIAGNOSTIC CONTRACT (M-4): the same
+                # `error_class`/`error` fields both sibling seats log — an
+                # EmitCapacityCorruptionError raised by the drain's own
+                # typed doors is NAMED here (a per-flow refusal that
+                # re-offers every selection with no name is an anonymous
+                # warning the operator cannot alert on).
                 logger.warning(
                     "wf.emit_intent_drain_flow_failed",
                     flow_id=str(flow),
                     offered_anyway=True,
+                    error_class=type(exc).__name__,
+                    error=str(exc)[:300],
                 )
             offered += 1
         if len(rows) < 100:
@@ -1433,7 +1445,11 @@ async def fence_not_draining_parked_sources(
     )
     fenced = int(row["fenced_count"]) if row is not None else 0
     if fenced:
-        _not_draining_counter.add(fenced, {"error_class": WORKFLOW_NOT_DRAINING_CLASS})
+        # THE ONE ATTRIBUTE CONTRACT (M-3's correction): both seats (this
+        # cascade seat and the maintenance seat) emit exactly
+        # ``error_class`` — the same constant — so an error_class
+        # -filtered alert sees every refusal.
+        NOT_DRAINING_COUNTER.add(fenced, {"error_class": WORKFLOW_NOT_DRAINING_CLASS})
         logger.warning(
             "wf.not_draining_refusal",
             flow_id=str(flow_id),

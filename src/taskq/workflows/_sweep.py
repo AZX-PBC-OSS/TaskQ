@@ -41,6 +41,7 @@ import structlog
 from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
+from taskq.constants import WORKFLOW_NOT_DRAINING_CLASS
 from taskq.obs import get_logger
 from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._progress import PROGRESS_RING_BOUND
@@ -293,20 +294,20 @@ async def sweep_join_rederive(
         # counter and this bounded diagnostic, never a raw saturation
         # count.
         if maintain is not None and int(maintain["not_draining_fenced"] or 0):
-            from taskq.obs import get_meter
+            from taskq.workflows._emit import NOT_DRAINING_COUNTER
 
-            _not_draining = get_meter().create_counter(
-                name="taskq.workflows.wf_not_draining",
-                unit="{refusal}",
-                description="The proven non-drainage refusals (the committed terminal-root "
-                "proof behind an exhausted child failure, with an exact parked source "
-                "still holding un-emitted work — including the first page when no "
-                "cursor has committed).",
+            # THE ONE DECLARATION, ONE ATTRIBUTE CONTRACT (M-3): the
+            # cascade seat's own counter instrument, imported — never a
+            # second creation — with the SAME attribute set (the
+            # error_class-filtered alert sees every seat's refusals).
+            NOT_DRAINING_COUNTER.add(
+                int(maintain["not_draining_fenced"]),
+                {"error_class": WORKFLOW_NOT_DRAINING_CLASS},
             )
-            _not_draining.add(int(maintain["not_draining_fenced"]))
             logger.warning(
                 "wf.not_draining_refusal",
                 reason="terminal_root_after_child_failure_exhaustion",
+                error_class=WORKFLOW_NOT_DRAINING_CLASS,
                 fenced=int(maintain["not_draining_fenced"]),
             )
     return SweepResult(

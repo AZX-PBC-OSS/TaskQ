@@ -94,7 +94,7 @@ from taskq.constants import (
 )
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
-from taskq.workflows._emit import EmitBackpressure
+from taskq.workflows._emit import EmitBackpressure, EmitCapacityCorruptionError
 from taskq.workflows._policy import TerminalEffect, TerminalEffectReason
 from taskq.workflows._progress import KIND_NODE_TERMINAL
 from taskq.workflows._sql_finalize import EMIT_BACKPRESSURE_PARK_SQL
@@ -384,7 +384,13 @@ async def defer_row_law(
         if verdict["verdict"] in ("deferred", "parked"):
             if backpressure is not None:
                 if int(verdict["ledger_count"]) != 1:
-                    raise RuntimeError(
+                    # THE TYPED CORRUPTION CLASS (M-5): the park lost its
+                    # exact current ledger claim — the same corruption
+                    # category the emit-capacity doors name, so it rides
+                    # the DETERMINISTIC terminal route (a bare RuntimeError
+                    # rode the transient ladder, burning retry budget to
+                    # end under a generic exhaustion class).
+                    raise EmitCapacityCorruptionError(
                         "the source park lost its exact current ledger claim; "
                         "the job park and ledger transition rolled back"
                     )
