@@ -317,7 +317,11 @@ def c4_kill_recovery_flow() -> Promise[object]:
 
 async def _c4b_screen(ctx: StepContext, item: object) -> C4Ok:
     del item
-    if ctx.map_index == 0:
+    # The page-0 gate reads the estate's own page declaration (the same
+    # one-truth rule the kill estate's `_c4_screen` gate follows): the
+    # children of ``C4_PARK_PAGES[0]`` hold their slots for the gate's
+    # own span; the resumed page-1 child runs free.
+    if ctx.map_index is not None and ctx.map_index in C4_PARK_PAGES[0]:
         await asyncio.sleep(_C4_GATE_S)
     return C4Ok.OK
 
