@@ -839,7 +839,8 @@ async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
         assert intent["handled"] == intent["wake"], intent
         a_rows = await pool.fetch(
             f"""SELECT map_index::int AS m, status::text AS status, attempt::int AS a,
-                       idempotency_key
+                       idempotency_key,
+                       metadata->'wf_emit_backpressure'->>'wakes' AS wakes
                 FROM "{schema}".jobs
                 WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key = 'spawn'
                 ORDER BY map_index""",
@@ -852,6 +853,22 @@ async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
         # was still in flight at the SIGKILL (the re-mint/reclaim pair).
         assert all(int(r["a"]) in (1, 2) for r in a_rows), [int(r["a"]) for r in a_rows][:5]
         assert sum(1 for r in a_rows if int(r["a"]) == 2) <= 32, [int(r["a"]) for r in a_rows]
+        # THE PER-A EXACTLY-ONCE PROMOTION (per-row, direct): ``wakes`` is
+        # the promotion CAS's own durable counter (each committed win adds
+        # exactly 1, guarded by the row's reservation absence), the park
+        # write preserves it, and the terminal strips only
+        # ``wf_emit_reservation`` — so the count survives into the drained
+        # estate, where the reservation key cannot serve (the terminal
+        # removed it). This estate's A rows never re-park after promotion
+        # (every gate row is pre-stamped), so a legitimate history reads
+        # exactly 1 here; a double promotion confined to a ≤32-row subset
+        # reads 2 on its rows — invisible to the attempt bound above (a
+        # legitimate kill reclaim shows the same ≤32 attempt-2 face) and
+        # to the pre-kill ``succeeded >= 1`` gate (the source alone
+        # satisfies it).
+        assert all(int(r["wakes"]) == 1 for r in a_rows), [
+            (int(r["m"]), int(r["wakes"])) for r in a_rows if int(r["wakes"]) != 1
+        ]
         counts = await _flow_counts(pool, schema, flow_id)
         assert counts["failed"] == 0, counts
         # The kill's committed-wins evidence: the A's chunk 1 promoted and
