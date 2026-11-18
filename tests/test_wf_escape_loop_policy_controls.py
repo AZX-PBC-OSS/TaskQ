@@ -76,7 +76,12 @@ _PARK_DEADLINE_S = 30.0
 #: commits its terminals in well under a second once the park is live
 #: (Qwen's fixed-shape run: the whole estate finished in 6.5 s); the
 #: in-transaction self-wait cannot complete at any bound — Qwen's shipped
-#: reference hung past 40 s — so a TimeoutError here IS the defect's red.
+#: reference hung past 40 s. The bound expires INTO the red, and no
+#: TimeoutError exists on this path: ``asyncio.wait`` neither raises nor
+#: cancels on timeout — it returns the still-pending seats — and the
+#: expiry branch below samples the catalogs, asserts the live hang's
+#: fingerprint, cancels the seats, and raises the AssertionError that
+#: carries that fingerprint. That AssertionError IS the defect's red.
 _EXHAUST_BOUND_S = 20.0
 
 #: The post-commit primitive's own bound (the same fail-closed rule).
