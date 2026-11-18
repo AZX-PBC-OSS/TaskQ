@@ -2045,8 +2045,12 @@ the child line landed, surfaced.
 `wf.loop(name, body, *, initial, carry_type, until, max_iterations,
 budget_s, on_exhausted, escalates_to, gates)` — the loop is v1; the
 signature is the SHIPPED verb's own, every parameter spelled: `initial` seeds the
-carry at iteration 0, `carry_type` declares the carry's model
-(revalidated at every boundary), `until` is awaited per iteration,
+carry at iteration 0, `carry_type` declares the carry's model (every
+committed carry is revalidated at each boundary — the advance, a
+resume, the memo replay; the type-only declaration's initial carry is
+the empty `None`, and a committed `None` against a declared model or
+dict is the loud `LoopCarryContractError` — a JSON-native declared type
+keeps the untyped `None`), `until` is awaited per iteration,
 `budget_s` bounds the loop's wall clock, and the exhaustion takes
 `on_exhausted` (`"fail"` | `"escalate"` — the escalation step via
 `escalates_to=`, with `gates=`'s HOLD gates). Each iteration is FRESH jobs: the iteration-scoped

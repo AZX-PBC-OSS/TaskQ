@@ -204,15 +204,19 @@ CONTROL UNION:
   the memo replay would re-thread as a Refine), the loop exhausts with
   the named class, and the flow terminalizes.
 
-**The carry's type is the contract:** the declared carrier-type
-(`carry_type=`, or derived from the `initial=` model instance) is
-re-applied at the ONE point a carry reaches the body — at iteration 0
-AND after EVERY resume and on the memo-replay path (the jsonb round-trip
-is typeless; the driver re-hydrates through the declared type's
-validator: a pydantic model, a dict subclass, or a JSON-native type). A
-declared type the jsonb boundary cannot honor is the loud
-`LoopCarryContractError` — a silent type change is refused. The compile
-side is E8 (the carrier-type check).
+**The carry's type is the contract:** the type-only declaration's
+initial carry is the empty `None` — the body receives `None` until its
+first `Refine` commits one. Every COMMITTED carry is revalidated at each
+boundary — the advance, a resume, the memo replay (`carry_type=`, or
+derived from the `initial=` model instance, is re-applied at the ONE
+point a carry reaches the body; the jsonb round-trip is typeless, so the
+driver re-hydrates through the declared type's validator: a pydantic
+model, a dict subclass, or a JSON-native type). A declared type the
+jsonb boundary cannot honor is the loud `LoopCarryContractError` — a
+silent type change is refused, and a committed `None` against a declared
+model or dict is the same refusal (the pre-first-carry seed is the only
+`None` the contract passes; a JSON-native declared type keeps the
+untyped `None`). The compile side is E8 (the carrier-type check).
 
 **The two walls are different:** `max_iterations` bounds TOTAL SPAWNS
 (the iteration cap); `budget_s` is the TIME wall — and it is BLIND while
