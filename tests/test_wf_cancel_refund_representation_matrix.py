@@ -172,6 +172,8 @@ async def _seed_target(
         "locked_by_worker, lock_expires_at, started_at) "
         "VALUES ($1, 'matrix', 'matrix', '{}', 'running', 1, 3, 'transient', $2, "
         "$3::jsonb, 2, clock_timestamp(), clock_timestamp(), $4, 'workflow-run', $5, "
+        # Why: the claim CAS's own lease shape (NODE_CLAIM_SQL's 90 seconds) —
+        # the row reads as a LIVE claim, never a lapsed one.
         "$6, now() + interval '90 seconds', clock_timestamp())",
         job,
         key,
@@ -218,6 +220,10 @@ async def _seed_decoys(
             "map_index, attempt, claim_epoch, status, error_class, created_at, "
             "updated_at) VALUES ($1, $2, $3, $4, $5::smallint, $6::int, $7::bigint, "
             "$8::text, $9::text, clock_timestamp(), "
+            # Why: the decoys' instants are STAGGERED by whole microseconds
+            # strictly after the outer claim's — a broken association's
+            # maximality probe resolves to a decoy deterministically (the
+            # mutant red is the decoy's own rewrite, never a timestamp tie).
             "clock_timestamp() + ($10::int * interval '1 microsecond'))",
             ledger_id,
             estate_flow,
