@@ -465,6 +465,7 @@ ignore = [
 "tests/test_wf_not_draining_refusal.py" = ["S608"]
 "tests/test_wf_emit_capacity_controls.py" = ["S608"]
 "tests/test_wf_cancel_park_races.py" = ["S608"]
+"tests/test_wf_cancel_refund_representation_matrix.py" = ["S608"]
 "tests/test_wf_migration_deadlock_control.py" = ["S608"]
 "tests/test_wf_occupancy_and_latency.py" = ["S608"]
 "tests/test_wf_guard_overhead_control.py" = ["S608"]
