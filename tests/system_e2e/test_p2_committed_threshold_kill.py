@@ -138,6 +138,21 @@ async def _flow_counts(pool: asyncpg.Pool, schema: str, flow_id: str) -> dict[st
     return {key: int(row[key]) for key in ("parked", "promoted", "running", "succeeded", "failed")}
 
 
+# THE WAIT DEADLINES vs THE TIER TIMEOUT (the recorded analysis; no
+# deadline number changed): this module only ever runs under the
+# `--system-e2e` opt-in (the tier gate drops it from every other run),
+# and every recorded invocation of the tier — CI's system-e2e lanes
+# (`.github/workflows/ci.yaml`, `--timeout=900`) and the tracker's lane
+# commands — passes an explicit `--timeout=900`; the suite-wide
+# `--timeout=300` addopts default has never been this module's recorded
+# invocation. Under that 900 s budget the waits' own deadlines below
+# (300 s; 600 s in the mid-chunk control) expire FIRST, so a
+# never-completing wait surfaces as THIS function's own descriptive
+# assertion ("the wait expired: …"), not as an opaque pytest-timeout
+# failure. Should a future invocation ever run this module at the bare
+# 300 s default, that coupling must be re-examined — pytest-timeout's
+# per-test timer (which counts the pod-spawn and window phases too)
+# would then win the race against this function's deadline.
 async def _wait_for(predicate: Any, interval_s: float, deadline_s: float, description: str) -> None:
     deadline = time.monotonic() + deadline_s
     while True:
@@ -377,9 +392,16 @@ async def test_committed_threshold_survives_kill_and_recovers_on_second_pid(
         # success is NOT that state: its body returns after the final
         # page's emit, so the source can terminalise while the last
         # child is still pending (the source-success instant is the
-        # round-19 red's exact race), and the last child's terminal
-        # re-arms the intent after it — each fact lands in its own
-        # transaction, so each must be waited for.
+        # round-19 red's exact race). The intent leg is a CONSERVATIVE
+        # gate, not a claimed re-arm: a terminal's arm is gated on the
+        # exact-park marker probe (`WF_EMIT_PARK_EXISTS_SQL`), and once
+        # the source's promotion has removed the marker there is no park
+        # row for the last child's terminal to find — it arms nothing;
+        # the generation was settled in the promotion's own drain
+        # transaction. The drain's `handled = wake` bookkeeping still
+        # commits in its own transaction, concurrent with the source's
+        # finalize and the children's terminals, so each fact lands
+        # separately and must be waited for.
         async def _done() -> bool:
             row = await _source_row(pool, schema, flow_id)
             if row["status"] != "succeeded":
@@ -525,7 +547,13 @@ async def test_park_before_ack_kill_preserves_marker_and_promotes_once(
         # page set is terminal on exactly that set, and the intent is
         # fully handled. The source's success alone is a subset gate: its
         # body returns after the final page's emit, while the last child
-        # and the last drain generation are still in flight.
+        # is still in flight. The intent leg is the same CONSERVATIVE
+        # gate — no terminal re-arms anything here: after the source's
+        # promotion removed the park marker, a terminal's arm (gated on
+        # the exact-park probe `WF_EMIT_PARK_EXISTS_SQL`) finds no park
+        # row to arm from; the generation was settled in the promotion's
+        # own drain transaction, whose `handled = wake` bookkeeping is a
+        # separate concurrent commit the wait must still cover.
         async def _done() -> bool:
             row = await _source_row(pool, schema, flow_id)
             if row["status"] != "succeeded":
@@ -899,16 +927,25 @@ async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
         # THE READINESS LAW: the assertions below read the intent's
         # handled generation beside the estate's completion. The root's
         # own `succeeded` is the engine's own all-children-terminal
-        # derivation (the status reconstruction writes it only on a
-        # same-transaction `NOT has_live` aggregate — every A row and the
-        # source were terminal at that instant, and terminal rows have no
-        # outbound transitions), so it is the authoritative completeness
-        # fact for the a_rows reads. What it does NOT cover is the
-        # drain's own bookkeeping: the LAST A's terminal re-arms the
-        # intent in its own transaction, and the drain's
-        # `handled = wake` lands concurrently with the root's finalize —
-        # so the wait gates on that too, or the handled==wake assertion
-        # below could read a mid-flight drain.
+        # derivation — `WORKFLOW_ROOT_MAINTAIN_SQL` (the maintenance
+        # rollup) WRITES it in one statement on its `NOT has_live`
+        # aggregate (every A row and the source were terminal at that
+        # instant, and terminal rows have no outbound transitions), so it
+        # is the authoritative completeness fact for the a_rows reads;
+        # `reconstruct_workflow_status` is that derivation's pure read
+        # face and writes nothing. What the root does NOT cover is the
+        # drain's own bookkeeping. A terminal CAN re-arm a handled intent,
+        # but only conditionally: the arm is gated on the exact-park
+        # probe (`WF_EMIT_PARK_EXISTS_SQL`) plus a fitting waiter plus no
+        # already-pending generation, so a re-arm needs a SURVIVING park
+        # marker beside a handled generation. In THIS estate that window
+        # does not exist: every parked A fits the 800 bound, so the drain
+        # marks handled only after the final promotion removed the last
+        # marker — the last A's terminal arms nothing. The intent leg
+        # stays as the conservative gate: the drain's `handled = wake`
+        # lands in its own transaction, concurrent with the root's
+        # finalize — so the wait gates on it too, or the handled==wake
+        # assertion below could read a mid-flight drain.
         async def _done() -> bool:
             root = await pool.fetchval(
                 f'SELECT status::text FROM "{schema}".jobs '
