@@ -17,13 +17,21 @@ The real-PostgreSQL run seeds the ruling's decoy estate (rootless
 pending/scheduled/running orphans with exact current claims, a reservation,
 older-epoch/sibling substep/map ledger decoys, a terminal row, an
 after-terminal-effect row, another rootless flow, and a present-root flow)
-and, per executed mutant, proves the honest assertion battery reds:
-removing the missing-root predicate, the flow predicate, the
-after-terminal-effect exclusion, or the exact-claim leg each reds its own
-control; a present-root mutation produces no targets and no writes; a
-suppressed fence forces ``had_current_claim=true`` to a zero-row fence and
-proves the visibility result turns false (the half-recovery the operator
-must ROLL BACK, never COMMIT).
+and, per executed mutant, proves the honest assertion battery reds. Every
+mutant is TOKEN-PRESERVING — the ``:'flow_id'`` count and every ``psql``
+token are unchanged, so the mutated SQL actually executes and the
+extractor's own fail-closed guards can never be what fires: neutralising
+the missing-root predicate reds the PRESENT-ROOT scenario (against the
+rootless reviewed estate that neutralisation is behaviourally inert —
+the leg's load-bearing face is the present-root flow it must refuse),
+neutralising the flow predicate, removing the after-terminal-effect
+exclusion, and dropping the exact-claim leg each red the reviewed-estate
+battery; the HONEST recipe run for a present-root flow targets nothing,
+writes nothing, and returns empty visibility; a present-root predicate
+mutation produces no targets and no writes; a suppressed fence forces
+``had_current_claim=true`` to a zero-row fence and proves the visibility
+result turns false (the half-recovery the operator must ROLL BACK, never
+COMMIT).
 """
 
 from __future__ import annotations
@@ -491,6 +499,70 @@ async def _dump_rows(conn: asyncpg.Connection, schema: str, table: str, ids: lis
     return _json.dumps([dict(r) for r in rows], sort_keys=True, default=str)
 
 
+async def _execute_remedy_statements(
+    conn: asyncpg.Connection,
+    statements: list[str],
+    capture: dict[str, Any],
+) -> None:
+    """Execute the transformed document statements in the caller's
+    transaction, capturing the two SELECT results the batteries read: the
+    fence-visibility rows (the operator's half-recovery check) and the
+    final reviewed-id/status rows."""
+    visibility: list[dict[str, Any]] = []
+    final_status: list[dict[str, Any]] = []
+
+    def _code_head(stmt: str) -> str:
+        """The statement's first non-comment line (the classifier's
+        own face; a statement may open with a -- comment)."""
+        for ln in stmt.splitlines():
+            if ln.strip().startswith("--") or not ln.strip():
+                continue
+            return ln.strip()
+        return ""
+
+    for stmt in statements:
+        head = _code_head(stmt)
+        if "FROM written AS w" in stmt:
+            # The WITH-chained fence-visibility SELECT (the operator's
+            # half-recovery check).
+            visibility = [dict(r) for r in await conn.fetch(stmt)]
+        elif head.startswith("SELECT t.job_id"):
+            final_status = [dict(r) for r in await conn.fetch(stmt)]
+        else:
+            await conn.execute(stmt)
+    capture["visibility"] = visibility
+    capture["final_status"] = final_status
+
+
+#: The extractor's own fail-closed guard messages. A mutant whose red
+#: carries one of these never executed its mutated SQL — the extractor
+#: fired instead of the battery — and that run is vacuous.
+_EXTRACTOR_GUARDS = (
+    "expected exactly one psql",
+    "expected exactly four",
+    "surviving psql variable tokens",
+    "surviving psql command at",
+    "the remedy lost its schema-qualified names",
+    "expected exactly one BEGIN",
+    "the splitter left an unterminated",
+)
+
+
+def _assert_battery_red(
+    excinfo: pytest.ExceptionInfo[AssertionError],
+    battery: str,
+) -> None:
+    """The captured AssertionError is the HONEST BATTERY's own failure,
+    not the extractor's: no extractor guard message, and the traceback's
+    frames are the battery's own (the mutated SQL actually executed)."""
+    message = str(excinfo.value)
+    for guard in _EXTRACTOR_GUARDS:
+        assert guard not in message, (guard, message)
+    names = [entry.name for entry in excinfo.traceback]
+    assert "_transform_for_test" not in names, names
+    assert battery in names, (battery, names)
+
+
 async def _run_remedy_and_assert(
     conn: asyncpg.Connection,
     schema: str,
@@ -503,30 +575,9 @@ async def _run_remedy_and_assert(
     transaction and run the honest outcome battery. The caller rolls back
     (the estate survives for the next mutant)."""
     async with conn.transaction():
-        visibility: list[dict[str, Any]] = []
-        final_status: list[dict[str, Any]] = []
-
-        def _code_head(stmt: str) -> str:
-            """The statement's first non-comment line (the classifier's
-            own face; a statement may open with a -- comment)."""
-            for ln in stmt.splitlines():
-                if ln.strip().startswith("--") or not ln.strip():
-                    continue
-                return ln.strip()
-            return ""
-
-        for stmt in statements:
-            head = _code_head(stmt)
-            if "FROM written AS w" in stmt:
-                # The WITH-chained fence-visibility SELECT (the operator's
-                # half-recovery check).
-                visibility = [dict(r) for r in await conn.fetch(stmt)]
-            elif head.startswith("SELECT t.job_id"):
-                final_status = [dict(r) for r in await conn.fetch(stmt)]
-            else:
-                await conn.execute(stmt)
-        capture["visibility"] = visibility
-        capture["final_status"] = final_status
+        await _execute_remedy_statements(conn, statements, capture)
+        visibility = capture["visibility"]
+        final_status = capture["final_status"]
 
         # THE VISIBILITY RESULT: one row per reviewed winner, ids equal to
         # the reviewed set, and fenced true wherever had_current_claim is
@@ -676,6 +727,52 @@ async def _run_remedy_and_assert(
         raise _RollbackHarnessError()
 
 
+async def _run_present_root_and_assert(
+    conn: asyncpg.Connection,
+    schema: str,
+    statements: list[str],
+    estate: dict[str, Any],
+    capture: dict[str, Any],
+) -> None:
+    """Execute the recipe bound to a flow whose ``__flow__`` root is
+    PRESENT and run the present-root battery: zero targets, no writes,
+    empty visibility — the missing-root leg's own load-bearing face (the
+    missing-root mutant reds HERE; against the rootless reviewed estate a
+    neutralised missing-root predicate is behaviourally inert). The
+    caller rolls back (the estate survives for the next run)."""
+    all_ids = estate["reviewed"] + list(estate["decoys"].values()) + [estate["present_root_flow"]]
+    before_reviewed = await _dump_rows(conn, schema, "jobs", estate["reviewed"])
+    async with conn.transaction():
+        await _execute_remedy_statements(conn, statements, capture)
+        # EMPTY VISIBILITY and EMPTY FINAL STATUS: a present-root flow is
+        # not the remedy's subject — the recipe selected zero targets.
+        assert capture["visibility"] == [], capture["visibility"]
+        assert capture["final_status"] == [], capture["final_status"]
+        # NO WRITES: every estate row byte-preserved — the reviewed
+        # (rootless-flow) orphans, every decoy, the present root itself.
+        assert await _dump_rows(conn, schema, "jobs", estate["reviewed"]) == before_reviewed, (
+            "a reviewed (rootless-flow) row moved under the present-root run"
+        )
+        after_jobs = await _dump_rows(conn, schema, "jobs", estate["decoy_job_ids"])
+        assert after_jobs == estate["decoy_snapshots"]["jobs"], "a decoy job row moved"
+        # ZERO EVENTS anywhere in the estate: no winner, no event.
+        events = await conn.fetch(
+            f"""SELECT job_id::text AS job_id FROM "{schema}".job_events
+                WHERE job_id = ANY($1::uuid[]) ORDER BY job_id""",
+            all_ids,
+        )
+        assert events == [], [dict(e) for e in events]
+        # ZERO FENCES anywhere: no current claim was touched.
+        fenced = await conn.fetchval(
+            f"""SELECT count(*) FROM "{schema}".wf_step_ledger
+                WHERE flow_id = ANY($1::uuid[]) AND status = 'fenced'""",
+            [estate["flow"], estate["other"], estate["present_root_flow"]],
+        )
+        assert int(fenced) == 0, fenced
+
+        raise _RollbackHarnessError()
+
+
 class TestRunbookRootMissingRemedy:
     async def test_documented_remedy_executes_exactly_on_real_postgres(
         self,
@@ -690,12 +787,11 @@ class TestRunbookRootMissingRemedy:
         doc = _RUNBOOKS.read_text(encoding="utf-8")  # noqa: ASYNC240  # Why: a single fast read of a repo doc in the control's setup; the file is local and tiny.
         raw_sql = _extract_remedy_sql(doc)
         # THE EMBEDDED-SEMICOLON PIN (Qwen's observation 3): the remedy's
-        # error_message literal carries an embedded semicolon, and the
-        # quote-aware splitter is what survives it — a naive split would
-        # cut mid-literal into more fragments.
-        assert _EMBEDDED_SEMICOLON_MESSAGE.replace("; ", ";") in raw_sql or (
-            "quarantined after root loss; recreate as a new run" in raw_sql
-        ), raw_sql
+        # own error_message literal — WITH its embedded semicolon inside
+        # the quotes — is present in the doc's bytes, and the quote-aware
+        # splitter is what survives it (the naive/aware comparison below
+        # proves a naive split cuts mid-literal into more fragments).
+        assert _EMBEDDED_SEMICOLON_MESSAGE in raw_sql, raw_sql
         naive = [s for s in raw_sql.split(";") if s.strip()]
         aware = _split_sql_aware(raw_sql)
         assert len(naive) > len(aware), (len(naive), len(aware))
@@ -734,53 +830,68 @@ class TestRunbookRootMissingRemedy:
         module_pg_schema: ModulePgSchema,
         module_pg_pool: asyncpg.Pool,
     ) -> None:
-        """Removing the missing-root predicate breaks the reviewed targeting:
-        the honest battery reds (and the flip lands where the reviewed set's
-        protection was removed)."""
+        """Neutralising the missing-root predicate to a surely-absent root
+        key (TOKEN-PRESERVING: the ``:'flow_id'`` count and every ``psql``
+        token are unchanged, so the mutated SQL actually executes — the
+        extractor's own guards cannot fire) makes the recipe fire on a
+        flow whose root is PRESENT: the present-root battery reds.
+        Against the rootless reviewed estate this neutralisation is
+        behaviourally inert (no root row exists there to be seen either
+        way) — which is exactly why the leg's load-bearing face is the
+        present-root scenario it must refuse."""
         doc = _RUNBOOKS.read_text(encoding="utf-8")  # noqa: ASYNC240  # Why: a single fast read of a repo doc in the control's setup; the file is local and tiny.
         raw = _extract_remedy_sql(doc)
         schema = module_pg_schema.schema_name
         async with module_pg_pool.acquire() as conn:
             estate = await _seed_decoy_estate(conn, schema)
             mutated = raw.replace(
-                """      AND NOT EXISTS (
-          SELECT 1 FROM taskq.jobs AS root
-          WHERE root.id = :'flow_id'::uuid AND root.step_key = '__flow__'
-      )
-    ORDER BY j.id""",
-                "    ORDER BY j.id",
-                1,
+                "root.step_key = '__flow__'",
+                "root.step_key = '__no_such_root__'",
+                2,  # both NOT EXISTS blocks: the quarantine's and the flip's
             )
             assert mutated != raw, "the missing-root mutation never applied"
+            # TOKEN-PRESERVING: the mutated bytes keep the remedy's own
+            # token face, so the extractor executes the mutated SQL.
+            assert mutated.count(":'flow_id'") == raw.count(":'flow_id'") == 4
             await _prepare_snapshots(conn, schema, estate)
             capture: dict[str, Any] = {}
-            with pytest.raises(AssertionError):
-                await _run_remedy_and_assert(
+            with pytest.raises(AssertionError) as excinfo:
+                await _run_present_root_and_assert(
                     conn,
                     schema,
-                    _transform_for_test(mutated, estate["flow"], schema),
-                    estate["flow"],
+                    _transform_for_test(mutated, estate["present_root_flow"], schema),
                     estate,
                     capture,
                 )
+            _assert_battery_red(excinfo, "_run_present_root_and_assert")
 
     async def test_mutant_dropping_the_flow_predicate_touches_another_flow(
         self,
         module_pg_schema: ModulePgSchema,
         module_pg_pool: asyncpg.Pool,
     ) -> None:
-        """Removing the flow predicate pulls ANOTHER flow's orphans into the
-        target set: the honest battery reds on the untouched-decoy law."""
+        """Neutralising the flow predicate TOKEN-PRESERVINGLY (``OR true``
+        — the ``:'flow_id'`` count and every ``psql`` token are unchanged,
+        so the mutated SQL actually executes; the extractor's own guards
+        cannot fire) pulls EVERY flow's orphans into the target set: the
+        honest battery reds on the untouched-decoy law."""
         doc = _RUNBOOKS.read_text(encoding="utf-8")  # noqa: ASYNC240  # Why: a single fast read of a repo doc in the control's setup; the file is local and tiny.
         raw = _extract_remedy_sql(doc)
         schema = module_pg_schema.schema_name
         async with module_pg_pool.acquire() as conn:
             estate = await _seed_decoy_estate(conn, schema)
-            mutated = raw.replace("WHERE j.metadata->>'flow_id' = :'flow_id'\n", "", 1)
+            mutated = raw.replace(
+                "j.metadata->>'flow_id' = :'flow_id'",
+                "(j.metadata->>'flow_id' = :'flow_id' OR true)",
+                2,  # both predicates: the quarantine's and the flip's
+            )
             assert mutated != raw, "the flow-predicate mutation never applied"
+            # TOKEN-PRESERVING: the mutated bytes keep the remedy's own
+            # token face, so the extractor executes the mutated SQL.
+            assert mutated.count(":'flow_id'") == raw.count(":'flow_id'") == 4
             await _prepare_snapshots(conn, schema, estate)
             capture: dict[str, Any] = {}
-            with pytest.raises(AssertionError):
+            with pytest.raises(AssertionError) as excinfo:
                 await _run_remedy_and_assert(
                     conn,
                     schema,
@@ -789,6 +900,7 @@ class TestRunbookRootMissingRemedy:
                     estate,
                     capture,
                 )
+            _assert_battery_red(excinfo, "_run_remedy_and_assert")
 
     async def test_mutant_dropping_the_after_effect_exclusion_touches_that_row(
         self,
@@ -804,9 +916,13 @@ class TestRunbookRootMissingRemedy:
             estate = await _seed_decoy_estate(conn, schema)
             mutated = raw.replace("  AND NOT j.metadata ? 'wf_after_terminal_effect'\n", "", 2)
             assert mutated != raw, "the after-effect mutation never applied"
+            # TOKEN-PRESERVING: the removed exclusion carries no
+            # ``:'flow_id'`` and no psql token, so the mutated SQL
+            # actually executes (the extractor cannot be what fires).
+            assert mutated.count(":'flow_id'") == raw.count(":'flow_id'") == 4
             await _prepare_snapshots(conn, schema, estate)
             capture: dict[str, Any] = {}
-            with pytest.raises(AssertionError):
+            with pytest.raises(AssertionError) as excinfo:
                 await _run_remedy_and_assert(
                     conn,
                     schema,
@@ -815,6 +931,7 @@ class TestRunbookRootMissingRemedy:
                     estate,
                     capture,
                 )
+            _assert_battery_red(excinfo, "_run_remedy_and_assert")
 
     async def test_mutant_dropping_the_exact_claim_leg_fences_history(
         self,
@@ -836,9 +953,13 @@ class TestRunbookRootMissingRemedy:
             estate = await _seed_decoy_estate(conn, schema)
             mutated = raw.replace(" AND l.step_key = f.step_key", "", 1)
             assert mutated != raw, "the exact-claim mutation never applied"
+            # TOKEN-PRESERVING: the removed leg carries no ``:'flow_id'``
+            # and no psql token, so the mutated SQL actually executes (the
+            # extractor cannot be what fires).
+            assert mutated.count(":'flow_id'") == raw.count(":'flow_id'") == 4
             await _prepare_snapshots(conn, schema, estate)
             capture: dict[str, Any] = {}
-            with pytest.raises(AssertionError):
+            with pytest.raises(AssertionError) as excinfo:
                 await _run_remedy_and_assert(
                     conn,
                     schema,
@@ -847,6 +968,7 @@ class TestRunbookRootMissingRemedy:
                     estate,
                     capture,
                 )
+            _assert_battery_red(excinfo, "_run_remedy_and_assert")
 
     async def test_present_root_mutation_yields_no_targets_and_no_writes(
         self,
@@ -875,9 +997,13 @@ class TestRunbookRootMissingRemedy:
                 1,
             )
             assert mutated != raw, "the present-root mutation never applied"
+            # TOKEN-PRESERVING: the flip changes no ``:'flow_id'`` and no
+            # psql token, so the mutated SQL actually executes (the
+            # extractor cannot be what fires).
+            assert mutated.count(":'flow_id'") == raw.count(":'flow_id'") == 4
             await _prepare_snapshots(conn, schema, estate)
             capture: dict[str, Any] = {}
-            with pytest.raises(AssertionError):
+            with pytest.raises(AssertionError) as excinfo:
                 await _run_remedy_and_assert(
                     conn,
                     schema,
@@ -886,6 +1012,7 @@ class TestRunbookRootMissingRemedy:
                     estate,
                     capture,
                 )
+            _assert_battery_red(excinfo, "_run_remedy_and_assert")
             # NO TARGETS, NO WRITES: the reviewed set is untouched.
             for job_id in estate["reviewed"]:
                 status = await conn.fetchval(
@@ -893,6 +1020,36 @@ class TestRunbookRootMissingRemedy:
                     job_id,
                 )
                 assert status in ("pending", "scheduled", "running"), (job_id, status)
+
+    async def test_recipe_for_a_present_root_flow_targets_nothing_and_writes_nothing(
+        self,
+        module_pg_schema: ModulePgSchema,
+        module_pg_pool: asyncpg.Pool,
+    ) -> None:
+        """The HONEST recipe run for a flow whose ``__flow__`` root is
+        PRESENT: zero targets, no writes, empty visibility — the
+        missing-root leg's own load-bearing face, exercised UNMUTATED (a
+        mutant that neutralises the leg reds this same battery)."""
+        doc = _RUNBOOKS.read_text(encoding="utf-8")  # noqa: ASYNC240  # Why: a single fast read of a repo doc in the control's setup; the file is local and tiny.
+        raw = _extract_remedy_sql(doc)
+        schema = module_pg_schema.schema_name
+        async with module_pg_pool.acquire() as conn:
+            estate = await _seed_decoy_estate(conn, schema)
+            await _prepare_snapshots(conn, schema, estate)
+            capture: dict[str, Any] = {}
+            with pytest.raises(_RollbackHarnessError):
+                await _run_present_root_and_assert(
+                    conn,
+                    schema,
+                    _transform_for_test(raw, estate["present_root_flow"], schema),
+                    estate,
+                    capture,
+                )
+        print(
+            "PRESENT-ROOT VISIBILITY:",
+            _json.dumps(capture.get("visibility", []), sort_keys=True, default=str),
+        )
+        assert capture.get("visibility") == [], capture.get("visibility")
 
     async def test_suppressed_fence_forces_had_current_claim_to_false(
         self,
@@ -915,9 +1072,13 @@ class TestRunbookRootMissingRemedy:
                 1,
             )
             assert mutated != raw, "the fence-suppression mutation never applied"
+            # TOKEN-PRESERVING: the flipped comparison changes no
+            # ``:'flow_id'`` and no psql token, so the mutated SQL
+            # actually executes (the extractor cannot be what fires).
+            assert mutated.count(":'flow_id'") == raw.count(":'flow_id'") == 4
             await _prepare_snapshots(conn, schema, estate)
             capture: dict[str, Any] = {}
-            with pytest.raises(AssertionError):
+            with pytest.raises(AssertionError) as excinfo:
                 await _run_remedy_and_assert(
                     conn,
                     schema,
@@ -926,6 +1087,7 @@ class TestRunbookRootMissingRemedy:
                     estate,
                     capture,
                 )
+            _assert_battery_red(excinfo, "_run_remedy_and_assert")
             visibility = capture.get("visibility", [])
             falses = [r for r in visibility if r["had_current_claim"] and not r["fenced"]]
             assert falses, visibility
