@@ -11,6 +11,7 @@ row mechanics; the runner's exit face here.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 import asyncpg
@@ -78,7 +79,7 @@ class ExitOps(_ExitHost):
         *,
         claim_epoch: int = 0,
         ledger_id: JobId | None = None,
-        ledger_claimed_at: Any = None,
+        ledger_claimed_at: datetime | None = None,
     ) -> None:
         """TYPED EARLY-EXIT (§17.1, attack-audit's Missing #1): the
         body returned ``Exit(payload)`` — the node TERMINAL-SUCCEEDS
