@@ -256,11 +256,13 @@ def loop(
     subject). When ``initial`` is a model INSTANCE the type is DERIVED
     from it (the instance carries its own type — no double declaration);
     an explicit ``carry_type=`` is for the type-only declaration (the
-    initial carry is ``None``) or an honest override. A dict/list carry
-    declares no model — the type check is skipped, never guessed (the
-    old silent no-check is the named gap this split closes: the two
-    meanings resolved by distant isinstance branches were a dict carry
-    passing UNCHECKED).
+    initial carry is ``None`` and the body receives ``None`` until its
+    first ``Refine`` commits a carry — the pre-first-carry value passes
+    the contract unvalidated; only an actual carry is checked) or an
+    honest override. A dict/list carry declares no model — the type
+    check is skipped, never guessed (the old silent no-check is the
+    named gap this split closes: the two meanings resolved by distant
+    isinstance branches were a dict carry passing UNCHECKED).
 
     ``until=`` is AWAITED per iteration (``Callable[[], Awaitable[bool]]``
     — a sync closure returning a coroutine object is the rejected

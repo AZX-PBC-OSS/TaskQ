@@ -69,8 +69,10 @@ def jsonable(value: object) -> object:
 
 def rehydrate_carry(declared: object, raw: object) -> object:
     """The value the body
-    receives is an instance of the DECLARED initial's type — at iteration
-    0, after every resume, and on the memo-replay path alike.
+    receives is an instance of the DECLARED initial's type once a carry
+    exists — after every resume and on the memo-replay path alike — and
+    ``None`` before that (the pre-first-carry value; the type-only
+    declaration's documented initial).
 
     The jsonb round-trip is typeless (a model dumps to a dict; the row
     reads a plain dict back), so the driver re-hydrates through the
@@ -84,6 +86,12 @@ def rehydrate_carry(declared: object, raw: object) -> object:
 
     * declared ``None`` — the untyped contract: the raw value passes
       (the pre-typed-loop face is unchanged).
+    * the PRE-FIRST-CARRY ``None`` (a declared type, raw ``None``) — no
+      carry exists yet, so ``None`` passes through as ``None``: the
+      type-only declaration's documented initial (``carry_type=`` with
+      no model ``initial=``), a resume before any carry was committed,
+      and the memo replay of an empty carry all land here. Only an
+      ACTUAL carry is validated — ``None`` is not a wrong-typed carry.
     * a pydantic model declared — ``model_validate`` (the type's own
       codec, the same validator the wiring args walk).
     * a dict SUBCLASS declared (``collections.Counter`` — the counting
@@ -96,7 +104,19 @@ def rehydrate_carry(declared: object, raw: object) -> object:
     """
     if declared is None:
         return raw
-        # the declared face may arrive as the class itself (the loop's
+    if raw is None:
+        # THE PRE-FIRST-CARRY VALUE (the type-only declaration's own
+        # face): the driver seeds ``carry = None`` at iteration 0 and a
+        # resume before the first ``Refine`` reads the init's ``None``
+        # back. No carry exists yet — the body receives ``None`` until a
+        # ``Refine`` commits one — and ``None`` is not a wrong-typed
+        # carry: the no-silent-type-change law below refuses only an
+        # ACTUAL carry of the wrong shape. Passing the value through here
+        # (not at the call site) keeps the contract in its ONE owner: the
+        # validator the body's carry reaches, whose single caller this
+        # seam documents.
+        return None
+    # the declared face may arrive as the class itself (the loop's
     # ``carry_type=`` declaration — the spec's own field since the split) or as
     # an instance (the initial carry's value — the derivation's other face).
     # The class is the contract's home; the instance contributes its type.
@@ -131,7 +151,8 @@ def rehydrate_carry(declared: object, raw: object) -> object:
         f"the loop's declared carry type {declared_type.__name__!r} cannot "
         "round-trip the jsonb boundary — declare a pydantic model, a dict "
         "subclass, or a JSON-native type (the carry contract: the body "
-        "receives the declared type at iteration 0 AND after every resume)"
+        "receives the declared type once a carry exists — None until the "
+        "first Refine commits one — and after every resume)"
     )
 
 

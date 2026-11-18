@@ -386,8 +386,9 @@ class LoopOps(_LoopHost):
         # isinstance re-derivation here; the type check is the validator's
         # subject). It is serialized through the codec (a model dumps to its
         # dict) and the declared type is re-applied at the read below (the
-        # carry's typed contract — the body receives the declared type at
-        # iteration 0 and after every resume).
+        # carry's typed contract — the body receives the declared type once a
+        # carry exists; the seeded ``None`` IS the pre-first-carry value and
+        # passes through as ``None`` until the first Refine commits one).
         initial_carry: object = (
             jsonable(cast(object, spec.initial_carry)) if spec.initial_carry is not None else None
         )
@@ -545,9 +546,11 @@ class LoopOps(_LoopHost):
                 # at iteration 0 (the init's dump), after every resume (the row
                 # read), on the memo replay (the recorded feedback), and on the
                 # in-memory Refine (idempotent). A dict is never the body's
-                # carry when a type is declared. (before the body boundary: a
-                # contract refusal is the declaration's bug — the machinery's
-                # own loud error, never a body failure to absorb.)
+                # carry when a type is declared, and the pre-first-carry
+                # ``None`` passes through as ``None`` (no carry exists yet —
+                # only an actual carry is validated). (before the body
+                # boundary: a contract refusal is the declaration's bug — the
+                # machinery's own loud error, never a body failure to absorb.)
                 carry = rehydrate_carry(spec.carry_type, carry)
                 try:
                     # a loop body declaring one param beyond (ctx, carry)
