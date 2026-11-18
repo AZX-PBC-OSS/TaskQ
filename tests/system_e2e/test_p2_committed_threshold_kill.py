@@ -70,18 +70,44 @@ import asyncio
 import json as _json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import asyncpg
 import pytest
 
 from taskq.testing.fixtures import ModulePgSchema
+from taskq.workflows.ledger import TERMINAL_JOB_STATUSES
 from tests.system_e2e import _p2_saturation_worker as entry
 
 pytestmark = [pytest.mark.system, pytest.mark.integration]
 
 _KILL_WAIT_S = 10.0
 _QUEUES = f"{entry.SOURCE_QUEUE},{entry.LEAF_QUEUE},{entry.SIBLING_QUEUE}"
+
+#: THE RUNS' OWN EXPECTED CHILD SETS, derived from the estates' own page
+#: declarations (the bodies' one truth — never a re-counted literal): the
+#: readiness predicates below compare the durable children rows against
+#: THESE sets, so a predicate and the assertion that follows it can never
+#: drift apart about how many children the run owes.
+_C4_KILL_CHILDREN: Final[frozenset[int]] = frozenset(
+    m for page in entry.C4_KILL_PAGES for m in page
+)
+_C4_PARK_CHILDREN: Final[frozenset[int]] = frozenset(
+    m for page in entry.C4_PARK_PAGES for m in page
+)
+
+
+def _children_settled(kids: list[dict[str, Any]], expected: frozenset[int]) -> bool:
+    """The completeness leg every recovery wait gates on: the durable
+    children rows' map-index set equals the run's own expected child set
+    EXACTLY, and every row is in a terminal status (the state machine's
+    own vocabulary, never a re-spelled literal).
+
+    NOT merely "none pending": a page the recovery never emitted would
+    leave its child row MISSING — "none pending" over the surviving rows
+    would pass an incomplete recovery, so the SET must match too."""
+    indices = frozenset(int(r["m"]) for r in kids)
+    return indices == expected and all(r["status"] in TERMINAL_JOB_STATUSES for r in kids)
 
 
 def _admission_lock_sql() -> str:
@@ -343,9 +369,26 @@ async def test_committed_threshold_survives_kill_and_recovers_on_second_pid(
         replacement = await _spawn_pod(conn, pg_dsn, schema, log_dir, "c4-kill-replacement")
         assert replacement.proc.pid != victim_pid, "the replacement must be a DIFFERENT real PID"
 
+        # THE READINESS LAW (the round-19 flake's own lesson): the wait
+        # completes only when EVERY fact the assertions below read is
+        # stable — the source succeeded AND the durable children rows
+        # settle onto the run's own expected child set (exactly, terminal)
+        # AND the drain's generation is fully handled. The source's own
+        # success is NOT that state: its body returns after the final
+        # page's emit, so the source can terminalise while the last
+        # child is still pending (the source-success instant is the
+        # round-19 red's exact race), and the last child's terminal
+        # re-arms the intent after it — each fact lands in its own
+        # transaction, so each must be waited for.
         async def _done() -> bool:
             row = await _source_row(pool, schema, flow_id)
-            return row["status"] == "succeeded"
+            if row["status"] != "succeeded":
+                return False
+            kids = await _children(pool, schema, str(row["id"]))
+            if not _children_settled(kids, _C4_KILL_CHILDREN):
+                return False
+            intent = await _intent_row(pool, schema, flow_id)
+            return intent["handled"] == intent["wake"]
 
         await _wait_for(_done, 0.2, 300, "the replacement never completed the run")
 
@@ -474,9 +517,24 @@ async def test_park_before_ack_kill_preserves_marker_and_promotes_once(
         replacement = await _spawn_pod(conn, pg_dsn, schema, log_dir, "c4-park-replacement")
         assert replacement.proc.pid != victim_pid
 
+        # THE READINESS LAW (the same one the committed-threshold control
+        # states): the assertions below read the source's estate, the
+        # run's children (through the whole-flow failed count) and the
+        # drain's handled generation — so the wait completes only when
+        # the source succeeded, every child of the run's own declared
+        # page set is terminal on exactly that set, and the intent is
+        # fully handled. The source's success alone is a subset gate: its
+        # body returns after the final page's emit, while the last child
+        # and the last drain generation are still in flight.
         async def _done() -> bool:
             row = await _source_row(pool, schema, flow_id)
-            return row["status"] == "succeeded"
+            if row["status"] != "succeeded":
+                return False
+            kids = await _children(pool, schema, str(row["id"]))
+            if not _children_settled(kids, _C4_PARK_CHILDREN):
+                return False
+            intent = await _intent_row(pool, schema, flow_id)
+            return intent["handled"] == intent["wake"]
 
         await _wait_for(_done, 0.2, 300, "the replacement never completed the run")
 
@@ -581,9 +639,22 @@ async def test_emit_rollback_kill_never_parks_and_reclaims_once(
         replacement = await _spawn_pod(conn, pg_dsn, schema, log_dir, "c4-roll-replacement")
         assert replacement.proc.pid != victim_pid
 
+        # THE READINESS LAW (the round-19 red's own control): the source
+        # is the flow's EMITTER — its body returns after the final page's
+        # emit and its own terminal lands in its own transaction, while
+        # the page's children are still being claimed and terminalised
+        # (the round-19 flake read child m=2 PENDING at the source-success
+        # instant). The assertions below read the children's terminal set
+        # and the whole-flow failed count, so the wait completes only
+        # when the source succeeded AND the durable children rows have
+        # settled onto the run's own expected child set — exactly, and
+        # terminal.
         async def _done() -> bool:
             row = await _source_row(pool, schema, flow_id)
-            return row["status"] == "succeeded"
+            if row["status"] != "succeeded":
+                return False
+            kids = await _children(pool, schema, str(row["id"]))
+            return _children_settled(kids, _C4_KILL_CHILDREN)
 
         await _wait_for(_done, 0.5, 300, "the reclaim never completed the run")
 
@@ -794,7 +865,11 @@ async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
         async def _frozen() -> bool:
             counts = await _flow_counts(pool, schema, flow_id)
             intent = await _intent_row(pool, schema, flow_id)
-            return counts["parked"] == 200 and intent["wake"] > intent["handled"]
+            return (
+                counts["parked"] == 200
+                and counts["succeeded"] >= 1
+                and intent["wake"] > intent["handled"]
+            )
 
         await _wait_for(_frozen, 0.1, 240, "the mid-chunk freeze never landed")
         await asyncio.sleep(1.0)  # the freeze is stable: the hook holds the lock
@@ -821,13 +896,29 @@ async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
         replacement = await _spawn_pod(conn, pg_dsn, schema, log_dir, "c4-chunk-replacement")
         assert replacement.proc.pid != victim_pid
 
+        # THE READINESS LAW: the assertions below read the intent's
+        # handled generation beside the estate's completion. The root's
+        # own `succeeded` is the engine's own all-children-terminal
+        # derivation (the status reconstruction writes it only on a
+        # same-transaction `NOT has_live` aggregate — every A row and the
+        # source were terminal at that instant, and terminal rows have no
+        # outbound transitions), so it is the authoritative completeness
+        # fact for the a_rows reads. What it does NOT cover is the
+        # drain's own bookkeeping: the LAST A's terminal re-arms the
+        # intent in its own transaction, and the drain's
+        # `handled = wake` lands concurrently with the root's finalize —
+        # so the wait gates on that too, or the handled==wake assertion
+        # below could read a mid-flight drain.
         async def _done() -> bool:
             root = await pool.fetchval(
                 f'SELECT status::text FROM "{schema}".jobs '
                 "WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key='__flow__'",
                 flow_id,
             )
-            return root == "succeeded"
+            if root != "succeeded":
+                return False
+            intent = await _intent_row(pool, schema, flow_id)
+            return intent["handled"] == intent["wake"]
 
         await _wait_for(_done, 0.5, 600, "the replacement never completed the estate")
 

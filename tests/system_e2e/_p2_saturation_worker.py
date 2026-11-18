@@ -261,13 +261,21 @@ class C4Ok(enum.Enum):
 
 _C4_GATE_S: Final = 3.0
 
+#: THE C4 ESTATES' OWN PAGE DECLARATIONS (one truth per flow): each
+#: source body emits exactly these pages, and the controls' readiness
+#: predicates derive the run's EXPECTED CHILD SET from the same constants
+#: — never a re-counted literal that can drift from the estate the bodies
+#: actually emit.
+C4_KILL_PAGES: Final = ((0, 1), (2,))
+C4_PARK_PAGES: Final = ((0,), (1,))
+
 
 async def _c4_screen(ctx: StepContext, item: object) -> C4Ok:
     del item
     # The page-0 children hold their slots for the gate's own span (the
     # committed-intent window's precondition); the resumed page-1 child
     # runs free.
-    if ctx.map_index is not None and ctx.map_index < 2:
+    if ctx.map_index is not None and ctx.map_index in C4_KILL_PAGES[0]:
         await asyncio.sleep(_C4_GATE_S)
     return C4Ok.OK
 
@@ -275,12 +283,11 @@ async def _c4_screen(ctx: StepContext, item: object) -> C4Ok:
 async def _c4_source_body(ctx: Any) -> None:
     cursor = await ctx.cursor()
     start_page = int(cursor.get("page", -1)) + 1
-    pages = ([0, 1], [2])
-    for page in range(start_page, len(pages)):
+    for page in range(start_page, len(C4_KILL_PAGES)):
         await ctx.emit_batch(
             [
                 chain_start(_C4_CHAIN, {"app_id": m}, map_index=m, trace_id=f"app-{m}")
-                for m in pages[page]
+                for m in C4_KILL_PAGES[page]
             ],
             cursor={"page": page},
         )
@@ -318,12 +325,11 @@ async def _c4b_screen(ctx: StepContext, item: object) -> C4Ok:
 async def _c4b_source_body(ctx: Any) -> None:
     cursor = await ctx.cursor()
     start_page = int(cursor.get("page", -1)) + 1
-    pages = ([0], [1])
-    for page in range(start_page, len(pages)):
+    for page in range(start_page, len(C4_PARK_PAGES)):
         await ctx.emit_batch(
             [
                 chain_start(_C4B_CHAIN, {"app_id": m}, map_index=m, trace_id=f"app-{m}")
-                for m in pages[page]
+                for m in C4_PARK_PAGES[page]
             ],
             cursor={"page": page},
         )
