@@ -25,7 +25,7 @@ Mutation notes (each control names what going red proves):
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 import pytest
@@ -36,6 +36,36 @@ from taskq.worker import leader as leader_mod
 from tests._ns_patch import patch_ns
 
 pytestmark = pytest.mark.integration
+
+
+class _RecordingLoopProxy:
+    """The loop-spelled creation seam's stand-in: ``create_task`` feeds
+    the probe's recorder and every other loop attribute delegates to the
+    real running loop (the same delegating semantics
+    :func:`tests._ns_patch.module_ns_proxy` gives the module proxy).
+
+    Why it exists: ``asyncio.create_task(...)`` and
+    ``asyncio.get_running_loop().create_task(...)`` are two spellings of
+    the same waiter-pair creation. A probe that records only one leaves
+    the residual law vacuously green after a refactor to the other — the
+    single-spelling probe's own blind spot, closed here.
+    """
+
+    def __init__(
+        self,
+        real: asyncio.AbstractEventLoop,
+        record: Callable[..., asyncio.Task[object]],
+    ) -> None:
+        self._real = real
+        self._record = record
+
+    def create_task(
+        self, coro: Coroutine[Any, Any, object], **kwargs: Any
+    ) -> asyncio.Task[object]:
+        return self._record(coro, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
 
 
 class TestWfEmitCapacitySubscriptionLifecycle:
@@ -160,16 +190,25 @@ class TestWfEmitCapacitySubscriptionLifecycle:
         leader._wf_emit_capacity_drain_once = _fake_drain_once  # type: ignore[method-assign]  # Why: the drain-once seam is the loop's own arm; the control asserts the subscription + event discipline, not the SQL.
         shutdown = asyncio.Event()
 
-        # THE RESIDUAL-TASK PROBE: record every task created while the
-        # loop ran; at the end each must be done (the loop's own finally
+        # THE RESIDUAL-TASK PROBE: record every task the loop's OWN code
+        # creates while it ran, through EITHER creation spelling — the
+        # owner module's ``asyncio.create_task`` binding AND a
+        # ``get_running_loop()`` override whose loop proxy records a
+        # loop-spelled ``loop.create_task(...)`` too (two spellings, one
+        # recorder); at the end each must be done (the loop's own finally
         # cancels and awaits its waiter pair). The probe patches the
         # OWNER's own ``asyncio`` binding (taskq.worker.leader's - the
         # module whose code resolves the name), never the stdlib module
         # object: a process-global create_task patch is visible to every
         # coroutine in the process for the patch's length (the suite
         # hygiene control's own violation class) - tests/_ns_patch.py.
+        # The recorded population is exactly the owner module's own task
+        # creations: tasks created in OTHER namespaces (the backend's
+        # subscription internals) resolve ``asyncio`` there and are
+        # outside this probe's scope.
         recorded: list[asyncio.Task[object]] = []
         real_create_task = asyncio.create_task
+        real_get_running_loop = asyncio.get_running_loop
 
         def _recording_create_task(
             coro: Coroutine[Any, Any, object], **kwargs: Any
@@ -178,7 +217,16 @@ class TestWfEmitCapacitySubscriptionLifecycle:
             recorded.append(task)
             return task
 
-        patch_ns(monkeypatch, leader_mod, "asyncio", create_task=_recording_create_task)
+        def _recording_get_running_loop() -> _RecordingLoopProxy:
+            return _RecordingLoopProxy(real_get_running_loop(), _recording_create_task)
+
+        patch_ns(
+            monkeypatch,
+            leader_mod,
+            "asyncio",
+            create_task=_recording_create_task,
+            get_running_loop=_recording_get_running_loop,
+        )
 
         async def _notify_and_stop() -> None:
             # Wait for the loop's own registration (the handshake — never
@@ -200,6 +248,14 @@ class TestWfEmitCapacitySubscriptionLifecycle:
         # The initial reconciliation (leadership assumption's R term) ran,
         # then the event-driven arm ran again on the delivered event.
         assert drained == ["once", "once"], drained
+        # THE PROBE'S OWN NON-VACUITY PIN: the law below is only as
+        # strong as the recording — a probe that recorded nothing would
+        # assert nothing (the exact blind spot the single-spelling probe
+        # had: a refactor to the loop-spelled create_task left
+        # ``recorded`` empty and the residual law green). Any refactor
+        # that stops the loop's task creations being recorded must red
+        # HERE and be diagnosed — never silently pass.
+        assert recorded, "the residual probe recorded no task; the leak law below is vacuous"
         # THE RESIDUAL-TASK LAW: the loop's own waiters never outlive the
         # loop's frames (the finally's cancel-and-await); a leaked
         # Event.wait task would still be pending here.
