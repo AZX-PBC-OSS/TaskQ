@@ -364,12 +364,8 @@ class TestMarkerCarryingPendingRowUnclaimable:
             rows = await conn.fetch(claimable, flow)
             assert list(rows) == [], [dict(r) for r in rows]
             # DOOR 2: the claim CAS moves nothing.
-            cas_with_flow = cas.replace(
-                "UPDATE {schema}".replace("{schema}", f'"{schema}"'), "UPDATE " + f'"{schema}"'
-            )
             result = await conn.execute(cas, node, worker_id)
             assert result == "UPDATE 0", result
-            del cas_with_flow
             # THE OPPOSITE DIRECTION (the complete-P mutant): injecting the
             # status leg into the exclusions makes the SAME row claimable
             # through both doors — the forbidden injection the parity
