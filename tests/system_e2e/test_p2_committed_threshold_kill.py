@@ -641,6 +641,18 @@ async def test_park_before_ack_kill_preserves_marker_and_promotes_once(
         assert meta["wf_source_logical_attempt"] == 1, meta
         intent = await _intent_row(pool, schema, flow_id)
         assert intent["handled"] == intent["wake"], intent
+        # THE EXACT CHILD SET (the kill control's own exactness, which
+        # the readiness frozenset cannot see): `_children_settled`
+        # compares a frozenset of map indices, so a DUPLICATED park child
+        # (a re-emit's second durable row) would satisfy it — the ordered
+        # list, the terminal-status set and the idempotency-key count
+        # here make a duplicated or extra park child red. The expected
+        # values are the run's own page declaration (the one truth the
+        # readiness predicate reads), not a second spelling of it.
+        children = await _children(pool, schema, str(source["id"]))
+        assert [int(r["m"]) for r in children] == sorted(_C4_PARK_CHILDREN), children
+        assert {r["status"] for r in children} == {"succeeded"}, children
+        assert len({r["idempotency_key"] for r in children}) == len(_C4_PARK_CHILDREN)
         counts = await _flow_counts(pool, schema, flow_id)
         assert counts["failed"] == 0, counts
         census = await _census_grants_at_least(
