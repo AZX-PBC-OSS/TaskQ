@@ -328,6 +328,14 @@ async def _race_phase(
     # the cancelled source was never resurrected.
     assert int(census.get("flow_drains", 0)) == 1, census
     assert int(census.get("fitted_grants", 0)) == 0, census
+    # THE READ FAMILY'S OWN IDENTITY ON THE MISS SHAPE (A10): one entered
+    # drain transaction, zero grants — the read pair is exactly
+    # 2 * (G + D) = 2 (the miss ends the invocation at its first CAS).
+    assert (
+        int(census.get("candidate_reads", 0))
+        == 2 * (int(census.get("fitted_grants", 0)) + int(census.get("flow_drains", 0)))
+        == 2
+    ), census
     intent = await pool.fetchrow(
         f'SELECT wake_generation, handled_generation FROM "{schema}".wf_emit_capacity '
         "WHERE flow_id = $1::uuid",

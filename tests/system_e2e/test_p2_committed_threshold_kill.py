@@ -844,7 +844,11 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
     try:
         # THE PRE-REGISTRATION, printed BEFORE execution: P=2, S=1,
         # R=1 (the initial leadership assumption; no later recoveries —
-        # a healthy lane), B=0 (no direct runner), J=C=0.
+        # a healthy lane), B=0 (no direct runner), J=C=0. The corrected
+        # analytical envelopes (A10) and the standalone acceptance caps
+        # are separately labelled: the caps are literals, never the value
+        # of a current polynomial (the former 19P+18S+4R+4B+J+C aggregate
+        # and its lane form are superseded historical derivations).
         pre_registered = {
             "P": 2,
             "S": 1,
@@ -852,12 +856,16 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
             "B": 0,
             "J": 0,
             "C": 0,
-            "V_lane": 19 * 2 + 18 * 1 + 4 * 1 + 0,
-            "V_general": 19 * 2 + 18 * 1 + 4 * 1 + 4 * 0,
+            "V_general_envelope = 23P+22S+5R+5B+J+C": 23 * 2 + 22 * 1 + 5 * 1 + 5 * 0,
+            "V_lane_envelope = 23P+22S+5R+B+J+C": 23 * 2 + 22 * 1 + 5 * 1 + 0,
+            "acceptance cap V_lane": 60,
+            "acceptance cap V_general": 60,
         }
-        assert pre_registered["V_lane"] == 60, pre_registered
-        assert pre_registered["V_general"] == 60, pre_registered
-        assert pre_registered["V_lane"] <= pre_registered["V_general"]
+        assert pre_registered["V_general_envelope = 23P+22S+5R+5B+J+C"] == 73, pre_registered
+        assert pre_registered["V_lane_envelope = 23P+22S+5R+B+J+C"] == 73, pre_registered
+        assert pre_registered["acceptance cap V_lane"] == 60, pre_registered
+        assert pre_registered["acceptance cap V_general"] == 60, pre_registered
+        assert pre_registered["acceptance cap V_lane"] <= pre_registered["acceptance cap V_general"]
         print(
             "C3-TWO-WORKER-PRE-REGISTRATION " + _json.dumps(pre_registered, sort_keys=True),
             flush=True,
@@ -960,9 +968,9 @@ async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
             ),
             flush=True,
         )
-        assert families <= pre_registered["V_lane"], (
-            f"measured V {families} exceeds the two-worker lane pin "
-            f"{pre_registered['V_lane']} (red): {total}"
+        assert families <= pre_registered["acceptance cap V_lane"], (
+            f"measured V {families} exceeds the two-worker lane cap "
+            f"{pre_registered['acceptance cap V_lane']} (red): {total}"
         )
         # THE EVENT-SIDE LAW: E = T + X + K <= 2T + K.
         e = total.get("probes", 0) + total.get("observations", 0)

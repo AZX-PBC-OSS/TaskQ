@@ -844,16 +844,20 @@ async def _healthy_assertions(
     facts["census_by_pod"] = census_by_pod
     facts["census_total"] = census_total
     facts["V_measured"] = families_v
-    facts["V_lane"] = 60  # the pre-registered two-worker lane pin (§4.2)
+    # The standalone pre-registered acceptance CAP (a literal, never the
+    # value of a current polynomial — A10: the corrected analytical
+    # envelopes are 73/73 at this shape; the caps stay deliberately
+    # stricter at 60/60).
+    facts["V_lane_cap"] = 60
     facts["E_measured"] = event_e
     facts["E_bound_2T_plus_K"] = event_bound
     print(
-        f"P2SAT-V-MEASURED V={families_v} V_lane={facts['V_lane']} "
+        f"P2SAT-V-MEASURED V={families_v} V_lane_cap={facts['V_lane_cap']} "
         f"E={event_e} 2T+K={event_bound} census={json.dumps(census_total, sort_keys=True)}",
         flush=True,
     )
-    assert families_v <= facts["V_lane"], (
-        f"measured V {families_v} exceeds the pre-registered two-worker lane pin 60: {census_total}"
+    assert families_v <= facts["V_lane_cap"], (
+        f"measured V {families_v} exceeds the pre-registered two-worker lane cap 60: {census_total}"
     )
     assert event_e <= event_bound, (
         f"E {event_e} > 2T + K {event_bound} — a hidden count/fallback "
@@ -904,10 +908,18 @@ async def test_two_os_workers_saturation_600_seconds_and_healthy_wake(
     maintenance-leadership reconciliation), B=0, J=C=0, so the fixed family
     ceilings are admission P+K ≤ 3, claims 2P+2S+J+C ≤ 6, grants ≤ 3,
     intents ≤ 6, per-flow drains ≤ 3P+3S+R+B = 10, global/direct drains
-    ≤ 2R+2B+… = 10, reads ≤ 4P+4S+R+B = 9 — and the invocation bound
-    V_lane = 19P + 18S + 4R + B + J + C = **60** equals V_general = 60.
-    The red predicates: V_lane > V_general is red (impossible here —
-    equality), and measured V > V_lane is red."""
+    ≤ 5P+5S+2R+2B = 10, reads ≤ 8P+8S+2R+2B = **26** (A10's actual-SQL
+    -query-execution units: each drain read point is one shared aggregate
+    observation plus one fitting-candidate query — the former 4P+4S+R+B=9
+    is a superseded historical derivation) — and the corrected analytical
+    envelopes V_general_envelope = 23P+22S+5R+5B+J+C = **73** and
+    V_lane_envelope = 23P+22S+5R+B+J+C = **73**. The acceptance caps are
+    standalone literals, deliberately stricter, never the value of a
+    current polynomial: cap V_lane = **60** equals cap V_general = **60**
+    (the former 19P+18S+4R+4B+J+C aggregate and its lane form are
+    superseded historical derivations).
+    The red predicates: cap V_lane > cap V_general is red (impossible here
+    — equality), and measured V > cap V_lane is red."""
     # The lane's own family counts (the contract's own labels; the
     # lowercase locals feed the pre-registered literals below).
     p_workers, s_probe, r_recon, b_backfill = 2, 1, 1, 0
@@ -924,11 +936,31 @@ async def test_two_os_workers_saturation_600_seconds_and_healthy_wake(
         "new_intents <= 2P+2S": 6,
         "flow_drains <= 3P+3S+R+B": 10,
         "global_drains <= 5P+5S+2R+2B": 10,
-        "candidate_reads <= 4P+4S+R+B": 9,
-        "V_lane": 19 * p_workers + 18 * s_probe + 4 * r_recon + b_backfill,
-        "V_general": 19 * p_workers + 18 * s_probe + 4 * r_recon + 4 * b_backfill,
+        "candidate_reads <= 8P+8S+2R+2B": 8 * p_workers
+        + 8 * s_probe
+        + 2 * r_recon
+        + 2 * b_backfill,
+        "V_general_envelope = 23P+22S+5R+5B+J+C": 23 * p_workers
+        + 22 * s_probe
+        + 5 * r_recon
+        + 5 * b_backfill,
+        "V_lane_envelope = 23P+22S+5R+B+J+C": 23 * p_workers
+        + 22 * s_probe
+        + 5 * r_recon
+        + b_backfill,
+        "acceptance cap V_lane": 60,
+        "acceptance cap V_general": 60,
     }
-    assert pre_registration["V_lane"] == 60 and pre_registration["V_general"] == 60
+    assert pre_registration["candidate_reads <= 8P+8S+2R+2B"] == 26, pre_registration
+    assert pre_registration["V_general_envelope = 23P+22S+5R+5B+J+C"] == 73, pre_registration
+    assert pre_registration["V_lane_envelope = 23P+22S+5R+B+J+C"] == 73, pre_registration
+    assert (
+        pre_registration["acceptance cap V_lane"] == 60
+        and pre_registration["acceptance cap V_general"] == 60
+    ), pre_registration
+    assert (
+        pre_registration["acceptance cap V_lane"] <= pre_registration["acceptance cap V_general"]
+    ), pre_registration
     print("P2SAT-V-PRE-REGISTRATION " + json.dumps(pre_registration, sort_keys=True), flush=True)
     schema = module_pg_schema.schema_name
     scenario = "healthy600"

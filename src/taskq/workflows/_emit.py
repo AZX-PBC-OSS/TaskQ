@@ -124,11 +124,18 @@ class EmitCapacityCounters:
     Every family the invocation-bound table names is counted exactly once
     per operation instance: ``admission_decisions`` (P + K: one whole-page
     admission decision each), ``source_body_claims`` (P + K + S + J + C),
-    ``fitted_grants`` (G), ``new_intents`` (I), ``flow_drains`` (D),
-    ``global_drains`` (U), and the read families ``probes`` (E_probe = T)
-    and ``observations`` (E_observation = X + K) plus ``candidate_reads``
-    (the G + D read family). No count is hidden inside another; the
-    snapshot is the acceptance report's input."""
+    ``fitted_grants`` (G), ``new_intents`` (I), ``flow_drains`` (D: per
+    ENTERED drain transaction, never per invocation — a chunked
+    invocation contributes one D per entered chunk transaction,
+    including a transaction that subsequently fails; pool-acquisition or
+    transaction-entry failure is not a D), ``global_drains`` (U), and the
+    read families ``probes`` (E_probe = T) and ``observations``
+    (E_observation = X + K) plus ``candidate_reads`` (ACTUAL SQL query
+    executions: each drain read point is one shared aggregate observation
+    plus one fitting-candidate query, so the family is exactly
+    ``2 * (G + D)`` for every ordinarily terminating drain; an exception
+    before a read point can only lower it). No count is hidden inside
+    another; the snapshot is the acceptance report's input."""
 
     admission_decisions: int = 0
     source_body_claims: int = 0
@@ -1064,8 +1071,13 @@ async def wake_emit_backpressure(
     winning CAS attaches the durable page-width reservation, removes the
     live marker atomically, and emits the effective queue wake. At most
     :data:`FLOW_DRAIN_MAX_WINS` winning CASes/notifications commit in one
-    transaction; a full chunk continues only into a fresh transaction
-    whose own first observation again returns a fitting candidate
+    transaction; at that ceiling the SAME transaction performs one final
+    shared observation and fitting-candidate comparison — if no candidate
+    fits, that same transaction marks the intent handled, commits, and
+    terminates the invocation (no empty fresh transaction, no second lock
+    acquisition); if another candidate fits, it performs no 201st CAS and
+    does not mark handled — it commits its 200 wins and immediately opens
+    the next fresh chunk transaction under the still-pending generation
     (progress is the necessary condition for continuation).
 
     Completion is exactly a fresh observation returning no fitting
@@ -1077,13 +1089,18 @@ async def wake_emit_backpressure(
     recovery arms' to observe; notifications are accelerators, never
     authority.
     """
-    bump_emit_census("flow_drains")
     total = 0
     completed = False
     missed = False
     while True:
         wins_tx = 0
         async with pool.acquire() as conn, conn.transaction():
+            # D IS PER ENTERED DRAIN TRANSACTION (A10): the census's first
+            # statement inside the transaction, so pool-acquisition or
+            # transaction-entry failure is not counted as an entered drain
+            # transaction, and every entered chunk transaction — including
+            # one that subsequently fails — is counted exactly once.
+            bump_emit_census("flow_drains")
             from taskq.workflows._capability import verify_emit_capacity_objects
 
             await verify_emit_capacity_objects(conn, wsql.schema)
@@ -1128,11 +1145,12 @@ async def wake_emit_backpressure(
                     "drain — the bound stamp is missing (fail-closed)"
                 )
             bound, _wake_generation, _handled_generation = _intent_generation(intent)
-            while wins_tx < FLOW_DRAIN_MAX_WINS:
-                # The drain's reads are the §4.2 V-family's own units (one
-                # fresh observation + one candidate comparison per
-                # grant/completion — counted in `candidate_reads`); they are
-                # never duplicated into the event-side E census.
+            while True:
+                # The drain's reads are the §4.2 V-family's own units in
+                # ACTUAL SQL QUERY EXECUTIONS (A10): each read point is the
+                # shared aggregate observation plus the fitting-candidate
+                # query (bumped by 2) — never duplicated into the event-side
+                # E census.
                 observation = await observe_emit_capacity(conn, wsql, flow_id=flow_id)
                 bump_emit_census("candidate_reads", 2)
                 candidate = await conn.fetchrow(
@@ -1140,9 +1158,20 @@ async def wake_emit_backpressure(
                 )
                 if candidate is None:
                     # Completion: the fresh observation returned no fitting
-                    # candidate (including the case with no waiters).
+                    # candidate (including the case with no waiters) — THIS
+                    # transaction marks the intent handled (the ceiling
+                    # rule's final observation belongs to the current full
+                    # transaction; no empty fresh transaction follows).
                     await conn.fetchval(wsql.emit_intent_handled, flow_id)
                     completed = True
+                    break
+                if wins_tx == FLOW_DRAIN_MAX_WINS:
+                    # THE 200-WIN CEILING's final fresh observation returned
+                    # ANOTHER fitting candidate: no 201st CAS and no handled
+                    # mark — the intent stays pending, this transaction
+                    # commits its 200 wins, and the next chunk transaction
+                    # owns the grant (progress is the necessary condition
+                    # for continuation).
                     break
                 promoted = await conn.fetchrow(
                     wsql.emit_backpressure_wake, candidate["id"], int(candidate["width"])
@@ -1166,10 +1195,11 @@ async def wake_emit_backpressure(
                 )
         if missed or completed or wins_tx < FLOW_DRAIN_MAX_WINS:
             break
-        # The chunk committed at its 200-win ceiling having observed another
-        # fitting candidate (the candidate comparison returned a row): the
-        # next chunk's own first fresh observation is the ceiling rule's
-        # final observation.
+        # The chunk committed at its 200-win ceiling whose final in
+        # -transaction observation returned another fitting candidate (the
+        # final pair already ran in THIS transaction): the next chunk's
+        # first fresh observation is an ordinary read point, never the
+        # ceiling rule's final observation.
     return EmitWakeResult(promoted=total, intent_completed=completed, missed=missed)
 
 
