@@ -868,9 +868,11 @@ async def finalize_node(
     attempt 'fenced' on the ledger and reports ``applied=False``.
 
     The LEDGER TERMINAL's key: *ledger_id* (the claim's own RETURNING id —
-    ``LedgerClaim.ledger_id``) when held, else the arbiter tuple keyed with
-    *map_index* — either way the write touches exactly the claimed row, so
-    two map children of one step key never overwrite each other's outcome.
+    ``LedgerClaim.ledger_id``) when held. Every production caller threads
+    the claimed row's own id, so the write touches exactly the claimed row
+    — two map children of one step key never overwrite each other's
+    outcome. (The former arbiter-tuple fallback keyings keyed with
+    *map_index* were deleted with the by-id keying's adoption.)
 
     *emit_capacity* gates the bounded run's §4.1 terminal event rule inside
     tx1 (one indexed exact-marker probe; only a marker-positive probe

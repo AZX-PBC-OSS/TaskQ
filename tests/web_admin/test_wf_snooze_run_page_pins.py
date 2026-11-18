@@ -397,7 +397,7 @@ async def test_the_runs_list_exposes_a_pathologically_deferring_run(
 async def test_the_runs_list_renders_a_parked_source_without_a_fire_time(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
-    clean_pg_conn: Any,
+    clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
     """A run whose only deferral is a PARKED source (the capacity park —
@@ -470,7 +470,7 @@ async def test_the_runs_list_renders_a_parked_source_without_a_fire_time(
 async def test_the_runs_list_survives_an_overflow_shaped_deferral_stamp(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
-    clean_pg_conn: Any,
+    clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
     """The cast's bound (the re-review's required residual — the 500): a

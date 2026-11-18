@@ -56,6 +56,7 @@ from taskq.constants import (
     wake_channel,
     wf_emit_capacity_channel,
 )
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.notify import (
     _make_wf_emit_capacity_callback,
     _NotifyEntry,
@@ -187,7 +188,7 @@ def drained_reset(event: asyncio.Event) -> asyncio.Event:
 
 
 async def test_reconnect_backfills_every_hook_in_order_exactly_once_and_drains(
-    wf_pool: Any, module_pg_schema: Any
+    wf_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
     """The reconnect correction's own control: with a committed intent
     present, dropping the listener and reconnecting (1) journals the
@@ -336,7 +337,7 @@ async def test_reconnect_backfills_every_hook_in_order_exactly_once_and_drains(
 
 
 async def test_raising_gated_hook_cannot_prevent_the_drain_arms(
-    wf_pool: Any, module_pg_schema: Any
+    wf_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
     """The total-callback law's own injection: a hook that sets its own
     event FIRST and then raises in its gated bookkeeping cannot prevent
@@ -430,7 +431,7 @@ def _mutant_host_cross_channel_wake(
     ),
 )
 async def test_fail_closed_host_mutants_show_their_own_fault_signature(
-    module_pg_schema: Any, mutant: Any, fault: str
+    module_pg_schema: ModulePgSchema, mutant: Any, fault: str
 ) -> None:
     """The committed-intent scenario against each fail-closed host
     mutant; each mutant's OWN fault signature is the asserted red:

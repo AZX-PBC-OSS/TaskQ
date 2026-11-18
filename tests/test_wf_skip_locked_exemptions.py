@@ -33,6 +33,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows._sweep import sweep_join_rederive
 from taskq.workflows.engine import render_workflow_sql
 
@@ -146,7 +147,10 @@ async def _row(conn: Any, schema: str, job_id: str) -> dict[str, Any]:
 
 
 async def test_root_maintenance_defers_a_held_root_and_never_waits(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, module_pg_schema: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The maintenance seat's exemption: with the flow's root row HELD by
     another open transaction, the real `sweep_join_rederive` (whose
@@ -205,7 +209,10 @@ async def test_root_maintenance_defers_a_held_root_and_never_waits(
 
 
 async def test_rederive_seat_defers_a_held_join_row_and_never_waits(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, module_pg_schema: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The rederive/fire seat's exemption: with the join-wait row HELD by
     another open transaction, the real `sweep_join_rederive` acquires its

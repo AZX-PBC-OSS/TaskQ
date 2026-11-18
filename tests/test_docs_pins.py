@@ -266,6 +266,32 @@ def test_docs5_the_upgrading_guide_pins_the_folded_backpressure_train() -> None:
     assert files == ["01.00.42_01_pre_wf_step_ledger_claim_epoch.sql"], files
 
 
+def test_docs7_the_upgrading_guide_states_the_10_7_operational_facts() -> None:
+    """RULING_718_ROUND3's F9 narrow pins: `upgrading.md`'s §10.7
+    operational-facts paragraph states each binding fact and stays
+    current — the fixed 200/100 ceilings, the scoped sub-second wake
+    target, `parked <= S`, `Theta(live + parked)`, and the non-drainage
+    refusal's durable-only export (the metric counter named, never an
+    importable class)."""
+    text = (_REPO / "docs" / "guides" / "upgrading.md").read_text(encoding="utf-8")
+    section = re.search(
+        r"\*\*Operational facts \(§10\.7\):\*\*(.*?)(?=\n## |\nThe folded file)",
+        text,
+        re.DOTALL,
+    )
+    assert section is not None, "the §10.7 operational-facts paragraph is missing"
+    body = section.group(1)
+    assert "**200** winning" in body, body
+    assert "**100**" in body, body
+    assert "**< 1 s**" in body and "competent fleet" in body, body
+    assert "`parked <= S`" in body, body
+    assert "`Theta(parked) <= Theta(S)`" in body, body
+    assert "`Theta(live + parked)`" in body, body
+    assert "`taskq.workflows.wf_not_draining`" in body, body
+    assert "never as an\nimportable class" in body or "never as an importable class" in body, body
+    assert "maintenance interval" in body, body
+
+
 def test_docs6_author_facing_docs_never_publish_internal_capacity_vocabulary() -> None:
     """§10.1's API-surface leak pin (D9): the internal capacity vocabulary —
     the derived-charge token, the intent generations, the derived

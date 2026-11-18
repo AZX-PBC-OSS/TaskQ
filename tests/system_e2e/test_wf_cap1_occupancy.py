@@ -45,6 +45,7 @@ from typing import Any
 import asyncpg
 import pytest
 
+from taskq.testing.fixtures import ModulePgSchema
 from tests.system_e2e import _p2_saturation_worker as entry
 
 pytestmark = [pytest.mark.system, pytest.mark.integration]
@@ -63,7 +64,9 @@ async def _seed_gate(pool: Any, schema: str, hold_s: float) -> None:
     )
 
 
-async def _run_variant(pg_dsn: str, module_pg_schema: Any, log_dir: Any, workers: int) -> None:
+async def _run_variant(
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Any, workers: int
+) -> None:
     from taskq.workflows import FlowRunner
     from tests.system_e2e._harness import spawn_joined_worker
 
@@ -196,14 +199,14 @@ async def _run_variant(pg_dsn: str, module_pg_schema: Any, log_dir: Any, workers
 
 
 async def test_cap_one_child_cap_one_never_occupancy_deadlocks_one_worker(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Any
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Any
 ) -> None:
     """The one-worker variant."""
     await _run_variant(pg_dsn, module_pg_schema, log_dir, workers=1)
 
 
 async def test_cap_one_child_cap_one_never_occupancy_deadlocks_two_workers(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Any
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Any
 ) -> None:
     """The two-worker variant."""
     await _run_variant(pg_dsn, module_pg_schema, log_dir, workers=2)

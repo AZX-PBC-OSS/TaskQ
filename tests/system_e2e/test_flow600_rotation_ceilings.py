@@ -57,6 +57,7 @@ from typing import Any
 import asyncpg
 import pytest
 
+from taskq.testing.fixtures import ModulePgSchema
 from tests.system_e2e import _p2_saturation_worker as entry
 
 pytestmark = [pytest.mark.system, pytest.mark.integration, pytest.mark.load_sensitive]
@@ -160,7 +161,7 @@ async def _census_grants_at_least(
 
 
 async def test_flow600_obies_the_200_win_ceiling_rotates_and_covers_fully(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Any
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Any
 ) -> None:
     """The flow_600 estate: the real drain over real OS workers chunks at
     the 200-win per-transaction ceiling, the test-only hook freezes the
@@ -436,7 +437,7 @@ async def test_flow600_obies_the_200_win_ceiling_rotates_and_covers_fully(
 
 
 async def test_rotation_above_100_pending_flows_poisons_early_advances_cursor_fully(
-    pg_dsn: str, module_pg_schema: Any
+    pg_dsn: str, module_pg_schema: ModulePgSchema
 ) -> None:
     """The rotation at >100 pending flows: the poisoned early flow's own
     drain is absorbed by the rotation's per-flow error arm, the cursor

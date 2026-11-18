@@ -17,6 +17,7 @@ import types
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import asyncpg
 import pytest
 from pydantic import BaseModel
 
@@ -25,6 +26,7 @@ from taskq.actor import actor
 from taskq.backend._protocol import JobId
 from taskq.context import JobContext
 from taskq.settings import WorkerSettings
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.shutdown import ShutdownPhase
 from taskq.workflows._sql import WorkflowSql
@@ -179,7 +181,7 @@ def _real_row(
 
 
 async def test_missing_root_direct_rolls_back_before_any_write(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """The direct seat: with the flow's root row GONE, the real
     `finalize_node` commits the child's tx1 terminal and tx2 raises the
@@ -246,7 +248,10 @@ async def test_missing_root_direct_rolls_back_before_any_write(
 
 
 async def test_missing_root_fleet_executor_passes_the_exact_class_through(
-    wf_conn: Any, wf_schema: str, module_pg_pool: Any, module_pg_schema: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The REAL fleet-claimed door (`run_fleet_claimed_step` — the
     execution leg `_worker_execution`'s except chain wraps): the body
@@ -456,7 +461,10 @@ class _BackendDeps:
 
 
 async def test_worker_release_arm_attempts_the_bounded_noop_release(
-    wf_conn: Any, wf_schema: str, module_pg_pool: Any, module_pg_schema: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The worker's own arm, over the REAL backend: the release attempt
     names its reason with the bounded 10-second delay and the SEEDED
@@ -524,9 +532,9 @@ async def test_worker_release_arm_attempts_the_bounded_noop_release(
 
     def _seam() -> types.ModuleType:
         stub = types.ModuleType("wf-seam-root-missing")
-        stub.execute_flow_job = _raising_door  # type: ignore[attr-defined]
-        stub.WorkflowBodyUnresolvableError = real_seam.WorkflowBodyUnresolvableError  # type: ignore[attr-defined]
-        stub.WorkflowRootMissingError = real_seam.WorkflowRootMissingError  # type: ignore[attr-defined]
+        stub.execute_flow_job = _raising_door  # type: ignore[attr-defined]  # Why: the SimpleNamespace stand-in installs the real seam's own name — the stub's dynamism is the subject, not a type surprise.
+        stub.WorkflowBodyUnresolvableError = real_seam.WorkflowBodyUnresolvableError  # type: ignore[attr-defined]  # Why: the stub's exception vocabulary is copied VERBATIM from the real seam (the identity law the control asserts) — an attribute the static stub type does not declare.
+        stub.WorkflowRootMissingError = real_seam.WorkflowRootMissingError  # type: ignore[attr-defined]  # Why: the stub's exception vocabulary is copied VERBATIM from the real seam (the identity law the control asserts) — an attribute the static stub type does not declare.
         return stub
 
     settings = WorkerSettings.load_from_dict(
@@ -704,7 +712,10 @@ class _FleetEstate:
 
 
 async def _seed_real_fleet_corruption(
-    module_pg_pool: Any, module_pg_schema: Any, wf_conn: Any, wf_schema: str
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
 ) -> _FleetEstate:
     """The REAL corruption sequence the fleet door executes: a registered
     workflow whose `screen` body DELETES the run's own root row and then
@@ -950,10 +961,10 @@ async def _run_loop_once(
 
 
 async def test_real_fleet_seam_propagates_the_exact_class_to_the_worker_arm(
-    wf_conn: Any,
+    wf_conn: asyncpg.Connection,
     wf_schema: str,
-    module_pg_pool: Any,
-    module_pg_schema: Any,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Round-4 NEW-1: the REAL fleet-claimed door — `di_consumer_loop` →
@@ -1105,10 +1116,10 @@ async def test_real_fleet_seam_propagates_the_exact_class_to_the_worker_arm(
 
 
 async def test_root_missing_release_exception_disowns_the_job(
-    wf_conn: Any,
+    wf_conn: asyncpg.Connection,
     wf_schema: str,
-    module_pg_pool: Any,
-    module_pg_schema: Any,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Round-4 NEW-8a / CL-1: the release arm's own failure law. The REAL

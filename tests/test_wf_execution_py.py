@@ -530,9 +530,9 @@ def _seam_stub(execute: Any) -> types.ModuleType:
     from taskq.workflows import _worker_execution as real
 
     stub = types.ModuleType("wf-exec-seam-stub")
-    stub.execute_flow_job = execute  # type: ignore[attr-defined]
-    stub.WorkflowBodyUnresolvableError = real.WorkflowBodyUnresolvableError  # type: ignore[attr-defined]
-    stub.WorkflowRootMissingError = real.WorkflowRootMissingError  # type: ignore[attr-defined]
+    stub.execute_flow_job = execute  # type: ignore[attr-defined]  # Why: the SimpleNamespace stand-in installs the real seam's own name — the stub's dynamism is the subject, not a type surprise.
+    stub.WorkflowBodyUnresolvableError = real.WorkflowBodyUnresolvableError  # type: ignore[attr-defined]  # Why: the stub's exception vocabulary is copied VERBATIM from the real seam (the identity law the control asserts) — an attribute the static stub type does not declare.
+    stub.WorkflowRootMissingError = real.WorkflowRootMissingError  # type: ignore[attr-defined]  # Why: the stub's exception vocabulary is copied VERBATIM from the real seam (the identity law the control asserts) — an attribute the static stub type does not declare.
     return stub
 
 

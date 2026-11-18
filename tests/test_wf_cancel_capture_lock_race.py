@@ -42,6 +42,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.testing.fixtures import ModulePgSchema
 
 pytestmark = pytest.mark.integration
 
@@ -75,7 +76,7 @@ async def _xid_text(conn: Any) -> str:
 
 
 async def test_xid_comparison_key_matches_pg_locks_domain(
-    module_pg_schema: Any, wf_schema: str
+    module_pg_schema: ModulePgSchema, wf_schema: str
 ) -> None:
     """The real-PG self-check (N6-3): the control's comparison key
     (`pg_current_xact_id()::xid::text`) is the SAME textual domain
@@ -102,7 +103,10 @@ async def test_xid_comparison_key_matches_pg_locks_domain(
 
 
 async def test_cancel_capture_lock_wins_the_old_state_race(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, module_pg_schema: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The fixed capture: the real cancel verb, racing the real uncommitted
     `scheduled -> pending` writer, captures the COMMITTED winner state

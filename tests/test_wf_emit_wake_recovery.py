@@ -255,7 +255,7 @@ async def test_cancel_while_parked_is_terminal_fenced_and_never_reenters(
         final = await _source_state(wf_conn, wf_schema, flow_id, source_id, "source")
         assert source_attempts == at_cancel_attempts == [(0, 1), (1, 1)]
         assert final["status"] == "cancelled"
-        assert final["metadata"]["wf_emit_backpressure"]["wakes"] == 0  # type: ignore[index]
+        assert final["metadata"]["wf_emit_backpressure"]["wakes"] == 0  # type: ignore[index]  # Why: the asyncpg Record's jsonb decode is Any-typed; the indexed shape is the park write's own documented keys.
         assert await _cursor(wf_conn, wf_schema, source_id) == {"page": 0}
         assert child_calls == [0, 1]
     finally:
@@ -305,7 +305,7 @@ class _DelayedCommitConnection:
         return await self.conn.fetchrow(query, *args, timeout=timeout)
 
     def transaction(self, **kwargs: object) -> _DelayedTransaction:
-        transaction = self.conn.transaction(**kwargs)  # type: ignore[arg-type]
+        transaction = self.conn.transaction(**kwargs)  # type: ignore[arg-type]  # Why: the delayed-commit proxy forwards the real connection's own **kwargs — the delegation's signature is the delegate's, not the static shim's.
         return _DelayedTransaction(self, transaction)
 
     def __getattr__(self, name: str) -> Any:
@@ -495,7 +495,7 @@ async def test_uncommitted_terminal_cannot_hide_from_both_commit_acknowledged_re
             deadline_s=_WAIT_S,
         )
         assert woken["blocking_reason"] is None, woken
-        assert woken["metadata"]["wf_emit_backpressure"]["wakes"] == 1  # type: ignore[index]
+        assert woken["metadata"]["wf_emit_backpressure"]["wakes"] == 1  # type: ignore[index]  # Why: the asyncpg Record's jsonb decode is Any-typed; the indexed shape is the promotion CAS's own documented keys.
         assert await runner.drive(flow_id) == "terminal"
         assert delayed_pool.commits_delayed == 1
         assert source_attempts == [(0, 1), (1, 1), (1, 1)]
@@ -918,7 +918,7 @@ async def test_two_registered_fleet_claimants_release_source_and_wake(
     wake_state = await _source_state(wf_conn, wf_schema, flow_id, source_id, "source")
     assert wake_state["status"] == "pending"
     assert wake_state["blocking_reason"] is None
-    assert wake_state["metadata"]["wf_emit_backpressure"]["wakes"] == 1  # type: ignore[index]
+    assert wake_state["metadata"]["wf_emit_backpressure"]["wakes"] == 1  # type: ignore[index]  # Why: the asyncpg Record's jsonb decode is Any-typed; the indexed shape is the promotion CAS's own documented keys.
 
     resumed = await claim(1, limit=1)
     assert len(resumed) == 1 and resumed[0]["id"] == source_id
@@ -1411,8 +1411,8 @@ async def test_real_failure_after_park_uses_logical_then_physical_attempts(
     assert final["ledger_job_id"] == source_id
     assert final["metadata"]["wf_source_logical_attempt"] == 2
     assert final["failed_ledger"] == 1
-    assert final["metadata"]["wf_emit_backpressure"]["deferrals"] == 1  # type: ignore[index]
-    assert final["metadata"]["wf_emit_backpressure"]["wakes"] == 1  # type: ignore[index]
+    assert final["metadata"]["wf_emit_backpressure"]["deferrals"] == 1  # type: ignore[index]  # Why: the asyncpg Record's jsonb decode is Any-typed; the indexed shape is the park write's own documented keys.
+    assert final["metadata"]["wf_emit_backpressure"]["wakes"] == 1  # type: ignore[index]  # Why: the asyncpg Record's jsonb decode is Any-typed; the indexed shape is the promotion CAS's own documented keys.
 
 
 @pytest.mark.integration

@@ -42,6 +42,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any, cast
 
+import asyncpg
 import pytest
 from pydantic import BaseModel
 
@@ -100,7 +101,7 @@ def _loop_app(
 
 
 async def test_type_only_carry_declaration_runs_and_observes_none_then_the_model(
-    wf_pool: Any, wf_schema: str
+    wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
     """``carry_type=Counter`` with the seeded ``None`` initial: the body
     observes ``None`` at iteration 0 (the pre-first-carry value), the
@@ -142,7 +143,7 @@ async def test_type_only_carry_declaration_runs_and_observes_none_then_the_model
 
 
 async def test_resume_before_the_first_carry_committed_observes_none(
-    wf_pool: Any, wf_schema: str
+    wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
     """The row-read resume face: the loop's FIRST claim defers through the
     real Snooze arm (the row law — the counters untouched, the advance
@@ -187,7 +188,9 @@ async def test_resume_before_the_first_carry_committed_observes_none(
 # ── (c) the no-silent-type-change law is NOT weakened ────────────────────
 
 
-async def test_wrong_typed_carry_still_refuses_loudly(wf_pool: Any, wf_schema: str) -> None:
+async def test_wrong_typed_carry_still_refuses_loudly(
+    wf_pool: asyncpg.Pool, wf_schema: str
+) -> None:
     """A wrong-typed NON-None carry still refuses loudly — the pre-first-
     carry pass-through never laundered a real type change. The unit face
     (the validator's own contract): a non-dict raw refuses with
@@ -220,7 +223,7 @@ async def test_wrong_typed_carry_still_refuses_loudly(wf_pool: Any, wf_schema: s
 
 
 async def test_dict_carry_without_a_declared_model_is_unchanged(
-    wf_pool: Any, wf_schema: str
+    wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
     """The untyped face: no ``carry_type`` — the raw dict passes at every
     boundary (the pre-typed-loop contract, unchanged by the None
@@ -246,7 +249,7 @@ async def test_dict_carry_without_a_declared_model_is_unchanged(
 # ── (e) a COMMITTED None carry refuses loudly (the seed is the only None) ────
 
 
-async def test_a_committed_none_carry_refuses_loudly(wf_pool: Any, wf_schema: str) -> None:
+async def test_a_committed_none_carry_refuses_loudly(wf_pool: asyncpg.Pool, wf_schema: str) -> None:
     """A body's ``Refine(None)`` is a COMMITTED carry: the advance writes
     ``carry = null`` + ``iteration = 1``, and the NEXT boundary
     re-hydrates that committed value against the declared model — the
@@ -310,7 +313,7 @@ async def test_a_committed_none_carry_refuses_loudly(wf_pool: Any, wf_schema: st
 
 
 async def test_a_committed_none_passes_a_json_native_declaration(
-    wf_pool: Any, wf_schema: str
+    wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
     """The over-tighten guard: a JSON-NATIVE declared type's committed
     ``None`` passes — exactly the pre-fix face (the jsonb boundary
@@ -342,7 +345,7 @@ async def test_a_committed_none_passes_a_json_native_declaration(
 
 
 async def test_crash_window_memo_replay_of_a_committed_none_refuses_before_the_body(
-    wf_pool: Any, wf_schema: str, wf_conn: Any
+    wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
     """The MEMO face's provenance pin — the crash window between the
     iteration's terminal record and the advance. The iteration-0 ledger
@@ -418,10 +421,16 @@ async def test_crash_window_memo_replay_of_a_committed_none_refuses_before_the_b
         )
     assert memo is not None and memo.status == "succeeded", memo
     assert memo.result == {"done": False, "feedback": None}, memo.result
-    # the crash window's row fact: no advance has landed (the fresh
-    # drive's init writes exactly the seed row the window's re-claim
-    # reads).
-    assert row["iteration"] is None, dict(row)
+    # the crash window's row fact: NO ADVANCE HAS LANDED. Both durable
+    # shapes mean exactly that — this fixture's pre-init NULL seed and the
+    # genuine crash window's post-init `iteration='0'` row (the fresh
+    # drive's init writes the zero ordinal; a written zero is a seed, not
+    # an advance) — so the assertion accepts either. NOT a weakening: the
+    # refusal's detection power lives in the raises + `calls == []` +
+    # post-state assertions below (all of the M-mutants red identically
+    # under both shapes); the disjunction only removes a future spurious
+    # red if the fresh drive's init ever moves before this read.
+    assert row["iteration"] in (None, "0"), dict(row)
 
     # the fresh drive: the memo replay must treat the recorded feedback
     # as COMMITTED and refuse before any body invocation.

@@ -12,9 +12,11 @@ import enum
 import json as _json
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
+from taskq.workflows._sql import WorkflowSql
 
 pytestmark = pytest.mark.integration
 
@@ -90,10 +92,10 @@ def _pre_registration() -> dict[str, Any]:
 
 
 async def test_direct_lane_counters_within_the_preregistered_pin(
-    wf_conn: Any,
+    wf_conn: asyncpg.Connection,
     wf_schema: str,
-    module_pg_pool: Any,
-    wf_sql: Any,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
 ) -> None:
     """The direct-only two-page/one-source/no-failure lane: every family
     census is at its real site; the measured V (the seven families' sum)
@@ -227,7 +229,7 @@ def new_uuid_hex() -> str:
 
 
 async def test_non_crossing_terminal_causes_one_zero_row_probe_and_no_derivation(
-    wf_conn: Any, wf_schema: str, module_pg_pool: Any, wf_sql: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, module_pg_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """§9 control 2's own first law, as a census control: a terminal event
     on a bounded flow with NO exact park causes ONE zero-row indexed probe

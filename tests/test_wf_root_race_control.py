@@ -51,6 +51,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows._emit import wake_emit_backpressure
 from taskq.workflows.engine import render_workflow_sql
 
@@ -201,7 +202,7 @@ async def test_drain_serializes_with_root_maintenance_no_stranded_reserved_sourc
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_pool: asyncpg.Pool,
-    module_pg_schema: Any,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The real drain and the real maintenance race over the real estate;
     the strand may never form."""

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json as _json
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq.backend._protocol import JobId
@@ -67,7 +68,7 @@ async def _observation(conn: Any, wsql: WorkflowSql, flow: JobId) -> tuple[int, 
 
 
 async def test_reserved_row_terminalizes_through_each_family_exactly_once(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """Every terminal family removes the key in its own winning statement and
     the derived charge moves exactly once; a non-winning writer changes
@@ -95,6 +96,7 @@ async def test_reserved_row_terminalizes_through_each_family_exactly_once(
     live, reservations = await _observation(wf_conn, wf_sql, flow)
     assert (live, reservations) == (0, 0), "the terminal moved charge exactly once"
     row = await wf_conn.fetchrow(f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', job)
+    assert row is not None
     assert "wf_emit_reservation" not in _meta(row["metadata"])
 
     # ── the cooperative cancel mark RETAINS the key (the opposite direction) ──
@@ -132,6 +134,7 @@ async def test_reserved_row_terminalizes_through_each_family_exactly_once(
     live, reservations = await _observation(wf_conn, wf_sql, flow2b)
     assert (live, reservations) == (0, 0), "the cancel's winning flip moved charge exactly once"
     row = await wf_conn.fetchrow(f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', job2b)
+    assert row is not None
     assert "wf_emit_reservation" not in _meta(row["metadata"])
 
     # ── the loop exhaust's batched family ──
@@ -174,6 +177,7 @@ async def test_reserved_row_terminalizes_through_each_family_exactly_once(
     live, reservations = await _observation(wf_conn, wf_sql, flow3)
     assert (live, reservations) == (0, 0), "the exhaust's winning CAS moved charge exactly once"
     row = await wf_conn.fetchrow(f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', job3)
+    assert row is not None
     assert "wf_emit_reservation" not in _meta(row["metadata"])
 
     # ── a NON-winning writer changes neither the charge nor the key ──
@@ -197,6 +201,7 @@ async def test_reserved_row_terminalizes_through_each_family_exactly_once(
     live_after, reservations_after = await _observation(wf_conn, wf_sql, flow4)
     assert (live_after, reservations_after) == (live_before, reservations_before)
     row = await wf_conn.fetchrow(f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', job4)
+    assert row is not None
     assert _meta(row["metadata"])["wf_emit_reservation"] == _json.loads(_RESERVATION), (
         "a fenced-out writer never touches the key"
     )

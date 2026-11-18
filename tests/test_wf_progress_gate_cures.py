@@ -283,13 +283,13 @@ async def _routed_node(
         )
     runner = FlowRunner.__new__(FlowRunner)
     runner.pool = wf_pool  # type: ignore[attr-defined]  # Why: the pin drives the ladder's own route (the mixin's host fields), not the driver loop.
-    runner.wsql = wf_sql  # type: ignore[attr-defined]
-    runner.schema = wf_schema  # type: ignore[attr-defined]
-    runner._worker_id = worker  # type: ignore[attr-defined]
-    runner.compiled = type("C", (), {"capture": "none", "name": "routing-pin"})()  # type: ignore[attr-defined]
+    runner.wsql = wf_sql  # type: ignore[attr-defined]  # Why: the direct-drive shape installs the runner's own dependency fields on a __new__-built host — the control's subject is the door, not the host graph.
+    runner.schema = wf_schema  # type: ignore[attr-defined]  # Why: the direct-drive shape installs the runner's own dependency fields on a __new__-built host — the control's subject is the door, not the host graph.
+    runner._worker_id = worker  # type: ignore[attr-defined]  # Why: the direct-drive shape installs the runner's own dependency fields on a __new__-built host — the control's subject is the door, not the host graph.
+    runner.compiled = type("C", (), {"capture": "none", "name": "routing-pin"})()  # type: ignore[attr-defined]  # Why: the direct-drive shape installs the runner's own dependency fields on a __new__-built host — the control's subject is the door, not the host graph.
     # The ladder route's host fields: the unbounded run pays no §4.1 event
     # tax and never drains.
-    runner._emit_capacity = False  # type: ignore[attr-defined]
+    runner._emit_capacity = False  # type: ignore[attr-defined]  # Why: the direct-drive shape installs the runner's own dependency fields on a __new__-built host — the control's subject is the door, not the host graph.
     row = {"id": str(node_id), "step_key": step_key, "map_index": None}
     ownership = AttemptClaim(
         job_id=node_id,

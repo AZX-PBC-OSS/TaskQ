@@ -33,6 +33,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
@@ -48,6 +49,7 @@ from taskq.workflows import (
     chain_source,
     chain_start,
 )
+from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.chain import DONE, Route
 
 pytestmark = pytest.mark.integration
@@ -98,7 +100,7 @@ async def _source_meta(conn: Any, schema: str, source_id: JobId) -> dict[str, An
 
 
 async def test_reserved_replay_wider_than_grant_fences_on_the_first_violation(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """D2: the W' > W replay terminalizes through the deterministic
     grant-violation route on the FIRST violation — one ledger row, the
@@ -248,7 +250,7 @@ async def test_reserved_replay_wider_than_grant_fences_on_the_first_violation(
 
 
 async def test_stored_bound_contradicting_compiled_declaration_fails_closed(
-    wf_conn: Any, wf_schema: str, wf_pool: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """D5: the stored bound is the admission's authority — a compiled
     declaration that drifted WIDE must fail closed at the admission (a
@@ -326,7 +328,7 @@ async def test_stored_bound_contradicting_compiled_declaration_fails_closed(
 
 
 async def test_drive_adopts_existing_active_run_missing_capacity_record(
-    wf_conn: Any, wf_schema: str, wf_pool: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """D6: the drive's own initial backfill adopts an existing active
     bounded run that lacks its capacity record (an old binary's run) —
@@ -388,7 +390,7 @@ async def test_drive_adopts_existing_active_run_missing_capacity_record(
 
 
 async def test_admission_boundary_commits_or_parks_through_the_real_emit_path(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """Control 1 (C2): the admission boundary through the REAL
     ``ctx.emit_batch`` on cloned rows — the exact-fit page commits all W
@@ -599,7 +601,7 @@ async def _seed_reserved_peer(conn: Any, schema: str, flow: JobId, *, width: int
 
 
 async def test_reserved_replay_narrower_than_grant_commits_and_removes_the_key(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """Control 10's W' < W arm: the reserved replay presents a SMALLER
     page — the emit commits exactly W' children, removes the
@@ -760,7 +762,7 @@ def _build_c13_flow(name: str) -> Any:
 
 
 async def test_direct_drive_producing_verdict_and_cursor_resume_after_death(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, tmp_path: Any, pg_dsn: str
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, tmp_path: Any, pg_dsn: str
 ) -> None:
     """§9 control 13: the direct drive counts its own initial backfill
     (the B term), the producing drive's verdict is terminal, and a
@@ -845,6 +847,7 @@ async def test_direct_drive_producing_verdict_and_cursor_resume_after_death(
         "WHERE id = $1::uuid",
         source_id,
     )
+    assert src_final is not None
     print(
         "C13-SOURCE "
         + _json.dumps({**dict(src_final), "metadata": _meta_of(src_final["metadata"])}),
@@ -856,7 +859,7 @@ _APP_HOLDER: dict[str, Any] = {}
 
 
 async def test_grouped_deterministic_error_terminals_on_the_first_violation(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """N2: a deterministic refusal delivered inside an ``ExceptionGroup``
     (an ``asyncio.TaskGroup`` body's own shape) is still deterministic —
@@ -1008,7 +1011,7 @@ async def test_grouped_deterministic_error_terminals_on_the_first_violation(
 
 
 async def test_bare_tick_never_scans_the_parked_estate(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """N11 (control 13's own law): a BARE `tick()` performs NO parked
     -estate scan — the parked rows' states are bit-identical across bare

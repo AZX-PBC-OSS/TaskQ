@@ -14,6 +14,7 @@ import textwrap as _textwrap
 from pathlib import Path
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq.backend._protocol import JobId
@@ -87,9 +88,9 @@ def test_admission_boundary_oracle_is_the_verbatim_main_text() -> None:
 
 
 async def test_unreserved_admission_boundary_matches_legacy_at_bound_minus_one_exact_and_plus_one(
-    wf_conn: Any,
+    wf_conn: asyncpg.Connection,
     wf_schema: str,
-    wf_pool: Any,
+    wf_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
 ) -> None:
     """The two-direction boundary oracle against `$2 = source_id`: at

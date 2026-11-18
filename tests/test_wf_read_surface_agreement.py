@@ -24,6 +24,7 @@ from __future__ import annotations
 import json as _json
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
@@ -72,7 +73,7 @@ async def _seed_flow_root(conn: Any, schema: str, flow_id: str, *, status: str =
 
 
 async def test_park_reads_agree_across_claimable_listing_and_admin(
-    wf_conn: Any, wf_schema: str
+    wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """The one park row reads the SAME on every surface: the claimable
     -nodes read counts it ZERO (a park is the promotion's to move), the
@@ -112,7 +113,7 @@ async def test_park_reads_agree_across_claimable_listing_and_admin(
 
 
 async def test_other_deferral_faces_render_honestly_and_awaited_history_is_kept(
-    wf_conn: Any, wf_schema: str
+    wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """The due/future snooze schedules and a hold render their own honest
     faces (the admin's deferring/next_fire), a failed root's parked-only
@@ -198,7 +199,7 @@ async def test_other_deferral_faces_render_honestly_and_awaited_history_is_kept(
 
 
 async def test_holds_joins_and_cancelled_roots_read_the_same_on_every_surface(
-    wf_conn: Any, wf_schema: str
+    wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """N12: the rest of the contract's shape list — a HOLD, a JOIN wait,
     a due and a future schedule, and a CANCELLED root's own park — read

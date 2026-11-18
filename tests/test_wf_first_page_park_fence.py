@@ -30,11 +30,13 @@ import json as _json
 from datetime import timedelta
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.constants import WORKFLOW_NOT_DRAINING_CLASS
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows._sql import WorkflowSql
 
 pytestmark = pytest.mark.integration
@@ -135,7 +137,11 @@ async def _seed_awaited_ledger(
 
 
 async def test_first_page_no_cursor_park_is_fenced_when_the_root_fails(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql, module_pg_pool: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    module_pg_pool: asyncpg.Pool,
 ) -> None:
     """The real-runner first-page proof (DeepSeek's nested-gather shape):
     A's FIRST page cannot fit and parks with no ``emit_cursor``; B
@@ -407,7 +413,11 @@ async def test_first_page_no_cursor_park_is_fenced_when_the_root_fails(
 
 
 async def test_fence_spares_substep_map_and_older_epoch_decoys_both_forms(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql, module_pg_schema: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The exact current-claim ledger fence (the R1/F3 supplement): BOTH
     fence forms (the cascade's Python statement and the maintenance
@@ -547,7 +557,7 @@ async def test_fence_spares_substep_map_and_older_epoch_decoys_both_forms(
 
 
 async def test_healthy_first_page_park_completes_its_first_page_exactly_once(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """The opposite direction: a healthy live-root first-page park never
     fails due to waiting — the capacity release wakes it, the replay
@@ -741,7 +751,7 @@ def test_migration_function_fences_the_same_current_claim_core() -> None:
 
 
 async def test_cancelled_parked_peer_is_never_failed_a_second_time(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """The opposite direction: a parked peer already CANCELLED (the R2/R4
     peers arm's own disposition) is not P(j) anymore — the §5.4 fence
@@ -791,7 +801,7 @@ async def test_cancelled_parked_peer_is_never_failed_a_second_time(
 
 
 async def test_python_statement_fences_the_no_cursor_first_page_park(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """Round-4 NEW-3: the PYTHON statement's own no-cursor branch. The
     decoys control drives the Python statement over a cursor-BEARING

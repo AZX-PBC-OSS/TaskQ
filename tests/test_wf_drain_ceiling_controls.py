@@ -194,15 +194,16 @@ class _JournalAcquire:
         self._pool = pool
         self._j = journal
         self._names = sql_names
-        self._conn: asyncpg.Connection | None = None
+        self._held: list[asyncpg.Connection] = []
 
     async def __aenter__(self) -> _JournalConn:
-        self._conn = await self._pool.acquire()
-        return _JournalConn(self._conn, self._j, self._names)
+        conn = await self._pool.acquire()
+        self._held.append(conn)
+        return _JournalConn(conn, self._j, self._names)
 
     async def __aexit__(self, *exc: object) -> None:
-        assert self._conn is not None
-        await self._pool.release(self._conn)
+        assert self._held, "the journal acquire exited without its connection"
+        await self._pool.release(self._held.pop())
 
 
 class _JournalPool:

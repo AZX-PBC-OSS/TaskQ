@@ -26,6 +26,7 @@ from __future__ import annotations
 import json as _json
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
@@ -171,7 +172,7 @@ async def _seed_parked_source(conn: Any, schema: str, flow_id: str) -> str:
 
 
 async def test_causal_child_is_the_current_nonabsorbed_node_not_ledger_recency(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """Directions (a) + (c): an OLD failed ledger attempt (aged an hour)
     whose job later SUCCEEDED beside a CURRENT nonabsorbed failed cause
@@ -222,7 +223,7 @@ async def test_causal_child_is_the_current_nonabsorbed_node_not_ledger_recency(
 
 
 async def test_crashed_cause_with_no_failed_ledger_row_names_the_actual_node(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """Direction (b): a CRASHED current cause with NO failed ledger row —
     the fence's causal record is a non-null ACTUAL node id (the

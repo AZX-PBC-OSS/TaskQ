@@ -32,6 +32,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows._emit import wake_emit_backpressure
 from taskq.workflows.engine import render_workflow_sql
 
@@ -100,7 +101,7 @@ async def _wait_for_keyed_blocked_state(
                 if wet == "Lock"
             ]
             if len(corroborated) >= min_waiters:
-                return pids, corroborated  # type: ignore[return-value]
+                return pids, corroborated  # type: ignore[return-value]  # Why: the handshake's two shapes (a keyed corroboration and its waiters list) narrow to the declared tuple only at this exit — the timeout exits raise instead.
         await asyncio.sleep(0.02)
     if saw_keyed:
         raise _HandshakeTimeoutError(
@@ -245,7 +246,11 @@ async def _outcome(task: asyncio.Task[Any]) -> tuple[bool, str | None]:
 
 @pytest.mark.parametrize("order", ["cascade_first", "drain_first"])
 async def test_root_first_order_never_deadlocks_the_cascade_against_the_drain(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, module_pg_schema: Any, order: str
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    order: str,
 ) -> None:
     """The F2 control in BOTH serial orders: the parked source is a peer
     of the failing child's own fail_closed join. The pre-fix cascade
@@ -472,7 +477,10 @@ async def _run_real_park_seat(
 
 
 async def test_park_locks_root_and_intent_before_the_park_write(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, module_pg_schema: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """A9.2's park phases: the park seat acquires the flow root's row
     lock, then adopts and locks its intent record — BEFORE the park
@@ -642,7 +650,7 @@ async def test_park_locks_root_and_intent_before_the_park_write(
 
 
 async def test_missing_root_park_seat_fails_closed_before_the_durable_park(
-    wf_conn: Any, wf_schema: str, wf_pool: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """Round-4 NEW-7: the park seat's own missing-root fail-closed. The
     root row is the park transaction's FIRST lock (the canonical order
@@ -714,6 +722,7 @@ async def test_missing_root_park_seat_fails_closed_before_the_durable_park(
         f'SELECT count(*) FROM "{wf_schema}".job_events WHERE job_id = $1', source_id
     )
     assert source_after is not None and ledger_before is not None
+    assert source_before is not None
     assert dict(source_after) == dict(source_before), (
         "the park transaction rolled back — the source row is byte-identical"
     )

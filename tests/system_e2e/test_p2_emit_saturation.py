@@ -28,6 +28,7 @@ from asyncpg.transaction import Transaction
 
 from taskq import TaskQ
 from taskq.constants import wake_channel
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows import FlowRunner, cancel_workflow_run
 from tests.system_e2e import _p2_saturation_worker as sample
 from tests.system_e2e._harness import WorkerProc, graceful_stop, reap, spawn_joined_worker
@@ -898,7 +899,7 @@ async def _flow_facts(pool: asyncpg.Pool, schema: str, flow_id: str) -> dict[str
 @pytest.mark.load_sensitive
 @pytest.mark.timeout(900)
 async def test_two_os_workers_saturation_600_seconds_and_healthy_wake(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Path
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Path
 ) -> None:
     """The actual required ten-minute, two-process, continuously observed gate.
 
@@ -1145,7 +1146,7 @@ async def _release_children(pool: asyncpg.Pool, schema: str, scenario: str) -> d
 
 @pytest.mark.timeout(240)
 async def test_notify_and_inline_wake_failure_use_real_bounded_sweep(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Path
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Path
 ) -> None:
     """Committed child terminal + failed fine wake + lost listener -> fallback."""
     schema = module_pg_schema.schema_name
@@ -1366,7 +1367,7 @@ async def _healthy_terminal_common(
 
 @pytest.mark.timeout(240)
 async def test_sigkill_after_the_park_commit_converges_without_source_retry(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Path
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Path
 ) -> None:
     """SIGKILL the source's worker immediately after the park's own
     commit and prove the failover converges with NO source-retry spend.
@@ -1466,7 +1467,7 @@ async def test_sigkill_after_the_park_commit_converges_without_source_retry(
 
 @pytest.mark.timeout(180)
 async def test_cancel_parked_source_never_resurrects_or_emits_later_page(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Path
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Path
 ) -> None:
     """Real operator cancellation owns terminal/no-re-entry, not body observation."""
     schema = module_pg_schema.schema_name

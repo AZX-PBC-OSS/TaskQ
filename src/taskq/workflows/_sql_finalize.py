@@ -24,11 +24,6 @@ from taskq.workflows._sql_claim import current_claim_join
 FANIN_FAILURES_BYTE_CAP: Final[int] = 64 * 1024
 
 
-#: the bounded collect's join row carries the ``__truncated__`` count in its
-#: metadata (``wf_collect_truncated``) alongside the envelope's own markers —
-#: the decode unwraps the envelope at the consumer's typed boundary (the
-#: declared ``list[...]`` arrives), so the count must surface where the reads
-#: decide, never be swallowed by the unwrap.
 def park_predicate(alias: str) -> str:
     """THE SHARED ``P(a)`` PREDICATE (§7's one authoritative spelling) — the
     public seam for the product's own read surfaces (the admin's runs list)
@@ -123,6 +118,11 @@ def _wf_emit_validated_reservation_width(alias: str) -> str:
     )
 
 
+#: The bounded collect's join row carries the ``__truncated__`` count in its
+#: metadata (``wf_collect_truncated``) alongside the envelope's own markers —
+#: the decode unwraps the envelope at the consumer's typed boundary (the
+#: declared ``list[...]`` arrives), so the count must surface where the reads
+#: decide, never be swallowed by the unwrap.
 COLLECT_TRUNCATION_RECEIPT_SQL = """\
 UPDATE {schema}.jobs
 SET metadata = metadata || $2::jsonb
@@ -1101,14 +1101,6 @@ SELECT (SELECT count(*) FROM blocked) AS blocked,
     validated_reservation_width("p") + " AS released_emit_reservation_width",
 )
 
-#: THE ROOT'S OWN GATED FAILURE (N1): its own statement — its own fresh
-#: snapshot, taken after the root lock's grant — so the unresolved-live
-#: gate decides from the ROWS AS THEY STAND NOW (a promotion the drain
-#: committed while this transaction waited on the root is visible). The
-#: maintenance seat's own law, applied at the cascade seat: a live
-#: unresolved node (a promoted pending source, a running node) withholds
-#: the root's failure; the maintenance's later pass owns the finalize once
-#: the live work rests.
 #: THE ROOT'S OWN GATED FAILURE (N1): its own statement — its own fresh
 #: snapshot, taken after the root lock's grant — so the unresolved-live
 #: gate decides from the ROWS AS THEY STAND NOW (a promotion the drain

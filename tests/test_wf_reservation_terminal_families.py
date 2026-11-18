@@ -26,6 +26,7 @@ from __future__ import annotations
 import json as _json
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
@@ -75,7 +76,7 @@ async def _observation(conn: Any, wsql: WorkflowSql, flow: JobId) -> tuple[int, 
 
 
 async def test_deadline_sweep_terminal_removes_the_reservation_key(
-    wf_conn: Any, wf_schema: str, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
     """The deadline family's terminal removes the key in its own winning
     statement — no key survives for re-arm (the review's proof: the key
@@ -103,7 +104,7 @@ async def test_deadline_sweep_terminal_removes_the_reservation_key(
 
 
 async def test_early_exit_skip_terminal_removes_the_reservation_key(
-    wf_conn: Any, wf_schema: str
+    wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """The early-Exit family's skip-terminal removes the key in its own
     winning statement (the review's proof: the key survived with width 3)."""
@@ -122,7 +123,7 @@ async def test_early_exit_skip_terminal_removes_the_reservation_key(
 
 
 async def test_peer_cancel_terminal_removes_the_reservation_key(
-    wf_conn: Any, wf_schema: str
+    wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """The fail-closed cascade's peer-cancel family removes the key in its
     own winning statement; the cancel-origin marker still rides the same
@@ -158,7 +159,7 @@ async def test_peer_cancel_terminal_removes_the_reservation_key(
 
 
 async def test_manual_rearm_strips_key_and_park_marker_and_restores_claimability(
-    wf_conn: Any, wf_schema: str
+    wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """The manual re-arm (retry_job) strips the reservation key AND the
     park marker family, restoring an ORDINARY claimable live row — the
@@ -256,7 +257,7 @@ async def test_manual_rearm_strips_key_and_park_marker_and_restores_claimability
 
 
 async def test_bulk_cancel_terminal_removes_the_reservation_key(
-    wf_conn: Any, wf_schema: str, wf_pool: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The bulk-cancel family's terminal removes the key in its own
     winning statement."""
@@ -282,7 +283,7 @@ async def test_bulk_cancel_terminal_removes_the_reservation_key(
 
 
 async def test_batch_abort_terminal_removes_the_reservation_key(
-    wf_conn: Any, wf_schema: str
+    wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """The batch-abort family's terminal removes the key in its own
     winning statement."""
@@ -311,7 +312,7 @@ async def test_batch_abort_terminal_removes_the_reservation_key(
 
 
 async def test_actor_deregister_force_terminal_removes_the_reservation_key(
-    wf_conn: Any, wf_schema: str
+    wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """The force-deregistration family's terminal removes the key in its
     own winning statement."""
@@ -334,7 +335,7 @@ async def test_actor_deregister_force_terminal_removes_the_reservation_key(
 
 
 async def test_node_retry_rearm_strips_key_and_restores_claimability(
-    wf_conn: Any, wf_schema: str
+    wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """N4: the per-node/manual re-arm (RETRY_NODE_CAS — the admin run
     page's node retry, the CLI, `retry_workflow_node`) strips the
@@ -388,7 +389,7 @@ async def test_node_retry_rearm_strips_key_and_restores_claimability(
 
 
 async def test_terminal_mixed_key_present_and_key_absent_winners(
-    wf_conn: Any, wf_schema: str, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
     """§2.4's mixed-winner arm: one terminal statement over BOTH a
     key-present and a key-absent winner removes the key from exactly the

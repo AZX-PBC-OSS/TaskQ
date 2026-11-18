@@ -75,6 +75,7 @@ from typing import Any
 import asyncpg
 import pytest
 
+from taskq.testing.fixtures import ModulePgSchema
 from tests.system_e2e import _p2_saturation_worker as entry
 
 pytestmark = [pytest.mark.system, pytest.mark.integration]
@@ -244,7 +245,7 @@ def _print_r(pre_registered_r: dict[str, int]) -> None:
 
 
 async def test_committed_threshold_survives_kill_and_recovers_on_second_pid(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Any
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Any
 ) -> None:
     """The committed-threshold window: the terminal + generation COMMIT
     lands, the producing pod's drain blocks at the flow's own admission
@@ -396,7 +397,7 @@ async def test_committed_threshold_survives_kill_and_recovers_on_second_pid(
 
 
 async def test_park_before_ack_kill_preserves_marker_and_promotes_once(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Any
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Any
 ) -> None:
     """The park-before-ack window: the producing pod parks the source and
     blocks inside the post-park root check on the control's ``FOR UPDATE``
@@ -521,7 +522,7 @@ async def test_park_before_ack_kill_preserves_marker_and_promotes_once(
 
 
 async def test_emit_rollback_kill_never_parks_and_reclaims_once(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Any
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Any
 ) -> None:
     """The rollback window (the pre-commit face): the control holds the
     flow's admission lock while the source's EMIT transaction is in
@@ -626,7 +627,7 @@ async def test_emit_rollback_kill_never_parks_and_reclaims_once(
 
 
 async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Any
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Any
 ) -> None:
     """The mid-chunk window over the seeded 400-waiter estate.
 
@@ -824,7 +825,7 @@ def families_min_ok(total: dict[str, int]) -> bool:
 
 
 async def test_two_worker_healthy_lane_counters_within_the_preregistered_pin(
-    pg_dsn: str, module_pg_schema: Any, log_dir: Any
+    pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Any
 ) -> None:
     """§4.2 control 3's healthy two-OS-worker lane: two real OS workers,
     the two-page/one-source healthy flow (P=2, S=1), the initial

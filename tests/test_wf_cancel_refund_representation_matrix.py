@@ -76,10 +76,12 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows._sql import WorkflowSql
 
 pytestmark = pytest.mark.integration
@@ -104,7 +106,7 @@ class _Conn:
 
 
 def _detail(raw: object) -> dict[str, object]:
-    return _json.loads(raw) if isinstance(raw, str) else dict(raw)  # type: ignore[arg-type,call-overload]
+    return _json.loads(raw) if isinstance(raw, str) else dict(raw)  # type: ignore[arg-type,call-overload]  # Why: the jsonb round-trip's decode boundary — the row's jsonb read is Any-typed and the decoded shape is this helper's own dict contract.
 
 
 @dataclass(frozen=True, slots=True)
@@ -522,13 +524,13 @@ _dsn_by_schema: dict[str, str] = {}
 
 
 @pytest.fixture(autouse=True)
-def _register_dsn(module_pg_schema: Any, wf_schema: str) -> None:
+def _register_dsn(module_pg_schema: ModulePgSchema, wf_schema: str) -> None:
     _dsn_by_schema[wf_schema] = module_pg_schema.pg_dsn
 
 
 async def _build_estate(
-    wf_conn: Any,
-    wf_pool: Any,
+    wf_conn: asyncpg.Connection,
+    wf_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     schema: str,
     rep: str,
@@ -720,7 +722,12 @@ async def _assert_decoys_untouched(
 @pytest.mark.parametrize("seat", ["operator", "peer"])
 @pytest.mark.parametrize("rep", sorted(REPRESENTATIONS))
 async def test_cancel_of_every_refund_representation_is_claim_exact(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql, rep: str, seat: str
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    rep: str,
+    seat: str,
 ) -> None:
     """Seven representations x two seats: the exact current claim fences,
     the job terminalises, the reservation goes where held, ONE truthful
@@ -954,13 +961,19 @@ async def test_cancel_of_every_refund_representation_is_claim_exact(
         observation_after.live_rows,
         observation_after.reservations,
     ) == independent_after, (rep, seat, independent_after, observation_after)
+    # THE OBSERVATION'S OWN WAITER ABSENCE (the `_independent_capacity`
+    # helper's documented claim, made true): these flows hold no exact
+    # parks, so the resting observation reports NO waiter at all — a
+    # spurious surviving park would surface here before any capacity
+    # arithmetic could.
+    assert observation_after.min_waiting_width is None, (rep, seat, observation_after)
 
 
 # ── the strict single-row maximality inside the matrix (NEW-6) ───────────
 
 
 async def test_duplicate_attempt_estate_inside_the_matrix_fences_exactly_one(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """The maximality probe's own cell, on the matrix's snooze estate: a
     SECOND nonterminal row at the same (job, epoch, step, map) with a

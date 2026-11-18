@@ -42,6 +42,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import asyncpg
 import pytest
 import structlog.testing
 from pydantic import BaseModel
@@ -50,6 +51,7 @@ from taskq._ids import new_uuid
 from taskq.actor import actor
 from taskq.backend._protocol import JobId, JobRow
 from taskq.context import JobContext
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows import (
     Done,
     FlowRunner,
@@ -488,7 +490,7 @@ def _assert_bounded_vocabulary(captured: list[dict[str, object]], deps: SimpleNa
 
 
 async def test_iteration_bound_exhaustion_reaches_the_bounded_release(
-    wf_schema: str, module_pg_pool: Any, module_pg_schema: Any
+    wf_schema: str, module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
     """The driver's iteration bound (`max_wall`) exhausted by an
     always-Refine body with NO declared wall — the loud
@@ -553,7 +555,7 @@ async def test_iteration_bound_exhaustion_reaches_the_bounded_release(
 
 
 async def test_missing_iteration_ledger_identity_reaches_the_bounded_release(
-    wf_schema: str, module_pg_pool: Any, module_pg_schema: Any
+    wf_schema: str, module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
     """An iteration terminal with NO ledger claim identity — the
     replay/legacy face the guard names (a healthy claim always carries
@@ -615,7 +617,7 @@ async def test_missing_iteration_ledger_identity_reaches_the_bounded_release(
 
 
 async def test_carry_contract_refusal_reaches_the_bounded_release(
-    wf_schema: str, module_pg_pool: Any, module_pg_schema: Any
+    wf_schema: str, module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
     """`LoopCarryContractError` — a body whose Refine feedback the
     declared carry type cannot re-hydrate at the next iteration's

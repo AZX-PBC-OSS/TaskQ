@@ -44,6 +44,7 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.backend._sql_templates import render as render_backend_sql
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows._emit import COUNTERS, wake_emit_backpressure
 from taskq.workflows.engine import render_workflow_sql
 
@@ -137,7 +138,7 @@ async def _seed_miss_estate(conn: Any, schema: str) -> tuple[str, str, str]:
 
 
 async def test_zero_cas_miss_leaves_intent_pending_and_the_next_arm_completes_it(
-    pg_dsn: str, module_pg_schema: Any, tmp_path: Any
+    pg_dsn: str, module_pg_schema: ModulePgSchema, tmp_path: Any
 ) -> None:
     """The zero-CAS miss (the real cancel racing the real promotion
     primitive) leaves the intent pending with zero spin; the second OS

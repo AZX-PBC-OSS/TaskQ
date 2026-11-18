@@ -49,11 +49,6 @@ _EMBEDDED_SEMICOLON_MESSAGE = (
 )
 
 
-class _RemedyExtractionError(AssertionError):
-    """The extractor's fail-closed refusal (a missing or ambiguous remedy
-    block is drift, never a fallback)."""
-
-
 def _extract_remedy_span(doc: str) -> str:
     """The ordered-list item 3 span of the stranded-jobs 'How to remediate.'
     list — from its own ``3.`` line to the next column-0 ``4.`` line."""

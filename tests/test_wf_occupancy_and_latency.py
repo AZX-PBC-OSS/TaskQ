@@ -13,9 +13,11 @@ import contextlib
 import enum
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq.backend._protocol import JobId
+from taskq.workflows._sql import WorkflowSql
 
 pytestmark = pytest.mark.integration
 
@@ -41,7 +43,7 @@ def _chain(name: str, body: Any) -> Any:
 
 
 async def test_cap_one_child_cap_one_never_occupancy_deadlocks(
-    wf_conn: Any, wf_schema: str, module_pg_pool: Any, wf_sql: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, module_pg_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """At max_in_flight=1 with the consuming child's max_concurrent=1 and
     every slot held by the same run's children: terminalizing one child
@@ -127,7 +129,7 @@ async def test_cap_one_child_cap_one_never_occupancy_deadlocks(
 
 
 async def test_bounded_wake_latency_measured_on_the_new_claim(
-    wf_conn: Any, wf_schema: str, module_pg_pool: Any, wf_sql: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, module_pg_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """The controlled-host acceptance target: < 1 s from the terminal
     database commit instant to the source's NEW claim instant (the claim's

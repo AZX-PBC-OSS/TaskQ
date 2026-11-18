@@ -24,6 +24,7 @@ from __future__ import annotations
 import json as _json
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
@@ -105,7 +106,7 @@ def _wsql(schema: str) -> WorkflowSql:
 
 
 async def test_marker_sweep_repairs_all_marked_flows_within_the_rotation_bound(
-    wf_conn: Any, wf_schema: str, wf_pool: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """D7: 150 marked flows without intents ALL repair within
     ceil(150/100) + 1 = 3 sweep selections — the pre-fix defect repaired
@@ -130,7 +131,7 @@ async def test_marker_sweep_repairs_all_marked_flows_within_the_rotation_bound(
 
 
 async def test_marker_sweep_quarantines_a_poison_marker_and_repairs_the_rest(
-    wf_conn: Any, wf_schema: str, wf_pool: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """D7: one malformed marker poisons only its own flow — the other 99
     repair in the same sweep pass (the pre-fix defect: every call raised
@@ -156,7 +157,7 @@ async def test_marker_sweep_quarantines_a_poison_marker_and_repairs_the_rest(
 
 
 async def test_capacity_record_retires_with_its_run_and_never_before(
-    wf_conn: Any, wf_schema: str, wf_pool: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """D10: the capacity record's retention lifetime is the run's — the
     RUN'S OWN retention pass (the step-ledger retention's flows-side
@@ -203,7 +204,7 @@ async def test_capacity_record_retires_with_its_run_and_never_before(
 
 
 async def test_runs_list_renders_a_repended_reserved_source_honestly(
-    wf_conn: Any, wf_schema: str
+    wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """D8's read-surface arm: a re-pended reserved source (the blob, no
     park marker) is DEFERRING with a next fire from its own due time and
@@ -246,7 +247,7 @@ async def test_runs_list_renders_a_repended_reserved_source_honestly(
 
 
 async def test_vanilla_deadline_release_wake_is_never_lost_by_the_marker_sweep(
-    wf_conn: Any, wf_schema: str, wf_pool: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """N3's executed counterexample, as a control: a flow-unaware vanilla
     terminal (the real deadline sweep) frees a live row so a parked
@@ -317,7 +318,7 @@ async def test_vanilla_deadline_release_wake_is_never_lost_by_the_marker_sweep(
 
 
 async def test_handled_intent_never_rebumps_while_pending_no_busy_loop(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, monkeypatch: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: Any
 ) -> None:
     """The no-busy-loop law over the N3 selection: a marked flow whose
     intent is PENDING (the drain's own to observe) is never selected, and
@@ -412,7 +413,7 @@ async def test_handled_intent_never_rebumps_while_pending_no_busy_loop(
 
 
 async def test_retention_never_removes_the_record_while_a_live_node_references_the_run(
-    wf_conn: Any, wf_schema: str, wf_pool: Any
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """N5: the retention's own gate — a terminal-aged root with a LIVE
     (pending/scheduled/running) node still referencing the run keeps its

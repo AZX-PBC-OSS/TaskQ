@@ -10,6 +10,7 @@ from __future__ import annotations
 import json as _json
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq.backend._protocol import JobId
@@ -58,7 +59,7 @@ async def _seed_node(
 
 
 async def test_cancel_before_park_and_after_park_never_reenters_and_spares_siblings(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """Cancel immediately before and after the park commit: the node
     terminalizes, its exact ledger claim fences, no later event or due time
@@ -200,7 +201,7 @@ async def test_cancel_before_park_and_after_park_never_reenters_and_spares_sibli
 
 
 async def test_park_and_cancel_race_resolves_by_row_state(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """Cancel racing the park: whichever wins, the row state is the truth —
     the park's fenced arm answers cancel_fenced and the runner terminalizes;
@@ -360,7 +361,7 @@ async def _seed_nonrunning_target_with_decoys(
     ("status", "parked"), [("pending", False), ("scheduled", True), ("scheduled", False)]
 )
 async def test_operator_cancel_of_nonrunning_targets_is_claim_exact(
-    wf_conn: Any, wf_schema: str, status: str, parked: bool
+    wf_conn: asyncpg.Connection, wf_schema: str, status: str, parked: bool
 ) -> None:
     """R4's control-12 extension: the non-running target's cancel fences
     ONLY its own outer current-epoch claim — the ``ctx.substep`` row, the
@@ -433,7 +434,7 @@ async def test_operator_cancel_of_nonrunning_targets_is_claim_exact(
 
 
 async def test_operator_cancel_after_refunded_deferrals_fences_the_current_claim(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """The N-1 minimum mainstream matrix: an ordinary Snooze and a legacy
     ``RetryAfter(consume_budget=False)`` each refund the job's displayed
@@ -525,7 +526,7 @@ async def test_operator_cancel_after_refunded_deferrals_fences_the_current_claim
 
 
 async def test_deadline_repend_failed_history_is_never_fenced(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """The negative direction: a deadline re-pend's ledger row is terminal
     ``failed`` history at an unchanged attempt — the cancel leaves it
@@ -564,7 +565,7 @@ async def test_deadline_repend_failed_history_is_never_fenced(
 
 
 async def test_fail_closed_peer_cancel_is_a_complete_root_ordered_transition(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """F12/R4: the fail-closed peer cancellation is ONE root-ordered
     atomic transition per actual winner — the job terminal, the
@@ -874,7 +875,7 @@ async def _seed_duplicate_attempt_estate(
 
 
 async def test_duplicate_attempt_estate_fences_exactly_one_row_and_writes_one_event(
-    wf_conn: Any, wf_schema: str, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
     """The current-claim association's single-row property is a property
     of the SQL (round-4 NEW-6), never a protocol: the ledger's arbiter

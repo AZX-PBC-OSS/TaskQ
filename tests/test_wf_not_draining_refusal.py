@@ -13,6 +13,7 @@ import enum
 import json as _json
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq.backend._protocol import JobId
@@ -57,9 +58,9 @@ def _chain(name: str, body: Any, *, max_attempts: int = 3) -> Any:
 
 
 async def test_exhausted_child_failure_with_parked_cursor_fences_the_source(
-    wf_conn: Any,
+    wf_conn: asyncpg.Connection,
     wf_schema: str,
-    module_pg_pool: Any,
+    module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
 ) -> None:
     """The positive proof: the child's genuine failure exhausts its declared
@@ -221,9 +222,9 @@ async def test_exhausted_child_failure_with_parked_cursor_fences_the_source(
 
 
 async def test_healthy_saturation_and_nonterminal_retries_never_refuse(
-    wf_conn: Any,
+    wf_conn: asyncpg.Connection,
     wf_schema: str,
-    module_pg_pool: Any,
+    module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
 ) -> None:
     """The opposite directions: a healthy parked source under a LIVE root

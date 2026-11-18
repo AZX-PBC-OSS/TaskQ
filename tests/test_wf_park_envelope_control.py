@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import asyncpg
 import pytest
 
 from taskq.workflows._sql import WorkflowSql
@@ -217,7 +218,7 @@ def uuid7_of(value: str) -> Any:
 
 @pytest.mark.integration
 async def test_newest_fit_and_oldest_fit_envelopes_and_declaration_mapping(
-    wf_conn: Any,
+    wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_sql: WorkflowSql,
 ) -> None:
@@ -374,7 +375,7 @@ async def test_newest_fit_and_oldest_fit_envelopes_and_declaration_mapping(
 
 @pytest.mark.integration
 async def test_hoisted_observation_at_the_control2_shape(
-    wf_conn: Any,
+    wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_sql: WorkflowSql,
 ) -> None:

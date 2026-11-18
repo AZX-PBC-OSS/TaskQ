@@ -29,6 +29,7 @@ import enum
 import json as _json
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
@@ -75,7 +76,9 @@ async def _screen_ok(ctx: Any, item: object) -> Ok:
     return Ok.OK
 
 
-async def _run_form(wf_pool: Any, wf_schema: str, wf_conn: Any, form: str) -> dict[str, Any]:
+async def _run_form(
+    wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection, form: str
+) -> dict[str, Any]:
     """One form's full scenario: the first refusal parks (or — the
     pre-fix embedded defect — ladders), then the release + replay
     recovers exactly once. Returns the observed facts."""
@@ -257,7 +260,7 @@ async def _run_form(wf_pool: Any, wf_schema: str, wf_conn: Any, form: str) -> di
 
 @pytest.mark.parametrize("form", ["direct", "taskgroup", "nested", "cause"])
 async def test_embedded_emit_backpressure_parks_like_the_direct_raise(
-    wf_pool: Any, wf_schema: str, wf_conn: Any, form: str
+    wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection, form: str
 ) -> None:
     """The four forms' one law: the first refusal parks ONCE with the
     exact marker and no reservation; the logical attempt is unchanged and
@@ -283,7 +286,7 @@ async def test_embedded_emit_backpressure_parks_like_the_direct_raise(
 
 
 async def test_ordinary_grouped_body_failure_still_takes_the_genuine_ladder(
-    wf_pool: Any, wf_schema: str, wf_conn: Any
+    wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
     """The opposite direction: the embedded park door never swallows an
     ORDINARY grouped body failure — a TaskGroup whose leaf is a plain

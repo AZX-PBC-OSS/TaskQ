@@ -50,6 +50,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows._emit import wake_emit_backpressure
 from taskq.workflows.engine import render_workflow_sql
 
@@ -181,7 +182,10 @@ async def _run_real_cascade_seat(conn: Any, wsql: Any, flow_id: str) -> None:
 
 
 async def test_cascade_never_strands_a_promoted_reserved_source(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, module_pg_schema: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """THE DRAIN-WINS ORDER (forced, and the only order this topology's
     lock queue can produce with the park row held first): the real drain
@@ -300,7 +304,10 @@ async def test_cascade_never_strands_a_promoted_reserved_source(
 
 
 async def test_cascade_wins_fences_the_still_parked_source(
-    wf_conn: Any, wf_schema: str, wf_pool: Any, module_pg_schema: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """THE CASCADE-WINS ORDER (separately forced): the cascade takes the
     ENTRY root lock first; its §5.4 fence queues on the held park row

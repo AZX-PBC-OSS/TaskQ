@@ -144,7 +144,9 @@ def find_embedded_exception[T: BaseException](
         if isinstance(candidate, classes):
             return candidate
         if isinstance(candidate, BaseExceptionGroup):
-            for leaf in cast("tuple[BaseException, ...]", candidate.exceptions):
+            for leaf in cast(
+                "tuple[BaseException, ...]", candidate.exceptions
+            ):  # Why: pyright narrows BaseExceptionGroup to BaseExceptionGroup[Unknown], so .exceptions is partially unknown without this cast (verified probe) — the members are BaseException by the group's own contract.
                 if id(leaf) in seen:
                     continue
                 seen.add(id(leaf))
@@ -172,7 +174,11 @@ def _deterministic_error_class(exc: BaseException) -> str:
     refusal's OWN name — a grouped deterministic error records its first
     deterministic leaf's name (the group's wrapper name is not the
     remedy's own vocabulary); a plain deterministic error records its own
-    name. A non-deterministic shape is never this helper's caller."""
+    name. For a non-deterministic shape the helper records the exception's
+    own class name via the fallback below — the failure ladder CALLS this
+    helper unconditionally on the terminal path (the caller routes by
+    :func:`is_deterministic_authoring_failure`; the record class is this
+    helper's), so the fallback is load-bearing, never dead."""
     return _find_deterministic_leaf(exc) or type(exc).__name__
 
 
