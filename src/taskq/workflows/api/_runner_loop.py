@@ -84,7 +84,7 @@ class _LoopHost(Protocol):
         *,
         claim_epoch: int = 0,
         ledger_id: JobId | None = None,
-        ledger_claimed_at: Any = None,
+        ledger_claimed_at: datetime | None = None,
     ) -> FinalizeResult: ...
 
 
@@ -917,35 +917,42 @@ class LoopOps(_LoopHost):
                 intent_created = await emit_capacity_event(
                     conn, self.wsql, flow_id=flow_id, probe=True
                 )
-            if policy != "escalate":
-                await self._drain_created_intent(flow_id, intent_created)
-                return  # the fail policy: the named state is the record, no enqueue
-            bindings = escalation_bindings(
-                self.compiled.name,
-                row["step_key"],
-                flow_id=flow_id,
-                error_class=error_class,
-                message=message,
-            )
-            if bindings is None:
-                logger.warning(
-                    "loop.escalation-unregistered",
-                    loop=row["step_key"],
-                    run_id=str(flow_id),
-                    why="the escalation policy declared but the workflow's "
-                    "escalation step is not registered in this process (D1) — "
-                    "the named state stands, no outbox row is written",
+            if policy == "escalate":
+                bindings = escalation_bindings(
+                    self.compiled.name,
+                    row["step_key"],
+                    flow_id=flow_id,
+                    error_class=error_class,
+                    message=message,
                 )
-                return
-            await conn.execute(
-                render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, self.schema),
-                new_uuid(),
-                row["id"],
-                flow_id,
-                ESCALATION_STEP_KEY,
-                dumps_jsonb_str(bindings),
-            )
-        # The exhaust transaction committed. The loop's own terminal route
-        # drains the intent it just created — exactly one acknowledged
-        # post-COMMIT promotion pass per threshold crossing.
+                if bindings is None:
+                    logger.warning(
+                        "loop.escalation-unregistered",
+                        loop=row["step_key"],
+                        run_id=str(flow_id),
+                        why="the escalation policy declared but the workflow's "
+                        "escalation step is not registered in this process (D1) — "
+                        "the named state stands, no outbox row is written",
+                    )
+                else:
+                    await conn.execute(
+                        render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, self.schema),
+                        new_uuid(),
+                        row["id"],
+                        flow_id,
+                        ESCALATION_STEP_KEY,
+                        dumps_jsonb_str(bindings),
+                    )
+        # The exhaust transaction committed. EVERY owned-intent exit — the
+        # fail policy and both escalation exits — drains the intent it just
+        # created HERE, after the acknowledged COMMIT, never inside the open
+        # transaction (§5.3: the one-bit ``intent_created`` result calls the
+        # same drain once after commit). The drain acquires a second pool
+        # connection and queues on the root and intent row locks THIS
+        # transaction still holds; the holder is idle-in-transaction (a
+        # client wait, not a lock wait), so PostgreSQL's deadlock detector
+        # sees no cycle and no timeout exists to break it — the
+        # in-transaction call is an unbounded self-wait. The CAS-loss exit
+        # above returns without draining: another writer won the exhaust CAS
+        # and its own route owns that crossing's single post-COMMIT pass.
         await self._drain_created_intent(flow_id, intent_created)
