@@ -477,7 +477,14 @@ class LadderOps(_LadderHost):
                 {
                     "outcome": "failed",
                     "step_key": row["step_key"],
-                    "error_class": type(exc).__name__,
+                    # THE RECORD'S OWN TRUTH, projected (L-2): the same
+                    # helper the terminal write just used — the
+                    # deterministic LEAF's own class name (a grouped
+                    # deterministic error projects the leaf, never the
+                    # group's wrapper name). The projection is best-effort
+                    # freshness, but it must not disagree with the durable
+                    # record it mirrors.
+                    "error_class": _deterministic_error_class(exc),
                 },
             )
         return "failed"

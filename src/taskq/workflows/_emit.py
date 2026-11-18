@@ -78,6 +78,7 @@ from taskq.constants import wake_channel, wf_emit_capacity_channel
 from taskq.obs import get_logger, get_meter
 from taskq.workflows._fork import FORK_CHUNK
 from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
+from taskq.workflows._sql_finalize import WF_EMIT_ROTATION_BATCH
 from taskq.workflows._types import MAP_INDEX_CEILING, EmitChild, _jsonb, _row_metadata
 
 if TYPE_CHECKING:
@@ -1275,7 +1276,7 @@ async def drain_pending_emit_intents(
                     error=str(exc)[:300],
                 )
             offered += 1
-        if len(rows) < 100:
+        if len(rows) < WF_EMIT_ROTATION_BATCH:
             async with pool.acquire() as conn:
                 await conn.execute(wsql.emit_rotation_write, _ZERO_UUID)
             break
@@ -1297,9 +1298,13 @@ async def drain_pending_emit_intents(
 #: never work.
 _SWEEP_CURSORS: dict[str, str] = {}
 
-#: The marker sweep's per-call flow batch (the same 100-flow bound the
-#: global pending-intent selection owns).
-_SWEEP_BATCH = 100
+#: The marker sweep's per-call flow batch — the ONE shared rotation bound
+#: (L-3: the SQL ``LIMIT`` renders from `WF_EMIT_ROTATION_BATCH` and the
+#: Python checks compare against it; a second spelling would let the SQL
+#: LIMIT exceed the Python literal, every selection would look "short",
+#: the rotation cursor would reset, and flows past the first batch would
+#: never be offered).
+_SWEEP_BATCH: Final[int] = WF_EMIT_ROTATION_BATCH
 
 
 async def sweep_emit_markers(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:

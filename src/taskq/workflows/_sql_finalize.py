@@ -570,6 +570,15 @@ WHERE flow_id = $1
 RETURNING flow_id
 """
 
+#: The rotation bound (L-3's ONE shared constant): the global
+#: pending-intent selection's SQL ``LIMIT``, the marker sweep's per-call
+#: flow batch, and both Python short-selection checks all read THIS value
+#: — if the SQL LIMIT ever exceeded the Python literal, every selection
+#: would look "short", the rotation cursor would reset, and flows past the
+#: first batch would never be offered. The SQL constants render their
+#: ``LIMIT`` from it and the controls compare against it.
+WF_EMIT_ROTATION_BATCH: Final[int] = 100
+
 #: The global pending-intent selection: at most 100 distinct flow ids in one
 #: short indexed read (the pending-generation partial index), ordered,
 #: rotated by the persistent ``after_flow_id`` cursor, and holding no row
@@ -580,8 +589,7 @@ FROM {schema}.wf_emit_capacity
 WHERE wake_generation > handled_generation
   AND flow_id > $1::uuid
 ORDER BY flow_id
-LIMIT 100
-"""
+LIMIT """ + str(WF_EMIT_ROTATION_BATCH) + "\n"
 
 #: The fairness rotation's singleton: one row, one ``after_flow_id``, never
 #: growing with run cardinality.
@@ -624,7 +632,7 @@ WF_EMIT_MARKER_SWEEP_SQL = (
     "        AND c.wake_generation > c.handled_generation\n"
     "  )\n"
     "ORDER BY flow_id\n"
-    "LIMIT 100\n"
+    "LIMIT " + str(WF_EMIT_ROTATION_BATCH) + "\n"
 )
 
 #: The isolated per-flow repair's own bound read (D7): the flow's marker

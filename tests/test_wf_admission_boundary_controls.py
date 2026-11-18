@@ -968,10 +968,14 @@ async def test_grouped_deterministic_error_terminals_on_the_first_violation(
             break
         await asyncio.sleep(0.05)
     assert verdict is not None, "the grouped replay never terminalized"
-    assert verdict == ("failed", "ExceptionGroup") or verdict == (
-        "failed",
-        "EmitReservationExceededError",
-    ), verdict
+    # THE DETERMINISTIC RECORD'S OWN CLASS (N2, tightened per L-1): the
+    # terminal names the deterministic LEAF (`_deterministic_error_class`)
+    # — the wrapper's own name never reaches the durable row, and the
+    # ledger check below is the second leg of the same law. A permissive
+    # `or verdict == ("failed", "ExceptionGroup")` arm here would be dead
+    # (the deterministic route always records the leaf) and would become
+    # a real hole if the ledger assertion were ever relaxed.
+    assert verdict == ("failed", "EmitReservationExceededError"), verdict
     ledgers = await wf_conn.fetch(
         f"""SELECT attempt::int AS a, status::text AS status, error_class
             FROM "{wf_schema}".wf_step_ledger
@@ -982,6 +986,18 @@ async def test_grouped_deterministic_error_terminals_on_the_first_violation(
     assert len(failed_rows) == 1, [(r["a"], r["status"], r["error_class"]) for r in ledgers]
     assert "EmitReservationExceededError" in (failed_rows[0]["error_class"] or ""), failed_rows[0]
     assert int(failed_rows[0]["a"]) == 1
+    # THE PROJECTION AGREES WITH THE RECORD (L-2's pin): the auto
+    # projection's KIND_NODE_TERMINAL payload names the same deterministic
+    # LEAF the durable row carries — never the group's wrapper name. (The
+    # projection is best-effort freshness, never authority; this pin keeps
+    # it from disagreeing with the record it mirrors.)
+    projection = await wf_conn.fetchval(
+        f"""SELECT payload->>'error_class' FROM "{wf_schema}".wf_node_stream
+            WHERE flow_id = $1::uuid AND kind = 'wf.node.terminal'
+            ORDER BY seq DESC LIMIT 1""",
+        flow_id,
+    )
+    assert projection == "EmitReservationExceededError", projection
     meta = await _source_meta(wf_conn, wf_schema, source_id)
     assert "wf_emit_reservation" not in meta, meta
     children = await wf_conn.fetchval(
