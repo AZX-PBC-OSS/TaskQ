@@ -75,8 +75,8 @@ from typing import Any, Final
 import asyncpg
 import pytest
 
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.testing.fixtures import ModulePgSchema
-from taskq.workflows.ledger import TERMINAL_JOB_STATUSES
 from tests.system_e2e import _p2_saturation_worker as entry
 
 pytestmark = [pytest.mark.system, pytest.mark.integration]
@@ -107,7 +107,7 @@ def _children_settled(kids: list[dict[str, Any]], expected: frozenset[int]) -> b
     leave its child row MISSING — "none pending" over the surviving rows
     would pass an incomplete recovery, so the SET must match too."""
     indices = frozenset(int(r["m"]) for r in kids)
-    return indices == expected and all(r["status"] in TERMINAL_JOB_STATUSES for r in kids)
+    return indices == expected and all(r["status"] in TERMINAL_STATUSES for r in kids)
 
 
 def _admission_lock_sql() -> str:
