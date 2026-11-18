@@ -61,6 +61,7 @@ from taskq.workflows import (
     build,
     loop,
 )
+from taskq.workflows._sql import WorkflowSql
 
 pytestmark = pytest.mark.integration
 
@@ -115,7 +116,7 @@ def _fleet_worker_id() -> JobId:
 
 
 async def _loop_node_row(
-    pool: Any, schema: str, flow_id: str, node_key: str = "counter"
+    pool: asyncpg.Pool, schema: str, flow_id: str, node_key: str = "counter"
 ) -> dict[str, Any]:
     raw = await pool.fetchrow(
         f"""SELECT id, actor, queue, payload, trace_id, attempt, max_attempts,
@@ -136,7 +137,7 @@ def _decode_jsonb(value: object) -> Any:
 
 
 async def _fleet_claim_loop_node(
-    pool: Any,
+    pool: asyncpg.Pool,
     schema: str,
     flow_id: str,
     fleet_worker: JobId,
@@ -211,7 +212,7 @@ async def _fleet_claim_loop_node(
 
 
 async def _assert_landed_release_preconditions(
-    pool: Any, schema: str, job_id: str, fleet_worker: JobId, claimed_attempt: int
+    pool: asyncpg.Pool, schema: str, job_id: str, fleet_worker: JobId, claimed_attempt: int
 ) -> None:
     """CL-4: before the release call, the row is RUNNING under this
     exact claim with `cancel_phase=0`; where `schedule_to_close` is set,
@@ -244,7 +245,7 @@ async def _assert_landed_release_preconditions(
 
 
 async def _assert_bounded_landing(
-    pool: Any, schema: str, job_id: str, *, claimed_attempt: int
+    pool: asyncpg.Pool, schema: str, job_id: str, *, claimed_attempt: int
 ) -> None:
     """The release LANDED: the row is `scheduled` (the live claim's
     deferral — not the tri-state union), at the documented 10-second
@@ -285,7 +286,7 @@ async def _assert_bounded_landing(
 
 
 async def _drive_through_consumer_loop(
-    pool: Any,
+    pool: asyncpg.Pool,
     dsn: str,
     schema: str,
     job: JobRow,
@@ -471,7 +472,7 @@ class _BackendDeps:
     heartbeat_pool: Any
     dispatcher_pool: Any = None
 
-    def __init__(self, schema: str, pool: Any) -> None:
+    def __init__(self, schema: str, pool: asyncpg.Pool) -> None:
         self.settings = _BackendSettings(schema)
         self.worker_pool = pool
         self.heartbeat_pool = pool
@@ -571,7 +572,9 @@ async def test_missing_iteration_ledger_identity_reaches_the_bounded_release(
 
     real_claim = ledger_module.claim_step_ledger
 
-    async def ledgerless_iteration_claim(conn: Any, wsql: Any, **kw: Any) -> Any:
+    async def ledgerless_iteration_claim(
+        conn: asyncpg.Connection, wsql: WorkflowSql, **kw: Any
+    ) -> Any:
         claim = await real_claim(conn, wsql, **kw)
         if ".iter" in str(kw.get("step_key", "")):
             # no identity to write and none may be manufactured — the

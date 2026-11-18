@@ -58,7 +58,7 @@ def _park_meta(flow_id: str, *, width: int, bound: int, cursor: bool = True) -> 
 
 
 async def _seed_marked_flow(
-    conn: Any,
+    conn: asyncpg.Connection,
     schema: str,
     *,
     width: int = 1,
@@ -318,7 +318,10 @@ async def test_vanilla_deadline_release_wake_is_never_lost_by_the_marker_sweep(
 
 
 async def test_handled_intent_never_rebumps_while_pending_no_busy_loop(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: Any
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The no-busy-loop law over the N3 selection: a marked flow whose
     intent is PENDING (the drain's own to observe) is never selected, and
@@ -338,7 +341,9 @@ async def test_handled_intent_never_rebumps_while_pending_no_busy_loop(
     real_observe = emit_mod.observe_emit_capacity
     observations: dict[str, int] = {}
 
-    async def _counting_observe(conn: Any, w: Any, *, flow_id: Any, **kwargs: Any) -> Any:
+    async def _counting_observe(
+        conn: asyncpg.Connection, w: Any, *, flow_id: Any, **kwargs: Any
+    ) -> Any:
         observations[str(flow_id)] = observations.get(str(flow_id), 0) + 1
         return await real_observe(conn, w, flow_id=flow_id, **kwargs)
 

@@ -53,7 +53,7 @@ def new_uuid_str() -> str:
     return str(new_uuid())
 
 
-async def _seed_scheduled_root(conn: Any, schema: str) -> str:
+async def _seed_scheduled_root(conn: asyncpg.Connection, schema: str) -> str:
     flow_id = str(new_uuid())
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
@@ -69,7 +69,7 @@ async def _seed_scheduled_root(conn: Any, schema: str) -> str:
     return flow_id
 
 
-async def _xid_text(conn: Any) -> str:
+async def _xid_text(conn: asyncpg.Connection) -> str:
     """The connection's own current transaction id in the PLAIN xid domain
     (N6-3's mandatory spelling)."""
     return str(await conn.fetchval("SELECT pg_current_xact_id()::xid::text"))

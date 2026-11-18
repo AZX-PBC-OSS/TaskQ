@@ -51,7 +51,7 @@ async def _wf_placeholder(payload: _WfPayload, ctx: JobContext[_WfPayload]) -> N
 
 
 async def _seed_flow_with_child(
-    conn: Any, schema: str, *, with_join: bool = False
+    conn: asyncpg.Connection, schema: str, *, with_join: bool = False
 ) -> tuple[str, str]:
     """A running root, a RUNNING claimed child (its exact claim identity)
     — and optionally the child's pending fail_closed join (the cascade's
@@ -104,13 +104,13 @@ async def _seed_flow_with_child(
     return flow_id, child
 
 
-async def _child_row(conn: Any, schema: str, child: str) -> dict[str, Any]:
+async def _child_row(conn: asyncpg.Connection, schema: str, child: str) -> dict[str, Any]:
     raw = await conn.fetchrow(f'SELECT * FROM "{schema}".jobs WHERE id = $1', child)
     assert raw is not None
     return dict(raw)
 
 
-async def _counts(conn: Any, schema: str, child: str) -> tuple[int, int, int]:
+async def _counts(conn: asyncpg.Connection, schema: str, child: str) -> tuple[int, int, int]:
     attempts = await conn.fetchval(
         f'SELECT count(*) FROM "{schema}".job_attempts WHERE job_id = $1', child
     )
@@ -454,7 +454,7 @@ class _BackendDeps:
     heartbeat_pool: Any
     dispatcher_pool: Any = None
 
-    def __init__(self, schema: str, pool: Any) -> None:
+    def __init__(self, schema: str, pool: asyncpg.Pool) -> None:
         self.settings = _BackendSettings(schema)
         self.worker_pool = pool
         self.heartbeat_pool = pool
@@ -848,7 +848,7 @@ async def _seed_real_fleet_corruption(
     return _FleetEstate(real_flow_id, str(child_id), join, workflow_name, runner, str(fleet_worker))
 
 
-def _loop_deps(settings: Any, pool: Any) -> Any:
+def _loop_deps(settings: Any, pool: asyncpg.Pool) -> Any:
     """The consumer loop's duck-typed deps (the existing release-arm
     control's shape)."""
     from types import SimpleNamespace

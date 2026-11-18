@@ -338,7 +338,9 @@ def new_uuid_hex() -> str:
     return new_uuid().hex
 
 
-async def _source_id(conn: Any, schema: str, flow_id: JobId, key: str = "source") -> JobId:
+async def _source_id(
+    conn: asyncpg.Connection, schema: str, flow_id: JobId, key: str = "source"
+) -> JobId:
     value = await conn.fetchval(
         f'SELECT id FROM "{schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = $2 "

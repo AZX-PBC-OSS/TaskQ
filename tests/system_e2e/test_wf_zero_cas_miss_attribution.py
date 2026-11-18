@@ -46,6 +46,7 @@ from taskq.backend._protocol import JobId
 from taskq.backend._sql_templates import render as render_backend_sql
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows._emit import COUNTERS, wake_emit_backpressure
+from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import render_workflow_sql
 
 pytestmark = [pytest.mark.system, pytest.mark.integration]
@@ -74,7 +75,7 @@ def _park_meta(flow_id: str, *, width: int, bound: int) -> dict[str, Any]:
     }
 
 
-async def _seed_miss_estate(conn: Any, schema: str) -> tuple[str, str, str]:
+async def _seed_miss_estate(conn: asyncpg.Connection, schema: str) -> tuple[str, str, str]:
     """The miss's estate: a running root, the parked source (its cursor
     un-moved), one SUCCEEDED child (the spent charge), one LIVE pending
     child, and a PENDING intent (wake=1, handled=0) — the parked source
@@ -138,7 +139,7 @@ async def _seed_miss_estate(conn: Any, schema: str) -> tuple[str, str, str]:
 
 
 async def test_zero_cas_miss_leaves_intent_pending_and_the_next_arm_completes_it(
-    pg_dsn: str, module_pg_schema: ModulePgSchema, tmp_path: Any
+    pg_dsn: str, module_pg_schema: ModulePgSchema, tmp_path: Path
 ) -> None:
     """The zero-CAS miss (the real cancel racing the real promotion
     primitive) leaves the intent pending with zero spin; the second OS
@@ -188,11 +189,11 @@ async def _race_phase(
     holder: Any,
     blocker_tx: Any,
     poller: Any,
-    pool: Any,
-    wsql: Any,
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
     flow_id: str,
     source_id: str,
-    tmp_path: Any,
+    tmp_path: Path,
     pg_dsn: str,
     schema: str,
 ) -> None:

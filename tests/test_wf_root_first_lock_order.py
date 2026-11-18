@@ -34,6 +34,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows._emit import wake_emit_backpressure
+from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import render_workflow_sql
 
 pytestmark = pytest.mark.integration
@@ -45,7 +46,7 @@ class _HandshakeTimeoutError(Exception):
     """The keyed blocked-state evidence never appeared within the bound."""
 
 
-async def _txid_of(conn: Any) -> str:
+async def _txid_of(conn: asyncpg.Connection) -> str:
     """The connection's OWN current transaction id, normalized to the
     plain xid domain (N6-3: `pg_current_xact_id()::xid::text` — the
     64-bit xid8's textual form diverges from `pg_locks.transactionid`
@@ -136,7 +137,7 @@ def _park_meta(flow_id: str, *, width: int, bound: int) -> dict[str, Any]:
     }
 
 
-async def _seed_peer_deadlock_estate(conn: Any, schema: str) -> tuple[str, str]:
+async def _seed_peer_deadlock_estate(conn: asyncpg.Connection, schema: str) -> tuple[str, str]:
     """THE F2 TOPOLOGY: a running root, a genuinely exhausted failed
     child B, the parked source A, and the fail_closed join J whose
     parents are A AND B — the failing child and the parked source are
@@ -207,7 +208,9 @@ async def _seed_peer_deadlock_estate(conn: Any, schema: str) -> tuple[str, str]:
     return flow_id, source_id
 
 
-async def _run_real_cascade_seat(conn: Any, wsql: Any, flow_id: str, child_id: str) -> None:
+async def _run_real_cascade_seat(
+    conn: asyncpg.Connection, wsql: WorkflowSql, flow_id: str, child_id: str
+) -> None:
     """The REAL failure-cascade seat (`engine._resolve_failed_parent`),
     driven the way the runner's own exhaustion arm drives it."""
     from taskq.workflows.engine import _resolve_failed_parent
@@ -401,7 +404,9 @@ async def test_root_first_order_never_deadlocks_the_cascade_against_the_drain(
         await poller.close()
 
 
-async def _seed_park_order_estate(conn: Any, schema: str) -> tuple[str, str, str, Any]:
+async def _seed_park_order_estate(
+    conn: asyncpg.Connection, schema: str
+) -> tuple[str, str, str, Any]:
     """One running root, one RUNNING source (its claim's exact ledger
     identity), the capacity record: the real park seat's own input."""
     flow_id = str(new_uuid())
@@ -448,7 +453,13 @@ async def _seed_park_order_estate(conn: Any, schema: str) -> tuple[str, str, str
 
 
 async def _run_real_park_seat(
-    pool: Any, wsql: Any, *, flow_id: str, source_id: str, ledger_id: str, claimed_at: Any
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    flow_id: str,
+    source_id: str,
+    ledger_id: str,
+    claimed_at: Any,
 ) -> None:
     """The REAL park seat (`defer_row_law` with the EmitBackpressure
     disposition) — the runner's own park door."""

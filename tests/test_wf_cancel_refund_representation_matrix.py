@@ -94,7 +94,7 @@ def _new_uuid_str() -> str:
 class _Conn:
     """The observation's minimal connection view over the pool."""
 
-    def __init__(self, pool: Any) -> None:
+    def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
     def __getattr__(self, name: str) -> Any:
@@ -137,7 +137,7 @@ class Estate:
 # ── the estate seeds ─────────────────────────────────────────────────────
 
 
-async def _seed_flow_root(conn: Any, schema: str) -> JobId:
+async def _seed_flow_root(conn: asyncpg.Connection, schema: str) -> JobId:
     flow = JobId(_new_uuid_str())
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, status, '
@@ -152,7 +152,7 @@ async def _seed_flow_root(conn: Any, schema: str) -> JobId:
 
 
 async def _seed_target(
-    conn: Any,
+    conn: asyncpg.Connection,
     schema: str,
     flow: JobId,
     key: str,
@@ -188,7 +188,7 @@ async def _seed_target(
 
 
 async def _seed_decoys(
-    conn: Any,
+    conn: asyncpg.Connection,
     schema: str,
     estate_flow: JobId,
     job: JobId,
@@ -251,7 +251,9 @@ async def _seed_decoys(
 # ── the seven representation drivers (each a REAL product path) ──────────
 
 
-async def _claim_outer(pool: Any, wf_sql: WorkflowSql, flow: JobId, job: JobId, key: str) -> Any:
+async def _claim_outer(
+    pool: asyncpg.Pool, wf_sql: WorkflowSql, flow: JobId, job: JobId, key: str
+) -> Any:
     from taskq.workflows.ledger import claim_step_ledger
 
     async with pool.acquire() as conn:
@@ -268,7 +270,7 @@ async def _claim_outer(pool: Any, wf_sql: WorkflowSql, flow: JobId, job: JobId, 
 
 
 async def _drive_snooze(
-    pool: Any,
+    pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     schema: str,
     flow: JobId,
@@ -298,7 +300,7 @@ async def _drive_snooze(
 
 
 async def _drive_retry_after(
-    pool: Any,
+    pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     schema: str,
     flow: JobId,
@@ -334,7 +336,7 @@ async def _drive_retry_after(
 
 
 async def _drive_non_consuming(
-    pool: Any,
+    pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     schema: str,
     flow: JobId,
@@ -374,7 +376,7 @@ async def _drive_non_consuming(
 
 
 async def _drive_hold(
-    pool: Any,
+    pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     schema: str,
     flow: JobId,
@@ -412,7 +414,7 @@ async def _drive_hold(
 
 
 async def _drive_shutdown_drain(
-    pool: Any,
+    pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     schema: str,
     flow: JobId,
@@ -431,7 +433,7 @@ async def _drive_shutdown_drain(
 
 
 async def _drive_heartbeat_reconcile(
-    pool: Any,
+    pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     schema: str,
     flow: JobId,
@@ -458,7 +460,7 @@ async def _drive_heartbeat_reconcile(
 
 
 async def _drive_reclaim_crashed(
-    pool: Any,
+    pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     schema: str,
     flow: JobId,
@@ -662,7 +664,9 @@ async def _build_estate(
 # ── the independent derived-capacity count ───────────────────────────────
 
 
-async def _independent_capacity(conn: Any, schema: str, flow: JobId) -> tuple[int, int]:
+async def _independent_capacity(
+    conn: asyncpg.Connection, schema: str, flow: JobId
+) -> tuple[int, int]:
     """The documented live-row/reservation predicate, counted directly —
     the product's own observation is asserted AGAINST this, never trusted
     alone. (These flows hold no exact parks, so the park exclusion is the
@@ -687,7 +691,7 @@ async def _independent_capacity(conn: Any, schema: str, flow: JobId) -> tuple[in
 
 
 async def _assert_decoys_untouched(
-    conn: Any, schema: str, estate: Estate, before_stamps: dict[str, dict[str, Any]]
+    conn: asyncpg.Connection, schema: str, estate: Estate, before_stamps: dict[str, dict[str, Any]]
 ) -> None:
     rows = await conn.fetch(
         f"""SELECT id, status::text AS status, error_class, attempt::int AS attempt,

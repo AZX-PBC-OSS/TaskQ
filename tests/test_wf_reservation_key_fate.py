@@ -40,7 +40,7 @@ def _meta(raw: object) -> dict[str, Any]:
 
 
 async def _seed_reserved_running(
-    conn: Any, schema: str, flow: JobId, step_key: str = "source"
+    conn: asyncpg.Connection, schema: str, flow: JobId, step_key: str = "source"
 ) -> JobId:
     """A promoted source's claimed row carrying its page-width reservation."""
     from taskq._ids import new_uuid
@@ -62,8 +62,9 @@ async def _seed_reserved_running(
     return job
 
 
-async def _observation(conn: Any, wsql: WorkflowSql, flow: JobId) -> tuple[int, int]:
+async def _observation(conn: asyncpg.Connection, wsql: WorkflowSql, flow: JobId) -> tuple[int, int]:
     row = await conn.fetchrow(wsql.emit_capacity_observation, flow, None)
+    assert row is not None  # the aggregate always returns exactly one row
     return int(row["live_rows"]), int(row["reservations"])
 
 

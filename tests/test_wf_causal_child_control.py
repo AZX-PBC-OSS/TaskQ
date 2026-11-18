@@ -35,7 +35,7 @@ from taskq.workflows._sql import WorkflowSql
 pytestmark = pytest.mark.integration
 
 
-async def _seed_root(conn: Any, schema: str) -> str:
+async def _seed_root(conn: asyncpg.Connection, schema: str) -> str:
     flow_id = str(new_uuid())
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
@@ -51,7 +51,7 @@ async def _seed_root(conn: Any, schema: str) -> str:
 
 
 async def _seed_node(
-    conn: Any,
+    conn: asyncpg.Connection,
     schema: str,
     flow_id: str,
     step_key: str,
@@ -79,7 +79,7 @@ async def _seed_node(
 
 
 async def _seed_failed_ledger(
-    conn: Any, schema: str, flow_id: str, job_id: str, *, age: bool = False
+    conn: asyncpg.Connection, schema: str, flow_id: str, job_id: str, *, age: bool = False
 ) -> str:
     ledger_id = str(new_uuid())
     await conn.execute(
@@ -97,7 +97,9 @@ async def _seed_failed_ledger(
     return ledger_id
 
 
-async def _seed_absorbed_edge(conn: Any, schema: str, flow_id: str, parent: str, join: str) -> None:
+async def _seed_absorbed_edge(
+    conn: asyncpg.Connection, schema: str, flow_id: str, parent: str, join: str
+) -> None:
     """An ABSORBING (collect) edge whose consumer is live: the parent's
     failure IS absorbed (the fan-in's own delivery)."""
     await conn.execute(
@@ -109,7 +111,9 @@ async def _seed_absorbed_edge(conn: Any, schema: str, flow_id: str, parent: str,
     )
 
 
-async def _run_maintenance(conn: Any, pool: Any, wsql: WorkflowSql) -> dict[str, Any]:
+async def _run_maintenance(
+    conn: asyncpg.Connection, pool: asyncpg.Pool, wsql: WorkflowSql
+) -> dict[str, Any]:
     from taskq.workflows._sweep import sweep_join_rederive
 
     await sweep_join_rederive(pool, wsql, batch_size=10)
@@ -117,7 +121,9 @@ async def _run_maintenance(conn: Any, pool: Any, wsql: WorkflowSql) -> dict[str,
     return {}
 
 
-async def _refusal_record(conn: Any, schema: str, source_id: str) -> dict[str, Any] | None:
+async def _refusal_record(
+    conn: asyncpg.Connection, schema: str, source_id: str
+) -> dict[str, Any] | None:
     """The fenced source's own refusal record (the fence writes it on the
     parked source's row)."""
     raw = await conn.fetchval(
@@ -131,7 +137,7 @@ async def _refusal_record(conn: Any, schema: str, source_id: str) -> dict[str, A
     return doc
 
 
-async def _seed_parked_source(conn: Any, schema: str, flow_id: str) -> str:
+async def _seed_parked_source(conn: asyncpg.Connection, schema: str, flow_id: str) -> str:
     """The §5.4 fence's own subject: one exact parked source of the flow
     (the refusal record lands here). Cursor-bearing — the causal-child
     direction is orthogonal to the cursor gate, so the PRE-FIX fence runs

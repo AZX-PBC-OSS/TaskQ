@@ -122,7 +122,9 @@ async def _stop(proc: Any) -> None:
         await asyncio.to_thread(proc.proc.wait)
 
 
-async def _spawn(conn: Any, pg_dsn: str, schema: str, log_dir: Any, tag: str, *, hook: bool) -> Any:
+async def _spawn(
+    conn: asyncpg.Connection, pg_dsn: str, schema: str, log_dir: Any, tag: str, *, hook: bool
+) -> Any:
     from tests.system_e2e._harness import spawn_joined_worker
 
     extra_env: dict[str, str] = {"TASKQ_QUEUES": _QUEUES, "TASKQ_MAX_CONCURRENCY": "32"}

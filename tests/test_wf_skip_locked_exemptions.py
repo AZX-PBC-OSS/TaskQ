@@ -46,7 +46,7 @@ pytestmark = pytest.mark.integration
 _NON_WAITING_BOUND_S = 5.0
 
 
-async def _seed_maintained_flow(conn: Any, schema: str) -> tuple[str, str]:
+async def _seed_maintained_flow(conn: asyncpg.Connection, schema: str) -> tuple[str, str]:
     """A running root whose every node is terminal (one succeeded node):
     the maintenance seat's own derivation finalizes the root
     'succeeded' and records the state_change event — the deferred work
@@ -76,7 +76,7 @@ async def _seed_maintained_flow(conn: Any, schema: str) -> tuple[str, str]:
     return flow_id, node_id
 
 
-async def _seed_stale_cache_join(conn: Any, schema: str) -> str:
+async def _seed_stale_cache_join(conn: asyncpg.Connection, schema: str) -> str:
     """A due join-wait row whose deps_pending cache is STALE-HIGH (2) but
     whose parents resolve to one un-terminal (a succeeded parent, a
     pending one): the rederive seat's reconcile arm corrects the cache
@@ -140,7 +140,7 @@ async def _seed_stale_cache_join(conn: Any, schema: str) -> str:
     return join_id
 
 
-async def _row(conn: Any, schema: str, job_id: str) -> dict[str, Any]:
+async def _row(conn: asyncpg.Connection, schema: str, job_id: str) -> dict[str, Any]:
     raw = await conn.fetchrow(f'SELECT * FROM "{schema}".jobs WHERE id = $1', job_id)
     assert raw is not None
     return dict(raw)

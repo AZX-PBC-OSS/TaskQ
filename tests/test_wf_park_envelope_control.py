@@ -75,7 +75,9 @@ class _ParkArm:
     """One ladder arm's fixture: the truncated relation, the pinned seed
     order, ANALYZE, and the observed plan."""
 
-    def __init__(self, conn: Any, wsql: WorkflowSql, schema: str, flow_id: str) -> None:
+    def __init__(
+        self, conn: asyncpg.Connection, wsql: WorkflowSql, schema: str, flow_id: str
+    ) -> None:
         self._conn = conn
         self._wsql = wsql
         self._schema = schema

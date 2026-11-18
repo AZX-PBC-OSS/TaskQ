@@ -151,7 +151,7 @@ def _whole_object_set(schema: str) -> dict[str, Any]:
     }
 
 
-async def _catalog_facts(conn: Any, schema: str) -> dict[str, Any]:
+async def _catalog_facts(conn: asyncpg.Connection, schema: str) -> dict[str, Any]:
     """Every probe is absence-tolerant (the LOST-migration branch reads the
     pre-fold shape, where the post-fold relations do not exist): a missing
     relation reads as None, the same face a missing column gets."""

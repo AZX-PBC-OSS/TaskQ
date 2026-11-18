@@ -25,7 +25,7 @@ def new_uuid_str() -> str:
     return str(new_uuid())
 
 
-async def _seed_flow_root(conn: Any, schema: str) -> JobId:
+async def _seed_flow_root(conn: asyncpg.Connection, schema: str) -> JobId:
     flow = JobId(new_uuid_str())
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, status, '
@@ -40,7 +40,7 @@ async def _seed_flow_root(conn: Any, schema: str) -> JobId:
 
 
 async def _seed_node(
-    conn: Any, schema: str, flow: JobId, step_key: str, *, status: str = "running"
+    conn: asyncpg.Connection, schema: str, flow: JobId, step_key: str, *, status: str = "running"
 ) -> JobId:
     job = JobId(new_uuid_str())
     await conn.execute(
@@ -275,7 +275,7 @@ async def test_park_and_cancel_race_resolves_by_row_state(
 class _Conn:
     """The observation's minimal connection view over the pool."""
 
-    def __init__(self, pool: Any) -> None:
+    def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
     def __getattr__(self, name: str) -> Any:
@@ -290,7 +290,7 @@ class _Conn:
 
 
 async def _seed_nonrunning_target_with_decoys(
-    conn: Any, schema: str, flow: JobId, *, status: str, parked: bool
+    conn: asyncpg.Connection, schema: str, flow: JobId, *, status: str, parked: bool
 ) -> tuple[JobId, str, str, str, str]:
     """One non-running target job + its exact ledger estate: the outer
     current claim (epoch 2, the ordinary physical attempt), the
@@ -845,7 +845,7 @@ async def test_fail_closed_peer_cancel_is_a_complete_root_ordered_transition(
 
 
 async def _seed_duplicate_attempt_estate(
-    conn: Any, schema: str, flow: JobId, step_key: str, *, status: str
+    conn: asyncpg.Connection, schema: str, flow: JobId, step_key: str, *, status: str
 ) -> tuple[JobId, str, str]:
     """The round-4 estate: ONE job whose ledger carries TWO nonterminal
     rows at the same (job, epoch, step, map) — the ledger's own arbiter

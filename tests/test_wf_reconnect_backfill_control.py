@@ -102,7 +102,7 @@ JournalEntry = tuple[str, ...]
 
 
 def _recording(entry_cb: Any, journal: list[JournalEntry]) -> Any:
-    def _cb(conn: Any, pid: int, ch: str, payload: str) -> None:
+    def _cb(conn: asyncpg.Connection, pid: int, ch: str, payload: str) -> None:
         # THE INVOKED CHANNEL, not the entry's own: a host that delivers
         # a wake carrying ANOTHER entry's channel (the cross-channel
         # mutant) is visible here as a substituted pair. The identity is
@@ -147,7 +147,7 @@ def _registry(schema: str, backend: Any, journal: list[JournalEntry]) -> list[_N
     through."""
     cap_cb = _make_wf_emit_capacity_callback(backend)
 
-    def own_cb(conn: Any, pid: int, ch: str, payload: str) -> None:
+    def own_cb(conn: asyncpg.Connection, pid: int, ch: str, payload: str) -> None:
         del conn, pid, ch, payload
 
     entries = [
@@ -351,7 +351,7 @@ async def test_raising_gated_hook_cannot_prevent_the_drain_arms(
     drained = asyncio.Event()
     backend._wf_emit_capacity_subscribers.add(drained)
 
-    def raising_hook(conn: Any, pid: int, ch: str, payload: str) -> None:
+    def raising_hook(conn: asyncpg.Connection, pid: int, ch: str, payload: str) -> None:
         # TOTAL: the event first, then the raising bookkeeping.
         for event in list(backend._wf_emit_capacity_subscribers):
             event.set()
@@ -387,7 +387,7 @@ async def test_raising_gated_hook_cannot_prevent_the_drain_arms(
 
 
 def _mutant_host_wake_only_channels0(
-    channels: list[_NotifyEntry], conn: Any, wake_log: list[str]
+    channels: list[_NotifyEntry], conn: asyncpg.Connection, wake_log: list[str]
 ) -> asyncio.Task[None]:
     """THE HOST MUTANT A (the pre-fix host's own shape): the reconnect
     LISTENs every channel but offers ONE simulated wake to
@@ -405,7 +405,7 @@ def _mutant_host_wake_only_channels0(
 
 
 def _mutant_host_cross_channel_wake(
-    channels: list[_NotifyEntry], conn: Any, wake_log: list[str]
+    channels: list[_NotifyEntry], conn: asyncpg.Connection, wake_log: list[str]
 ) -> asyncio.Task[None]:
     """THE HOST MUTANT B: the reconnect wakes every backfill hook but
     carries ``channels[0]``'s channel to EVERY callback — a substituted,

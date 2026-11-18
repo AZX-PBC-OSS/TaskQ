@@ -52,6 +52,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.workflows._emit import wake_emit_backpressure
+from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import render_workflow_sql
 
 pytestmark = pytest.mark.integration
@@ -78,7 +79,7 @@ def _park_meta(flow_id: str, *, width: int, bound: int) -> dict[str, Any]:
     }
 
 
-async def _seed_cascade_estate(conn: Any, schema: str) -> tuple[str, str]:
+async def _seed_cascade_estate(conn: asyncpg.Connection, schema: str) -> tuple[str, str]:
     """A running root, an exhausted failed child, the child's fail_closed
     join row, the parked source (with its cursor), a pending intent: the
     cascade's own estate."""
@@ -147,7 +148,7 @@ async def _seed_cascade_estate(conn: Any, schema: str) -> tuple[str, str]:
     return flow_id, source_id
 
 
-async def _run_real_cascade_seat(conn: Any, wsql: Any, flow_id: str) -> None:
+async def _run_real_cascade_seat(conn: asyncpg.Connection, wsql: WorkflowSql, flow_id: str) -> None:
     """The REAL failure-cascade seat (`engine._resolve_failed_parent` —
     the cascade statement + the gated §5.4 fence, one transaction), driven
     the way the runner's own exhaustion arm drives it."""

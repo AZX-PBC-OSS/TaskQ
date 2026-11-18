@@ -59,7 +59,9 @@ def _park_meta(flow_id: str, *, width: int, bound: int) -> dict[str, Any]:
     }
 
 
-async def _seed_flow_root(conn: Any, schema: str, flow_id: str, *, status: str = "running") -> None:
+async def _seed_flow_root(
+    conn: asyncpg.Connection, schema: str, flow_id: str, *, status: str = "running"
+) -> None:
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key) "

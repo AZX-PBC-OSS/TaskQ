@@ -53,7 +53,7 @@ pytestmark = [pytest.mark.system, pytest.mark.integration]
 _QUEUES = f"{entry.SOURCE_QUEUE},{entry.C7_CHILD_QUEUE}"
 
 
-async def _seed_gate(pool: Any, schema: str, hold_s: float) -> None:
+async def _seed_gate(pool: asyncpg.Pool, schema: str, hold_s: float) -> None:
     await pool.execute(
         f'CREATE TABLE IF NOT EXISTS "{schema}".p2sat_c7_gate (id int PRIMARY KEY, hold_s float8)'
     )

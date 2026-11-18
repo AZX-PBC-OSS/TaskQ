@@ -72,7 +72,7 @@ def _park_meta(flow_id: str, *, width: int, bound: int, cursor: bool) -> dict[st
     return meta
 
 
-async def _seed_flow_root(conn: Any, schema: str, *, status: str = "failed") -> str:
+async def _seed_flow_root(conn: asyncpg.Connection, schema: str, *, status: str = "failed") -> str:
     flow_id = str(new_uuid())
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
@@ -90,7 +90,7 @@ async def _seed_flow_root(conn: Any, schema: str, *, status: str = "failed") -> 
 
 
 async def _seed_parked_source(
-    conn: Any, schema: str, flow_id: str, *, cursor: bool, step_key: str = "source"
+    conn: asyncpg.Connection, schema: str, flow_id: str, *, cursor: bool, step_key: str = "source"
 ) -> str:
     source_id = str(new_uuid())
     await conn.execute(
@@ -109,7 +109,7 @@ async def _seed_parked_source(
 
 
 async def _seed_awaited_ledger(
-    conn: Any,
+    conn: asyncpg.Connection,
     schema: str,
     flow_id: str,
     job_id: str,

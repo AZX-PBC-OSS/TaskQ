@@ -82,7 +82,7 @@ def _chain(suffix: str) -> Chain:
     )
 
 
-async def _source_id(conn: Any, schema: str, flow_id: JobId) -> JobId:
+async def _source_id(conn: asyncpg.Connection, schema: str, flow_id: JobId) -> JobId:
     raw = await conn.fetchval(
         f'SELECT id FROM "{schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key = 'source'",
@@ -92,7 +92,7 @@ async def _source_id(conn: Any, schema: str, flow_id: JobId) -> JobId:
     return JobId(str(raw))
 
 
-async def _source_meta(conn: Any, schema: str, source_id: JobId) -> dict[str, Any]:
+async def _source_meta(conn: asyncpg.Connection, schema: str, source_id: JobId) -> dict[str, Any]:
     raw = await conn.fetchval(f'SELECT metadata FROM "{schema}".jobs WHERE id = $1', source_id)
     assert raw is not None
     doc: dict[str, Any] = _json.loads(raw) if isinstance(raw, str) else dict(raw)
@@ -576,7 +576,9 @@ def _meta_of(raw: object) -> dict[str, Any]:
     return decoded
 
 
-async def _seed_reserved_peer(conn: Any, schema: str, flow: JobId, *, width: int) -> JobId:
+async def _seed_reserved_peer(
+    conn: asyncpg.Connection, schema: str, flow: JobId, *, width: int
+) -> JobId:
     """One live peer row carrying a valid two-key reservation — join-blocked
     (deps_pending=1), so the runner's own tick can never claim or resolve
     it: the peer's charge is STABLE for the arms that need it stable."""
@@ -762,7 +764,7 @@ def _build_c13_flow(name: str) -> Any:
 
 
 async def test_direct_drive_producing_verdict_and_cursor_resume_after_death(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, tmp_path: Any, pg_dsn: str
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, tmp_path: Path, pg_dsn: str
 ) -> None:
     """§9 control 13: the direct drive counts its own initial backfill
     (the B term), the producing drive's verdict is terminal, and a

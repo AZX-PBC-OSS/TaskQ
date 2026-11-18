@@ -45,7 +45,7 @@ def _meta(raw: object) -> dict[str, Any]:
 
 
 async def _seed_reserved(
-    conn: Any, schema: str, flow: JobId, step_key: str, status: str, *, width: int
+    conn: asyncpg.Connection, schema: str, flow: JobId, step_key: str, status: str, *, width: int
 ) -> JobId:
     """A reserved row in the given status (the families' shared input)."""
     job = JobId(new_uuid())
@@ -69,9 +69,10 @@ def _wsql(schema: str) -> WorkflowSql:
     return WorkflowSql.build(schema)
 
 
-async def _observation(conn: Any, wsql: WorkflowSql, flow: JobId) -> tuple[int, int]:
+async def _observation(conn: asyncpg.Connection, wsql: WorkflowSql, flow: JobId) -> tuple[int, int]:
     """The derived charge after a winning statement (the §2.3 read)."""
     row = await conn.fetchrow(wsql.emit_capacity_observation, flow, None)
+    assert row is not None  # the aggregate always returns exactly one row
     return int(row["live_rows"]), int(row["reservations"])
 
 

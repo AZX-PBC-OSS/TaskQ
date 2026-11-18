@@ -143,7 +143,7 @@ def _new_uuid() -> str:
 class _Conn:
     """The observation's minimal connection view over the pool."""
 
-    def __init__(self, pool: Any) -> None:
+    def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
     def __getattr__(self, name: str) -> Any:
@@ -154,7 +154,7 @@ class _Conn:
             return await conn.fetchrow(*args)
 
 
-async def _seed_running_source(conn: Any, schema: str, flow: JobId) -> JobId:
+async def _seed_running_source(conn: asyncpg.Connection, schema: str, flow: JobId) -> JobId:
     from taskq._ids import new_uuid
 
     job = JobId(new_uuid())
@@ -171,7 +171,9 @@ async def _seed_running_source(conn: Any, schema: str, flow: JobId) -> JobId:
     return job
 
 
-async def _seed_live_peers(conn: Any, schema: str, flow: JobId, *, count: int) -> None:
+async def _seed_live_peers(
+    conn: asyncpg.Connection, schema: str, flow: JobId, *, count: int
+) -> None:
     from taskq._ids import new_uuid
 
     for _ in range(count):
