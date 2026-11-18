@@ -386,7 +386,21 @@ async def _c4c_spawn(ctx: StepContext, item: object) -> C4Ok:
         return C4Ok.OK
     await asyncio.sleep(2.0)
     # The FIRST run: park this A through the product's own park path —
-    # the outstanding is this body's own honest read of the live estate.
+    # the outstanding is this body's own honest read of the live estate,
+    # and the bound is THIS flow's own declared max_in_flight read off
+    # the wired ctx (the shared chain serves estates declaring different
+    # bounds — c4_chunk_flow 400, c4_seed_flow 800 — so a hard-coded
+    # constant drifts the estate's declaration and the body's raise apart;
+    # the ctx wiring is the declaration's own runtime face).
+    declared = ctx._max_in_flight
+    if declared is None:
+        # The explicit unbounded declaration has no park bound to raise
+        # with; fabricating one would be exactly the drift this body
+        # refuses. Fail closed.
+        raise RuntimeError(
+            "the c4 spawn estate's flow declared no max_in_flight; "
+            "the park raise has no declared bound to present"
+        )
     conn2 = await asyncpg.connect(os.environ["TASKQ_PG_DSN"])
     try:
         outstanding = int(
@@ -402,7 +416,7 @@ async def _c4c_spawn(ctx: StepContext, item: object) -> C4Ok:
         await conn2.close()
     raise EmitBackpressure(
         page_width=1,
-        bound=CHUNK_ESTATE,  # this flow's own declared max_in_flight
+        bound=declared,  # this flow's own declared max_in_flight
         outstanding=outstanding,
     )
 
