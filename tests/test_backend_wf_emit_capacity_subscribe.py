@@ -32,6 +32,8 @@ import pytest
 
 from taskq.backend._protocol import Backend
 from taskq.testing.fixtures import JobsApp, ModulePgSchema
+from taskq.worker import leader as leader_mod
+from tests._ns_patch import patch_ns
 
 pytestmark = pytest.mark.integration
 
@@ -160,7 +162,12 @@ class TestWfEmitCapacitySubscriptionLifecycle:
 
         # THE RESIDUAL-TASK PROBE: record every task created while the
         # loop ran; at the end each must be done (the loop's own finally
-        # cancels and awaits its waiter pair).
+        # cancels and awaits its waiter pair). The probe patches the
+        # OWNER's own ``asyncio`` binding (taskq.worker.leader's - the
+        # module whose code resolves the name), never the stdlib module
+        # object: a process-global create_task patch is visible to every
+        # coroutine in the process for the patch's length (the suite
+        # hygiene control's own violation class) - tests/_ns_patch.py.
         recorded: list[asyncio.Task[object]] = []
         real_create_task = asyncio.create_task
 
@@ -171,7 +178,7 @@ class TestWfEmitCapacitySubscriptionLifecycle:
             recorded.append(task)
             return task
 
-        monkeypatch.setattr(asyncio, "create_task", _recording_create_task)
+        patch_ns(monkeypatch, leader_mod, "asyncio", create_task=_recording_create_task)
 
         async def _notify_and_stop() -> None:
             # Wait for the loop's own registration (the handshake — never
