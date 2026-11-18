@@ -384,6 +384,31 @@ async def test_committed_threshold_survives_kill_and_recovers_on_second_pid(
         replacement = await _spawn_pod(conn, pg_dsn, schema, log_dir, "c4-kill-replacement")
         assert replacement.proc.pid != victim_pid, "the replacement must be a DIFFERENT real PID"
 
+        # THE PRESERVED-REST PAIR'S OWN WINDOW: read BEFORE the full
+        # estate settles. The resumed claim's terminal row lands in the
+        # source's own finalize — atomically with the source's
+        # 'succeeded' job row (the terminal-atomicity rule) — while the
+        # resumed page's child still holds the run live (its gate spans
+        # the window). The terminal-flow reaper (`wf_phantom_reap`,
+        # PHANTOM_REAP_SQL) fences every nonterminal ledger row of a
+        # TERMINAL flow at the sweep cadence — the preserved 'awaited'
+        # rest is its subject the moment the run's root derives terminal
+        # (the pin-15 rows-alone law), which is exactly the race this
+        # read must not run. Here the reaper's precondition (a terminal
+        # root) cannot yet exist, so the 'awaited' status is guaranteed,
+        # not raced.
+        async def _resumed() -> bool:
+            row = await _source_row(pool, schema, flow_id)
+            return row["status"] == "succeeded"
+
+        await _wait_for(_resumed, 0.05, 300, "the replacement never re-completed the source")
+        ledgers = await _source_ledger(pool, schema, flow_id)
+        # THE RECOVERY'S OWN PAIR: the preserved 'awaited' rest beside the
+        # resumed claim's own succeeded row (the new epoch's own row — the
+        # parked attempt's record is never overwritten).
+        assert [r["status"] for r in ledgers] == ["awaited", "succeeded"], ledgers
+        assert [int(r["attempt"]) for r in ledgers] == [1, 1], ledgers
+
         # THE READINESS LAW (the round-19 flake's own lesson): the wait
         # completes only when EVERY fact the assertions below read is
         # stable — the source succeeded AND the durable children rows
@@ -417,8 +442,8 @@ async def test_committed_threshold_survives_kill_and_recovers_on_second_pid(
         # THE RECOVERY'S OWN ACCOUNTING: exactly ONE promotion from the
         # unchanged cursor; the exact three children ONCE each (no
         # duplicates — a re-emit would duplicate); the preserved
-        # `awaited` beside the resumed claim's terminal; no
-        # logical-attempt spend.
+        # `awaited` beside the resumed claim's terminal (asserted in the
+        # pair's own window above); no logical-attempt spend.
         source = await _source_row(pool, schema, flow_id)
         meta = _meta(source)
         pressure = meta["wf_emit_backpressure"]
@@ -433,9 +458,6 @@ async def test_committed_threshold_survives_kill_and_recovers_on_second_pid(
         assert [int(r["m"]) for r in children] == [0, 1, 2], children
         assert {r["status"] for r in children} == {"succeeded"}, children
         assert len({r["idempotency_key"] for r in children}) == 3
-        ledgers = await _source_ledger(pool, schema, flow_id)
-        assert [r["status"] for r in ledgers] == ["awaited", "succeeded"], ledgers
-        assert [int(r["attempt"]) for r in ledgers] == [1, 1], ledgers
         counts = await _flow_counts(pool, schema, flow_id)
         assert counts["failed"] == 0, counts
 
@@ -539,6 +561,31 @@ async def test_park_before_ack_kill_preserves_marker_and_promotes_once(
         replacement = await _spawn_pod(conn, pg_dsn, schema, log_dir, "c4-park-replacement")
         assert replacement.proc.pid != victim_pid
 
+        # THE PRESERVED-REST PAIR'S OWN WINDOW: read BEFORE the full
+        # estate settles. The resumed claim's terminal row lands in the
+        # source's own finalize — atomically with the source's
+        # 'succeeded' job row (the terminal-atomicity rule) — while the
+        # resumed page's child still holds the run live (its gate spans
+        # the window). The terminal-flow reaper (`wf_phantom_reap`,
+        # PHANTOM_REAP_SQL) fences every nonterminal ledger row of a
+        # TERMINAL flow at the sweep cadence — the preserved 'awaited'
+        # rest is its subject the moment the run's root derives terminal
+        # (the pin-15 rows-alone law), which is exactly the race the
+        # lane red exposed. Here the reaper's precondition (a terminal
+        # root) cannot yet exist, so the 'awaited' status is guaranteed,
+        # not raced.
+        async def _resumed() -> bool:
+            row = await _source_row(pool, schema, flow_id)
+            return row["status"] == "succeeded"
+
+        await _wait_for(_resumed, 0.05, 300, "the replacement never re-completed the source")
+        ledgers = await _source_ledger(pool, schema, flow_id)
+        # THE RECOVERY'S OWN PAIR: the preserved 'awaited' rest beside the
+        # resumed claim's own succeeded row (the new epoch's own row — the
+        # parked attempt's record is never overwritten).
+        assert [r["status"] for r in ledgers] == ["awaited", "succeeded"], ledgers
+        assert [int(r["attempt"]) for r in ledgers] == [1, 1], ledgers
+
         # THE READINESS LAW (the same one the committed-threshold control
         # states): the assertions below read the source's estate, the
         # run's children (through the whole-flow failed count) and the
@@ -568,7 +615,8 @@ async def test_park_before_ack_kill_preserves_marker_and_promotes_once(
 
         # THE RECOVERY: exactly one later promotion; no attempt inflation
         # beyond the reclaim's own documented rule (the source's physical
-        # attempt stays 1 — the park's refund stands).
+        # attempt stays 1 — the park's refund stands). The preserved-rest
+        # pair itself was asserted in its own window above.
         source = await _source_row(pool, schema, flow_id)
         meta = _meta(source)
         pressure = meta["wf_emit_backpressure"]
@@ -579,12 +627,6 @@ async def test_park_before_ack_kill_preserves_marker_and_promotes_once(
         assert meta["wf_source_logical_attempt"] == 1, meta
         intent = await _intent_row(pool, schema, flow_id)
         assert intent["handled"] == intent["wake"], intent
-        ledgers = await _source_ledger(pool, schema, flow_id)
-        # THE RECOVERY'S OWN PAIR: the preserved 'awaited' rest beside the
-        # resumed claim's own succeeded row (the new epoch's own row — the
-        # parked attempt's record is never overwritten).
-        assert [r["status"] for r in ledgers] == ["awaited", "succeeded"], ledgers
-        assert [int(r["attempt"]) for r in ledgers] == [1, 1], ledgers
         counts = await _flow_counts(pool, schema, flow_id)
         assert counts["failed"] == 0, counts
         census = await _census_grants_at_least(

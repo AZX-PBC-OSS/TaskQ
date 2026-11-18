@@ -272,10 +272,15 @@ C4_PARK_PAGES: Final = ((0,), (1,))
 
 async def _c4_screen(ctx: StepContext, item: object) -> C4Ok:
     del item
-    # The page-0 children hold their slots for the gate's own span (the
-    # committed-intent window's precondition); the resumed page-1 child
-    # runs free.
-    if ctx.map_index is not None and ctx.map_index in C4_KILL_PAGES[0]:
+    # Every child of the kill estate holds its slot for the gate's own
+    # span, each gate with its own reader: the page-0 children's gates
+    # hold the bound so the page-1 emit refuses and the source parks
+    # (the committed-threshold window's precondition); the resumed
+    # page-1 child's gate holds the run LIVE past the source's own
+    # terminal — the control reads the preserved 'awaited'/'succeeded'
+    # ledger pair in that window, where the terminal-flow reaper's
+    # precondition (a TERMINAL flow root) cannot yet exist.
+    if ctx.map_index is not None:
         await asyncio.sleep(_C4_GATE_S)
     return C4Ok.OK
 
@@ -317,11 +322,16 @@ def c4_kill_recovery_flow() -> Promise[object]:
 
 async def _c4b_screen(ctx: StepContext, item: object) -> C4Ok:
     del item
-    # The page-0 gate reads the estate's own page declaration (the same
-    # one-truth rule the kill estate's `_c4_screen` gate follows): the
-    # children of ``C4_PARK_PAGES[0]`` hold their slots for the gate's
-    # own span; the resumed page-1 child runs free.
-    if ctx.map_index is not None and ctx.map_index in C4_PARK_PAGES[0]:
+    # Every child of the park estate holds its slot for the gate's own
+    # span (the same one-truth rule the kill estate's `_c4_screen` gate
+    # follows — the estate's page declarations own the emitted sets),
+    # each gate with its own reader: the page-0 child's gate holds the
+    # bound so the page-1 emit refuses and the source parks; the resumed
+    # page-1 child's gate holds the run LIVE past the source's own
+    # terminal — the control reads the preserved 'awaited'/'succeeded'
+    # ledger pair in that window, where the terminal-flow reaper's
+    # precondition (a TERMINAL flow root) cannot yet exist.
+    if ctx.map_index is not None:
         await asyncio.sleep(_C4_GATE_S)
     return C4Ok.OK
 
