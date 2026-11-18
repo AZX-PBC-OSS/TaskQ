@@ -25,6 +25,8 @@ Mutation notes (each control names what going red proves):
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
+from typing import Any
 
 import pytest
 
@@ -140,7 +142,9 @@ class TestWfEmitCapacitySubscriptionLifecycle:
         leadership-gated initial reconciliation + the event-driven drain —
         the periodic fallback is preserved (the sweep table's own
         pending-intent selection is a separate arm; a failing drain
-        resumes waiting)."""
+        resumes waiting). The loop's own waiter tasks never outlive the
+        loop: every task created while the loop ran is DONE at the end
+        (a leaked ``Event.wait`` would still be pending here)."""
         from taskq.worker.leader import MaintenanceLeader
 
         backend = clean_jobs_app.backend
@@ -153,6 +157,21 @@ class TestWfEmitCapacitySubscriptionLifecycle:
         leader._backend = backend  # type: ignore[attr-defined]  # Why: the control drives the loop's own subscription face; the leader's real __init__ owns the full deps graph this control does not need.
         leader._wf_emit_capacity_drain_once = _fake_drain_once  # type: ignore[method-assign]  # Why: the drain-once seam is the loop's own arm; the control asserts the subscription + event discipline, not the SQL.
         shutdown = asyncio.Event()
+
+        # THE RESIDUAL-TASK PROBE: record every task created while the
+        # loop ran; at the end each must be done (the loop's own finally
+        # cancels and awaits its waiter pair).
+        recorded: list[asyncio.Task[object]] = []
+        real_create_task = asyncio.create_task
+
+        def _recording_create_task(
+            coro: Coroutine[Any, Any, object], **kwargs: Any
+        ) -> asyncio.Task[object]:
+            task = real_create_task(coro, **kwargs)
+            recorded.append(task)
+            return task
+
+        monkeypatch.setattr(asyncio, "create_task", _recording_create_task)
 
         async def _notify_and_stop() -> None:
             # Wait for the loop's own registration (the handshake — never
@@ -174,3 +193,8 @@ class TestWfEmitCapacitySubscriptionLifecycle:
         # The initial reconciliation (leadership assumption's R term) ran,
         # then the event-driven arm ran again on the delivered event.
         assert drained == ["once", "once"], drained
+        # THE RESIDUAL-TASK LAW: the loop's own waiters never outlive the
+        # loop's frames (the finally's cancel-and-await); a leaked
+        # Event.wait task would still be pending here.
+        residual = [task for task in recorded if not task.done()]
+        assert not residual, residual
