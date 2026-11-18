@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Final
 
+from taskq.backend._sql_fragments import double_braces, emit_park_predicate
 from taskq.workflows._sql_claim import current_claim_join
 
 #: the collect's ``failures`` jsonb truncates here — over the cap the join row
@@ -50,23 +51,15 @@ def validated_reservation_width(alias: str) -> str:
 
 
 def _wf_emit_park_predicate(alias: str) -> str:
-    """The one shared exact-park predicate ``P(a)`` (the representation's own
-    identity): the marker, never a timestamp, is the discriminator.
-    ``scheduled_at`` is deliberately absent from park identity — it stores
-    the park instant and is never a due date. Every park-scoped statement
-    renders this one definition with its own alias; there is no second
-    spelling to drift. The jsonb literals carry the doubled-brace render
-    convention (the bundle's collapse pass un-doubles them)."""
-    return (
-        "{a}.status = 'scheduled'\n"
-        '  AND {a}.metadata @> \'{{"blocking_reason":"backpressure"}}\'::jsonb\n'
-        '  AND {a}.metadata @> \'{{"wf_deferral":'
-        '{{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}}}\'::jsonb\n'
-        '  AND {a}.metadata @> \'{{"wf_emit_backpressure":{{"version":1}}}}\'::jsonb\n'
-        "  AND {a}.step_key IS NOT NULL\n"
-        "  AND {a}.step_key <> '__flow__'\n"
-        "  AND {a}.metadata ? 'flow_id'"
-    ).replace("{a}", alias)
+    """The bundle renderers' own name for the shared exact-park predicate
+    ``P(a)``: the neutral renderer's complete output (the one ordered
+    seven-leg leaf owned by ``backend/_sql_fragments.py``), encoded in
+    THIS module's doubled-brace render convention — the bundle's collapse
+    pass un-doubles it. There is exactly one predicate definition; the
+    released catalog SQL (the frozen migration) necessarily inlines its
+    own forms, and the maintained literal parity control
+    (``tests/test_wf_park_predicate_parity.py``) owns that boundary."""
+    return double_braces(emit_park_predicate(alias))
 
 
 def _wf_emit_validated_park_width(alias: str) -> str:

@@ -16,6 +16,7 @@ from typing import Any, Final
 import asyncpg
 
 from taskq._sql_render import render as shared_render
+from taskq.backend._sql_fragments import emit_park_marker_core
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
 from taskq.workflows._sql_claim import current_claim_join
@@ -80,14 +81,7 @@ WHERE id = $1
   -- a timestamp, is the discriminator, and a row still carrying the live
   -- EmitBackpressure marker is the promotion's to move (the promotion CAS
   -- removes the marker atomically with the reservation it installs).
-  AND NOT (
-      metadata @> '{"blocking_reason":"backpressure"}'::jsonb
-      AND metadata @> '{"wf_deferral":{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}'::jsonb
-      AND metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
-      AND step_key IS NOT NULL
-      AND step_key <> '__flow__'
-      AND metadata ? 'flow_id'
-  )
+  AND NOT ({wf_emit_park_core})
   AND deps_pending = 0
   -- THE HOLD-STAMP LEG (the fence's last word — the two-driver race's
   -- wedged-hold fix, the same leg the worker's claimable fence carries
@@ -299,14 +293,7 @@ WHERE (metadata->>'flow_id')::uuid = $1
   -- carrying the live EmitBackpressure marker is the promotion's to move,
   -- never a claim's to take — the promotion removes the marker atomically
   -- with the reservation it installs.
-  AND NOT (
-      metadata @> '{"blocking_reason":"backpressure"}'::jsonb
-      AND metadata @> '{"wf_deferral":{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}'::jsonb
-      AND metadata @> '{"wf_emit_backpressure":{"version":1}}'::jsonb
-      AND step_key IS NOT NULL
-      AND step_key <> '__flow__'
-      AND metadata ? 'flow_id'
-  )
+  AND NOT ({wf_emit_park_core})
   AND deps_pending = 0
   AND step_key <> '__flow__'
   AND NOT metadata ? 'hold'
@@ -704,6 +691,12 @@ async def wf_conn_fetchval(pool: asyncpg.Pool, schema: str, query: str, *args: o
 #: its one home (``api/_runner_defer``), never spelled per template.
 _SQL_TOKEN_SUBS: Final[tuple[tuple[str, str], ...]] = (
     ("{wf_cancelled_class}", WORKFLOW_CANCELLED_CLASS),
+    # The exact-park exclusion's shared MARKER CORE (the neutral renderer's
+    # projection: complete minus its status leg — the only correct
+    # exclusion for a WHERE that admits `pending` rows). Unqualified,
+    # single-brace canonical text; the runner's render is a plain replace
+    # and never collapses braces, so no re-brace is owed.
+    ("{wf_emit_park_core}", emit_park_marker_core("")),
 )
 
 
