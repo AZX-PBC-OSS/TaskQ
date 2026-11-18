@@ -44,6 +44,7 @@ import pytest_asyncio
 from taskq.backend._protocol import JobId
 from taskq.constants import wake_channel
 from taskq.testing.fixtures import ModulePgSchema
+from taskq.workflows._sql import WorkflowSql
 
 pytestmark = pytest.mark.integration
 
@@ -222,13 +223,13 @@ class _JournalPool:
 
 
 @pytest_asyncio.fixture
-async def drain_sql(module_pg_schema: ModulePgSchema) -> Any:
+async def drain_sql(module_pg_schema: ModulePgSchema) -> WorkflowSql:
     from taskq.workflows.engine import render_workflow_sql
 
     return render_workflow_sql(module_pg_schema.schema_name)
 
 
-def _sql_names(wsql: Any) -> dict[str, str]:
+def _sql_names(wsql: WorkflowSql) -> dict[str, str]:
     """The drain's statement identities (the rendered strings the drain
     passes to its connection, journalled by equality)."""
     return {
@@ -270,7 +271,7 @@ class TestDrainCeiling:
         self,
         module_pg_schema: ModulePgSchema,
         module_pg_pool: asyncpg.Pool,
-        drain_sql: Any,
+        drain_sql: WorkflowSql,
     ) -> None:
         """Exactly 200 fitting waiters, no 201st: ONE transaction, one of
         each lock, 200 wins and notifications in it, the handled mark
@@ -334,7 +335,7 @@ class TestDrainCeiling:
         self,
         module_pg_schema: ModulePgSchema,
         module_pg_pool: asyncpg.Pool,
-        drain_sql: Any,
+        drain_sql: WorkflowSql,
     ) -> None:
         """201 fitting waiters: the ceiling transaction commits exactly 200
         wins and leaves the intent pending (no 201st CAS, no handled mark);
@@ -394,7 +395,7 @@ class TestDrainCeiling:
         self,
         module_pg_schema: ModulePgSchema,
         module_pg_pool: asyncpg.Pool,
-        drain_sql: Any,
+        drain_sql: WorkflowSql,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The 201-waiter shape, observed AT the chunk boundary: after the
