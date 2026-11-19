@@ -127,11 +127,11 @@ async def drain_one_chain(pool: asyncpg.Pool, wf_sql: WorkflowSql, flow_id: JobI
     return True
 
 
-# ── the fence: the pager blocks at the declared bound ───────────────────
+# ── the fence: the no-fit page refuses immediately ───────────────────
 
 
 @pytest.mark.integration
-async def test_emit_blocks_at_the_declared_bound(
+async def test_no_fit_page_refused_immediately_at_the_declared_bound(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,

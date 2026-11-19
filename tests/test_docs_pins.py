@@ -357,6 +357,19 @@ def test_docs6_author_facing_docs_never_publish_internal_capacity_vocabulary() -
 #: both words and would turn the allowlist into a judgment call); the
 #: pre-fix-archive red pins that they fire on the class, and the
 #: green tree pins that they fire on nothing else.
+#:
+#: The last three members are the same class caught one surface later
+#: (the fresh-DeepSeek round-25 finding): the test-family table's own
+#: backpressure row still said "the pager blocks at the declared
+#: bound … the throttle releases under a draining worker" — a WAITING
+#: description of a mechanism that refuses — and the row survived
+#: every sweep because none of its phrases was listed. "the pager
+#: blocks" (the general waiting claim about the pager), "blocks at
+#: the declared bound" (the exact surviving clause) and "the throttle
+#: releases" (the sibling waiting claim) are here for the same reason
+#: the ladder spans are: each is a literal substring of a sentence
+#: that has already survived a review, and the list is the record of
+#: the vocabulary the sweeps have had to convict so far.
 _BACKPRESSURE_LEGACY_PHRASES = (
     "bounded poll",
     "ladder-owned stall",
@@ -366,6 +379,9 @@ _BACKPRESSURE_LEGACY_PHRASES = (
     "waits at the fence",
     "stall rides the certified ladder",
     "laziness is the pause",
+    "the pager blocks",
+    "blocks at the declared bound",
+    "the throttle releases",
 )
 
 #: Every file under ``docs/`` is current-facing (the docs build
