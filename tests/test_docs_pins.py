@@ -386,7 +386,7 @@ _BACKPRESSURE_LEGACY_PHRASES = (
 
 #: Every scanned markdown surface is current-facing (the docs build
 #: publishes all of ``docs/``; the front page and the examples' pages
-#: ship in the repository root and with the wheel's examples), so the
+#: ship in the repository root and with the sdist's examples), so the
 #: allowlist is EMPTY by construction. A genuinely historical page —
 #: an archived design note kept for provenance — is exempted BY PATH,
 #: with its reason recorded beside it, never by phrase: an exemption
