@@ -179,10 +179,6 @@ class LoopOps(_LoopHost):
                 disposition=disposition,
                 delay_seconds=exc.delay.total_seconds(),
             )
-            if disposition == "emit_backpressure":
-                # The park's terminal route drains the intent its own
-                # transaction may have created — once, post-COMMIT.
-                await self._drain_created_intent(flow_id, outcome.intent_created)
             return "deferred"
         if verdict_text == "fenced":
             logger.info(
