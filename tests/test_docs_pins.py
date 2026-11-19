@@ -335,12 +335,28 @@ def test_docs6_author_facing_docs_never_publish_internal_capacity_vocabulary() -
 #: failure; the park is attempt-free). The phrases below are that
 #: DELETED pre-#718 mechanism's own vocabulary: a bounded poll at the
 #: fence, the failure-ladder-owned stall, the pager's term, the waiting
-#: child. Their reappearance on a current-facing docs page teaches a
+#: child. Their reappearance on a current-facing docs page — or on the
+#: product tree's own authoring surfaces (``src/taskq/`` docstrings,
+#: string literals, and comments: a shipped docstring RIDES THE API,
+#: so it is worse-placed than a docs page, not better) — teaches a
 #: behaviour the product no longer has (the final whole-diff review's
-#: KF-1 finding: four pages still taught it). Each phrase is
+#: KF-1 finding: four pages still taught it, and a fifth sentence of
+#: the same class survived in the ``max_in_flight`` docstring because
+#: the pin then scanned ``docs/`` only). Each phrase is
 #: multi-word and backpressure-fence-specific — generic bounded
 #: polling on an unrelated surface (a test seam, an SSE stream) is not
 #: this pin's subject and does not match.
+#:
+#: The last two members are the fifth surface's own spans, and they
+#: are here on purpose: the docstring sentence read "the stall rides
+#: the CERTIFIED ladder" — the interpolating adjective defeated the
+#: exact-substring match "stall rides the ladder", which is exactly
+#: how the sentence survived both the KF-1 sweep and the six-phrase
+#: list. The spans are added literally (no gap-tolerant regex: a
+#: "stall …ladder" pattern false-positives every file that mentions
+#: both words and would turn the allowlist into a judgment call); the
+#: pre-fix-archive red pins that they fire on the class, and the
+#: green tree pins that they fire on nothing else.
 _BACKPRESSURE_LEGACY_PHRASES = (
     "bounded poll",
     "ladder-owned stall",
@@ -348,6 +364,8 @@ _BACKPRESSURE_LEGACY_PHRASES = (
     "stall rides the ladder",
     "the pager's term",
     "waits at the fence",
+    "stall rides the certified ladder",
+    "laziness is the pause",
 )
 
 #: Every file under ``docs/`` is current-facing (the docs build
@@ -359,24 +377,54 @@ _BACKPRESSURE_LEGACY_PHRASES = (
 #: lose the entry.
 _BACKPRESSURE_LEGACY_ALLOWLIST: dict[str, str] = {}
 
+#: The product tree's allowlist, same discipline: keyed BY PATH with the
+#: reason recorded beside the entry, never by phrase, and empty unless an
+#: unrelated surface genuinely forces one. The scan reads the WHOLE
+#: module file (docstrings, string literals, and comments — the
+#: codebase's authoring surfaces), whitespace-collapsed, exactly like
+#: the docs pass.
+_BACKPRESSURE_LEGACY_SRC_ALLOWLIST: dict[str, str] = {
+    "src/taskq/web/admin/jobs.py": (
+        "the admin SSE progress stream's own checkout comment says "
+        "'bounded polls' for the stream's BoundedPool checkouts — "
+        "generic bounded polling on an unrelated surface (the control's "
+        "declared out-of-scope class), not the emit admission fence"
+    ),
+}
+
 
 def test_docs8_no_current_facing_doc_teaches_the_deleted_backpressure_behaviour() -> None:
     """KF-1's maintained negative control: the deleted pre-#718
     backpressure mechanism's vocabulary must not reappear on a
-    current-facing docs page. The shipped law is the guide's
-    "Slot-free emit backpressure" section — saturation raises
-    ``EmitBackpressure`` immediately and parks the source; nothing
-    polls at the fence and nothing rides the failure ladder.
+    current-facing docs page, nor in the product tree's own authoring
+    surfaces (every docstring, string literal, and comment under
+    ``src/taskq/`` — the ``max_in_flight`` docstring is exactly the
+    surface an author reads when choosing a bound, so the product scan
+    is not a bonus, it is the class's likeliest home). The shipped law
+    is the guide's "Slot-free emit backpressure" section — saturation
+    raises ``EmitBackpressure`` immediately and parks the source;
+    nothing polls at the fence and nothing rides the failure ladder.
 
     The comparison collapses whitespace across the whole file first, so
-    a phrase cannot hide by wrapping across lines. The witness (the
-    shipped-mechanism sentence in the guide) keeps the read honest: if
-    the section itself is deleted or renamed, this pin reds loud
-    instead of passing vacuously on an empty corpus."""
+    a phrase cannot hide by wrapping across lines — for ``src/`` the
+    whole module file is the unit, exactly like a docs page. Two
+    witnesses keep the read honest: the guide's shipped-mechanism
+    sentence (the docs corpus' anchor) and the ``EmitBackpressure``
+    docstring's own shipped-law sentence (the src corpus' anchor) — if
+    either is deleted or renamed, this pin reds loud instead of passing
+    vacuously on an empty corpus."""
     guide_text = _GUIDE.read_text(encoding="utf-8")
     assert "saturation is a park, not a failure" in " ".join(guide_text.split()), (
         "the guide's shipped-mechanism sentence is gone — the witness "
         "fails loud (the pin's own subject must exist to be enforceable)"
+    )
+    emit_text = " ".join(
+        (_REPO / "src" / "taskq" / "workflows" / "_emit.py").read_text(encoding="utf-8").split()
+    )
+    assert "deliberately outside ``Snooze``/``RetryAfter`` and the failure ladder" in emit_text, (
+        "the EmitBackpressure docstring's shipped-law sentence is gone — the "
+        "src witness fails loud (the pin's product anchor must exist to be "
+        "enforceable)"
     )
     offenders: list[str] = []
     for doc in sorted((_REPO / "docs").rglob("*.md")):
@@ -387,12 +435,20 @@ def test_docs8_no_current_facing_doc_teaches_the_deleted_backpressure_behaviour(
         for phrase in _BACKPRESSURE_LEGACY_PHRASES:
             if phrase in text:
                 offenders.append(f"{key}: {phrase!r}")
+    for module in sorted((_REPO / "src" / "taskq").rglob("*.py")):
+        key = module.relative_to(_REPO).as_posix()
+        if key in _BACKPRESSURE_LEGACY_SRC_ALLOWLIST:
+            continue
+        text = " ".join(module.read_text(encoding="utf-8").split())
+        for phrase in _BACKPRESSURE_LEGACY_PHRASES:
+            if phrase in text:
+                offenders.append(f"{key}: {phrase!r}")
     assert not offenders, (
-        "A current-facing doc teaches the DELETED pre-#718 backpressure "
-        "behaviour (a bounded poll at the admission fence / a "
-        "failure-ladder-owned stall). The shipped mechanism raises "
-        "EmitBackpressure immediately on a no-fit page and parks the "
-        "source (docs/guides/workflows.md, 'Slot-free emit backpressure: "
-        "saturation is a park, not a failure'); rephrase the page to the "
-        "shipped mechanism:\n" + "\n".join(offenders)
+        "A current-facing doc or product surface teaches the DELETED "
+        "pre-#718 backpressure behaviour (a bounded poll at the admission "
+        "fence / a failure-ladder-owned stall). The shipped mechanism "
+        "raises EmitBackpressure immediately on a no-fit page and parks "
+        "the source (docs/guides/workflows.md, 'Slot-free emit "
+        "backpressure: saturation is a park, not a failure'); rephrase "
+        "the surface to the shipped mechanism:\n" + "\n".join(offenders)
     )

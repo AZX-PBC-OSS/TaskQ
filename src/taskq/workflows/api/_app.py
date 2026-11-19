@@ -535,11 +535,14 @@ class WorkflowApp:
 
         The RUN's admission control
         — how many non-terminal rows the run may materialize. The emit
-        admits its WHOLE page under the bound; a fast source outpacing
-        its workers BLOCKS at the bound (the generator's laziness is the
-        pause; the stall rides the certified ladder). The default is the
-        shipped fence-ON (``EMIT_MAX_IN_FLIGHT_DEFAULT``); ``None`` is
-        the EXPLICIT unbounded (the author takes the dragon).
+        admits its WHOLE page under the bound; a page that does not fit
+        raises :class:`~taskq.workflows.EmitBackpressure` immediately
+        (no wait, no poll), and the runner PARKS the source — the claim
+        released, the ledger resting at nonterminal ``awaited`` (never a
+        ladder failure) — until a durable promotion intent wakes it when
+        capacity frees. The default is the shipped fence-ON
+        (``EMIT_MAX_IN_FLIGHT_DEFAULT``); ``None`` is the EXPLICIT
+        unbounded (the author takes the dragon).
 
         The signal channel is not a declaration param: a ``channel=``
         declaration would be accepted and silently
