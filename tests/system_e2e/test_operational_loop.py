@@ -440,7 +440,8 @@ async def spawn_admin_ui(dsn: str, schema: str) -> tuple[AdminUI, httpx.AsyncCli
         if proc.poll() is not None:
             log = await asyncio.to_thread(Path(log_path).read_text, errors="replace")
             raise RuntimeError(
-                f"taskq ui serve exited rc={proc.returncode} during startup: {log[-4000:]}"
+                f"taskq ui serve exited rc={proc.returncode} during startup "
+                f"(its log: {log_path}): {log[-20000:]}"
             )
         try:
             resp = await client.get("/admin/workers")
