@@ -33,7 +33,7 @@ from tests.system_e2e._harness import (
     _BASE_ENV,  # pyright: ignore[reportPrivateUsage]  # Why: the fleet env is the tier's shared constant; the production entry must run the same pod shape.
     WorkerProc,
     reap,
-    wait_for_socket,
+    wait_worker_ready,
 )
 from tests.system_e2e.actors import SysPayload, sys_always_fails, sys_fast
 
@@ -152,7 +152,7 @@ async def test_warning_level_keeps_failures_drops_state_changes(
             events_level="warning",
             log_sink=log_sink,
         )
-        wait_for_socket(worker.sock_path, worker.proc)
+        wait_worker_ready(worker)
 
         await sys_client.enqueue(sys_fast, SysPayload(), tags=[_TAG])
         await sys_client.enqueue(sys_always_fails, SysPayload(), tags=[_TAG])
@@ -199,7 +199,7 @@ async def test_off_level_keeps_the_ledger_complete(
             events_level="off",
             log_sink=log_sink,
         )
-        wait_for_socket(worker.sock_path, worker.proc)
+        wait_worker_ready(worker)
 
         ok = await sys_client.enqueue(sys_fast, SysPayload(), tags=[_TAG])
         bad = await sys_client.enqueue(sys_always_fails, SysPayload(), tags=[_TAG])
@@ -253,7 +253,7 @@ async def test_debug_level_adds_the_internals(
             events_level="debug",
             log_sink=log_sink,
         )
-        wait_for_socket(worker.sock_path, worker.proc)
+        wait_worker_ready(worker)
 
         await sys_client.enqueue(sys_fast, SysPayload(), tags=[_TAG])
         conn = await asyncpg.connect(pg_dsn)
