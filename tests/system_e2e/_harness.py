@@ -208,11 +208,12 @@ def spawn_worker(
         env["TASKQ_REDIS_URL"] = redis_url
     if extra_env is not None:
         env.update(extra_env)
-    # stdout is DEVNULL on the no-sink path: a second PIPE there would be
-    # an undrained pipe (the tee reads stderr only), and the wedge it can
-    # produce is the exact defect the drain rule exists to prevent. See
-    # the docstring for why stdout has no designed payload.
-    stdout: IO[str] | int = subprocess.PIPE if log_sink is not None else subprocess.DEVNULL
+    # stdout is DEVNULL unless a log_sink file replaces it below: a second
+    # PIPE there would be an undrained pipe (the tee reads stderr only),
+    # and the wedge it can produce is the exact defect the drain rule
+    # exists to prevent. See the docstring for why stdout has no designed
+    # payload.
+    stdout: IO[str] | int = subprocess.DEVNULL
     stderr: IO[str] | int = subprocess.PIPE
     log_file: IO[str] | None = None
     if log_sink is not None:
