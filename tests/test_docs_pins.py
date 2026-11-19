@@ -325,3 +325,74 @@ def test_docs6_author_facing_docs_never_publish_internal_capacity_vocabulary() -
                 "not author-facing API (§10.1); teach the author-facing "
                 "behaviour instead."
             )
+
+
+# ── the deleted backpressure mechanism's vocabulary ────────────
+
+#: #718's shipped mechanism raises ``EmitBackpressure`` IMMEDIATELY on a
+#: no-fit page — there is no bounded poll at the admission fence — and
+#: the runner parks the source (the ledger records ``awaited``, never a
+#: failure; the park is attempt-free). The phrases below are that
+#: DELETED pre-#718 mechanism's own vocabulary: a bounded poll at the
+#: fence, the failure-ladder-owned stall, the pager's term, the waiting
+#: child. Their reappearance on a current-facing docs page teaches a
+#: behaviour the product no longer has (the final whole-diff review's
+#: KF-1 finding: four pages still taught it). Each phrase is
+#: multi-word and backpressure-fence-specific — generic bounded
+#: polling on an unrelated surface (a test seam, an SSE stream) is not
+#: this pin's subject and does not match.
+_BACKPRESSURE_LEGACY_PHRASES = (
+    "bounded poll",
+    "ladder-owned stall",
+    "stalls ride the ladder",
+    "stall rides the ladder",
+    "the pager's term",
+    "waits at the fence",
+)
+
+#: Every file under ``docs/`` is current-facing (the docs build
+#: publishes all of them; none is an archive), so the allowlist is
+#: EMPTY by construction. A genuinely historical page — an archived
+#: design note kept for provenance — is exempted BY PATH, with its
+#: reason recorded beside it, never by phrase: an exemption must name
+#: the file, and a file that returns to current-facing teaching must
+#: lose the entry.
+_BACKPRESSURE_LEGACY_ALLOWLIST: dict[str, str] = {}
+
+
+def test_docs8_no_current_facing_doc_teaches_the_deleted_backpressure_behaviour() -> None:
+    """KF-1's maintained negative control: the deleted pre-#718
+    backpressure mechanism's vocabulary must not reappear on a
+    current-facing docs page. The shipped law is the guide's
+    "Slot-free emit backpressure" section — saturation raises
+    ``EmitBackpressure`` immediately and parks the source; nothing
+    polls at the fence and nothing rides the failure ladder.
+
+    The comparison collapses whitespace across the whole file first, so
+    a phrase cannot hide by wrapping across lines. The witness (the
+    shipped-mechanism sentence in the guide) keeps the read honest: if
+    the section itself is deleted or renamed, this pin reds loud
+    instead of passing vacuously on an empty corpus."""
+    guide_text = _GUIDE.read_text(encoding="utf-8")
+    assert "saturation is a park, not a failure" in " ".join(guide_text.split()), (
+        "the guide's shipped-mechanism sentence is gone — the witness "
+        "fails loud (the pin's own subject must exist to be enforceable)"
+    )
+    offenders: list[str] = []
+    for doc in sorted((_REPO / "docs").rglob("*.md")):
+        key = doc.relative_to(_REPO).as_posix()
+        if key in _BACKPRESSURE_LEGACY_ALLOWLIST:
+            continue
+        text = " ".join(doc.read_text(encoding="utf-8").split())
+        for phrase in _BACKPRESSURE_LEGACY_PHRASES:
+            if phrase in text:
+                offenders.append(f"{key}: {phrase!r}")
+    assert not offenders, (
+        "A current-facing doc teaches the DELETED pre-#718 backpressure "
+        "behaviour (a bounded poll at the admission fence / a "
+        "failure-ladder-owned stall). The shipped mechanism raises "
+        "EmitBackpressure immediately on a no-fit page and parks the "
+        "source (docs/guides/workflows.md, 'Slot-free emit backpressure: "
+        "saturation is a park, not a failure'); rephrase the page to the "
+        "shipped mechanism:\n" + "\n".join(offenders)
+    )
