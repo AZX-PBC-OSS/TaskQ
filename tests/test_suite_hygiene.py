@@ -868,6 +868,8 @@ def _expr_reaches_handle(value: ast.expr, handle_name: str) -> bool:
         return value.id == handle_name
     if isinstance(value, ast.Attribute):
         dotted = _dotted_name(value)
+        if dotted is None:
+            return False
         return (
             dotted == handle_name
             or dotted.startswith(f"{handle_name}.stdout")
@@ -895,9 +897,11 @@ def _is_harness_attr_call(
     if isinstance(func, ast.Name):
         return func.id in local_names
     if isinstance(func, ast.Attribute):
-        return func.attr == attr and (
-            _dotted_name(func.value).endswith("_harness")
-            or _dotted_name(func.value) in harness_roots
+        dotted = _dotted_name(func.value)
+        return (
+            func.attr == attr
+            and dotted is not None
+            and (dotted.endswith("_harness") or dotted in harness_roots)
         )
     return False
 
