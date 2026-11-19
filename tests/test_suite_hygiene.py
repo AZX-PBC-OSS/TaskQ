@@ -717,6 +717,180 @@ def test_pg_stat_activity_queries_are_scoped_to_the_current_database() -> None:
     )
 
 
+# ── The system-e2e tier's undrained-PIPE spawn rule ──────────────────
+# The kill9pg incident (system-e2e lane 1 failed / 58 passed):
+# test_kill9_pg_crash.py spawned its workers with
+# ``subprocess.Popen(stdout=PIPE, stderr=PIPE)`` and no reader - the
+# tier's ``reap`` only kill()+wait()s, nothing ever reads. The killed
+# worker's own log on the dead-PG path measured 43,806 bytes (66.8% of
+# the 65,536-byte OS pipe buffer) at rest; under lane contention the
+# isolation window stretches, the log volume crosses 64K, and the child
+# blocks mid-write on its own log line - it can never reach the exit the
+# test waits 180s for. A harness-manufactured wedge, not a product
+# defect. The tier's one drain authority is
+# ``tests/system_e2e/_harness.py::spawn_worker``: with a ``log_sink``
+# both streams ride a file; without one the ``_tee_stderr`` daemon
+# reader drains the pipes for the process's whole life, and
+# ``WorkerProc.log_drain`` joins the reader at the process's death.
+#
+# The rule: every ``subprocess.Popen`` under ``tests/system_e2e/`` that
+# wires ``stdout=subprocess.PIPE`` or ``stderr=subprocess.PIPE`` must
+# either be the authority's own spawner or hand its handle to the tee
+# within the same function (the sanctioned hand-built shape:
+# ``WorkerProc(log_drain=_tee_stderr(proc, ...))``).
+# ``DEVNULL``, a file object, and an inherited stream (the kwarg
+# absent) are safe by construction - none is a pipe the child can fill.
+# ``asyncio.create_subprocess_exec`` is outside the shape: its
+# transports drain continuously from spawn, and the tier's one use
+# reads to EOF under a timeout.
+#
+# Honest limit (the source-pin precedent of this file): a PIPE smuggled
+# through a variable, a dict splat or ``globals()`` is invisible to a
+# source scan; the suite's convention is direct spellings only. The
+# tee-handoff credit is a same-function lexical check, not a dataflow
+# proof - it matches the one sanctioned hand-built shape, and a
+# conditional handoff would still pass the scan (a review finding, not
+# a pin).
+
+_SYSE2E_DIR = _TESTS_DIR / "system_e2e"
+#: The tier's drain authority: (module path relative to tests/, the
+#: spawner function whose PIPE pair is always drained - log_sink file or
+#: the _tee_stderr reader).
+_DRAIN_AUTHORITY = ("system_e2e/_harness.py", "spawn_worker")
+_TEE_DRAIN_NAME_SUFFIX = "tee_stderr"
+
+
+def _subprocess_names(tree: ast.Module) -> tuple[set[str], dict[str, str]]:
+    """(module aliases of ``subprocess``, {imported-as: original-name}
+    from ``from subprocess import ...``) for *tree*."""
+    module_aliases: set[str] = set()
+    direct: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            module_aliases.update(
+                (alias.asname or alias.name) for alias in node.names if alias.name == "subprocess"
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            direct.update({alias.asname or alias.name: alias.name for alias in node.names})
+    return module_aliases, direct
+
+
+def _is_subprocess_pipe(value: ast.expr, module_aliases: set[str], direct: dict[str, str]) -> bool:
+    """True when *value* is the ``subprocess.PIPE`` spelling: an
+    attribute chain on a module alias, or a direct-imported PIPE alias."""
+    if isinstance(value, ast.Attribute):
+        return value.attr == "PIPE" and _dotted_name(value.value) in module_aliases
+    if isinstance(value, ast.Name):
+        return direct.get(value.id) == "PIPE"
+    return False
+
+
+def _is_subprocess_popen(node: ast.Call, module_aliases: set[str], direct: dict[str, str]) -> bool:
+    """True when *node* calls ``subprocess.Popen`` (module alias or
+    direct import)."""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr == "Popen" and _dotted_name(func.value) in module_aliases
+    if isinstance(func, ast.Name):
+        return direct.get(func.id) == "Popen"
+    return False
+
+
+def _tee_drains_target(scope: ast.AST, target: str | None) -> bool:
+    """True when *scope* hands the spawn handle named *target* to a
+    ``*_tee_stderr`` call - the sanctioned hand-built drain (a
+    WorkerProc whose ``log_drain`` carries the tee reader)."""
+    if target is None:
+        return False
+    for node in ast.walk(scope):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name: str | None = None
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            name = func.attr
+        if name is None or not name.endswith(_TEE_DRAIN_NAME_SUFFIX):
+            continue
+        args = [*node.args, *(kw.value for kw in node.keywords)]
+        if any(isinstance(arg, ast.Name) and arg.id == target for arg in args):
+            return True
+    return False
+
+
+def _popen_pipe_violations(tree: ast.Module, relpath: str) -> list[str]:
+    """The ``file:line`` sites in *tree* where a ``subprocess.Popen``
+    wires ``stdout/stderr=subprocess.PIPE`` and the spawn handle never
+    reaches a drain (see the section comment for the sanctioned shapes)."""
+    module_aliases, direct = _subprocess_names(tree)
+    func_nodes: list[tuple[int, int, ast.AST, str]] = [
+        (node.lineno, node.end_lineno or node.lineno, node, node.name)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    targets: dict[int, str] = {}
+    for node in ast.walk(tree):
+        value: ast.expr | None = None
+        target: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            value = node.value
+            target = node.targets[0] if len(node.targets) == 1 else None
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            target = node.target
+        if value is not None and isinstance(target, ast.Name) and isinstance(value, ast.Call):
+            targets[id(value)] = target.id
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and _is_subprocess_popen(node, module_aliases, direct)):
+            continue
+        pipe_streams = sorted(
+            kw.arg
+            for kw in node.keywords
+            if kw.arg in ("stdout", "stderr")
+            and _is_subprocess_pipe(kw.value, module_aliases, direct)
+        )
+        if not pipe_streams:
+            continue
+        handle_name = targets.get(id(node))
+        enclosing: ast.AST | None = None
+        enclosing_name: str | None = None
+        span = 10**9
+        for start, end, fnode, fname in func_nodes:
+            if start <= node.lineno <= end and (end - start) < span:
+                enclosing, enclosing_name, span = fnode, fname, end - start
+        if relpath == _DRAIN_AUTHORITY[0] and enclosing_name == _DRAIN_AUTHORITY[1]:
+            continue  # the authority's own spawner: log_sink or tee, never a bare pipe
+        if _tee_drains_target(enclosing, handle_name):
+            continue  # the sanctioned hand-built tee: WorkerProc(log_drain=_tee_stderr(proc, ...))
+        violations.append(
+            f"{relpath}:{node.lineno}: {' and '.join(pipe_streams)}=subprocess.PIPE "
+            f"with no drain on the spawn handle ({handle_name or 'unbound'})"
+        )
+    return violations
+
+
+def test_system_e2e_popen_pipes_are_drained() -> None:
+    """No ``subprocess.Popen`` under ``tests/system_e2e/`` may wire
+    ``stdout/stderr=subprocess.PIPE`` without a drain - the exact shape
+    that wedged the kill9pg lane (see the section comment)."""
+    offenders: list[str] = []
+    for path in sorted(_SYSE2E_DIR.rglob("*.py")):
+        rel = path.relative_to(_TESTS_DIR).as_posix()
+        offenders.extend(_popen_pipe_violations(ast.parse(path.read_text()), rel))
+    assert not offenders, (
+        "Found undrained subprocess.PIPE spawn(s) under tests/system_e2e/:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nA PIPE nobody reads fills at 64K and blocks the child mid-log - the\n"
+        "harness-manufactured wedge behind the kill9pg lane's phantom 180s exit\n"
+        "timeout. Workers: spawn through _harness.spawn_worker (its tee drains\n"
+        "the pipes; pass log_sink for the continuously-chatty cases). Other\n"
+        "long-lived children (admin/web): give them a file sink. Never a bare\n"
+        "PIPE pair."
+    )
+
+
 # ── Two-HTTP-stack hygiene ──────────────────────────────────────────────
 # The `taskq[oidc]` extra ships only httpx2 - nothing under src/taskq
 # imports httpx - but the dev group installs httpx as well, so the test
