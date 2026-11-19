@@ -384,13 +384,14 @@ _BACKPRESSURE_LEGACY_PHRASES = (
     "the throttle releases",
 )
 
-#: Every file under ``docs/`` is current-facing (the docs build
-#: publishes all of them; none is an archive), so the allowlist is
-#: EMPTY by construction. A genuinely historical page — an archived
-#: design note kept for provenance — is exempted BY PATH, with its
-#: reason recorded beside it, never by phrase: an exemption must name
-#: the file, and a file that returns to current-facing teaching must
-#: lose the entry.
+#: Every scanned markdown surface is current-facing (the docs build
+#: publishes all of ``docs/``; the front page and the examples' pages
+#: ship in the repository root and with the wheel's examples), so the
+#: allowlist is EMPTY by construction. A genuinely historical page —
+#: an archived design note kept for provenance — is exempted BY PATH,
+#: with its reason recorded beside it, never by phrase: an exemption
+#: must name the file, and a file that returns to current-facing
+#: teaching must lose the entry.
 _BACKPRESSURE_LEGACY_ALLOWLIST: dict[str, str] = {}
 
 #: The product tree's allowlist, same discipline: keyed BY PATH with the
@@ -412,14 +413,45 @@ _BACKPRESSURE_LEGACY_SRC_ALLOWLIST: dict[str, str] = {
 def test_docs8_no_current_facing_doc_teaches_the_deleted_backpressure_behaviour() -> None:
     """KF-1's maintained negative control: the deleted pre-#718
     backpressure mechanism's vocabulary must not reappear on a
-    current-facing docs page, nor in the product tree's own authoring
-    surfaces (every docstring, string literal, and comment under
-    ``src/taskq/`` — the ``max_in_flight`` docstring is exactly the
-    surface an author reads when choosing a bound, so the product scan
-    is not a bonus, it is the class's likeliest home). The shipped law
-    is the guide's "Slot-free emit backpressure" section — saturation
-    raises ``EmitBackpressure`` immediately and parks the source;
-    nothing polls at the fence and nothing rides the failure ladder.
+    current-facing surface. The scanned corpus, exactly:
+
+    * every ``*.md`` under ``docs/`` (the docs build publishes all of
+      them; none is an archive);
+    * the repository's front page (``README.md``) and every ``*.md``
+      the shipped ``examples/`` carry — the round-25 review executed
+      the bypass: a banned phrase pasted into either left this pin
+      green while it scanned ``docs/`` only;
+    * every ``*.py`` under ``src/taskq/`` — docstrings, string
+      literals, and comments, the product tree's own authoring
+      surfaces (the ``max_in_flight`` docstring is exactly the surface
+      an author reads when choosing a bound, so the product scan is
+      not a bonus, it is the class's likeliest home).
+
+    Deliberately NOT scanned, by path, with the reason: ``CHANGELOG.md``
+    (append-only release history — a past-tense entry may name the
+    pre-#718 behaviour truthfully), the ``perf-evidence-*.md`` reports
+    (frozen per-run evidence — provenance artifacts, not behaviour
+    teaching), the policy pages (``CONTRIBUTING.md``,
+    ``CODE_OF_CONDUCT.md``, ``SECURITY.md``, ``SUPPORT.md``), and
+    everything outside those roots (build outputs, site-packages, the
+    preserved ``rescue/`` snapshot). The pin's claim is exactly this
+    corpus: a surface that becomes current-facing teaching joins the
+    scan, or its path is exempted below with a written reason.
+
+    The declared residual: this is a LITERAL scanner. It convicts the
+    exact vocabulary the review sweeps have already met (the phrase
+    list is that record) and cannot catch a never-seen paraphrase of
+    the deleted mechanism — "no current-facing surface teaches the
+    deleted behaviour" is enforced here as "no scanned surface uses
+    the convicted phrases". The residual is discharged by the review
+    discipline, not by this pin: each review round re-reads the
+    current-facing surfaces against the shipped mechanism (the KF-1
+    sweep), and every phrase a sweep convicts joins the list.
+
+    The shipped law is the guide's "Slot-free emit backpressure"
+    section — saturation raises ``EmitBackpressure`` immediately and
+    parks the source; nothing polls at the fence and nothing rides
+    the failure ladder.
 
     The comparison collapses whitespace across the whole file first, so
     a phrase cannot hide by wrapping across lines — for ``src/`` the
@@ -443,7 +475,10 @@ def test_docs8_no_current_facing_doc_teaches_the_deleted_backpressure_behaviour(
         "enforceable)"
     )
     offenders: list[str] = []
-    for doc in sorted((_REPO / "docs").rglob("*.md")):
+    markdown = sorted((_REPO / "docs").rglob("*.md"))
+    markdown.append(_REPO / "README.md")
+    markdown.extend(sorted((_REPO / "examples").rglob("*.md")))
+    for doc in markdown:
         key = doc.relative_to(_REPO).as_posix()
         if key in _BACKPRESSURE_LEGACY_ALLOWLIST:
             continue
@@ -462,9 +497,11 @@ def test_docs8_no_current_facing_doc_teaches_the_deleted_backpressure_behaviour(
     assert not offenders, (
         "A current-facing doc or product surface teaches the DELETED "
         "pre-#718 backpressure behaviour (a bounded poll at the admission "
-        "fence / a failure-ladder-owned stall). The shipped mechanism "
-        "raises EmitBackpressure immediately on a no-fit page and parks "
-        "the source (docs/guides/workflows.md, 'Slot-free emit "
-        "backpressure: saturation is a park, not a failure'); rephrase "
-        "the surface to the shipped mechanism:\n" + "\n".join(offenders)
+        "fence / a failure-ladder-owned stall). The scanned corpus is "
+        "docs/**/*.md, README.md, examples/**/*.md and src/taskq/**/*.py "
+        "(the docstring records what is deliberately out and why). The "
+        "shipped mechanism raises EmitBackpressure immediately on a "
+        "no-fit page and parks the source (docs/guides/workflows.md, "
+        "'Slot-free emit backpressure: saturation is a park, not a "
+        "failure'); rephrase the surface to the shipped mechanism:\n" + "\n".join(offenders)
     )
