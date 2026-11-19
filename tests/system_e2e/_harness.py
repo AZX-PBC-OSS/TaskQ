@@ -175,18 +175,25 @@ def spawn_worker(
     spawn (the tag plus the pid), so concurrent scenarios never gate on
     each other's readiness.
 
-    The worker's stderr is teed to a file next to its health socket (a
-    daemon reader thread drains the pipe for the process's whole life):
-    a scenario that needs the worker's own log lines - a wedged-loop
-    forensic, a failed-tick cascade - reads the file instead of the
-    pipe, and an undrained 64K pipe can never block a chatty worker
-    mid-write.
+    Every spawn path leaves no pipe undrained. With a ``log_sink`` both
+    streams ride that file. Without one, the worker's stdout is
+    ``DEVNULL`` — the worker's log surface is stderr (the bootstrap's
+    logging handler defaults to stderr, ``faulthandler`` dumps there,
+    and an uncaught traceback lands there too; stdout has no designed
+    payload, and an unread stdout PIPE is exactly the wedge class this
+    harness exists to prevent) — and the stderr PIPE is teed to a file
+    next to the health socket by a daemon reader thread for the
+    process's whole life: a scenario that needs the worker's own log
+    lines - a wedged-loop forensic, a failed-tick cascade - reads the
+    file instead of the pipe, and a full pipe can never block a chatty
+    worker mid-write.
 
-    ``log_sink``: a file path to redirect both streams into. Scenarios
+    ``log_sink``: a file path redirecting both streams into (the child
+    owns the file; the tee's socket-adjacent log is skipped). Scenarios
     whose workers log continuously (chaos windows, failing heartbeats)
-    MUST pass one: the default PIPE pair is sized for short-lived
-    readiness-spawned workers, and a full pipe blocks the child's first
-    logging write - a harness-manufactured wedge.
+    pass one so the record lives at the scenario's own path; the drain
+    itself is unconditional — no spawn path leaves a pipe a reader must
+    keep up with, the harness-manufactured-wedge class.
     """
     sock_path = unique_health_sock_path(f"syse2e-{tag}")
     env = {**os.environ, **_BASE_ENV}
@@ -201,7 +208,11 @@ def spawn_worker(
         env["TASKQ_REDIS_URL"] = redis_url
     if extra_env is not None:
         env.update(extra_env)
-    stdout: IO[str] | int = subprocess.PIPE
+    # stdout is DEVNULL on the no-sink path: a second PIPE there would be
+    # an undrained pipe (the tee reads stderr only), and the wedge it can
+    # produce is the exact defect the drain rule exists to prevent. See
+    # the docstring for why stdout has no designed payload.
+    stdout: IO[str] | int = subprocess.PIPE if log_sink is not None else subprocess.DEVNULL
     stderr: IO[str] | int = subprocess.PIPE
     log_file: IO[str] | None = None
     if log_sink is not None:
@@ -220,9 +231,10 @@ def spawn_worker(
         # The child owns the dup'ed descriptors now.
         log_file.close()
     else:
-        # No sink given: drain the PIPEs with the daemon tee so a chatty
-        # worker can never wedge on a full 64K pipe. The reader thread
-        # rides the WorkerProc: the harness joins it at the process's
+        # No sink given: drain the stderr PIPE with the daemon tee so a
+        # chatty worker can never wedge on a full 64K pipe (stdout is
+        # DEVNULL - there is no second pipe). The reader thread rides
+        # the WorkerProc: the harness joins it at the process's
         # death, so the log file is final at assertion time.
         log_drain = _tee_stderr(proc, f"{sock_path}.worker.log")
     return WorkerProc(proc=proc, sock_path=sock_path, log_path=log_sink, log_drain=log_drain)

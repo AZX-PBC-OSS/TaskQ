@@ -2503,7 +2503,10 @@ def test_worker_log_drain_joins_at_graceful_stop(tmp_path: Any) -> None:
             "time.sleep(0.3)\n"
             "print('final-line', file=sys.stderr, flush=True)\n",
         ],
-        stdout=sp.PIPE,
+        # stdout is DEVNULL: the probe writes its records to stderr only,
+        # and an unread stdout PIPE (the tee reads stderr) is the wedge
+        # class the drain rule exists to prevent.
+        stdout=sp.DEVNULL,
         stderr=sp.PIPE,
     )
     worker = WorkerProc(
