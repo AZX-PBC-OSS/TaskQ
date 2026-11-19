@@ -13,14 +13,28 @@ in the claim's or the probe's own path. A same-name wrong object is
 exactly the shape ``CREATE INDEX IF NOT EXISTS`` cannot detect; the
 preflight's exact-definition equality is the enforcement point.
 
+The constraint class (the final whole-diff review's finding, KF-2):
+the capacity table's CHECK check was a bare COUNT of ``contype='c'``
+rows — it accepted at least-two CHECK constraints of ANY body. The
+executed exploit on real PostgreSQL 18.7: drop both shipped CHECKs and
+recreate them under their ORIGINAL names as ``CHECK (true)`` — the
+preflight accepted, and PostgreSQL then accepted ``bound = 0`` and
+``wake_generation = 0, handled_generation = 1``. The preflight now
+validates each required constraint by NAME, contype, and EXACT
+normalized body (``pg_get_constraintdef``, whitespace/quote/paren
+normalised), and the rotation singleton's whole shape the same way;
+a missing, renamed, wrong-contype, unparseable, or same-name
+wrong-body constraint is a refusal, never a pass.
+
 Each control: apply the real folded migration to a fresh schema,
-replace one index with a plausible wrong definition, reset the
+replace one object with a plausible wrong definition, reset the
 capability cache (the per-schema verdict is a process-lifetime fact
 about the catalog's SHAPE — a replaced object must re-verify), and
 assert the REAL ``verify_emit_capacity_objects`` refuses with the
 typed capability error. The positive arm re-asserts the migrated
 schema's own definitions pass, so the constants cannot drift away from
-PostgreSQL's real ``pg_get_indexdef`` output format without a red.
+PostgreSQL's real ``pg_get_indexdef``/``pg_get_constraintdef`` output
+format without a red.
 """
 
 from __future__ import annotations
@@ -137,6 +151,229 @@ async def test_preflight_refuses_a_wrong_same_name_pending_index(pg_dsn: str) ->
         )
         reset_emit_capability_cache(schema)
         with pytest.raises(WorkflowWorkerCapabilityError, match="wf_emit_capacity_pending_idx"):
+            await verify_emit_capacity_objects(conn, schema)
+        reset_emit_capability_cache(schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_preflight_refuses_both_capacity_checks_recreated_as_check_true(
+    pg_dsn: str,
+) -> None:
+    """THE EXECUTED EXPLOIT (the review's own shape, on real PostgreSQL):
+    drop both shipped CHECK constraints and recreate them under their
+    ORIGINAL names as ``CHECK (true)``. The count-of-CHECKs preflight
+    accepted this (two CHECK constraints exist), and PostgreSQL then
+    accepted ``bound = 0`` and ``wake_generation = 0,
+    handled_generation = 1`` — the promotion-ordering invariant gone.
+    The preflight must refuse by name and body."""
+    schema = "cap4_check_true_pair"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _fresh_migrated(conn, schema)
+        for name in (
+            "wf_emit_capacity_bound_positive",
+            "wf_emit_capacity_generations_monotonic",
+        ):
+            await conn.execute(f'ALTER TABLE "{schema}".wf_emit_capacity DROP CONSTRAINT {name}')
+            await conn.execute(
+                f'ALTER TABLE "{schema}".wf_emit_capacity ADD CONSTRAINT {name} CHECK (true)'
+            )
+        # The corruption is real, not hypothetical: the emptied bodies
+        # accept exactly the rows the invariants forbid.
+        await conn.execute(
+            f'INSERT INTO "{schema}".wf_emit_capacity '  # noqa: S608  # Why: the fixture-validated throwaway schema identifier; every value is a literal probe of the emptied invariants.
+            "(flow_id, bound, wake_generation, handled_generation) "
+            "VALUES (gen_random_uuid(), 0, 0, 1)"
+        )
+        reset_emit_capability_cache(schema)
+        with pytest.raises(WorkflowWorkerCapabilityError, match="wf_emit_capacity_bound_positive"):
+            await verify_emit_capacity_objects(conn, schema)
+        reset_emit_capability_cache(schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_preflight_refuses_a_semantically_inverted_generation_check(
+    pg_dsn: str,
+) -> None:
+    """The monotonic constraint's body INVERTED (``<=`` — which legalises
+    ``handled_generation`` overtaking ``wake_generation``, the exact
+    corruption the real constraint forbids) under its own original name
+    must refuse: the preflight compares the body, never the count."""
+    schema = "cap4_inverted_check"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _fresh_migrated(conn, schema)
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_capacity '
+            "DROP CONSTRAINT wf_emit_capacity_generations_monotonic"
+        )
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_capacity '
+            "ADD CONSTRAINT wf_emit_capacity_generations_monotonic "
+            "CHECK (wake_generation <= handled_generation)"
+        )
+        reset_emit_capability_cache(schema)
+        with pytest.raises(
+            WorkflowWorkerCapabilityError, match="wf_emit_capacity_generations_monotonic"
+        ):
+            await verify_emit_capacity_objects(conn, schema)
+        reset_emit_capability_cache(schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_preflight_refuses_a_near_miss_bound_check(pg_dsn: str) -> None:
+    """The bound constraint's near-miss body (``bound >= 0`` — the one
+    difference being the admitted ``bound = 0`` row) must refuse."""
+    schema = "cap4_nearmiss_bound"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _fresh_migrated(conn, schema)
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_capacity '
+            "DROP CONSTRAINT wf_emit_capacity_bound_positive"
+        )
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_capacity '
+            "ADD CONSTRAINT wf_emit_capacity_bound_positive CHECK (bound >= 0)"
+        )
+        reset_emit_capability_cache(schema)
+        with pytest.raises(WorkflowWorkerCapabilityError, match="wf_emit_capacity_bound_positive"):
+            await verify_emit_capacity_objects(conn, schema)
+        reset_emit_capability_cache(schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_preflight_refuses_a_renamed_but_correct_bodied_check(pg_dsn: str) -> None:
+    """The bound constraint's EXACT body under a DIFFERENT name must
+    refuse too — the migration's own object set is named, and a renamed
+    constraint is exactly what ``IF NOT EXISTS``-shaped re-application
+    would produce against a drifted schema."""
+    schema = "cap4_renamed_check"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _fresh_migrated(conn, schema)
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_capacity '
+            "DROP CONSTRAINT wf_emit_capacity_bound_positive"
+        )
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_capacity '
+            "ADD CONSTRAINT wf_emit_capacity_bound_positive_v2 CHECK (bound > 0)"
+        )
+        reset_emit_capability_cache(schema)
+        with pytest.raises(WorkflowWorkerCapabilityError, match="wf_emit_capacity_bound_positive"):
+            await verify_emit_capacity_objects(conn, schema)
+        reset_emit_capability_cache(schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_preflight_refuses_a_unique_constraint_shadowing_a_check_name(
+    pg_dsn: str,
+) -> None:
+    """A dropped CHECK's name is FREE (PostgreSQL requires constraint-name
+    uniqueness per table, across types): a UNIQUE constraint reusing
+    ``wf_emit_capacity_generations_monotonic`` carries the name, and a
+    decoy third CHECK keeps the contype='c' COUNT at two — the count
+    preflight accepted exactly this shape (the name matched, the count
+    matched) while the invariant was gone. The name-matched body
+    comparison refuses it (wrong contype)."""
+    schema = "cap4_unique_shadow"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _fresh_migrated(conn, schema)
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_capacity '
+            "DROP CONSTRAINT wf_emit_capacity_generations_monotonic"
+        )
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_capacity '
+            "ADD CONSTRAINT wf_emit_capacity_generations_monotonic "
+            "UNIQUE (wake_generation)"
+        )
+        # The decoy keeps the CHECK count at two — the count law must
+        # not be this control's refuser; the name/contype/body rigour is.
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_capacity '
+            "ADD CONSTRAINT wf_emit_capacity_decoy CHECK (true)"
+        )
+        reset_emit_capability_cache(schema)
+        with pytest.raises(
+            WorkflowWorkerCapabilityError, match="wf_emit_capacity_generations_monotonic"
+        ):
+            await verify_emit_capacity_objects(conn, schema)
+        reset_emit_capability_cache(schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_preflight_refuses_a_dropped_capacity_check(pg_dsn: str) -> None:
+    """A CHECK dropped and NOT recreated must refuse by name. The decoy
+    third CHECK keeps the contype='c' COUNT at two — the count law must
+    not be this control's refuser; the missing NAME is."""
+    schema = "cap4_dropped_check"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _fresh_migrated(conn, schema)
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_capacity '
+            "DROP CONSTRAINT wf_emit_capacity_bound_positive"
+        )
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_capacity '
+            "ADD CONSTRAINT wf_emit_capacity_decoy CHECK (true)"
+        )
+        reset_emit_capability_cache(schema)
+        with pytest.raises(WorkflowWorkerCapabilityError, match="wf_emit_capacity_bound_positive"):
+            await verify_emit_capacity_objects(conn, schema)
+        reset_emit_capability_cache(schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_preflight_refuses_the_rotation_singleton_check_true(pg_dsn: str) -> None:
+    """The rotation singleton's own CHECK recreated as ``CHECK (true)``
+    admits a second ``id = false`` row beside the singleton — the
+    'never grows with run cardinality' law's enforcement gone. The
+    singleton shape is validated with the same name+body rigour."""
+    schema = "cap4_rotation_check_true"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _fresh_migrated(conn, schema)
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_intent_rotation '
+            "DROP CONSTRAINT wf_emit_intent_rotation_singleton"
+        )
+        await conn.execute(
+            f'ALTER TABLE "{schema}".wf_emit_intent_rotation '
+            "ADD CONSTRAINT wf_emit_intent_rotation_singleton CHECK (true)"
+        )
+        # The corruption is real: a second row fits beside the singleton.
+        await conn.execute(
+            f'INSERT INTO "{schema}".wf_emit_intent_rotation (id) VALUES (false)'  # noqa: S608  # Why: the fixture-validated throwaway schema identifier; the value is a literal probe of the emptied singleton invariant.
+        )
+        reset_emit_capability_cache(schema)
+        with pytest.raises(
+            WorkflowWorkerCapabilityError, match="wf_emit_intent_rotation_singleton"
+        ):
             await verify_emit_capacity_objects(conn, schema)
         reset_emit_capability_cache(schema)
     finally:

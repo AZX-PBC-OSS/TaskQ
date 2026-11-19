@@ -200,6 +200,94 @@ _PENDING_IDX_INDEXDEF: Final[str] = (
     "USING btree (flow_id) WHERE (wake_generation > handled_generation)"
 )
 
+#: The capacity table's REQUIRED CHECK constraints — (name, the exact
+#: ``pg_get_constraintdef`` body as PostgreSQL renders it, measured on
+#: PostgreSQL 18.6/18.7). Each is validated by NAME, contype, and FULL
+#: normalized-body equality: the previous COUNT of CHECK constraints
+#: accepted a same-name ``CHECK (true)`` pair — dropped and recreated
+#: under their original names — whose loss then admitted ``bound = 0``
+#: and ``wake_generation < handled_generation`` rows on real
+#: PostgreSQL.
+_CAPACITY_CHECKS: Final[tuple[tuple[str, str], ...]] = (
+    ("wf_emit_capacity_bound_positive", "CHECK (bound > 0)"),
+    ("wf_emit_capacity_generations_monotonic", "CHECK (wake_generation >= handled_generation)"),
+)
+
+#: The rotation singleton's REQUIRED CHECK — the migration's own
+#: singleton invariant: a row may exist only with ``id`` true. Validated
+#: with the same name + body rigour (a same-name ``CHECK (true)``
+#: admits a second ``id = false`` row beside the singleton).
+_ROTATION_CHECKS: Final[tuple[tuple[str, str], ...]] = (
+    ("wf_emit_intent_rotation_singleton", "CHECK (id)"),
+)
+
+
+def _normalized_constraintdef(text: str) -> str:
+    """The constraint comparison's normal form: whitespace runs collapsed
+    and quote/parenthesis characters removed. Parenthesisation in a
+    deparsed constraint body is grouping, never semantics (PostgreSQL
+    renders ``CHECK (bound > 0)`` as ``CHECK ((bound > 0))``), and
+    identifiers are quoted only when the name requires it — the index
+    definitions' own normal form extended to the parens."""
+    return " ".join("".join(char for char in text if char not in '()"').split())
+
+
+def _contype(raw: object) -> str:
+    """asyncpg decodes PostgreSQL's one-byte internal ``"char"`` type as
+    ``bytes`` (``b'c'`` CHECK, ``b'p'`` PRIMARY KEY, ``b'u'`` UNIQUE);
+    the comparisons want the letter."""
+    if isinstance(raw, bytes):
+        return raw.decode("ascii", errors="replace")
+    return str(raw)
+
+
+def _missing_check_constraint(
+    present: dict[str, tuple[str, str | None]],
+    required: tuple[tuple[str, str], ...],
+    table: str,
+) -> str | None:
+    """The required CHECK constraints' refusal detail, or ``None`` when
+    every one exists under its own name with its own body.
+
+    Fail-closed on every wrong shape: a MISSING name, a name reused by
+    a non-CHECK constraint (a UNIQUE/PK shadow — PostgreSQL only
+    requires constraint-name uniqueness per table, so a dropped CHECK's
+    name is free), a NULL/empty (unparseable) definition, or a
+    same-name WRONG body is a refusal, never a pass. EXTRA constraints
+    are allowed: an additional CHECK can only restrict writes further —
+    the migration's own named set is what the preflight owes."""
+    for name, body in required:
+        entry = present.get(name)
+        if entry is None:
+            return f"{table} lacks its {name} CHECK constraint"
+        contype, definition = entry
+        if contype != "c":
+            return f"{table}.{name} is not a CHECK constraint (contype {contype!r})"
+        if definition is None or not definition.strip():
+            return f"{table}.{name}'s definition is unparseable (NULL or empty)"
+        if _normalized_constraintdef(definition) != _normalized_constraintdef(body):
+            return f"{table}.{name} is not the required {body} — the catalog carries {definition!r}"
+    return None
+
+
+def _missing_primary_key(
+    present: dict[str, tuple[str, str | None]],
+    columns: tuple[str, ...],
+    table: str,
+) -> str | None:
+    """The table's PRIMARY KEY refusal detail, or ``None`` when the PK
+    is exactly over *columns* (the migration's own identity invariant —
+    the capacity row's at-most-one-per-flow law, the rotation's
+    singleton law)."""
+    want = _normalized_constraintdef("PRIMARY KEY (" + ", ".join(columns) + ")")
+    for _name, (contype, definition) in present.items():
+        if contype != "p":
+            continue
+        if definition is not None and _normalized_constraintdef(definition) == want:
+            return None
+        return f"{table}'s PRIMARY KEY is not {want} (the catalog carries {definition!r})"
+    return f"{table} lacks its PRIMARY KEY over ({', '.join(columns)})"
+
 
 def _normalized_indexdef(text: str) -> str:
     """The exact-definition comparison's normal form: whitespace runs
@@ -255,32 +343,82 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
             "wf_step_ledger_claim_uniq is not the exact five-expression claim_epoch arbiter"
         )
 
-    # 3. wf_emit_capacity's typed columns and CHECK constraints.
+    # 3. wf_emit_capacity's typed columns, NOT NULL flags, PRIMARY KEY,
+    #    and its own two CHECK constraints — each CHECK validated by
+    #    NAME, contype, and EXACT normalized body (D4's equality law):
+    #    a COUNT of CHECK constraints accepted a same-name CHECK (true)
+    #    pair — or a UNIQUE constraint reusing a dropped constraint's
+    #    name — whose loss then admitted bound=0 and
+    #    wake_generation < handled_generation rows on real PostgreSQL.
     cols = await conn.fetch(
-        """SELECT attname, format_type(atttypid, atttypmod) AS t
+        """SELECT attname, format_type(atttypid, atttypmod) AS t, attnotnull
            FROM pg_attribute
            WHERE attrelid = ($1 || '.wf_emit_capacity')::regclass
              AND NOT attisdropped AND attnum > 0""",
         f'"{schema}"',
     )
-    col_types = {r["attname"]: r["t"] for r in cols}
+    col_types = {r["attname"]: (r["t"], r["attnotnull"]) for r in cols}
     for name, want in (
         ("flow_id", "uuid"),
         ("bound", "integer"),
         ("wake_generation", "bigint"),
         ("handled_generation", "bigint"),
     ):
-        if col_types.get(name) != want:
-            raise _fail(f"wf_emit_capacity.{name} is missing or mistyped")
-    checks = await conn.fetchval(
-        """SELECT count(*) FROM pg_constraint
-           WHERE conrelid = ($1 || '.wf_emit_capacity')::regclass AND contype = 'c'""",
+        got = col_types.get(name)
+        if got is None or got[0] != want or not got[1]:
+            raise _fail(f"wf_emit_capacity.{name} is missing, mistyped, or nullable")
+    capacity_constraints = {
+        r["conname"]: (_contype(r["contype"]), r["def"])
+        for r in await conn.fetch(
+            """SELECT conname, contype, pg_get_constraintdef(oid) AS def
+               FROM pg_constraint
+               WHERE conrelid = ($1 || '.wf_emit_capacity')::regclass""",
+            f'"{schema}"',
+        )
+    }
+    checks = _missing_check_constraint(capacity_constraints, _CAPACITY_CHECKS, "wf_emit_capacity")
+    if checks is not None:
+        raise _fail(checks)
+    # The capacity row's own identity invariant: the flow_id PRIMARY KEY
+    # is the §2.1 at-most-one-intent-per-flow law's enforcement.
+    pk = _missing_primary_key(capacity_constraints, ("flow_id",), "wf_emit_capacity")
+    if pk is not None:
+        raise _fail(pk)
+
+    # 4. the rotation singleton's WHOLE shape — its typed columns, its
+    #    id PRIMARY KEY, and its own CHECK (id), each validated with the
+    #    same name+body rigour (a same-name CHECK (true) would admit a
+    #    second id=false row beside the singleton) — then the singleton
+    #    row itself.
+    rotation_cols = await conn.fetch(
+        """SELECT attname, format_type(atttypid, atttypmod) AS t, attnotnull
+           FROM pg_attribute
+           WHERE attrelid = ($1 || '.wf_emit_intent_rotation')::regclass
+             AND NOT attisdropped AND attnum > 0""",
         f'"{schema}"',
     )
-    if not checks or int(checks) < 2:
-        raise _fail("wf_emit_capacity lacks its bound/generation CHECK constraints")
-
-    # 4. the rotation singleton.
+    rotation_types = {r["attname"]: (r["t"], r["attnotnull"]) for r in rotation_cols}
+    for name, want in (("id", "boolean"), ("after_flow_id", "uuid")):
+        got = rotation_types.get(name)
+        if got is None or got[0] != want or not got[1]:
+            raise _fail(f"wf_emit_intent_rotation.{name} is missing, mistyped, or nullable")
+    rotation_constraints = {
+        r["conname"]: (_contype(r["contype"]), r["def"])
+        for r in await conn.fetch(
+            """SELECT conname, contype, pg_get_constraintdef(oid) AS def
+               FROM pg_constraint
+               WHERE conrelid = ($1 || '.wf_emit_intent_rotation')::regclass""",
+            f'"{schema}"',
+        )
+    }
+    checks = _missing_check_constraint(
+        rotation_constraints, _ROTATION_CHECKS, "wf_emit_intent_rotation"
+    )
+    if checks is not None:
+        raise _fail(checks)
+    pk = _missing_primary_key(rotation_constraints, ("id",), "wf_emit_intent_rotation")
+    if pk is not None:
+        raise _fail(pk)
     rotation = await conn.fetchval(
         "SELECT after_flow_id FROM " + f'"{schema}".wf_emit_intent_rotation WHERE id'
     )
