@@ -6,6 +6,7 @@ scheduling, and retention-config helpers against InMemoryBackend.
 
 import asyncio
 import contextlib
+import itertools
 from collections.abc import AsyncGenerator, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -4820,3 +4821,548 @@ async def test_a_failed_resign_retries_fenced_until_it_lands(
         "each failed attempt must carry its own leader-resign-failed WARN"
     )
     assert not deps.is_leader.is_set()
+
+
+# ── the cron conn's dirty record dies with the connection it describes ────
+#
+# A tick that fails while its transaction state is unknown records the conn; the
+# next iteration repairs it with Connection.reset(). The record is keyed to the
+# connection OBJECT rather than a bare flag because the election loop rebuilds
+# _cron_conn (SIGHUP credential reload, a re-election cascade) while the cron
+# loop may still hold the record for the old one: applied to the fresh
+# connection, the repair would RESET ALL a session nobody failed on and drop
+# whatever an embedder's leader_conn_factory setup hook set.
+
+
+class _RepairRecordingCronConn(FakeConn):
+    """FakeConn that records the deferred repair and the tick's entry.
+
+    ``reset`` is the repair's only observable on a connection, and the shared
+    double has none - which is why a repair attempt against it raises
+    ``AttributeError`` and tells a repaired connection from an untouched one
+    not at all.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reset_calls = 0
+        self.transaction_entries = 0
+
+    async def reset(self) -> None:
+        self.reset_calls += 1
+
+    def transaction(self) -> _FakeTransaction:
+        conn = self
+
+        class _RecordingTx(_FakeTransaction):
+            async def __aenter__(self) -> None:
+                conn.transaction_entries += 1
+
+        return _RecordingTx()
+
+
+def _cron_tick_stub(monkeypatch: pytest.MonkeyPatch, *, failures: int) -> None:
+    """Make the loop's tick time out on its first *failures* calls, then succeed."""
+    from taskq.worker import leader as leader_mod
+
+    calls = 0
+
+    async def _tick(*args: object, **kwargs: object) -> int:
+        nonlocal calls
+        calls += 1
+        if calls <= failures:
+            raise TimeoutError()  # the deadline family: keeps the conn, records it
+        return 0
+
+    monkeypatch.setattr(leader_mod, "tick_cron", _tick)
+
+
+def _cron_loop_leader(
+    conn: FakeConn, monkeypatch: pytest.MonkeyPatch, *, tick_deadline: float = 1.0
+) -> tuple[MaintenanceLeader, WorkerDeps]:
+    from types import SimpleNamespace
+    from typing import cast
+
+    from taskq.backend._protocol import Backend
+    from taskq.backend.clock import SystemClock
+
+    from ._leader_stub_deps import stub_deps
+
+    liveness = SimpleNamespace(tick=lambda *args, **kwargs: None)
+    is_leader = asyncio.Event()
+    is_leader.set()
+    deps = stub_deps(
+        SimpleNamespace(
+            liveness=liveness,
+            is_leader=is_leader,
+            settings=SimpleNamespace(
+                schema_name="taskq",
+                dispatcher_command_timeout=tick_deadline,
+                cron_tick_limit=100,
+            ),
+        )
+    )
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
+    leader._cron_conn = conn  # type: ignore[reportAttributeAccessIssue]  # Why: FakeConn is the asyncpg.Connection stand-in used throughout this module.
+    _cron_tick_stub(monkeypatch, failures=1)
+    return leader, deps
+
+
+async def test_the_same_cron_conn_is_repaired_after_a_failed_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control: the record is live, so the same connection IS repaired.
+
+    Without this arm a green discard assertion would prove only that the
+    harness never reached the repair.
+    """
+    conn = _RepairRecordingCronConn()
+    leader, _deps = _cron_loop_leader(conn, monkeypatch)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._cron_loop(shutdown))  # pyright: ignore[reportPrivateUsage]
+    try:
+        await wait_for_condition(
+            lambda: conn.reset_calls >= 1,
+            description="the deferred repair to run on the connection that failed",
+            timeout=5.0,
+        )
+    finally:
+        shutdown.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert conn.reset_calls == 1, (
+        f"the failed tick's connection was repaired {conn.reset_calls} times, "
+        "not once: the record did not reach the repair"
+    )
+    assert conn.transaction_entries >= 1, "the loop never ticked on the repaired connection"
+
+
+async def test_a_conn_that_cannot_be_repaired_is_given_up_after_two_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repair that keeps raising must be bounded, not retried for the process's life.
+
+    ``conn.reset()`` can fail outside the deadline family: an embedder
+    connection class with no ``reset`` (the handler names that case), or a
+    driver-side error. A tick that appears to succeed on that conn is NOT proof
+    the state is usable: with the leaked top-level transaction still recorded,
+    the next ``transaction()`` is a nested SAVEPOINT whose ``RELEASE`` returns
+    while nothing commits - the incident this change exists to end, invisible to
+    the tick's own success. So the failure counts toward the same give-up bound
+    as a cut: after two consecutive failed repairs the connection is terminated
+    synchronously (Postgres rolls the transaction back on disconnect) and the
+    next iteration's conn-state branch drops and demotes. Without the bound the
+    failing reset is retried, and warns, once per iteration for the process's
+    life.
+    """
+    from taskq.worker import leader as leader_mod
+
+    class _UnrepairableCronConn(_RepairRecordingCronConn):
+        async def reset(self) -> None:
+            self.reset_calls += 1
+            raise AttributeError("reset")
+
+    conn = _UnrepairableCronConn()
+    leader, deps = _cron_loop_leader(conn, monkeypatch)
+    calls = 0
+
+    async def _tick(*args: object, **kwargs: object) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError()  # the deadline family: records the conn
+        return 0
+
+    monkeypatch.setattr(leader_mod, "tick_cron", _tick)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._cron_loop(shutdown))  # pyright: ignore[reportPrivateUsage]
+    try:
+        await wait_for_condition(
+            lambda: conn.terminated,
+            description="the unrepairable connection to be given up",
+            timeout=10.0,
+        )
+    finally:
+        shutdown.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert conn.reset_calls == 2, (
+        f"the failing repair ran {conn.reset_calls} times, not the two the "
+        "give-up bound allows: an unrepairable conn must not be retried (and "
+        "warn) once per iteration for the process's life"
+    )
+    assert conn.terminated, (
+        "the unrepairable connection was never terminated: the unknown "
+        "transaction state it carries is bounded only by the give-up"
+    )
+    assert deps.is_leader.is_set(), (
+        "the pin did not reach the give-up before the loop stopped: the "
+        "escalation, not a shutdown, is what must end this sequence"
+    )
+
+
+async def test_a_rebuilt_cron_conn_is_not_repaired_for_the_old_conns_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record for the old connection must not reset the rebuilt one.
+
+    The election loop can assign a fresh ``_cron_conn`` between two iterations
+    (credential reload) while the record still names the old connection.
+    ``reset()`` on the fresh one would ``RESET ALL`` a session that never failed
+    and drop an embedder's setup-hook session settings.
+    """
+    old_conn = _RepairRecordingCronConn()
+    new_conn = _RepairRecordingCronConn()
+    leader, _deps = _cron_loop_leader(old_conn, monkeypatch)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._cron_loop(shutdown))  # pyright: ignore[reportPrivateUsage]
+    try:
+        # Iteration 1 fails on old_conn and records it; iteration 2 begins one
+        # period later, so the rebuild lands inside the loop's own park. Wait
+        # on the record's own observable (the failing tick's transaction
+        # entry) rather than a sleep: a starved loop that never dirtied the old
+        # conn would make the no-reset assertion below pass without reaching
+        # its premise.
+        await wait_for_condition(
+            lambda: old_conn.transaction_entries >= 1,
+            description="the first iteration to fail on the old connection",
+            timeout=5.0,
+        )
+        leader._cron_conn = new_conn  # type: ignore[reportAttributeAccessIssue]  # Why: this is exactly what the election loop's rebuild does.
+        await wait_for_condition(
+            lambda: new_conn.transaction_entries >= 1,
+            description="the loop to tick on the rebuilt connection",
+            timeout=5.0,
+        )
+    finally:
+        shutdown.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert old_conn.reset_calls == 0, (
+        "the old connection was reset after the rebuild: the record must die "
+        "with the connection it describes, not be applied to whatever is there"
+    )
+    assert new_conn.reset_calls == 0, (
+        "the rebuilt cron connection was reset for the OLD connection's failed "
+        "tick: the record outlived the connection it describes, so a credential "
+        "reload now RESET ALLs a fresh session and drops an embedder's "
+        "leader_conn_factory setup-hook settings"
+    )
+    assert new_conn.transaction_entries >= 1, (
+        "the loop never ticked on the rebuilt connection, so this pin did not "
+        "reach the iteration the record would have been applied to"
+    )
+
+
+@pytest.mark.load_sensitive
+async def test_a_tick_that_spends_its_granted_factory_budget_still_commits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tick that fits ``dispatcher_command_timeout`` must commit, not be cut.
+
+    ``cron_loop._TICK_WRITE_RESERVE_FRACTION`` grants payload factories up to
+    ``dispatcher_command_timeout * (1 - 0.1)`` and states what the remaining
+    tenth is for: *"the reserve leaves room for the tick's own writes and its
+    COMMIT"*. The settings field says the same thing from the operator's side:
+    the factory deadline is *"clamped to stay strictly inside what is left of
+    the leader's whole-tick deadline (dispatcher_command_timeout)"*. So a tick
+    whose granted waits total 0.9 of the setting and whose writes take the
+    remaining 0.1 is inside the documented budget and must reach its COMMIT.
+
+    The regression this guards is carving the reserved unwind share out of the
+    tick body's pot: the body would then run under
+    ``dispatcher_command_timeout - 0.1 * dispatcher_command_timeout``, so the
+    batch the factory arithmetic was built around would have no time left for
+    its
+    writes. It is cut, the transaction rolls back, ``next_fire_at`` does not
+    advance, the identical batch is selected next tick and the same grant is
+    made again - the livelock ``_TickWriteReserveFraction`` exists to prevent.
+    """
+    from taskq.worker import leader as leader_mod
+
+    conn = _RepairRecordingCronConn()
+    leader, _deps = _cron_loop_leader(conn, monkeypatch)
+    committed: list[int] = []
+    cut: list[int] = []
+    monkeypatch.setattr(leader_mod, "record_sweep_success", lambda loop: committed.append(1))
+    monkeypatch.setattr(leader_mod, "record_sweep_timeout", lambda loop: cut.append(1))
+
+    tick_deadline = leader._deps.settings.dispatcher_command_timeout  # pyright: ignore[reportPrivateUsage]  # Why: the setting the test's budget arithmetic is stated in.
+
+    async def _tick(*args: object, **kwargs: object) -> int:
+        # 0.9 of the setting for the granted factory waits + 0.05 for the
+        # writes: the shape _factory_deadline budgets for, well inside the
+        # whole-tick deadline.
+        await asyncio.sleep(tick_deadline * 0.95)
+        return 1
+
+    monkeypatch.setattr(leader_mod, "tick_cron", _tick)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._cron_loop(shutdown))  # pyright: ignore[reportPrivateUsage]
+    try:
+        # Either the tick commits, or the loop has already cut it twice: the
+        # latter is the livelock, and asserting on it here keeps the failure
+        # message about the budget rather than about a wait timing out.
+        await wait_for_condition(
+            lambda: bool(committed) or len(cut) >= 2,
+            description="the 95%-of-budget tick to commit or be cut twice",
+            timeout=3.0,
+        )
+    finally:
+        shutdown.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert committed, (
+        f"a tick that spends 95% of dispatcher_command_timeout ({tick_deadline}s) "
+        f"never committed: the iteration was cut {len(cut)} time(s) with "
+        f"{conn.transaction_entries} transaction(s) entered. The factory "
+        "arithmetic grants waits up to 0.9 of the setting and reserves the "
+        "other 0.1 for this tick's writes and COMMIT, so this batch fits the "
+        "documented budget - a cut here rolls it back, selects the identical "
+        "batch again and re-grants the same wait every second, starving the "
+        "schedule"
+    )
+    assert not cut, (
+        f"{len(cut)} iteration(s) were cut before a tick that fits "
+        f"dispatcher_command_timeout ({tick_deadline}s) could commit"
+    )
+
+
+async def test_a_slow_repair_does_not_spend_the_reserved_unwind_share(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the body is cut, the reserved unwind share must still be unspent.
+
+    The nested scopes reserve ``_CRON_TICK_UNWIND_FRACTION`` of the iteration
+    *"so a stalled transport cannot park the loop inside its own unwind with no
+    timer left"*. That reservation only holds if the inner scope is sized from
+    what is left of the iteration: it is armed *after* the deferred repair, so a
+    repair slower than the reserved share pushes the inner scope's expiry past
+    the outer scope's. The outer deadline then cuts the body, and the unwind
+    that follows has no live timer at all - the exact park the reservation was
+    added to prevent, reachable without any help from the transport.
+    """
+    from taskq.worker import leader as leader_mod
+
+    tick_deadline = 3.0
+    repair_delay = tick_deadline * 0.5
+    unwind_share = tick_deadline * 0.1
+
+    class _SlowResetConn(_RepairRecordingCronConn):
+        async def reset(self) -> None:
+            await asyncio.sleep(repair_delay)
+            self.reset_calls += 1
+
+    conn = _SlowResetConn()
+    leader, _deps = _cron_loop_leader(conn, monkeypatch, tick_deadline=tick_deadline)
+
+    # (repaired_before_this_body, seconds_the_body_ran_before_being_cut)
+    bodies: list[tuple[bool, float]] = []
+
+    async def _tick(*args: object, **kwargs: object) -> int:
+        repaired = conn.reset_calls > 0
+        started = asyncio.get_running_loop().time()
+        try:
+            await asyncio.sleep(tick_deadline * 10)  # always cut
+        finally:
+            bodies.append((repaired, asyncio.get_running_loop().time() - started))
+        return 1
+
+    monkeypatch.setattr(leader_mod, "tick_cron", _tick)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._cron_loop(shutdown))  # pyright: ignore[reportPrivateUsage]
+    try:
+        await wait_for_condition(
+            lambda: any(repaired for repaired, _ in bodies),
+            description="a tick body to run after the deferred repair",
+            timeout=15.0,
+        )
+    finally:
+        shutdown.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    after_repair = [(repaired, ran) for repaired, ran in bodies if repaired]
+    assert after_repair, "no tick body ran after the repair, so the pin did not reach its window"
+    _, ran = after_repair[0]
+    # What remains of the ITERATION when the body was cut: the iteration's
+    # bound is the tick deadline plus the added unwind share (the outer
+    # scope), so the remaining-of-iteration measure carries that share. Measuring
+    # from the bare tick deadline instead would demand the share be carved out
+    # of the tick body's own pot - which the factory-budget contract
+    # (``_TICK_WRITE_RESERVE_FRACTION`` reserves the writes and COMMIT inside
+    # the whole-tick deadline) forbids, and no code change satisfies both.
+    remaining_when_cut = tick_deadline + unwind_share - repair_delay - ran
+    assert remaining_when_cut >= unwind_share - 0.05, (
+        f"the body was cut with only {remaining_when_cut:.2f}s of the iteration "
+        f"left ({ran:.2f}s after a {repair_delay:.2f}s repair), not the reserved "
+        f"{unwind_share:.2f}s: the inner scope is armed from the nominal "
+        "deadline, not from what remains, so the outer deadline is the one that "
+        "cut the body and the unwind that follows has no live timer - the park "
+        "the reservation exists to prevent"
+    )
+
+
+async def test_an_iteration_that_spends_the_unwind_share_repays_it_from_the_period(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An iteration that spends the unwind share must repay it from the period.
+
+    The unwind share is ADDED to the iteration's bound, but the settings
+    validator's staleness model still says the worst-case stamp-to-stamp gap is
+    ``dispatcher_command_timeout +`` the 1.0s period - so whatever the iteration
+    spends past the tick's own deadline (a transaction unwind slower than a
+    round trip, cut by the outer bound) is repaid from the period at the bottom
+    of the iteration. Without the repayment, an iteration that spent the share
+    widens the gap to timeout + share + period: the false trip of a healthy
+    worker mid-degradation that the load-time model exists to prevent, and one
+    no test would see (the watchdog budget suite's margin is wider than the
+    share).
+    """
+    from taskq.worker import leader as leader_mod
+
+    tick_deadline = 1.0
+    unwind_spend = 0.09  # most of the 0.1 share, well past a round trip
+
+    class _SlowUnwindConn(_RepairRecordingCronConn):
+        """A conn whose transaction unwind (its __aexit__) is slow."""
+
+        def transaction(self) -> _FakeTransaction:
+            class _SlowUnwindTx(_FakeTransaction):
+                async def __aexit__(self, *args: object) -> None:
+                    await asyncio.sleep(unwind_spend)
+
+            return _SlowUnwindTx()
+
+    conn = _SlowUnwindConn()
+    leader, _deps = _cron_loop_leader(conn, monkeypatch, tick_deadline=tick_deadline)
+
+    tick_starts: list[float] = []
+
+    async def _tick(*args: object, **kwargs: object) -> int:
+        tick_starts.append(asyncio.get_running_loop().time())
+        await asyncio.sleep(tick_deadline * 10)  # always cut by the tick's scope
+        return 1
+
+    monkeypatch.setattr(leader_mod, "tick_cron", _tick)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._cron_loop(shutdown))  # pyright: ignore[reportPrivateUsage]
+    try:
+        await wait_for_condition(
+            lambda: len(tick_starts) >= 3,
+            description="three ticks to start",
+            timeout=10.0,
+        )
+    finally:
+        shutdown.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    gaps = [b - a for a, b in itertools.pairwise(tick_starts)]
+    assert gaps, "no tick-to-tick gap was observed"
+    # timeout + the 1.0s period, with timer-granularity slack only: the share
+    # the unwind spent must appear as a SHORTER period, not a wider gap.
+    bound = tick_deadline + 1.0 + 0.03
+    assert max(gaps) <= bound, (
+        f"an iteration that spent the unwind share widened the tick gap to "
+        f"{max(gaps):.3f}s (gaps {[f'{g:.3f}' for g in gaps]}), past the "
+        f"timeout + period bound ({bound:.3f}s) the settings validator "
+        "enforces: the overshoot was not repaid from the loop's period, so a "
+        "healthy worker false-trips the staleness detector mid-degradation"
+    )
+
+
+@pytest.mark.slow
+async def test_the_widened_iteration_still_fits_the_staleness_model_at_large_deadlines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The unwind repayment must hold at every LEGAL ``dispatcher_command_timeout``.
+
+    The repayment exists so the stamp-to-stamp gap stays inside
+    ``dispatcher_command_timeout + period`` — the arithmetic
+    ``WorkerSettings`` validates at load time and the constant's docstring
+    promises (*"Whatever of the share the iteration actually spends is repaid
+    from the loop's period"*). The share is 10% of the deadline and the period
+    is ``_CRON_TICK_PERIOD_SECS`` (1.0s), so the repayment can only cover it
+    while ``0.1 * deadline <= 1.0``; above a 10s deadline the sleep bottoms out
+    at zero and the share widens the gap outright.
+
+    That is reachable through the settings' own documented lever: a slow but
+    successful payload factory is told to *"raise dispatcher_command_timeout"*,
+    and the validator's bounded-loop invariant then only demands a staleness
+    budget STRICTLY above ``deadline + period`` (it refuses
+    ``dispatcher_command_timeout + period >= budget``: a 15s timeout with the
+    natural 16.0s floor is rejected, while 16.2s loads). An uncapped iteration
+    that spends its whole 1.5s share ends at 16.5s — past every legal budget in
+    between, so detector 2 force-exits a worker that is degraded but
+    recovering: precisely the healthy-worker false trip the load-time model
+    exists to prevent.
+    """
+    from taskq.worker import leader as leader_mod
+
+    tick_deadline = 15.0
+    # Past the CAPPED share (min(0.1 x 15.0, 1.0) = 1.0s), so the unwind is cut
+    # at the outer bound and the iteration ends at deadline + share, with the
+    # repayment bottomed out at zero. Under the uncapped 1.5s share the same
+    # spend completes instead and the iteration ends at deadline + spend, which
+    # is the widened gap this pin refuses.
+    unwind_spend = 1.4
+
+    class _SlowUnwindConn(_RepairRecordingCronConn):
+        def transaction(self) -> _FakeTransaction:
+            class _SlowUnwindTx(_FakeTransaction):
+                async def __aexit__(self, *args: object) -> None:
+                    await asyncio.sleep(unwind_spend)
+
+            return _SlowUnwindTx()
+
+    conn = _SlowUnwindConn()
+    leader, _deps = _cron_loop_leader(conn, monkeypatch, tick_deadline=tick_deadline)
+
+    tick_starts: list[float] = []
+
+    async def _tick(*args: object, **kwargs: object) -> int:
+        tick_starts.append(asyncio.get_running_loop().time())
+        await asyncio.sleep(tick_deadline * 10)  # always cut by the tick's scope
+        return 1
+
+    monkeypatch.setattr(leader_mod, "tick_cron", _tick)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._cron_loop(shutdown))  # pyright: ignore[reportPrivateUsage]
+    try:
+        await wait_for_condition(
+            lambda: len(tick_starts) >= 2,
+            description="two tick starts across an iteration that spends its unwind share",
+            timeout=60.0,
+        )
+    finally:
+        shutdown.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    gaps = [b - a for a, b in itertools.pairwise(tick_starts)]
+    assert gaps, "no tick-to-tick gap was observed"
+    # The uncapped share's signal is 1.4s (a 17.4s gap against the 16.0s
+    # model); the slack here is scheduler granularity on a serial lane, still
+    # 5.6x below that signal.
+    bound = tick_deadline + 1.0 + 0.25  # the model, plus scheduling slack
+    assert max(gaps) <= bound, (
+        f"an iteration that spent its {tick_deadline * 0.1:.2f}s unwind share "
+        f"widened the tick gap to {max(gaps):.2f}s, past the deadline + period "
+        f"bound ({bound:.2f}s) the settings validator models: the repayment "
+        "sleeps max(0.0, 1.0 - overshoot), so it cannot cover a share larger "
+        "than the period and the stale-loop detector force-exits the worker"
+    )

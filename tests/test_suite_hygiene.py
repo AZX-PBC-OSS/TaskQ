@@ -2322,6 +2322,19 @@ _TASKQ_PATCH_EXEMPT: dict[str, dict[str, str]] = {
             "wiring; the recovery itself is the cron ownership pack's"
         ),
         "record_election_attempt": "the OTel counter's stamp site on the unit path; the counter's contract is tests/test_obs.py's",
+        "tick_cron": (
+            "the cron LOOP's seam: the deadline/repair/unwind pins drive the "
+            "loop by making the tick time out or spend its budget; what a fire "
+            "DOES (rows, locks, the commit gate) is the real-PG packs' "
+            "(tests/test_cron_integration.py, "
+            "tests/test_rt_cron_tick_cancel_txn.py)"
+        ),
+        "record_sweep_success": (
+            "the obs seam: the pins observe which arm of the loop's finally "
+            "ran; the sweep-health stamps' own contract is "
+            "tests/test_sweep_timeout_metrics.py's"
+        ),
+        "record_sweep_timeout": "same obs seam, the timeout arm",
         "CLOSE_TIMEOUT_SECS": (
             "the bounded-close deadline's TUNABLE: the hang/close arms drive "
             "the deadline deterministically on the fake clock; the close "

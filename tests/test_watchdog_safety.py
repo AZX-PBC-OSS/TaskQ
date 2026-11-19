@@ -1766,6 +1766,14 @@ async def test_cron_multi_statement_tick_gap_stays_within_budget(
         async def close(self) -> None:
             pass
 
+        async def reset(self) -> None:
+            # The deferred repair's interface on a real asyncpg connection;
+            # a no-op here keeps the loop's retry cadence the test pins.
+            pass
+
+        def terminate(self) -> None:
+            pass
+
     liveness = LoopLiveness(grace_factor=4.0, stale_floor=1.0)  # budget 4.0s
     is_leader = asyncio.Event()
     is_leader.set()
@@ -2158,6 +2166,14 @@ async def test_cron_loop_treats_transient_error_as_retry_not_fatal(
         async def close(self) -> None:
             pass
 
+        async def reset(self) -> None:
+            # The deferred repair's interface on a real asyncpg connection;
+            # a no-op here keeps the loop's retry cadence the test pins.
+            pass
+
+        def terminate(self) -> None:
+            pass
+
     liveness = LoopLiveness()
     is_leader = asyncio.Event()
     is_leader.set()
@@ -2415,6 +2431,14 @@ async def test_cron_timeout_branch_sleeps_before_next_tick(
         async def close(self) -> None:
             pass
 
+        async def reset(self) -> None:
+            # The deferred repair's interface on a real asyncpg connection;
+            # a no-op here keeps the loop's retry cadence the test pins.
+            pass
+
+        def terminate(self) -> None:
+            pass
+
     liveness = LoopLiveness()
     is_leader = asyncio.Event()
     is_leader.set()
@@ -2649,6 +2673,14 @@ async def test_transient_pg_errors_doc_describes_query_canceled_correctly(
             return False
 
         async def close(self) -> None:
+            pass
+
+        async def reset(self) -> None:
+            # The deferred repair's interface on a real asyncpg connection;
+            # a no-op here keeps the loop's retry cadence the test pins.
+            pass
+
+        def terminate(self) -> None:
             pass
 
     liveness = LoopLiveness()

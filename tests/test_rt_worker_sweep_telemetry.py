@@ -663,6 +663,14 @@ class _CronConnStub:
     async def close(self) -> None:
         pass
 
+    async def reset(self) -> None:
+        # The deferred repair's interface on a real asyncpg connection; a
+        # no-op here keeps the loop's retry cadence the tests pin.
+        pass
+
+    def terminate(self) -> None:
+        pass
+
 
 def _cron_leader() -> MaintenanceLeader:
     """A MaintenanceLeader carrying what ``_cron_loop`` touches, with a
