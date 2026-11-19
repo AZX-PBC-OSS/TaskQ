@@ -50,20 +50,16 @@ runs, over the tagged population:
 from __future__ import annotations
 
 import asyncio
-import os
-import subprocess
-import sys
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
 
-from taskq.testing.health import unique_health_sock_path
 from tests.system_e2e._harness import (
-    _BASE_ENV,  # pyright: ignore[reportPrivateUsage]  # Why: the fleet env is the tier's shared constant; the kill harness spawns with the same knobs the graceful scenarios prove.
     WorkerProc,
     reap,
+    spawn_worker,
     wait_worker_ready,
 )
 from tests.system_e2e._invariants import (
@@ -124,37 +120,28 @@ _SETTLE_CAP_S = _RECLAIM_OBSERVE_CAP_S + _POLL_INTERVAL_S + 30.0
 _KILL_LANDS_CAP_S = 30.0  # worker boot + the enqueue's dispatch are sub-second each
 
 
+#: The kill entry the harness spawns (the fault-injection seam lives in
+#: the entry, not the spawner - the same module boundary _harness's
+#: ``_WORKER_ENTRY`` constant draws).
+_KILL_ENTRY = "tests.system_e2e._kill_entry"
+
+
 def _spawn_kill_worker(
     pg_dsn: str, schema: str, *, seam: str | None = None, tag: str = "kill9"
 ) -> WorkerProc:
     """One kill-harness worker subprocess: the tier's fleet env, the
-    campaign's shortened leader lease, and (optionally) the kill seam."""
-    sock_path = _health_sock(tag)
-    env = {**os.environ, **_BASE_ENV}
-    env.update(
-        {
-            "TASKQ_PG_DSN": pg_dsn,
-            "TASKQ_SCHEMA_NAME": schema,
-            "TASKQ_HEALTH_SOCKET_PATH": sock_path,
-            "TASKQ_LEADER_LEASE": str(_LEADER_LEASE_S),
-        }
-    )
+    campaign's shortened leader lease, and (optionally) the kill seam.
+
+    Delegated to the shared harness spawner, not hand-rolled: a chaos
+    window is exactly the continuously-logging case whose PIPE pair must
+    be drained (the harness's tee reader) - a hand-rolled PIPE pair with
+    no reader fills at 64K and blocks the child mid-log, the wedge the
+    kill9pg lane reported as a phantom 180s exit timeout.
+    """
+    extra_env = {"TASKQ_LEADER_LEASE": str(_LEADER_LEASE_S)}
     if seam is not None:
-        env["TASKQ_KILL9_SEAM"] = seam
-    proc: subprocess.Popen[bytes] = (
-        subprocess.Popen(  # Why: fixed argv, no shell, this interpreter, project-owned module.
-            [sys.executable, "-m", "tests.system_e2e._kill_entry"],
-            env=env,
-            cwd=os.environ.get("TASKQ_REPO_ROOT", os.getcwd()),
-            stderr=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-        )
-    )
-    return WorkerProc(proc=proc, sock_path=sock_path)
-
-
-def _health_sock(tag: str) -> str:
-    return unique_health_sock_path(f"syse2e-{tag}")
+        extra_env["TASKQ_KILL9_SEAM"] = seam
+    return spawn_worker(pg_dsn, schema, tag=tag, entry=_KILL_ENTRY, extra_env=extra_env)
 
 
 async def _wait_killed(worker: WorkerProc, cap_s: float, phase: str) -> int:

@@ -42,7 +42,7 @@ from taskq._ids import new_uuid
 from taskq.migrate import apply_pending, apply_pending_locked
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from tests.conftest import free_host_port
-from tests.system_e2e._harness import WorkerProc, reap, wait_worker_ready
+from tests.system_e2e._harness import WorkerProc, reap, spawn_worker, wait_worker_ready
 from tests.system_e2e._invariants import (
     assert_effects_balance,
     conservation_violations,
@@ -319,38 +319,24 @@ async def test_docker_kill_mid_transaction_recovers_and_conserves(
 
 
 def _spawn_worker(pg_dsn: str, schema: str) -> WorkerProc:
-    """The tier's standard worker, env-configured for the chaos PG (the
+    """The tier's standard worker through the shared harness spawner (the
     campaign's shortened leader lease so the replacement's leadership
-    handover is bounded)."""
-    import os
-    import subprocess
-    import sys
+    handover is bounded).
 
-    from taskq.testing.health import unique_health_sock_path
-    from tests.system_e2e._harness import (
-        _BASE_ENV,  # pyright: ignore[reportPrivateUsage]  # Why: the fleet env is the tier's shared constant.
+    Delegated, not hand-rolled: the harness tees the worker's streams for
+    the process's whole life (``log_drain`` joined by ``reap`` at death).
+    The hand-rolled PIPE pair this used to spawn with had no reader at
+    all - the killed worker's own dead-PG log measured 43,806 bytes
+    (66.8% of the 65,536-byte pipe) at rest, and under lane contention
+    the volume crosses 64K and the child blocks mid-write on its own log
+    line: the manufactured hang the 180s isolation assertion reported.
+    """
+    return spawn_worker(
+        pg_dsn,
+        schema,
+        tag="kill9pg",
+        extra_env={"TASKQ_LEADER_LEASE": "6.0"},
     )
-
-    sock_path = unique_health_sock_path("syse2e-kill9pg")
-    env = {**os.environ, **_BASE_ENV}
-    env.update(
-        {
-            "TASKQ_PG_DSN": pg_dsn,
-            "TASKQ_SCHEMA_NAME": schema,
-            "TASKQ_HEALTH_SOCKET_PATH": sock_path,
-            "TASKQ_LEADER_LEASE": "6.0",
-        }
-    )
-    proc: subprocess.Popen[bytes] = (
-        subprocess.Popen(  # Why: fixed argv, no shell, this interpreter, project-owned module.
-            [sys.executable, "-m", "tests.system_e2e._worker_entry"],
-            env=env,
-            cwd=os.environ.get("TASKQ_REPO_ROOT", os.getcwd()),
-            stderr=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-        )
-    )
-    return WorkerProc(proc=proc, sock_path=sock_path)
 
 
 async def _wait_started(dsn: str, schema: str, job_id: object) -> None:
