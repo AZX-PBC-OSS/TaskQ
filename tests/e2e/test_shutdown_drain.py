@@ -33,6 +33,7 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
@@ -41,6 +42,7 @@ from taskq._ids import new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.testing.settings import make_integration_settings
+from taskq.worker._registration import reregister_worker
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.heartbeat import heartbeat_loop
@@ -77,6 +79,7 @@ if TYPE_CHECKING:
 
     from ._types import BuiltImage
     from .conftest import E2EDragonfly, E2ESchema
+
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]
 
@@ -599,16 +602,66 @@ class _CountingHeartbeatPool:
 # gated lease renewal, the reservation write, the claim-loss reconcile
 # probe (one indexed SELECT - it rides the tick's existing transaction and
 # single command budget, but it is a round trip), the cancel-hook poll,
-# COMMIT.
-_TICK_COMMAND_COUNT = 7
+# COMMIT — 7 commands. A tick that finds its row REAPED (the stale sweep
+# deleted the workers row while the process was alive) runs exactly one
+# more: the liveness write matches zero rows and the tick restores its
+# registration inside the same transaction (the liveness repair's
+# ``INSERT ... ON CONFLICT (id) DO NOTHING``) — 8 commands, the restore
+# third, immediately after the zero-row liveness write it answers.
+_NORMAL_TICK_SEQUENCE = (
+    "begin",
+    "liveness",
+    "renewal",
+    "reservation",
+    "reconcile",
+    "cancel-hook",
+    "commit",
+)
+_REAPED_TICK_SEQUENCE = (
+    "begin",
+    "liveness",
+    "restore",
+    "renewal",
+    "reservation",
+    "reconcile",
+    "cancel-hook",
+    "commit",
+)
+
+
+def _classify_tick_command(sql: str) -> str:
+    """One stable name per statement shape the tick issues (an unknown
+    shape classifies as ``unknown:…`` and fails the sequence pin)."""
+    if sql == "BEGIN":
+        return "begin"
+    if sql == "COMMIT":
+        return "commit"
+    if sql.startswith("INSERT INTO ") and ".workers" in sql:
+        # The liveness repair: the shared re-registration template's
+        # ``ON CONFLICT (id) DO NOTHING`` restore arm.
+        assert "ON CONFLICT (id) DO NOTHING" in sql, sql[:120]
+        return "restore"
+    if sql.startswith("UPDATE ") and ".workers SET last_seen_at" in sql:
+        return "liveness"
+    if sql.startswith("WITH due AS"):
+        return "renewal"
+    if sql.startswith("UPDATE ") and ".reservation_slots" in sql:
+        return "reservation"
+    if sql.startswith("UPDATE ") and "GREATEST(j.attempt - 1, 0)" in sql:
+        return "reconcile"
+    if sql.startswith("SELECT ") and "cancel_phase" in sql:
+        return "cancel-hook"
+    return f"unknown:{sql[:80]}"
 
 
 async def test_heartbeat_tick_round_trip_budget(
     e2e_schema: E2ESchema,
     e2e_pg_pool: asyncpg.Pool,
 ) -> None:
-    """One production heartbeat tick against the live PG issues exactly six
-    commands - the compensating pin for the 0.5 s budget widening.
+    """One production heartbeat tick against the live PG issues exactly
+    its pinned command sequence - the compensating pin for the 0.5 s
+    budget widening, re-derived for both tick shapes the liveness repair
+    introduced.
 
     At the old 0.1 s command budget, a tick that grew a round trip (or a
     beat of scheduling lag) failed loudly - the worker self-isolated and
@@ -620,6 +673,33 @@ async def test_heartbeat_tick_round_trip_budget(
     tens of milliseconds (the flake this PR fixes is exactly that), so a
     latency bound tight enough to catch one added round trip would flake;
     the count is deterministic and environment-independent.
+
+    Two arms, both driven explicitly:
+
+    * the NORMAL tick (the workers row boot registration wrote is
+      present): 7 commands - begin, the liveness write, the gated lease
+      renewal, the reservation write, the claim-loss reconcile probe, the
+      cancel-hook poll, commit;
+    * the REAPED-ROW tick (the stale sweep deleted the row while the
+      process was alive): 8 commands - the same seven plus the
+      registration RESTORE arm third, between the zero-row liveness write
+      it answers and the lease renewal, inside the same transaction.
+
+    The budget argument at 8: the 0.5 s budget bounds the tick's whole
+    statement SEQUENCE against this fleet's local-PG round trips
+    (single-digit milliseconds each) - 8 statements cost tens of
+    milliseconds, a small fraction of the budget - and the restore arm is
+    not a per-tick cost: it rides the tick's EXISTING transaction (no
+    second acquire, no second connection handshake) and fires only on the
+    reaped-row beat, an already-abnormal beat whose alternative was the
+    bare UPDATE's fake success (a liveness write matching zero rows
+    reporting success while the worker's row is gone). Folding the
+    restore into the liveness write (an unconditional UPSERT every tick)
+    was rejected by the repair's own design: the repair merges the full
+    registration metadata under the tick's payload with registration keys
+    winning, and the normal path must stay the light liveness UPDATE - so
+    the pin bounds BOTH sequences instead, and any further growth still
+    fails here.
     """
     settings = make_integration_settings(
         e2e_schema.host_dsn,
@@ -633,58 +713,103 @@ async def test_heartbeat_tick_round_trip_budget(
         CLEANUP_GRACE_PERIOD="1.0",
         TERMINATION_GRACE_PERIOD="15.0",
     )
-    worker_id = new_uuid()
 
-    stack = AsyncExitStack()
-    try:
-        deps: WorkerDeps = await stack.enter_async_context(open_worker_deps(settings))
-        counting = _CountingHeartbeatPool(deps.heartbeat_pool)
-        deps.heartbeat_pool = counting  # type: ignore[assignment]  # Why: the counting wrapper is a drop-in for asyncpg.Pool in the heartbeat path (same discipline as the unit tier's FakePool), and only the heartbeat touches it here.
+    async def _first_tick_commands(worker_id: UUID, *, row_present: bool) -> list[str]:
+        """Run the heartbeat loop to its first committed tick and return
+        the commands that tick (and any leading restore work) issued.
 
-        controller = make_cancel_controller(
-            deps,
-            worker_id,
-            PostgresBackend(
+        ``row_present=False`` is the reaped shape: no workers row exists
+        when the loop starts, so the first tick's zero-row liveness write
+        runs the restore arm."""
+        stack = AsyncExitStack()
+        try:
+            deps: WorkerDeps = await stack.enter_async_context(open_worker_deps(settings))
+            if row_present:
+                # The shipped registration writer (the same template the
+                # tick's own restore arm and the leader's FK recovery
+                # execute) stands in for the boot registration.
+                async with e2e_pg_pool.acquire() as conn:
+                    await reregister_worker(
+                        conn,
+                        worker_id,
+                        deps.settings,
+                        workflow_execution=deps.workflow_execution_capable,
+                    )
+            counting = _CountingHeartbeatPool(deps.heartbeat_pool)
+            deps.heartbeat_pool = counting  # type: ignore[assignment]  # Why: the counting wrapper is a drop-in for asyncpg.Pool in the heartbeat path (same discipline as the unit tier's FakePool), and only the heartbeat touches it here.
+
+            controller = make_cancel_controller(
                 deps,
-                clock=SystemClock(),
-                cancellation_grace_period=timedelta(seconds=settings.cancellation_grace_period),
-                cleanup_grace_period=timedelta(seconds=settings.cleanup_grace_period),
-            ),
-        )
-        shutdown = asyncio.Event()
-        task = asyncio.create_task(
-            heartbeat_loop(deps, worker_id, shutdown, cancel_controller=controller)
-        )
+                worker_id,
+                PostgresBackend(
+                    deps,
+                    clock=SystemClock(),
+                    cancellation_grace_period=timedelta(seconds=settings.cancellation_grace_period),
+                    cleanup_grace_period=timedelta(seconds=settings.cleanup_grace_period),
+                ),
+            )
+            shutdown = asyncio.Event()
+            task = asyncio.create_task(
+                heartbeat_loop(deps, worker_id, shutdown, cancel_controller=controller)
+            )
 
-        async def _first_tick_committed() -> bool:
-            return "COMMIT" in counting.commands
+            async def _first_tick_committed() -> bool:
+                return "COMMIT" in counting.commands
 
-        await poll_until(
-            _first_tick_committed,
-            timeout=30.0,
-            description="the in-process heartbeat's first tick to commit against the live PG",
+            await poll_until(
+                _first_tick_committed,
+                timeout=30.0,
+                description="the in-process heartbeat's first tick to commit against the live PG",
+            )
+            shutdown.set()
+            await task
+            return counting.commands
+        finally:
+            await stack.aclose()
+
+    observed: dict[str, list[str]] = {}
+    reaped_worker_id = new_uuid()
+    normal_worker_id = new_uuid()
+    try:
+        # The REAPED arm first: a fresh worker id with no row - the first
+        # tick must restore the registration (8 commands, restore third).
+        observed["reaped"] = await _first_tick_commands(
+            reaped_worker_id, row_present=False
         )
-        shutdown.set()
-        await task
-
-        commands = counting.commands
-        assert len(commands) == _TICK_COMMAND_COUNT, (
-            f"one heartbeat tick issued {len(commands)} commands, expected "
-            f"{_TICK_COMMAND_COUNT} (BEGIN, the liveness write, the gated "
-            f"lease renewal, the reservation write, the claim-loss "
-            f"reconcile probe, the cancel-hook poll, COMMIT); the tick's "
-            f"round-trip sequence grew - under this fleet's 0.5 s command "
-            f"budget nothing else would fail, so either fold the round "
-            f"trip into an existing statement, or re-derive the budget "
-            f"and this pin together. "
-            f"Commands observed: {[sql[:80] for sql in commands]}"
+        # The NORMAL arm: the row present (registered through the shipped
+        # writer) - the liveness write matches one row, no restore (7
+        # commands).
+        observed["normal"] = await _first_tick_commands(
+            normal_worker_id, row_present=True
         )
     finally:
-        # The tick registered an in-process workers row; the e2e tier's
+        # The ticks registered in-process workers rows; the e2e tier's
         # shared schema keeps workers rows across tests, so remove ours.
-        with contextlib.suppress(Exception):
-            await e2e_pg_pool.execute(
-                f'DELETE FROM "{e2e_schema.schema_name}".workers WHERE id = $1',
-                worker_id,
-            )
-        await stack.aclose()
+        for worker_id in (reaped_worker_id, normal_worker_id):
+            with contextlib.suppress(Exception):
+                await e2e_pg_pool.execute(
+                    f'DELETE FROM "{e2e_schema.schema_name}".workers WHERE id = $1',
+                    worker_id,
+                )
+
+    for arm, expected in (
+        ("reaped", _REAPED_TICK_SEQUENCE),
+        ("normal", _NORMAL_TICK_SEQUENCE),
+    ):
+        commands = observed[arm]
+        classified = tuple(_classify_tick_command(sql) for sql in commands)
+        assert classified == expected, (
+            f"the {arm} tick issued {classified}, expected {expected}; "
+            f"the tick's round-trip sequence grew or shrank - under this "
+            f"fleet's 0.5 s command budget nothing else would fail, so "
+            f"either fold the round trip into an existing statement, or "
+            f"re-derive the budget and this pin together. "
+            f"Commands observed: {[sql[:80] for sql in commands]}"
+        )
+    # The restore arm's POSITION, named: the third command of the reaped
+    # tick, the zero-row liveness write's own answer, before the lease
+    # renewal it shares the transaction with.
+    assert _classify_tick_command(observed["reaped"][2]) == "restore", (
+        f"the reaped tick's third command is not the registration restore "
+        f"arm: {observed['reaped'][2][:120]!r}"
+    )
