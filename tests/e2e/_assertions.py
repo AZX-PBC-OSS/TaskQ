@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable, Sequence
+from datetime import datetime
 from uuid import UUID
 
 import asyncpg
@@ -266,8 +267,16 @@ async def wait_for_effects(
 
 
 async def fresh_worker_ids(pool: asyncpg.Pool, schema: str) -> set[UUID]:
-    """The workers of *schema* with a fresh post-register heartbeat
-    (``last_seen_at > started_at``, within the last 10 s)."""
+    """The workers of *schema* registered in the last 10 s.
+
+    The predicate (``last_seen_at > started_at``, within the last 10 s)
+    is satisfied by the REGISTRATION row itself - the registration INSERT
+    stamps ``last_seen_at = clock_timestamp()``, strictly greater than
+    ``started_at``'s ``now()`` transaction-start default - so this
+    answers "registered recently", never "has ticked". It is the right
+    predicate for the KNOWN-WORKERS snapshot (any recent registration is
+    known); a readiness gate that must observe a live heartbeat uses
+    :func:`wait_for_worker_ready`'s beat-increase rule instead."""
     rows = await pool.fetch(
         f"""
         SELECT id FROM "{schema}".workers
@@ -285,25 +294,57 @@ async def wait_for_worker_ready(
     timeout: float = 30.0,  # noqa: ASYNC109  # Why: forwarded to poll_until as a polling deadline, not an asyncio.timeout-style wrapper.
     known_workers: frozenset[UUID] | set[UUID] = frozenset(),
 ) -> None:
-    """Readiness gate: poll ``{schema}.workers`` until a row shows a fresh
-    POST-REGISTER heartbeat (``last_seen_at > started_at``, within the last
-    10s). Requiring a heartbeat after registration means a worker that
-    crashes mid-bootstrap (after ``register_worker`` but before its first
-    tick - e.g. an actor-config failure) never satisfies the gate, so the
-    fixture dumps the container logs with the actual traceback instead of
-    letting the test proceed against a dead worker.
+    """Readiness gate: poll ``{schema}.workers`` until a NEW worker shows
+    a SECOND BEAT - its own ``last_seen_at`` strictly increasing across
+    two gate samples.
+
+    The beat rule, not row presence: the registration INSERT stamps
+    ``last_seen_at = clock_timestamp()`` (the statement's own instant)
+    while ``started_at`` carries the table's ``now()`` default (the
+    transaction's start), so ``last_seen_at > started_at`` is true on the
+    registration row itself and a row-presence gate admits a worker that
+    is still BETWEEN ``register_worker`` and its later bootstrap steps
+    (the actor-config sync, the cron-schedule registration) - exactly the
+    mid-bootstrap admission the gate exists to refuse. A worker's
+    ``last_seen_at`` moves only when its heartbeat loop writes a tick, so
+    an increase across samples is a real post-registration beat: a
+    worker that crashes mid-bootstrap (after ``register_worker`` but
+    before its first tick - e.g. an actor-config failure) never satisfies
+    the gate, so the fixture dumps the container logs with the actual
+    traceback instead of letting the test proceed against a dead or
+    half-booted worker.
 
     *known_workers* are the ids already beating before the worker under
     the gate started (:func:`fresh_worker_ids`); the gate waits for a
-    fresh heartbeat from some OTHER worker, so a second container on a
-    schema whose first worker is alive is gated on its own readiness,
-    never on its sibling's."""
+    beat from some OTHER worker, so a second container on a schema whose
+    first worker is alive is gated on its own readiness, never on its
+    sibling's."""
 
-    async def _fresh_heartbeat() -> bool:
-        return bool(await fresh_worker_ids(pool, schema) - set(known_workers))
+    seen_beats: dict[UUID, datetime] = {}
+
+    async def _second_beat() -> bool:
+        rows = await pool.fetch(
+            f"""
+            SELECT id, last_seen_at FROM "{schema}".workers
+            WHERE last_seen_at > now() - interval '10 seconds'
+              AND last_seen_at > started_at
+              AND NOT (id = ANY($1::uuid[]))
+            """,
+            sorted(known_workers),
+        )
+        for row in rows:
+            prior = seen_beats.get(row["id"])
+            if prior is not None and row["last_seen_at"] > prior:
+                return True
+            if prior is None or row["last_seen_at"] > prior:
+                seen_beats[row["id"]] = row["last_seen_at"]
+        return False
 
     await poll_until(
-        _fresh_heartbeat,
+        _second_beat,
         timeout=timeout,
-        description=f"fresh post-register worker heartbeat in {schema}.workers",
+        description=(
+            f"a second post-registration beat (last_seen_at increasing across "
+            f"samples) from a new worker in {schema}.workers"
+        ),
     )
