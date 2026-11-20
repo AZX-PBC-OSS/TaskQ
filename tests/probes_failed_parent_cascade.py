@@ -57,6 +57,7 @@ from tests._wf_fixtures import (
     node_state,
     seed_flow,
     seed_join,
+    seed_ledger_claim,
     seed_running_node,
 )
 
@@ -179,6 +180,9 @@ async def test_attack_maybe_child_never_cascades(
     for p in (failing, peer1, peer2):
         await _seed_edge_named(wf_conn, wf_schema, join_id, p, flow_id, "maybe")
 
+    m0_ledger, m0_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=failing, step_key="m0", attempt=1, epoch=0
+    )
     await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -191,6 +195,8 @@ async def test_attack_maybe_child_never_cascades(
         outcome="failed",
         error_class="ValueError",
         error_message="the maybe child's terminal",
+        ledger_id=m0_ledger,
+        ledger_claimed_at=m0_claimed_at,
     )
 
     for peer in (peer1, peer2):
@@ -229,6 +235,19 @@ async def test_attack_cascade_racing_a_normal_finalize(
 
     worker, attempt, epoch = await claim_view(wf_conn, wf_schema, racing_peer)
 
+    c0_ledger, c0_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=failed_child, step_key="c0", attempt=1, epoch=0
+    )
+    c1_ledger, c1_claimed_at = await seed_ledger_claim(
+        wf_conn,
+        wf_schema,
+        flow_id=flow_id,
+        job_id=racing_peer,
+        step_key="c1",
+        attempt=attempt,
+        epoch=epoch,
+    )
+
     async def fail_now() -> None:
         await finalize_node(
             module_pg_pool,
@@ -241,6 +260,8 @@ async def test_attack_cascade_racing_a_normal_finalize(
             claim_epoch=0,
             outcome="failed",
             error_class="ValueError",
+            ledger_id=c0_ledger,
+            ledger_claimed_at=c0_claimed_at,
         )
 
     async def succeed_now() -> None:
@@ -255,6 +276,8 @@ async def test_attack_cascade_racing_a_normal_finalize(
             claim_epoch=epoch,
             outcome="succeeded",
             result={"ok": True},
+            ledger_id=c1_ledger,
+            ledger_claimed_at=c1_claimed_at,
         )
 
     for _round in range(6):
@@ -318,6 +341,12 @@ async def test_attack_two_cascades_overlapping_peer_sets(
     await _seed_edge_named(wf_conn, wf_schema, join_b, f1, flow_id, "fail_closed")
     await _seed_edge_named(wf_conn, wf_schema, join_b, common, flow_id, "fail_closed")
 
+    f0_ledger, f0_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=f0, step_key="f0", attempt=1, epoch=0
+    )
+    f1_ledger, f1_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=f1, step_key="f1", attempt=1, epoch=0
+    )
     await asyncio.gather(
         finalize_node(
             module_pg_pool,
@@ -330,6 +359,8 @@ async def test_attack_two_cascades_overlapping_peer_sets(
             claim_epoch=0,
             outcome="failed",
             error_class="ValueError",
+            ledger_id=f0_ledger,
+            ledger_claimed_at=f0_claimed_at,
         ),
         finalize_node(
             module_pg_pool,
@@ -342,6 +373,8 @@ async def test_attack_two_cascades_overlapping_peer_sets(
             claim_epoch=0,
             outcome="failed",
             error_class="ValueError",
+            ledger_id=f1_ledger,
+            ledger_claimed_at=f1_claimed_at,
         ),
     )
 
@@ -388,6 +421,9 @@ async def test_attack_mixed_policy_node_the_collect_join_hangs(
     await _seed_edge_named(wf_conn, wf_schema, join_a, x, flow_id, "fail_closed")
     await _seed_edge_named(wf_conn, wf_schema, join_b, x, flow_id, "collect")
 
+    x_ledger, x_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=x, step_key="x", attempt=1, epoch=0
+    )
     await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -400,6 +436,8 @@ async def test_attack_mixed_policy_node_the_collect_join_hangs(
         outcome="failed",
         error_class="ValueError",
         error_message="the mixed node",
+        ledger_id=x_ledger,
+        ledger_claimed_at=x_claimed_at,
     )
 
     root = await node_state(wf_conn, wf_schema, flow_id)

@@ -31,7 +31,7 @@ from taskq.backend.statemachine import (
 from taskq.exceptions import IllegalStateTransition
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import finalize_node
-from tests._wf_fixtures import claim_view, seed_flow
+from tests._wf_fixtures import claim_view, seed_flow, seed_ledger_claim
 
 #: the 8 job_status states x the 8 event targets. Every cell below is defined:
 #: it either names the shipped write that performs the transition, or the guard
@@ -188,16 +188,26 @@ async def test_state_event_totality_zero_undefined_cells(
                     if state == "running"
                     else new_uuid()
                 )
+                tot_flow = JobId(
+                    await wf_conn.fetchval(
+                        f"SELECT (metadata->>'flow_id')::uuid FROM "
+                        f'"{wf_schema}".jobs WHERE id = $1',
+                        node_id,
+                    )
+                )
+                tot_ledger, tot_claimed_at = await seed_ledger_claim(
+                    wf_conn,
+                    wf_schema,
+                    flow_id=tot_flow,
+                    job_id=node_id,
+                    step_key=f"tot_{state}",
+                    attempt=1,
+                    epoch=0,
+                )
                 result = await finalize_node(
                     module_pg_pool,
                     wf_sql,
-                    flow_id=JobId(
-                        await wf_conn.fetchval(
-                            f"SELECT (metadata->>'flow_id')::uuid FROM "
-                            f'"{wf_schema}".jobs WHERE id = $1',
-                            node_id,
-                        )
-                    ),
+                    flow_id=tot_flow,
                     job_id=node_id,
                     step_key=f"tot_{state}",
                     worker_id=worker_id,
@@ -206,6 +216,8 @@ async def test_state_event_totality_zero_undefined_cells(
                     outcome=event,  # pyright: ignore[reportArgumentType]  # Why: the event is the terminal outcome vocabulary's own member.
                     result={"t": True} if event == "succeeded" else None,
                     error_class="Tot" if event == "failed" else None,
+                    ledger_id=tot_ledger,
+                    ledger_claimed_at=tot_claimed_at,
                 )
                 applied = result.applied
             else:

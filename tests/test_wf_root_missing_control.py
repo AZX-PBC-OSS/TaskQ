@@ -194,8 +194,18 @@ async def test_missing_root_direct_rolls_back_before_any_write(
         WorkflowRunError,
     )
     from taskq.workflows.engine import finalize_node
+    from tests._wf_fixtures import seed_ledger_claim
 
     flow_id, child = await _seed_flow_with_child(wf_conn, wf_schema, with_join=True)
+    child_ledger, child_claimed_at = await seed_ledger_claim(
+        wf_conn,
+        wf_schema,
+        flow_id=JobId(flow_id),
+        job_id=JobId(child),
+        step_key="screen",
+        attempt=1,
+        epoch=1,
+    )
     join_id = await wf_conn.fetchval(
         f"""SELECT id FROM "{wf_schema}".jobs
             WHERE (metadata->>'flow_id')::uuid = $1::uuid
@@ -222,8 +232,8 @@ async def test_missing_root_direct_rolls_back_before_any_write(
             outcome="failed",
             error_class="ValueError",
             error_message="exhausted",
-            ledger_id=None,
-            ledger_claimed_at=None,
+            ledger_id=child_ledger,
+            ledger_claimed_at=child_claimed_at,
         )
     raised = exc_info.value
     assert not isinstance(raised, WorkflowBodyUnresolvableError)

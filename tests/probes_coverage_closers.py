@@ -719,7 +719,7 @@ async def test_signal_reads_a_delivered_payload_and_refuses_the_rest(
 # ══ engine.py — the fence ledger writes + the join fire arms ═════════════
 
 
-async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
+async def test_the_finalize_fence_writes_the_ledger_by_claim_identity(
     module_pg_pool: Any, module_pg_schema: ModulePgSchema, clean_pg_conn: Any
 ) -> None:
     """The FENCED-out finalize: a stale claim's finalize writes the
@@ -739,48 +739,25 @@ async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
     #718 re-keying made the guard strict — a NULL instant is the DESIGNED
     stale refusal).
 
-    INVERSION, labelled: the by-attempt fence leg of the pre-#718 probe
-    asserted ``'fenced'`` for a finalize with NO ledger id. The fallback
-    was deleted with the #718 ledger re-keying (the epoch arbiter can
-    carry several rows per (flow, step, attempt), and an update keyed on
-    those four alone rewrote the parked attempt's 'awaited' history
-    beside the current row) — there is no four-expression no-id fallback
-    in current production, so this probe now pins the REFUSAL: a caller
-    that lost its own claim identity writes no ledger history at all.
-    The fence's teeth demonstrated here are the two identity guards the
-    statement actually carries: a STALE instant is refused (the re-mint
-    guard) and a NO-identity caller is refused (the deleted fallback).
-    The claim_epoch is not a leg of the by-ID fence statement (it keys
-    id + nonterminal status + instant); the epoch is the ASSOCIATION
-    core's leg, whose parity controls live with ``_sql_claim``."""
-    from datetime import datetime, timedelta
+    The by-attempt fence leg of the pre-#718 probe is gone with the #718
+    ledger re-keying (the epoch arbiter can carry several rows per
+    (flow, step, attempt), and an update keyed on those four alone
+    rewrote the parked attempt's 'awaited' history beside the current
+    row) — there is no four-expression fallback in current production,
+    and the door fails closed: a finalize asked to APPLY a terminal
+    without its claim's ledger id is refused outright before any write
+    (the arm at the bottom). The fence's teeth demonstrated here are the
+    two identity guards the statements actually carry: a STALE instant
+    is refused (the re-mint guard) and an IDENTITY-LESS terminal is
+    refused (the door's own law). The claim_epoch is not a leg of the
+    by-ID fence statement (it keys id + nonterminal status + instant);
+    the epoch is the ASSOCIATION core's leg, whose parity controls live
+    with ``_sql_claim``."""
+    from datetime import timedelta
 
-    from taskq.backend._protocol import JobId
     from taskq.workflows._sql import WorkflowSql
     from taskq.workflows.engine import finalize_node
-    from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
-
-    async def _seed_claim_row(
-        step_key: str, node: JobId, attempt_: int, epoch_: int
-    ) -> tuple[JobId, datetime]:
-        """The claim arbiter's own row (the product's LEDGER_CLAIM_SQL
-        shape), returning (ledger_id, the claim's RETURNING instant)."""
-        row_id = JobId(uuid.uuid4())
-        await clean_pg_conn.execute(
-            f'INSERT INTO "{schema}".wf_step_ledger '
-            "(id, flow_id, job_id, step_key, map_index, attempt, claim_epoch, status) "
-            "VALUES ($1, $2, $3, $4, NULL, $5, $6, 'running')",
-            row_id,
-            flow_id,
-            node,
-            step_key,
-            attempt_,
-            epoch_,
-        )
-        claimed = await clean_pg_conn.fetchval(
-            f'SELECT updated_at FROM "{schema}".wf_step_ledger WHERE id = $1', row_id
-        )
-        return row_id, claimed
+    from tests._wf_fixtures import claim_view, seed_flow, seed_ledger_claim, seed_running_node
 
     schema = module_pg_schema.schema_name
     wsql = WorkflowSql.build(schema)
@@ -790,7 +767,15 @@ async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
     # and instant ──
     node_id = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="fenced")
     worker, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
-    ledger_id, claimed_at = await _seed_claim_row("fenced", node_id, attempt, epoch)
+    ledger_id, claimed_at = await seed_ledger_claim(
+        clean_pg_conn,
+        schema,
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="fenced",
+        attempt=attempt,
+        epoch=epoch,
+    )
     wrong_worker = type(worker)("018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4a")
     res = await finalize_node(
         module_pg_pool,
@@ -823,7 +808,15 @@ async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
     # the stale presentation meets a live 'running' row. ──
     node_s = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="fenced-s")
     worker_s, attempt_s, epoch_s = await claim_view(clean_pg_conn, schema, node_s)
-    ledger_s, instant_s = await _seed_claim_row("fenced-s", node_s, attempt_s, epoch_s)
+    ledger_s, instant_s = await seed_ledger_claim(
+        clean_pg_conn,
+        schema,
+        flow_id=flow_id,
+        job_id=node_s,
+        step_key="fenced-s",
+        attempt=attempt_s,
+        epoch=epoch_s,
+    )
     res_stale = await finalize_node(
         module_pg_pool,
         wsql,
@@ -854,8 +847,14 @@ async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
     # the row ITS OWN claim minted. ──
     node_t = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="fenced-t")
     worker_t, attempt_t, epoch_t = await claim_view(clean_pg_conn, schema, node_t)
-    terminal_ledger, terminal_instant = await _seed_claim_row(
-        "fenced-t", node_t, attempt_t, epoch_t
+    terminal_ledger, terminal_instant = await seed_ledger_claim(
+        clean_pg_conn,
+        schema,
+        flow_id=flow_id,
+        job_id=node_t,
+        step_key="fenced-t",
+        attempt=attempt_t,
+        epoch=epoch_t,
     )
     res2 = await finalize_node(
         module_pg_pool,
@@ -877,37 +876,53 @@ async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
     )
     assert terminal == "succeeded", f"the by-ID terminal leg did not run: {terminal!r}"
 
-    # ── the no-ledger-id arm: the shipped REFUSAL (the labelled inversion
-    # above) — a finalize with no claim identity is fenced out of the jobs
-    # row AND writes no ledger history: no by-attempt fallback may key a
-    # write it cannot pin to its own claim row. ──
+    # ── the no-ledger-id arm: the door's fail-closed refusal — an APPLIED
+    # terminal must carry its claim's ledger identity. The RIGHT worker
+    # (the jobs-row fence passes it) presenting NO ledger id: finalize
+    # refuses the terminal outright — the jobs row AND the claim's own
+    # ledger row both stay 'running'. Applying the terminal without the
+    # id would leave the claim's history row 'running' beside the
+    # terminal node — the split state the ledger-terminal-atomic rule
+    # forbids — and no by-attempt fallback may key a write it cannot pin
+    # to its own claim row (the #718 re-keying deleted the fallback).
+    # Every production caller threads its claim's RETURNING id; the
+    # refusal is the identity-less caller's shape only. ──
     node2 = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="fenced2")
     worker2, attempt2, epoch2 = await claim_view(clean_pg_conn, schema, node2)
-    ledger2, _ = await _seed_claim_row("fenced2", node2, attempt2, epoch2)
+    ledger2, _ = await seed_ledger_claim(
+        clean_pg_conn,
+        schema,
+        flow_id=flow_id,
+        job_id=node2,
+        step_key="fenced2",
+        attempt=attempt2,
+        epoch=epoch2,
+    )
     res3 = await finalize_node(
         module_pg_pool,
         wsql,
         flow_id=flow_id,
         job_id=node2,
         step_key="fenced2",
-        worker_id=type(worker2)("018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4b"),
+        worker_id=worker2,
         attempt=attempt2,
         claim_epoch=epoch2,
         outcome="failed",
         error_class="ValueError",
         ledger_id=None,
     )
-    assert res3.applied is False, res3
-    state2 = await clean_pg_conn.fetchval(
+    job_state2 = await clean_pg_conn.fetchval(
         f'SELECT status FROM "{schema}".jobs WHERE id = $1', node2
     )
-    assert state2 == "running", "the identity-less finalize moved the row"
     fence2 = await clean_pg_conn.fetchval(
         f'SELECT status FROM "{schema}".wf_step_ledger WHERE id = $1', ledger2
     )
-    assert fence2 == "running", (
-        f"an identity-less finalize wrote ledger history (a by-attempt "
-        f"fallback survives that the #718 re-keying deleted): {fence2!r}"
+    assert res3.applied is False and job_state2 == "running" and fence2 == "running", (
+        "the identity-less finalize must be refused with nothing written — "
+        "an applied terminal must carry its claim's ledger identity; observed "
+        f"applied={res3.applied!r}, jobs row {job_state2!r}, ledger row {fence2!r} "
+        "(a terminal applied beside a still-'running' history row is the split "
+        "state the ledger-terminal-atomic rule forbids)"
     )
 
 
@@ -949,7 +964,14 @@ async def test_the_finalize_registers_the_flow_reducers_for_the_cold_process(
     from taskq.workflows._reducers import resolve_flow_reducer
     from taskq.workflows._sql import WorkflowSql
     from taskq.workflows.engine import finalize_node
-    from tests._wf_fixtures import claim_view, seed_edge, seed_flow, seed_join, seed_running_node
+    from tests._wf_fixtures import (
+        claim_view,
+        seed_edge,
+        seed_flow,
+        seed_join,
+        seed_ledger_claim,
+        seed_running_node,
+    )
 
     schema = module_pg_schema.schema_name
     wsql = WorkflowSql.build(schema)
@@ -963,6 +985,15 @@ async def test_the_finalize_registers_the_flow_reducers_for_the_cold_process(
     await seed_edge(clean_pg_conn, schema, join_id, node_id, flow_id)
 
     worker, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
+    ledger_id, claimed_at = await seed_ledger_claim(
+        clean_pg_conn,
+        schema,
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="child",
+        attempt=attempt,
+        epoch=epoch,
+    )
     await finalize_node(
         module_pg_pool,
         wsql,
@@ -975,6 +1006,8 @@ async def test_the_finalize_registers_the_flow_reducers_for_the_cold_process(
         outcome="succeeded",
         result={"n": 1},
         reducers={"reg_join": the_reducer},
+        ledger_id=ledger_id,
+        ledger_claimed_at=claimed_at,
     )
     # The registration is visible to the reducer resolution (the same
     # process's registry, keyed by the run's JobId): the memo answers for

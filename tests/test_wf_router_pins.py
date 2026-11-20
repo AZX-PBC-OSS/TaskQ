@@ -262,7 +262,7 @@ async def test_chain_routes_through_the_certified_fork(
         assert rec is not None
         attempt_n, epoch_n = int(rec["attempt"]), int(rec["claim_epoch"])
         async with module_pg_pool.acquire() as conn:
-            await claim_step_ledger(
+            ledger_claim = await claim_step_ledger(
                 conn,
                 wf_sql,
                 flow_id=flow_id,
@@ -297,6 +297,8 @@ async def test_chain_routes_through_the_certified_fork(
             result={"value": outcome.value},
             fork=fork,
             map_index=int(rec["map_index"]),
+            ledger_id=ledger_claim.ledger_id,
+            ledger_claimed_at=ledger_claim.claimed_at,
         )
         assert res.applied
         return outcome
@@ -406,7 +408,7 @@ async def test_router_not_total_fails_the_row_loudly(
     from taskq.workflows.ledger import claim_step_ledger
 
     async with module_pg_pool.acquire() as conn:
-        await claim_step_ledger(
+        ledger_claim = await claim_step_ledger(
             conn,
             wf_sql,
             flow_id=flow_id,
@@ -436,6 +438,8 @@ async def test_router_not_total_fails_the_row_loudly(
                 error_class="RouterNotTotal",
                 error_message=str(exc)[:500],
                 map_index=int(rec["map_index"]),
+                ledger_id=ledger_claim.ledger_id,
+                ledger_claimed_at=ledger_claim.claimed_at,
             )
             return
         raise AssertionError("NOT REFUSED — the runtime door is broken")

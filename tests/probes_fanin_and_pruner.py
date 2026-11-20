@@ -41,6 +41,7 @@ from tests._wf_fixtures import (
     node_state,
     seed_flow,
     seed_join,
+    seed_ledger_claim,
     seed_running_node,
 )
 
@@ -91,6 +92,9 @@ async def test_attack_expiry_after_the_fire_before_the_reduce(
     # both children terminalize with results + a shortened expiry (the
     # named clock mechanism — the rows' expiry forced into the past).
     for node, key in ((a, "a"), (b, "b")):
+        node_ledger, node_claimed_at = await seed_ledger_claim(
+            wf_conn, wf_schema, flow_id=flow_id, job_id=node, step_key=key, attempt=1, epoch=0
+        )
         await finalize_node(
             module_pg_pool,
             wf_sql,
@@ -102,6 +106,8 @@ async def test_attack_expiry_after_the_fire_before_the_reduce(
             claim_epoch=0,
             outcome="succeeded",
             result={"k": key},
+            ledger_id=node_ledger,
+            ledger_claimed_at=node_claimed_at,
         )
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET result_expires_at = now() - interval '1 second' "
@@ -206,6 +212,15 @@ async def test_attack_barrier_racing_a_cancel(
         await _seed_edge_named(wf_conn, wf_schema, join_id, late_child, flow_id, "collect")
 
         # the first child completes cleanly (the barrier waits)
+        d0_ledger, d0_claimed_at = await seed_ledger_claim(
+            wf_conn,
+            wf_schema,
+            flow_id=flow_id,
+            job_id=done_child,
+            step_key="d0",
+            attempt=1,
+            epoch=0,
+        )
         await finalize_node(
             module_pg_pool,
             wf_sql,
@@ -217,6 +232,8 @@ async def test_attack_barrier_racing_a_cancel(
             claim_epoch=0,
             outcome="succeeded",
             result={"k": "d0"},
+            ledger_id=d0_ledger,
+            ledger_claimed_at=d0_claimed_at,
         )
 
         # the flow root + the late child cancel (the cancel arm's direct write
@@ -232,6 +249,15 @@ async def test_attack_barrier_racing_a_cancel(
         # CAS (status='running') still matches the child row — the child marks
         # succeeded — but tx2's decrement/fire must refuse on the flow-status
         # leg.
+        d1_ledger, d1_claimed_at = await seed_ledger_claim(
+            wf_conn,
+            wf_schema,
+            flow_id=flow_id,
+            job_id=late_child,
+            step_key="d1",
+            attempt=late_attempt,
+            epoch=late_epoch,
+        )
         await finalize_node(
             module_pg_pool,
             wf_sql,
@@ -243,6 +269,8 @@ async def test_attack_barrier_racing_a_cancel(
             claim_epoch=late_epoch,
             outcome="succeeded",
             result={"k": "d1"},
+            ledger_id=d1_ledger,
+            ledger_claimed_at=d1_claimed_at,
         )
         fires = await fire_count(wf_conn, wf_schema, join_id)
         assert fires == 0, (
@@ -303,6 +331,15 @@ async def test_attack_timeout_sweep_racing_the_last_attempt(
     # the real worker's finalize lands now (the attempt was genuinely
     # running — its work succeeded).
     worker, attempt, epoch = await claim_view(wf_conn, wf_schema, child)
+    child_ledger, child_claimed_at = await seed_ledger_claim(
+        wf_conn,
+        wf_schema,
+        flow_id=flow_id,
+        job_id=child,
+        step_key="t0",
+        attempt=attempt,
+        epoch=epoch,
+    )
     result = await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -314,6 +351,8 @@ async def test_attack_timeout_sweep_racing_the_last_attempt(
         claim_epoch=epoch,
         outcome="succeeded",
         result={"k": "the work actually finished"},
+        ledger_id=child_ledger,
+        ledger_claimed_at=child_claimed_at,
     )
     print(json.dumps({"finalize_applied": result.applied}, indent=2))
 

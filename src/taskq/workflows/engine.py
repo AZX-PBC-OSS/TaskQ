@@ -868,17 +868,36 @@ async def finalize_node(
     attempt 'fenced' on the ledger and reports ``applied=False``.
 
     The LEDGER TERMINAL's key: *ledger_id* (the claim's own RETURNING id —
-    ``LedgerClaim.ledger_id``) when held. Every production caller threads
-    the claimed row's own id, so the write touches exactly the claimed row
+    ``LedgerClaim.ledger_id``). Every production caller threads the
+    claimed row's own id, so the write touches exactly the claimed row
     — two map children of one step key never overwrite each other's
-    outcome. (The former arbiter-tuple fallback keyings keyed with
-    *map_index* were deleted with the by-id keying's adoption.)
+    outcome. The identity is not optional: a finalize asked to apply a
+    terminal with no *ledger_id* is refused (``applied=False``, nothing
+    written) — an applied terminal without its claim identity would
+    leave the claim's history row 'running' beside the terminal node,
+    the split state the ledger-terminal-atomic rule forbids. (The
+    former arbiter-tuple fallback keyings keyed with *map_index* were
+    deleted with the by-id keying's adoption.)
 
     *emit_capacity* gates the bounded run's §4.1 terminal event rule inside
     tx1 (one indexed exact-marker probe; only a marker-positive probe
     derives capacity and may create the durable promotion intent). It is a
     declaration fact of the run, never a wake seat: no promotion executes
     here."""
+    # THE LEDGER-TRUTH LAW, fail closed at the door: an APPLIED terminal
+    # must carry its claim's ledger identity. The history write keys the
+    # claim's own RETURNING id (LEDGER_TERMINAL_BY_ID_SQL) — a finalize
+    # with no id in hand can never pin that write, and applying its
+    # terminal anyway would leave the claim's own history row 'running'
+    # beside the terminal job row: the split state the
+    # ledger-terminal-atomic rule forbids. No production caller reaches
+    # this refusal (every route threads its claim's id; the loop's
+    # iteration terminal and the disposition primitive raise on a missing
+    # claim), so the door narrows to exactly the identity-less caller —
+    # refused with the fenced shape, nothing written.
+    if ledger_id is None:
+        return FinalizeResult(applied=False, attempt=None)
+
     assert_valid_transition("running", outcome, job_id)
 
     # the finalize's reducers are resolvable outside this call's stack — the

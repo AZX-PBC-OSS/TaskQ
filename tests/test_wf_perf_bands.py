@@ -32,6 +32,7 @@ from tests._wf_fixtures import (
     seed_edge,
     seed_flow,
     seed_join,
+    seed_ledger_claim,
     seed_running_node,
     write_band_artifact,
 )
@@ -65,6 +66,9 @@ async def test_fan_out_tx_band_1000_children(
             consumers=(ConsumerBinding(step_key="post", actor="wf", queue="default"),),
         ),
     )
+    fork_ledger, fork_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=fork_parent, step_key="a", attempt=1, epoch=0
+    )
     start = time.perf_counter_ns()
     result = await finalize_node(
         module_pg_pool,
@@ -77,6 +81,8 @@ async def test_fan_out_tx_band_1000_children(
         claim_epoch=0,
         outcome="succeeded",
         fork=fork,
+        ledger_id=fork_ledger,
+        ledger_claimed_at=fork_claimed_at,
     )
     elapsed_ms = (time.perf_counter_ns() - start) / 1e6
     assert result.applied
@@ -118,6 +124,9 @@ async def test_join_fire_latency_band(
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
 
+    parent_ledger, parent_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=parent, step_key="a", attempt=1, epoch=0
+    )
     start = time.perf_counter_ns()
     result = await finalize_node(
         module_pg_pool,
@@ -129,6 +138,8 @@ async def test_join_fire_latency_band(
         attempt=1,
         claim_epoch=0,
         outcome="succeeded",
+        ledger_id=parent_ledger,
+        ledger_claimed_at=parent_claimed_at,
     )
     elapsed_ms = (time.perf_counter_ns() - start) / 1e6
     assert result.applied
@@ -447,6 +458,9 @@ async def _seed_fan_in(
             child_driven=child_driven,
         ),
     )
+    fork_ledger, fork_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=fork_parent, step_key="a", attempt=1, epoch=0
+    )
     result = await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -458,6 +472,8 @@ async def _seed_fan_in(
         claim_epoch=0,
         outcome="succeeded",
         fork=fork,
+        ledger_id=fork_ledger,
+        ledger_claimed_at=fork_claimed_at,
     )
     assert result.applied
     return flow_id

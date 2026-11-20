@@ -45,6 +45,7 @@ from tests._wf_fixtures import (
     node_state,
     seed_flow,
     seed_join,
+    seed_ledger_claim,
     seed_running_node,
 )
 
@@ -152,10 +153,24 @@ async def _succeed_now(
     """The child's terminal SUCCESS from its CURRENT claim view (the
     fence reads the row's own attempt/epoch/worker — always consistent)."""
     worker, attempt, epoch = await claim_view(wf_conn, wf_schema, child)
+    flow_id = await _flow_of(wf_conn, wf_schema, child)
+    map_index = await wf_conn.fetchval(
+        f'SELECT map_index FROM "{wf_schema}".jobs WHERE id = $1', child
+    )
+    child_ledger, child_claimed_at = await seed_ledger_claim(
+        wf_conn,
+        wf_schema,
+        flow_id=flow_id,
+        job_id=child,
+        step_key=step_key,
+        attempt=attempt,
+        epoch=epoch,
+        map_index=map_index,
+    )
     await finalize_node(
         module_pg_pool,
         wf_sql,
-        flow_id=await _flow_of(wf_conn, wf_schema, child),
+        flow_id=flow_id,
         job_id=child,
         step_key=step_key,
         worker_id=worker,
@@ -163,6 +178,8 @@ async def _succeed_now(
         claim_epoch=epoch,
         outcome="succeeded",
         result={"child": step_key},
+        ledger_id=child_ledger,
+        ledger_claimed_at=child_claimed_at,
     )
 
 
@@ -178,10 +195,24 @@ async def _fail_terminal_now(
     """The child's terminal FAILURE from its CURRENT claim view — the
     ladder EXHAUSTED (the terminal state the duality's fail arm reads)."""
     worker, attempt, epoch = await claim_view(wf_conn, wf_schema, child)
+    flow_id = await _flow_of(wf_conn, wf_schema, child)
+    map_index = await wf_conn.fetchval(
+        f'SELECT map_index FROM "{wf_schema}".jobs WHERE id = $1', child
+    )
+    child_ledger, child_claimed_at = await seed_ledger_claim(
+        wf_conn,
+        wf_schema,
+        flow_id=flow_id,
+        job_id=child,
+        step_key=step_key,
+        attempt=attempt,
+        epoch=epoch,
+        map_index=map_index,
+    )
     await finalize_node(
         module_pg_pool,
         wf_sql,
-        flow_id=await _flow_of(wf_conn, wf_schema, child),
+        flow_id=flow_id,
         job_id=child,
         step_key=step_key,
         worker_id=worker,
@@ -190,6 +221,8 @@ async def _fail_terminal_now(
         outcome="failed",
         error_class="ValueError",
         error_message=err,
+        ledger_id=child_ledger,
+        ledger_claimed_at=child_claimed_at,
     )
 
 

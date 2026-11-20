@@ -49,7 +49,7 @@ from taskq.workflows._emit import (
 )
 from taskq.workflows.chain import DONE, Chain, Route, Step
 from taskq.workflows.engine import finalize_node
-from tests._wf_fixtures import RedLog, seed_flow
+from tests._wf_fixtures import RedLog, seed_flow, seed_ledger_claim
 from tests.test_wf_emit_tx_pins import (
     _LEASE,
     claim_source,
@@ -105,24 +105,37 @@ async def drain_one_chain(pool: asyncpg.Pool, wf_sql: WorkflowSql, flow_id: JobI
             "attempt = LEAST(attempt + 1, 32767), claim_epoch = claim_epoch + 1, "
             "locked_by_worker = $2, lock_expires_at = now() + $3::interval, "
             "last_heartbeat_at = now() WHERE id = $1 AND status = 'pending' "
-            "AND deps_pending = 0 RETURNING attempt, claim_epoch",
+            "AND deps_pending = 0 RETURNING attempt, claim_epoch, map_index",
             JobId(rec["id"]),
             worker,
             _LEASE,
         )
-    if claimed is None:
-        return False
+        if claimed is None:
+            return False
+        job_id = JobId(rec["id"])
+        screen_ledger, screen_claimed_at = await seed_ledger_claim(
+            conn,
+            wf_sql.schema,
+            flow_id=flow_id,
+            job_id=job_id,
+            step_key="screen",
+            attempt=int(claimed["attempt"]),
+            epoch=int(claimed["claim_epoch"]),
+            map_index=claimed["map_index"],
+        )
     result = await finalize_node(
         pool,
         wf_sql,
         flow_id=flow_id,
-        job_id=JobId(rec["id"]),
+        job_id=job_id,
         step_key="screen",
         worker_id=worker,
         attempt=int(claimed["attempt"]),
         claim_epoch=int(claimed["claim_epoch"]),
         outcome="succeeded",
         result={"value": {"screened": True}},
+        ledger_id=screen_ledger,
+        ledger_claimed_at=screen_claimed_at,
     )
     assert result.applied
     return True

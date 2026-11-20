@@ -34,7 +34,7 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.workflows.engine import finalize_node
-from tests._wf_fixtures import RedLog, seed_flow
+from tests._wf_fixtures import RedLog, seed_flow, seed_ledger_claim
 from tests.test_wf_emit_tx_pins import (
     _LEASE,
     claim_source,
@@ -67,6 +67,15 @@ async def finalize_source(
     """The source's own terminal (its pager exhausted): the REAL two-tx
     finalize — the cursor's last page is the last checkpoint."""
     worker, attempt, epoch = view
+    source_ledger, source_claimed_at = await seed_ledger_claim(
+        pool,
+        wf_sql.schema,
+        flow_id=flow_id,
+        job_id=source_id,
+        step_key="source",
+        attempt=attempt,
+        epoch=epoch,
+    )
     result = await finalize_node(
         pool,
         wf_sql,
@@ -78,6 +87,8 @@ async def finalize_source(
         claim_epoch=epoch,
         outcome="succeeded",
         result={"value": {"pages": len(_PROBE_PAGES)}},
+        ledger_id=source_ledger,
+        ledger_claimed_at=source_claimed_at,
     )
     assert result.applied
 
@@ -96,13 +107,24 @@ async def claim_chain_and_finalize(
             "attempt = LEAST(attempt + 1, 32767), claim_epoch = claim_epoch + 1, "
             "locked_by_worker = $2, lock_expires_at = now() + $3::interval, "
             "last_heartbeat_at = now() WHERE id = $1 AND status = 'pending' "
-            "AND deps_pending = 0 RETURNING attempt, claim_epoch",
+            "AND deps_pending = 0 RETURNING attempt, claim_epoch, map_index",
             job_id,
             worker,
             _LEASE,
         )
         assert rec is not None, f"chain row {job_id} did not claim"
         attempt, epoch = int(rec["attempt"]), int(rec["claim_epoch"])
+        map_index = rec["map_index"]
+        chain_ledger, chain_claimed_at = await seed_ledger_claim(
+            conn,
+            wf_sql.schema,
+            flow_id=flow_id,
+            job_id=job_id,
+            step_key="screen",
+            attempt=attempt,
+            epoch=epoch,
+            map_index=map_index,
+        )
     result = await finalize_node(
         pool,
         wf_sql,
@@ -114,6 +136,8 @@ async def claim_chain_and_finalize(
         claim_epoch=epoch,
         outcome="succeeded",
         result={"value": {"screened": True}},
+        ledger_id=chain_ledger,
+        ledger_claimed_at=chain_claimed_at,
     )
     assert result.applied
 

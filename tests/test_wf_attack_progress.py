@@ -45,7 +45,7 @@ from taskq.workflows._progress import (
 from taskq.workflows._progress_read import rebuild_display, run_display
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import finalize_node, render_workflow_sql
-from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
+from tests._wf_fixtures import claim_view, seed_flow, seed_ledger_claim, seed_running_node
 
 pytestmark = pytest.mark.integration
 
@@ -308,6 +308,9 @@ async def test_guard_progress_writes_never_block_the_finalize(
     # The finalize lands normally — the ledger's path never touched by
     # the emission's failures.
     worker_id, attempt, epoch = await claim_view(wf_conn, wf_schema, node)
+    node_ledger, node_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow, job_id=node, step_key="a", attempt=attempt, epoch=epoch
+    )
     final = await finalize_node(
         wf_pool,
         wf_sql,
@@ -319,6 +322,8 @@ async def test_guard_progress_writes_never_block_the_finalize(
         claim_epoch=epoch,
         outcome="succeeded",
         result={"value": 1},
+        ledger_id=node_ledger,
+        ledger_claimed_at=node_claimed_at,
     )
     assert final.applied, "the finalize was blocked by the progress writes' failures"
     status = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', node)
@@ -344,6 +349,9 @@ async def test_guard_the_progress_lie_never_flips_the_terminal_state(
 
     # The node fails at 100% (the ledger is the truth).
     worker_id, attempt, epoch = await claim_view(wf_conn, wf_schema, node)
+    node_ledger, node_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow, job_id=node, step_key="a", attempt=attempt, epoch=epoch
+    )
     await finalize_node(
         wf_pool,
         wf_sql,
@@ -356,6 +364,8 @@ async def test_guard_the_progress_lie_never_flips_the_terminal_state(
         outcome="failed",
         error_class="Boom",
         error_message="the body failed at 100%",
+        ledger_id=node_ledger,
+        ledger_claimed_at=node_claimed_at,
     )
     # a late emission lands after the terminal (the aclose race).
     await emitter.emit(100, "really done", None)
