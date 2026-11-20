@@ -143,6 +143,23 @@ _PYTEST_XDIST_WORKER_RE = re.compile(r"PYTEST_XDIST_WORKER")
 _MODULE_SCHEMA_CONST_RE = re.compile(r"^_?SCHEMA\s*=", re.MULTILINE)
 
 
+_PARSED_AST_CACHE: dict[tuple[Path, int, int], ast.Module] = {}
+
+
+def _parsed_ast(path: Path) -> ast.Module:
+    """Parse *path* once per ``(path, mtime_ns, size)`` so multiple AST
+    hygiene checks share the parsed trees instead of re-reading and
+    re-parsing every test module from scratch."""
+    st = path.stat()
+    key = (path, st.st_mtime_ns, st.st_size)
+    cached = _PARSED_AST_CACHE.get(key)
+    if cached is not None:
+        return cached
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    _PARSED_AST_CACHE[key] = tree
+    return tree
+
+
 def _test_files() -> list[Path]:
     return [
         p
@@ -284,7 +301,7 @@ def _testing_module_all_contract(module: str) -> tuple[set[str], set[str], set[s
     fall outside "literal constant" and stay out of the contract.
     """
     path = _TESTING_PKG_DIR / f"{module}.py"
-    tree = ast.parse(path.read_text())
+    tree = _parsed_ast(path)
     statements = [
         branch
         for node in tree.body
@@ -431,7 +448,7 @@ def test_no_test_file_writes_os_environ_directly() -> None:
     """
     offenders: list[str] = []
     for path in _all_test_tree_files():
-        for site in _os_environ_direct_writes(ast.parse(path.read_text())):
+        for site in _os_environ_direct_writes(_parsed_ast(path)):
             offenders.append(f"{path.relative_to(_TESTS_DIR)}: {site}")
     assert not offenders, (
         "Found direct os.environ mutation(s) in the test tree:\n"
@@ -532,7 +549,7 @@ def test_no_test_file_setattrs_a_global_stdlib_module() -> None:
     """
     offenders: list[str] = []
     for path in _all_test_tree_files():
-        for site in _global_stdlib_setattrs(ast.parse(path.read_text())):
+        for site in _global_stdlib_setattrs(_parsed_ast(path)):
             offenders.append(f"{path.relative_to(_TESTS_DIR)}: {site}")
     assert not offenders, (
         "Found setattr() on a stdlib module object in the test tree:\n"
@@ -579,7 +596,7 @@ def test_pg_container_is_only_consumed_through_pg_dsn() -> None:
     for path in _all_test_tree_files():
         if path.name == "conftest.py":
             continue  # the pg_dsn fixture itself is the sanctioned consumer
-        tree = ast.parse(path.read_text())
+        tree = _parsed_ast(path)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -702,7 +719,7 @@ def test_pg_stat_activity_queries_are_scoped_to_the_current_database() -> None:
     files.extend(_TESTING_PKG_DIR.rglob("*.py"))
     offenders: list[str] = []
     for path in sorted(files):
-        for query in _pg_stat_activity_string_constants(ast.parse(path.read_text())):
+        for query in _pg_stat_activity_string_constants(_parsed_ast(path)):
             if "datname" not in query or "current_database" not in query:
                 offenders.append(
                     f"{path.relative_to(_TESTS_DIR.parent)}: {query.strip().splitlines()[0]}"
@@ -1134,7 +1151,7 @@ def test_system_e2e_popen_pipes_are_drained() -> None:
     offenders: list[str] = []
     for path in sorted(_SYSE2E_DIR.rglob("*.py")):
         rel = path.relative_to(_TESTS_DIR).as_posix()
-        offenders.extend(_popen_pipe_violations(ast.parse(path.read_text()), rel))
+        offenders.extend(_popen_pipe_violations(_parsed_ast(path), rel))
     assert not offenders, (
         "Found undrained subprocess.PIPE spawn(s) under tests/system_e2e/:\n"
         + "\n".join(f"  - {f}" for f in offenders)
@@ -1412,7 +1429,7 @@ def test_every_module_level_warn_once_stamp_is_covered_by_the_reset() -> None:
     pkg_dir = Path(taskq.__file__).resolve().parent
     candidates: list[tuple[str, str]] = []
     for path in sorted(pkg_dir.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = _parsed_ast(path)
         for node in ast.walk(tree):
             target: ast.expr | None = None
             if isinstance(node, ast.AnnAssign):
@@ -2601,7 +2618,7 @@ def test_fake_connection_classes_fail_closed_on_unmatched_sql() -> None:
     """
     offenders: list[str] = []
     for path in _all_test_tree_files():
-        tree = ast.parse(path.read_text())
+        tree = _parsed_ast(path)
         offenders.extend(
             f"{path.relative_to(_TESTS_DIR)}: {site}" for site in _fail_closed_offenders(tree)
         )
@@ -3003,7 +3020,7 @@ def test_taskq_patch_sites_in_the_cured_packs_are_registered() -> None:
         if not path.exists():
             offenders.append(f"{name}: a registry entry names a file that does not exist")
             continue
-        tree = ast.parse(path.read_text())
+        tree = _parsed_ast(path)
         aliases = _taskq_module_aliases(tree)
         for site in _taskq_patch_offenders(tree, aliases, set(_TASKQ_PATCH_EXEMPT[name])):
             offenders.append(f"{name}:{site}")
@@ -3117,7 +3134,7 @@ _REGISTERED_LOOPS = frozenset(
 def _registered_loop_starts(path: Path) -> list[int]:
     """Line numbers of ``create_task`` calls that start a registered
     long-running loop (a named loop function, or a leader's ``run``)."""
-    tree = ast.parse(path.read_text())
+    tree = _parsed_ast(path)
     starts = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -3143,7 +3160,7 @@ def _registered_loop_starts(path: Path) -> list[int]:
 def _adjacent_set_then_cancel(path: Path) -> list[int]:
     """Line numbers of the legacy stop shape: a ``.set()`` call statement
     immediately followed by a ``.cancel()`` call statement."""
-    tree = ast.parse(path.read_text())
+    tree = _parsed_ast(path)
     lines = []
     for node in ast.walk(tree):
         body = getattr(node, "body", None)

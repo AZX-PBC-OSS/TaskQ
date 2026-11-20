@@ -630,13 +630,11 @@ async def test_emit_map_index_discriminates_siblings(
 
 
 async def close_storm_pool(pool: asyncpg.Pool) -> None:
-    """Close a pool whose connections may include a terminated backend.
+    """Terminate a pool whose connections include a killed backend.
 
     A kill mid-transaction leaves the holder's release future unresolved
     (the dead protocol will never answer the reset) — a graceful
-    ``close()`` hangs on it; the storm's pools are terminated HARD (the
-    kill's own teardown, never the pin's concern)."""
-    try:
-        await asyncio.wait_for(pool.close(), timeout=5)
-    except TimeoutError:
-        pool.terminate()
+    ``close()`` hangs on it until timeout; terminate the pool directly
+    and yield once so transport cleanup settles."""
+    pool.terminate()
+    await asyncio.sleep(0)

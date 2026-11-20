@@ -27,8 +27,7 @@ import socket
 from collections.abc import Mapping
 from uuid import UUID
 
-import asyncpg
-
+from taskq.backend._protocol import ConnLike
 from taskq.backend._records import jsonb_param
 from taskq.backend._sql import WORKER_REREGISTRATION_SQL_TEMPLATE
 from taskq.constants import require_schema
@@ -103,7 +102,7 @@ def worker_registration_params(
 
 
 async def reregister_worker(
-    conn: asyncpg.Connection,
+    conn: ConnLike,
     worker_id: UUID,
     settings: WorkerSettings,
     *,

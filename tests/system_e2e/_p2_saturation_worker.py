@@ -105,13 +105,13 @@ async def write_record(ctx: StepContext, item: dict[str, object]) -> str:
         # release row (the durable row is the gate's authority).
         await conn.add_listener(gate_channel(schema), notice)
         while True:
+            released.clear()
             released_at = await conn.fetchval(
                 f'SELECT release_at FROM "{schema}".p2sat_control WHERE scenario = $1',
                 scenario,
             )
             if released_at is not None:
                 break
-            released.clear()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(released.wait(), timeout=1.0)
         await conn.execute(

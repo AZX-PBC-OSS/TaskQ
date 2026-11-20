@@ -40,9 +40,6 @@ from taskq.worker.deps import WorkerDeps
 from taskq.worker.leader import MaintenanceLeader
 from tests._ns_patch import module_ns_proxy
 
-pytestmark = pytest.mark.asyncio
-
-
 # ── Test doubles ─────────────────────────────────────────────────────────
 
 

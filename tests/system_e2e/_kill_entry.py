@@ -59,10 +59,7 @@ _SEAM = os.environ.get("TASKQ_KILL9_SEAM", "")
 _orig_dispatch_batch = PostgresBackend.dispatch_batch
 _orig_mark_succeeded = PostgresBackend.mark_succeeded
 _orig_mark_succeeded_with_conn = PostgresBackend.mark_succeeded_with_conn
-# The runtime patch target is heartbeat's own module global (its tick
-# reads the name on every renewal tick) — pyright's private-import flag
-# is the cross-module read being deliberate.
-_orig_parse_rowcount = _heartbeat_module.parse_rowcount  # pyright: ignore[reportPrivateImportUsage]
+_orig_heartbeat_logger = _heartbeat_module.logger
 
 _killed = False
 
@@ -103,16 +100,33 @@ async def _mark_succeeded_then_sigkill(self: Any, *args: Any, **kwargs: Any) -> 
     return row  # pragma: no cover
 
 
-def _parse_rowcount_then_sigkill(tag: Any) -> int:
-    n = _orig_parse_rowcount(tag)
-    # The heartbeat loop reads the renewal tag here on the success path,
-    # after tx.commit() has returned (worker/heartbeat.py's
-    # ``jobs_extended`` debug field). A positive count is a beat that just
-    # extended an in-flight job's lease; an idle beat (0 rows) is not a
-    # mid-heartbeat kill, so only a real renewal dies.
-    if n > 0 and not _killed:
-        _sigkill()
-    return n  # pragma: no cover - the process is gone before this returns
+class _AfterHeartbeatLoggerProxy:
+    """Delegating proxy over ``heartbeat.logger`` that SIGKILLs the worker
+    immediately after a committed beat that actually extended at least one
+    in-flight job's lease.
+
+    Keying on the post-commit ``heartbeat-tick-success`` event's explicit
+    ``jobs_extended`` field (rather than patching ``parse_rowcount``) keeps
+    the seam immune to other ``parse_rowcount`` calls inside the tick
+    transaction (such as the worker-liveness row check).
+    """
+
+    def __init__(self, wrapped: Any) -> None:
+        self._wrapped = wrapped
+
+    def debug(self, event: Any = None, *args: Any, **kwargs: Any) -> Any:
+        jobs_extended = kwargs.get("jobs_extended", 0)
+        if (
+            event == "heartbeat-tick-success"
+            and type(jobs_extended) is int
+            and jobs_extended > 0
+            and not _killed
+        ):
+            _sigkill()
+        return self._wrapped.debug(event, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped, name)
 
 
 if _SEAM == "after_claim":
@@ -126,15 +140,13 @@ elif _SEAM == "after_terminal":
     PostgresBackend.mark_succeeded = _mark_succeeded_then_sigkill  # type: ignore[assignment]
     PostgresBackend.mark_succeeded_with_conn = _mark_succeeded_with_conn_then_sigkill  # type: ignore[assignment]
 elif _SEAM == "after_heartbeat":
-    # Why the module-global patch: the heartbeat loop does not ride
-    # ``PostgresBackend.heartbeat_jobs`` - it issues the renewal SQL
-    # directly on its pool connection inside the tick's own transaction
-    # (and the renewal is threshold-gated: only rows whose remaining lease
-    # fell under the threshold are re-stamped). The loop reads
-    # ``parse_rowcount`` as a module global on each successful tick, so
-    # patching the name here intercepts exactly the post-commit renewal
-    # observation point.
-    _heartbeat_module.parse_rowcount = _parse_rowcount_then_sigkill  # pyright: ignore[reportPrivateImportUsage]
+    # Why the module-logger proxy: the heartbeat loop issues the renewal SQL
+    # directly on its pool connection inside the tick transaction, and emits
+    # ``logger.debug("heartbeat-tick-success", ..., jobs_extended=...)``
+    # immediately after tx.commit() returns. Intercepting that post-commit
+    # event ensures only a committed lease renewal (jobs_extended > 0) dies,
+    # never an idle boot beat or an in-transaction liveness row check.
+    _heartbeat_module.logger = _AfterHeartbeatLoggerProxy(_orig_heartbeat_logger)  # type: ignore[assignment]  # Why: _AfterHeartbeatLoggerProxy dynamically delegates BoundLogger via __getattr__ for the after_heartbeat fault-injection seam.
 
 if __name__ == "__main__":
     settings = WorkerSettings.load()

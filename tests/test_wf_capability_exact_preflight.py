@@ -380,3 +380,145 @@ async def test_preflight_refuses_the_rotation_singleton_check_true(pg_dsn: str) 
         reset_emit_capability_cache(schema)
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
+
+
+async def test_preflight_refuses_a_missing_park_index_with_the_typed_error(
+    pg_dsn: str,
+) -> None:
+    """A schema whose park index is absent (a dropped object / a drifted or
+    partially migrated schema) must refuse through the typed capability
+    error that names the migration — not leak a raw ``UndefinedTableError``
+    from the catalog read. The W1 fix moved this lookup to ``to_regclass``,
+    whose NULL must stay a fail-closed refusal."""
+    schema = "cap4_missing_park_idx"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _fresh_migrated(conn, schema)
+        await conn.execute(f'DROP INDEX "{schema}".jobs_wf_emit_park_idx')
+        reset_emit_capability_cache(schema)
+        with pytest.raises(WorkflowWorkerCapabilityError, match="jobs_wf_emit_park_idx"):
+            await verify_emit_capacity_objects(conn, schema)
+        reset_emit_capability_cache(schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_preflight_accepts_the_real_definitions_on_the_schema_search_path(
+    pg_dsn: str,
+) -> None:
+    """A correct, fully migrated schema must pass the preflight regardless of
+    the connection's ``search_path``. The park index's deparsed predicate casts
+    the status literal to the schema's enum type; PostgreSQL renders that cast
+    unqualified when the type is visible on ``search_path``
+    (``'scheduled'::job_status``) and qualified otherwise
+    (``'scheduled'::"<schema>".job_status``), so the exact-definition equality
+    refused a schema that has every object. A deployment whose TaskQ schema is
+    visible on its connection's search_path — ``TASKQ_SCHEMA_NAME=public`` on
+    the default ``"$user", public``, or a role/DSN-level ``search_path``
+    naming the schema — hit this on every bounded emit, with a message telling
+    the operator to apply a migration they had already applied."""
+    schema = "cap4_search_path_visible"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _fresh_migrated(conn, schema)
+        await conn.execute(f'SET search_path TO "{schema}", public')
+        reset_emit_capability_cache(schema)
+        await verify_emit_capacity_objects(conn, schema)
+        reset_emit_capability_cache(schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_preflight_accepts_public_schema_on_default_search_path_and_refuses_wrong_park_index(
+    pg_dsn: str,
+) -> None:
+    """A stock ``TASKQ_SCHEMA_NAME=public`` install (no explicit ``SET
+    search_path``; PostgreSQL's default ``"$user", public`` makes
+    ``public.job_status`` visible) and an empty ``search_path`` must both pass
+    the exact preflight, and a wrong same-name park index on ``public`` must
+    still be refused while ``public`` is visible on ``search_path``."""
+    schema = "public"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        default_search_path = await conn.fetchval("SHOW search_path")
+        assert "public" in str(default_search_path), (
+            f"expected stock search_path to include public, got {default_search_path!r}"
+        )
+        await _fresh_migrated(conn, schema)
+
+        # Stock default search_path: public.job_status is visible -> unqualified cast.
+        reset_emit_capability_cache(schema)
+        await verify_emit_capacity_objects(conn, schema)
+        assert await conn.fetchval("SHOW search_path") == default_search_path
+
+        # Empty search_path: public.job_status is not visible -> qualified cast.
+        await conn.execute("SET search_path TO ''")
+        empty_search_path = await conn.fetchval("SHOW search_path")
+        reset_emit_capability_cache(schema)
+        await verify_emit_capacity_objects(conn, schema)
+        assert await conn.fetchval("SHOW search_path") == empty_search_path
+
+        # Strictness under visible search_path: a wrong same-name park index
+        # must still be refused when status_visible is true.
+        await conn.execute("RESET search_path")
+        await conn.execute('DROP INDEX "public".jobs_wf_emit_park_idx')
+        await conn.execute(
+            'CREATE INDEX jobs_wf_emit_park_idx ON "public".jobs '
+            "USING btree (((metadata->>'flow_id')::uuid), created_at, id, step_key) "
+            "WHERE status = 'scheduled'::\"public\".job_status "
+            'AND (metadata @> \'{"blocking_reason": "backpressure"}\'::jsonb) '
+            'AND (metadata @> \'{"wf_deferral": {"signal": "EmitBackpressure", '
+            '"attempt": 0, "consume_budget": false}}\'::jsonb) '
+            'AND (metadata @> \'{"wf_emit_backpressure": {"version": 1}}\'::jsonb) '
+            "AND (step_key IS NOT NULL) AND (step_key <> '__flow__'::text) "
+            "AND (metadata ? 'flow_id'::text)"
+        )
+        reset_emit_capability_cache(schema)
+        with pytest.raises(WorkflowWorkerCapabilityError, match="jobs_wf_emit_park_idx"):
+            await verify_emit_capacity_objects(conn, schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute("RESET search_path")
+        await conn.execute('DROP SCHEMA IF EXISTS "public" CASCADE')
+        await conn.execute('CREATE SCHEMA "public"')
+        await conn.close()
+
+
+async def test_preflight_accepts_a_quoted_schema_and_every_visibility_state(
+    pg_dsn: str,
+) -> None:
+    """The W1 fix's other visibility edges: a mixed-case schema (every schema
+    token in the expected deparse needs quoting), reached through a
+    ``search_path`` where it is NOT first (``public`` has no ``job_status``,
+    so the type is still visible and deparse drops the qualifier), and then a
+    same-name type in an earlier schema SHADOWS it (not visible, so deparse
+    qualifies). Both are valid migrated installs the exact comparison must
+    not falsely refuse."""
+    schema = "CapQuotedProbe"
+    shadow = "cap_quoted_shadow"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _fresh_migrated(conn, schema)
+        await conn.execute(f'CREATE SCHEMA "{shadow}"')
+        await conn.execute(f"CREATE TYPE \"{shadow}\".job_status AS ENUM ('x')")
+
+        # Visible, but not first on search_path: public has no job_status.
+        await conn.execute(f'SET search_path TO public, "{schema}"')
+        reset_emit_capability_cache(schema)
+        await verify_emit_capacity_objects(conn, schema)
+
+        # Shadowed by the earlier same-name type: not visible -> qualified.
+        await conn.execute(f'SET search_path TO "{shadow}", "{schema}", public')
+        reset_emit_capability_cache(schema)
+        await verify_emit_capacity_objects(conn, schema)
+        reset_emit_capability_cache(schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute("RESET search_path")
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{shadow}" CASCADE')
+        await conn.close()

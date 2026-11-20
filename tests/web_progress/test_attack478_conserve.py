@@ -68,7 +68,12 @@ from tests.web_progress.test_integration import (  # pyright: ignore[reportPriva
     _update_progress,  # pyright: ignore[reportPrivateUsage]
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.redis]
+# Serial lane: this module runs a real uvicorn socket and private Dragonfly
+# ``CLIENT PAUSE`` against a 1.0s SSE heartbeat / 1.5s broker read deadline
+# (only 0.5s scheduling grace); under parallel xdist worker load, event-loop
+# jitter trips ``sse-redis-read-timeout`` on the server's ``cancel_on_finish``
+# task independently of conservation behaviour.
+pytestmark = [pytest.mark.integration, pytest.mark.redis, pytest.mark.load_sensitive]
 
 
 # ── Real-server fixture: one uvicorn socket per test ──────────────────────

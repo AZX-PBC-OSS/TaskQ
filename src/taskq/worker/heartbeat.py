@@ -669,7 +669,7 @@ async def heartbeat_loop(
                                 # _bootstrap._main's finally runs
                                 # deregister_worker.
                                 await reregister_worker(
-                                    conn,  # type: ignore[arg-type]  # Why: PoolConnectionProxy delegates execute() to the underlying Connection at runtime; pyright's stubs model the proxy as unrelated, the same delegation run_in_tx's ignore relies on.
+                                    conn,
                                     worker_id,
                                     deps.settings,
                                     workflow_execution=deps.workflow_execution_capable,

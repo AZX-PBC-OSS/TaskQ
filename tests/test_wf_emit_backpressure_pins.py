@@ -31,6 +31,7 @@ Captured: ``.measurements/t20-backpressure-*.txt``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 import json
 from typing import TYPE_CHECKING, Any
@@ -218,6 +219,8 @@ async def test_backpressure_releases_when_workers_drain(
     # must not rely on pytest's unrelated global 300 s timeout.
     admission_deadline = asyncio.get_running_loop().time() + 30.0
     admission_retries = 0
+    emitted_all = asyncio.Event()
+    progress = asyncio.Event()
 
     async def slow_worker() -> None:
         nonlocal max_seen
@@ -225,12 +228,17 @@ async def test_backpressure_releases_when_workers_drain(
             await drain_one_chain(module_pg_pool, wf_sql, flow_id)
             seen = await outstanding(module_pg_pool, wf_schema, flow_id, exclude=source_id)
             max_seen = max(max_seen, seen)
+            progress.set()
+            if emitted_all.is_set() and seen == 0:
+                break
             await asyncio.sleep(0.03)
 
     worker_task = asyncio.create_task(slow_worker())
+    completed = False
     try:
         for p, page in enumerate(_PAGES):
             while True:
+                progress.clear()
                 try:
                     await emit_batch(
                         module_pg_pool,
@@ -248,7 +256,8 @@ async def test_backpressure_releases_when_workers_drain(
                     break
                 except EmitBackpressure as control:
                     admission_retries += 1
-                    if asyncio.get_running_loop().time() >= admission_deadline:
+                    remaining = admission_deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
                         final_rows = await wf_conn.fetch(
                             f"SELECT step_key, status::text AS status, attempt "
                             f'FROM "{wf_schema}".jobs WHERE parent_id = $1 ORDER BY map_index',
@@ -275,13 +284,22 @@ async def test_backpressure_releases_when_workers_drain(
                                 sort_keys=True,
                             )
                         ) from control
-                    # The test-only drain task supplies actual committed
-                    # terminal progress before this low-level retry.
-                    await asyncio.sleep(0)
+                    # Wait for the drain worker to commit real terminal
+                    # progress before retrying (event cleared before emit_batch
+                    # so concurrent drain completions are never missed).
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(progress.wait(), timeout=min(remaining, 0.2))
             seen = await outstanding(module_pg_pool, wf_schema, flow_id, exclude=source_id)
             max_seen = max(max_seen, seen)
+        completed = True
     finally:
-        await worker_task
+        emitted_all.set()
+        if not completed:
+            worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_task
+        else:
+            await worker_task
 
     redlog.red(
         "t20-backpressure-throttle",

@@ -687,22 +687,34 @@ async def test_flow4_metrics_scrape_serves_the_series_the_rules_read(
     port = _free_port()
     log_path = tmp_path / "worker-scrape.log"
     # The scrape listener binds the health host at TASKQ_METRICS_PORT.
-    env = _cli_env(schema, dsn, TASKQ_METRICS_PORT=str(port))
+    # Run the leader's periodic samplers at their 1s minimum cadence so the
+    # scrape serves every sampler-fed series immediately instead of waiting
+    # 60s for the default stranded-jobs sweep interval.
+    env = _cli_env(
+        schema,
+        dsn,
+        TASKQ_METRICS_PORT=str(port),
+        TASKQ_STRANDED_JOBS_INTERVAL="1.0",
+        TASKQ_QUEUE_DEPTH_INTERVAL="1.0",
+        TASKQ_SWEEP_INTERVAL="1.0",
+        TASKQ_RESERVATION_SLOTS_INTERVAL="1.0",
+    )
     # Give the leader samplers a population to report.
     await _insert_pending_jobs(clean_pg_conn, schema, actor="test_actor", queue="default", n=2)
     await _insert_pending_jobs(
         clean_pg_conn, schema, actor="configless_actor", queue="default", n=1
     )
     log_file = log_path.open("w", encoding="utf-8")
-    proc = subprocess.Popen(  # noqa: S603  # Why: static argv built from module constants, no shell.
-        [*CLI, "worker", "--actors", ACTORS_REF, "--queues", E2E_QUEUE],
-        cwd=REPO_ROOT,
-        env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    proc: subprocess.Popen[str] | None = None
     try:
+        proc = subprocess.Popen(  # noqa: S603  # Why: static argv built from module constants, no shell.
+            [*CLI, "worker", "--actors", ACTORS_REF, "--queues", E2E_QUEUE],
+            cwd=REPO_ROOT,
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
         url = f"http://127.0.0.1:{port}/metrics"
         deadline = datetime.now(UTC) + timedelta(seconds=_WORKER_BOOT_TIMEOUT + 60)
         required = (
@@ -719,11 +731,15 @@ async def test_flow4_metrics_scrape_serves_the_series_the_rules_read(
             "taskq_jobs_oldest_due_age_seconds",
             "taskq_jobs_running_lease_expired",
         )
+
+        def _scrape() -> str:
+            with urlopen(url, timeout=5) as resp:
+                return bytes(resp.read()).decode("utf-8")
+
         body = ""
         while True:
             try:
-                with urlopen(url, timeout=5) as resp:
-                    body = (await asyncio.to_thread(resp.read)).decode("utf-8")
+                body = await asyncio.to_thread(_scrape)
                 missing = [s for s in required if s not in body]
                 if not missing:
                     break
@@ -737,15 +753,16 @@ async def test_flow4_metrics_scrape_serves_the_series_the_rules_read(
             assert datetime.now(UTC) < deadline, (
                 f"the scrape never served the sampler-fed series: {missing}"
             )
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.25)
     finally:
-        proc.send_signal(signal.SIGTERM)
-        try:
-            await asyncio.to_thread(proc.wait, 60)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            await asyncio.to_thread(proc.wait, 10)
-    log_file.close()
+        if proc is not None and proc.poll() is None:
+            proc.send_signal(signal.SIGTERM)
+            try:
+                await asyncio.to_thread(proc.wait, 60)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                await asyncio.to_thread(proc.wait, 10)
+        log_file.close()
 
     log = log_path.read_text(encoding="utf-8")
     # The documented startup line, in the worker's default JSON shape: the

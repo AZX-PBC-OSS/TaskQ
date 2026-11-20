@@ -297,6 +297,24 @@ def _normalized_indexdef(text: str) -> str:
     return " ".join(text.replace('"', "").split())
 
 
+def _expected_park_indexdef(schema: str, *, status_type_visible: bool) -> str:
+    """The exact-park partial index's expected ``pg_get_indexdef`` text for
+    *schema*.
+
+    PostgreSQL's ``ruleutils.c`` renders the ``jobs.status`` enum cast
+    unqualified (``'scheduled'::job_status``) whenever ``"{schema}".job_status``
+    is visible on the connection's ``search_path`` (``pg_type_is_visible``) —
+    including a stock ``TASKQ_SCHEMA_NAME=public`` install on the default
+    ``"$user", public`` path — and schema-qualified otherwise. The table
+    target ``ON {schema}.jobs`` is always schema-qualified by
+    ``pg_get_indexdef`` regardless of ``search_path``.
+    """
+    status_type = "job_status" if status_type_visible else f'"{schema}".job_status'
+    return _PARK_IDX_INDEXDEF.replace("{schema}.job_status", status_type).replace(
+        "{schema}", f'"{schema}"'
+    )
+
+
 async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     """The §2.1 whole-object-set catalog preflight (fail-closed, cached per
     schema).
@@ -455,13 +473,24 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
 
     # 7. the exact-park partial index (EXACT definition equality via
     # pg_get_indexdef — D4: the substring check accepted a same-name
-    # wrong index whose probe then planned a Seq Scan on jobs).
-    park_idx = await conn.fetchval(
-        "SELECT pg_get_indexdef(($1 || '.jobs_wf_emit_park_idx')::regclass)",
+    # wrong index whose probe then planned a Seq Scan on jobs). Read
+    # pg_type_is_visible in the same query so the comparison matches
+    # PostgreSQL's own search_path-dependent enum cast qualification
+    # without mutating the caller's session or transaction search_path.
+    park_row = await conn.fetchrow(
+        """SELECT pg_get_indexdef(to_regclass($1 || '.jobs_wf_emit_park_idx')) AS indexdef,
+                  pg_type_is_visible(to_regtype($1 || '.job_status')) AS status_visible""",
         f'"{schema}"',
     )
-    if park_idx is None or _normalized_indexdef(park_idx) != _normalized_indexdef(
-        _PARK_IDX_INDEXDEF.replace("{schema}", f'"{schema}"')
+    park_idx = park_row["indexdef"] if park_row is not None else None
+    status_visible = park_row["status_visible"] if park_row is not None else None
+    if (
+        park_idx is None
+        or status_visible is None
+        or _normalized_indexdef(park_idx)
+        != _normalized_indexdef(
+            _expected_park_indexdef(schema, status_type_visible=bool(status_visible))
+        )
     ):
         raise _fail("jobs_wf_emit_park_idx is not the exact-park partial index definition")
 

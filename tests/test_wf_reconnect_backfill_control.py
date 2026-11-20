@@ -186,18 +186,6 @@ def _flow_id() -> str:
     return str(new_uuid())
 
 
-def _wait_event(event: asyncio.Event) -> Any:
-    async def _w() -> None:
-        await event.wait()
-
-    return _w()
-
-
-def drained_reset(event: asyncio.Event) -> asyncio.Event:
-    event.clear()
-    return event
-
-
 async def test_reconnect_backfills_every_hook_in_order_exactly_once_and_drains(
     wf_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
@@ -319,20 +307,29 @@ async def test_reconnect_backfills_every_hook_in_order_exactly_once_and_drains(
 
         # THE REAL NOTIFICATION (no suppression — a timeout is a failure):
         # the reconnect's own conn is LIVE and listening on every channel.
+        # Clear the event and snapshot the journal BEFORE issuing pg_notify:
+        # asyncpg can deliver the NOTIFY on deps.notify_conn before
+        # notify_conn.execute() returns, so clearing afterwards loses the wake.
         notify_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
         try:
+            drained.clear()
+            journal_before_real_notify = len(journal)
             await notify_conn.execute(
                 "SELECT pg_notify($1, $2)", wf_emit_capacity_channel(schema), "x"
             )
-            await asyncio.wait_for(_wait_event(drained_reset(drained)), 2.0)
+            await asyncio.wait_for(drained.wait(), 2.0)
         finally:
             await notify_conn.close()
-        # The REAL callback's own channel is journaled (skipping
-        # add_listener cannot pass): the real delivery carried the
+        # The REAL callback's own channel is journaled AFTER pg_notify
+        # (skipping add_listener cannot pass): the real delivery carried the
         # capacity channel's own name to the capacity callback.
         cap_entry = next(e for e in channels if e.channel == wf_emit_capacity_channel(schema))
-        real_deliveries = [e for e in wakes if e[1] == cap_entry.channel]
-        assert len(real_deliveries) >= 1 and real_deliveries[0][2] == id(cap_entry.callback), (
+        real_deliveries = [
+            e
+            for e in journal[journal_before_real_notify:]
+            if e[0] == "wake" and e[1] == cap_entry.channel
+        ]
+        assert len(real_deliveries) == 1 and real_deliveries[0][2] == id(cap_entry.callback), (
             journal
         )
     finally:
@@ -390,13 +387,16 @@ async def test_raising_gated_hook_cannot_prevent_the_drain_arms(
     await deps.notify_conn.close()
     import contextlib
 
-    with contextlib.suppress(RuntimeError):
-        await reconnect_notify_conn(deps, backend, channels)
-    assert drained.is_set(), (
-        "the raising hook's own event was set first — the delivery is total; "
-        "the drain arms regardless of the bookkeeping fault"
-    )
-    await deps.notify_conn.close()
+    try:
+        with contextlib.suppress(RuntimeError):
+            await reconnect_notify_conn(deps, backend, channels)
+        assert drained.is_set(), (
+            "the raising hook's own event was set first — the delivery is total; "
+            "the drain arms regardless of the bookkeeping fault"
+        )
+    finally:
+        if deps.notify_conn is not None and not deps.notify_conn.is_closed():
+            await deps.notify_conn.close()
 
 
 # ── N6: the two fail-closed HOST MUTANTS, in-tree ──────────────────────────

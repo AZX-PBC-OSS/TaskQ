@@ -28,6 +28,7 @@ without someone writing down why.
 
 from __future__ import annotations
 
+import ast
 import re
 import shlex
 from pathlib import Path
@@ -644,4 +645,76 @@ def test_every_extra_with_tagged_tests_has_a_test_extras_leg() -> None:
     assert not legless, (
         f"test-extras legs {legless} select a marker no test file uses — the leg is a "
         "fake gate (0 tests, green). Tag the extra's real tests with its marker, or delete the leg."
+    )
+
+
+def test_the_private_broker_pause_module_is_serial_only() -> None:
+    """The SSE conservation module pauses a PRIVATE Dragonfly against a 1.0 s
+    heartbeat / 1.5 s broker read deadline (0.5 s scheduling grace). Under a
+    parallel xdist lane, event-loop jitter trips ``sse-redis-read-timeout``
+    on the server's ``cancel_on_finish`` task independently of conservation
+    behaviour. The guard is lane placement: the module must
+    carry ``load_sensitive`` so the root/parallel lanes deselect it, and the
+    ``load-sensitive`` job must select it serially. Losing either half
+    silently puts a wall-clock-fragile module back in a parallel lane."""
+    module = _REPO_ROOT / "tests/web_progress/test_attack478_conserve.py"
+    tree = ast.parse(module.read_text(encoding="utf-8"))
+
+    def _is_load_sensitive(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "load_sensitive"
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "mark"
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "pytest"
+        )
+
+    marker_lists = [
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets
+        )
+    ]
+    assert any(
+        isinstance(value, (ast.List, ast.Tuple))
+        and any(_is_load_sensitive(elt) for elt in value.elts)
+        for value in marker_lists
+    ), (
+        f"{module.relative_to(_REPO_ROOT)} no longer declares pytest.mark.load_sensitive in "
+        "its pytestmark; it would be collected by the parallel root lane, where its "
+        "private-broker pause races the SSE read deadline"
+    )
+
+    ci = next(wf for wf in _WORKFLOWS if wf.name == "ci.yaml")
+    jobs = _jobs(ci)
+    test_job = jobs.get("test")
+    assert test_job is not None, "ci.yaml no longer has the root `test` job"
+    whole_suite_runs = [
+        str(step.get("run", ""))
+        for step in _steps(test_job)
+        if "pytest" in str(step.get("run", "")) and "tests/probes_" not in str(step.get("run", ""))
+    ]
+    assert whole_suite_runs, "the root `test` job no longer runs a whole-suite pytest step"
+    assert all("not load_sensitive" in run for run in whole_suite_runs), (
+        "the root `test` job's whole-suite selection no longer excludes load_sensitive; "
+        f"the module rides the parallel lane again (runs: {whole_suite_runs})"
+    )
+
+    load_job = jobs.get("load-sensitive")
+    assert load_job is not None, "ci.yaml no longer has the `load-sensitive` job"
+    load_runs = [
+        str(step.get("run", ""))
+        for step in _steps(load_job)
+        if "load_sensitive" in str(step.get("run", ""))
+    ]
+    assert any('-m "load_sensitive and not timescale"' in run for run in load_runs), (
+        "the load-sensitive job no longer selects `load_sensitive and not timescale`; "
+        f"the module would not run in the serial lane (runs: {load_runs})"
+    )
+    assert all(" -n " not in run and "--dist" not in run for run in load_runs), (
+        "the load-sensitive job's marker selection is no longer serial; the module's "
+        "lane premise is a single worker"
     )

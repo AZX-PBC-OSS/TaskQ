@@ -1562,6 +1562,34 @@ def _html_units(path: str, text: str, line_offset: int = 0, dedent: int = 0) -> 
     yield from units
 
 
+#: Matches CPython's ``ast._splitlines_no_ff`` line-splitting rule so source
+#: segments match ``ast.get_source_segment`` byte-for-byte without rescanning
+#: the entire file on every collection/Literal node.
+_PY_SOURCE_LINE_RE = re.compile(r"(.*?(?:\r\n|\n|\r|$))")
+
+
+def _source_segment_from_lines(
+    raw_lines: list[str], encoded_lines: list[bytes], node: ast.AST
+) -> str:
+    """O(1) equivalent of ``ast.get_source_segment(text, node)`` using
+    pre-split lines (matches CPython's UTF-8 byte-offset slicing)."""
+    end_lineno: int | None = getattr(node, "end_lineno", None)
+    end_col_offset: int | None = getattr(node, "end_col_offset", None)
+    lineno_1: int | None = getattr(node, "lineno", None)
+    col_offset: int | None = getattr(node, "col_offset", None)
+    if end_lineno is None or end_col_offset is None or lineno_1 is None or col_offset is None:
+        return ""
+    lineno = lineno_1 - 1
+    end_idx = end_lineno - 1
+    if end_idx == lineno:
+        return encoded_lines[lineno][col_offset:end_col_offset].decode()
+    first = encoded_lines[lineno][col_offset:].decode()
+    last = encoded_lines[end_idx][:end_col_offset].decode()
+    if end_idx == lineno + 1:
+        return first + last
+    return first + "".join(raw_lines[lineno + 1 : end_idx]) + last
+
+
 def _python_units(path: str, text: str, tree: ast.Module) -> Iterator[Unit]:
     """AST docstrings, each comment line its own unit (tokenize follows
     every comment token with the next non-COMMENT token — an NL after a
@@ -1576,6 +1604,16 @@ def _python_units(path: str, text: str, tree: ast.Module) -> Iterator[Unit]:
     (identical span and text) is dropped — the round-9 D9-8 defect had
     every docstring reported twice."""
     units: list[Unit] = []
+    raw_lines: list[str] | None = None
+    encoded_lines: list[bytes] | None = None
+
+    def _seg(node: ast.AST) -> str:
+        nonlocal raw_lines, encoded_lines
+        if raw_lines is None or encoded_lines is None:
+            raw_lines = [m[0] for m in _PY_SOURCE_LINE_RE.finditer(text)]
+            encoded_lines = [line.encode() for line in raw_lines]
+        return _source_segment_from_lines(raw_lines, encoded_lines, node)
+
     # The f-string parts: a JoinedStr's inner Constants report PEP-701
     # concat-spanning positions that PARTIALLY OVERLAP at line
     # granularity (adjacent chunks share the boundary line). The
@@ -1647,12 +1685,12 @@ def _python_units(path: str, text: str, tree: ast.Module) -> Iterator[Unit]:
             and isinstance(node.value, ast.Name)
             and node.value.id == "Literal"
         ):
-            seg = ast.get_source_segment(text, node) or ""
+            seg = _seg(node)
             units.append(
                 Unit(path, "literal-type", node.lineno, node.end_lineno or node.lineno, seg)
             )
         if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-            seg = ast.get_source_segment(text, node) or ""
+            seg = _seg(node)
             units.append(Unit(path, "collection", node.lineno, node.end_lineno or node.lineno, seg))
 
     docstring_spans = {(u.start_line, u.end_line, u.text) for u in units if u.kind == "docstring"}
@@ -2056,6 +2094,26 @@ def _allowlisted(path: str, unit: Unit) -> bool:
     return False
 
 
+_TREE_UNITS_CACHE: dict[tuple[Path, str, int, int], tuple[str, tuple[Unit, ...]]] = {}
+
+
+def _read_and_extract_units(path: Path, rel: str) -> tuple[str, list[Unit]]:
+    """Read *path* and compute its semantic units, caching by ``(path, rel,
+    mtime_ns, size)`` so multiple tree-wide invariant tests do not re-parse
+    the same ~1,700 repository files repeatedly. Unreadable files and parse
+    errors raise directly and are never cached."""
+    st = path.stat()
+    key = (path, rel, st.st_mtime_ns, st.st_size)
+    cached = _TREE_UNITS_CACHE.get(key)
+    if cached is not None:
+        raw, cached_units = cached
+        return raw, list(cached_units)
+    raw = path.read_text(encoding="utf-8")
+    units = _units_for(rel, raw)
+    _TREE_UNITS_CACHE[key] = (raw, tuple(units))
+    return raw, units
+
+
 def _scan(base: Path | None = None) -> list[tuple[str, Unit, str]]:
     """The full scan: every unit x every rule; the unlisted matches are
     the failures. Fail-closed on unreadable files and parse errors.
@@ -2067,11 +2125,9 @@ def _scan(base: Path | None = None) -> list[tuple[str, Unit, str]]:
     for path in _iter_scan_files(root):
         rel = str(path.relative_to(root))
         try:
-            raw = path.read_text(encoding="utf-8")
+            _raw, units = _read_and_extract_units(path, rel)
         except (UnicodeDecodeError, OSError) as exc:
             pytest.fail(f"{rel}: unreadable file — the scan fails closed: {exc}")
-        try:
-            units = _units_for(rel, raw)
         except SyntaxError as exc:
             pytest.fail(f"{rel}: ast.parse failed — the scan fails closed: {exc}")
         for unit in units:
@@ -3445,8 +3501,7 @@ def test_unit_model_laws_hold_over_every_scanned_file() -> None:
     files = 0
     for path in _iter_scan_files(REPO_ROOT):
         rel = str(path.relative_to(REPO_ROOT))
-        raw = path.read_text(encoding="utf-8")
-        units = _units_for(rel, raw)
+        raw, units = _read_and_extract_units(path, rel)
         violations = (
             _coverage_violations(rel, raw, units)
             + _overlap_violations(rel, units)
@@ -3455,6 +3510,80 @@ def test_unit_model_laws_hold_over_every_scanned_file() -> None:
         assert not violations, f"{rel}:\n" + "\n".join(f"  {v}" for v in violations)
         files += 1
     assert files > 1000, f"the laws ran over {files} files — the scan scope collapsed?"
+
+
+def test_rule4_units_match_the_stdlib_segment_oracle_on_multiline_nodes() -> None:
+    """The rule-4 units' text is the scanner's own matching input, and for a
+    MULTI-LINE ``Literal[...]``/collection node it is read by a hoisted
+    helper (pre-split lines) instead of a per-node ``ast.get_source_segment``
+    rescan. That multi-line concatenation is the only branch that is not
+    literally the stdlib expression: if it diverges, the unit text is
+    silently truncated or garbled and a banned phrase the oracle can still
+    see escapes the tree-wide vocabulary scan. Differential over every
+    multi-line rule-4 node in the scanned tree, through the REAL
+    ``_python_units`` extraction the scanner uses, plus the line-ending and
+    multi-byte sources a checked-out file can carry (CRLF, lone CR, and a
+    non-ASCII literal before/inside the node)."""
+
+    def _checked(rel: str, raw: str) -> int:
+        tree = ast.parse(raw)
+        expected: list[tuple[str, int, int, str]] = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "Literal"
+            ):
+                kind = "literal-type"
+            elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+                kind = "collection"
+            else:
+                continue
+            start = node.lineno
+            end = node.end_lineno or start
+            if end == start:
+                # Single-line segments are the stdlib expression verbatim.
+                continue
+            expected.append((kind, start, end, ast.get_source_segment(raw, node) or ""))
+        actual = [
+            (unit.kind, unit.start_line, unit.end_line, unit.text)
+            for unit in _python_units(rel, raw, tree)
+            if unit.kind in ("literal-type", "collection") and unit.start_line != unit.end_line
+        ]
+        assert actual == expected, (
+            f"{rel}: the extracted rule-4 units diverged from "
+            f"ast.get_source_segment on a multi-line node"
+        )
+        return len(expected)
+
+    checked = 0
+    for path in _iter_scan_files(REPO_ROOT):
+        if path.suffix != ".py":
+            continue
+        checked += _checked(str(path.relative_to(REPO_ROOT)), path.read_text(encoding="utf-8"))
+    assert checked > 100, (
+        f"the differential walked {checked} multi-line rule-4 nodes — the corpus collapsed?"
+    )
+
+    # Line-ending and encoding boundaries a checked-out source file can carry
+    # (a CRLF Windows checkout, a stray lone CR, non-ASCII before/inside the
+    # node). Each snippet must actually exercise a multi-line rule-4 node, so
+    # a passing comparison cannot be vacuous.
+    for name, snippet in (
+        (
+            "virtual/crlf.py",
+            'from typing import Literal\r\ntype X = Literal[\r\n  "a",\r\n  "b",\r\n]\r\n',
+        ),
+        (
+            "virtual/lone-cr.py",
+            'from typing import Literal\rtype X = Literal[\r  "a",\r  "b",\r]\r',
+        ),
+        (
+            "virtual/multibyte.py",
+            '# caf\u00e9 \u00fcn\u00efcode\ntype X = Literal[\n  "caf\u00e9",\n  "\u65e5\u672c",\n]\n',
+        ),
+    ):
+        assert _checked(name, snippet) >= 1, f"{name}: the synthetic node is not multi-line"
 
 
 def test_unit_model_laws_red_when_violated() -> None:
