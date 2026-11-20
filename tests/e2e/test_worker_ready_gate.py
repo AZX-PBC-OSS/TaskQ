@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from taskq.backend._sql import WORKER_REGISTRATION_SQL_TEMPLATE
 from taskq._ids import new_uuid
+from taskq.backend._sql import WORKER_REGISTRATION_SQL_TEMPLATE
 
 from ._assertions import wait_for_worker_ready
 
