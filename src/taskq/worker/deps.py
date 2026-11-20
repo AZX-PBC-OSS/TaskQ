@@ -343,6 +343,17 @@ class WorkerDeps:
     reproduces identically in the backstop, which also logs-and-suppresses
     it, so the teardown never crashes on either shape - the staleness
     sweep is the final backstop for a row still not confirmed gone."""
+    workflow_execution_capable: bool = False
+    """The boot-resolved workflow execution capability.
+
+    The same predicate ``register_worker``'s ``workflow_execution``
+    argument answers at boot. The live re-registration repairs (the
+    heartbeat's zero-row liveness write, the leader's FK-violation
+    recovery) read it so a restored row carries the capability metadata
+    the boot stamped. Defaulting ``False`` matches ``register_worker``'s
+    default for callers outside ``_bootstrap.py``; set only there, right
+    after ``register_worker`` commits.
+    """
     producer_stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     active_jobs: ActiveJobRegistry = field(default_factory=ActiveJobRegistry)
     shutdown_phase: ShutdownPhase = ShutdownPhase.NONE

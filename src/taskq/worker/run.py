@@ -27,10 +27,8 @@ real producer/consumer.
 
 import asyncio
 import contextlib
-import os
 import random
 import secrets
-import socket
 import time
 from collections.abc import Mapping
 from datetime import timedelta
@@ -50,7 +48,7 @@ from taskq._shield import shield_with_retrieval
 from taskq.actor import ActorRef
 from taskq.actor_config_ops import ActorConfigRow
 from taskq.backend._protocol import Backend, JobId, JobRow
-from taskq.backend._records import jsonb_param
+from taskq.backend._sql import WORKER_REGISTRATION_SQL_TEMPLATE
 from taskq.backend.clock import Clock
 from taskq.client._enqueuer import SubJobEnqueuer, parent_tags
 from taskq.constants import (
@@ -77,6 +75,9 @@ from taskq.worker._consumer import (
 )
 from taskq.worker._handlers import (  # pyright: ignore[reportPrivateUsage]  # Why: the SlotPoolAcquireError arm disowns the claimed row exactly as dispatch's terminal-write-infra arm does; same private-seam rationale.
     _disown_job,
+)
+from taskq.worker._registration import (
+    worker_registration_params,
 )
 from taskq.worker._transient import (
     TRANSIENT_PG_ERRORS,
@@ -1837,50 +1838,13 @@ async def register_worker(
     worker_id = new_uuid()
     schema = settings.schema_name
     require_schema(schema)
-    hostname = socket.gethostname()
-    pid = os.getpid()
-    queues = settings.queues
 
-    maybe_label: str | None = settings.worker_label
-    maybe_instance_raw = settings.workgroup_instance
-    maybe_instance: UUID | None = UUID(maybe_instance_raw) if maybe_instance_raw else None
-
-    notify_enabled = getattr(settings, "notify_enabled", False)
-    # The workers row carries the capacity this worker actually runs at:
-    # ``max_concurrency`` sizes ``local_queue`` and bounds every dispatch,
-    # so a fleet's effective parallelism stays queryable from the database
-    # for monitoring and coordination.
-    # Schema level 1 is implemented by this build's physical claim trigger and
-    # direct-driver refusal; level 2 by the guarded terminal effects. The
-    # stamp is what this build actually implements, not an operator override
-    # or a claim that future guarded application features are complete.
-    # Vanilla workers stamp zero: they still cannot execute workflow bodies
-    # under the existing workflow_execution fence, and every pre-existing
-    # metadata key survives.
-    workflow_execution_schema = 0
-    if workflow_execution:
-        from taskq.workflows._capability import WORKER_BOOT_WORKFLOW_SCHEMA
-
-        workflow_execution_schema = WORKER_BOOT_WORKFLOW_SCHEMA
-    metadata: dict[str, object] = {
-        "notify_enabled": notify_enabled,
-        "max_concurrency": settings.max_concurrency,
-        "workflow_execution": workflow_execution,
-        "workflow_execution_schema": workflow_execution_schema,
-    }
-
-    sql = (
-        f'INSERT INTO "{schema}".workers '  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg cannot bind identifiers as parameters.
-        "(id, hostname, pid, queues, worker_label, workgroup_instance, metadata) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)"
-    )
-    metadata_json = jsonb_param(metadata)
+    sql = WORKER_REGISTRATION_SQL_TEMPLATE.format(schema=schema)
+    params = worker_registration_params(settings, workflow_execution=workflow_execution)
 
     try:
         async with pool.acquire(timeout=2.0) as conn:
-            await conn.execute(
-                sql, worker_id, hostname, pid, queues, maybe_label, maybe_instance, metadata_json
-            )
+            await conn.execute(sql, worker_id, *params)
     except TRANSIENT_PG_ERRORS as e:
         _reg_log.error("register-worker-failed", error=str(e))
         raise

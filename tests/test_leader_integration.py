@@ -27,7 +27,7 @@ from taskq.constants import schema_lock_name, wake_channel
 from taskq.obs import setup_logging
 from taskq.settings import WorkerSettings
 from taskq.testing.assertions import wait_for_condition
-from taskq.testing.fixtures import _create_worker
+from taskq.testing.pg import create_worker
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.heartbeat import heartbeat_loop, isolate_self
 from taskq.worker.leader import MaintenanceLeader
@@ -94,7 +94,7 @@ async def _open_single(
 
     worker_id = new_uuid()
     async with deps.dispatcher_pool.acquire() as conn:
-        await _create_worker(conn, settings.schema_name, worker_id)
+        await create_worker(conn, settings.schema_name, worker_id)
 
     return settings.schema_name, stack, deps, backend, worker_id
 
@@ -155,9 +155,9 @@ async def _open_two(
         raise
 
     async with deps_a.dispatcher_pool.acquire() as c_a:
-        await _create_worker(c_a, settings.schema_name, wid_a)
+        await create_worker(c_a, settings.schema_name, wid_a)
     async with deps_b.dispatcher_pool.acquire() as c_b:
-        await _create_worker(c_b, settings.schema_name, wid_b)
+        await create_worker(c_b, settings.schema_name, wid_b)
 
     return (
         settings.schema_name,
@@ -503,7 +503,7 @@ async def test_ti7_equivalence_isolate_self_vs_sweep_cancel_phase_0(pg_dsn: str)
     try:
         worker_id_b = new_uuid()
         async with deps.dispatcher_pool.acquire() as conn:
-            await _create_worker(conn, schema, worker_id_b)
+            await create_worker(conn, schema, worker_id_b)
 
         job_a = new_uuid()
         job_b = new_uuid()
@@ -590,7 +590,7 @@ async def test_ti7_equivalence_cancel_phase_1_grace_divergence(pg_dsn: str) -> N
     try:
         worker_id_b = new_uuid()
         async with deps.dispatcher_pool.acquire() as conn:
-            await _create_worker(conn, schema, worker_id_b)
+            await create_worker(conn, schema, worker_id_b)
 
         job_a = new_uuid()
         job_b = new_uuid()
@@ -823,11 +823,36 @@ async def test_sweep_loop_transitions_deadline_exceeded_pending_job(
 
 @pytest.mark.asyncio
 async def test_tn5_fk_violation_triggers_shutdown(pg_dsn: str) -> None:
-    """FK violation on UPSERT triggers clean shutdown.."""
+    """A PERMANENT registration refusal on elect still fails closed.
+
+    The FK arm's first move is the idempotent re-registration (a reaped
+    row recovers there), so this pin blocks re-insertion for real: a
+    BEFORE INSERT trigger on workers raising SQLSTATE 42501, a non
+    -transient refusal the server will repeat forever. The initial elect
+    hits the FK, the restore is refused, and the fail-closed arm sets the
+    process-wide shutdown with the refusal's cause attached - never a
+    transient retry log-storming a permanent fault, never a silent
+    restore-then-die.
+    """
     schema, stack, deps, backend, worker_id = await _open_single(
         pg_dsn, f"test_leader_{new_base62()}"
     )
     try:
+        # The permanent fault: every future registration INSERT for this
+        # schema is refused (the deployment that can no longer register
+        # workers - revoked privilege, broken constraint). 42501 maps to
+        # asyncpg.InsufficientPrivilegeError, deliberately outside
+        # TRANSIENT_PG_ERRORS.
+        await deps.dispatcher_pool.execute(
+            f'CREATE FUNCTION "{schema}"._refuse_worker_reinsert() RETURNS trigger '  # Why: schema is a validated identifier constant, not user input.
+            "AS $$ BEGIN RAISE EXCEPTION 'worker re-insertion refused' "
+            "USING ERRCODE = '42501'; END; $$ LANGUAGE plpgsql"
+        )
+        await deps.dispatcher_pool.execute(
+            f'CREATE TRIGGER refuse_worker_reinsert BEFORE INSERT ON "{schema}".workers '  # Why: see above.
+            f'FOR EACH ROW EXECUTE FUNCTION "{schema}"._refuse_worker_reinsert()'
+        )
+
         leader = MaintenanceLeader(deps, worker_id, backend, clock=SystemClock())
         shutdown = asyncio.Event()
         task = asyncio.create_task(leader.run(shutdown))
@@ -848,7 +873,7 @@ async def test_tn5_fk_violation_triggers_shutdown(pg_dsn: str) -> None:
             await deps.leader_conn.close()  # pyright: ignore[reportOptionalMemberAccess] # Why: is_leader.set() guarantees leader_conn was opened; pyright cannot narrow across the Event boundary.
             deps.leader_conn = None
 
-            await asyncio.wait_for(shutdown.wait(), timeout=_HEARTBEAT_INTERVAL + 3)
+            await asyncio.wait_for(shutdown.wait(), timeout=_HEARTBEAT_INTERVAL + 5)
             assert shutdown.is_set()
             task.cancel()
             with suppress(asyncio.CancelledError):
@@ -1708,7 +1733,7 @@ async def test_leader_whose_row_was_taken_over_steps_down_on_the_next_renewal(
             # having lapsed is how production reaches this state).
             successor = new_uuid()
             async with deps.dispatcher_pool.acquire() as conn:
-                await _create_worker(conn, schema, successor)
+                await create_worker(conn, schema, successor)
                 await conn.execute(
                     f'UPDATE "{schema}".maintenance_leader SET '
                     f"worker_id = $1, elected_at = clock_timestamp(), "

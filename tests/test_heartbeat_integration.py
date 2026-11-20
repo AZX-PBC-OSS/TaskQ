@@ -15,6 +15,7 @@ so the suite completes in seconds rather than minutes.
 
 import asyncio
 import contextlib
+import json
 import time
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta
@@ -1176,3 +1177,88 @@ async def test_tick_issues_no_maintenance_leader_statement(
         f"the heartbeat tick wrote the lease row: {offenders[:1]!r} - the "
         "lease is renewed only by the election loop, fenced on the term it holds"
     )
+
+
+# ── The zero-row liveness write: reaped-row repair ────────────────
+
+
+async def test_a_reaped_capable_worker_is_restored_with_its_boot_metadata(
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """A worker whose row was reaped comes back dispatch-eligible.
+
+    The zero-row liveness write restores the registration in the same
+    transaction, and the restored row carries the full boot registration
+    metadata - the capability keys the dispatch claim's execution fence
+    reads as data (``workflow_execution``, ``workflow_execution_schema``)
+    plus capacity and notify - not just the bare identity columns. A
+    repair that restored a narrower payload would silently downgrade a
+    workflow-capable worker to vanilla. The reap itself is the exact
+    state ``cleanup_stale_workers`` leaves; the real sweep is driven
+    end-to-end in tests/test_reaped_worker_liveness.py, this pin is what
+    the repair writes back.
+    """
+    from taskq._ids import new_uuid  # Why: local import matches the file's per-test idiom.
+
+    stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
+    try:
+        worker_id = new_uuid()
+        boot_metadata = {
+            "notify_enabled": True,
+            "max_concurrency": 4,
+            "workflow_execution": True,
+            "workflow_execution_schema": 2,
+        }
+        async with obs_conn.transaction():
+            await obs_conn.execute(
+                f'INSERT INTO "{schema}".workers (id, hostname, pid, queues, metadata) '  # Why: schema is a validated identifier constant, not user input; values are bound.
+                "VALUES ($1, 'test-host', 12345, ARRAY['default']::text[], $2::jsonb)",
+                worker_id,
+                json.dumps(boot_metadata),
+            )
+            await obs_conn.execute(
+                f'DELETE FROM "{schema}".workers WHERE id = $1',  # Why: see above.
+                worker_id,
+            )
+
+        # The boot's assignment (taskq.worker._bootstrap) supplies this in
+        # production; a capable worker is what makes the downgrade visible.
+        deps.workflow_execution_capable = True
+
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(
+            heartbeat_loop(deps, worker_id, shutdown),
+            name="heartbeat-restored-capable",
+        )
+        try:
+            found: asyncpg.Record | None = None
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                found = await obs_conn.fetchrow(
+                    f'SELECT metadata FROM "{schema}".workers WHERE id = $1',  # Why: see above.
+                    worker_id,
+                )
+                if found is not None:
+                    break
+                await asyncio.sleep(0.2)
+            assert found is not None, (
+                "the reaped worker's row never came back: the zero-row liveness "
+                "write did not restore the registration"
+            )
+            metadata = json.loads(found["metadata"])
+            assert metadata["workflow_execution"] is True, (
+                f"the restored row downgraded the workflow capability: {metadata}"
+            )
+            assert metadata["workflow_execution_schema"] == 2
+            # Capacity and notify are settings-derived (the registration
+            # keys win over anything the reap deleted): the restored row
+            # matches what boot registration would have stamped.
+            assert metadata["max_concurrency"] == deps.settings.max_concurrency
+            assert metadata["notify_enabled"] is getattr(deps.settings, "notify_enabled", False)
+        finally:
+            shutdown.set()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+    finally:
+        await stack.aclose()

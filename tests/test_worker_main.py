@@ -623,6 +623,42 @@ async def test_register_worker_oserror_raises(settings: WorkerSettings) -> None:
         await register_worker(mock_pool, settings)
 
 
+async def test_main_records_the_workflow_capability_on_deps(
+    settings: WorkerSettings,
+    monkeypatch: Any,
+) -> None:
+    """_main propagates the boot-resolved workflow capability onto deps.
+
+    The live re-registration repairs restore the row from
+    ``deps.workflow_execution_capable`` - if the boot never records the
+    resolved capability there, a reaped workflow-capable worker would be
+    silently restored as vanilla (the claim fence would park its flow
+    rows fail-closed forever) with every other check green. The pin is on
+    the boot's assignment, so dropping or mis-scoping it fails here
+    instead of downgrading the worker in production.
+    """
+    import taskq.workflows._worker_execution as _wf_exec
+
+    # Pin the resolution itself, so the assignment is what's under test:
+    # a capable boot (the real projection/collectors are the flows tests'
+    # subject; empty stubs keep this file's DB-free harness intact) and a
+    # vanilla boot must land on deps as the value register_worker saw.
+    monkeypatch.setattr(_wf_exec, "workflow_execution_capable", lambda: True)
+    monkeypatch.setattr(_wf_exec, "project_workflow_actor_configs", lambda: [])
+    monkeypatch.setattr(_wf_exec, "collect_workflow_rate_limits", lambda registry: ([], []))
+    monkeypatch.setattr(_wf_exec, "collect_workflow_reservations", lambda registry: ([], []))
+    with _use_test_harness(settings) as h:
+        await _main(settings)
+    assert h.deps is not None
+    assert h.deps.workflow_execution_capable is True
+
+    monkeypatch.setattr(_wf_exec, "workflow_execution_capable", lambda: False)
+    with _use_test_harness(settings) as h:
+        await _main(settings)
+    assert h.deps is not None
+    assert h.deps.workflow_execution_capable is False
+
+
 # ── deregister_worker runs in try/finally ────────────────────────────
 
 

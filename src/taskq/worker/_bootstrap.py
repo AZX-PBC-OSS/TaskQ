@@ -2238,6 +2238,12 @@ async def _main(
         # it again), so this logs-and-suppresses rather than crashing
         # the unwind; the staleness sweep is the final backstop.
         deps.registered_worker_id = worker_id
+        # The live re-registration repairs (heartbeat zero-row, leader FK)
+        # restore the row from deps: the capability the boot resolved must
+        # ride the restored row's metadata, or a reaped workflow-capable
+        # worker would come back vanilla (the claim fence would park its
+        # flow rows fail-closed forever).
+        deps.workflow_execution_capable = wf_execution_capable
 
         async def _deregister_on_boot_failure() -> None:
             if deps.registered_worker_id is None:
