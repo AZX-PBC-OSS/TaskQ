@@ -823,9 +823,7 @@ async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
     # the stale presentation meets a live 'running' row. ──
     node_s = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="fenced-s")
     worker_s, attempt_s, epoch_s = await claim_view(clean_pg_conn, schema, node_s)
-    ledger_s, instant_s = await _seed_claim_row(
-        "fenced-s", node_s, attempt_s, epoch_s
-    )
+    ledger_s, instant_s = await _seed_claim_row("fenced-s", node_s, attempt_s, epoch_s)
     res_stale = await finalize_node(
         module_pg_pool,
         wsql,
@@ -845,8 +843,7 @@ async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
         f'SELECT status FROM "{schema}".wf_step_ledger WHERE id = $1', ledger_s
     )
     assert fence_stale == "running", (
-        f"a stale instant fenced the row (the re-mint guard refused "
-        f"nothing): {fence_stale!r}"
+        f"a stale instant fenced the row (the re-mint guard refused nothing): {fence_stale!r}"
     )
 
     # ── the terminal-by-id leg: the right worker's finalize with ITS OWN

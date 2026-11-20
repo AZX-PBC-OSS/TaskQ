@@ -773,15 +773,11 @@ async def test_heartbeat_tick_round_trip_budget(
     try:
         # The REAPED arm first: a fresh worker id with no row - the first
         # tick must restore the registration (8 commands, restore third).
-        observed["reaped"] = await _first_tick_commands(
-            reaped_worker_id, row_present=False
-        )
+        observed["reaped"] = await _first_tick_commands(reaped_worker_id, row_present=False)
         # The NORMAL arm: the row present (registered through the shipped
         # writer) - the liveness write matches one row, no restore (7
         # commands).
-        observed["normal"] = await _first_tick_commands(
-            normal_worker_id, row_present=True
-        )
+        observed["normal"] = await _first_tick_commands(normal_worker_id, row_present=True)
     finally:
         # The ticks registered in-process workers rows; the e2e tier's
         # shared schema keeps workers rows across tests, so remove ours.
