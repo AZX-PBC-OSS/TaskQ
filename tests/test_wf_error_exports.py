@@ -24,3 +24,18 @@ def test_fan_in_bound_error_is_a_top_level_workflow_export() -> None:
 
     assert "FanInBoundExceededError" in wf.__all__
     assert FanInBoundExceededError is definitions.FanInBoundExceededError
+
+
+def test_emit_reservation_exceeded_error_is_a_top_level_workflow_export() -> None:
+    """``EmitReservationExceededError`` is a top-level ``taskq.workflows``
+    export by the same convention: importable from the root, IDENTICAL to
+    its defining-module class (a re-export, never a shadow), a member of
+    ``__all__``, and derived EXACTLY from ``Exception`` — never from
+    ``EmitBackpressure`` or ``PageDivergedError``."""
+    import taskq.workflows as wf
+    import taskq.workflows._emit as emit_module
+    from taskq.workflows import EmitReservationExceededError
+
+    assert "EmitReservationExceededError" in wf.__all__
+    assert EmitReservationExceededError is emit_module.EmitReservationExceededError
+    assert EmitReservationExceededError.__bases__ == (Exception,)

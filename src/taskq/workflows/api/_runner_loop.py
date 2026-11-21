@@ -33,6 +33,7 @@ from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._runner_codec import encode_result, jsonable
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._runner_ladder import is_infra_fault
+from taskq.workflows.ledger import LedgerClaim
 
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
@@ -57,6 +58,12 @@ class _LoopHost(Protocol):
     #: the id the node claim stamped on the row — the loop's advance/exhaust
     #: bind it (a zombie driver's write is refused by its own legs).
     _worker_id: JobId
+    #: The bounded-run gate (the compiled declaration's own fact): True only
+    #: when the run declares ``max_in_flight`` and carries chain sources —
+    #: the §4.1 event rule's host-side gate. Unbounded runs pay nothing.
+    _emit_capacity: bool
+
+    async def _drain_created_intent(self, flow_id: JobId, intent_created: bool) -> None: ...
 
     async def _flow_input(self, flow_id: JobId) -> object: ...
 
@@ -76,6 +83,8 @@ class _LoopHost(Protocol):
         emitter: ProgressEmitter | None = None,
         *,
         claim_epoch: int = 0,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: datetime | None = None,
     ) -> FinalizeResult: ...
 
 
@@ -95,6 +104,7 @@ class LoopOps(_LoopHost):
         *,
         claim_epoch: int = 0,
         ledger_claimed_at: Any = None,
+        iteration_rest: tuple[JobId, Any] | None = None,
     ) -> str:
         """the LOOP'S DEFERRAL DISPOSITION (the loop body's signals route
         through the same disposition the step bodies share — the
@@ -141,7 +151,7 @@ class LoopOps(_LoopHost):
         )
 
         disposition = deferral_disposition(exc)
-        verdict_text = await defer_row_law(
+        outcome = await defer_row_law(
             self.pool,
             self.wsql,
             job_id=JobId(row["id"]),
@@ -153,7 +163,10 @@ class LoopOps(_LoopHost):
             signal_name=type(exc).__name__,
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            iteration_rest=iteration_rest,
+            flow_id=flow_id,
         )
+        verdict_text = outcome.verdict
 
         if verdict_text == "deferred":
             # the loop's counters are the advance statement's own —
@@ -193,6 +206,7 @@ class LoopOps(_LoopHost):
                 attempt=attempt,
                 claim_epoch=claim_epoch,
                 ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
                 capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the ladder's own call shape (the declared capture policy rides the compile).
                 project_auto=self._project_auto,
                 outcome="cancelled",
@@ -368,8 +382,12 @@ class LoopOps(_LoopHost):
         # isinstance re-derivation here; the type check is the validator's
         # subject). It is serialized through the codec (a model dumps to its
         # dict) and the declared type is re-applied at the read below (the
-        # carry's typed contract — the body receives the declared type at
-        # iteration 0 and after every resume).
+        # carry's typed contract — the body receives the declared type once a
+        # carry is committed; the seeded ``None`` IS the pre-first-carry
+        # value and passes through as ``None`` until the first Refine commits
+        # one, while a COMMITTED ``None`` — a ``Refine(None)`` — is the loud
+        # refusal at the next boundary: the seed is the only None the
+        # contract passes).
         initial_carry: object = (
             jsonable(cast(object, spec.initial_carry)) if spec.initial_carry is not None else None
         )
@@ -405,6 +423,17 @@ class LoopOps(_LoopHost):
 
         iteration = int(str(meta_doc.get("iteration", 0)))
         carry: object = meta_doc.get("carry")
+        # the carry's PROVENANCE (rehydrate_carry's ``committed`` flag —
+        # the seed's gate): the row's carry and iteration are written by
+        # the SAME atomic statement (the init or the advance) — and by
+        # nothing else, the driver's own init/advance under the claim
+        # fence — so iteration == 0 means no advance has committed a
+        # carry TO THE ROW (the carry is the init's seed); iteration >= 1
+        # means the carry is the last advance's committed value. A
+        # recorded iteration terminal the advance never reached (the
+        # crash window's memo) is still a commit — the memo replay below
+        # supplies ``True`` itself. A body owns neither write.
+        carry_committed = iteration > 0
 
         max_wall = 10_000  # the driver's own bound (a hang is a defect with no stack)
         for _ in range(max_wall):
@@ -419,6 +448,8 @@ class LoopOps(_LoopHost):
                     encode_result(carry),
                     emitter=emitter,
                     claim_epoch=claim_epoch,
+                    ledger_id=ledger_id,
+                    ledger_claimed_at=ledger_claimed_at,
                 )
                 return
 
@@ -462,9 +493,15 @@ class LoopOps(_LoopHost):
                         encode_result(payload),
                         emitter=emitter,
                         claim_epoch=claim_epoch,
+                        ledger_id=ledger_id,
+                        ledger_claimed_at=ledger_claimed_at,
                     )
                     return
                 carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
+                # the recorded feedback is the iteration's committed
+                # terminal (the ledger's truth) — never a seed: the
+                # re-hydrate at the next body invocation validates it.
+                carry_committed = True
             elif memo is not None and memo.status == "failed":
                 # The replay honors the recorded truth (the shape error's
                 # ledger rule): a failed iteration's terminal is the named
@@ -486,7 +523,7 @@ class LoopOps(_LoopHost):
                 return
             else:
                 async with self.pool.acquire() as conn:
-                    await claim_step_ledger(
+                    iteration_claim = await claim_step_ledger(
                         conn,
                         self.wsql,
                         flow_id=flow_id,
@@ -494,6 +531,7 @@ class LoopOps(_LoopHost):
                         step_key=iter_key,
                         map_index=None,
                         attempt=attempt,
+                        claim_epoch=claim_epoch,
                     )
                 loop_ctx = build_step_context(
                     flow_id=flow_id,
@@ -515,16 +553,22 @@ class LoopOps(_LoopHost):
                     queue=node.queue,
                     claimed_at=datetime.now(UTC),
                     budget_remaining_ms=remaining,
+                    claim_epoch=claim_epoch,
                 )
                 # the carry's typed contract, at the one point a carry reaches
                 # a body: re-hydrated through the declared type's validator —
                 # at iteration 0 (the init's dump), after every resume (the row
                 # read), on the memo replay (the recorded feedback), and on the
                 # in-memory Refine (idempotent). A dict is never the body's
-                # carry when a type is declared. (before the body boundary: a
+                # carry when a type is declared. The ``committed`` flag is the
+                # seed's gate, tracked per face above: the PRE-FIRST-CARRY seed
+                # passes through as ``None`` (nothing committed to the row
+                # yet), while a COMMITTED ``None`` — a ``Refine(None)`` —
+                # refuses loudly here against a declared model/dict, exactly
+                # as any other wrong-typed carry. (before the body boundary: a
                 # contract refusal is the declaration's bug — the machinery's
                 # own loud error, never a body failure to absorb.)
-                carry = rehydrate_carry(spec.carry_type, carry)
+                carry = rehydrate_carry(spec.carry_type, carry, committed=carry_committed)
                 try:
                     # a loop body declaring one param beyond (ctx, carry)
                     # receives the runner's bound instance — the same instance
@@ -568,6 +612,12 @@ class LoopOps(_LoopHost):
                         exc,
                         claim_epoch=claim_epoch,
                         ledger_claimed_at=ledger_claimed_at,
+                        iteration_rest=(
+                            (iteration_claim.ledger_id, iteration_claim.claimed_at)
+                            if iteration_claim.ledger_id is not None
+                            and iteration_claim.claimed_at is not None
+                            else None
+                        ),
                     )
                     return
                 except Exception as exc:
@@ -589,7 +639,13 @@ class LoopOps(_LoopHost):
                         claim_epoch=claim_epoch,
                     )
                     return
-                await self._record_iteration_terminal(flow_id, iter_key, attempt, outcome)
+                await self._record_iteration_terminal(
+                    flow_id,
+                    iter_key,
+                    attempt,
+                    outcome,
+                    iteration_claim,
+                )
 
                 # consumed with the residual machinery.
                 if isinstance(outcome, Done):
@@ -602,6 +658,8 @@ class LoopOps(_LoopHost):
                         encode_result(done_payload),
                         emitter=emitter,
                         claim_epoch=claim_epoch,
+                        ledger_id=ledger_id,
+                        ledger_claimed_at=ledger_claimed_at,
                     )
                     return
                 if not isinstance(outcome, Refine):
@@ -624,6 +682,10 @@ class LoopOps(_LoopHost):
                     )
                     return
                 carry = cast(object, outcome.feedback)  # the walk's boundary
+                # the body's ``Refine`` is the committed carry the
+                # advance below writes — never a seed: the body cannot
+                # mark its own feedback as the pre-first-carry value.
+                carry_committed = True
 
             # the advance statement — the carry + the cap guard, one atomic
             # write . the claim identity's fence rides the statement: a zombie
@@ -660,7 +722,12 @@ class LoopOps(_LoopHost):
         )
 
     async def _record_iteration_terminal(
-        self, flow_id: JobId, iter_key: str, attempt: int, outcome: object
+        self,
+        flow_id: JobId,
+        iter_key: str,
+        attempt: int,
+        outcome: object,
+        iteration_claim: LedgerClaim | None = None,
     ) -> None:
         """The iteration's ledger terminal (the §13.3 trace shape: the
         iteration index + the Done/Refine kind per iteration).
@@ -671,7 +738,10 @@ class LoopOps(_LoopHost):
         whose feedback-shaped payload the memo replay would re-thread as
         a Refine (the 'other' kind must not be laundered into
         ``{"done": false, "feedback":
-        …}`` with its computed kind deleted)."""
+        …}`` with its computed kind deleted). The write keys the
+        iteration claim's EXACT identity (its own row id + instant) —
+        the epoch arbiter's rows are never keyed by the four-expression
+        fallback."""
         from taskq.workflows.api._loop import Done, Refine
         from taskq.workflows.api._sql_loop import LOOP_ERROR_SHAPE
 
@@ -692,18 +762,25 @@ class LoopOps(_LoopHost):
                 "is the shape error it is, never a replayable refine"
             )
             payload = {"shape": jsonable(outcome)}
+        if iteration_claim is None or iteration_claim.ledger_id is None:
+            # No actual claim in hand — this is a replay/legacy face with no
+            # ledger row of its own; there is no identity to write and no
+            # identity may be manufactured.
+            raise WorkflowRunError(
+                f"loop iteration {iter_key!r} has no ledger claim identity — the "
+                "iteration terminal requires the exact claim (id + instant) the "
+                "driver's own claim returned"
+            )
         async with self.pool.acquire() as conn:
             await conn.execute(
-                self.wsql.ledger_terminal,
-                flow_id,
-                iter_key,
-                attempt,
+                self.wsql.ledger_terminal_by_id,
+                iteration_claim.ledger_id,
                 status,
                 dumps_jsonb_str(payload),
                 error_class,
                 error_message,
                 None,
-                None,
+                iteration_claim.claimed_at,
             )
 
     async def _reclaim_loop(
@@ -817,33 +894,61 @@ class LoopOps(_LoopHost):
                 worker_id,
                 attempt,
                 claim_epoch,
+                # The LEDGER ARBITER's own legs: the exhaust's ledger terminal
+                # keys the loop's OWN claim (flow, step, map, attempt, epoch) —
+                # never a job-wide identity that would rewrite a sibling
+                # ctx.substep claim's row.
+                row["step_key"],
+                row["map_index"],
             )
             if result is None or not result["loop_exhausted"]:
                 return  # another writer got there first — the CAS held
-            if policy != "escalate":
-                return  # the fail policy: the named state is the record, no enqueue
-            bindings = escalation_bindings(
-                self.compiled.name,
-                row["step_key"],
-                flow_id=flow_id,
-                error_class=error_class,
-                message=message,
-            )
-            if bindings is None:
-                logger.warning(
-                    "loop.escalation-unregistered",
-                    loop=row["step_key"],
-                    run_id=str(flow_id),
-                    why="the escalation policy declared but the workflow's "
-                    "escalation step is not registered in this process (D1) — "
-                    "the named state stands, no outbox row is written",
+            intent_created = False
+            if self._emit_capacity:
+                from taskq.workflows._emit import emit_capacity_event
+
+                # The §4.1 terminal event rule in the exhaust's own
+                # transaction (the winning loop terminal is this flow's
+                # terminal statement).
+                intent_created = await emit_capacity_event(
+                    conn, self.wsql, flow_id=flow_id, probe=True
                 )
-                return
-            await conn.execute(
-                render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, self.schema),
-                new_uuid(),
-                row["id"],
-                flow_id,
-                ESCALATION_STEP_KEY,
-                dumps_jsonb_str(bindings),
-            )
+            if policy == "escalate":
+                bindings = escalation_bindings(
+                    self.compiled.name,
+                    row["step_key"],
+                    flow_id=flow_id,
+                    error_class=error_class,
+                    message=message,
+                )
+                if bindings is None:
+                    logger.warning(
+                        "loop.escalation-unregistered",
+                        loop=row["step_key"],
+                        run_id=str(flow_id),
+                        why="the escalation policy declared but the workflow's "
+                        "escalation step is not registered in this process (D1) — "
+                        "the named state stands, no outbox row is written",
+                    )
+                else:
+                    await conn.execute(
+                        render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, self.schema),
+                        new_uuid(),
+                        row["id"],
+                        flow_id,
+                        ESCALATION_STEP_KEY,
+                        dumps_jsonb_str(bindings),
+                    )
+        # The exhaust transaction committed. EVERY owned-intent exit — the
+        # fail policy and both escalation exits — drains the intent it just
+        # created HERE, after the acknowledged COMMIT, never inside the open
+        # transaction (§5.3: the one-bit ``intent_created`` result calls the
+        # same drain once after commit). The drain acquires a second pool
+        # connection and queues on the root and intent row locks THIS
+        # transaction still holds; the holder is idle-in-transaction (a
+        # client wait, not a lock wait), so PostgreSQL's deadlock detector
+        # sees no cycle and no timeout exists to break it — the
+        # in-transaction call is an unbounded self-wait. The CAS-loss exit
+        # above returns without draining: another writer won the exhaust CAS
+        # and its own route owns that crossing's single post-COMMIT pass.
+        await self._drain_created_intent(flow_id, intent_created)

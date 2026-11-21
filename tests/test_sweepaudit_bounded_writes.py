@@ -85,6 +85,15 @@ _LIMIT_CLAUSE_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
 # check fails until the entry is removed. Registering a new entry requires
 # writing the justification - that sentence is the review.
 _EXEMPT: dict[str, tuple[str, str]] = {
+    # ── The D1 live-root lock (§3.1's canonical order): a single-row PK
+    # probe ──
+    "EMIT_ROOT_LOCK_SQL": (
+        "WHERE id = $1::uuid AND step_key = '__flow__'",
+        "the drain's own live-root FOR UPDATE lock (the §3.1 canonical "
+        "order): a PRIMARY-KEY probe on the run's own __flow__ row — the "
+        "write set is exactly one row by construction (the flow's own id "
+        "is the key); it cannot grow with any backlog",
+    ),
     # ── Worker-scoped refunds: the predicate names the calling worker ──
     "_RECONCILE_LOST_CLAIMS_SQL_TEMPLATE": (
         "WHERE j.locked_by_worker = $1",
@@ -346,6 +355,15 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "still-non-terminal peer parents, the one flow root) — bounded by "
         "the join's declared fan-in, never the backlog",
     ),
+    "WF_FLOW_FAILED_GATED_SQL": (
+        "WHERE f.id = $1::uuid",
+        "the root's own gated failure (N1): ONE row — the flow root keyed "
+        "by its own primary key ($1::uuid is the root id, not a backlog "
+        "scan; the row LOCK is the caller's ENTRY lock, R2/A9.2 — the old "
+        "flow_locked lock CTE is gone, one root-lock owner per "
+        "transaction); the unresolved-live gate only ever withholds, "
+        "never widens",
+    ),
     "COLLECT_FAN_IN_APPEND_SQL": (
         "WHERE j.id = $1",
         "keyed single join row (the collect fan-in appends the failed child's FailureInfo item)",
@@ -360,26 +378,22 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "loudness fix rides the fire's own transaction)",
     ),
     "LEDGER_CLAIM_SQL": (
-        "ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt)",
+        "ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt, claim_epoch)",
         "INSERT ... ON CONFLICT DO UPDATE: the write set is the ONE arbiter "
-        "row the conflict target keys (the full ledger arbiter + attempt) — "
-        "keyed, one row per claim",
-    ),
-    "LEDGER_TERMINAL_SQL": (
-        "COALESCE(map_index, -1) = COALESCE($9::smallint, -1)",
-        "keyed single ledger row (the full arbiter tuple: flow + step + attempt + map_index)",
+        "row the conflict target keys (the full ledger arbiter + attempt + "
+        "claim epoch) — keyed, one row per claim",
     ),
     "LEDGER_TERMINAL_BY_ID_SQL": (
         "WHERE id = $1",
-        "keyed single ledger row (the claim's own RETURNING id)",
-    ),
-    "LEDGER_FENCE_ATTEMPT_SQL": (
-        "COALESCE(map_index, -1) = COALESCE($5::smallint, -1)",
-        "keyed single ledger row (the full arbiter tuple), status-guarded 'running'",
+        "keyed single ledger row (the claim's own RETURNING id + its own "
+        "claim instant — the exact claim identity; no four-expression "
+        "fallback statement exists)",
     ),
     "LEDGER_FENCE_BY_ID_SQL": (
         "WHERE id = $1",
-        "keyed single ledger row (the claim's own RETURNING id), status-guarded 'running'",
+        "keyed single ledger row (the claim's own RETURNING id + its own "
+        "claim instant — the exact claim identity), status-guarded "
+        "nonterminal",
     ),
     "OUTBOX_DRAIN_FLIP_SQL": (
         "WHERE id = ANY($1::uuid[])",
@@ -389,13 +403,12 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "exactly-once drain is pin 20's)",
     ),
     "PHANTOM_REAP_SQL": (
-        "WHERE l.status = 'running'",
-        "the phantom reaper: its write set is 'running' ledger rows whose "
-        "FLOW is terminal — by definition rows whose worker died mid-attempt "
-        "(the crash window), a population bounded by crash traffic between "
-        "passes, not by the backlog; each reaped row leaves the predicate, "
-        "so a second pass returns zero (the same self-draining shape "
-        "_RECONCILE_LOST_CLAIMS_SQL_TEMPLATE registers for)",
+        "WHERE l.status IN ('running', 'awaited', 'crashed')",
+        "the phantom reaper: its write set is live-current ledger rows whose "
+        "FLOW is terminal — a worker crash, cancellation, or parked-source "
+        "terminal transition. Every fenced row leaves the predicate, so the "
+        "statement is self-draining; a later pass returns zero. Live-root "
+        "awaited rows and previously terminal ledger outcomes are untouched.",
     ),
     # ── The workflow engine's per-run writes (the failed-parent propagation..the progress reporting, the phase work):
     # every write set below is one run's own rows — the compiled graph's
@@ -407,14 +420,14 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     # isolated rows; no statement here scans by anything broader than its
     # own flow id).
     "CANCEL_NODES_SQL_TEMPLATE": (
-        "(metadata->>'flow_id')::uuid = $1",
+        "(j.metadata->>'flow_id')::uuid = $1",
         "the cancel cascade's node leg (the runner's and the id-addressed "
         "verbs' shared statement): its write set is ONE run's "
         "non-terminal rows — the compiled graph's node count, a "
         "definition-time constant",
     ),
     "CANCEL_ROOT_SQL_TEMPLATE": (
-        "WHERE id = $1",
+        "WHERE j.id = $1",
         "keyed single root row (the cancel's linearization flip; the "
         "runner's and the id-addressed verbs' shared statement)",
     ),
@@ -463,7 +476,8 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "NODE_REPEND_SQL_TEMPLATE": (
         "WHERE j.id = params.job_id",
-        "keyed single node row (the ladder's repend CAS)",
+        "keyed single node row guarded by worker, attempt and claim epoch; "
+        "ledger identity is claim-owned and cancellation/exhaustion are explicit verdicts",
     ),
     "NODE_DEADLINE_REPEND_SQL": (
         "WHERE j.id = (SELECT job_id FROM params)",
@@ -582,6 +596,51 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "claim_epoch = $5",
         "keyed single source row (the emit's cursor checkpoint — the "
         "full claim fence: worker, attempt, epoch)",
+    ),
+    # #718: capacity control and recovery are one PK row at a time; only the
+    # separate candidate-selection statements are estate-wide and batched.
+    "EMIT_BACKPRESSURE_PARK_SQL": (
+        "AND j.attempt = (SELECT physical_attempt FROM params)",
+        "one current claimed job and its exact ledger id/claim instant",
+    ),
+    "EMIT_BACKPRESSURE_WAKE_SQL": (
+        "WHERE j.id = $1",
+        "one live parked job PK, refenced by a nonterminal root",
+    ),
+    # ── #718's derived-capacity statements: the intent/rotation writes are
+    # one PK-keyed row at a time; the fence is one indexed flow probe away
+    # from the parked estate and the markers' UPDATE keys the winner PKs.
+    "WF_EMIT_INTENT_GENERATION_SQL": (
+        "WHERE flow_id = $1",
+        "one bounded run's PK intent row: the threshold crossing bumps the "
+        "generation exactly once, CAS-gated on handled (never pending)",
+    ),
+    "WF_EMIT_INTENT_HANDLED_SQL": (
+        "WHERE flow_id = $1",
+        "one bounded run's PK intent row: the completing drain marks the "
+        "generation handled, CAS-gated on pending",
+    ),
+    "WF_EMIT_ROTATION_WRITE_SQL": (
+        "ON CONFLICT (id) DO UPDATE",
+        "the singleton rotation row (the CHECK pins id = true): the global "
+        "fairness cursor's one owner, never growing with run cardinality. "
+        "The write is an UPSERT (the D10 reset law): a schema whose "
+        "singleton was truncated re-seeds it on the first write — the "
+        "conflict target IS the singleton identity, the write set is "
+        "exactly one row by construction",
+    ),
+    "WF_EMIT_INTENT_LOCK_SQL": (
+        "WHERE flow_id = $1",
+        "one bounded run's PK intent row locked FOR UPDATE (the canonical "
+        "root -> intent order's row lock; a keyed read, no write set)",
+    ),
+    "WF_NOT_DRAINING_FENCE_SQL": (
+        "FROM parks",
+        "the §5.4 non-drainage refusal: its write set is the exact-park "
+        "winner PKs captured by the parks CTE (the indexed exact-marker "
+        "probe of ONE terminal flow, over every exact park still holding "
+        "un-emitted work — including the first page when no cursor has "
+        "committed) — a keyed family, never an estate scan",
     ),
 }
 

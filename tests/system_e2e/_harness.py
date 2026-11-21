@@ -175,18 +175,25 @@ def spawn_worker(
     spawn (the tag plus the pid), so concurrent scenarios never gate on
     each other's readiness.
 
-    The worker's stderr is teed to a file next to its health socket (a
-    daemon reader thread drains the pipe for the process's whole life):
-    a scenario that needs the worker's own log lines - a wedged-loop
-    forensic, a failed-tick cascade - reads the file instead of the
-    pipe, and an undrained 64K pipe can never block a chatty worker
-    mid-write.
+    Every spawn path leaves no pipe undrained. With a ``log_sink`` both
+    streams ride that file. Without one, the worker's stdout is
+    ``DEVNULL`` — the worker's log surface is stderr (the bootstrap's
+    logging handler defaults to stderr, ``faulthandler`` dumps there,
+    and an uncaught traceback lands there too; stdout has no designed
+    payload, and an unread stdout PIPE is exactly the wedge class this
+    harness exists to prevent) — and the stderr PIPE is teed to a file
+    next to the health socket by a daemon reader thread for the
+    process's whole life: a scenario that needs the worker's own log
+    lines - a wedged-loop forensic, a failed-tick cascade - reads the
+    file instead of the pipe, and a full pipe can never block a chatty
+    worker mid-write.
 
-    ``log_sink``: a file path to redirect both streams into. Scenarios
+    ``log_sink``: a file path redirecting both streams into (the child
+    owns the file; the tee's socket-adjacent log is skipped). Scenarios
     whose workers log continuously (chaos windows, failing heartbeats)
-    MUST pass one: the default PIPE pair is sized for short-lived
-    readiness-spawned workers, and a full pipe blocks the child's first
-    logging write - a harness-manufactured wedge.
+    pass one so the record lives at the scenario's own path; the drain
+    itself is unconditional — no spawn path leaves a pipe a reader must
+    keep up with, the harness-manufactured-wedge class.
     """
     sock_path = unique_health_sock_path(f"syse2e-{tag}")
     env = {**os.environ, **_BASE_ENV}
@@ -201,11 +208,16 @@ def spawn_worker(
         env["TASKQ_REDIS_URL"] = redis_url
     if extra_env is not None:
         env.update(extra_env)
-    stdout: IO[str] | int = subprocess.PIPE
+    # stdout is DEVNULL unless a log_sink file replaces it below: a second
+    # PIPE there would be an undrained pipe (the tee reads stderr only),
+    # and the wedge it can produce is the exact defect the drain rule
+    # exists to prevent. See the docstring for why stdout has no designed
+    # payload.
+    stdout: IO[str] | int = subprocess.DEVNULL
     stderr: IO[str] | int = subprocess.PIPE
     log_file: IO[str] | None = None
     if log_sink is not None:
-        log_file = open(log_sink, "w")  # noqa: SIM115  # Why: closed by reap/graceful_stop's communicate, the same lifetime the PIPEs' reader has.
+        log_file = open(log_sink, "w")  # noqa: SIM115  # Why: closed immediately below - Popen dups the descriptor into the child, and the parent's handle has no reader lifetime of its own.
         stdout = log_file
         stderr = log_file
     proc = subprocess.Popen(  # noqa: S603  # Why: fixed argv, no shell, binary is this interpreter, module is project-owned; no untrusted input.
@@ -220,9 +232,10 @@ def spawn_worker(
         # The child owns the dup'ed descriptors now.
         log_file.close()
     else:
-        # No sink given: drain the PIPEs with the daemon tee so a chatty
-        # worker can never wedge on a full 64K pipe. The reader thread
-        # rides the WorkerProc: the harness joins it at the process's
+        # No sink given: drain the stderr PIPE with the daemon tee so a
+        # chatty worker can never wedge on a full 64K pipe (stdout is
+        # DEVNULL - there is no second pipe). The reader thread rides
+        # the WorkerProc: the harness joins it at the process's
         # death, so the log file is final at assertion time.
         log_drain = _tee_stderr(proc, f"{sock_path}.worker.log")
     return WorkerProc(proc=proc, sock_path=sock_path, log_path=log_sink, log_drain=log_drain)
@@ -337,17 +350,75 @@ async def spawn_joined_worker(
     raise AssertionError(f"the replica never joined the fleet in 3 spawns: {last_error}")
 
 
-def wait_for_socket(socket_path: str, proc: subprocess.Popen[bytes]) -> None:
+#: The crash record's tail bound: the readiness gate's failure report
+#: carries the worker's log tail, bounded at the same 20,000 chars the
+#: ``taskq ui serve`` startup diagnostic ships - the whole output for a
+#: bootstrap-sized crash, never an unbounded read.
+_CRASH_RECORD_TAIL_CHARS = 20_000
+
+
+def _log_tail(log_path: str, limit: int) -> str:
+    """The last *limit* bytes of *log_path* (the whole file when it is
+    smaller), decoded leniently at the slice boundary. An unreadable log
+    is reported as such - never silently dropped, and never raised over
+    the crash record it would decorate."""
+    try:
+        with open(log_path, "rb") as log:
+            log.seek(0, os.SEEK_END)
+            size = log.tell()
+            log.seek(max(0, size - limit))
+            return log.read().decode(errors="replace")
+    except OSError:
+        return f"<the log at {log_path!r} could not be read>"
+
+
+def _exited_before_readiness(worker: WorkerProc) -> RuntimeError:
+    """The gate's crash record: the exit code, the log that owns the
+    worker's stderr, and that log's (bounded) tail.
+
+    Exactly one reader. When the spawn teed the stderr pipe, the record
+    is read from the tee's log after its EOF - ``communicate()`` here
+    would be a second reader on the same pipe, stealing bytes from the
+    tee (a corrupted durable log) while usually receiving nothing itself
+    (an empty crash record). When both streams ride a sink file, no pipe
+    exists to read and ``communicate()`` would return no stream at all.
+    Only a handle with neither record - a raw ``Popen`` caller - reads
+    its own pipes, once, here.
+    """
+    proc = worker.proc
+    proc.wait(timeout=5)  # poll() already saw the exit; this only reaps the handle
+    if worker.log_drain is not None:
+        # The tee owns the pipe; its EOF is the log file's finality.
+        _join_log_drain(worker, fail_loud=False)
+        log_path = worker.sock_path + ".worker.log"
+    elif worker.log_path is not None:
+        # Both streams ride the caller's sink file; the record is there.
+        log_path = worker.log_path
+    else:
+        # No tee, no sink: the caller's raw pipes are ours to read - once.
+        if proc.stderr is None:
+            detail = "<the handle has no captured stderr stream>"
+        else:
+            _stdout, stderr = proc.communicate(timeout=5)
+            detail = stderr.decode()
+        return RuntimeError(f"worker exited rc={proc.returncode} before readiness: {detail!r}")
+    return RuntimeError(
+        f"worker exited rc={proc.returncode} before readiness; its log is "
+        f"{log_path!r} (tail): {_log_tail(log_path, _CRASH_RECORD_TAIL_CHARS)!r}"
+    )
+
+
+def wait_for_socket(socket_path: str, worker: WorkerProc) -> None:
     """Block until the worker's health socket accepts, or fail loudly with
-    the worker's stderr (a bootstrap crash must not surface as a bare
-    socket timeout)."""
+    the worker's crash record (a bootstrap crash must not surface as a
+    bare socket timeout). Takes the whole ``WorkerProc`` - not a bare
+    handle - because the crash record must be read by the ONE reader that
+    owns the worker's stderr (the tee's log, or the caller's sink file),
+    and that ownership is exactly what the bare handle drops."""
     deadline = time.monotonic() + BOOT_READY_BOUND_S
     while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            _stdout, stderr = proc.communicate(timeout=5)
-            raise RuntimeError(
-                f"worker exited rc={proc.returncode} before readiness: {stderr.decode()!r}"
-            )
+        if worker.proc.poll() is not None:
+            raise _exited_before_readiness(worker)
         try:
             with socket.socket(socket.AF_UNIX) as sock:
                 sock.settimeout(0.1)
@@ -360,7 +431,7 @@ def wait_for_socket(socket_path: str, proc: subprocess.Popen[bytes]) -> None:
 
 def wait_worker_ready(worker: WorkerProc) -> None:
     """Readiness gate: the worker's own health socket answers."""
-    wait_for_socket(worker.sock_path, worker.proc)
+    wait_for_socket(worker.sock_path, worker)
 
 
 def graceful_stop(worker: WorkerProc, timeout: float = 60.0) -> int:

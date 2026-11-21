@@ -188,7 +188,13 @@ async def test_reconstruction_two_sources_rows_only(
     await seed_edge(wf_conn, wf_schema, join_id, child_b, flow_id)
 
     # a terminalizes: the node row's own terminal fact (its ledger row
-    # is that claim's history — written in the same _run_tx1 transaction).
+    # is that claim's history — written in the same _run_tx1 transaction;
+    # the claim's own ledger row exists first, the identity the finalize's
+    # ledger write keys).
+    claimed_a = await wf_conn.fetchrow(
+        wf_sql.ledger_claim, new_uuid(), flow_id, child_a, "a", None, 1, 0
+    )
+    assert claimed_a is not None
     await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -200,6 +206,8 @@ async def test_reconstruction_two_sources_rows_only(
         claim_epoch=0,
         outcome="succeeded",
         result={"ok": "a"},
+        ledger_id=JobId(claimed_a["id"]),
+        ledger_claimed_at=claimed_a["updated_at"],
     )
     # b is cancelled while pending-never-granted (the cancel's own write —
     # no ledger row exists for it: the terminal class rides the node row
@@ -577,6 +585,17 @@ async def test_one_run_one_trace_concurrent(
                 trace_id,
             )
             worker, attempt, epoch = await claim_view(conn, wf_schema, child)
+            claimed = await conn.fetchrow(
+                wf_sql.ledger_claim,
+                new_uuid(),
+                flow_id,
+                child,
+                f"s{index}",
+                None,
+                attempt,
+                epoch,
+            )
+        assert claimed is not None
         await finalize_node(
             module_pg_pool,
             wf_sql,
@@ -588,6 +607,8 @@ async def test_one_run_one_trace_concurrent(
             claim_epoch=epoch,
             outcome="succeeded",
             result={"run": index},
+            ledger_id=JobId(claimed["id"]),
+            ledger_claimed_at=claimed["updated_at"],
         )
 
     await asyncio.gather(*(one_run(rid, i) for i, rid in enumerate(runs)))
@@ -1551,7 +1572,7 @@ async def test_reconstruction_real_ladder_repend_promotion_stays_pending(
     node = await seed_running_node(wf_conn, wf_schema, flow, step_key="item")
     worker, attempt, epoch = await claim_view(wf_conn, wf_schema, node)
     claimed = await wf_conn.fetchrow(
-        wf_sql.ledger_claim, new_uuid(), flow, node, "item", None, attempt
+        wf_sql.ledger_claim, new_uuid(), flow, node, "item", None, attempt, epoch
     )
     assert claimed is not None
     claim = AttemptClaim(
@@ -1666,7 +1687,7 @@ async def test_reconstruction_real_manual_retry_reopen_stays_pending(
     # The claim's own ledger row (the real claim write — the terminal's
     # by-attempt arbiter row must exist for the finalize to record into).
     claimed = await wf_conn.fetchrow(
-        wf_sql.ledger_claim, new_uuid(), flow, node, "triage", None, attempt
+        wf_sql.ledger_claim, new_uuid(), flow, node, "triage", None, attempt, epoch
     )
     assert claimed is not None
     await finalize_node(
@@ -1681,6 +1702,10 @@ async def test_reconstruction_real_manual_retry_reopen_stays_pending(
         outcome="failed",
         error_class="ValueError",
         error_message="the first attempt failed",
+        # The claim's OWN identity (the ledger-truth law: a won terminal
+        # CAS records its own ledger row; no by-attempt fallback exists).
+        ledger_id=JobId(claimed["id"]),
+        ledger_claimed_at=claimed["updated_at"],
     )
     # The older opposite-status terminal: the same job's substep claim,
     # succeeded — a 'succeeded-first' selector must not pass either.
@@ -2113,7 +2138,7 @@ async def test_reconstruction_is_byte_identical_under_ledger_heap_motion_and_ana
     node = await seed_running_node(wf_conn, wf_schema, retry_flow, step_key="item")
     worker, attempt, epoch = await claim_view(wf_conn, wf_schema, node)
     claimed = await wf_conn.fetchrow(
-        wf_sql.ledger_claim, new_uuid(), retry_flow, node, "item", None, attempt
+        wf_sql.ledger_claim, new_uuid(), retry_flow, node, "item", None, attempt, epoch
     )
     assert claimed is not None
     await repend_attempt(

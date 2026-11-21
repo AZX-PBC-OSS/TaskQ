@@ -116,7 +116,11 @@ from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend._records import compute_duration_ms, jsonb_param, parse_rowcount
 from taskq.backend._retention_floor import retention_policy_floor
 from taskq.backend._sql import INSERT_EVENTS_DETAIL_BATCH_SQL, WAKE_NOTIFY_SQL
-from taskq.backend._sql_fragments import DEADLINE_EXCEEDED_MESSAGE
+from taskq.backend._sql_fragments import (
+    DEADLINE_EXCEEDED_MESSAGE,
+    double_braces,
+    emit_park_marker_core,
+)
 from taskq.constants import (
     DEFAULT_EVENT_RETENTION_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
@@ -704,6 +708,15 @@ SET status = CASE
     -- taskq/backend/_dispatch_sql.py). Set on every arm: a row that
     -- terminalises instead is not dispatchable, and the flag is inert.
     assignment_routed = true,
+    -- THE §2.4 KEY FATE AT THE RECLAIM: the re-pend arm (a nonterminal
+    -- re-pend patches named fields only) RETAINS the page-width
+    -- reservation; the terminal cancelled/crashed arms remove it — no key
+    -- survives a terminal row for re-arm.
+    metadata = CASE
+        WHEN j.cancel_phase = 0 AND ({has_budget})
+            THEN j.metadata
+            ELSE j.metadata - 'wf_emit_reservation'
+    END,
     -- The re-pend arm alone reschedules: its membership after the
     -- reorder is exactly `cancel_phase = 0 AND {has_budget}`: the
     -- cancelled and crashed arms keep the row's own scheduled_at.
@@ -808,7 +821,12 @@ UPDATE "{schema}".jobs j
 SET status = 'failed'::"{schema}".job_status,
     finished_at = clock_timestamp(),
     error_class = '{deadline_exceeded_class}',
-    error_message = '{deadline_message}'
+    error_message = '{deadline_message}',
+    -- THE TERMINAL REMOVES THE RESERVATION KEY (§2.4): no key survives a
+    -- terminal row for re-arm — a deadline-terminal reserved row would
+    -- otherwise keep charging its width against the run's derived
+    -- capacity forever.
+    metadata = metadata - 'wf_emit_reservation'
 FROM snap
 WHERE j.id = snap.id
 RETURNING j.id, snap.prev_status, j.attempt, j.started_at, j.actor,
@@ -817,16 +835,29 @@ RETURNING j.id, snap.prev_status, j.attempt, j.started_at, j.actor,
     "{deadline_exceeded_class}", ERROR_CLASS_DEADLINE_EXCEEDED
 ).replace("{deadline_message}", DEADLINE_EXCEEDED_MESSAGE)
 
-_SWEEP_3_SQL = """\
+_SWEEP_3_BODY = """\
 -- Bounded batch + MATERIALIZED + the STABLE-bound ORDER BY: the full
 -- rationale is _SWEEP_1_SQL's comment block (LIMIT caps one call's
 -- lock-hold and write set; MATERIALIZED fences the LIMIT; no keyset
 -- cursor — every snapped row is transitioned by this same statement).
+--
+-- THE EXACT-PARK EXCLUSION: a scheduled row carrying the live
+-- EmitBackpressure marker is never the scheduler's to promote — the
+-- #718 guard trigger (01.00.42_01) refuses the transition server-side for
+-- old binaries, and this NOT-core leg keeps the new binary from ever
+-- trying. A winning reserved promotion installs the versioned
+-- reservation and removes the marker, so genuinely promoted rows pass.
+-- The projection is the shared MARKER CORE (complete minus its status
+-- leg): this statement's own WHERE already admits only `scheduled` rows,
+-- and the core — never the complete predicate — is the exclusion spelling
+-- the parity control pins (the migration's trigger WHEN covers only
+-- scheduled -> pending, so no other projection is normalised here).
 WITH snap AS MATERIALIZED (
     SELECT id, status AS prev_status
     FROM "{schema}".jobs
     WHERE status = 'scheduled'
       AND scheduled_at <= statement_timestamp()
+      AND NOT ({wf_park_core})
     ORDER BY scheduled_at
     LIMIT $1
     FOR UPDATE SKIP LOCKED
@@ -836,6 +867,11 @@ SET status = 'pending'::"{schema}".job_status
 FROM snap
 WHERE j.id = snap.id
 RETURNING j.id, snap.prev_status"""
+
+#: The shared renderer's marker core, encoded for this module's
+#: `.format(schema=...)` convention (the collapse un-doubles it) — one
+#: predicate definition, never a second spelling.
+_SWEEP_3_SQL = _SWEEP_3_BODY.replace("{wf_park_core}", double_braces(emit_park_marker_core("")))
 
 _SWEEP_4_SQL = """\
 -- Bounded batch + MATERIALIZED + the STABLE-bound ORDER BY on

@@ -1708,16 +1708,20 @@ async def _list_stranded_pending_jobs(
 
     The same computation the leader's stranded-jobs sweep runs every
     minute, issued here on demand: ``doctor`` is the surface an operator
-    reaches for mid-incident, and it cannot wait on a leader tick.  The
-    routing-queue discriminator (a re-pended row routes by its actor's
-    stored assignment, not its label) is dispatch's own contract, mirrored
-    from the sweep so both surfaces answer the same question the same way.
-    "Serves" means a LIVE worker subscribes the queue, the sweep's own
-    liveness arm: a worker row whose heartbeat has gone stale must not
-    count as serving until the stale-worker sweep removes it, or a ghost
-    row hides an unserved queue from the operator mid-incident. The
-    result is per ACTOR, bounded by the distinct-actor count, never by
-    backlog depth.
+    reaches for mid-incident, and it cannot wait on a leader tick. THIS
+    READ MIRRORS ONLY THE DETECTOR'S TWO DISPATCH-INVISIBLE LEGS (a row
+    whose actor has no actor_config row; a row whose effective queue no
+    live worker serves) — not the detector's third, run-scoped
+    workflow_root_missing leg, which only the leader's sweep computes.
+    The routing-queue discriminator (a re-pended row routes by its
+    actor's stored assignment, not its label) is dispatch's own contract,
+    mirrored from the sweep so both surfaces answer the same two-leg
+    question the same way. "Serves" means a LIVE worker subscribes the
+    queue, the sweep's own liveness arm: a worker row whose heartbeat
+    has gone stale must not count as serving until the stale-worker
+    sweep removes it, or a ghost row hides an unserved queue from the
+    operator mid-incident. The result is per ACTOR, bounded by the
+    distinct-actor count, never by backlog depth.
     """
     # Defence in depth: TaskQSettings validates schema_name at load;
     # re-check at the SQL interpolation site (the queue_ops convention).

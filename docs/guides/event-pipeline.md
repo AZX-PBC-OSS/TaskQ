@@ -290,17 +290,19 @@ DECLARED per-workflow bound:
 @wf_app.workflow("doc_screen_router", max_in_flight=6)  # the DECLARED bound
 def doc_screen_router() -> Promise[object]:
     return build(chain_source(SCREEN_CHAIN, _screen_source_body, key="screen_source"))
-    # the admission fence (in-tx advisory lock + bounded poll) admits
-    # new children only under the cap; a page WIDER than the bound is
-    # REFUSED loudly, and a fence-wait longer than the pager's term is
-    # the ladder-owned stall, named.
+    # the admission fence (in-tx advisory lock) admits new children
+    # only under the cap; a page WIDER than the bound is REFUSED
+    # loudly, and a page that does not FIT raises EmitBackpressure
+    # immediately — the runner parks the source (the ledger records
+    # awaited, never a failure) until a promotion intent wakes it.
 ```
 
 The order of degradation when the bound is hit is the design point:
 **observability degrades FIRST, correctness never.** An emission that
 cannot land is coalesced (the progress emitter's discipline) and the
 drop is ON THE RECORD (the drop accounting: appended == retained +
-dropped); a child that cannot be admitted waits at the fence. The run
+dropped); a page that cannot be admitted raises `EmitBackpressure` on
+the spot and the source parks — no child row is written. The run
 never lies and never materializes without bound. The stale-payload
 dragon (a dashboard reading a progress row newer than the row it
 describes) dies at the same seam: the terminal-mark's statement carries

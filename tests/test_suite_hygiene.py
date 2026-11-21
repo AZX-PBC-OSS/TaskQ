@@ -143,6 +143,23 @@ _PYTEST_XDIST_WORKER_RE = re.compile(r"PYTEST_XDIST_WORKER")
 _MODULE_SCHEMA_CONST_RE = re.compile(r"^_?SCHEMA\s*=", re.MULTILINE)
 
 
+_PARSED_AST_CACHE: dict[tuple[Path, int, int], ast.Module] = {}
+
+
+def _parsed_ast(path: Path) -> ast.Module:
+    """Parse *path* once per ``(path, mtime_ns, size)`` so multiple AST
+    hygiene checks share the parsed trees instead of re-reading and
+    re-parsing every test module from scratch."""
+    st = path.stat()
+    key = (path, st.st_mtime_ns, st.st_size)
+    cached = _PARSED_AST_CACHE.get(key)
+    if cached is not None:
+        return cached
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    _PARSED_AST_CACHE[key] = tree
+    return tree
+
+
 def _test_files() -> list[Path]:
     return [
         p
@@ -251,6 +268,55 @@ def test_testing_pkg_no_module_level_schema_constant() -> None:
     )
 
 
+# ── the e2e worker-readiness gate's one mechanism ────────────────────────
+# The tier fix stamped the registration INSERT's ``last_seen_at`` from
+# ``clock_timestamp()`` (src/taskq/backend/_sql.py
+# WORKER_REGISTRATION_SQL_TEMPLATE) while ``started_at`` keeps the table's
+# ``now()`` transaction-start default — so the legacy row-presence
+# predicate is TRUE ON THE REGISTRATION ROW ITSELF and a gate keyed on it
+# admits a worker that is still between ``register_worker`` and its later
+# bootstrap steps. The one readiness mechanism is
+# ``tests/e2e._assertions.wait_for_worker_ready``'s SECOND-BEAT rule (the
+# row's own ``last_seen_at`` strictly increasing across gate samples —
+# something only a live heartbeat loop produces); its home also carries
+# the two legitimate row-presence uses (``fresh_worker_ids``' known-workers
+# snapshot and the gate's own freshness pre-filter). This guard keeps it
+# the ONE mechanism: the predicate may appear in no other tests/e2e file,
+# so a future readiness gate cannot quietly reintroduce the
+# mid-bootstrap admission (the diagnosed mechanism of test_cron's
+# "worker startup did not register the cron schedule" reds).
+
+_E2E_DIR = _TESTS_DIR / "e2e"
+_E2E_CENTRAL_READINESS = _E2E_DIR / "_assertions.py"
+_WORKER_READY_ROW_PRESENCE_RE = re.compile(r"last_seen_at\s*>\s*started_at")
+
+
+def test_no_inline_worker_readiness_predicate_outside_the_central_gate() -> None:
+    """The row-presence predicate (``last_seen_at > started_at``) over
+    ``{schema}.workers`` is part of the central e2e readiness mechanism
+    and may appear in exactly one place: ``tests/e2e/_assertions.py``.
+    Any other tests/e2e file carrying the predicate is an inline
+    readiness gate that admits the registration ROW (see the tier fix's
+    mechanism note above) — gate through ``wait_for_worker_ready`` (or
+    its shared beat-rule predicate) instead."""
+    offenders = [
+        str(p.relative_to(_TESTS_DIR))
+        for p in sorted(_E2E_DIR.rglob("*.py"))
+        if p != _E2E_CENTRAL_READINESS and _WORKER_READY_ROW_PRESENCE_RE.search(p.read_text())
+    ]
+    assert not offenders, (
+        "Found inline worker-readiness predicate(s) (last_seen_at > started_at) in:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + f"\n\nThe predicate is satisfied by the REGISTRATION row itself (the INSERT "
+        f"stamps last_seen_at = clock_timestamp(), strictly greater than started_at's "
+        f"now() transaction-start default), so an inline gate keyed on it admits a "
+        f"worker that is still mid-bootstrap. Gate through "
+        f"tests/e2e/_assertions.wait_for_worker_ready (the second-beat rule) instead; "
+        f"the predicate's only legitimate home is the central mechanism: "
+        f"{_E2E_CENTRAL_READINESS.relative_to(_TESTS_DIR)}."
+    )
+
+
 # ── taskq.testing submodule __all__ contracts ────────────────────────────
 # The otel.py incident: the module's ``__all__`` was exactly inverted - it
 # advertised six underscore-private helpers (the ``_save_*`` snapshots,
@@ -284,7 +350,7 @@ def _testing_module_all_contract(module: str) -> tuple[set[str], set[str], set[s
     fall outside "literal constant" and stay out of the contract.
     """
     path = _TESTING_PKG_DIR / f"{module}.py"
-    tree = ast.parse(path.read_text())
+    tree = _parsed_ast(path)
     statements = [
         branch
         for node in tree.body
@@ -431,7 +497,7 @@ def test_no_test_file_writes_os_environ_directly() -> None:
     """
     offenders: list[str] = []
     for path in _all_test_tree_files():
-        for site in _os_environ_direct_writes(ast.parse(path.read_text())):
+        for site in _os_environ_direct_writes(_parsed_ast(path)):
             offenders.append(f"{path.relative_to(_TESTS_DIR)}: {site}")
     assert not offenders, (
         "Found direct os.environ mutation(s) in the test tree:\n"
@@ -532,7 +598,7 @@ def test_no_test_file_setattrs_a_global_stdlib_module() -> None:
     """
     offenders: list[str] = []
     for path in _all_test_tree_files():
-        for site in _global_stdlib_setattrs(ast.parse(path.read_text())):
+        for site in _global_stdlib_setattrs(_parsed_ast(path)):
             offenders.append(f"{path.relative_to(_TESTS_DIR)}: {site}")
     assert not offenders, (
         "Found setattr() on a stdlib module object in the test tree:\n"
@@ -579,7 +645,7 @@ def test_pg_container_is_only_consumed_through_pg_dsn() -> None:
     for path in _all_test_tree_files():
         if path.name == "conftest.py":
             continue  # the pg_dsn fixture itself is the sanctioned consumer
-        tree = ast.parse(path.read_text())
+        tree = _parsed_ast(path)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -702,7 +768,7 @@ def test_pg_stat_activity_queries_are_scoped_to_the_current_database() -> None:
     files.extend(_TESTING_PKG_DIR.rglob("*.py"))
     offenders: list[str] = []
     for path in sorted(files):
-        for query in _pg_stat_activity_string_constants(ast.parse(path.read_text())):
+        for query in _pg_stat_activity_string_constants(_parsed_ast(path)):
             if "datname" not in query or "current_database" not in query:
                 offenders.append(
                     f"{path.relative_to(_TESTS_DIR.parent)}: {query.strip().splitlines()[0]}"
@@ -714,6 +780,438 @@ def test_pg_stat_activity_queries_are_scoped_to_the_current_database() -> None:
         + "\n\npg_stat_activity is cluster-wide and the shared container hosts every "
         "xdist worker's database, so an unscoped query is satisfied by other "
         "workers' backends. Scope it to the querying connection's own database."
+    )
+
+
+# ── The system-e2e tier's undrained-PIPE spawn rule ──────────────────
+# The kill9pg incident (system-e2e lane 1 failed / 58 passed):
+# test_kill9_pg_crash.py spawned its workers with
+# ``subprocess.Popen(stdout=PIPE, stderr=PIPE)`` and no reader - the
+# tier's ``reap`` only kill()+wait()s, nothing ever reads. The killed
+# worker's own log on the dead-PG path measured 43,806 bytes (66.8% of
+# the 65,536-byte OS pipe buffer) at rest; under lane contention the
+# isolation window stretches, the log volume crosses 64K, and the child
+# blocks mid-write on its own log line - it can never reach the exit the
+# test waits 180s for. A harness-manufactured wedge, not a product
+# defect.
+#
+# The tier's drain authority is ``tests/system_e2e/_harness.py::
+# spawn_worker``, and its real invariant is PER-STREAM: with a
+# ``log_sink`` both streams ride that file; without one the worker's
+# stdout is ``DEVNULL`` (the worker's log surface is stderr - the
+# bootstrap's logging handler defaults to stderr and faulthandler dumps
+# there - so the tier never needs a worker's stdout, and an unread
+# stdout PIPE is the wedge class again) and the stderr PIPE is teed by
+# the module's own ``_tee_stderr`` daemon reader for the process's
+# whole life, ``WorkerProc.log_drain`` joining the reader at the
+# process's death. The rule therefore holds every spawn - the
+# authority's own included - to the same per-stream standard instead of
+# exempting the authority by name: a stream wired to PIPE must reach a
+# genuine drain within the same function, and the authority's stdout
+# wiring is checked exactly like any other site's.
+#
+# The sanctioned drains, all same-function:
+# - the harness's own ``_tee_stderr`` (defined in the authority file or
+#   imported from a ``*_harness`` module - a local function that merely
+#   ends in the same suffix is not the drain) with the spawn handle as
+#   its argument AND its result bound to a ``WorkerProc``'s
+#   ``log_drain``. This credits the STDERR stream only, because that is
+#   the stream the reader actually reads - a stdout PIPE "drained" by
+#   the stderr tee is the round-25 C-1 defect shape and is named as its
+#   own violation;
+# - a ``communicate()`` call on the spawn handle;
+# - a ``Thread`` constructed on the handle and started.
+# ``DEVNULL``, a file object, and an inherited stream (the kwarg
+# absent) are safe by construction - none is a pipe the child can fill.
+# ``asyncio.create_subprocess_exec`` is outside the shape: its
+# transports drain continuously from spawn, and the tier's one use
+# reads to EOF under a timeout.
+#
+# Honest limit (the source-pin precedent of this file): a PIPE
+# smuggled through a container, a dict splat or ``globals()`` is
+# invisible to a source scan, and so is an alias of an alias; the
+# suite's convention is direct spellings only. The one variable form
+# the harness's own spawner uses - a same-function direct assignment
+# of ``subprocess.PIPE`` handed to the ``Popen`` by name - IS
+# resolved. The credits are same-function lexical checks, not dataflow
+# proofs: the tee credit's two hops (handle → ``_tee_stderr`` →
+# ``WorkerProc(log_drain=...)``) are matched lexically inside the
+# enclosing function, and a drain routed across a function boundary
+# through a container would still pass unseen (a review finding, not a
+# pin).
+
+_SYSE2E_DIR = _TESTS_DIR / "system_e2e"
+#: The tier's drain authority module: it defines ``_tee_stderr`` and
+#: ``WorkerProc``, and its own spawner is held to the same per-stream
+#: rule as every other spawn (no by-name exemption - its stdout is
+#: ``DEVNULL``, its stderr is the tee's).
+_DRAIN_AUTHORITY = "system_e2e/_harness.py"
+_TEE_DRAIN_NAME = "_tee_stderr"
+_WORKER_PROC_NAME = "WorkerProc"
+
+
+def _subprocess_names(tree: ast.Module) -> tuple[set[str], dict[str, str]]:
+    """(module aliases of ``subprocess``, {imported-as: original-name}
+    from ``from subprocess import ...``) for *tree*."""
+    module_aliases: set[str] = set()
+    direct: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            module_aliases.update(
+                (alias.asname or alias.name) for alias in node.names if alias.name == "subprocess"
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            direct.update({alias.asname or alias.name: alias.name for alias in node.names})
+    return module_aliases, direct
+
+
+def _is_subprocess_pipe(value: ast.expr, module_aliases: set[str], direct: dict[str, str]) -> bool:
+    """True when *value* is the ``subprocess.PIPE`` spelling: an
+    attribute chain on a module alias, or a direct-imported PIPE alias."""
+    if isinstance(value, ast.Attribute):
+        return value.attr == "PIPE" and _dotted_name(value.value) in module_aliases
+    if isinstance(value, ast.Name):
+        return direct.get(value.id) == "PIPE"
+    return False
+
+
+def _is_subprocess_popen(node: ast.Call, module_aliases: set[str], direct: dict[str, str]) -> bool:
+    """True when *node* calls ``subprocess.Popen`` (module alias or
+    direct import)."""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr == "Popen" and _dotted_name(func.value) in module_aliases
+    if isinstance(func, ast.Name):
+        return direct.get(func.id) == "Popen"
+    return False
+
+
+def _harness_tee_names(tree: ast.Module, relpath: str) -> tuple[set[str], set[str]]:
+    """The local spellings that resolve to the harness's own
+    ``_tee_stderr`` function and ``WorkerProc`` class for *tree*:
+    module-level definitions in the authority file, or names imported
+    from a ``*_harness`` module. A local function that merely ends in
+    the same suffix is neither."""
+    tee_names: set[str] = set()
+    proc_names: set[str] = set()
+    in_authority = relpath == _DRAIN_AUTHORITY
+    for node in ast.walk(tree):
+        if in_authority and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name == _TEE_DRAIN_NAME:
+                tee_names.add(_TEE_DRAIN_NAME)
+        elif in_authority and isinstance(node, ast.ClassDef):
+            if node.name == _WORKER_PROC_NAME:
+                proc_names.add(_WORKER_PROC_NAME)
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").endswith("_harness"):
+            for alias in node.names:
+                if alias.name == _TEE_DRAIN_NAME:
+                    tee_names.add(alias.asname or alias.name)
+                elif alias.name == _WORKER_PROC_NAME:
+                    proc_names.add(alias.asname or alias.name)
+    return tee_names, proc_names
+
+
+def _harness_module_roots(tree: ast.Module) -> set[str]:
+    """The local names bound to a ``*_harness`` module by a plain
+    ``import ... [as ...]`` - the roots an attribute spelling like
+    ``harness._tee_stderr`` may hang from."""
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top, _, leaf = alias.name.rpartition(".")
+                if leaf.endswith("_harness"):
+                    roots.add(alias.asname or top or leaf)
+    return roots
+
+
+def _expr_reaches_handle(value: ast.expr, handle_name: str) -> bool:
+    """True when *value* carries the spawn handle's pipe surface: the
+    handle itself, or an attribute chain rooted at it that names the
+    stream (``proc.stdout``, ``proc.stderr``) - the shapes a reader
+    thread's target/args spell."""
+    if isinstance(value, ast.Name):
+        return value.id == handle_name
+    if isinstance(value, ast.Attribute):
+        dotted = _dotted_name(value)
+        if dotted is None:
+            return False
+        return (
+            dotted == handle_name
+            or dotted.startswith(f"{handle_name}.stdout")
+            or dotted.startswith(f"{handle_name}.stderr")
+        )
+    return False
+
+
+def _call_reaches_handle(node: ast.Call, handle_name: str) -> bool:
+    """True when the call's arguments carry the spawn handle's pipe
+    surface directly (positional or keyword)."""
+    if any(_expr_reaches_handle(arg, handle_name) for arg in node.args):
+        return True
+    return any(_expr_reaches_handle(kw.value, handle_name) for kw in node.keywords)
+
+
+def _is_harness_attr_call(
+    node: ast.Call, attr: str, local_names: set[str], harness_roots: set[str]
+) -> bool:
+    """True when *node* calls *attr* through a spelling that resolves to
+    the harness's own definition: the imported local name, an import
+    alias of the harness module, or a dotted chain ending in the
+    module."""
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id in local_names
+    if isinstance(func, ast.Attribute):
+        dotted = _dotted_name(func.value)
+        return (
+            func.attr == attr
+            and dotted is not None
+            and (dotted.endswith("_harness") or dotted in harness_roots)
+        )
+    return False
+
+
+def _tee_stderr_credits_stderr(
+    scope: ast.AST | None, tree: ast.Module, relpath: str, handle_name: str | None
+) -> bool:
+    """True when *scope* (the spawn's enclosing function) hands the
+    spawn handle to the harness's own ``_tee_stderr`` AND binds the
+    reader to a ``WorkerProc``'s ``log_drain`` - the sanctioned
+    hand-built drain. Same-function and lexical: both hops (handle →
+    tee call → ``log_drain`` keyword) must appear here. This credits
+    the child's STDERR only, because that is the stream the reader
+    reads."""
+    if scope is None or handle_name is None:
+        return False
+    tee_names, proc_names = _harness_tee_names(tree, relpath)
+    if not tee_names or not proc_names:
+        return False
+    harness_roots = _harness_module_roots(tree)
+
+    def _tee(node: ast.Call) -> bool:
+        return _is_harness_attr_call(
+            node, _TEE_DRAIN_NAME, tee_names, harness_roots
+        ) and _call_reaches_handle(node, handle_name)
+
+    tee_vars: set[str] = set()
+    for node in ast.walk(scope):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        target = (
+            node.target
+            if isinstance(node, ast.AnnAssign)
+            else (node.targets[0] if len(node.targets) == 1 else None)
+        )
+        if isinstance(node.value, ast.Call) and _tee(node.value) and isinstance(target, ast.Name):
+            tee_vars.add(target.id)
+    for node in ast.walk(scope):
+        if not (
+            isinstance(node, ast.Call)
+            and _is_harness_attr_call(node, _WORKER_PROC_NAME, proc_names, harness_roots)
+        ):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "log_drain":
+                continue
+            if isinstance(kw.value, ast.Call) and _tee(kw.value):
+                return True
+            if isinstance(kw.value, ast.Name) and kw.value.id in tee_vars:
+                return True
+    return False
+
+
+def _handle_communicates(scope: ast.AST | None, handle_name: str | None) -> bool:
+    """True when *scope* calls ``communicate()`` on the spawn handle -
+    subprocess draining its own pipes to EOF."""
+    if scope is None or handle_name is None:
+        return False
+    for node in ast.walk(scope):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "communicate"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == handle_name
+        ):
+            return True
+    return False
+
+
+def _is_thread_construction(node: ast.Call) -> bool:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id == "Thread"
+    return isinstance(func, ast.Attribute) and func.attr == "Thread"
+
+
+def _thread_started_on_handle(scope: ast.AST | None, handle_name: str | None) -> bool:
+    """True when *scope* constructs a ``Thread`` on the spawn handle and
+    starts it - a hand-built reader-thread drain (same-function: the
+    construction, the handle argument, and the ``.start()`` all live
+    here)."""
+    if scope is None or handle_name is None:
+        return False
+    started_call_ids: set[int] = set()
+    started_names: set[str] = set()
+    for node in ast.walk(scope):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "start"
+        ):
+            value = node.func.value
+            if isinstance(value, ast.Call):
+                started_call_ids.add(id(value))
+            elif isinstance(value, ast.Name):
+                started_names.add(value.id)
+    assignments: dict[int, str] = {}
+    for node in ast.walk(scope):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and _is_thread_construction(node.value)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            assignments[id(node.value)] = node.targets[0].id
+    for node in ast.walk(scope):
+        if not (isinstance(node, ast.Call) and _is_thread_construction(node)):
+            continue
+        if not _call_reaches_handle(node, handle_name):
+            continue
+        if id(node) in started_call_ids:
+            return True
+        if assignments.get(id(node)) in started_names:
+            return True
+    return False
+
+
+def _pipe_alias_names(scope: ast.AST, module_aliases: set[str], direct: dict[str, str]) -> set[str]:
+    """The local names *scope* binds directly to the ``subprocess.PIPE``
+    spelling - the same-function variable form the harness's own
+    spawner uses (``stdout: IO[str] | int = subprocess.PIPE`` handed to
+    the ``Popen`` as ``stdout=stdout``). Direct assignment only: an
+    alias of an alias, a container element or a ``globals()`` smuggle
+    stays invisible (the section's honest limit)."""
+    names: set[str] = set()
+    for node in ast.walk(scope):
+        value = None
+        target = None
+        if isinstance(node, ast.Assign):
+            value = node.value
+            target = node.targets[0] if len(node.targets) == 1 else None
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            target = node.target
+        if (
+            value is not None
+            and isinstance(target, ast.Name)
+            and _is_subprocess_pipe(value, module_aliases, direct)
+        ):
+            names.add(target.id)
+    return names
+
+
+def _popen_pipe_violations(tree: ast.Module, relpath: str) -> list[str]:
+    """The ``file:line`` sites in *tree* where a ``subprocess.Popen``
+    wires ``stdout/stderr=subprocess.PIPE`` (directly or through a
+    same-function alias) and that STREAM never reaches a drain (see the
+    section comment for the sanctioned shapes). The stream is the
+    subject: the harness's ``_tee_stderr`` reads the child's stderr
+    only, so it credits stderr and never stdout - the authority's own
+    spawner is held to the same per-stream rule, with no by-name
+    exemption."""
+    module_aliases, direct = _subprocess_names(tree)
+    func_nodes: list[tuple[int, int, ast.AST]] = [
+        (node.lineno, node.end_lineno or node.lineno, node)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    pipe_aliases = {
+        id(fnode): _pipe_alias_names(fnode, module_aliases, direct) for _, _, fnode in func_nodes
+    }
+    targets: dict[int, str] = {}
+    for node in ast.walk(tree):
+        value: ast.expr | None = None
+        target: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            value = node.value
+            target = node.targets[0] if len(node.targets) == 1 else None
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            target = node.target
+        if value is not None and isinstance(target, ast.Name) and isinstance(value, ast.Call):
+            targets[id(value)] = target.id
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and _is_subprocess_popen(node, module_aliases, direct)):
+            continue
+        handle_name = targets.get(id(node))
+        enclosing: ast.AST | None = None
+        span = 10**9
+        for start, end, fnode in func_nodes:
+            if start <= node.lineno <= end and (end - start) < span:
+                enclosing, span = fnode, end - start
+        aliases = pipe_aliases.get(id(enclosing), set()) if enclosing is not None else set()
+        pipe_streams = sorted(
+            kw.arg
+            for kw in node.keywords
+            if kw.arg in ("stdout", "stderr")
+            and (
+                _is_subprocess_pipe(kw.value, module_aliases, direct)
+                or (isinstance(kw.value, ast.Name) and kw.value.id in aliases)
+            )
+        )
+        if not pipe_streams:
+            continue
+        stderr_tee = _tee_stderr_credits_stderr(enclosing, tree, relpath, handle_name)
+        communicates = _handle_communicates(enclosing, handle_name)
+        thread_started = _thread_started_on_handle(enclosing, handle_name)
+        for stream in pipe_streams:
+            if stream == "stderr" and stderr_tee:
+                continue  # the harness's own reader drains the child's stderr
+            if communicates or thread_started:
+                continue  # a drain on the handle itself covers every PIPE stream
+            if stderr_tee:
+                # The round-25 C-1 defect shape: a stdout PIPE whose only
+                # reader is the stderr tee.
+                violations.append(
+                    f"{relpath}:{node.lineno}: stdout=subprocess.PIPE whose only "
+                    f"reader is the stderr tee ({handle_name or 'unbound'} reaches "
+                    f"{_TEE_DRAIN_NAME}, which reads the child's stderr, never "
+                    "its stdout)"
+                )
+            else:
+                violations.append(
+                    f"{relpath}:{node.lineno}: {stream}=subprocess.PIPE "
+                    f"with no drain on the spawn handle ({handle_name or 'unbound'})"
+                )
+    return violations
+
+
+def test_system_e2e_popen_pipes_are_drained() -> None:
+    """No ``subprocess.Popen`` under ``tests/system_e2e/`` may leave a
+    PIPE-wired stream without a drain - the exact shape that wedged the
+    kill9pg lane (see the section comment). The STREAM is the rule's
+    subject, not the handle: the harness's ``_tee_stderr`` reader drains
+    the child's stderr only, so a stdout PIPE whose only reader is that
+    tee is the round-25 C-1 defect and is named as its own violation."""
+    offenders: list[str] = []
+    for path in sorted(_SYSE2E_DIR.rglob("*.py")):
+        rel = path.relative_to(_TESTS_DIR).as_posix()
+        offenders.extend(_popen_pipe_violations(_parsed_ast(path), rel))
+    assert not offenders, (
+        "Found undrained subprocess.PIPE spawn(s) under tests/system_e2e/:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nA PIPE nobody reads fills at 64K and blocks the child mid-log - the\n"
+        "harness-manufactured wedge behind the kill9pg lane's phantom 180s exit\n"
+        "timeout. Workers: spawn through _harness.spawn_worker (stdout DEVNULL,\n"
+        "stderr teed; pass log_sink for the continuously-chatty cases). Other\n"
+        "long-lived children (admin/web): give them a file sink, drain with\n"
+        "communicate(), or start a reader thread on the handle. Never a bare\n"
+        "PIPE pair, and never a stdout PIPE whose only reader is the stderr\n"
+        "tee."
     )
 
 
@@ -980,7 +1478,7 @@ def test_every_module_level_warn_once_stamp_is_covered_by_the_reset() -> None:
     pkg_dir = Path(taskq.__file__).resolve().parent
     candidates: list[tuple[str, str]] = []
     for path in sorted(pkg_dir.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = _parsed_ast(path)
         for node in ast.walk(tree):
             target: ast.expr | None = None
             if isinstance(node, ast.AnnAssign):
@@ -2169,7 +2667,7 @@ def test_fake_connection_classes_fail_closed_on_unmatched_sql() -> None:
     """
     offenders: list[str] = []
     for path in _all_test_tree_files():
-        tree = ast.parse(path.read_text())
+        tree = _parsed_ast(path)
         offenders.extend(
             f"{path.relative_to(_TESTS_DIR)}: {site}" for site in _fail_closed_offenders(tree)
         )
@@ -2571,7 +3069,7 @@ def test_taskq_patch_sites_in_the_cured_packs_are_registered() -> None:
         if not path.exists():
             offenders.append(f"{name}: a registry entry names a file that does not exist")
             continue
-        tree = ast.parse(path.read_text())
+        tree = _parsed_ast(path)
         aliases = _taskq_module_aliases(tree)
         for site in _taskq_patch_offenders(tree, aliases, set(_TASKQ_PATCH_EXEMPT[name])):
             offenders.append(f"{name}:{site}")
@@ -2685,7 +3183,7 @@ _REGISTERED_LOOPS = frozenset(
 def _registered_loop_starts(path: Path) -> list[int]:
     """Line numbers of ``create_task`` calls that start a registered
     long-running loop (a named loop function, or a leader's ``run``)."""
-    tree = ast.parse(path.read_text())
+    tree = _parsed_ast(path)
     starts = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -2711,7 +3209,7 @@ def _registered_loop_starts(path: Path) -> list[int]:
 def _adjacent_set_then_cancel(path: Path) -> list[int]:
     """Line numbers of the legacy stop shape: a ``.set()`` call statement
     immediately followed by a ``.cancel()`` call statement."""
-    tree = ast.parse(path.read_text())
+    tree = _parsed_ast(path)
     lines = []
     for node in ast.walk(tree):
         body = getattr(node, "body", None)

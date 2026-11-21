@@ -79,6 +79,15 @@ never sees a dying pod win or hold leadership.
    of ``orchestrate_shutdown`` writes through the dispatcher pool and
    the backend with no leadership premise, and the successor covers the
    maintenance sweeps from its first tick.
+6. This clause binds leadership, not row lifetime: the heartbeat loop is
+   deliberately NOT gated on the stop signal and keeps re-stamping - and,
+   from a zero-row liveness write, re-inserting - the worker's row for the
+   whole drain. The drain's terminal writes resolve
+   ``job_attempts.worker_id`` through the holder ``FOR KEY SHARE`` CTE,
+   which records NULL once the row is gone, so a beat that stopped
+   restoring would strip the attribution from every attempt a draining,
+   reaped worker hands back. The row it restores lives only until
+   ``_bootstrap._main``'s ``finally`` runs ``deregister_worker``.
 """
 
 import asyncio
@@ -157,6 +166,7 @@ from taskq.worker._leader_sweeps import (
     _stranded_jobs_loop,
     _sweep_loop,
 )
+from taskq.worker._registration import reregister_worker
 from taskq.worker._transient import (
     PERMANENT_PG_REFUSALS,
     TRANSIENT_PG_ERRORS,
@@ -811,6 +821,9 @@ class MaintenanceLeader:
                 tg.create_task(self._scheduled_wake_loop(shutdown), name="leader.scheduled_wake")
                 tg.create_task(self._cron_loop(shutdown), name="leader.cron")
                 tg.create_task(self._sweep_loop(shutdown), name="leader.sweep")
+                tg.create_task(
+                    self._wf_emit_capacity_drain_loop(shutdown), name="leader.wf_emit_capacity"
+                )
                 tg.create_task(self._prune_loop(shutdown), name="leader.prune")
                 tg.create_task(self._archive_expiry_loop(shutdown), name="leader.archive_expiry")
                 tg.create_task(self._queue_depth_loop(shutdown), name="leader.queue_depth")
@@ -1334,14 +1347,117 @@ class MaintenanceLeader:
                     pre_lease_slack,
                 )
             except asyncpg.ForeignKeyViolationError as exc:
-                log.error(
-                    "leader-upsert-fk-violation",
-                    kind="leader_upsert_fk_violation",
+                # The elect stamps this worker's id into
+                # maintenance_leader.worker_id, an FK to workers(id): the
+                # violation means the workers row is gone. That is usually
+                # NOT a never-registered deploy fault - the stale sweep can
+                # reap a live worker's row (the reap's ON DELETE CASCADE
+                # also removes a term this pod held, the deposed-leader
+                # shape) - so the arm restores the registration once and
+                # retries the elect, and only a persistent refusal is the
+                # permanent fault the fail-closed arm exists for.
+                if self._stopping():
+                    # The shutdown-ordering contract, scoped to this loop
+                    # (clause 6 in the module header): a stopping worker's
+                    # election never re-inserts a workers row while draining.
+                    # The heartbeat deliberately still does - it owns
+                    # attempt attribution through the drain - but this row
+                    # would be deleted by ``_bootstrap._main``'s ``finally``
+                    # without ever backing a campaign.
+                    continue
+                # Connection-ownership rule across awaits: reload_credentials
+                # can time out closing the old leader_conn, schedule its
+                # background termination, and null deps.leader_conn while an
+                # await here is in flight. Re-read the attribute into a local
+                # before EVERY await below; a None or closed conn is not a
+                # permanent fault - the loop top's open block rebuilds it
+                # (via leader_conn_factory, with rotated credentials) and
+                # retries there. The local is annotated back to the field's
+                # declared union: pyright narrows the attribute from the
+                # loop top's open block, but reload_credentials can null it
+                # at ANY await - the None check is real runtime state, not
+                # an unreachable comparison.
+                conn: asyncpg.Connection | None = self._deps.leader_conn
+                if conn is None or conn.is_closed():  # pyright: ignore[reportUnnecessaryComparison]  # Why: pyright narrows the local from the loop top's open block, but reload_credentials nulls deps.leader_conn at ANY await - the None check is real runtime state the type model cannot see.
+                    continue
+                try:
+                    await reregister_worker(
+                        conn,
+                        self._worker_id,
+                        self._deps.settings,
+                        workflow_execution=self._deps.workflow_execution_capable,
+                    )
+                except TRANSIENT_PG_ERRORS as repair_exc:
+                    await self._election_attempt_failed(repair_exc)
+                    await self._wait_next_tick(self._deps.settings.heartbeat_interval)
+                    continue
+                except Exception as repair_exc:
+                    # A non-transient restore refusal (revoked INSERT
+                    # privilege, broken schema, a constraint that refuses
+                    # the row) is permanent rather than a reaped row: the
+                    # same fail-closed arm, with the restore's own cause
+                    # attached beside the FK that routed us here.
+                    log.error(
+                        "leader-upsert-fk-violation",
+                        kind="leader_upsert_fk_violation",
+                        worker_id=str(self._worker_id),
+                        error=repr(exc),
+                        cause=repr(repair_exc),
+                    )
+                    shutdown.set()
+                    return
+                if self._stopping():
+                    continue
+                retry_conn: asyncpg.Connection | None = self._deps.leader_conn
+                if retry_conn is None or retry_conn.is_closed():  # pyright: ignore[reportUnnecessaryComparison]  # Why: same cross-coroutine nulling as above - the reload can land between the restore and this re-read.
+                    continue
+                try:
+                    elected_at = await retry_conn.fetchval(
+                        elect_sql,
+                        self._worker_id,
+                        self._deps.settings.resolved_leader_lease,
+                        pre_lease_slack,
+                    )
+                except asyncpg.ForeignKeyViolationError:
+                    # The retry is the authoritative check, not the restore's
+                    # tag: an INSERT 0 0 from ON CONFLICT only means the row
+                    # already existed (the heartbeat may have restored it
+                    # first). FK on the retry itself means the row cannot
+                    # persist - the permanent fault, fail closed.
+                    log.error(
+                        "leader-upsert-fk-violation",
+                        kind="leader_upsert_fk_violation",
+                        worker_id=str(self._worker_id),
+                        error=repr(exc),
+                    )
+                    shutdown.set()
+                    return
+                except TRANSIENT_PG_ERRORS as retry_exc:
+                    await self._election_attempt_failed(retry_exc)
+                    await self._wait_next_tick(self._deps.settings.heartbeat_interval)
+                    continue
+                except Exception as retry_exc:
+                    # Backstop (see _transient.py): tolerated + logged a few
+                    # times, then deliberately fatal; cleanup mirrors the
+                    # transient path since conn state is unknown.
+                    await self._election_attempt_failed(retry_exc)
+                    guard.unexpected(retry_exc)
+                    await self._wait_next_tick(self._deps.settings.heartbeat_interval)
+                    continue
+                # The retry completed (win or loss), which is the proof the
+                # restored row survived and this worker's identity is usable
+                # again - the durability point the recovery warning reports
+                # from. A retry that still hit the FK never restored anything
+                # durable and reaches no warning here.
+                log.warning(
+                    "worker-registration-restored",
+                    kind="worker_registration_restored",
                     worker_id=str(self._worker_id),
-                    error=repr(exc),
+                    source="leader_election",
                 )
-                shutdown.set()
-                return
+                # A successful retry falls through to the post-elect path
+                # below: the same win/loss accounting, stop-race resign, and
+                # assume boundary the primary elect takes, never a bypass.
             except TRANSIENT_PG_ERRORS as exc:
                 await self._election_attempt_failed(exc)
                 await self._wait_next_tick(self._deps.settings.heartbeat_interval)
@@ -2229,6 +2345,67 @@ class MaintenanceLeader:
 
     async def _sweep_loop(self, shutdown: asyncio.Event) -> None:
         await _sweep_loop(self._sweep_ctx, shutdown)
+
+    async def _wf_emit_capacity_drain_once(self) -> None:
+        """One global pending-intent drain pass (the §6 selection + the
+        per-flow bounded drains)."""
+        from taskq.workflows._emit import drain_pending_emit_intents
+        from taskq.workflows.engine import render_workflow_sql
+
+        await drain_pending_emit_intents(
+            self._sweep_ctx.deps.dispatcher_pool,
+            render_workflow_sql(self._sweep_ctx.deps.settings.schema_name),
+        )
+
+    async def _wf_emit_capacity_drain_loop(self, shutdown: asyncio.Event) -> None:
+        """The #718 capacity drain's event arm: a committed capacity
+        notification arms the drain immediately; leadership assumption
+        performs the initial reconciliation backfill. Durable intents, never
+        notifications, are the authority — between arms this loop owns no
+        worker slot, claim, flow set, or per-flow task, and the sweep
+        table's pending-intent selection at the maintenance interval bounds
+        notification loss. A drain error is logged with a bounded
+        diagnostic and the loop resumes waiting (the event is level
+        -cleared, so a failing drain cannot spin); the periodic fallback
+        owns the retry."""
+        async with self._backend.subscribe_wf_emit_capacity() as event:
+            # Leadership assumption (the R term's initial reconciliation).
+            try:
+                await self._wf_emit_capacity_drain_once()
+            except Exception as exc:
+                log.warning(
+                    "wf-emit-capacity-drain-failed",
+                    kind="wf_emit_capacity_drain_failed",
+                    error_class=type(exc).__name__,
+                    error=str(exc)[:500],
+                )
+            while not shutdown.is_set():
+                wake_task = asyncio.create_task(event.wait())
+                stop_task = asyncio.create_task(shutdown.wait())
+                try:
+                    done, _pending = await asyncio.wait(
+                        {wake_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    # The loop's own waiters never outlive this frame: a
+                    # cancellation (the TaskGroup's shutdown) must cancel and
+                    # await both probe tasks — a leaked Event.wait keeps
+                    # writing loop state into later tests.
+                    for task in (wake_task, stop_task):
+                        task.cancel()
+                    await asyncio.gather(wake_task, stop_task, return_exceptions=True)
+                if stop_task in done:
+                    break
+                event.clear()
+                try:
+                    await self._wf_emit_capacity_drain_once()
+                except Exception as exc:
+                    log.warning(
+                        "wf-emit-capacity-drain-failed",
+                        kind="wf_emit_capacity_drain_failed",
+                        error_class=type(exc).__name__,
+                        error=str(exc)[:500],
+                    )
 
     async def _prune_loop(self, shutdown: asyncio.Event) -> None:
         await _prune_loop(self._sweep_ctx, shutdown)

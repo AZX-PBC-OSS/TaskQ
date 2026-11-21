@@ -196,8 +196,13 @@ GROUP BY p.id, p.step_key
 # → the root 'succeeded' (the run completed; an absorbed failure derives
 # through its parent — B2's clause). The cancel flip and the direct cascade own
 # their own legs (the linearization points); this heals the windows. Bounded:
-# the roots batch (FOR UPDATE SKIP LOCKED, LIMIT $2), and the per-root node
-# scan rides jobs_wf_flow_nodes_idx (01.00.26_02) — never a seq scan. The rows
+# the roots batch (FOR UPDATE SKIP LOCKED, LIMIT $2) — THE LOCK-ORDER
+# EXEMPTION (A9.2's named list, the real reason): SKIP LOCKED never queues
+# behind a root a drain/cascade transaction already holds (contended roots
+# are deferred to a later pass), so this seat cannot form a root/drain
+# cycle and takes no separate admission serialization — and the per-root
+# node scan rides jobs_wf_flow_nodes_idx (01.00.26_02) — never a seq scan.
+# The rows
 # are truth, the root row is a cache: the maintenance leg derives the root's
 # terminal state from the node rows — the same reconstruction the debug view
 # uses — and finalizes the root in the same tx when the derivation is terminal
@@ -237,6 +242,19 @@ per_flow AS (
     + absorbed_exists("n")
     + """
            ) AS has_failed,
+           -- THE CAUSAL CHILD (F11): the ACTUAL current non-root node that
+           -- made has_failed true — the same failed/crashed/abandoned AND
+           -- NOT-absorbed rows the failure predicate reads, deterministically
+           -- ordered (the freshest finish, then the id) — never the latest
+           -- failed LEDGER attempt (an old failed attempt whose job later
+           -- succeeded, or a crashed/abandoned terminal with no failed
+           -- ledger row, named the wrong child). The §5.4 fence's causal
+           -- record is the node rows' own truth.
+           (array_agg(n.id ORDER BY n.finished_at DESC NULLS LAST, n.id DESC)
+               FILTER (WHERE n.status IN ('failed', 'crashed', 'abandoned')
+                       AND NOT """
+    + absorbed_exists("n")
+    + """))[1] AS failure_cause_id,
            -- THE FAILED ARM'S LIVENESS (derived against the state machine's
            -- totality table): live UNRESOLVED work holds
            -- a failing run — a RUNNING row (the reclaim arms' ONLY
@@ -304,7 +322,9 @@ maintained AS (
           -- THE COMPLETED/CANCELLED ROOT: every row terminal (rows 4-5).
           OR NOT COALESCE(pf.has_live, true)
       )
-    RETURNING f.id, f.status::text AS to_state
+    RETURNING f.id, f.status::text AS to_state,
+          CASE WHEN pf.has_failed THEN 1 ELSE 0 END AS failed_root,
+          pf.failure_cause_id
 ),
 -- THE AUDIT ROW RIDES THE DERIVATION (the deploy matrix's audit fix):
 -- the root's terminal is a mutation like any other — the events reader
@@ -318,7 +338,21 @@ evt AS (
                               'to_state', m.to_state,
                               'reason', 'workflow-maintained')
     FROM maintained m
+),
+-- THE §5.4 NON-DRAINAGE FENCE (the derivation's failure arm's second
+-- seat): a root this maintenance leg just terminal-failed, while an exact
+-- parked source still holds un-emitted work (including the first page
+-- when no cursor has committed — the absent key means zero pages have
+-- committed, not that the park is empty), is the proven non-drainage
+-- shape — the same transaction fences every such parked source (the
+-- refusal's causal proof is the root's own failed terminal behind the
+-- exhausted child failure the derivation saw).
+not_draining AS (
+    SELECT {schema}.fence_not_draining_parked(maintained.id, maintained.failure_cause_id) AS fenced
+    FROM maintained
+    WHERE maintained.failed_root = 1
 )
-SELECT count(*)::int AS roots_updated FROM maintained
+SELECT (SELECT count(*)::int FROM maintained) AS roots_updated,
+       COALESCE((SELECT sum(fenced)::int FROM not_draining), 0) AS not_draining_fenced
 """
 )

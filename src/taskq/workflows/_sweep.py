@@ -41,6 +41,7 @@ import structlog
 from taskq._ids import new_uuid
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
+from taskq.constants import WORKFLOW_NOT_DRAINING_CLASS
 from taskq.obs import get_logger
 from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._progress import PROGRESS_RING_BOUND
@@ -157,6 +158,17 @@ async def sweep_join_rederive(
     The whole pass runs in one transaction: the rederive statement's row
     locks are held until the fire arm + outbox rows commit, so the fire's
     re-derivation of the firable set is deterministic.
+
+    THE LOCK-ORDER EXEMPTION (A9.2's named list, the real reason): this
+    seat acquires its join rows with ``FOR UPDATE SKIP LOCKED`` — it
+    NEVER waits on a contended row, so it cannot form a root/drain cycle
+    through its own lock acquisition, and it therefore needs no root
+    lock ahead of them. The nested root-maintenance call in this same
+    transaction also selects its roots ``FOR UPDATE SKIP LOCKED`` (a
+    root already held by a drain/cascade transaction is skipped, never
+    queued behind). Contended nodes/roots defer to a later bounded pass;
+    reducer bodies remain inside this transaction with no new root
+    serialization.
 
     The fired join's reducer body resolves durably — from the registered
     definition of the workflow stamped on the flow root's
@@ -275,7 +287,29 @@ async def sweep_join_rederive(
         # by the root batch; the per-root node scan rides the flow-nodes
         # expression index (01.00.26_02 — the uuid-cast expression, the
         # workflow-rows-only partial) — never a seq scan.
-        await conn.execute(wsql.workflow_root_maintain, batch_size)
+        maintain = await conn.fetchrow(wsql.workflow_root_maintain, batch_size)
+        # THE §5.4 REFUSAL'S LOG FACE (the fence itself rode the maintain
+        # statement's own not_draining CTE — same transaction, the proof
+        # conditions named there): the operator's alert reads the metric
+        # counter and this bounded diagnostic, never a raw saturation
+        # count.
+        if maintain is not None and int(maintain["not_draining_fenced"] or 0):
+            from taskq.workflows._emit import NOT_DRAINING_COUNTER
+
+            # THE ONE DECLARATION, ONE ATTRIBUTE CONTRACT (M-3): the
+            # cascade seat's own counter instrument, imported — never a
+            # second creation — with the SAME attribute set (the
+            # error_class-filtered alert sees every seat's refusals).
+            NOT_DRAINING_COUNTER.add(
+                int(maintain["not_draining_fenced"]),
+                {"error_class": WORKFLOW_NOT_DRAINING_CLASS},
+            )
+            logger.warning(
+                "wf.not_draining_refusal",
+                reason="terminal_root_after_child_failure_exhaustion",
+                error_class=WORKFLOW_NOT_DRAINING_CLASS,
+                fenced=int(maintain["not_draining_fenced"]),
+            )
     return SweepResult(
         blocked=summary["blocked"],
         blocked_required=summary["blocked_required"],
@@ -1011,6 +1045,8 @@ async def sweep_loop_budget(
         workers: list[object] = []
         attempts: list[int] = []
         epochs: list[int] = []
+        step_keys: list[str] = []
+        map_indexes: list[int | None] = []
         error_class_of: dict[object, str] = {}
         for loop_row in loops:
             cap_hit = (
@@ -1034,6 +1070,11 @@ async def sweep_loop_budget(
             workers.append(loop_row["locked_by_worker"])
             attempts.append(loop_row["attempt"])
             epochs.append(loop_row["claim_epoch"])
+            # The LEDGER ARBITER's own legs (the exhaust's ledger terminal
+            # keys the loop's OWN claim — never a job-wide identity that
+            # would rewrite a sibling ctx.substep claim's row).
+            step_keys.append(loop_row["step_key"])
+            map_indexes.append(loop_row["map_index"])
             # the identity was read under THIS arm's own row lock (FOR UPDATE —
         # stable to statement end), so the exhaust lands exactly on the row the
         # lock admitted — a stale identity is unrepresentable here by
@@ -1049,6 +1090,8 @@ async def sweep_loop_budget(
             workers,
             attempts,
             epochs,
+            step_keys,
+            map_indexes,
         )
         won_ids = {row["id"] for row in winners}
         exhausted = len(won_ids)
@@ -1093,4 +1136,21 @@ async def sweep_loop_budget(
             await conn.executemany(
                 render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, wsql.schema), outbox_rows
             )
+        # THE §4.1 EVENT RULE — in this same transaction, per affected
+        # bounded flow: the winning loop terminals are this statement's
+        # terminal event. The gate is the run's own bounded declaration; the
+        # derived charge counts this transaction's own committed exhaust
+        # rows. The promotion itself stays the drain's (the notification is
+        # only the accelerator); the leader's capacity listener (or the
+        # maintenance-interval fallback) observes the created intent.
+        if exhausted:
+            from taskq.workflows._emit import emit_capacity_event
+
+            for terminal_flow in sorted({JobId(row["flow_id"]) for row in winners}):
+                # The sweep serves every flow and holds no declaration: a
+                # missing capacity record is an UNBOUNDED run (no feature
+                # tax, nothing to notify), not corruption.
+                await emit_capacity_event(
+                    conn, wsql, flow_id=terminal_flow, probe=True, missing_ok=True
+                )
     return exhausted

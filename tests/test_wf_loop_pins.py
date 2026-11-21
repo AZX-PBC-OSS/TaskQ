@@ -451,20 +451,19 @@ async def test_iteration_memo_is_the_one_tx_shape(
             step_key=iter_key,
             map_index=None,
             attempt=1,
+            claim_epoch=0,
         )
         assert claim.status == "running"
         # the recorded proposal.
         await conn.execute(
-            runner.wsql.ledger_terminal,
-            flow_id,
-            iter_key,
-            1,
+            runner.wsql.ledger_terminal_by_id,
+            claim.ledger_id,
             "succeeded",
             json.dumps({"done": False, "feedback": {"acc": 1}}),
             None,
             None,
             None,
-            None,
+            claim.claimed_at,
         )
         # the same outcome returns — the model is not re-consulted.
         memo = await memoized_step_result(
@@ -927,6 +926,8 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
         zombie,
         5,
         3,
+        "counter",
+        None,
     )
     assert zombie_exhaust is not None and not zombie_exhaust["loop_exhausted"], (
         "the zombie driver's exhaust LANDED — it killed a healthy "
@@ -966,6 +967,8 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
         fresh,
         6,
         4,
+        "counter",
+        None,
     )
     assert exhausted is not None and exhausted["loop_exhausted"] == 1
     status = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', loop_id)
@@ -1022,3 +1025,305 @@ async def test_wrong_shape_body_is_named_loop_body_shape_error_never_fabricated(
     # re-threads the raw return.
     assert await runner.drive(flow_id) == "terminal"
     assert calls["n"] == 1, calls["n"]
+
+
+async def test_loop_done_success_writes_its_own_succeeded_ledger(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A normal loop completion (the body's ``Done``) writes the LOOP NODE'S
+    OWN ledger terminal ``succeeded`` at the loop's EXACT claim identity —
+    the per-claim history law's loop face. The rejected regression: the
+    Done path finalized without the claim's ledger identity, the loop's own
+    row stayed ``running`` (no four-expression fallback exists to write it),
+    and the phantom reaper later fenced it — a succeeded loop whose ledger
+    said ``fenced``. The body's ``ctx.claim_epoch`` is the loop job's own
+    granted epoch (the same pair every fence carries), never a stamped
+    zero."""
+    seen_epochs: list[int] = []
+
+    async def counting_body(ctx: StepContext, carry: Counter) -> object:
+        seen_epochs.append(ctx.claim_epoch)
+        if carry.acc >= 2:
+            return Done(payload={"acc": carry.acc})
+        return Refine(feedback=Counter(acc=carry.acc + 1))
+
+    app, name = _loop_app(counting_body, initial=Counter(acc=0))
+    runner = await _runner_of(app, name, wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id) == "terminal"
+    assert await runner.result(flow_id) == {"acc": 2}
+
+    loop_row = await wf_conn.fetchrow(
+        f"SELECT attempt::int AS attempt, claim_epoch::bigint AS claim_epoch "
+        f'FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'counter'",
+        flow_id,
+    )
+    assert loop_row is not None
+    assert loop_row["attempt"] == 1 and loop_row["claim_epoch"] == 1, dict(loop_row)
+    # the loop body's ctx carries the loop job's OWN granted epoch.
+    assert seen_epochs and seen_epochs == [1, 1, 1], seen_epochs
+
+    # THE LOOP'S OWN LEDGER ROW: exactly one, 'succeeded', at the loop's own
+    # claim identity — never 'running', never reaped into 'fenced'.
+    ledger = await wf_conn.fetch(
+        f"SELECT id, attempt::int AS attempt, claim_epoch::bigint AS claim_epoch, "
+        f'status::text AS status, error_class FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND step_key = $2 "
+        "ORDER BY attempt, claim_epoch, created_at, id",
+        flow_id,
+        "counter",
+    )
+    assert len(ledger) == 1, [dict(r) for r in ledger]
+    assert (ledger[0]["status"], ledger[0]["error_class"]) == ("succeeded", None), dict(ledger[0])
+    assert ledger[0]["attempt"] == loop_row["attempt"]
+    assert ledger[0]["claim_epoch"] == loop_row["claim_epoch"]
+
+    # The opposite direction: the reaper must NOT fence the loop's own
+    # succeeded row (it fences only running/awaited/crashed residue).
+    from taskq.workflows._sweep import reap_phantom_ledger
+
+    await reap_phantom_ledger(wf_pool, runner.wsql)
+    after = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".wf_step_ledger WHERE id = $1',
+        ledger[0]["id"],
+    )
+    assert after == "succeeded", after
+
+
+async def test_cap_exhausted_loop_writes_its_own_failed_ledger_terminal(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The ledger-truth law at the loop's own exhaustion (the same class the
+    Done fix closed on the success path): the cap wall's winning CAS commits
+    the loop node's OWN ledger terminal 'failed' with the exhaust's named
+    class IN THE SAME STATEMENT — never a 'running' row the phantom reaper
+    later fences into a lie. The reaper must leave the recorded terminal."""
+
+    async def refining_body(ctx: StepContext, carry: Counter) -> object:
+        return Refine(feedback=Counter(acc=carry.acc + 1))
+
+    app, name = _loop_app(refining_body, max_iterations=2, initial=Counter(acc=0))
+    runner = await _runner_of(app, name, wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id) == "terminal"
+
+    loop_row = await wf_conn.fetchrow(
+        f"SELECT status::text AS status, error_class, attempt::int AS attempt, "
+        f'claim_epoch::bigint AS claim_epoch FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'counter'",
+        flow_id,
+    )
+    assert loop_row is not None
+    assert loop_row["status"] == "failed", dict(loop_row)
+    # THE LOOP'S OWN LEDGER ROW: 'failed' with the exhaust's own named class,
+    # at the loop's exact claim identity — in the same commit as the job row.
+    ledger = await wf_conn.fetch(
+        f"SELECT id, attempt::int AS attempt, claim_epoch::bigint AS claim_epoch, "
+        f'status::text AS status, error_class FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND step_key = $2 "
+        "ORDER BY attempt, claim_epoch, created_at, id",
+        flow_id,
+        "counter",
+    )
+    assert len(ledger) == 1, [dict(r) for r in ledger]
+    assert ledger[0]["status"] == "failed", dict(ledger[0])
+    assert ledger[0]["error_class"] == loop_row["error_class"], dict(ledger[0])
+    assert (ledger[0]["attempt"], ledger[0]["claim_epoch"]) == (
+        loop_row["attempt"],
+        loop_row["claim_epoch"],
+    )
+    # The reaper leaves the recorded terminal (the opposite direction: the
+    # fenced-into-a-lie shape is the defect this pin exists to refuse).
+    from taskq.workflows._sweep import reap_phantom_ledger
+
+    await reap_phantom_ledger(wf_pool, runner.wsql)
+    after = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".wf_step_ledger WHERE id = $1',
+        ledger[0]["id"],
+    )
+    assert after == "failed", after
+
+
+async def test_loop_exhaustion_ledger_is_claim_exact_and_never_touches_a_substep_sibling(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The exhaust's ledger terminal keys the LEDGER ARBITER (flow, step_key,
+    COALESCE(map_index,-1), attempt, claim_epoch) — the loop's OWN claim.
+    A ``ctx.substep`` claim shares the outer loop job's job_id/attempt/
+    claim_epoch and differs only by its own step key: a job-wide ledger
+    match would rewrite the substep's own claim history (the demonstrated
+    corruption: both rows read 'running' and both landed 'failed' with the
+    loop's exhaustion class). The sibling's row is the substep finalizer's
+    (or the reaper's) to write — never the outer loop's exhaustion."""
+    from taskq.workflows.api._sql_loop import LOOP_ERROR_CAP
+    from taskq.workflows.ledger import claim_step_ledger
+    from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
+
+    flow_id = await seed_flow(wf_conn, wf_schema, status="running")
+    node_id = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="counter")
+    worker, attempt, epoch = await claim_view(wf_conn, wf_schema, node_id)
+    row_worker, row_attempt, row_epoch = worker, int(attempt), int(epoch)
+
+    # The LOOP'S OWN ledger claim, and a SIBLING ctx.substep claim at the
+    # SAME job/attempt/epoch (the shared outer identity — exactly the shape
+    # a real loop body's substep leaves while its body is mid-substep).
+    loop_claim = await claim_step_ledger(
+        wf_conn,
+        runner_wsql(wf_schema),
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="counter",
+        map_index=None,
+        attempt=row_attempt,
+        claim_epoch=row_epoch,
+    )
+    sibling_claim = await claim_step_ledger(
+        wf_conn,
+        runner_wsql(wf_schema),
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="sub",
+        map_index=None,
+        attempt=row_attempt,
+        claim_epoch=row_epoch,
+    )
+    assert loop_claim.ledger_id != sibling_claim.ledger_id
+    before = await wf_conn.fetch(
+        f'SELECT step_key, status::text AS status, error_class FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND job_id = $2 ORDER BY step_key",
+        flow_id,
+        node_id,
+    )
+    print("BEFORE EXHAUST:", [dict(r) for r in before])
+    assert [(r["step_key"], r["status"]) for r in before] == [
+        ("counter", "running"),
+        ("sub", "running"),
+    ], [dict(r) for r in before]
+
+    compiled = _exhaust_loop_compiled(wf_schema)
+    runner = FlowRunner(compiled, wf_pool, wf_schema, worker_id=row_worker)
+    await runner._exhaust_loop(  # pyright: ignore[reportPrivateUsage]  # Why: the driver's own exhaust door is the subject.
+        flow_id,
+        {"id": node_id, "step_key": "counter", "map_index": None},
+        LOOP_ERROR_CAP,
+        "the loop's iteration cap wall fired",
+        worker_id=row_worker,
+        attempt=row_attempt,
+        claim_epoch=row_epoch,
+    )
+
+    after = await wf_conn.fetch(
+        f"SELECT step_key, status::text AS status, error_class, attempt::int AS attempt, "
+        f'claim_epoch::bigint AS claim_epoch FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND job_id = $2 ORDER BY step_key",
+        flow_id,
+        node_id,
+    )
+    print("AFTER EXHAUST:", [dict(r) for r in after])
+    by_key = {str(r["step_key"]): r for r in after}
+    # The LOOP'S OWN row: 'failed' with the exhaust's own class, at its own
+    # claim identity.
+    assert (by_key["counter"]["status"], by_key["counter"]["error_class"]) == (
+        "failed",
+        LOOP_ERROR_CAP,
+    ), dict(by_key["counter"])
+    assert (by_key["counter"]["attempt"], by_key["counter"]["claim_epoch"]) == (
+        row_attempt,
+        row_epoch,
+    )
+    # THE SIBLING SUBSTEP'S ROW: UNTOUCHED — still 'running', still its own
+    # (absent) error class. The outer loop's exhaustion is not its writer.
+    assert (by_key["sub"]["status"], by_key["sub"]["error_class"]) == ("running", None), (
+        f"THE CLAIM-EXACT LAW: the sibling substep claim's row must be untouched "
+        f"by the loop's own exhaustion, got {dict(by_key['sub'])}"
+    )
+
+
+async def test_sweep_batch_exhaustion_ledger_is_claim_exact_too(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The sweep's BATCHED exhaust arm obeys the same claim-exact law: each
+    exhausted loop's OWN ledger row takes the terminal; the sibling
+    ctx.substep rows at the shared job identity stay untouched."""
+    from taskq.workflows._sweep import sweep_loop_budget
+    from taskq.workflows.ledger import claim_step_ledger
+    from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
+
+    exhausted_flows: list[JobId] = []
+    for _ in range(2):
+        flow_id = await seed_flow(wf_conn, wf_schema, status="running")
+        node_id = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="counter")
+        # The at-cap shape the budget arm's own predicate selects: the
+        # iteration counter AT max_iterations, running, the lock's lease
+        # lapsed (the cap leg's own gate), under the loop kind.
+        await wf_conn.execute(
+            f'UPDATE "{wf_schema}".jobs SET metadata = metadata || $2::jsonb, '
+            "lock_expires_at = now() - interval '1 second' WHERE id = $1",
+            node_id,
+            json.dumps({"kind": "loop", "iteration": 5, "max_iterations": 5}),
+        )
+        _worker, attempt, epoch = await claim_view(wf_conn, wf_schema, node_id)
+        await claim_step_ledger(
+            wf_conn,
+            runner_wsql(wf_schema),
+            flow_id=flow_id,
+            job_id=node_id,
+            step_key="counter",
+            map_index=None,
+            attempt=int(attempt),
+            claim_epoch=int(epoch),
+        )
+        # The sibling substep claim at the SAME job/attempt/epoch.
+        await claim_step_ledger(
+            wf_conn,
+            runner_wsql(wf_schema),
+            flow_id=flow_id,
+            job_id=node_id,
+            step_key="sub",
+            map_index=None,
+            attempt=int(attempt),
+            claim_epoch=int(epoch),
+        )
+        exhausted_flows.append(flow_id)
+
+    exhausted = await sweep_loop_budget(wf_pool, runner_wsql(wf_schema))
+    assert exhausted == 2, exhausted
+
+    for flow_id in exhausted_flows:
+        rows = await wf_conn.fetch(
+            f'SELECT step_key, status::text AS status, error_class FROM "{wf_schema}".wf_step_ledger '
+            "WHERE flow_id = $1 AND step_key IN ('counter', 'sub') ORDER BY step_key",
+            flow_id,
+        )
+        print("BATCH EXHAUST LEDGER:", [dict(r) for r in rows])
+        by_key = {str(r["step_key"]): r for r in rows}
+        assert by_key["counter"]["status"] == "failed", dict(by_key["counter"])
+        assert by_key["counter"]["error_class"] is not None
+        assert (by_key["sub"]["status"], by_key["sub"]["error_class"]) == ("running", None), (
+            f"THE CLAIM-EXACT LAW (the batch path): the sibling substep claim's "
+            f"row must be untouched, got {dict(by_key['sub'])}"
+        )
+
+
+def runner_wsql(schema: str) -> Any:
+    from taskq.workflows.engine import render_workflow_sql
+
+    return render_workflow_sql(schema)
+
+
+def _exhaust_loop_compiled(schema: str) -> Any:
+    """A registered loop workflow whose compiled shape the exhaust door reads
+    (the escalate policy's own default — the exhaust's outbox leg is inert
+    without a registered escalation step, the named state is the record)."""
+    app = WorkflowApp()
+
+    @app.workflow("exhaust_loop_probe")
+    def exhaust_probe() -> Promise[object]:
+        return build(loop("counter", _exhaust_body, max_iterations=5, initial=Counter(acc=0)))
+
+    return app.get("exhaust_loop_probe")
+
+
+async def _exhaust_body(ctx: StepContext, carry: Counter) -> object:
+    return Refine(feedback=Counter(acc=carry.acc + 1))

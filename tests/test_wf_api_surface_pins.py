@@ -280,3 +280,20 @@ def test_mermaid_label_and_shape_edges() -> None:
     assert _shape("map_source", False) == ("([", "])")
     assert _shape("map_join", False) == ("{{", "}}")
     assert _shape("gather", False) == ("[[", "]]")
+
+
+def test_the_documented_backpressure_control_is_importable_at_its_documented_path() -> None:
+    """The docs bless ``taskq.workflows.EmitBackpressure`` (the guide's
+    saturation section and the API reference's control route) — the
+    author-facing typed control is a PUBLIC SURFACE name: importable at the
+    documented root path, present in the package's own ``__all__`` (a
+    documented type cannot vanish from the surface without a red pin)."""
+    import taskq.workflows as workflows_surface
+    from taskq.workflows import EmitBackpressure
+
+    assert workflows_surface.EmitBackpressure is EmitBackpressure
+    assert "EmitBackpressure" in workflows_surface.__all__
+    # The control's vocabulary: the signal is the typed capacity control,
+    # deliberately NOT an error-ladder member.
+    control = EmitBackpressure(page_width=2, bound=3, outstanding=1)
+    assert control.page_width == 2 and control.bound == 3 and control.outstanding == 1

@@ -6,7 +6,12 @@ refused loudly; never a silent wedge."""
 
 from __future__ import annotations
 
-__all__ = ["VanishedNodeError", "WorkflowRunCancelledError", "WorkflowRunError"]
+__all__ = [
+    "VanishedNodeError",
+    "WorkflowRootMissingError",
+    "WorkflowRunCancelledError",
+    "WorkflowRunError",
+]
 
 
 class WorkflowRunError(RuntimeError):
@@ -57,3 +62,31 @@ class VanishedNodeError(WorkflowRunError):
     truth — never an eternal zombie (a ``running`` root over a
     forever-pending node, parked budget-free, surfaced only in a
     detector's log)."""
+
+
+class WorkflowRootMissingError(WorkflowRunError):
+    """Durable run-root corruption: the flow's own ``__flow__`` root row
+    is gone while one of its nodes needs it. Raised at the root-ordered
+    seats' ENTRY — the failed-parent propagation's seat (before any
+    cascade, fan-in, decrement, fire, or outbox write) and the capacity
+    park's seat (before any intent adoption or park write) — so the
+    transaction rolls back whole and the already-committed state stands
+    untouched.
+
+    This is control-plane data corruption, never an author/body-resolution
+    error and never a capacity fault: it is not converted into a
+    body-unresolvable snooze, it is not fed to the infra-fault classifier,
+    and the direct lane propagates the exact class to the caller. The
+    fleet-claimed executor passes it through unwrapped (its own bounded
+    release arm owns it there). The remedy is the runbook's
+    restore-or-quarantine recovery, not a worker knob."""
+
+    def __init__(self, flow_id: object, parent_id: object, seat: str = "failed-parent") -> None:
+        self.flow_id = flow_id
+        self.parent_id = parent_id
+        self.seat = seat
+        super().__init__(
+            f"run {flow_id}'s __flow__ root row is missing while its node "
+            f"{parent_id} reached the {seat} seat (durable run-root corruption; "
+            "the transaction rolled back without any write)"
+        )

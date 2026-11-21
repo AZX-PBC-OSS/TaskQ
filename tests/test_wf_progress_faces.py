@@ -42,7 +42,7 @@ from taskq.workflows._progress_read import (
     run_display,
 )
 from taskq.workflows._sql import WorkflowSql
-from tests._wf_fixtures import RedLog, claim_view, seed_flow, seed_running_node
+from tests._wf_fixtures import RedLog, claim_view, seed_flow, seed_ledger_claim, seed_running_node
 
 pytestmark = pytest.mark.integration
 
@@ -341,6 +341,9 @@ async def test_crash_window_freshness_only_loss_then_the_terminal_heals(
     from taskq.workflows.engine import finalize_node
 
     worker_id, attempt, epoch = await claim_view(wf_conn, wf_schema, node)
+    node_ledger, node_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow, job_id=node, step_key="a", attempt=attempt, epoch=epoch
+    )
     await finalize_node(
         wf_pool,
         wf_sql,
@@ -352,6 +355,8 @@ async def test_crash_window_freshness_only_loss_then_the_terminal_heals(
         claim_epoch=epoch,
         outcome="succeeded",
         result={"value": 1},
+        ledger_id=node_ledger,
+        ledger_claimed_at=node_claimed_at,
     )
     healed = await sample_display()
     assert healed["status"] == "succeeded", "the terminal did not heal the display"

@@ -62,8 +62,10 @@ __all__ = [
     "TERMINAL_WRITE_BUDGET_SECS",
     "WAKE_CHANNEL_FMT",
     "WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS",
+    "WF_EMIT_CAPACITY_CHANNEL_FMT",
     "WF_LOOP_ESCALATION_STEP_KEY",
     "WORKER_CHANNEL_FMT",
+    "WORKFLOW_NOT_DRAINING_CLASS",
     "base_name_collides_with_reserved_prefix",
     "check_max_attempts_domain",
     "check_payload_float_constraints",
@@ -76,6 +78,7 @@ __all__ = [
     "resolve_priority_stamp",
     "schema_lock_name",
     "wake_channel",
+    "wf_emit_capacity_channel",
     "worker_channel",
 ]
 
@@ -298,6 +301,18 @@ ERROR_CLASS_WORKER_CRASHED: Final[str] = "WorkerCrashed"
 """``error_class`` the leader sweeps stamp on a row whose worker died
 with its lease held (lock expiry, heartbeat timeout), where the worker
 cannot describe its own death."""
+
+WORKFLOW_NOT_DRAINING_CLASS: Final[str] = "WorkflowNotDrainingError"
+"""``error_class`` the durable non-drainage refusal stamps (§5.4): a
+genuine child failure exhausted its declared retry policy AND the root
+terminal ``failed`` committed, while an exact parked source still
+represents un-emitted work — INCLUDING the first page when no cursor has
+committed (the absent key means zero pages have committed, not that the
+park is empty) — the committed proof that the run is provably not
+draining. This is a durable string value only: it is deliberately NOT
+a Python class, is never raised into an author frame, and is not an
+attribute of :mod:`taskq.workflows`. Neither a duration nor a wait count
+participates in the proof."""
 
 ERROR_CLASS_HEARTBEAT_LOST: Final[str] = "HeartbeatLost"
 """``error_class`` the heartbeat isolate-recovery arm stamps, distinct
@@ -949,6 +964,18 @@ today's tick cadence, so the crash bound never regresses. Schema-tagged
 like every other channel: channels share one database-wide namespace.
 """
 
+WF_EMIT_CAPACITY_CHANNEL_FMT: Final[str] = "taskq_wf_emit_capacity_{schema_tag}"
+"""Format template for the emit-capacity channel.
+
+The threshold-crossing notification channel (#718): a terminal/park event
+that created a durable promotion intent issues one schema-tagged
+``pg_notify`` here in the same transaction. The notification is only an
+accelerator — durable intents are the promotion-scheduling authority — and
+the listener side arms the leader's drain event, never the drain itself.
+Schema-tagged like every other channel: channels share one database-wide
+namespace.
+"""
+
 LEADER_RESIGNED_EVENT: Final[str] = "leader_resigned"
 """The ``"type"`` discriminator of the leadership wake payload, the same
 JSON ``{"type": ...}`` convention the events channels carry. Receivers
@@ -1119,6 +1146,23 @@ def wake_channel(schema: str) -> str:
     """
     return _bounded_channel(
         WAKE_CHANNEL_FMT.format(schema_tag=schema_channel_tag(schema)), schema=schema
+    )
+
+
+def wf_emit_capacity_channel(schema: str) -> str:
+    """Return the emit-capacity channel name for *schema*.
+
+    The threshold-crossing notification channel: a terminal/park event that
+    created a durable promotion intent issues one schema-tagged ``pg_notify``
+    here in the same transaction. The notification is only an accelerator —
+    durable intents are the promotion-scheduling authority — and the
+    listener side arms the leader's drain event, never the drain itself.
+
+    Raises :class:`ValueError` on an invalid schema identifier.
+    """
+    return _bounded_channel(
+        WF_EMIT_CAPACITY_CHANNEL_FMT.format(schema_tag=schema_channel_tag(schema)),
+        schema=schema,
     )
 
 

@@ -47,6 +47,7 @@ from tests._wf_fixtures import (
     node_state,
     seed_flow,
     seed_join,
+    seed_ledger_claim,
     seed_running_node,
 )
 
@@ -127,6 +128,9 @@ async def test_pin1_fail_closed_join_resolves_never_hangs(
     the join never resolves, the pin reds."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id, children = await _seed_map(wf_conn, wf_schema, flow_id, n=2, policy="fail_closed")
+    ledger_id, claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=children[0], step_key="c0", attempt=1, epoch=0
+    )
 
     result = await finalize_node(
         module_pg_pool,
@@ -140,6 +144,8 @@ async def test_pin1_fail_closed_join_resolves_never_hangs(
         outcome="failed",  # the ladder exhausted: a terminal failure
         error_class="ValueError",
         error_message="boom",
+        ledger_id=ledger_id,
+        ledger_claimed_at=claimed_at,
     )
     assert result.applied
 
@@ -200,6 +206,9 @@ async def test_pin1_fail_closed_join_resolves_never_hangs(
     mutated_sql = render_workflow_sql(wf_schema)
     flow2 = await seed_flow(wf_conn, wf_schema)
     join2, children2 = await _seed_map(wf_conn, wf_schema, flow2, n=2, policy="fail_closed")
+    ledger_id2, claimed_at2 = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow2, job_id=children2[0], step_key="c0", attempt=1, epoch=0
+    )
     await finalize_node(
         module_pg_pool,
         mutated_sql,
@@ -211,6 +220,8 @@ async def test_pin1_fail_closed_join_resolves_never_hangs(
         claim_epoch=0,
         outcome="failed",
         error_class="ValueError",
+        ledger_id=ledger_id2,
+        ledger_claimed_at=claimed_at2,
     )
     monkeypatch.undo()
     state2 = await node_state(wf_conn, wf_schema, join2)
@@ -260,6 +271,9 @@ async def test_pin2_peer_cancel_record(
         children[1],
         new_uuid(),
     )
+    ledger_id, claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=children[0], step_key="c0", attempt=1, epoch=0
+    )
     await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -271,6 +285,8 @@ async def test_pin2_peer_cancel_record(
         claim_epoch=0,
         outcome="failed",
         error_class="ValueError",
+        ledger_id=ledger_id,
+        ledger_claimed_at=claimed_at,
     )
 
     peer = await wf_conn.fetchrow(
@@ -338,6 +354,15 @@ async def test_pin3_collect_exhaustion_fans_in_fires_partial(
     # Children 0 and 1 succeed (the finalize's own tx1 does the fenced
     # terminal write from the seeded running row).
     for i in (0, 1):
+        child_ledger, child_claimed_at = await seed_ledger_claim(
+            wf_conn,
+            wf_schema,
+            flow_id=flow_id,
+            job_id=children[i],
+            step_key=f"c{i}",
+            attempt=1,
+            epoch=0,
+        )
         await finalize_node(
             module_pg_pool,
             wf_sql,
@@ -349,20 +374,24 @@ async def test_pin3_collect_exhaustion_fans_in_fires_partial(
             claim_epoch=0,
             outcome="succeeded",
             result={"ok": i},
+            ledger_id=child_ledger,
+            ledger_claimed_at=child_claimed_at,
         )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_step_ledger '
         "(id, flow_id, job_id, step_key, map_index, attempt, status, error_class, error_message) "
-        "VALUES ($1, $2, $3, 'c2', NULL, 1, 'failed', 'ValueError', 'boom-1'), "
-        "       ($4, $2, $3, 'c2', NULL, 2, 'failed', 'ValueError', 'boom-2')",
+        "VALUES ($1, $2, $3, 'c2', NULL, 1, 'failed', 'ValueError', 'boom-1')",
         new_uuid(),
         flow_id,
         children[2],
-        new_uuid(),
     )
     # The child's second claim is the running row (attempt 2 — the ladder
-    # burned once already); its finalize's fence reads this attempt.
+    # burned once already); its finalize's fence reads this attempt, and
+    # the exhausted finalize's own terminal converts it (boom-2).
     await wf_conn.execute(f'UPDATE "{wf_schema}".jobs SET attempt = 2 WHERE id = $1', children[2])
+    c2_ledger, c2_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=children[2], step_key="c2", attempt=2, epoch=0
+    )
 
     result = await finalize_node(
         module_pg_pool,
@@ -376,6 +405,8 @@ async def test_pin3_collect_exhaustion_fans_in_fires_partial(
         outcome="failed",
         error_class="ValueError",
         error_message="boom-2",
+        ledger_id=c2_ledger,
+        ledger_claimed_at=c2_claimed_at,
     )
     assert result.applied
 
@@ -652,6 +683,9 @@ async def test_pin8_mixed_policy_node_the_fence_is_not_absorption(
         flow_id,
     )
 
+    x_ledger, x_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=x, step_key="x", attempt=1, epoch=0
+    )
     await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -664,6 +698,8 @@ async def test_pin8_mixed_policy_node_the_fence_is_not_absorption(
         outcome="failed",
         error_class="ValueError",
         error_message="the mixed node",
+        ledger_id=x_ledger,
+        ledger_claimed_at=x_claimed_at,
     )
 
     # the flow failed, joinA blocked-with-reason.

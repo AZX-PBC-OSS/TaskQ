@@ -517,6 +517,8 @@ cancellation racing the body. The suite's own doctrine is the
 `tests/test_rt_lost_job_soak.py`):
 
 ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
+try:  # the body's own shape above; the doctrine is the finally's cancel-and-await
+    ...
 finally:
     if not worker_task.done():
         worker_task.cancel()

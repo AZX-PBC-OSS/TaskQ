@@ -1,0 +1,36 @@
+{
+  "contract": "CONTRACT_718.md §9 control 2, clause (ii-b)",
+  "measured_by": "the control's author, on the real fixture, before the control's first execution (this commit precedes the control's first run)",
+  "environment": {
+    "postgres": "18.6 (Debian 18.6-1.pgdg13+2), server_version_num 180006, scratch postgres:18 container",
+    "migrations": "the real chain through 01.00.42_01:pre (70 records), applied by the repo's own apply_pending",
+    "python": "3.14.10 via /tmp/opencode/run-py314.sh",
+    "planner": "ordinary unchanged GUCs"
+  },
+  "fixture_pins": {
+    "park_rows": 1000,
+    "row_metadata": "the complete §2.2 park row as exact literal values, no other metadata key: flow_id, blocking_reason='backpressure', wf_deferral {signal,consume_budget:false,attempt:0}, wf_emit_backpressure {version:1,page_width,bound:100,outstanding:60,deferrals:1,wakes:0,deferred_at:'2026-11-15T09:30:00.123456+00:00' fixed literal}, wf_source_logical_attempt=1",
+    "non_metadata_column_pins": ["id (uuid7 mint)", "actor='a'", "queue='q'", "payload='{}'", "max_attempts=3", "retry_kind='transient'", "step_key='src_NNNN' (zero-padded, distinct)", "status='scheduled'", "scheduled_at=clock_timestamp() (the park instant)", "created_at=clock_timestamp() (seed order)", "fairness_key=flow_id (the CHECK's own law)"],
+    "seed_order_newest_fit": "999 older W=100 parks contiguous in created_at,id order, then the one newest W=1 park, then ANALYZE",
+    "seed_order_oldest_fit": "the one oldest W=1 park first, then the 999 W=100 parks contiguous in order, then ANALYZE",
+    "reset": "TRUNCATE jobs, job_attempts, job_events CASCADE per arm (the job_attempts FK requires CASCADE)",
+    "candidate_shape": "WF_EMIT_CANDIDATE_SQL at charge=60, bound=100"
+  },
+  "derivation_facts": {
+    "avg_park_row_width_bytes": 716.0,
+    "park_heap_pages": 91,
+    "measured_execution_node_buffers_newest_fit": 200,
+    "planning_block_buffers_warm_excluded": 22,
+    "derived_ceiling": 224
+  },
+  "law": "newest_fit_buffers = 2 × park_heap_pages + 18 (2 × 91 + 18 = 200 measured, min = max across runs); ceiling = 224",
+  "basis_match": "MATCHES the contract's recorded basis: park_heap_pages 91 (recorded 91) and measured 200 buffers (recorded 200) reproduce exactly; the measured average row width 716.0 B is within the recorded basis's page quantization (the recorded 721.9 B on the same 91 pages). No re-derivation is owed; the pre-registered ceiling is the contract's 224.",
+  "arms": {
+    "newest_fit": {"buffers": 200, "rows_removed_by_filter": 999, "returned": "the newest source", "plan": "Index Scan on jobs_wf_emit_park_idx"},
+    "oldest_fit": {"buffers": 6, "rows_removed_by_filter": 0, "returned": "the oldest source", "plan": "Index Scan on jobs_wf_emit_park_idx"}
+  },
+  "red_directions": {
+    "interleaved_seed_order": "the same 1,000 parks inserted interleaved (not contiguous) measured 1004 buffers on the round-7 build — far over 224; the pinned order is part of the fixture",
+    "unhoisted_mutant": "the deliberately unhoisted FILTER-only reference examines 50201 rows at the control-2 shape and exceeds the 64 ceiling"
+  }
+}

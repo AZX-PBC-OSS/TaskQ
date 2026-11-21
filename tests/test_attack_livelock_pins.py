@@ -53,6 +53,7 @@ from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema, _create_worker
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker.leader import build_leader_lease_sql
+from taskq.worker.notify import _NotifyEntry
 from tests._ns_patch import patch_ns
 
 # ruff: noqa: S608  # Why: every interpolated identifier is the module fixture's schema name, fixture-derived, not user input; all values are $-bound.
@@ -383,7 +384,7 @@ async def test_reconnect_backoff_grows_to_the_cap_and_the_wake_fires_on_success(
     def wake_cb(conn: object, pid: int, channel: str, payload: str) -> None:
         wake_event.set()
 
-    channels = [(wake_channel("taskq_livelock_pin"), wake_cb)]
+    channels = [_NotifyEntry(wake_channel("taskq_livelock_pin"), wake_cb, reconnect_backfill=True)]
 
     slept: list[float] = []
 
@@ -439,7 +440,9 @@ async def test_reconnect_loop_observes_shutdown_without_a_hot_spin() -> None:
 
     deps = _notify_deps(always_fails)
     backend = Mock()
-    channels = [(wake_channel("taskq_livelock_pin"), lambda *a: None)]
+    channels = [
+        _NotifyEntry(wake_channel("taskq_livelock_pin"), lambda *a: None, reconnect_backfill=True)
+    ]
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(random_mod, "uniform", fake_uniform)

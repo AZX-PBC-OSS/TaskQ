@@ -1507,9 +1507,20 @@ _queue_utilization_gauge = get_meter().create_observable_gauge(
 )
 
 
-type StrandedReason = Literal["no_actor_config", "unserved_queue"]
-"""Why a pending/scheduled row can never dispatch, the closed ``reason``
-label set of ``taskq.jobs.stranded``."""
+type StrandedReason = Literal["no_actor_config", "unserved_queue", "workflow_root_missing"]
+"""Why a pending/scheduled row cannot make progress, the closed ``reason``
+label set of ``taskq.jobs.stranded``.
+
+The two dispatch-invisible reasons (``no_actor_config`` — the actor has
+no actor_config row, so the dispatch CTE's candidate derivation never
+sees the row; ``unserved_queue`` — no live registered worker serves the
+queue dispatch routes the row on) are conditions NO dispatch round and
+no deadline sweep will ever touch. The third (``workflow_root_missing``)
+is NOT dispatch-invisible: the row can dispatch and be bounded-consumed
+when its actor config and effective routing queue are otherwise served;
+what cannot progress is the row's RUN — its own ``__flow__`` root row is
+gone (control-plane data corruption; restore it or quarantine the
+run — the runbook's remedy, never a worker knob)."""
 
 _stranded_jobs_cache: dict[tuple[str, StrandedReason], int] = {}
 
@@ -1517,17 +1528,24 @@ _stranded_jobs_cache: dict[tuple[str, StrandedReason], int] = {}
 def update_stranded_jobs_cache(data: Mapping[tuple[str, StrandedReason], int]) -> None:
     """Replace the stranded-jobs cache with fresh data from the leader's query.
 
-    Stranded jobs are pending/scheduled rows that can never dispatch: the
-    actor has no `actor_config` row (the dispatch CTE derives its
-    candidates from `per_actor_capacity`, which is `FROM actor_config`),
-    or the row sits on a queue no LIVE registered worker serves (dispatch
-    probes only its own subscription's queues, and a worker whose
-    last_seen_at has gone stale is not dispatching). Both shapes
-    accumulate invisibly to dispatch and the deadline sweep. Keyed by
-    ``(actor, reason)`` so the gauge says which condition held, the two
-    have different remediations (register the actor vs. subscribe a
-    worker to the queue), and a per-actor total made an operator who
-    found the actor_config row present conclude the detector lied.
+    Stranded jobs are pending/scheduled rows that cannot make progress.
+    Two reasons are DISPATCH-INVISIBLE: the actor has no `actor_config`
+    row (the dispatch CTE derives its candidates from
+    `per_actor_capacity`, which is `FROM actor_config`), or the row sits
+    on a queue no LIVE registered worker serves (dispatch probes only its
+    own subscription's queues, and a worker whose last_seen_at has gone
+    stale is not dispatching). Both shapes accumulate invisibly to
+    dispatch and the deadline sweep. The third reason,
+    `workflow_root_missing`, is a WORKFLOW-progress fault, not a
+    dispatch fault: the row's own run has lost its `__flow__` root row,
+    so the run can make no progress even though the row itself dispatches
+    and runs normally — its remedy is control-plane recovery (restore the
+    root or quarantine the run), never actor registration or a queue
+    move. Keyed by ``(actor, reason)`` so the gauge says which condition
+    held, the dispatch-invisible reasons have different remediations
+    (register the actor vs. subscribe a worker to the queue), and a
+    per-actor total made an operator who found the actor_config row
+    present conclude the detector lied.
 
     This gauge exists because a log line alone is invisible in metrics: the
     detector's WARN fires
@@ -1548,10 +1566,15 @@ def _observe_stranded_jobs(options: CallbackOptions) -> Iterable[Observation]:
 _stranded_jobs_gauge = get_meter().create_observable_gauge(
     name="taskq.jobs.stranded",
     description=(
-        "Pending/scheduled jobs that can never be dispatched, sampled by the "
+        "Pending/scheduled jobs that cannot make progress, sampled by the "
         "leader. Attributes: actor, reason ('no_actor_config', the actor "
-        "has no actor_config row; 'unserved_queue', the queue dispatch "
-        "routes the row on has no live worker subscribed)."
+        "has no actor_config row — the row is invisible to every dispatch "
+        "round; 'unserved_queue', the queue dispatch routes the row on has "
+        "no live worker subscribed — likewise never dispatched; "
+        "'workflow_root_missing', the row's own run has lost its __flow__ "
+        "root row — the row itself may dispatch and run, but the run can "
+        "make no progress and needs control-plane recovery, not a worker "
+        "knob)."
     ),
     unit="1",
     callbacks=[_observe_stranded_jobs],

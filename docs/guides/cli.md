@@ -531,10 +531,13 @@ real setting name as the remedy hint (a typo is nearly always one character
 of drift). The wrong value was in force before any worker registered, so
 this family is checked before every stored-row condition in the report.
 
-The two stranded-jobs families are the same computation the leader's
-stranded-jobs sweep runs every minute, issued here on demand: `doctor` is
-the surface an operator reaches for mid-incident, and it cannot wait on a
-leader tick. The result is per actor, bounded by the distinct-actor count,
+The two stranded-jobs families mirror ONLY the leader's stranded-jobs
+sweep's two dispatch-invisible legs (a row whose actor has no
+`actor_config` row; a row whose routing queue no live worker serves) —
+the same computation for those two legs, issued here on demand: `doctor`
+is the surface an operator reaches for mid-incident, and it cannot wait
+on a leader tick. The sweep's third, run-scoped `workflow_root_missing`
+leg is not mirrored here; the leader's tick owns it. The result is per actor, bounded by the distinct-actor count,
 never by backlog depth.
 
 When a live worker's `workers` row metadata carries a non-empty event-loop

@@ -21,6 +21,7 @@ import os
 import tempfile
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Final, cast
@@ -931,6 +932,46 @@ async def claim_view(
     )
     assert rec is not None and rec["locked_by_worker"] is not None
     return JobId(rec["locked_by_worker"]), rec["attempt"], rec["claim_epoch"]
+
+
+async def seed_ledger_claim(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    flow_id: JobId,
+    job_id: JobId,
+    step_key: str,
+    attempt: int,
+    epoch: int,
+    map_index: int | None = None,
+) -> tuple[JobId, datetime]:
+    """The claim arbiter's own row — ``_sql_ledger.LEDGER_CLAIM_SQL``'s
+    exact shape — returning ``(ledger_id, claimed_at)``: the claim's own
+    RETURNING identity (id + instant) every applied finalize threads.
+
+    ``finalize_node`` refuses an APPLIED terminal without it (the
+    ledger-truth law: a terminal applied beside the claim's still-
+    'running' history row is the split state the ledger-terminal-atomic
+    rule forbids), so a synthetic caller driving an applied finalize
+    seeds the claim row and threads what ``claim_step_ledger`` would
+    have RETURNed."""
+    row_id = new_uuid()
+    await conn.execute(
+        f'INSERT INTO "{schema}".wf_step_ledger '
+        "(id, flow_id, job_id, step_key, map_index, attempt, claim_epoch, status) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, 'running')",
+        row_id,
+        flow_id,
+        job_id,
+        step_key,
+        map_index,
+        attempt,
+        epoch,
+    )
+    claimed = await conn.fetchval(
+        f'SELECT updated_at FROM "{schema}".wf_step_ledger WHERE id = $1', row_id
+    )
+    return JobId(row_id), claimed
 
 
 async def node_state(conn: asyncpg.Connection, schema: str, node_id: JobId) -> dict[str, Any]:

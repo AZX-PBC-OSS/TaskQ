@@ -346,6 +346,14 @@ class InMemoryBackend:
         # broadcast (there is no LISTEN wire); the event is set only by a
         # test that drives the wake by hand.
         self._leader_wake_subscribers: set[asyncio.Event] = set()
+        # The emit-capacity notification seam's subscribers (the leader
+        # drain loop's event): the same subscriber-event/context-manager
+        # discipline as the leadership wake — the in-memory backend never
+        # emits it (no LISTEN wire is invented); the event is set only by
+        # a test that drives the notification by hand. Delivery is a hint
+        # only; the durable pending intents and the bounded maintenance
+        # selection remain the correctness authority.
+        self._wf_emit_capacity_subscribers: set[asyncio.Event] = set()
         self._actor_stubs: dict[str, StubFn] = {}
         self._actor_configs: dict[str, _InMemoryActorConfig] = {}
         self._actor_configs_meta: dict[str, ActorConfig] = {}
@@ -1102,6 +1110,16 @@ class InMemoryBackend:
         fallback the hint semantics promise."""
         event = asyncio.Event()
         return _SubscriberContext(event, self._leader_wake_subscribers)
+
+    def subscribe_wf_emit_capacity(self) -> AsyncContextManager[asyncio.Event]:
+        """Parity with the PG backend: subscribe to the emit-capacity
+        notification seam. Nothing in-memory emits it (no LISTEN wire is
+        invented — the sibling discipline), so the maintenance leader's
+        drain loop keeps its sweep-interval cadence; delivery is a hint
+        only, and the durable pending intents plus the bounded maintenance
+        selection remain the correctness authority."""
+        event = asyncio.Event()
+        return _SubscriberContext(event, self._wf_emit_capacity_subscribers)
 
     # ── Cancel polling ─────────────────────────────────────────────────
 

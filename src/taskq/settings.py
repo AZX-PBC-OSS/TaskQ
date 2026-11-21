@@ -1456,8 +1456,13 @@ class WorkerSettings(TaskQSettings):
         default=60.0,
         ge=1.0,
         description="TASKQ_STRANDED_JOBS_INTERVAL (seconds). Period between "
-        "stranded-jobs (pending jobs whose actor has no actor_config) "
-        "warning checks.",
+        "stranded-jobs detector sweeps — the leader's warning checks for "
+        "pending/scheduled rows that cannot make progress. The closed "
+        "reason set: no_actor_config and unserved_queue (the two "
+        "dispatch-invisible rows) and workflow_root_missing (a workflow "
+        "row whose run has lost its own __flow__ root row — control-plane "
+        "corruption; see the runbook for the restore-or-quarantine "
+        "remedy).",
         validator=_finite_float,
     )
 

@@ -69,6 +69,7 @@ from taskq.workflows._capability import (
     postgres_capability_error,
     validate_required_worker_schema,
 )
+from taskq.workflows._emit import EmitBackpressure
 from taskq.workflows._obs import (
     finish_step_span,
     record_step_deferred,
@@ -129,7 +130,12 @@ from taskq.workflows.api._runner_errors import (
     WorkflowRunError,
 )
 from taskq.workflows.api._runner_exit import ExitOps
-from taskq.workflows.api._runner_ladder import LadderOps, is_infra_fault
+from taskq.workflows.api._runner_ladder import (
+    LadderOps,
+    find_embedded_exception,
+    is_deterministic_authoring_failure,
+    is_infra_fault,
+)
 from taskq.workflows.api._runner_loop import LoopOps
 from taskq.workflows.api._sql_runner import (
     CLAIMABLE_NODES_SQL_TEMPLATE,
@@ -327,6 +333,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # it from the row; this echo only spares the dev loop a per-node read.
         # ``None`` = no override declared.
         self._run_priority: int | None = None
+        # Existing compiled declarations gate the bounded run's §4.1
+        # terminal/park event rule. A source-free or explicitly unbounded
+        # workflow performs no per-terminal probe SQL and pays no feature
+        # tax; the durable exact-marker sweep remains the completeness
+        # authority for any flow a missed seat could ever strand.
+        self._emit_capacity = getattr(compiled, "max_in_flight", None) is not None and any(
+            getattr(node, "kind", None) == "chain_source" for node in compiled.nodes.values()
+        )
         # the worker settings' value the fleet door threads
         # (``_worker_execution.execute_flow_job`` ←
         # ``run._dispatch_flow_job``'s deps.settings). The row's own stamp
@@ -517,6 +531,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # cohort never splits (the children riding the declarations
                     # while the root says 6 would split the fork's cohort).
                     self._run_priority = await self._adopted_run_priority(conn, claim.flow_id)
+                if self._emit_capacity and claim.created:
+                    from taskq.workflows._emit import ensure_emit_capacity
+
+                    # The bounded run's immutable bound record is stamped in
+                    # the create's own transaction (§2.1: the run's compiled
+                    # declaration stamps it at create; unbounded runs have
+                    # neither stamp nor intent row and pay no feature tax).
+                    await ensure_emit_capacity(
+                        conn,
+                        self.wsql,
+                        flow_id=claim.flow_id,
+                        bound=int(self.compiled.max_in_flight),
+                    )
         except asyncpg.exceptions.UndefinedTableError as exc:
             # The first contact's translation: the runner door on an
             # unmigrated schema raises the same typed
@@ -752,8 +779,39 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         heal + the outbox drain) and the flow's WORK is executed by the
         fleet's workers through the queue-routed dispatch (the
         worker-hosted door). The in-process body execution — the
-        dev-loop driver — is the ``execute=True`` default, unchanged."""
+        dev-loop driver — is the ``execute=True`` default, unchanged.
+
+        Each new runner drive performs ONE initial flow backfill (§5.3's
+        ``B`` term): the same promotion primitive, once, before the first
+        tick — a crashed predecessor's committed but undrained intent is
+        observed from real rows, never from elapsed time."""
         await self._refuse_guarded_direct_run(flow_id)
+        if self._emit_capacity:
+            from taskq.workflows._emit import (
+                EmitCapacityCorruptionError,
+                ensure_emit_capacity,
+                wake_emit_backpressure,
+            )
+
+            # THE ADOPTION (§2.1): an existing active run from an older
+            # binary may lack its capacity record; this drive's initial
+            # backfill is the first new-binary bounded claim's doorway —
+            # stamp the record once from the validated compiled bound,
+            # under the live root's own lock, and read the stored bound
+            # back (a mismatch is corruption, never an update). A record
+            # the run already has is untouched (the stamp is a no-op
+            # probe); the drain below then finds its intent row.
+            async with self.pool.acquire() as conn, conn.transaction():
+                root_id = await conn.fetchval(self.wsql.emit_root_lock, flow_id)
+                if root_id is None:
+                    raise EmitCapacityCorruptionError(
+                        f"the bounded run {flow_id} has no live root row at "
+                        "its adoption — the __flow__ row is missing (fail-closed)"
+                    )
+                await ensure_emit_capacity(
+                    conn, self.wsql, flow_id=flow_id, bound=int(self.compiled.max_in_flight)
+                )
+            await wake_emit_backpressure(self.pool, self.wsql, flow_id=flow_id)
         for _ in range(max_ticks):
             if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
                 return "terminal"
@@ -809,6 +867,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # per tick.
         await sweep_due_timers(self.pool, schema=self.schema, drain=True)
         return ran
+
+    async def _drain_created_intent(self, flow_id: JobId, intent_created: bool) -> None:
+        """The terminal route's own post-COMMIT drain trigger (§5.3): the
+        one-bit ``intent_created`` result calls the same promotion primitive
+        once, after the producing transaction's acknowledged commit. A drain
+        error propagates — the already committed terminal remains intact,
+        and re-entering :meth:`drive` reconciles."""
+        if not intent_created:
+            return
+        from taskq.workflows._emit import wake_emit_backpressure
+
+        await wake_emit_backpressure(self.pool, self.wsql, flow_id=flow_id)
 
     async def _drive_descendants(self, flow_id: JobId, *, execute: bool) -> bool:
         """The descendant flows' one claim pass (the dev-loop driver's
@@ -932,6 +1002,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     step_key=row["step_key"],
                     map_index=row["map_index"],
                     attempt=int(claimed_row["attempt"]),
+                    claim_epoch=int(claimed_row["claim_epoch"]),
                 )
                 ledger_id = claim.ledger_id
                 ledger_claimed_at = claim.claimed_at
@@ -1001,6 +1072,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     step_key=row["step_key"],
                     map_index=row["map_index"],
                     attempt=int(claimed_row["attempt"]),
+                    claim_epoch=int(claimed_row["claim_epoch"]),
                 )
                 ledger_id = claim.ledger_id
                 ledger_claimed_at = claim.claimed_at
@@ -1132,6 +1204,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 step_key=node_key,
                 map_index=row["map_index"],
                 attempt=attempt,
+                claim_epoch=claim_epoch,
             )
         return await self._execute_claimed(
             flow_id,
@@ -1163,10 +1236,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         worker-hosted fleet-claimed door (:meth:`run_fleet_claimed_step`)
         both land here — one execution semantics, the machinery never
         forked, the drivers differing only in WHO CLAIMED. ``claim_epoch``
-        is the fence epoch the finalize/emit fences carry: the runner's
-        own claim stamps 0; a fleet-claimed row carries its dispatch
-        claim's epoch. Returns the attempt's outcome label (the caller's
-        log line — the ROW is the truth, this is the record's echo).
+        is the fence epoch the finalize/emit fences carry: the direct
+        driver's own claim grants the NEXT epoch atomically with its
+        attempt (the CAS's ``claim_epoch + 1``); a fleet-claimed row
+        carries its dispatch claim's granted epoch. Returns the attempt's
+        outcome label (the caller's log line — the ROW is the truth, this
+        is the record's echo).
 
         ``ledger_claimed_at`` is the ledger claim's own RETURNING instant
         (the re-mint guard's discriminator) — threaded to the
@@ -1191,6 +1266,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         law. Telemetry off → the attributes are never built (the
         vanilla's gated-allocation law) and the span is the
         non-recording no-op."""
+        if self._emit_capacity and getattr(node, "kind", None) == "chain_source":
+            from taskq.workflows._emit import bump_emit_census
+
+            # The source body's claim entry (the §4.2 claim family's unit:
+            # P + K + S + J + C — every genuine claim of the chain source's
+            # row, including the post-park resumption and the genuine
+            # failure's J/C re-claims).
+            bump_emit_census("source_body_claims")
         with safe_start_span(
             step_span_name(row["step_key"]),
             kind=SpanKind.INTERNAL,
@@ -1482,7 +1565,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # skipped-with-the-record.
                     exit_value = cast("Exit[object]", outcome_value)  # pyright: ignore[reportUnknownArgumentType]  # Why: the body's object-typed return — the isinstance guard is the runtime shape check; the sentinel's payload is the walk's boundary.
                     await self._finalize_exit(
-                        flow_id, row, attempt, node, exit_value, claim_epoch=claim_epoch
+                        flow_id,
+                        row,
+                        attempt,
+                        node,
+                        exit_value,
+                        claim_epoch=claim_epoch,
+                        ledger_id=ledger_id,
+                        ledger_claimed_at=ledger_claimed_at,
                     )
                     return "succeeded"
                 if node is not None and node.map_arms is not None:
@@ -1504,7 +1594,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                             node=row["step_key"],
                             outcome=repr(outcome_value)[:200],
                         )
-                        await finalize_node(
+                        router_failed = await finalize_node(
                             self.pool,
                             self.wsql,
                             flow_id=flow_id,
@@ -1519,7 +1609,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                             map_index=row["map_index"],
                             ledger_id=ledger_id,
                             ledger_claimed_at=ledger_claimed_at,
+                            emit_capacity=self._emit_capacity,
                         )
+                        await self._drain_created_intent(flow_id, router_failed.intent_created)
                         return "succeeded"
                 result = encode_result(outcome_value)
         except NodeHeldError as held:
@@ -1538,6 +1630,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             )
             record_step_held(trace.get_current_span(), held.hold_id, held.signal_names)
             return "held"
+        except EmitBackpressure as exc:
+            # Ordinary whole-page capacity is control flow, never an error
+            # ladder. The dedicated park commits before the one fresh recheck;
+            # cancellation still uses the existing claim-fenced terminal door.
+            await emitter.aclose()
+            return await self._defer_step(
+                flow_id,
+                row,
+                attempt,
+                ledger_id,
+                exc,
+                claim_epoch=claim_epoch,
+                ledger_claimed_at=ledger_claimed_at,
+            )
         except (Snooze, RetryAfter) as exc:
             # the body's typed control-flow signals re-schedule the node at the
             # delay — the attempt refunded (never burned: a deferral did not
@@ -1593,6 +1699,30 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # the final flush is bounded and best-effort — it can cost
             # freshness, never the ladder's correctness.
             await emitter.aclose()
+            # THE EMBEDDED CONTROL SIGNAL (R3/A9.3): a grouped/wrapped
+            # deterministic authoring failure keeps its N2 precedence (the
+            # ladder's own classification below re-finds it), and otherwise
+            # an `EmitBackpressure` leaf carried by an `ExceptionGroup` or
+            # an explicit `__cause__` is the SAME control signal as the
+            # direct catch above — the park door receives the ACTUAL leaf
+            # object (its validated page/bound/outstanding facts), the
+            # exact same close/park/post-commit path, never the generic
+            # ladder's three-attempt burn of the identical page. An
+            # exception with no such leaf follows the old generic route.
+            from taskq.workflows._emit import EmitBackpressure as _EmitBackpressure
+
+            if not is_deterministic_authoring_failure(exc):
+                embedded_bp = find_embedded_exception(exc, (_EmitBackpressure,))
+                if embedded_bp is not None:
+                    return await self._defer_step(
+                        flow_id,
+                        row,
+                        attempt,
+                        ledger_id,
+                        embedded_bp,
+                        claim_epoch=claim_epoch,
+                        ledger_claimed_at=ledger_claimed_at,
+                    )
             route = await self._ladder_or_fail(
                 flow_id,
                 row,
@@ -2072,7 +2202,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             map_index=row["map_index"],
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            emit_capacity=self._emit_capacity,
         )
+        await self._drain_created_intent(flow_id, final.intent_created)
         # the finalize seam's additive write, after the two-tx finalize
         # returned (the projection is never inside the finalize's transactions
         # — the zero-finalize-changes probe pins the terminal-mark statement's
@@ -2673,7 +2805,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 step_key=row["step_key"],
                 map_index=row["map_index"],
             )
-        await finalize_node(
+        skipped_final = await finalize_node(
             self.pool,
             self.wsql,
             flow_id=flow_id,
@@ -2687,7 +2819,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             map_index=row["map_index"],
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            emit_capacity=self._emit_capacity,
         )
+        await self._drain_created_intent(flow_id, skipped_final.intent_created)
         await self._project_auto(
             flow_id,
             JobId(row["id"]),

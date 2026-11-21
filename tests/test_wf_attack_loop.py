@@ -160,13 +160,20 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
         # iteration 0's terminal write commits, then the backend dies before the
 
     # advance. Once only.
+    from taskq.workflows.ledger import LedgerClaim
+
     real_record = _runner_loop.LoopOps._record_iteration_terminal
     kills = {"n": 0}
 
     async def killing_record(
-        self: object, flow_id: object, iter_key: str, attempt: int, outcome: object
+        self: object,
+        flow_id: object,
+        iter_key: str,
+        attempt: int,
+        outcome: object,
+        iteration_claim: LedgerClaim | None = None,
     ) -> None:
-        await real_record(self, flow_id, iter_key, attempt, outcome)
+        await real_record(self, flow_id, iter_key, attempt, outcome, iteration_claim)
         kills["n"] += 1
         if kills["n"] == 1:
             raise asyncpg.exceptions.ConnectionDoesNotExistError(
@@ -823,13 +830,20 @@ async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly
     def _wf() -> Promise[object]:
         return build(loop("counter", counting_body, initial=Counter(acc=0), max_iterations=5))
 
+    from taskq.workflows.ledger import LedgerClaim
+
     real_record = _runner_loop.LoopOps._record_iteration_terminal
     kills = {"n": 0}
 
     async def killing_record(
-        self: object, flow_id: object, iter_key: str, attempt: int, outcome: object
+        self: object,
+        flow_id: object,
+        iter_key: str,
+        attempt: int,
+        outcome: object,
+        iteration_claim: LedgerClaim | None = None,
     ) -> None:
-        await real_record(self, flow_id, iter_key, attempt, outcome)
+        await real_record(self, flow_id, iter_key, attempt, outcome, iteration_claim)
         kills["n"] += 1
         if kills["n"] == 1:
             raise asyncpg.exceptions.ConnectionDoesNotExistError(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
+import time
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Literal, cast
@@ -90,6 +91,7 @@ async def _drive(
     schema: str,
     *,
     source_policy: ExecutionPolicy | None = None,
+    expect_deferral: bool = False,
 ) -> tuple[JobId, JobId, JobId]:
     suffix = new_uuid().hex
     app = WorkflowApp()
@@ -108,7 +110,50 @@ async def _drive(
 
     runner = FlowRunner(app.get(name), pool, schema)
     claim = await runner.create_flow()
-    assert await runner.drive(claim.flow_id, tick=0.001, max_ticks=1000) == "terminal"
+    # The deferral's own floor is 1s of DB clock; a bare tick budget races
+    # it (1000 x 1ms is the floor itself — the run died at max_ticks before
+    # the due instant's promotion sweep re-armed it). The wait is the
+    # TERMINAL FACT, short-polled on the row itself; the bound is a FAILURE
+    # TIMEOUT on that fact — grounded at five times the measured service
+    # (the 1s floor + the observed ~2s drive service), never the mechanism.
+    started = time.monotonic()
+    failure_timeout = started + 15.0
+
+    async def _root_status() -> str | None:
+        value = await pool.fetchval(
+            f'SELECT status::text FROM "{schema}".jobs WHERE id = $1',  # noqa: S608 — validated fixture schema
+            claim.flow_id,
+        )
+        return str(value) if value is not None else None
+
+    producing_verdict: str | None = None
+    while time.monotonic() < failure_timeout:
+        # THE PRODUCING CALL'S OWN VERDICT IS THE PIN (§8.5 disposition 5,
+        # control 13): the drive whose own service terminalizes the run
+        # returns "terminal" from its loop-top (it reads the same row the
+        # root-status read does) — captured and asserted HERE, never
+        # replaced by a later idempotence call. A drive that returned
+        # max_ticks over a run its own bound terminalized, or whose
+        # terminal fact only a LATER call reports, reds this pin.
+        producing_verdict = await runner.drive(claim.flow_id, tick=0.05, max_ticks=20)
+        if producing_verdict == "terminal":
+            break
+    assert producing_verdict == "terminal", (
+        f"the producing drive's own verdict must be 'terminal', got {producing_verdict!r}"
+    )
+    assert await _root_status() in ("succeeded", "failed", "cancelled"), (
+        "the policy run's terminal fact never arrived within the bounded failure timeout"
+    )
+    if expect_deferral:
+        # THE DEFERRING CALLER'S OWN PIN: the run's wall includes the 1s
+        # floor (a run that finished before it skipped the deferral's own
+        # wait — the floor is the fact that test pins). Non-deferring
+        # flows finish in sub-second service and assert nothing here.
+        elapsed = time.monotonic() - started
+        assert elapsed >= 1.0, (
+            f"the deferral floor must be honoured (the run finished in {elapsed:.2f}s — "
+            "before the 1s floor)"
+        )
     rows = await pool.fetch(
         f'SELECT id, step_key, status::text AS status, error_class, error_message FROM "{schema}".jobs '  # noqa: S608 — validated fixture schema
         "WHERE id = $1 OR (metadata->>'flow_id')::uuid = $1",
@@ -434,6 +479,7 @@ async def test_non_consuming_counter_is_bounded_and_never_consumes_attempt_budge
             ),
             wf_pool,
             wf_schema,
+            expect_deferral=True,
         )
     except Exception as exc:
         raise AssertionError(
@@ -458,6 +504,21 @@ async def test_non_consuming_counter_is_bounded_and_never_consumes_attempt_budge
         flow_id,
     )
     assert failed == 1  # the one terminal CAS; advertised waits had no failed ledger
+    # Each non-consuming deferral's own claim records its own 'awaited'
+    # row (the epoch arbiter's per-claim history); the terminal is the
+    # latest epoch's own row beside them — the EXACT history is
+    # (awaited, awaited, failed) in epoch order.
+    history = await wf_pool.fetch(
+        f'SELECT status, claim_epoch FROM "{wf_schema}".wf_step_ledger '  # noqa: S608
+        "WHERE flow_id = $1 AND step_key = 'work' "
+        "ORDER BY attempt, claim_epoch, created_at, id",
+        flow_id,
+    )
+    assert [(r["status"], r["claim_epoch"]) for r in history] == [
+        ("awaited", 1),
+        ("awaited", 2),
+        ("failed", 3),
+    ], [tuple(r) for r in history]
     print(
         "POLICY_NON_CONSUMING_ROWS",
         {

@@ -252,8 +252,10 @@ async def _ledger_rows(
     pool: asyncpg.Pool, schema: str, flow_id: str, step_key: str
 ) -> list[asyncpg.Record]:
     return await pool.fetch(
-        f'SELECT attempt, status, error_class, error_message FROM "{schema}".wf_step_ledger '
-        f"WHERE flow_id = $1 AND step_key = $2 ORDER BY attempt",
+        f"SELECT attempt, claim_epoch, status, error_class, error_message "
+        f'FROM "{schema}".wf_step_ledger '
+        f"WHERE flow_id = $1 AND step_key = $2 "
+        "ORDER BY attempt, claim_epoch, created_at, id",
         uuid.UUID(flow_id),
         step_key,
     )
@@ -1085,6 +1087,7 @@ async def test_current_awaited_claim_keeps_deadline_row_and_ledger_atomic(
         step_key="solo",
         map_index=None,
         attempt=int(seeded["attempt"]),
+        claim_epoch=int(seeded["claim_epoch"]),
     )
     await mark_awaited(clean_pg_conn, schema, claim.ledger_id)
     node = compiled.nodes.get("solo")
@@ -1158,6 +1161,7 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
         step_key="solo",
         map_index=None,
         attempt=int(seeded["attempt"]),
+        claim_epoch=int(seeded["claim_epoch"]),
     )
     assert w1_claim.claimed_at is not None
     # the row re-pends (the reclaim's shape).
@@ -1172,7 +1176,12 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
         render_sql(NODE_CLAIM_SQL_TEMPLATE, schema), node_id, w2
     )
     assert w2_attempt is not None, "W2's re-claim must grant the work"
-    # W2's ledger claim (the live claimant's own row).
+    # W2's ledger claim (the live claimant's own row, the re-claim's
+    # own granted epoch — the node row's current epoch).
+    w2_seeded = await clean_pg_conn.fetchrow(
+        f'SELECT claim_epoch FROM "{schema}".jobs WHERE id = $1', node_id
+    )
+    assert w2_seeded is not None
     await claim_step_ledger(
         clean_pg_conn,
         runner.wsql,
@@ -1181,6 +1190,7 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
         step_key="solo",
         map_index=None,
         attempt=int(w2_attempt),
+        claim_epoch=int(w2_seeded["claim_epoch"]),
     )
 
     # W1'S timer fires (the zombie's deadline disposition, its own binds).
@@ -1232,16 +1242,17 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """The burn's guard (the re-mint rig): the refund cycle re-mints the
-    ordinal — the arbiter re-use hands a LIVE winner the same ledger row
-    a zombie once claimed (the row's instant moves to the winner). The
-    zombie's deadline disposition — the fence legs refuse at the node
-    row, the zombie face's fence-by-id keys the STALE instant — can
-    never mark the winner's row: no 'failed' stamp, no 'fenced' stamp;
-    the winner's ledger row survives live (the burn's own
-    LEDGER_TERMINAL_BY_ID re-mint guard: the failed stamp cannot land on
-    a re-minted live winner's ledger row)."""
-    from tests._wf_fixtures import seed_flow, seed_running_node
+    """The burn's guard (the re-mint rig at the REAL refund shape): the
+    capacity park refunds the ordinal, the wake + the re-claim CAS grant
+    the NEXT epoch, and the winner's ledger claim records its OWN row —
+    the parked attempt's 'awaited' history survives beside it. The
+    zombie's (the parked attempt's worker's) deadline disposition — the
+    fence legs refuse at the moved-on node row, the zombie face's
+    fence-by-id keys the zombie's OWN history row — can never mark the
+    winner's row: no 'failed' stamp, no 'fenced' stamp; the winner's
+    ledger row survives live (the burn's own LEDGER_TERMINAL_BY_ID
+    id+instant guard)."""
+    from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
 
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("hang_flow_declared")  # type: ignore[attr-defined]
@@ -1254,11 +1265,12 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
     assert seeded is not None and seeded["locked_by_worker"] is not None
     w1 = JobId(seeded["locked_by_worker"])
     runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=w1)
+    from taskq.workflows._emit import EmitBackpressure, wake_emit_backpressure
+    from taskq.workflows.api._runner_defer import defer_row_law
+    from taskq.workflows.api._sql_runner import NODE_CLAIM_SQL_TEMPLATE, render_sql
     from taskq.workflows.ledger import claim_step_ledger
 
-    # W1's ledger claim — then the re-mint (the refund cycle's own face:
-    # a later claimant re-claims the same ordinal, the arbiter re-use
-    # hands the same row to the live winner W2, the instant re-stamps).
+    # W1's ledger claim — the parked attempt's own row (epoch 0).
     w1_claim = await claim_step_ledger(
         clean_pg_conn,
         runner.wsql,
@@ -1267,8 +1279,38 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
         step_key="solo",
         map_index=None,
         attempt=int(seeded["attempt"]),
+        claim_epoch=int(seeded["claim_epoch"]),
     )
     assert w1_claim.claimed_at is not None
+    # THE REAL REFUND/REMINT: the park (the row's own claimant), the
+    # promotion, the re-claim CAS at the next epoch, and W2's OWN ledger row.
+    row_worker, row_attempt, row_epoch = await claim_view(clean_pg_conn, schema, node_id)
+    assert (int(row_attempt), int(row_epoch)) == (1, 0)
+    park_verdict = await defer_row_law(
+        module_pg_pool,
+        runner.wsql,
+        job_id=node_id,
+        worker_id=row_worker,
+        attempt=int(row_attempt),
+        claim_epoch=int(row_epoch),
+        disposition="emit_backpressure",
+        delay=timedelta(0),
+        signal_name="EmitBackpressure",
+        ledger_id=w1_claim.ledger_id,
+        ledger_claimed_at=w1_claim.claimed_at,
+        backpressure=EmitBackpressure(page_width=1, bound=2, outstanding=1),
+        source_logical_attempt=1,
+        flow_id=flow_id,
+    )
+    assert park_verdict.verdict == "deferred", park_verdict
+    woken = await wake_emit_backpressure(module_pg_pool, runner.wsql, flow_id=flow_id)
+    assert woken.promoted == 1, "the parked source must promote for the re-claim"
+    w2 = JobId(new_uuid())
+    reclaimed = await clean_pg_conn.fetchrow(
+        render_sql(NODE_CLAIM_SQL_TEMPLATE, schema), node_id, w2
+    )
+    assert reclaimed is not None, "the promoted row is due for the winner's re-claim"
+    assert (int(reclaimed["attempt"]), int(reclaimed["claim_epoch"])) == (1, 1), dict(reclaimed)
     winner_claim = await claim_step_ledger(
         clean_pg_conn,
         runner.wsql,
@@ -1276,27 +1318,20 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
         job_id=node_id,
         step_key="solo",
         map_index=None,
-        attempt=int(seeded["attempt"]),
+        attempt=int(reclaimed["attempt"]),
+        claim_epoch=int(reclaimed["claim_epoch"]),
     )
-    assert winner_claim.ledger_id == w1_claim.ledger_id, (
-        "the re-mint re-uses the SAME arbiter row — the winner is LIVE on the zombie's row"
+    assert winner_claim.ledger_id != w1_claim.ledger_id, (
+        "the re-mint records its OWN ledger row (the epoch arbiter's "
+        "per-claim history) — the parked attempt's 'awaited' record is "
+        "never overwritten by the resumed claim"
     )
     assert winner_claim.claimed_at is not None
-    assert w1_claim.claimed_at is not None
-    assert winner_claim.claimed_at > w1_claim.claimed_at, (
-        "the re-mint re-stamped the claim instant (the discriminator moved to the winner)"
-    )
-    # the winner W2 is live on the row at its own identity (the re-mint's
-    # own shape: the node row carries W2's claim).
-    w2 = JobId(new_uuid())
-    await clean_pg_conn.execute(
-        f'UPDATE "{schema}".jobs SET locked_by_worker = $2, claim_epoch = 7, '
-        "lock_expires_at = now() + interval '90 seconds' WHERE id = $1",
-        node_id,
-        w2,
-    )
+    # the winner W2 is live on the row at its own identity (the re-claim's
+    # own granted pair, the CAS's own stamp).
 
-    # W1'S timer fires (the zombie's deadline disposition).
+    # W1'S timer fires (the parked attempt's worker's deadline disposition —
+    # its OWN epoch, its OWN ledger row id + instant).
     node = compiled.nodes.get("solo")
     label = await runner._deadline_disposition(  # pyright: ignore[reportPrivateUsage]
         flow_id,
@@ -1308,17 +1343,20 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
         ledger_claimed_at=w1_claim.claimed_at,
     )
     assert label == "fenced"
-    # the winner's row stays live at both faces: the node row never flipped,
-    # the re-minted ledger row never stamped (no 'failed' burn, no 'fenced'
-    # record — the stale instant refuses both).
+    # BOTH rows tell the truth: the zombie's OWN history row is fenced by
+    # its own id+instant; the winner's row stays live at both faces — the
+    # node row never flipped, the winner's ledger row never stamped (no
+    # 'failed' burn, no 'fenced' record).
     row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
     assert row["status"] == "running", (
         f"the zombie's deadline must never flip the winner's live row, got {row['status']!r}"
     )
     ledger = await _ledger_rows(module_pg_pool, schema, str(flow_id), "solo")
-    assert len(ledger) == 1, "the re-mint never grew the arbiter"
-    assert ledger[0]["status"] == "running", (
-        f"THE BURN'S GUARD: a re-minted live winner's ledger row must "
-        f"survive the zombie's disposition (no failed stamp, no fenced "
-        f"record), got {ledger[0]['status']!r}"
+    assert [(r["claim_epoch"], r["status"]) for r in ledger] == [
+        (0, "fenced"),
+        (1, "running"),
+    ], (
+        f"THE BURN'S GUARD: the zombie's own history row fences; the "
+        f"winner's row survives live (no failed stamp, no fenced record), "
+        f"got {ledger}"
     )

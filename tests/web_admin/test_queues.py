@@ -389,9 +389,12 @@ def test_queue_detail_queries_select_retry_kind() -> None:
 #
 # The list view carries the leader-sampled pressure signals per queue:
 # live workers (the queue-depth sampler's read over workers_last_seen_idx)
-# and stranded pending/scheduled rows (the stranded-jobs detector's shape,
-# grouped by routing queue). Both are parameterized reads over existing
-# partial indexes with the batches page's 200-row cap.
+# and stranded pending/scheduled rows (the stranded-jobs detector's TWO
+# dispatch-invisible legs only — no actor_config row, an unserved routing
+# queue — grouped by routing queue; the detector's run-scoped
+# workflow_root_missing leg is NOT counted here). Both are parameterized
+# reads over existing partial indexes with the batches page's 200-row
+# cap.
 
 
 async def _seed_pending_job(

@@ -148,13 +148,15 @@ not provide isolation benefits.
 ### Constructor
 
 ```python no-exec — not executed: excerpt of a larger listing (does not stand alone)
-JobsClient(
-    backend: Backend,
-    *,
-    clock: Clock | None = None,
-    settings: TaskQSettings | None = None,
-    capacity_cache_ttl: float = 5.0,
-)
+class JobsClient:
+    def __init__(
+        self,
+        backend: Backend,
+        *,
+        clock: Clock | None = None,
+        settings: TaskQSettings | None = None,
+        capacity_cache_ttl: float = 5.0,
+    ) -> None: ...
 ```
 
 | Parameter | Type | Default | Description |
@@ -170,7 +172,7 @@ JobsClient(
 ### `invalidate_actor_capacity_cache()`
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
-def invalidate_actor_capacity_cache(self) -> None
+def invalidate_actor_capacity_cache(self) -> None: ...
 ```
 
 Drops the cached `actor_config.max_pending` snapshot immediately, so the next

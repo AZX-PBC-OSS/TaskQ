@@ -448,6 +448,30 @@ ignore = [
 # binding. S311: random module used for jitter in the deadlock-retry backoff
 # (the hardening H7 cure), not crypto.
 "src/taskq/workflows/_sql.py" = ["S608"]
+# The folded #718 statement constants' shared renderers (the park
+# predicate's alias substitution is the module's own constant text) and the
+# catalog preflight's schema-identifier reads: the schema name is validated
+# against _IDENT_RE at the bundle's construction; every caller-controlled
+# value uses $N parameter binding.
+"src/taskq/workflows/_sql_finalize.py" = ["S608"]
+"src/taskq/workflows/_capability.py" = ["S608"]
+# The #718 controls: the pre-registration's variables mirror the contract's
+# lane-table symbols (P/S/R/B/J/C) verbatim — the counts and labels may not
+# change between the print and the assertion; the others' statement
+# constants are the contract's own marker shapes (schema identifiers
+# validated upstream, values $-bound).
+"tests/test_wf_counters_preregistered.py" = ["N806", "S608"]
+"tests/test_wf_reservation_key_fate.py" = ["S608"]
+"tests/test_wf_not_draining_refusal.py" = ["S608"]
+"tests/test_wf_emit_capacity_controls.py" = ["S608"]
+"tests/test_wf_cancel_park_races.py" = ["S608"]
+"tests/test_wf_cancel_refund_representation_matrix.py" = ["S608"]
+"tests/test_wf_loop_carry_none_seed.py" = ["S608"]
+"tests/test_wf_migration_deadlock_control.py" = ["S608"]
+"tests/test_wf_occupancy_and_latency.py" = ["S608"]
+"tests/test_wf_guard_overhead_control.py" = ["S608"]
+"tests/test_wf_park_envelope_control.py" = ["S608"]
+"tests/system_e2e/test_p2_emit_saturation.py" = ["S608"]
 "src/taskq/workflows/_sql_status.py" = ["S608"]
 "src/taskq/workflows/_progress_read.py" = ["S608"]
 "src/taskq/workflows/engine.py" = ["S608", "S311", "SIM117"]
@@ -823,7 +847,11 @@ extraPaths = ["."]
 # worker/, and the auth/aad/aws/vault boundaries.
 [[tool.pyright.executionEnvironments]]
 root = "."
-extraPaths = ["."]
+# `src` is the package root (the src-layout's own import root): the venv's
+# editable .pth binds `taskq` to whichever tree last installed it, so a
+# shared venv resolves another worktree's package without this — the
+# absolute `taskq.*` imports must bind to THIS tree's src.
+extraPaths = [".", "src"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -975,6 +1003,13 @@ dev = [
     "hypothesis>=6.157.1",
     "itsdangerous>=2.2.0",
     "jsonschema>=4.26.0",
+    # The stranded-reason vocabulary invariant's markdown units are driven
+    # by markdown-it-py's block token/line map (the tests import it
+    # directly, so it is declared here rather than ridden transitively);
+    # the floor matches the locked version the scanner's spans are
+    # derived from. The docs BUILD's parser stays Python-Markdown via
+    # mkdocs below — that parser exposes no line map to drive spans from.
+    "markdown-it-py>=4.2.0",
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=1.0.6",

@@ -4,10 +4,11 @@ Spawned as ``sys.executable -m tests.system_e2e._worker_entry`` with the
 worker's ``TASKQ_*`` environment set by the spawning test. Loads
 ``WorkerSettings`` from that environment exactly the way the production
 entry points do and runs the production ``_main`` bootstrap against
-the shared actor registry. Pure glue: deliberately no logging setup
-(the harness pipes stdout/stderr and reads them only at exit - a
-configured, chatty worker would fill the 64K pipe buffer and block
-mid-write, the not-settled-at-load shape), no business logic, no
+the shared actor registry. Pure glue: deliberately no logging setup of
+its own (the production bootstrap configures the log surface it needs;
+the harness tees the child's stderr continuously and sends its stdout
+to DEVNULL - a spawn path that leaves a pipe undrained is the wedge
+class the harness exists to prevent), no business logic, no
 per-test seams - the scenario injects its chaos from the outside
 (signals, kills, SQL, the broker). The post-drain SIGTERM guard is the
 entrypoint pattern every worker exit shares (the taskq worker command,

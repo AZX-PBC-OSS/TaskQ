@@ -63,7 +63,14 @@ from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sweep import drain_outbox, sweep_join_rederive
 from taskq.workflows.definitions import StepBody, WorkflowDef, get_registry
 from taskq.workflows.engine import finalize_node
-from tests._wf_fixtures import claim_view, seed_edge, seed_flow, seed_join, seed_running_node
+from tests._wf_fixtures import (
+    claim_view,
+    seed_edge,
+    seed_flow,
+    seed_join,
+    seed_ledger_claim,
+    seed_running_node,
+)
 
 #: The attack definition's registered name — the flow root's stamp and the
 #: subprocess's registration must agree (the fleet convention: the same
@@ -162,6 +169,9 @@ async def test_attack_sweep_fire_skips_the_reducer_body(
     join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
+    parent_ledger, parent_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=parent, step_key="a", attempt=1, epoch=0
+    )
 
     # registered under the name the flow root stamps — the convention every
     # worker process follows (the registry content is schema-level by
@@ -198,6 +208,8 @@ async def test_attack_sweep_fire_skips_the_reducer_body(
             claim_epoch=0,
             outcome="succeeded",
             reducers={"join": parent_body},
+            ledger_id=parent_ledger,
+            ledger_claimed_at=parent_claimed_at,
         )
     monkeypatch.undo()
 
@@ -321,6 +333,9 @@ async def test_attack_drain_consumer_payload_is_the_envelope(
         parent,
         worker,
     )
+    parent_ledger, parent_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=parent, step_key="a", attempt=1, epoch=0
+    )
     result = await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -331,6 +346,8 @@ async def test_attack_drain_consumer_payload_is_the_envelope(
         attempt=1,
         claim_epoch=0,
         outcome="succeeded",
+        ledger_id=parent_ledger,
+        ledger_claimed_at=parent_claimed_at,
     )
     assert result.fired
     assert await drain_outbox(module_pg_pool, wf_sql) == 1

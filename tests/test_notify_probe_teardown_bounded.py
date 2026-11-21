@@ -44,6 +44,7 @@ from taskq.testing.assertions import wait_for_condition
 from taskq.worker.notify import (
     _active_listeners,
     _health_check_loop,
+    _NotifyEntry,
     notify_listener_loop,
 )
 
@@ -111,19 +112,29 @@ def _make_backend() -> PostgresBackend:
     )
 
 
-def _make_channels(backend: PostgresBackend) -> list[tuple[str, Any]]:
-    from taskq.constants import events_channel, wake_channel, worker_channel
+def _make_channels(backend: PostgresBackend) -> list[_NotifyEntry]:
+    from taskq.constants import (
+        events_channel,
+        leader_wake_channel,
+        wake_channel,
+        worker_channel,
+    )
     from taskq.worker.notify import (
         _make_callback,
         _make_events_callback,
+        _make_leader_wake_callback,
         _make_worker_events_callback,
+        _NotifyEntry,
     )
 
     schema = "taskq_test"
     return [
-        (wake_channel(schema), _make_callback(backend)),
-        (events_channel(schema), _make_events_callback(backend, _WORKER_ID)),
-        (worker_channel(schema, str(_WORKER_ID)), _make_worker_events_callback(backend)),
+        _NotifyEntry(wake_channel(schema), _make_callback(backend), reconnect_backfill=True),
+        _NotifyEntry(events_channel(schema), _make_events_callback(backend, _WORKER_ID)),
+        _NotifyEntry(
+            worker_channel(schema, str(_WORKER_ID)), _make_worker_events_callback(backend)
+        ),
+        _NotifyEntry(leader_wake_channel(schema), _make_leader_wake_callback(backend, _WORKER_ID)),
     ]
 
 
@@ -294,7 +305,7 @@ async def test_listener_teardown_unlisten_hang_is_bounded() -> None:
             "wedged notify conn stalls the listener's shutdown and the "
             "ShutdownWatchdog force-exits the process for it."
         )
-    assert len(remove_calls) == 4, (
+    assert len(remove_calls) == 5, (
         f"teardown must attempt UNLISTEN for every channel; got {remove_calls!r}"
     )
     assert not _active_listeners, "the teardown must complete its bookkeeping"

@@ -64,6 +64,9 @@ async def test_stranded_jobs_loop_logs_once_per_actor() -> None:
                 "no_actor_config_cnt": 5,
                 "unserved_queue_cnt": 0,
                 "unserved_queues": [],
+                # The third leg's own keys (the detector SQL's new columns).
+                "workflow_root_missing_cnt": 0,
+                "root_missing_flow_ids": [],
             }
         ]
     )

@@ -30,6 +30,8 @@ constant to make a test pass.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import asyncpg
 import pytest
 
@@ -113,7 +115,14 @@ async def test_pin_child_driven_join_fires_exactly_once(
     child-driven join whose count double-fires) reds on the PK."""
     from taskq.workflows._types import NodeSpec
     from taskq.workflows.engine import insert_node
-    from tests._wf_fixtures import claim_view, fire_count, node_state, seed_flow, seed_running_node
+    from tests._wf_fixtures import (
+        claim_view,
+        fire_count,
+        node_state,
+        seed_flow,
+        seed_ledger_claim,
+        seed_running_node,
+    )
 
     flow_id = await seed_flow(wf_conn, wf_schema)
     n = 3
@@ -141,7 +150,19 @@ async def test_pin_child_driven_join_fires_exactly_once(
     )
 
     # The children terminalize — the last decrement fires the join.
+    c0_identity: tuple[JobId, datetime] | None = None
     for i, child in enumerate(children):
+        child_ledger, child_claimed_at = await seed_ledger_claim(
+            wf_conn,
+            wf_schema,
+            flow_id=flow_id,
+            job_id=child,
+            step_key=f"c{i}",
+            attempt=1,
+            epoch=0,
+        )
+        if i == 0:
+            c0_identity = (child_ledger, child_claimed_at)
         result = await finalize_node(
             module_pg_pool,
             wf_sql,
@@ -153,6 +174,8 @@ async def test_pin_child_driven_join_fires_exactly_once(
             claim_epoch=0,
             outcome="succeeded",
             result={"i": i},
+            ledger_id=child_ledger,
+            ledger_claimed_at=child_claimed_at,
         )
         assert result.applied
 
@@ -160,6 +183,11 @@ async def test_pin_child_driven_join_fires_exactly_once(
 
     # 50 more terminal writes on an already- terminal child — every one fenced
     # (the rowcount gate); no second decrement, no second fire.
+    # The duplicates present c0's OWN claim identity (the row its claim
+    # minted — terminal since the first finalize): every duplicate loses
+    # the jobs-row fence, and the fence arm refuses a terminal row.
+    assert c0_identity is not None
+    dup_ledger, dup_claimed_at = c0_identity
     for _ in range(50):
         dup = await finalize_node(
             module_pg_pool,
@@ -171,6 +199,8 @@ async def test_pin_child_driven_join_fires_exactly_once(
             attempt=1,
             claim_epoch=0,
             outcome="succeeded",
+            ledger_id=dup_ledger,
+            ledger_claimed_at=dup_claimed_at,
         )
         assert not dup.applied, "the duplicate finalize must fence out"
     assert await fire_count(wf_conn, wf_schema, join_id) == 1, "the PK rejects the double-fire"

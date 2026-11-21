@@ -15,16 +15,12 @@ capture/redact/channel:
 default is the shipped ``EMIT_MAX_IN_FLIGHT_DEFAULT`` (1000) — the fence
 is ON for the new surface.
 
-the MECHANISM (the PoC's proven one — the generator's laziness IS the
-pause): before the emit tx, the emit admits its WHOLE page — the
-outstanding non-terminal row count (the ledger's truth, one query) plus
-the page's width must fit under the bound, or the pager BLOCKS (a
-bounded poll; no tx, no connection held while waiting). A stall past the
-wait's deadline is the LOUD refusal (:class:`EmitBackpressureTimeoutError`) —
-and the certified ladder owns it: the source re-pends with backoff, the
-re-claim resumes FROM the CURSOR, and the blocked page emits fresh (it
-never ran — nothing was written). The degradation is the dispatch band's
-latency, never unbounded materialization.
+The mechanism admits each WHOLE page under the run's admission lock before
+writing children/edges/cursor. A full page raises typed ``EmitBackpressure``
+before any write; the real runner parks with no timer or physical claim and
+wakes from committed terminal state. The low-level pins below prove bound
+safety without confusing their hand-driven claim with the full park runner.
+Park/resume no longer spends the source's logical attempt or failure ledger.
 
 The rejected shape: the bound pins ran RED against the tree before the fence
 existed (the declared surface absent — the TypeError IS the red); the
@@ -35,8 +31,9 @@ Captured: ``.measurements/t20-backpressure-*.txt``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
-import time
+import json
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -47,12 +44,12 @@ from taskq.backend._protocol import JobId
 from taskq.workflows import Promise
 from taskq.workflows._emit import (
     EMIT_MAX_IN_FLIGHT_DEFAULT,
-    EmitBackpressureTimeoutError,
+    EmitBackpressure,
     emit_batch,
 )
 from taskq.workflows.chain import DONE, Chain, Route, Step
 from taskq.workflows.engine import finalize_node
-from tests._wf_fixtures import RedLog, seed_flow
+from tests._wf_fixtures import RedLog, seed_flow, seed_ledger_claim
 from tests.test_wf_emit_tx_pins import (
     _LEASE,
     claim_source,
@@ -108,46 +105,56 @@ async def drain_one_chain(pool: asyncpg.Pool, wf_sql: WorkflowSql, flow_id: JobI
             "attempt = LEAST(attempt + 1, 32767), claim_epoch = claim_epoch + 1, "
             "locked_by_worker = $2, lock_expires_at = now() + $3::interval, "
             "last_heartbeat_at = now() WHERE id = $1 AND status = 'pending' "
-            "AND deps_pending = 0 RETURNING attempt, claim_epoch",
+            "AND deps_pending = 0 RETURNING attempt, claim_epoch, map_index",
             JobId(rec["id"]),
             worker,
             _LEASE,
         )
-    if claimed is None:
-        return False
+        if claimed is None:
+            return False
+        job_id = JobId(rec["id"])
+        screen_ledger, screen_claimed_at = await seed_ledger_claim(
+            conn,
+            wf_sql.schema,
+            flow_id=flow_id,
+            job_id=job_id,
+            step_key="screen",
+            attempt=int(claimed["attempt"]),
+            epoch=int(claimed["claim_epoch"]),
+            map_index=claimed["map_index"],
+        )
     result = await finalize_node(
         pool,
         wf_sql,
         flow_id=flow_id,
-        job_id=JobId(rec["id"]),
+        job_id=job_id,
         step_key="screen",
         worker_id=worker,
         attempt=int(claimed["attempt"]),
         claim_epoch=int(claimed["claim_epoch"]),
         outcome="succeeded",
         result={"value": {"screened": True}},
+        ledger_id=screen_ledger,
+        ledger_claimed_at=screen_claimed_at,
     )
     assert result.applied
     return True
 
 
-# ── the fence: the pager blocks at the declared bound ───────────────────
+# ── the fence: the no-fit page refuses immediately ───────────────────
 
 
 @pytest.mark.integration
-async def test_emit_blocks_at_the_declared_bound(
+async def test_no_fit_page_refused_immediately_at_the_declared_bound(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """A fast source, no worker: page 0 emits (it fits); page 1 does not
-    fit under the bound (4 outstanding + 4 wide > 6) — the pager BLOCKS
-    (the generator's laziness: the body's next fetch never happens), the
-    wait is bounded, the stall is the LOUD refusal — and the blocked emit
-    wrote NOTHING (the block is before the tx). The outstanding count
-    never exceeds the bound."""
+    """Page 0 fits; page 1 immediately raises typed capacity control before
+    any child/edge/cursor write. Ordinary saturation is not a timed RuntimeError.
+    The outstanding count never exceeds the bound."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     source_id = await make_source(wf_conn, wf_schema, flow_id, wf_sql)
     worker, attempt, epoch = await claim_source(wf_conn, wf_schema, source_id)
@@ -167,9 +174,8 @@ async def test_emit_blocks_at_the_declared_bound(
     )
     assert await outstanding(module_pg_pool, wf_schema, flow_id, exclude=source_id) == PAGE
 
-    # Page 1: does not fit — the pager blocks, bounded, loudly.
-    t0 = time.perf_counter()
-    with pytest.raises(EmitBackpressureTimeoutError) as excinfo:
+    # Page 1: does not fit — one ordinary capacity control, no timed failure.
+    with pytest.raises(EmitBackpressure) as excinfo:
         await emit_batch(
             module_pg_pool,
             wf_sql,
@@ -183,9 +189,9 @@ async def test_emit_blocks_at_the_declared_bound(
             max_in_flight=BOUND,
             backpressure_timeout_s=1.0,
         )
-    elapsed = time.perf_counter() - t0
-    assert elapsed >= 1.0, "the emit must have BLOCKED for the wait's term"
-    assert str(BOUND) in str(excinfo.value), "the refusal names the bound"
+    assert excinfo.value.bound == BOUND
+    assert excinfo.value.page_width == PAGE
+    assert excinfo.value.outstanding == PAGE
 
     # the count stayed at page 0's — never over the bound.
     after = await outstanding(module_pg_pool, wf_schema, flow_id, exclude=source_id)
@@ -211,16 +217,23 @@ async def test_backpressure_releases_when_workers_drain(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """The bound is a THROTTLE, not a wall: a slow worker draining beside
-    the fast source — every emit waits for its admission, then proceeds;
-    the sampled outstanding count never exceeds the bound through the
-    run; all three pages land (12 chains — the spike's zero-re-emitted /
-    zero-lost discipline under the bound)."""
+    """The bound is a THROTTLE: this low-level door's typed refusal retries
+    only after the real worker makes committed progress. Full FlowRunner
+    slot release is covered by the parking controls; this hand-driven source
+    deliberately stays claimed to isolate whole-page admission/atomicity.
+    """
     flow_id = await seed_flow(wf_conn, wf_schema)
     source_id = await make_source(wf_conn, wf_schema, flow_id, wf_sql)
     worker, attempt, epoch = await claim_source(wf_conn, wf_schema, source_id)
 
     max_seen = 0
+    # 400 bounded worker iterations at 30 ms have a 12 s deterministic upper
+    # service term. Thirty seconds gives that real drain work margin; retries
+    # must not rely on pytest's unrelated global 300 s timeout.
+    admission_deadline = asyncio.get_running_loop().time() + 30.0
+    admission_retries = 0
+    emitted_all = asyncio.Event()
+    progress = asyncio.Event()
 
     async def slow_worker() -> None:
         nonlocal max_seen
@@ -228,28 +241,78 @@ async def test_backpressure_releases_when_workers_drain(
             await drain_one_chain(module_pg_pool, wf_sql, flow_id)
             seen = await outstanding(module_pg_pool, wf_schema, flow_id, exclude=source_id)
             max_seen = max(max_seen, seen)
+            progress.set()
+            if emitted_all.is_set() and seen == 0:
+                break
             await asyncio.sleep(0.03)
 
     worker_task = asyncio.create_task(slow_worker())
+    completed = False
     try:
         for p, page in enumerate(_PAGES):
-            await emit_batch(
-                module_pg_pool,
-                wf_sql,
-                flow_id=flow_id,
-                source_id=source_id,
-                worker_id=worker,
-                attempt=attempt,
-                claim_epoch=epoch,
-                children=page_children(page, flow_id),
-                cursor={"page": p},
-                max_in_flight=BOUND,
-                backpressure_timeout_s=30.0,
-            )
+            while True:
+                progress.clear()
+                try:
+                    await emit_batch(
+                        module_pg_pool,
+                        wf_sql,
+                        flow_id=flow_id,
+                        source_id=source_id,
+                        worker_id=worker,
+                        attempt=attempt,
+                        claim_epoch=epoch,
+                        children=page_children(page, flow_id),
+                        cursor={"page": p},
+                        max_in_flight=BOUND,
+                        backpressure_timeout_s=30.0,
+                    )
+                    break
+                except EmitBackpressure as control:
+                    admission_retries += 1
+                    remaining = admission_deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        final_rows = await wf_conn.fetch(
+                            f"SELECT step_key, status::text AS status, attempt "
+                            f'FROM "{wf_schema}".jobs WHERE parent_id = $1 ORDER BY map_index',
+                            source_id,
+                        )
+                        actual_outstanding = await outstanding(
+                            module_pg_pool, wf_schema, flow_id, exclude=source_id
+                        )
+                        raise AssertionError(
+                            json.dumps(
+                                {
+                                    "page": p,
+                                    "retries": admission_retries,
+                                    "control": {
+                                        "page_width": control.page_width,
+                                        "bound": control.bound,
+                                        "outstanding": control.outstanding,
+                                    },
+                                    "actual_outstanding": actual_outstanding,
+                                    "worker_done": worker_task.done(),
+                                    "child_rows": [dict(row) for row in final_rows],
+                                },
+                                default=str,
+                                sort_keys=True,
+                            )
+                        ) from control
+                    # Wait for the drain worker to commit real terminal
+                    # progress before retrying (event cleared before emit_batch
+                    # so concurrent drain completions are never missed).
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(progress.wait(), timeout=min(remaining, 0.2))
             seen = await outstanding(module_pg_pool, wf_schema, flow_id, exclude=source_id)
             max_seen = max(max_seen, seen)
+        completed = True
     finally:
-        await worker_task
+        emitted_all.set()
+        if not completed:
+            worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_task
+        else:
+            await worker_task
 
     redlog.red(
         "t20-backpressure-throttle",
@@ -376,10 +439,8 @@ BP_SOURCE_EMIT_LOG: list[tuple[int, int]] = []  # (page, the attempt that emitte
 
 
 async def bp_source(ctx: Any) -> None:
-    """The fast source: pages of 2 against the declared bound 3 — pages 1
-    and 2 CANNOT fit while their predecessors are live: the pager stalls,
-    the loud refusal rides the certified ladder, the resume continues
-    FROM the CURSOR."""
+    """Pages of 2 against bound 3 park under saturation and replay from the
+    committed cursor with the same logical source attempt."""
     from taskq.workflows.chain import chain_start
 
     cursor = await ctx.cursor()
@@ -392,7 +453,6 @@ async def bp_source(ctx: Any) -> None:
                 for i in BP_PAGES[p]
             ],
             cursor={"page": p},
-            backpressure_timeout_s=1.0,
         )
 
 
@@ -406,20 +466,17 @@ async def test_max_in_flight_is_declared_at_the_workflow(
 ) -> None:
     """The declared home, end to end: the workflow declares the bound once
     (``@app.workflow(..., max_in_flight=…)``); the compile carries it; the
-    runner hands it to every ``ctx.emit_batch``; the fast source's stalls
-    ride the certified ladder (the loud refusal → the re-pend → the
-    re-claim resumes FROM the CURSOR → the blocked page emits fresh);
-    the run completes with every chain row exactly once and terminal."""
+    runner hands it to every ``ctx.emit_batch``; saturation parks without a
+    claim or logical-attempt charge; committed child terminals wake replay
+    from the cursor. Every chain row lands exactly once and terminal."""
     from taskq.workflows import FlowRunner, WorkflowApp, build, chain_source
 
     app = WorkflowApp()
 
     @app.workflow("t20_bp_flow", max_in_flight=3)
     def t20_bp_flow() -> Promise[object]:
-        # the source's ladder budget: the stalls are the loud refusal's
-        # re-pends (one per page that can't fit) — budget the ladder for
-        # them (the declaration's max_attempts).
-        return build(chain_source(BP_CHAIN, bp_source, key="bp_source", max_attempts=8))
+        # Ordinary saturation no longer owns this real-failure budget.
+        return build(chain_source(BP_CHAIN, bp_source, key="bp_source", max_attempts=2))
 
     compiled = app.get("t20_bp_flow")
     assert compiled.max_in_flight == 3, "the declared bound rides the compile"
@@ -449,11 +506,21 @@ async def test_max_in_flight_is_declared_at_the_workflow(
             "stalls": len({a for _, a in BP_SOURCE_EMIT_LOG}),
         },
     )
-    # pages 1+ could not fit while their predecessors were live (the single
-    # drive loop) — the source's attempts advanced past the first.
-    assert max(a for _, a in BP_SOURCE_EMIT_LOG) > 1, (
-        "the source must have stalled on the ladder at least once (the "
-        "bound bit) — the throttle's pause is the certified machine's"
+    # Saturation caused real physical park/remint cycles, not retries: every
+    # body entry remains logical one and the ledger contains zero failures.
+    assert BP_SOURCE_EMIT_LOG
+    assert {attempt for _page, attempt in BP_SOURCE_EMIT_LOG} == {1}, BP_SOURCE_EMIT_LOG
+    failed_source_ledgers = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND step_key = 'bp_source' AND status = 'failed'",
+        flow_id,
     )
+    assert failed_source_ledgers == 0
+    source = await wf_conn.fetchrow(
+        "SELECT attempt, metadata FROM "
+        f"\"{wf_schema}\".jobs WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'bp_source'",
+        flow_id,
+    )
+    assert source is not None and source["attempt"] == 1
     root = await wf_conn.fetchrow(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root is not None and root["status"] == "succeeded"

@@ -146,7 +146,8 @@ declare `RetrySpec.on_exhaustion`:
    intent arbiter.
 
 Existing rows retain NULL epochs/requirements and existing outbox rows remain
-unchanged. (Applying the two 01.00.41 files without `01.00.38_01` fails at
+unchanged. (Applying the two existing 01.00.41 files (`01.00.41_01` and
+`01.00.41_02`) without `01.00.38_01` fails at
 `FlowRunner.create_flow()` with
 `column "required_worker_schema" of relation "jobs" does not exist` — the
 create path stamps the requirement on the root and its rows.)
@@ -157,6 +158,80 @@ queues before creating such runs; an insufficient/missing actual boot capability
 (the worker's boot-stamped `workflow_execution_schema` metadata) fails at the
 physical entry-to-running trigger before body execution. Do not manufacture
 worker metadata or use queue membership as an upgrade assertion.
+
+## Slot-free emit backpressure, durable intent, and per-claim ledger (01.00.42_01)
+
+Apply the one PRE file 01.00.42_01_pre_wf_step_ledger_claim_epoch.sql after the 01.00.38 + existing 01.00.41 files and before corrected bounded-emit/executor binaries; it installs the derived-capacity intent/rotation records, exact-park guard/indexes, and claim-epoch arbiter in one migration transaction.
+
+**Storage cost (§10.7):** the intent record is one `wf_emit_capacity` row
+per bounded run (four typed columns plus its CHECK constraints; the
+pending-generation partial index covers only rows with a pending wake) and
+one singleton rotation row total. The record's retention lifetime is the
+run's own: the leader's retention pass (the same statement that deletes a
+retained run's ledger rows) deletes the run's record — and only when the
+run's root is terminal-aged AND no live (pending/scheduled/running) node
+of the run still exists; retention cannot remove a record while a live
+node references the run.
+
+**Operational facts (§10.7):** the engine's hard ceilings are fixed and
+not caller-tunable: a flow drain commits at most **200** winning
+promotions/notifications per transaction (a full chunk continues into a
+fresh one), and the global pending-intent selection reads at most **100**
+distinct flows per pass under the persistent rotation cursor. The normal
+event wake target is **< 1 s** from the committing terminal's database
+commit to the woken source's next claim, on a competent fleet with a
+supported session-`LISTEN` configuration; crash/notification-loss
+recovery is bounded by the leader lease, the maintenance interval, and
+ordinary dispatch (never a time guarantee on a stalled database). A
+parked waiter can exist only per declared chain source (`parked <= S` —
+an exact park is a state of one durable source row), so the candidate
+fit scan is `Theta(parked) <= Theta(S)`. The derived-capacity observation
+is hoisted (`Theta(live + parked)`, terminal history never scanned); the
+per-terminal exact-marker probe is one indexed zero-row read on
+non-crossing terminals. The proven non-drainage refusal (a committed terminal root behind an
+exhausted child failure, with an exact parked source still holding
+un-emitted work — including the first page when no cursor has committed;
+the absent key means zero pages have committed, not that the park is
+empty) is exported only as the durable
+`error_class='WorkflowNotDrainingError'` string and the
+`taskq.workflows.wf_not_draining` metric counter — never as an
+importable class.
+
+The folded file's lock profile (one migration transaction; the cross-table
+order is `wf_step_ledger` BEFORE `jobs`):
+
+- On `wf_step_ledger`: `ADD COLUMN claim_epoch` takes `ACCESS EXCLUSIVE`
+  (metadata-only), the arbiter rebuild's `DROP INDEX` half takes
+  `ACCESS EXCLUSIVE` (subsumed by the already-held lock), the
+  non-CONCURRENT replacement `CREATE UNIQUE INDEX` takes `SHARE` (the
+  populated-ledger stop-accepting-work window), and `COMMENT ON COLUMN`
+  takes `SHARE UPDATE EXCLUSIVE`.
+- On `jobs`: the non-CONCURRENT `jobs_wf_emit_park_idx` build takes `SHARE`
+  (writes block, reads proceed), and the guard-trigger install — last —
+  takes `SHARE ROW EXCLUSIVE` (writes block, reads proceed; its grant is
+  immediate against writers because every conflicting mode also conflicts
+  with the already-held `SHARE`, but it can queue behind a concurrent
+  reader holding `SHARE` on `jobs` — this migration's own `SHARE` is
+  compatible with that reader while the trigger's `SHARE ROW EXCLUSIVE`
+  conflicts with it, measured on PostgreSQL 18.6). The jobs-side apply
+  outage is ONE write-block window from SHARE acquisition through COMMIT
+  (its acquisition wait can be extended by a concurrent `SHARE` reader);
+  there is no second read-blocking window and ordinary SELECTs proceed
+  throughout.
+
+Drain the producer first (stop new bounded-flow production/emission), then
+the full writer-role drain: old maintenance leaders, direct producers and
+runners, executors, and cancel-serving binaries; wait for every in-flight
+`jobs`/`wf_step_ledger` application transaction to finish and close or prove
+idle the old writer pools. A residual opposite-order writer can deadlock
+against the file's `wf_step_ledger` → `jobs` order, and PostgreSQL's victim
+choice is nondeterministic (SQLSTATE `40P01`): either the migration aborts
+(rollback is fail-closed, no migration record, re-apply after completing the
+drain — never reorder locks or blindly retry) or the residual writer aborts
+(the application must roll back and retry its whole transaction under its
+own retry policy; the migration commits the complete object set, no re-apply
+owed). An operator `lock_timeout` bound reduces the exposure but cannot
+eliminate it.
 
 ## If a migration goes wrong
 

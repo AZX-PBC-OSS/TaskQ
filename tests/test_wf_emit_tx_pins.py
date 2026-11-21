@@ -220,6 +220,36 @@ async def kill_backend_at(window: int, dsn: str) -> WindowHook:
 
 
 @pytest.mark.integration
+def test_rotation_bound_is_one_constant_across_sql_and_python() -> None:
+    """L-3's one-truth pin: the pending-intent selection's and the marker
+    sweep's rendered SQL ``LIMIT`` are exactly the shared
+    `WF_EMIT_ROTATION_BATCH` constant, and `_emit.py`'s Python checks
+    (`len(rows) < …` and `_SWEEP_BATCH`) compare against the same value —
+    a second spelling would let the SQL LIMIT exceed the Python literal,
+    every selection would look "short", the rotation cursor would reset,
+    and flows past the first batch would never be offered."""
+    from taskq.workflows._emit import _SWEEP_BATCH
+    from taskq.workflows._sql_finalize import (
+        WF_EMIT_MARKER_SWEEP_SQL,
+        WF_EMIT_ROTATION_BATCH,
+    )
+    from taskq.workflows.engine import render_workflow_sql
+
+    assert WF_EMIT_ROTATION_BATCH == 100
+    assert _SWEEP_BATCH is WF_EMIT_ROTATION_BATCH
+    wsql = render_workflow_sql("probe_schema")
+    assert wsql.emit_pending_intents.endswith(f"LIMIT {WF_EMIT_ROTATION_BATCH}\n"), (
+        wsql.emit_pending_intents
+    )
+    assert f"LIMIT {WF_EMIT_ROTATION_BATCH}\n" in WF_EMIT_MARKER_SWEEP_SQL, WF_EMIT_MARKER_SWEEP_SQL
+    # No second literal spelling of the bound survives in the drain module.
+    from pathlib import Path
+
+    emit_src = Path("src/taskq/workflows/_emit.py").read_text(encoding="utf-8")
+    assert "if len(rows) < 100" not in emit_src, emit_src
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize("window", [1, 2, 3])
 async def test_emit_tx_atomic_at_every_statement_window(
     window: int,
@@ -536,6 +566,7 @@ async def test_emit_map_index_discriminates_siblings(
             step_key="screen",
             map_index=7,
             attempt=1,
+            claim_epoch=0,
         )
         c8 = await claim_step_ledger(
             conn,
@@ -545,6 +576,7 @@ async def test_emit_map_index_discriminates_siblings(
             step_key="screen",
             map_index=8,
             attempt=1,
+            claim_epoch=0,
         )
     assert c7.ledger_id != c8.ledger_id, "the siblings share a ledger claim — the collision"
 
@@ -598,13 +630,11 @@ async def test_emit_map_index_discriminates_siblings(
 
 
 async def close_storm_pool(pool: asyncpg.Pool) -> None:
-    """Close a pool whose connections may include a terminated backend.
+    """Terminate a pool whose connections include a killed backend.
 
     A kill mid-transaction leaves the holder's release future unresolved
     (the dead protocol will never answer the reset) — a graceful
-    ``close()`` hangs on it; the storm's pools are terminated HARD (the
-    kill's own teardown, never the pin's concern)."""
-    try:
-        await asyncio.wait_for(pool.close(), timeout=5)
-    except TimeoutError:
-        pool.terminate()
+    ``close()`` hangs on it until timeout; terminate the pool directly
+    and yield once so transport cleanup settles."""
+    pool.terminate()
+    await asyncio.sleep(0)

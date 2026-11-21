@@ -20,6 +20,8 @@ __all__ = [
     "UPDATE_JOBS_LOCK_SQL_TEMPLATE",
     "UPDATE_RESERVATION_LEASES_SQL_TEMPLATE",
     "UPDATE_WORKER_LIVENESS_SQL_TEMPLATE",
+    "WORKER_REGISTRATION_SQL_TEMPLATE",
+    "WORKER_REREGISTRATION_SQL_TEMPLATE",
     "build_heartbeat_sql",
     "parse_rowcount",
 ]
@@ -127,6 +129,32 @@ WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND cancel_phase 
 # (taskq.worker.cancel), the hook uses a bare conn.execute on the heartbeat
 # connection that already holds an open transaction.  Keeping the SQL in a
 # single module-level constant prevents drift between the two call sites (dry).
+
+
+# The one worker-registration column list, shared by the boot registration
+# and the live re-registration repair: both writers stamp the same columns,
+# so the lists cannot drift. One template, two products: the strict boot
+# INSERT (register_worker in taskq.worker.run - a duplicate id there is a
+# bug and must raise) and the idempotent re-registration derived below by
+# appending the conflict clause. last_seen_at is stamped from the server
+# clock here, not left to the column default: the repair path re-inserts a
+# row the stale sweep judged old, and a restored row must not be born stale
+# (a client-clock stamp was rejected for the skew case - clock_timestamp()
+# is the same server clock the sweep's staleness predicate reads).
+WORKER_REGISTRATION_SQL_TEMPLATE = (
+    'INSERT INTO "{schema}".workers '
+    "(id, hostname, pid, queues, worker_label, workgroup_instance, last_seen_at, metadata) "
+    "VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp(), $7::jsonb)"
+)
+# The live re-registration: an existing row (a concurrent repair - the
+# heartbeat tick and the leader election can both reach for the same
+# missing row - or a beat that landed between the reap and this INSERT)
+# is left untouched, so the second writer no-ops harmlessly against the
+# first one's fresh row. DO NOTHING, not DO UPDATE: a repair must never
+# clobber a live row's fresher last_seen_at or tick-merged metadata.
+WORKER_REREGISTRATION_SQL_TEMPLATE = (
+    WORKER_REGISTRATION_SQL_TEMPLATE + " ON CONFLICT (id) DO NOTHING"
+)
 
 
 def parse_rowcount(tag: str) -> int:

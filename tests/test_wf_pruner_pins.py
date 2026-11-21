@@ -40,6 +40,7 @@ from tests._wf_fixtures import (
     node_state,
     seed_flow,
     seed_join,
+    seed_ledger_claim,
     seed_running_node,
 )
 
@@ -64,6 +65,9 @@ async def test_pin1_expiry_eats_children(
     n = 1000
     flow_id = await seed_flow(wf_conn, wf_schema)
     fork_parent = await seed_running_node(wf_conn, wf_schema, flow_id)
+    fork_ledger, fork_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=fork_parent, step_key="map", attempt=1, epoch=0
+    )
     result = await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -74,6 +78,8 @@ async def test_pin1_expiry_eats_children(
         attempt=1,
         claim_epoch=0,
         outcome="succeeded",
+        ledger_id=fork_ledger,
+        ledger_claimed_at=fork_claimed_at,
         fork=ForkSpec(
             children=tuple(
                 ChildSpec(step_key="child", actor="wf", queue="default", map_index=m)

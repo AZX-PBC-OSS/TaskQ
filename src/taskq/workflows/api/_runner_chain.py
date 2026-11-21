@@ -35,6 +35,11 @@ class _ChainHost(Protocol):
     pool: asyncpg.Pool
     wsql: WorkflowSql
     _worker_id: JobId
+    #: The bounded-run gate (the §4.1 event rule's host-side fact) and the
+    #: terminal route's own post-COMMIT drain trigger.
+    _emit_capacity: bool
+
+    async def _drain_created_intent(self, flow_id: JobId, intent_created: bool) -> None: ...
 
 
 class ChainOps(_ChainHost):
@@ -104,10 +109,11 @@ class ChainOps(_ChainHost):
                 map_index=row["map_index"],
                 ledger_id=ledger_id,
                 ledger_claimed_at=ledger_claimed_at,
+                emit_capacity=self._emit_capacity,
             )
             return
         fork = chain_fork(child, trace_id=row.get("trace_id"))
-        await finalize_node(
+        chain_final = await finalize_node(
             self.pool,
             self.wsql,
             flow_id=flow_id,
@@ -122,4 +128,6 @@ class ChainOps(_ChainHost):
             map_index=row["map_index"],
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            emit_capacity=self._emit_capacity,
         )
+        await self._drain_created_intent(flow_id, chain_final.intent_created)

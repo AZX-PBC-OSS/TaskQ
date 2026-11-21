@@ -799,6 +799,18 @@ workflow tables' own rows, one setting per table:
 | `TASKQ_WORKFLOW_SIGNALS_RETENTION_PERIOD` (`wf_signals_retention`) | the `wf_signals` rows (holds and their resolutions) | `created_at` |
 | `TASKQ_WORKFLOW_NODE_PROGRESS_RETENTION_PERIOD` (`wf_node_progress_retention`) | the `wf_node_progress` rows | `updated_at` — a rootless row's flow is reached through the NODE's jobs row (`metadata.flow_id`; the table has no flow column) |
 
+**The direct-only lane's own history shape (the honest limitation):**
+these retention arms run in the LEADER's sweep registry — a fleet
+deployment's own maintenance. A DIRECT-ONLY deployment (no worker
+leader) has NO shipped automatic workflow-ledger/capacity retention
+driver: inner nonterminal claim history (a `ctx.substep`'s or loop
+iteration's own ledger rows beside the fenced outer claim) and
+terminal-aged capacity records can persist indefinitely there. They
+remain non-authoritative claim history — the current jobs/root rows
+decide every status — but nothing collects them until fleet-leader
+retention (or a maintenance program explicitly invoking the private
+primitives) runs. Terminal status alone invokes no cleanup.
+
 All five default to `timedelta(0)` = **OFF** — the deletion-sweep
 family's zero-means-off sentinel (negative values refuse at settings
 load) — but DELIBERATELY OPPOSITE to the outbox/step-cache precedents,
@@ -899,7 +911,20 @@ whose stamped name resolves to nothing (the
 definitions not imported anywhere — a deployment defect, or a hand-crafted
 row) parks at the snooze cadence budget-free, `released_reason=
 'workflow-body-unresolvable'`, the stranded-jobs detector the witness —
-LOUD, never a silent wedge.
+LOUD, never a silent wedge. The MISSING RUN ROOT is a different failure
+with its own class: when a node's run has lost its own `__flow__` root
+row (control-plane data corruption — never a body-resolution fault), the
+failed-parent seat raises the typed `WorkflowRootMissingError` BEFORE any
+propagation write (the transaction rolls back; the already-committed
+child terminal stands), the fleet-claimed executor passes it through
+UNWRAPPED, and the worker's own release arm attempts ONE bounded
+budget-free 10-second release with `released_reason=
+'workflow-root-missing'` and the `dispatch-workflow-root-missing` log.
+Against the committed tx1 child terminal that release fence reads back
+`noop` — the terminal is preserved byte-identically, never rescheduled.
+The stranded detector's `workflow_root_missing` reason is the witness on
+the run's surviving rows; the remedy is the runbook's
+restore-or-quarantine recovery, never a worker knob.
 
 ### THE WORKFLOW-ONLY WORKER — how the worker imports definitions
 
@@ -1325,7 +1350,7 @@ and `tests/test_wf_perf_bands.py` the cost bands' pins); no pin was dropped.
 | `tests/test_wf_emit_tx_pins.py` | the emit tx: the kill-storm at every statement window (zero re-emitted, zero lost), the between-pages kill, the zombie fence, the map_index discipline |
 | `tests/test_wf_source_terminal_fence.py` | the source-terminal fences: the 30-sweep premature-terminal probe (no worker — nothing terminalizes), the mutation probe's teeth, the source-terminal subject |
 | `tests/test_wf_router_pins.py` | the router: both totality doors + the flips, the route through the certified fork, the end-to-end author surface, the loud refusal's row |
-| `tests/test_wf_emit_backpressure_pins.py` | the backpressure law: the pager blocks at the declared bound (the unbounded variant's blow-out captured as a failing run), the throttle releases under a draining worker, the wide-page refusal, the workflow-level declare end to end (the stalls ride the ladder, the resume from the cursor) |
+| `tests/test_wf_emit_backpressure_pins.py` | the backpressure law: the no-fit page refuses immediately — the typed `EmitBackpressure` raised before any child/edge/cursor write, the refused page writes nothing (the unbounded variant's blow-out captured as a failing run), admission lands only on a retry after the worker's committed progress frees capacity, the wide-page refusal, the workflow-level declare end to end (saturation is a park — never a ladder failure — and the resume replays from the cursor) |
 | `tests/test_wf_crashed_terminal_wedge.py` | THE TERMINAL-CRASH SEMANTICS: the corpse derives the failed-class terminal (it derived `running` forever before the fix), the wedged root heals on ONE maintenance pass, the mutation pin (the assertion fails on a corpse the heal cannot land — the no-op-maintenance mutant), the reclaim-input asymmetry (the ledger's attempt-level crash stays live), the zombie-audit structural pin (the liveness spellings) |
 | `tests/test_wf_progress_gate_cures.py` | the progress gate's cures: the VALIDATED dump is the record (the lax-pydantic string hole), the buffer door is private + the public op validates, the pct domain CHECK is real at the storage domain, the auto class's drop record, the failure-class ROUTING per class (3 deterministic legs + the transient leg), the poison record kills ITSELF loudly — never its mates |
 
@@ -2020,8 +2045,12 @@ the child line landed, surfaced.
 `wf.loop(name, body, *, initial, carry_type, until, max_iterations,
 budget_s, on_exhausted, escalates_to, gates)` — the loop is v1; the
 signature is the SHIPPED verb's own, every parameter spelled: `initial` seeds the
-carry at iteration 0, `carry_type` declares the carry's model
-(revalidated at every boundary), `until` is awaited per iteration,
+carry at iteration 0, `carry_type` declares the carry's model (every
+committed carry is revalidated at each boundary — the advance, a
+resume, the memo replay; the type-only declaration's initial carry is
+the empty `None`, and a committed `None` against a declared model or
+dict is the loud `LoopCarryContractError` — a JSON-native declared type
+keeps the untyped `None`), `until` is awaited per iteration,
 `budget_s` bounds the loop's wall clock, and the exhaustion takes
 `on_exhausted` (`"fail"` | `"escalate"` — the escalation step via
 `escalates_to=`, with `gates=`'s HOLD gates). Each iteration is FRESH jobs: the iteration-scoped
@@ -2473,9 +2502,7 @@ wait's outcome is the CLOSED UNION of the declared models joined with
 `Expired` — the CHECKER FORCES the fail-close arm. From the REAL
 example (`examples/deep_research.py`):
 
-```python no-exec — not executed: fragment, the body's spine — the
-REAL file is examples/deep_research.py (the demo's fake corpus + the
-loop wiring live there)
+```python no-exec — not executed: fragment, the body's spine
 outcome = await ctx.wait_signal(
     (ContinueApproval,),
     timeout_s=APPROVAL_TIMEOUT_S,  # the REAL default: 120.0
@@ -2490,6 +2517,9 @@ match outcome:
         # THE FAIL-CLOSE: nobody watching — finish with what you have.
         return Done(carry.finish_with_what_you_have())
 ```
+
+The REAL file is `examples/deep_research.py` (the demo's fake corpus + the
+loop wiring live there).
 
 The typed expiry is a RESULT the body matches: the run SUCCEEDS
 carrying the finish-with-what-you-have state — the user not watching
@@ -3188,3 +3218,89 @@ run-epoch and intent PRE migrations and run the declaring cohorts with capable
 fleet workers. The effect's own settlement fact is its job's terminal write
 plus the application's idempotent domain closure — no root status, `failed` or
 `cancelled`, proves that an effect exited.
+
+### Slot-free emit backpressure: saturation is a park, not a failure
+
+When a whole page does not fit under the workflow's declared
+`max_in_flight`, the emit raises `taskq.workflows.EmitBackpressure` — a
+control signal, deliberately not an error and never a `RuntimeError`:
+
+- it escapes BEFORE any child, edge, cursor, or application row is written
+  (the whole page is written or none of it is);
+- catch it only to add context and re-raise; swallowing it loses the page
+  because no page was started. It is deliberately outside `Snooze` and
+  `RetryAfter` and never enters the failure ladder;
+- `backpressure_timeout_s` at the emit boundary is diagnostic-only input —
+  raw wait time, park counts, and non-consuming counts never fail healthy
+  saturation.
+
+The park transaction releases the claim and heartbeat, refunds the physical
+attempt while preserving the durable logical ordinal, records the current
+ledger claim as nonterminal `awaited`, and rests the source as a
+non-claimable `scheduled` row whose `scheduled_at` holds the PARK INSTANT.
+The marker (`metadata.blocking_reason='backpressure'` plus the typed
+deferral and version-1 record) — never the timestamp — is the park's
+identity: `scheduled_at` is not a due date, is never an admin `next_fire`,
+and ordinary timers/holds/retries keep their own meaning.
+
+Capacity is DERIVED, never counted: there is no persisted total, waiter
+count, cached head, or cached minimum width to drift. Every fit decision
+reads the run's real `jobs` rows at the moment it runs (the running
+source's own row excluded), so vanilla reclaim, cancel, deadline, and
+re-arm writers need no capacity bookkeeping. The run's `max_in_flight`
+bounds the outstanding materialized rows plus whole admitted pages.
+
+Wake is a threshold-created durable intent and an event-driven drain:
+
+- each terminal/park event runs one indexed exact-marker probe; only when a
+  parked waiter exists is capacity derived, and only when the oldest
+  FITTING waiter newly fits is a durable promotion intent created (with its
+  accelerator notification) in the same transaction;
+- the drain promotes the oldest fitting real waiter under the run's
+  advisory lock and attaches a durable page-width RESERVATION, so a woken
+  source cannot be barged into another no-fit re-park. A replay may present
+  fewer records than its reservation; it may not present more — the excess
+  raises the public `taskq.workflows.EmitReservationExceededError`: nothing
+  is written, and the source terminalizes on the first violation (the
+  deterministic grant-violation route — no retry budget spent) with its
+  reservation removed in the same winning terminal statement. This is
+  distinct from a genuine `PageDivergedError` — the idempotency arbiter's
+  collision names a cursor re-sync remedy; a width mismatch never does;
+- the maintenance leader drains durable intents from committed capacity
+  notifications, leadership assumption, LISTEN reconnect backfill, and a
+  bounded pending-intent fallback at its maintenance interval. Durable
+  rows, not notifications, are the authority — a lost or duplicate
+  notification costs latency, never correctness;
+- healthy source/promotion work is O(pages) with the event-side evaluation
+  law `E = T + X + K ≤ 2T + K`; each observation is Θ(live + parked) —
+  independent of accumulated terminal history — and candidate fit selection
+  is Θ(parked) ≤ Θ(S) (one exact park is a state of one declared
+  chain-source row). The parked-heavy tradeoff is real and disclosed: at
+  very large parked populations the per-observation scan is not
+  parked-constant time. Bounded notification-loss reconciliation (the
+  maintenance-interval pending-intent selection and the exact-marker sweep)
+  is an explicit amendment — crash/loss recovery is NOT claimed as pure
+  O(pages).
+
+**Cancellation and failure while parked.** A parked source has NO owner,
+lease, heartbeat, or worker slot (a capacity reservation is not an execution
+reservation). An operator run cancel terminalizes the parked row
+`cancelled` and fences its exact ledger claim. A root that terminal-fails
+after a genuine child failure exhausted its declared retry policy — while
+an exact parked source still holds un-emitted work — is the one durable
+proof that the run is provably not draining; the exact park represents
+un-emitted resumable source work whether or not an `emit_cursor` key is
+present (a first-page park with no committed cursor is the same resumable
+obligation — the absent key means zero pages have committed, not that the
+park is empty). The same failure transaction fences the parked source with
+durable `error_class='WorkflowNotDrainingError'` (a string value, not an
+importable class), the causal child/root ids on the record, and no
+logical-attempt or ladder spend. Healthy saturation, elapsed time, and
+nonterminal retries are never such proof.
+
+**Reading the surfaces.** `has_live` prevents premature success before the
+parked suffix; `has_unresolved` permits failed-root completion. The admin
+surface shows a parked source as a scheduled row whose deferral line reads
+the signal and `deferred (backpressure)` with the park time displayed as the
+parked-at time — never as a next fire — and counts parks on the exact
+marker, distinct from failure.

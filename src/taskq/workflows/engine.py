@@ -245,6 +245,7 @@ def _jsonb_len(value: dict[str, object] | None) -> int | None:
 @dataclass(frozen=True, slots=True)
 class _Tx1Outcome:
     applied: bool
+    intent_created: bool = False
 
 
 async def _classify_own_ledger_no_match(
@@ -312,6 +313,7 @@ async def _run_tx1(
     map_index: int | None = None,
     ledger_id: JobId | None = None,
     ledger_claimed_at: datetime | None = None,
+    emit_capacity: bool = False,
     terminal_effect: TerminalEffect | None = None,
     terminal_reason: TerminalEffectReason = "retry_exhausted",
 ) -> _Tx1Outcome:
@@ -323,10 +325,10 @@ async def _run_tx1(
 
     The claim's own RETURNING id when the caller
     holds it (*ledger_id* — ``LEDGER_TERMINAL_BY_ID_SQL``, the write pins
-    exactly the claimed row), otherwise the full arbiter tuple with the
-    COALESCE(map_index, -1) expression (``LEDGER_TERMINAL_SQL``) — a map
-    child's terminal can never overwrite its sibling's row (the ledger-PK
-    attack's overwrite arm)."""
+    exactly the claimed row): the epoch arbiter can carry several rows per
+    (flow, step, attempt) — the parked attempt's 'awaited' history beside
+    the resumed claim's terminal — so there is no by-attempt fallback and
+    no caller may write history without its own claim identity."""
     async with conn.transaction():
         # Cancel takes the canonical root lock before its node cascade. Taking
         # the same root lock here arbitrates its commit against every fork and
@@ -369,33 +371,28 @@ async def _run_tx1(
         if rec is None:
             # Fenced out (a reclaimed row, a cancelled flow, a wrong
             # worker): the ledger says 'fenced', tx2 never runs. The fence
-            # targets the exact claim identity — the claim's own row id AND,
-            # when the caller holds it, its own RETURNING instant (the
-            # re-mint guard: a re-claimed row re-stamps updated_at, and the
-            # stale instant refuses the write). A stale fence whose instant
-            # no longer matches is the DESIGNED stale refusal (a re-minted
-            # row is the live winner's — its own terminal writes it).
+            # targets the exact claim identity — the claim's own row id AND
+            # its own RETURNING instant (the re-mint guard). There is no
+            # four-expression no-id fallback in current production: the
+            # epoch arbiter can carry several rows per (flow, step, attempt),
+            # and an update keyed on those four alone rewrote the parked
+            # attempt's 'awaited' history beside the current row. A stale
+            # fence whose instant no longer matches is the DESIGNED stale
+            # refusal (a re-minted row is the live winner's — its own
+            # terminal writes it; the phantom arms own a lapsed row).
             if ledger_id is not None:
                 await conn.execute(
                     wsql.ledger_fence_by_id, ledger_id, error_class, ledger_claimed_at
                 )
-            else:
-                # The no-ledger-id caller (the Exit path's finalize,
-                # ``api/_runner.py``'s `_finalize_exit` call site) still
-                # fences its ledger row — by the node's own arbiter tuple
-                # (flow, step, attempt, map_index), the status-only fence:
-                # a fenced-out finalize's 'fenced' record is never left to
-                # the phantom reap.
-                await conn.execute(
-                    wsql.ledger_fence_attempt,
-                    flow_id,
-                    step_key,
-                    attempt,
-                    error_class,
-                    map_index,
-                )
             return _Tx1Outcome(applied=False)
 
+        # THE LEDGER-TRUTH LAW: the won terminal CAS's ledger record keys the
+        # claim's own identity (the ledger claim's RETURNING id + instant).
+        # Every production claim threads it (the runner's step/loop/exit/
+        # chain/ladder/defer routes; the loop's iteration terminal raises on
+        # a missing claim) — the per-claim history has no by-attempt
+        # fallback to recover a caller that lost its own identity, and none
+        # may be manufactured here.
         if ledger_id is not None:
             written = await conn.execute(
                 wsql.ledger_terminal_by_id,
@@ -416,19 +413,6 @@ async def _run_tx1(
             # fence exists to prevent (raise; the tx rolls back).
             if written != "UPDATE 1":
                 await _classify_own_ledger_no_match(conn, wsql, ledger_id, flow_id, step_key)
-        else:
-            await conn.execute(
-                wsql.ledger_terminal,
-                flow_id,
-                step_key,
-                attempt,
-                outcome,
-                _jsonb(result),
-                error_class,
-                error_message,
-                _jsonb(capture) if capture is not None else None,
-                map_index,
-            )
 
         if fork is not None:
             await insert_fork(
@@ -483,7 +467,19 @@ async def _run_tx1(
                 reason=terminal_reason,
                 effect=terminal_effect,
             )
-        return _Tx1Outcome(applied=True)
+        # THE §4.1 TERMINAL EVENT RULE — in this same transaction, after the
+        # winning terminal write, under the canonical root (already held) ->
+        # intent -> winning-nodes order. A bounded flow pays one indexed
+        # exact-marker existence probe; only a marker-positive probe derives
+        # capacity once. A non-crossing terminal's zero-row probe performs no
+        # count, no width query, no candidate scan, no notification, and no
+        # promotion; an unbounded flow pays nothing here at all.
+        intent_created = False
+        if emit_capacity:
+            from taskq.workflows._emit import emit_capacity_event
+
+            intent_created = await emit_capacity_event(conn, wsql, flow_id=flow_id, probe=True)
+        return _Tx1Outcome(applied=True, intent_created=intent_created)
 
 
 async def _fire_and_deliver(
@@ -656,6 +652,21 @@ async def _resolve_failed_parent(
     ErrorInfo envelope (the engine constructs it through the typed door —
     the bound constants apply here too, never re-spelled SQL-side).
     """
+    # THE CANONICAL ROOT-FIRST ORDER (R2/A9.2): the exact flow root row is
+    # this transaction's FIRST row lock — before the cascade's blocked
+    # stamp, before the peer cancellation, before any node or fan-in
+    # write. The drain holds this same root while it walks root → intent
+    # → candidate CAS; a peer/park update acquired ahead of the root is
+    # the demonstrated 40P01 cycle (the drain holds the root and waits on
+    # the park row while the cascade holds the park row and waits on the
+    # root). A missing root is loud corruption: the raise aborts this tx2
+    # before ANY write (the committed tx1 child terminal stands), the
+    # error is never a body-ladder retry and never an infra fault.
+    root_id = await conn.fetchval(wsql.emit_root_lock, flow_id)
+    if root_id is None:
+        from taskq.workflows.api._runner_errors import WorkflowRootMissingError
+
+        raise WorkflowRootMissingError(flow_id, parent_id)
     # the fail-closed CASCADE — the record names the failed parent: the block
     # stamp (metadata.failed_parent), the peer-cancel record (the cancel-origin
     # marker + metadata.peer_cancel.cascade_from), and the flow's own failure
@@ -666,14 +677,55 @@ async def _resolve_failed_parent(
         "failed_step": step_key,
     }
     peer_record = {"peer_cancel": {"by": "peer_failure", "cascade_from": str(parent_id)}}
-    await conn.execute(
+    cascade_row = await conn.fetchrow(
         wsql.fail_closed_cascade,
         parent_id,
         _jsonb(cascade_stamp),
         CANCEL_ORIGIN_PEER_FAILURE,
         _jsonb(peer_record),
-        flow_id,
     )
+    # THE UNRESOLVED-LIVE GATE (N1 — the maintenance seat's own law, applied
+    # at the cascade seat too): `flow_failed` inside the statement fails the
+    # root ONLY when NO unresolved live node remains (a promoted pending
+    # source counts as unresolved live work — the state machine's own
+    # precedence row 1 outranks the failure). When the gate held the root's
+    # failure back (the drain just promoted the source in a concurrent
+    # transaction), the §5.4 fence MUST NOT fire: its own proof ("the root
+    # terminal 'failed' has just committed") is false here, and fencing the
+    # parked source under a live run would strand the run's own continuation.
+    # THE ROOT'S OWN LOCK IS THIS TRANSACTION'S ENTRY LOCK (R2/A9.2) — the
+    # gated failure stays its OWN statement after the grant, so its fresh
+    # READ COMMITTED snapshot decides from the rows as they stand NOW (a
+    # promotion the drain committed while this transaction waited on the
+    # root is visible; deciding from the wait's own stale snapshot is the
+    # strand's own mechanism). No second lock-acquisition CTE exists: the
+    # entry lock is the one root-lock owner here.
+    flow_actually_failed = False
+    if cascade_row is not None and int(cascade_row["blocked"]) >= 1:
+        failed_row = await conn.fetchrow(
+            wsql.flow_failed_gated,
+            flow_id,
+            CANCEL_ORIGIN_PEER_FAILURE,
+        )
+        flow_actually_failed = failed_row is not None and int(failed_row["flow_failed"]) == 1
+    # THE §5.4 NON-DRAINAGE REFUSAL — in this same failure-cascade
+    # transaction, ONLY when this statement's own root finalize actually
+    # committed: the root terminal `failed` behind this child's exhausted
+    # failure. An exact parked source still holding un-emitted work —
+    # INCLUDING the first page when no cursor has committed — is the one
+    # durable proof that the run is provably not draining; the fence ends
+    # it (no logical attempt spent, no ladder retry, the child's genuine
+    # error untouched).
+    if flow_actually_failed:
+        from taskq.workflows._emit import fence_not_draining_parked_sources
+
+        await fence_not_draining_parked_sources(
+            conn,
+            wsql,
+            flow_id=flow_id,
+            child_id=parent_id,
+            child_step_key=step_key,
+        )
 
     # the absorbed fan-in (collect | maybe) — the typed partial result's
     # failure items. The ledger's attempt rows for this child are the
@@ -803,6 +855,7 @@ async def finalize_node(
     map_index: int | None = None,
     ledger_id: JobId | None = None,
     ledger_claimed_at: datetime | None = None,
+    emit_capacity: bool = False,
     terminal_effect: TerminalEffect | None = None,
     terminal_reason: TerminalEffectReason = "retry_exhausted",
 ) -> FinalizeResult:
@@ -815,10 +868,36 @@ async def finalize_node(
     attempt 'fenced' on the ledger and reports ``applied=False``.
 
     The LEDGER TERMINAL's key: *ledger_id* (the claim's own RETURNING id —
-    ``LedgerClaim.ledger_id``) when held, else the arbiter tuple keyed with
-    *map_index* — either way the write touches exactly the claimed row, so
-    two map children of one step key never overwrite each other's outcome.
-    """
+    ``LedgerClaim.ledger_id``). Every production caller threads the
+    claimed row's own id, so the write touches exactly the claimed row
+    — two map children of one step key never overwrite each other's
+    outcome. The identity is not optional: a finalize asked to apply a
+    terminal with no *ledger_id* is refused (``applied=False``, nothing
+    written) — an applied terminal without its claim identity would
+    leave the claim's history row 'running' beside the terminal node,
+    the split state the ledger-terminal-atomic rule forbids. (The
+    former arbiter-tuple fallback keyings keyed with *map_index* were
+    deleted with the by-id keying's adoption.)
+
+    *emit_capacity* gates the bounded run's §4.1 terminal event rule inside
+    tx1 (one indexed exact-marker probe; only a marker-positive probe
+    derives capacity and may create the durable promotion intent). It is a
+    declaration fact of the run, never a wake seat: no promotion executes
+    here."""
+    # THE LEDGER-TRUTH LAW, fail closed at the door: an APPLIED terminal
+    # must carry its claim's ledger identity. The history write keys the
+    # claim's own RETURNING id (LEDGER_TERMINAL_BY_ID_SQL) — a finalize
+    # with no id in hand can never pin that write, and applying its
+    # terminal anyway would leave the claim's own history row 'running'
+    # beside the terminal job row: the split state the
+    # ledger-terminal-atomic rule forbids. No production caller reaches
+    # this refusal (every route threads its claim's id; the loop's
+    # iteration terminal and the disposition primitive raise on a missing
+    # claim), so the door narrows to exactly the identity-less caller —
+    # refused with the fenced shape, nothing written.
+    if ledger_id is None:
+        return FinalizeResult(applied=False, attempt=None)
+
     assert_valid_transition("running", outcome, job_id)
 
     # the finalize's reducers are resolvable outside this call's stack — the
@@ -869,6 +948,7 @@ async def finalize_node(
                 map_index=map_index,
                 ledger_id=ledger_id,
                 ledger_claimed_at=ledger_claimed_at,
+                emit_capacity=emit_capacity,
                 terminal_effect=terminal_effect,
                 terminal_reason=terminal_reason,
             )
@@ -900,4 +980,5 @@ async def finalize_node(
         attempt=attempt,
         decremented=hits,
         fired=fired,
+        intent_created=tx1.intent_created,
     )

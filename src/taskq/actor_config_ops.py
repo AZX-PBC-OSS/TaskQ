@@ -701,7 +701,11 @@ cancelled AS (
        SET status = 'cancelled',
            finished_at = clock_timestamp(),
            error_class = '{actor_deregistered_class}',
-           error_message = 'Job cancelled by actor deregistration (force=True)'
+           error_message = 'Job cancelled by actor deregistration (force=True)',
+           -- THE TERMINAL REMOVES THE RESERVATION KEY (§2.4): the force
+           -- deregistration's terminal removes any held page-width
+           -- reservation in the same winning statement.
+           metadata = j.metadata - 'wf_emit_reservation'
       FROM matching AS prev
      WHERE j.id = prev.id
        AND j.status IN ('pending', 'scheduled')

@@ -100,7 +100,7 @@ from taskq.testing.jobs import make_job_row
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import dispatch_one_job
-from taskq.worker.notify import _recover_notify_conn
+from taskq.worker.notify import _NotifyEntry, _recover_notify_conn
 from tests._di_scopes import bootstrap_scopes, make_scopes
 from tests.test_cron_loop import (
     _NOW,
@@ -262,16 +262,22 @@ def _mock_conn() -> Mock:
     return conn
 
 
-def _make_channels() -> list[tuple[str, object]]:
-    from taskq.constants import events_channel, wake_channel, worker_channel
+def _make_channels() -> list[_NotifyEntry]:
+    from taskq.constants import (
+        events_channel,
+        leader_wake_channel,
+        wake_channel,
+        worker_channel,
+    )
 
     def _cb(conn: object, *rest: object) -> None:
         del conn, rest  # Why: asyncpg's callback signature, never invoked in these pins.
 
     return [
-        (wake_channel("taskq_test"), _cb),
-        (events_channel("taskq_test"), _cb),
-        (worker_channel("taskq_test", _WORKER_ID), _cb),
+        _NotifyEntry(wake_channel("taskq_test"), _cb, reconnect_backfill=True),
+        _NotifyEntry(events_channel("taskq_test"), _cb),
+        _NotifyEntry(worker_channel("taskq_test", _WORKER_ID), _cb),
+        _NotifyEntry(leader_wake_channel("taskq_test"), _cb),
     ]
 
 

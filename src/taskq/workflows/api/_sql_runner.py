@@ -16,8 +16,11 @@ from typing import Any, Final
 import asyncpg
 
 from taskq._sql_render import render as shared_render
+from taskq.backend._sql_fragments import emit_park_marker_core
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
+from taskq.workflows._sql_claim import current_claim_join
+from taskq.workflows._sql_finalize import validated_reservation_width
 from taskq.workflows._sql_status import absorbed_exists
 from taskq.workflows.api._runner_defer import WORKFLOW_CANCELLED_CLASS
 
@@ -65,13 +68,20 @@ SET status = 'running', locked_by_worker = $2, lock_expires_at = now() + interva
     -- THE DIRECT CLAIM IS A REAL CLAIM SEQUENCE (the fleet's own rule):
     -- the epoch increments atomically with the attempt, and the returned
     -- pair fences this claim's ledger row and every context/finalize
-    -- write.
+    -- write. A parked-and-woken direct node resumes at a NEW epoch and
+    -- mints its own ledger row — the previous 'awaited' row stays
+    -- untouched, and no shared zero distinguishes (or collides) claims.
     attempt = attempt + 1, claim_epoch = claim_epoch + 1
 WHERE id = $1
   AND (
     status = 'pending'
     OR (status = 'scheduled' AND scheduled_at <= now())
   )
+  -- A parked source has no body and no claim of its own: the marker, never
+  -- a timestamp, is the discriminator, and a row still carrying the live
+  -- EmitBackpressure marker is the promotion's to move (the promotion CAS
+  -- removes the marker atomically with the reservation it installs).
+  AND NOT ({wf_emit_park_core})
   AND deps_pending = 0
   -- THE HOLD-STAMP LEG (the fence's last word — the two-driver race's
   -- wedged-hold fix, the same leg the worker's claimable fence carries
@@ -269,8 +279,21 @@ SELECT id, step_key, map_index, attempt, trace_id, payload, start_to_close, meta
        retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter
 FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
-  AND status IN ('pending', 'scheduled')
-  AND (scheduled_at IS NULL OR scheduled_at <= now())
+  AND (
+    status = 'pending'
+    OR (
+      status = 'scheduled'
+      -- THE CLAIM CAS'S OWN SCHEDULED SHAPE: a scheduled row is claimable
+      -- only at a real due time that has passed — the same leg the claim
+      -- CAS evaluates.
+      AND scheduled_at <= now()
+    )
+  )
+  -- The exact-park exclusion mirrors the claim CAS's own: a row still
+  -- carrying the live EmitBackpressure marker is the promotion's to move,
+  -- never a claim's to take — the promotion removes the marker atomically
+  -- with the reservation it installs.
+  AND NOT ({wf_emit_park_core})
   AND deps_pending = 0
   AND step_key <> '__flow__'
   AND NOT metadata ? 'hold'
@@ -352,14 +375,29 @@ UPDATE {schema}.jobs SET status = 'running' WHERE id = $1 AND status = 'pending'
 """
 
 CANCEL_ROOT_SQL_TEMPLATE = """
-WITH flipped AS (
+-- THE PRE-UPDATE CAPTURE (A9.4's truthful old state): the target CTE
+-- locks the root row (FOR UPDATE) and captures its ACTUAL pre-update
+-- status before the flip — the event's from_state is the row's own
+-- prior state (a pending root records 'pending', a running root
+-- 'running'), never a hardcoded value. The lock is the old-state race's
+-- own control (B-1): whichever writer locks first establishes the
+-- transition; the other captures the committed winner state afterwards.
+-- The root UPDATE itself remains the seat's first row lock and the
+-- cancel's linearization point (root-before-nodes).
+WITH target AS (
+    SELECT j.id, j.status::text AS from_state
+    FROM {schema}.jobs AS j
+    WHERE j.id = $1
+      AND j.status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+    FOR UPDATE
+), flipped AS (
     UPDATE {schema}.jobs SET status = 'cancelled',
         error_class = '{wf_cancelled_class}',
         error_message = $2,
         finished_at = clock_timestamp()
-    WHERE id = $1
-      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
-    RETURNING id, status::text AS to_state
+    FROM target
+    WHERE {schema}.jobs.id = target.id
+    RETURNING {schema}.jobs.id, status::text AS to_state, target.from_state
 ), evt AS (
     -- THE AUDIT LEG (the operator's march's battery finding): the
     -- cancel's flip IS a mutation — the events reader gets the
@@ -367,40 +405,131 @@ WITH flipped AS (
     -- terminal row's OWN event here).
     INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
     SELECT f.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', 'running', 'to_state', f.to_state,
+           jsonb_build_object('from_state', f.from_state, 'to_state', f.to_state,
                               'error_class', '{wf_cancelled_class}')
     FROM flipped f
 )
 SELECT id FROM flipped
 """
 
+
+#: The runner templates' render path does not collapse braces (their own
+#: jsonb literals are single-braced), while `_sql_finalize`'s shared
+#: fragments are written in that module's doubled-brace convention (its
+#: render collapses). A fragment moved across the seam is re-braced here,
+#: once, with the convention named — the runner's own literals are
+#: untouched.
+def _rebrace(fragment: str) -> str:
+    return fragment.replace("{{", "{").replace("}}", "}")
+
+
 CANCEL_NODES_SQL_TEMPLATE = """
-WITH flipped AS (
-    UPDATE {schema}.jobs
-    SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
-        finished_at = CASE WHEN status = 'running' THEN finished_at ELSE clock_timestamp() END,
-        error_class = CASE WHEN status = 'running' THEN error_class ELSE '{wf_cancelled_class}' END,
-        metadata = metadata || '{"cancel_phase": "cooperative"}'::jsonb
-    WHERE (metadata->>'flow_id')::uuid = $1
+-- THE PRE-UPDATE CAPTURE (A9.4's truthful old state + B-1's old-state
+-- race control): the target CTE locks each candidate row (FOR UPDATE —
+-- whichever writer locks first establishes the transition; the other
+-- captures the committed winner state) and captures its ACTUAL
+-- pre-update status and its validated old page-width reservation (the
+-- §2.4 semantics: NULL when absent, fail-closed on a malformed key) —
+-- the event's from_state and the additive released-width detail are the
+-- row's own facts, never post-update reads.
+WITH targets AS (
+    SELECT j.id,
+           j.status::text AS from_state,
+           {wf_emit_validated_reservation_width}
+    FROM {schema}.jobs AS j
+    WHERE (j.metadata->>'flow_id')::uuid = $1
       AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
       -- A materialized terminal effect owns an independent ordinary policy.
       -- Its committed intent has already been granted this one physical job;
       -- later run cancellation must not revoke that durable obligation.
       AND NOT metadata ? 'wf_after_terminal_effect'
-    RETURNING id, (status::text) AS to_state
+    FOR UPDATE
+), flipped AS (
+    UPDATE {schema}.jobs
+    SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
+        finished_at = CASE WHEN status = 'running' THEN finished_at ELSE clock_timestamp() END,
+        error_class = CASE WHEN status = 'running' THEN error_class ELSE '{wf_cancelled_class}' END,
+        -- THE §2.4 KEY FATE: the COOPERATIVE row (still running) retains
+        -- its key; a row this statement actually TERMINALIZES removes it.
+        metadata = CASE WHEN status = 'running'
+                        THEN metadata || '{"cancel_phase": "cooperative"}'::jsonb
+                        ELSE (metadata - 'wf_emit_reservation') || '{"cancel_phase": "cooperative"}'::jsonb END
+    FROM targets AS t
+    WHERE {schema}.jobs.id = t.id
+    RETURNING {schema}.jobs.id, (status::text) AS to_state, t.from_state,
+              t.released_emit_reservation_width
+), current_claim AS (
+    -- THE CURRENT-CLAIM RESOLUTION (the ONE shared association core —
+    -- `_sql_claim.current_claim_join`: job_id + the CURRENT claim_epoch +
+    -- the exact step_key + the null-safe map_index; NO attempt-equality
+    -- leg — every non-consuming release (an ordinary Snooze, a legacy
+    -- non-consuming RetryAfter, a hold, a worker refund, the capacity
+    -- park) refunds the job's DISPLAYED ordinal below the recorded
+    -- claim's attempt while the current epoch stands, so an attempt leg
+    -- would resolve zero rows and leave the current claim unfenced — and
+    -- no park-metadata test: the epoch already identifies the current
+    -- claim across every refund representation). The renderer owns this
+    -- disposition's own nonterminal status domain AND the strict
+    -- single-row maximality: the ledger's arbiter makes
+    -- same-job/same-epoch/same-step/same-map rows with different attempts
+    -- distinct, so the maximality probe (highest attempt, then the latest
+    -- updated_at, then the highest id) is what makes ONE cancelled winner
+    -- unable to associate two rows — two fences and two events for one
+    -- winner is the defect the probe closes. The captured ledger id +
+    -- pre-update instant are the exact fence; the captured attempt is a
+    -- NON-NARROWING recorded fact (the audit's optional claim_attempt
+    -- detail), never an association leg. A never-claimed pending row has
+    -- no current claim and needs none (LEFT-joined at the event).
+    SELECT f.id AS job_id, l.id AS ledger_id, l.updated_at AS claimed_at,
+           l.attempt AS claim_attempt
+    FROM flipped AS f
+    JOIN {schema}.jobs AS j ON j.id = f.id
+    JOIN {schema}.wf_step_ledger AS l
+      ON {current_claim_join}
+    WHERE f.to_state = 'cancelled'
+), fenced_ledger AS (
+    -- The exact writer fence: ONLY the captured current row (its own id +
+    -- its pre-update instant) changes; older epochs, sibling ctx.substep
+    -- rows, map siblings, and terminal history are byte-for-byte
+    -- untouched.
+    UPDATE {schema}.wf_step_ledger AS l
+    SET status = 'fenced', error_class = '{wf_cancelled_class}',
+        updated_at = clock_timestamp()
+    FROM current_claim AS c
+    WHERE l.id = c.ledger_id
+      AND l.updated_at = c.claimed_at
+    RETURNING l.id
 ), evt AS (
     -- THE AUDIT LEG: only the rows THIS statement actually
     -- terminalised (a running row's cooperative phase-1 keeps it
-    -- running — its own terminal write carries its event).
+    -- running — its own terminal write carries its event). The winner
+    -- set owns the event cardinality INDEPENDENTLY of any ledger match
+    -- (a never-claimed pending winner still records its event — the
+    -- optional LEFT association adds the non-narrowing claim_attempt
+    -- detail when a current claim exists and omits it through
+    -- jsonb_strip_nulls when none does). Detail is the union of the
+    -- captured old state and the additive F10/B-2 fields.
     INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
     SELECT f.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', 'pending', 'to_state', f.to_state,
-                              'error_class', '{wf_cancelled_class}')
-    FROM flipped f
+           jsonb_strip_nulls(jsonb_build_object(
+               'from_state', f.from_state,
+               'to_state', f.to_state,
+               'error_class', '{wf_cancelled_class}',
+               'claim_attempt', c.claim_attempt,
+               'released_emit_reservation_width', f.released_emit_reservation_width
+           ))
+    FROM flipped AS f
+    LEFT JOIN current_claim AS c ON c.job_id = f.id
     WHERE f.to_state = 'cancelled'
 )
 SELECT count(*) FROM flipped
-"""
+""".replace(
+    "{current_claim_join}",
+    current_claim_join("j", "l", ("running", "awaited", "crashed")),
+).replace(
+    "{wf_emit_validated_reservation_width}",
+    _rebrace(validated_reservation_width("j")) + " AS released_emit_reservation_width",
+)
 
 TERMINAL_RESULT_SQL_TEMPLATE = """
 SELECT r.status AS run_status,
@@ -446,7 +575,11 @@ EXIT_SKIP_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
 SET status = 'succeeded',
     result = $2::jsonb,
-    finished_at = clock_timestamp()
+    finished_at = clock_timestamp(),
+    -- THE TERMINAL REMOVES THE RESERVATION KEY (§2.4): the early Exit's
+    -- skip-terminal removes any held page-width reservation in the same
+    -- winning statement — no key survives a terminal row for re-arm.
+    metadata = metadata - 'wf_emit_reservation'
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
   AND step_key = ANY($3)
@@ -468,7 +601,17 @@ SET status = 'pending',
     error_message = NULL,
     scheduled_at = now(),
     locked_by_worker = NULL,
-    lock_expires_at = NULL
+    lock_expires_at = NULL,
+    -- THE MANUAL RE-ARM'S DEFENSIVE STRIP (§2.4, N4): a manually
+    -- re-armed terminal row carries no old episode's keys into its new
+    -- one — the reservation key (a future promotion re-grants it; a
+    -- stale key would charge the derived capacity and force the
+    -- re-armed row's own honest next page through the deterministic
+    -- grant-violation route), the park marker family, and any
+    -- terminal-fence stamp.
+    metadata = metadata - 'wf_emit_reservation'
+        - 'blocking_reason' - 'wf_deferral' - 'wf_emit_backpressure'
+        - 'wf_not_draining'
 WHERE step_key = $2
   AND (metadata->>'flow_id')::uuid = $1
   AND status = 'failed'
@@ -517,7 +660,12 @@ SET status = 'pending',
     finished_at = NULL,
     scheduled_at = now(),
     locked_by_worker = NULL,
-    lock_expires_at = NULL
+    lock_expires_at = NULL,
+    -- THE MANUAL RE-ARM'S DEFENSIVE STRIP (§2.4, N4): the same keys the
+    -- node-retry re-arm strips — a re-armed row is an ordinary live row.
+    metadata = metadata - 'wf_emit_reservation'
+        - 'blocking_reason' - 'wf_deferral' - 'wf_emit_backpressure'
+        - 'wf_not_draining'
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status = 'succeeded'
   AND result @> '{"skipped": true}'::jsonb
@@ -543,11 +691,20 @@ async def wf_conn_fetchval(pool: asyncpg.Pool, schema: str, query: str, *args: o
 #: its one home (``api/_runner_defer``), never spelled per template.
 _SQL_TOKEN_SUBS: Final[tuple[tuple[str, str], ...]] = (
     ("{wf_cancelled_class}", WORKFLOW_CANCELLED_CLASS),
+    # The exact-park exclusion's shared MARKER CORE (the neutral renderer's
+    # projection: complete minus its status leg — the only correct
+    # exclusion for a WHERE that admits `pending` rows). Unqualified,
+    # single-brace canonical text; the runner's render is a plain replace
+    # and never collapses braces, so no re-brace is owed.
+    ("{wf_emit_park_core}", emit_park_marker_core("")),
 )
 
 
 def render_sql(template: str, schema: str) -> str:
     """One runner statement's render (the shared render's substitution:
     the validated schema, then the token table above — the schema
-    identifier is checked before anything renders)."""
+    identifier is checked before anything renders). The runner templates'
+    jsonb literals are single-braced (a doubled `}}` sequence inside a
+    nested jsonb literal is REAL SQL text here, never an escape — the
+    un-doubling pass would truncate it)."""
     return shared_render(template, schema, subs=_SQL_TOKEN_SUBS)

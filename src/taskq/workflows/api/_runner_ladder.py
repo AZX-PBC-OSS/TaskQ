@@ -10,7 +10,7 @@ terminal-fail cascade) in ``taskq.workflows.engine``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 
 import asyncpg
 import structlog
@@ -88,74 +88,117 @@ def is_infra_fault(exc: BaseException) -> bool:
     return isinstance(exc, infra)
 
 
-def is_deterministic_authoring_failure(exc: BaseException) -> bool:
-    """the FAILURE-CLASS ROUTING RULE's deterministic leg (the rule
-    stated once, pinned per class):
-    a DETERMINISTIC authoring failure never rides the retry ladder. The
-    three classes the engine itself defines are deterministic BY
-    CONSTRUCTION — each is raised by the engine's own gates for a defect
-    that re-running cannot fix:
-
-    * :class:`ProgressRefusedError` — a wrong-shaped emission (an
-      authoring bug; the body will send the same shape on every retry);
-    * :class:`PageDivergedError` — the emit's page already exists (the
-      resume's cursor diverged from the row history; the re-claim
-      re-reads the same cursor and collides again);
-    * :class:`MapIndexExhaustedError` — the smallint ceiling (the
-      record's identity cannot grow past it on any retry);
-    * :class:`FanInBoundExceededError` — the fork's fan-in past the
-      declared bound (re-running cannot shrink the
-      corpus; the refusal NAMES the child_driven escape — the remedy is
-      a re-wiring, never a retry);
-    * :class:`SpawnDepthExceededError` — the spawn's ancestor walk past
-      the declared max depth (re-running cannot shrink
-      the ancestor chain — the child line's own bound, the fan-in
-      bound's sibling);
-    * :class:`ChildFlowLostError` — the parent's resume found a
-      DANGLING child pointer (re-running cannot restore
-      the purged rows — the respawn refusal is the honest face, the
-      silent re-execution it replaced was the lie).
-
-    ROUTING RULE, per class
-    ``deterministic = the NAMED terminal`` (finalize immediately, the
-    error class on the record, the ladder unburned — a retry budget
-    spent on a deterministic death is the record's lie: three identical
-    failures pretending to be a flake); ``infra = reclaim`` (the
-    machinery boundary's classifier, :func:`is_infra_fault` — the
-    ladder untouched); ``transient = the ladder`` (the body's ordinary
-    failures — the backoff curve, then the terminal).
-
-    The body boundary consults this before the ladder
-    (:meth:`LadderOps._ladder_or_fail`): a body-raised wrong-shape
-    emission is deterministic here, never a raw
-    laddered failure — the deterministic death must not be
-    mislabeled transient and burn the ladder.
-    """
+def _deterministic_classes() -> tuple[type[BaseException], ...]:
+    """The DETERMINISTIC authoring-failure classes (§2.1/§2.5's own
+    fail-closed refusals): each is raised by the engine's own gates for a
+    defect that re-running cannot fix — the one tuple both the routing
+    predicate and the terminal's own record-class helper consume (one
+    truth, never a second spelling to drift)."""
     from taskq.exceptions import ReservedTimerNamespaceError
     from taskq.workflows._childflow import ChildFlowLostError, SpawnDepthExceededError
-    from taskq.workflows._emit import MapIndexExhaustedError, PageDivergedError
+    from taskq.workflows._emit import (
+        EmitCapacityCorruptionError,
+        EmitReservationExceededError,
+        MapIndexExhaustedError,
+        PageDivergedError,
+    )
     from taskq.workflows._progress import ProgressRefusedError
     from taskq.workflows.api._runner_errors import VanishedNodeError
     from taskq.workflows.definitions import FanInBoundExceededError
 
-    deterministic: tuple[type[BaseException], ...] = (
+    return (
         ProgressRefusedError,
         PageDivergedError,
+        EmitReservationExceededError,
+        EmitCapacityCorruptionError,
         MapIndexExhaustedError,
         FanInBoundExceededError,
-        # E17 — the reserved-timer-prefix mint refusal: the payload
-        # model's name is the code's own —
-        # re-running the body re-raises the same refusal on every
-        # attempt (a retry budget spent on it is the record's lie).
         ReservedTimerNamespaceError,
         SpawnDepthExceededError,
         ChildFlowLostError,
-        # a step key the registry does not carry has no body on any attempt —
-        # the registry is the truth (D1); the remedy is cancel-then-restart,
-        # never a retry budget spent on an unresolvable key.
         VanishedNodeError,
     )
-    return isinstance(exc, deterministic)
+
+
+def find_embedded_exception[T: BaseException](
+    exc: BaseException,
+    classes: tuple[type[T], ...],
+) -> T | None:
+    """The ONE typed, private, cycle-bounded embedded-leaf finder (R3/A9.3)
+    — shared by the deterministic classification and the backpressure door.
+
+    Contract: match the CURRENT object before descent; traverse
+    ``BaseExceptionGroup.exceptions`` left-to-right recursively; then
+    traverse the explicit ``__cause__`` chain; one identity ``seen`` set
+    for the whole traversal (a cycle or a shared subgroup can neither
+    loop nor blow the stack). Implicit ``__context__`` is NEVER
+    traversed — a previously handled control exception hiding in context
+    is not this body's outcome. Returns the ACTUAL first matching
+    exception object — never a class name recreation — so the caller's
+    disposition carries the leaf's own validated facts (the
+    ``EmitBackpressure``'s page/bound/outstanding, the deterministic
+    refusal's own identity); ``None`` when no leaf matches."""
+    seen: set[int] = {id(exc)}
+
+    def _walk(candidate: BaseException) -> T | None:
+        if isinstance(candidate, classes):
+            return candidate
+        if isinstance(candidate, BaseExceptionGroup):
+            for leaf in cast(
+                "tuple[BaseException, ...]", candidate.exceptions
+            ):  # Why: pyright narrows BaseExceptionGroup to BaseExceptionGroup[Unknown], so .exceptions is partially unknown without this cast (verified probe) — the members are BaseException by the group's own contract.
+                if id(leaf) in seen:
+                    continue
+                seen.add(id(leaf))
+                found = _walk(leaf)
+                if found is not None:
+                    return found
+        cause = candidate.__cause__
+        if cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            return _walk(cause)
+        return None
+
+    return _walk(exc)
+
+
+def _find_deterministic_leaf(exc: BaseException) -> str | None:
+    """The FIRST deterministic leaf's own class name (the shared walker's
+    deterministic face); None when nothing deterministic is carried."""
+    leaf = find_embedded_exception(exc, _deterministic_classes())
+    return type(leaf).__name__ if leaf is not None else None
+
+
+def _deterministic_error_class(exc: BaseException) -> str:
+    """The deterministic terminal's own record class: the deterministic
+    refusal's OWN name — a grouped deterministic error records its first
+    deterministic leaf's name (the group's wrapper name is not the
+    remedy's own vocabulary); a plain deterministic error records its own
+    name. For a non-deterministic shape the helper records the exception's
+    own class name via the fallback below — the failure ladder CALLS this
+    helper unconditionally on the terminal path (the caller routes by
+    :func:`is_deterministic_authoring_failure`; the record class is this
+    helper's), so the fallback is load-bearing, never dead."""
+    return _find_deterministic_leaf(exc) or type(exc).__name__
+
+
+def is_deterministic_authoring_failure(exc: BaseException) -> bool:
+    """the FAILURE-CLASS ROUTING RULE's deterministic leg (the rule
+    stated once, pinned per class): a DETERMINISTIC authoring failure
+    never rides the retry ladder.
+
+    The classes are :func:`_deterministic_classes`' own tuple (the
+    engine's own fail-closed refusals — each re-raises on every retry,
+    so a retry budget spent on one is the record's lie). The GROUPED
+    face (N2): a body that emits pages inside ``asyncio.TaskGroup`` (or
+    a multi-coroutine gather) receives an ``ExceptionGroup`` — the
+    group is an ordinary ``Exception`` to the body arm, but the
+    deterministic facts ride its LEAVES: a grouped deterministic error
+    IS deterministic (re-running the body re-presents the same page and
+    re-raises the same leaf), recursively over nested groups and,
+    defensively, over a wrapped ``__cause__``.
+    """
+    return _find_deterministic_leaf(exc) is not None
 
 
 class _LadderHost(Protocol):
@@ -167,6 +210,11 @@ class _LadderHost(Protocol):
     schema: str
     compiled: Any  # the compiled workflow (the declared capture's source)
     _worker_id: JobId
+    # The bounded-run gate (the §4.1 event rule's host-side fact) and the
+    # terminal route's own post-COMMIT drain trigger.
+    _emit_capacity: bool
+
+    async def _drain_created_intent(self, flow_id: JobId, intent_created: bool) -> None: ...
 
     async def _project_auto(
         self, flow_id: JobId, node_id: JobId, kind: str, payload: dict[str, Any]
@@ -409,17 +457,24 @@ class LadderOps(_LadderHost):
             attempt=attempt,
             claim_epoch=claim_epoch,
             outcome="failed",
-            error_class=type(exc).__name__,
+            # THE RECORD'S OWN TRUTH (N2): the deterministic terminal names
+            # the DETERMINISTIC refusal's own class — a grouped
+            # deterministic error records its deterministic LEAF's name
+            # (the refusal the remedy names), never the group's own
+            # wrapper name.
+            error_class=_deterministic_error_class(exc),
             error_message=str(exc)[:MESSAGE_TERMINAL_MAX],
             capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the compile (the workflow decorator's declaration); the host protocol's compiled is the runner's Any-typed field.
             map_index=row["map_index"],
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            emit_capacity=self._emit_capacity,
             terminal_effect=(None if deterministic else self._terminal_effect_for(node, row)),
             terminal_reason=(
                 "non_retryable" if retry_kind == "non_retryable" else "retry_exhausted"
             ),
         )
+        await self._drain_created_intent(flow_id, final.intent_created)
         if final.applied:
             await self._project_auto(
                 flow_id,
@@ -428,7 +483,14 @@ class LadderOps(_LadderHost):
                 {
                     "outcome": "failed",
                     "step_key": row["step_key"],
-                    "error_class": type(exc).__name__,
+                    # THE RECORD'S OWN TRUTH, projected (L-2): the same
+                    # helper the terminal write just used — the
+                    # deterministic LEAF's own class name (a grouped
+                    # deterministic error projects the leaf, never the
+                    # group's wrapper name). The projection is best-effort
+                    # freshness, but it must not disagree with the durable
+                    # record it mirrors.
+                    "error_class": _deterministic_error_class(exc),
                 },
             )
         return "failed"
@@ -624,9 +686,11 @@ class LadderOps(_LadderHost):
                 map_index=row["map_index"],
                 ledger_id=ledger_id,
                 ledger_claimed_at=ledger_claimed_at,
+                emit_capacity=self._emit_capacity,
                 terminal_effect=self._terminal_effect_for(node, row),
                 terminal_reason="deadline",
             )
+            await self._drain_created_intent(flow_id, final.intent_created)
             if final.applied:
                 await self._project_auto(
                     flow_id,

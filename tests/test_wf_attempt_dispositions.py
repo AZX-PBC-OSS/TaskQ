@@ -11,6 +11,7 @@ from __future__ import annotations
 # ruff: noqa: S608  # Why: schema is the controlled fixture identifier; all values are parameter-bound.
 import asyncio
 import json
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import asyncpg
@@ -58,6 +59,7 @@ async def _claimed(
         "work",
         None,
         claimed_attempt,
+        claimed_epoch,
     )
     assert ledger is not None and ledger["updated_at"] is not None
     claim = AttemptClaim(
@@ -131,6 +133,7 @@ class _DispositionInterposedConn:
                 step_key=claim.step_key,
                 map_index=claim.map_index,
                 attempt=claim.attempt,
+                claim_epoch=claim.claim_epoch,
             )
             self.reminted_at = latest.claimed_at
         return record
@@ -227,7 +230,7 @@ async def test_body_retry_atomically_updates_row_and_current_ledger(
 
     # An actual second claim re-mints this worker's attempt. A different
     # logical attempt cannot accidentally overwrite the first ledger row.
-    next_attempt, _next_epoch = await _claim_second_attempt(wf_conn, wf_schema, claim)
+    next_attempt, next_epoch = await _claim_second_attempt(wf_conn, wf_schema, claim)
     assert next_attempt == 2
     new_ledger = await wf_conn.fetchrow(
         wf_sql.ledger_claim,
@@ -237,6 +240,7 @@ async def test_body_retry_atomically_updates_row_and_current_ledger(
         "work",
         None,
         next_attempt,
+        next_epoch,
     )
     assert new_ledger is not None and new_ledger["id"] != claim.ledger_id
     assert new_ledger["status"] == "running"
@@ -433,11 +437,49 @@ async def test_stale_claim_fences_its_ledger_without_touching_the_winner(
 
 @pytest.mark.integration
 async def test_a_stale_claim_after_ledger_remint_is_a_safe_noop(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_sql: WorkflowSql,
+    module_pg_pool: asyncpg.Pool,
 ) -> None:
+    from taskq.workflows._emit import EmitBackpressure, wake_emit_backpressure
+    from taskq.workflows.api._runner_defer import defer_row_law
+    from taskq.workflows.api._sql_runner import NODE_CLAIM_SQL_TEMPLATE, render_sql
     from taskq.workflows.ledger import claim_step_ledger
 
     flow_id, node_id, claim = await _claimed(wf_conn, wf_schema, wf_sql)
+    # THE REAL REMINT (the capacity park's own cycle): the park (the row's
+    # own claimant) refunds the physical ordinal, the wake promotes, the
+    # re-claim CAS grants the NEXT epoch, and the winner's claim records its
+    # OWN ledger row beside the parked attempt's history.
+    park_verdict = await defer_row_law(
+        module_pg_pool,
+        wf_sql,
+        job_id=node_id,
+        worker_id=claim.worker_id,
+        attempt=claim.attempt,
+        claim_epoch=claim.claim_epoch,
+        disposition="emit_backpressure",
+        delay=timedelta(0),
+        signal_name="EmitBackpressure",
+        ledger_id=claim.ledger_id,
+        ledger_claimed_at=claim.ledger_claimed_at,
+        backpressure=EmitBackpressure(page_width=1, bound=2, outstanding=1),
+        source_logical_attempt=1,
+        flow_id=flow_id,
+    )
+    assert park_verdict.verdict == "deferred", park_verdict
+    woken = await wake_emit_backpressure(module_pg_pool, wf_sql, flow_id=flow_id)
+    assert woken.promoted == 1, "the parked source must promote for the re-claim"
+    reclaimed = await wf_conn.fetchrow(
+        render_sql(NODE_CLAIM_SQL_TEMPLATE, wf_schema), node_id, new_uuid()
+    )
+    assert reclaimed is not None, "the promoted row is due for the winner's re-claim"
+    assert (
+        int(reclaimed["attempt"]) == claim.attempt
+        and int(reclaimed["claim_epoch"]) == claim.claim_epoch + 1
+    ), dict(reclaimed)
+    winner_epoch = int(reclaimed["claim_epoch"])
     latest = await claim_step_ledger(
         wf_conn,
         wf_sql,
@@ -445,13 +487,15 @@ async def test_a_stale_claim_after_ledger_remint_is_a_safe_noop(
         job_id=node_id,
         step_key=claim.step_key,
         map_index=claim.map_index,
-        attempt=claim.attempt,
+        attempt=int(reclaimed["attempt"]),
+        claim_epoch=winner_epoch,
     )
-    assert latest.ledger_id == claim.ledger_id
+    assert latest.ledger_id != claim.ledger_id, (
+        "the re-mint records its OWN ledger row (the epoch arbiter's "
+        "per-claim history) — the parked attempt's 'awaited' record is "
+        "never overwritten by the resumed claim"
+    )
     assert latest.claimed_at is not None
-    assert latest.claimed_at != claim.ledger_claimed_at, (
-        "a re-mint must have a new claim instant for this stale-writer proof"
-    )
     async with wf_conn.transaction():
         outcome = await repend_attempt(
             wf_conn,
@@ -465,11 +509,41 @@ async def test_a_stale_claim_after_ledger_remint_is_a_safe_noop(
             backoff_s=0.05,
         )
     assert outcome == "stale"
-    row, ledger = await _row_and_ledger(wf_conn, wf_schema, claim)
-    assert row["status"] == "running"
-    assert ledger["status"] == "running"
-    assert ledger["updated_at"] == latest.claimed_at
-    assert "wf_repend" not in _metadata(row)
+    # THE PER-CLAIM HISTORY IS THE RECORD: the stale writer's own arm fenced
+    # ITS OWN history row (the parked attempt's 'awaited' record becomes the
+    # attempt's 'fenced' receipt — the fenced-out law), and the winner's row
+    # is the live 'running' claim at its own epoch+instant, untouched.
+    ledger_rows = await wf_conn.fetch(
+        f'SELECT attempt, claim_epoch, status, updated_at FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND step_key = $2 "
+        "ORDER BY attempt, claim_epoch, created_at, id",
+        flow_id,
+        claim.step_key,
+    )
+    assert [(r["claim_epoch"], r["status"]) for r in ledger_rows] == [
+        (claim.claim_epoch, "fenced"),
+        (winner_epoch, "running"),
+    ], [dict(r) for r in ledger_rows]
+    assert ledger_rows[-1]["updated_at"] == latest.claimed_at
+    # THE STALE WRITER'S SAFETY (the retained poison/fence cases): the stale
+    # repend wrote NOTHING on the live row — the winner's claim stands, and
+    # no repend record was stamped on a verdict that wrote nothing.
+    job_row = await wf_conn.fetchrow(
+        f"SELECT status::text AS status, attempt::int AS attempt, "
+        f'claim_epoch::bigint AS claim_epoch, metadata FROM "{wf_schema}".jobs '
+        "WHERE id = $1",
+        node_id,
+    )
+    assert job_row is not None
+    assert job_row["status"] == "running", (
+        f"the stale repend must leave the live winner's row untouched, got {dict(job_row)}"
+    )
+    assert (job_row["attempt"], job_row["claim_epoch"]) == (claim.attempt, winner_epoch), dict(
+        job_row
+    )
+    assert "wf_repend" not in _metadata(job_row), (
+        "a stale verdict must never stamp a repend record on the live row"
+    )
 
 
 @pytest.mark.integration
@@ -686,3 +760,27 @@ async def test_disposition_requires_a_real_claim_identity(
         )
     row, ledger = await _row_and_ledger(wf_conn, wf_schema, claim)
     assert (row["status"], ledger["status"]) == ("running", "running")
+
+
+@pytest.mark.integration
+async def test_fenced_awaited_ledger_has_no_running_terminal_residue(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
+) -> None:
+    _flow_id, _node_id, claim = await _claimed(wf_conn, wf_schema, wf_sql)
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".wf_step_ledger SET status = $2 WHERE id = $1',
+        claim.ledger_id,
+        "awaited",
+    )
+    fenced = await wf_conn.fetchval(
+        wf_sql.ledger_fence_by_id,
+        claim.ledger_id,
+        "OldParkedClaim",
+        claim.ledger_claimed_at,
+    )
+    assert fenced == claim.ledger_id
+    status = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".wf_step_ledger WHERE id = $1',
+        claim.ledger_id,
+    )
+    assert status == "fenced"

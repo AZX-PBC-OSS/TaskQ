@@ -31,13 +31,16 @@ Implements the token-bucket algorithm. The bucket starts full; tokens drain on e
 from taskq.ratelimit import TokenBucket
 from datetime import timedelta
 
-TokenBucket(
-    name: str,
-    capacity: float,
-    refill_per_second: float,
-    backend: Literal["redis", "postgres", "memory"] = "redis",
-    ttl: timedelta | None = None,
-)
+
+class TokenBucket:
+    def __init__(
+        self,
+        name: str,
+        capacity: float,
+        refill_per_second: float,
+        backend: Literal["redis", "postgres", "memory"] = "redis",
+        ttl: timedelta | None = None,
+    ) -> None: ...
 ```
 
 | Parameter | Description |
@@ -107,14 +110,17 @@ Implements a sliding-window rate limiter. Two algorithms are available via the `
 from taskq.ratelimit import SlidingWindow
 from datetime import timedelta
 
-SlidingWindow(
-    name: str,
-    limit: int,
-    window: timedelta,
-    backend: Literal["redis", "postgres", "memory"] = "redis",
-    style: Literal["log", "gcra"] = "log",
-    ttl: timedelta | None = None,
-)
+
+class SlidingWindow:
+    def __init__(
+        self,
+        name: str,
+        limit: int,
+        window: timedelta,
+        backend: Literal["redis", "postgres", "memory"] = "redis",
+        style: Literal["log", "gcra"] = "log",
+        ttl: timedelta | None = None,
+    ) -> None: ...
 ```
 
 | Parameter | Description |
@@ -196,15 +202,18 @@ Controls how many jobs can hold a resource simultaneously using pre-allocated sl
 from taskq.ratelimit import ConcurrencyReservation
 from datetime import timedelta
 
-ConcurrencyReservation(
-    name: str,
-    slots: int,
-    lease: timedelta | float,
-    lock_lease: timedelta | None = None,
-    *,
-    clock: Clock | None = None,
-    schema: str = "taskq",
-)
+
+class ConcurrencyReservation:
+    def __init__(
+        self,
+        name: str,
+        slots: int,
+        lease: timedelta | float,
+        lock_lease: timedelta | None = None,
+        *,
+        clock: Clock | None = None,
+        schema: str = "taskq",
+    ) -> None: ...
 ```
 
 | Parameter | Description |
@@ -743,9 +752,9 @@ class RateLimitRegistry:
     def register(self, primitive: TokenBucket | SlidingWindow | ConcurrencyReservation) -> None: ...
     def get_rate_limit(self, name: str) -> TokenBucket | SlidingWindow: ...
     def get_reservation(self, name: str) -> ConcurrencyReservation: ...
-    async def peek(self, name: str, *, ...) -> RateLimitState: ...
-    async def peek_all(self, *, ...) -> dict[str, RateLimitState]: ...
-    async def reset(self, name: str, *, ...) -> None: ...
+    async def peek(self, name: str, **options: Any) -> RateLimitState: ...
+    async def peek_all(self, **options: Any) -> dict[str, RateLimitState]: ...
+    async def reset(self, name: str, **options: Any) -> None: ...
 ```
 
 - `register()` raises `ValueError` if a primitive with the same name is already registered in the same namespace. `TokenBucket`/`SlidingWindow` and `ConcurrencyReservation` live in separate namespaces, so the same name can be used in both.

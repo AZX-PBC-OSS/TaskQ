@@ -35,7 +35,12 @@ module exists to keep):
   through the wf terminal door as ``MaxAttemptsExceeded`` (the vanilla's
   own class + message).
 
-The next deferral DISPOSITION (a new signal, a new
+#718's ``EmitBackpressure`` is deliberately not another timer arm here:
+its ordinary-capacity control uses the separate EMIT_BACKPRESSURE_PARK_SQL
+and fresh post-commit wake helpers, with no delay, snooze_count, or provider
+retry counter. Generic timer/provider dispositions remain unchanged.
+
+The next timed deferral DISPOSITION (a new signal, a new
 non-terminal row law) adds exactly three things and touches nothing
 else —
 
@@ -74,6 +79,7 @@ face), never its special case.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
@@ -88,8 +94,10 @@ from taskq.constants import (
 )
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
+from taskq.workflows._emit import EmitBackpressure, EmitCapacityCorruptionError
 from taskq.workflows._policy import TerminalEffect, TerminalEffectReason
 from taskq.workflows._progress import KIND_NODE_TERMINAL
+from taskq.workflows._sql_finalize import EMIT_BACKPRESSURE_PARK_SQL
 
 if TYPE_CHECKING:
     import asyncpg
@@ -114,10 +122,12 @@ WORKFLOW_CANCELLED_CLASS: Final[str] = "WorkflowCancelled"
 
 #: the named deferral dispositions (the extension seam's member set —
 #: see the module docstring for the law).
-DeferralDisposition = Literal["snooze", "retry_after_consuming", "retry_after_non_consuming"]
+DeferralDisposition = Literal[
+    "snooze", "retry_after_consuming", "retry_after_non_consuming", "emit_backpressure"
+]
 
 
-def deferral_disposition(exc: Snooze | RetryAfter) -> DeferralDisposition:
+def deferral_disposition(exc: EmitBackpressure | Snooze | RetryAfter) -> DeferralDisposition:
     """the SIGNAL → DISPOSITION RESOLUTION (the catch arm's whole
     mapping — one function, never a per-signal branch at the call site).
 
@@ -130,6 +140,8 @@ def deferral_disposition(exc: Snooze | RetryAfter) -> DeferralDisposition:
     The next
     deferral verdict adds ITS arm here, beside the two above.
     """
+    if isinstance(exc, EmitBackpressure):
+        return "emit_backpressure"
     if isinstance(exc, RetryAfter) and exc.consume_budget:
         return "retry_after_consuming"
     return "snooze"
@@ -146,6 +158,11 @@ class _DeferHost(Protocol):
     # ladder's own field, read the same way).
     compiled: Any
     _worker_id: JobId
+    # The bounded-run gate (the §4.1 event rule's host-side fact) and the
+    # terminal route's own post-COMMIT drain trigger.
+    _emit_capacity: bool
+
+    async def _drain_created_intent(self, flow_id: JobId, intent_created: bool) -> None: ...
 
     async def _project_auto(
         self, flow_id: JobId, node_id: JobId, kind: str, payload: dict[str, Any]
@@ -170,6 +187,17 @@ class _DeferHost(Protocol):
         re-spelling)."""
 
 
+@dataclass(frozen=True, slots=True)
+class _DeferOutcome:
+    """The shared deferral row-law's verdict plus its one-bit §4.1 result
+    (True only when the park's own event crossed the threshold and created
+    the durable promotion intent — the caller's acknowledged post-COMMIT
+    drain trigger)."""
+
+    verdict: str
+    intent_created: bool = False
+
+
 async def defer_row_law(
     pool: asyncpg.Pool,
     wsql: WorkflowSql,
@@ -183,7 +211,11 @@ async def defer_row_law(
     signal_name: str,
     ledger_id: JobId | None,
     ledger_claimed_at: Any,
-) -> str:
+    backpressure: EmitBackpressure | None = None,
+    source_logical_attempt: int | None = None,
+    iteration_rest: tuple[JobId, Any] | None = None,
+    flow_id: JobId | None = None,
+) -> _DeferOutcome:
     """the ROW LAW + the LEDGER'S TRUTH, one transaction (the terminal-atomicity law's own
     shape — a split write leaves the row 'scheduled' with the ledger
     'running': the phantom the fence prevents) — the SHARED phase of both
@@ -206,32 +238,133 @@ async def defer_row_law(
     ``disposition``/``signal_name`` arrive pre-resolved
     (:func:`deferral_disposition` + the signal's class name) — this
     function is the ROW LAW only, never the signal's interpretation.
-    """
-    from taskq.workflows._policy import validate_retry_after_delay
 
-    validate_retry_after_delay(delay)
+    ``iteration_rest`` is the LOOP driver's deferred ITERATION claim's own
+    identity (id, instant): the epoch arbiter gives every claim its own
+    ledger row, so the deferred iteration's claim must rest 'awaited'
+    (or 'fenced' when the deferral was) in the SAME transaction — never a
+    running row left beside the resumed claim's own row.
+    """
+    if (backpressure is None) != (disposition != "emit_backpressure"):
+        raise ValueError("EmitBackpressure and its disposition must be supplied together")
+    if disposition != "emit_backpressure":
+        from taskq.workflows._policy import validate_retry_after_delay
+
+        validate_retry_after_delay(delay)
+    park_intent_created = False
     async with pool.acquire() as conn, conn.transaction():
-        try:
+        if backpressure is not None:
+            from taskq.workflows.api._sql_runner import render_sql
+
+            if (
+                ledger_id is None
+                or ledger_claimed_at is None
+                or source_logical_attempt is None
+                or type(source_logical_attempt) is not int
+                or source_logical_attempt < 1
+            ):
+                raise ValueError(
+                    "emit backpressure requires the validated current source logical "
+                    "attempt and ledger id/claim instant"
+                )
+            if flow_id is None:
+                raise ValueError("the emit park's event rule requires the run's flow id")
+            # Every numeric fact came from actual admission/the P0 carrier.
+            # Validate exact integers again at this persistence seam; no JSON
+            # coercion or malformed descriptor can become durable park state.
+            numbers = (
+                backpressure.page_width,
+                backpressure.bound,
+                backpressure.outstanding,
+            )
+            if any(type(value) is not int or value < 0 for value in numbers):
+                raise ValueError("emit-backpressure admission facts must be non-negative ints")
+            if backpressure.bound < 1:
+                raise ValueError("emit-backpressure bound must be positive")
+            # THE CANONICAL PARK ORDER (R2/A9.2): the flow root's row lock
+            # first (the drain and the root-failure seats hold this same
+            # row — the park can never interleave a peer-row lock ahead of
+            # it), then the intent record's adoption + lock, THEN the park
+            # UPDATE. The observation/generation decision runs only after
+            # the write and includes the newly parked row (the split's own
+            # phases: one adoption, one write, one observation, one census
+            # bump — one disposition owner).
+            from taskq.workflows._emit import adopt_and_lock_emit_intent
+
+            # THE MISSING ROOT FAILS CLOSED (round-4 NEW-7): the root row
+            # is this transaction's FIRST lock (the canonical order above)
+            # — and its absence is the same durable run-root corruption
+            # the failed-parent seat and the drain both raise at: a park
+            # committed without it would be a `scheduled` row that is
+            # unclaimable AND unpromotable forever (every promotion CAS
+            # and the marker sweep require the run's own root). The raise
+            # aborts THIS transaction before the intent adoption and the
+            # park write — nothing durable lands — and propagates as the
+            # exact typed corruption class (never a body-ladder retry,
+            # never an infra fault).
+            park_root_id = await conn.fetchval(wsql.emit_root_lock, flow_id)
+            if park_root_id is None:
+                from taskq.workflows.api._runner_errors import WorkflowRootMissingError
+
+                raise WorkflowRootMissingError(flow_id, job_id, seat="park")
+            intent_facts = await adopt_and_lock_emit_intent(
+                conn, wsql, flow_id=flow_id, bound=backpressure.bound
+            )
             verdict = await conn.fetchrow(
-                wsql.node_defer,
+                render_sql(EMIT_BACKPRESSURE_PARK_SQL, wsql.schema),
                 job_id,
                 worker_id,
-                delay,
                 attempt,
                 claim_epoch,
-                disposition,
-                signal_name,
+                backpressure.page_width,
+                backpressure.bound,
+                source_logical_attempt,
+                backpressure.outstanding,
+                ledger_id,
+                ledger_claimed_at,
             )
-        except Exception as exc:
-            import asyncpg
+            if verdict is not None and verdict["verdict"] == "parked":
+                # THE PARK'S OWN EVENT (§4.1 rule 4) — in this same
+                # transaction, AFTER the park write: no preceding existence
+                # probe (the committed exact park already proves the
+                # marker-positive case), and exactly one shared observation
+                # INCLUDING the park's own row, because removing the
+                # source's live row can make an older waiter fit. The
+                # intent row is already locked (the adopt/lock phase).
+                from taskq.workflows._emit import emit_capacity_event_locked
 
-            if disposition == "retry_after_non_consuming" and isinstance(exc, asyncpg.DataError):
-                raise ValueError(
-                    "metadata.wf_retry.non_consuming_count and non_consuming_limit "
-                    "must be valid signed-int32 integers; the deferral, counter, "
-                    "and ledger transition rolled back"
-                ) from exc
-            raise
+                park_intent_created = await emit_capacity_event_locked(
+                    conn,
+                    wsql,
+                    flow_id=flow_id,
+                    probe=False,
+                    census_family="lane",
+                    intent=intent_facts,
+                )
+        else:
+            try:
+                verdict = await conn.fetchrow(
+                    wsql.node_defer,
+                    job_id,
+                    worker_id,
+                    delay,
+                    attempt,
+                    claim_epoch,
+                    disposition,
+                    signal_name,
+                )
+            except Exception as exc:
+                import asyncpg
+
+                if disposition == "retry_after_non_consuming" and isinstance(
+                    exc, asyncpg.DataError
+                ):
+                    raise ValueError(
+                        "metadata.wf_retry.non_consuming_count and non_consuming_limit "
+                        "must be valid signed-int32 integers; the deferral, counter, "
+                        "and ledger transition rolled back"
+                    ) from exc
+                raise
         if verdict is None:
             if ledger_id is not None:
                 await conn.execute(
@@ -240,8 +373,28 @@ async def defer_row_law(
                     signal_name,
                     ledger_claimed_at,
                 )
-            return "fenced"
-        if verdict["verdict"] == "deferred":
+            if iteration_rest is not None:
+                await conn.execute(
+                    wsql.ledger_fence_by_id,
+                    iteration_rest[0],
+                    signal_name,
+                    iteration_rest[1],
+                )
+            return _DeferOutcome("fenced")
+        if verdict["verdict"] in ("deferred", "parked"):
+            if backpressure is not None:
+                if int(verdict["ledger_count"]) != 1:
+                    # THE TYPED CORRUPTION CLASS (M-5): the park lost its
+                    # exact current ledger claim — the same corruption
+                    # category the emit-capacity doors name, so it rides
+                    # the DETERMINISTIC terminal route (a bare RuntimeError
+                    # rode the transient ladder, burning retry budget to
+                    # end under a generic exhaustion class).
+                    raise EmitCapacityCorruptionError(
+                        "the source park lost its exact current ledger claim; "
+                        "the job park and ledger transition rolled back"
+                    )
+                return _DeferOutcome("deferred", intent_created=park_intent_created)
             if ledger_id is not None:
                 # 'awaited' — the hold's own resume-not-retry status. Never
                 # 'failed': the ladder's budget read counts failures only, and
@@ -262,14 +415,29 @@ async def defer_row_law(
                     None,
                     ledger_claimed_at,
                 )
-            return "deferred"
+            if iteration_rest is not None:
+                # The deferred ITERATION claim rests 'awaited' too — its own
+                # id+instant identity, the same transaction (the epoch
+                # arbiter's rows are per-claim; the resumed claim mints its
+                # own row, so this one must never read 'running' beside it).
+                await conn.execute(
+                    wsql.ledger_terminal_by_id,
+                    iteration_rest[0],
+                    "awaited",
+                    None,
+                    None,
+                    None,
+                    None,
+                    iteration_rest[1],
+                )
+            return _DeferOutcome("deferred")
         verdict_text = str(verdict["verdict"])
         if verdict_text == "malformed_counter":
             raise ValueError(
                 "metadata.wf_retry.non_consuming_count and non_consuming_limit "
                 "must be valid signed-int32 integers; no counter or ledger reset occurred"
             )
-        return verdict_text
+        return _DeferOutcome(verdict_text)
 
 
 async def route_defer_terminal(
@@ -370,7 +538,7 @@ async def policy_retry_defer(
     from taskq.workflows._policy import RetryDeferralBudgetExceeded
 
     signal_name = type(exc).__name__
-    verdict = await defer_row_law(
+    verdict_outcome = await defer_row_law(
         pool,
         wsql,
         job_id=JobId(row["id"]),
@@ -383,6 +551,7 @@ async def policy_retry_defer(
         ledger_id=ledger_id,
         ledger_claimed_at=ledger_claimed_at,
     )
+    verdict = verdict_outcome.verdict
     if verdict in ("deferred", "fenced"):
         return verdict
     cancelled = verdict == "cancel_fenced"
@@ -425,7 +594,7 @@ class DeferOps(_DeferHost):
         row: dict[str, Any],
         attempt: int,
         ledger_id: JobId | None,
-        exc: Snooze | RetryAfter,
+        exc: EmitBackpressure | Snooze | RetryAfter,
         *,
         claim_epoch: int = 0,
         ledger_claimed_at: Any = None,
@@ -450,22 +619,51 @@ class DeferOps(_DeferHost):
         ``"deferred"`` / ``"fenced"`` / ``"laddered"`` (the exhausted
         budget) / ``"cancelled"`` (the cancel won).
         """
+        source_logical_attempt: int | None = None
+        if isinstance(exc, EmitBackpressure):
+            from taskq.workflows.api._attempt import resolve_source_logical_attempt
+
+            # Existing birth carriers win over a refunded physical ordinal;
+            # genuinely legacy rows materialize the current validated physical
+            # claim in the same atomic park rather than inventing attempt zero.
+            source_logical_attempt = resolve_source_logical_attempt(row["metadata"], attempt)
         disposition = deferral_disposition(exc)
-        verdict_text = await defer_row_law(
+        outcome = await defer_row_law(
             self.pool,
             self.wsql,
             job_id=JobId(row["id"]),
             worker_id=self._worker_id,
-            delay=exc.delay,
+            # The park arm has no timer; the legacy positional signature is
+            # retained for ordinary Snooze/RetryAfter callers only.
+            delay=timedelta(0) if isinstance(exc, EmitBackpressure) else exc.delay,
             attempt=attempt,
             claim_epoch=claim_epoch,
             disposition=disposition,
             signal_name=type(exc).__name__,
             ledger_id=ledger_id,
             ledger_claimed_at=ledger_claimed_at,
+            backpressure=exc if isinstance(exc, EmitBackpressure) else None,
+            source_logical_attempt=source_logical_attempt,
+            flow_id=flow_id,
         )
+        verdict_text = outcome.verdict
 
         if verdict_text == "deferred":
+            if isinstance(exc, EmitBackpressure):
+                # The park transaction committed (its own §4.1 event ran
+                # inside it); the park's terminal route drains the intent it
+                # may have created — exactly one acknowledged post-COMMIT
+                # promotion pass. A drain error propagates after the
+                # committed park remains intact.
+                await self._drain_created_intent(flow_id, outcome.intent_created)
+                logger.info(
+                    "wf.emit_backpressured",
+                    run_id=str(flow_id),
+                    node=row["step_key"],
+                    logical_attempt=source_logical_attempt,
+                    physical_attempt=0,
+                )
+                return "deferred"
             logger.info(
                 "node.deferred",
                 run_id=str(flow_id),

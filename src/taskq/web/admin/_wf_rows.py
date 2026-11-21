@@ -139,7 +139,7 @@ class RunNode:
     # deferral stamp itself (the signal + the budget face + the disposition's
     # own post-attempt ordinal, written by NODE_DEFER_SQL).
     attempt: int = 0
-    scheduled_at: str | None = None
+    scheduled_at: str | datetime | None = None
     snooze_count: int = 0
     deferral: dict[str, Any] | None = None
     # the row's own declared bound (the column's seconds) + the claim's instant
@@ -212,6 +212,32 @@ class RunNode:
         # the label is a display, never a megabyte line through the DOM and
         # every SSE frame.
         signal = _truncate_error_text(str(self.deferral.get("signal") or "Snooze"))
+        if signal == "EmitBackpressure" and self.blocking_reason == "backpressure":
+            # The PARKED face (the capacity park's own row): the row's
+            # scheduled_at is the PARK INSTANT — displayed as the parked-at
+            # time under the deferred (backpressure) label, never as a next
+            # fire (a park has no timer; the marker — blocking_reason
+            # 'backpressure', the shared P(j) law's own key — not a
+            # timestamp, is the discriminator). Deferrals and wakes are the
+            # park's own counts, distinct from failure. A NON-PARK row
+            # (a re-pended reserved source whose blocking_reason moved on)
+            # never renders this face: its deferral shows honestly below,
+            # with next fire from its own real due time.
+            # The parked-at time: the row's datetime face renders ISO (the
+            # run page's own normalization), the SSE/JSON face's ISO string
+            # passes through; None (a hand-built row's absent face) renders
+            # "unknown" — never a fabricated next fire.
+            raw_parked_at = self.scheduled_at
+            if raw_parked_at is None:
+                parked_at = "unknown"
+            elif isinstance(raw_parked_at, datetime):
+                parked_at = raw_parked_at.isoformat()
+            else:
+                parked_at = str(raw_parked_at)
+            return (
+                f"⏰ {signal} · deferred (backpressure) · parked at {parked_at} · "
+                f"snooze #{self.snooze_count}"
+            )
         if self.deferral.get("consume_budget"):
             # the burn is the budget's charge — no snooze count (the counter
             # never moved), the budget face named.

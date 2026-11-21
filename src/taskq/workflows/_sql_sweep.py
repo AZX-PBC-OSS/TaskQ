@@ -417,11 +417,25 @@ PHANTOM_REAP_SQL = """\
 UPDATE {schema}.wf_step_ledger l
 SET status = 'fenced',
     updated_at = clock_timestamp()
-WHERE l.status = 'running'
+WHERE l.status IN ('running', 'awaited', 'crashed')
   AND EXISTS (
       SELECT 1 FROM {schema}.jobs f
       WHERE f.id = l.flow_id
         AND f.status IN {terminal}
+  )
+  -- THE LIVE-CLAIM EXCLUSION: a ledger row whose OWN job is a live
+  -- claimed running row (its lease still holds) belongs to an attempt
+  -- that is executing RIGHT NOW and will write its own terminal — the
+  -- reaper must never fence it (a fenced record over a heartbeating
+  -- attempt is the ledger lie: the deadline's own disposition would then
+  -- refuse its truthful write). The reaper's subjects are the rows whose
+  -- worker died: a lapsed lease, a non-running job, a refunded park.
+  AND NOT EXISTS (
+      SELECT 1 FROM {schema}.jobs j2
+      WHERE j2.id = l.job_id
+        AND j2.status = 'running'
+        AND j2.lock_expires_at IS NOT NULL
+        AND j2.lock_expires_at > clock_timestamp()
   )
 RETURNING l.id, l.flow_id
 """
@@ -994,9 +1008,30 @@ deleted AS (
     DELETE FROM {schema}.wf_step_ledger x USING doomed d
     WHERE x.id = d.id
     RETURNING x.id
+),
+capacity_gone AS (
+    -- THE RUN'S OWN CAPACITY RECORD DIES WITH ITS RUN (D10, §2.1/N5):
+    -- the record's retention lifetime IS the run's, and retention can
+    -- NEVER remove it while a live node references the run — the doomed
+    -- flows are terminal-aged AND have NO live (pending/scheduled/
+    -- running) node row left; the same retention pass that deletes the
+    -- run's ledger rows deletes the run's intent record in this same
+    -- statement. Never a separate sweep, never an unbounded walk.
+    DELETE FROM {schema}.wf_emit_capacity c
+    USING doomed_flows df
+    WHERE c.flow_id = df.id
+      AND NOT EXISTS (
+          SELECT 1 FROM {schema}.jobs n
+          WHERE (n.metadata->>'flow_id')::uuid = df.id
+            AND n.metadata ? 'flow_id'
+            AND n.step_key <> '__flow__'
+            AND n.status IN ('pending', 'scheduled', 'running')
+      )
+    RETURNING c.flow_id
 )
 SELECT (SELECT count(*) FROM deleted) AS deleted,
-       (SELECT n FROM null_observed) AS null_observed
+       (SELECT n FROM null_observed) AS null_observed,
+       (SELECT count(*) FROM capacity_gone) AS capacity_gone
 """
 
 

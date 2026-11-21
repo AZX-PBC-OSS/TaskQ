@@ -81,6 +81,9 @@ from taskq.backend._batch_sql import (  # pyright: ignore[reportPrivateUsage]  #
     BatchSql,
     render_batch_sql,
 )
+from taskq.backend._sql_fragments import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep's {wf_park_core} probe is rendered by this module's own substitution pair; the guard renders through them so its text is the production text, never a copy.
+    emit_park_marker_core,
+)
 from taskq.backend._sql_templates import (  # pyright: ignore[reportPrivateUsage]  # Why: rendering the production bundle through its own render() is the point of the guard; a re-derived copy would drift from the SQL that actually runs.
     SqlTemplates,
     render,
@@ -216,6 +219,20 @@ def _render_extra(placeholder: str, owning_module: str, body: str) -> object:
                 "the actor-config upsert's slot render changed - re-review this resolver"
             )
         return value
+    if placeholder == "wf_park_core":
+        # taskq.backend._sweeps renders _SWEEP_3_BODY's {wf_park_core}
+        # slot in two steps: token replacement with the shared renderer's
+        # marker core (backend/_sql_fragments.py's emit_park_marker_core)
+        # encoded through double_braces, then its own .format collapse —
+        # the collapse pass is what un-doubles the core's jsonb braces.
+        # The harness's one-step .format inserts VALUES verbatim (never
+        # re-scanned for escapes), so the value supplied here is exactly
+        # what production's own collapse produces: the renderer's
+        # single-brace canonical text. Rendering through it is the
+        # module's own render path, never a copy; the marker core's
+        # leg/order spelling is pinned independently by
+        # tests/test_wf_park_predicate_parity.py.
+        return emit_park_marker_core("")
     raise AssertionError(
         f"unregistered render placeholder {{{placeholder}}} on a constant in "
         f"{owning_module} - register the value production substitutes in "

@@ -120,13 +120,38 @@ WITH loop_row AS (
         error_class = $2,
         error_message = $4,
         finished_at = clock_timestamp(),
-        metadata = metadata || $3::jsonb
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY.
+        metadata = (metadata - 'wf_emit_reservation') || $3::jsonb
     WHERE id = $1
       AND status = 'running'
       AND locked_by_worker IS NOT DISTINCT FROM $5::uuid
       AND attempt IS NOT DISTINCT FROM $6::int
       AND claim_epoch IS NOT DISTINCT FROM $7::bigint
     RETURNING id, (metadata->>'flow_id')::uuid AS flow_id
+),
+-- THE LEDGER-TRUTH LAW at the loop's own exhaustion: the winning CAS's
+-- terminal record rides THIS statement — the LOOP'S OWN ledger row takes
+-- the 'failed' terminal with the exhaust's own named class, keyed on the
+-- LEDGER ARBITER (flow, step_key, COALESCE(map_index,-1), attempt,
+-- claim_epoch — the unique claim identity). job_id/attempt/epoch alone are
+-- NOT claim-exact: a ctx.substep claim shares the outer job's attempt and
+-- epoch and differs only by its own step key — a job-wide match would
+-- rewrite the substep's own claim history (the demonstrated corruption).
+-- Never a running row left for the phantom reaper to fence into a lie,
+-- and never a sibling claim's row.
+loop_ledger AS (
+    UPDATE {schema}.wf_step_ledger l
+    SET status = 'failed',
+        error_class = $2,
+        error_message = $4,
+        updated_at = clock_timestamp()
+    WHERE (SELECT flow_id FROM loop_row) IS NOT NULL
+      AND l.flow_id = (SELECT flow_id FROM loop_row)
+      AND l.step_key = $8::text
+      AND COALESCE(l.map_index, -1) IS NOT DISTINCT FROM COALESCE($9::int, -1)
+      AND l.attempt IS NOT DISTINCT FROM $6::int
+      AND l.claim_epoch IS NOT DISTINCT FROM $7::bigint
+      AND l.status IN ('running', 'awaited', 'crashed')
 ),
 flow_terminal AS (
     UPDATE {schema}.jobs f
@@ -164,10 +189,10 @@ VALUES ($1, $2, $3, $4, $5::jsonb)
 LOOP_EXHAUST_BATCH_SQL = """\
 WITH batch AS (
     SELECT b.loop_id, b.error_class, b.exhaust_meta, b.message,
-           b.worker, b.attempt, b.claim_epoch, b.ord
+           b.worker, b.attempt, b.claim_epoch, b.step_key, b.map_index, b.ord
     FROM unnest($1::uuid[], $2::text[], $3::jsonb[], $4::text[],
-                $5::uuid[], $6::int[], $7::bigint[])
-        WITH ORDINALITY AS b(loop_id, error_class, exhaust_meta, message, worker, attempt, claim_epoch, ord)
+                $5::uuid[], $6::int[], $7::bigint[], $8::text[], $9::int[])
+        WITH ORDINALITY AS b(loop_id, error_class, exhaust_meta, message, worker, attempt, claim_epoch, step_key, map_index, ord)
 ),
 loop_row AS (
     UPDATE {schema}.jobs j
@@ -175,7 +200,8 @@ loop_row AS (
         error_class = b.error_class,
         error_message = b.message,
         finished_at = clock_timestamp(),
-        metadata = j.metadata || b.exhaust_meta
+        -- THE §2.4 TERMINAL REMOVES THE RESERVATION KEY.
+        metadata = (j.metadata - 'wf_emit_reservation') || b.exhaust_meta
     FROM batch b
     WHERE j.id = b.loop_id
       AND j.status = 'running'
@@ -183,6 +209,29 @@ loop_row AS (
       AND j.attempt IS NOT DISTINCT FROM b.attempt
       AND j.claim_epoch IS NOT DISTINCT FROM b.claim_epoch
     RETURNING j.id, (j.metadata->>'flow_id')::uuid AS flow_id, b.error_class, b.ord
+),
+-- THE LEDGER-TRUTH LAW at the batched exhaustion: each winner's OWN ledger
+-- row takes the 'failed' terminal with the exhaust's own class, keyed on
+-- the LEDGER ARBITER (flow, step_key, COALESCE(map_index,-1), attempt,
+-- claim_epoch — the unique claim identity). job_id/attempt/epoch alone are
+-- NOT claim-exact: a ctx.substep claim shares the outer job's attempt and
+-- epoch and differs only by its own step key — a job-wide match would
+-- rewrite the substep's own claim history. Never a running row left for
+-- the phantom reaper to fence into a lie, and never a sibling claim's row.
+loop_ledger AS (
+    UPDATE {schema}.wf_step_ledger l
+    SET status = 'failed',
+        error_class = b.error_class,
+        error_message = b.message,
+        updated_at = clock_timestamp()
+    FROM batch b
+    JOIN loop_row lr ON lr.id = b.loop_id
+    WHERE l.flow_id = lr.flow_id
+      AND l.step_key = b.step_key
+      AND COALESCE(l.map_index, -1) IS NOT DISTINCT FROM COALESCE(b.map_index, -1)
+      AND l.attempt IS NOT DISTINCT FROM b.attempt
+      AND l.claim_epoch IS NOT DISTINCT FROM b.claim_epoch
+      AND l.status IN ('running', 'awaited', 'crashed')
 ),
 flow_terminal AS (
     UPDATE {schema}.jobs f
@@ -220,7 +269,7 @@ SELECT id, flow_id FROM loop_row
 LOOP_BUDGET_SWEEP_SQL = """\
 WITH loops AS (
     SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.step_key,
-           j.locked_by_worker, j.attempt, j.claim_epoch,
+           j.locked_by_worker, j.attempt, j.claim_epoch, j.map_index,
            (j.metadata->>'iteration')::int AS iteration,
            (j.metadata->>'max_iterations')::int AS max_iterations,
            root.metadata->>'workflow' AS workflow_name
@@ -243,7 +292,7 @@ WITH loops AS (
     FOR UPDATE OF j SKIP LOCKED
 )
 SELECT l.id, l.flow_id, l.step_key, l.locked_by_worker, l.attempt, l.claim_epoch,
-       l.iteration, l.max_iterations, l.workflow_name
+       l.map_index, l.iteration, l.max_iterations, l.workflow_name
 FROM loops l
 """
 

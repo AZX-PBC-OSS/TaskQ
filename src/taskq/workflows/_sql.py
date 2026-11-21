@@ -45,10 +45,11 @@ from taskq.workflows._sql_finalize import (
     DECREMENT_ABSORBED_SQL,
     DECREMENT_SQL,
     EMIT_ADMISSION_LOCK_SQL,
+    EMIT_BACKPRESSURE_WAKE_SQL,
     EMIT_CHILDREN_SQL,
     EMIT_CURSOR_SQL,
     EMIT_EDGES_SQL,
-    EMIT_IN_FLIGHT_SQL,
+    EMIT_ROOT_LOCK_SQL,
     FAIL_CLOSED_CASCADE_SQL,
     FIRE_SQL,
     FLOW_STATUS_SQL,
@@ -62,16 +63,29 @@ from taskq.workflows._sql_finalize import (
     NODE_INSERT_SQL,
     OUTBOX_INSERT_SQL,
     TERMINAL_MARK_SQL,
+    WF_EMIT_CANDIDATE_SQL,
+    WF_EMIT_CAPACITY_OBSERVATION_SQL,
+    WF_EMIT_INTENT_BOUND_SQL,
+    WF_EMIT_INTENT_GENERATION_SQL,
+    WF_EMIT_INTENT_HANDLED_SQL,
+    WF_EMIT_INTENT_LOCK_SQL,
+    WF_EMIT_INTENT_STAMP_SQL,
+    WF_EMIT_MARKER_FLOW_BOUND_SQL,
+    WF_EMIT_MARKER_SWEEP_SQL,
+    WF_EMIT_PARK_EXISTS_SQL,
+    WF_EMIT_PENDING_INTENTS_SQL,
+    WF_EMIT_ROTATION_READ_SQL,
+    WF_EMIT_ROTATION_WRITE_SQL,
+    WF_FLOW_FAILED_GATED_SQL,
+    WF_NOT_DRAINING_FENCE_SQL,
 )
 from taskq.workflows._sql_ledger import (
     FLOW_RUN_INSERT_SQL,
     FLOW_RUN_READ_SQL,
     LEDGER_CLAIM_SQL,
-    LEDGER_FENCE_ATTEMPT_SQL,
     LEDGER_FENCE_BY_ID_SQL,
     LEDGER_MEMOIZED_SQL,
     LEDGER_TERMINAL_BY_ID_SQL,
-    LEDGER_TERMINAL_SQL,
 )
 from taskq.workflows._sql_progress import (
     PROGRESS_CHILD_RESULTS_SQL,
@@ -171,6 +185,7 @@ class WorkflowSql:
     decrement: str
     decrement_absorbed: str
     fail_closed_cascade: str
+    flow_failed_gated: str
     collect_fan_in: str
     collect_fan_in_append: str
     fire: str
@@ -183,8 +198,23 @@ class WorkflowSql:
     emit_children: str
     emit_edges: str
     emit_cursor: str
-    emit_in_flight: str
     emit_admission_lock: str
+    emit_root_lock: str
+    emit_park_exists: str
+    emit_capacity_observation: str
+    emit_candidate: str
+    emit_backpressure_wake: str
+    emit_intent_lock: str
+    emit_intent_stamp: str
+    emit_intent_bound: str
+    emit_intent_generation: str
+    emit_intent_handled: str
+    emit_pending_intents: str
+    emit_rotation_read: str
+    emit_rotation_write: str
+    emit_marker_sweep: str
+    emit_marker_flow_bound: str
+    wf_not_draining_fence: str
     fork_join_node: str
     fork_join_consumers: str
     fork_consumer_edges: str
@@ -201,9 +231,7 @@ class WorkflowSql:
     node_progress_retention: str
     ledger_claim: str
     ledger_memoized: str
-    ledger_terminal: str
     ledger_terminal_by_id: str
-    ledger_fence_attempt: str
     ledger_fence_by_id: str
     phantom_reap: str
     nodeless_root_reap: str
@@ -253,6 +281,7 @@ class WorkflowSql:
             decrement=render(DECREMENT_SQL),
             decrement_absorbed=render(DECREMENT_ABSORBED_SQL),
             fail_closed_cascade=render(FAIL_CLOSED_CASCADE_SQL),
+            flow_failed_gated=render(WF_FLOW_FAILED_GATED_SQL),
             collect_fan_in=render(COLLECT_FAN_IN_SQL),
             collect_fan_in_append=render(COLLECT_FAN_IN_APPEND_SQL),
             fire=render(FIRE_SQL),
@@ -265,8 +294,23 @@ class WorkflowSql:
             emit_children=render(EMIT_CHILDREN_SQL),
             emit_edges=render(EMIT_EDGES_SQL),
             emit_cursor=render(EMIT_CURSOR_SQL),
-            emit_in_flight=render(EMIT_IN_FLIGHT_SQL),
             emit_admission_lock=render(EMIT_ADMISSION_LOCK_SQL),
+            emit_root_lock=render(EMIT_ROOT_LOCK_SQL),
+            emit_park_exists=render(WF_EMIT_PARK_EXISTS_SQL),
+            emit_capacity_observation=render(WF_EMIT_CAPACITY_OBSERVATION_SQL),
+            emit_candidate=render(WF_EMIT_CANDIDATE_SQL),
+            emit_backpressure_wake=render(EMIT_BACKPRESSURE_WAKE_SQL),
+            emit_intent_lock=render(WF_EMIT_INTENT_LOCK_SQL),
+            emit_intent_stamp=render(WF_EMIT_INTENT_STAMP_SQL),
+            emit_intent_bound=render(WF_EMIT_INTENT_BOUND_SQL),
+            emit_intent_generation=render(WF_EMIT_INTENT_GENERATION_SQL),
+            emit_intent_handled=render(WF_EMIT_INTENT_HANDLED_SQL),
+            emit_pending_intents=render(WF_EMIT_PENDING_INTENTS_SQL),
+            emit_rotation_read=render(WF_EMIT_ROTATION_READ_SQL),
+            emit_rotation_write=render(WF_EMIT_ROTATION_WRITE_SQL),
+            emit_marker_sweep=render(WF_EMIT_MARKER_SWEEP_SQL),
+            emit_marker_flow_bound=render(WF_EMIT_MARKER_FLOW_BOUND_SQL),
+            wf_not_draining_fence=render(WF_NOT_DRAINING_FENCE_SQL),
             fork_join_node=render(FORK_JOIN_NODE_SQL),
             fork_join_consumers=render(FORK_JOIN_CONSUMERS_SQL),
             fork_consumer_edges=render(FORK_CONSUMER_EDGES_SQL),
@@ -283,9 +327,7 @@ class WorkflowSql:
             node_progress_retention=render(NODE_PROGRESS_RETENTION_SQL),
             ledger_claim=render(LEDGER_CLAIM_SQL),
             ledger_memoized=render(LEDGER_MEMOIZED_SQL),
-            ledger_terminal=render(LEDGER_TERMINAL_SQL),
             ledger_terminal_by_id=render(LEDGER_TERMINAL_BY_ID_SQL),
-            ledger_fence_attempt=render(LEDGER_FENCE_ATTEMPT_SQL),
             ledger_fence_by_id=render(LEDGER_FENCE_BY_ID_SQL),
             phantom_reap=render(PHANTOM_REAP_SQL),
             nodeless_root_reap=render(NODELESS_ROOT_REAP_SQL),

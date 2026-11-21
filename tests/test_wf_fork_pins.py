@@ -31,6 +31,7 @@ from tests._wf_fixtures import (
     claim_view,
     node_state,
     seed_flow,
+    seed_ledger_claim,
     seed_running_node,
 )
 
@@ -109,6 +110,15 @@ async def test_pin_18_no_id_collision(
             ),
             join=JoinSpec(step_key=f"reduce{i}", actor="wf", queue="default"),
         )
+        fp_ledger, fp_claimed_at = await seed_ledger_claim(
+            wf_conn,
+            wf_schema,
+            flow_id=flow_id,
+            job_id=fork_parent,
+            step_key=f"fp{i}",
+            attempt=1,
+            epoch=0,
+        )
         result = await finalize_node(
             module_pg_pool,
             wf_sql,
@@ -120,6 +130,8 @@ async def test_pin_18_no_id_collision(
             claim_epoch=0,
             outcome="succeeded",
             fork=fork,
+            ledger_id=fp_ledger,
+            ledger_claimed_at=fp_claimed_at,
         )
         assert result.applied
     rows = await wf_conn.fetch(
@@ -225,6 +237,15 @@ async def test_pin_19_fork_atomicity(
     assert int(atomic_children) == 0, "never partial"
     # The reclaim re-forks: the retry lands the whole fork — exactly
     # N children + 1 join, never partial, never double.
+    atomic_ledger, atomic_claimed_at = await seed_ledger_claim(
+        wf_conn,
+        wf_schema,
+        flow_id=flow_id,
+        job_id=atomic_parent,
+        step_key="atomic",
+        attempt=1,
+        epoch=0,
+    )
     result = await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -236,6 +257,8 @@ async def test_pin_19_fork_atomicity(
         claim_epoch=0,
         outcome="succeeded",
         fork=fork,
+        ledger_id=atomic_ledger,
+        ledger_claimed_at=atomic_claimed_at,
     )
     assert result.applied
     # The children count excludes the join node (its parent_id is the fork
@@ -306,6 +329,9 @@ async def test_pin_20_outbox_drain_exactly_once(
         child_c,
         c_worker,
     )
+    c_ledger, c_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=child_c, step_key="c", attempt=1, epoch=0
+    )
     result = await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -316,6 +342,8 @@ async def test_pin_20_outbox_drain_exactly_once(
         attempt=1,
         claim_epoch=0,
         outcome="succeeded",
+        ledger_id=c_ledger,
+        ledger_claimed_at=c_claimed_at,
     )
     assert result.applied
     assert result.fired, "the join fired in tx2"

@@ -32,7 +32,7 @@ import pytest_asyncio
 
 from taskq.testing._shared_containers import creator_labels
 
-from ._assertions import poll_until
+from ._assertions import fresh_worker_ids, poll_until, wait_for_worker_ready
 from .conftest import (
     _DELETE_ORDER,
     E2EWorker,
@@ -111,9 +111,16 @@ async def e2e_worker_second(
 ) -> AsyncIterator[E2EWorker]:
     """Second worker container on the same queue/schema as ``e2e_worker``.
 
-    Mirrors the module-scoped ``e2e_worker`` fixture body with network
-    alias ``worker2-<schema>`` and a readiness gate requiring ≥2 fresh
-    post-register heartbeats.
+    Mirrors the module-scoped ``e2e_worker`` fixture body (same image tag,
+    same ``TASKQ_*`` env dict, same readiness-gate pattern) with network
+    alias ``worker2-<schema>``. Depends on ``e2e_worker`` so the readiness
+    gate is meaningful — and snapshots the first worker's id into
+    ``known_workers`` so the shared second-beat gate
+    (``wait_for_worker_ready``) cannot pass on the sibling's heartbeat:
+    the gate waits for the SECOND worker's own post-registration beat.
+    The first worker is already fully live (the ``e2e_worker`` fixture
+    yielded through the same gate), so when this fixture yields both
+    workers are live, not merely inserted.
     """
     from testcontainers.core.container import DockerContainer
 
@@ -125,32 +132,24 @@ async def e2e_worker_second(
     for key, value in e2e_schema.worker_env.items():
         container.with_env(key, value)
 
+    # Gate on THIS container's own heartbeat: the first worker's id is
+    # snapshotted before the start, so its beat cannot satisfy the
+    # second worker's gate.
+    known_workers = await fresh_worker_ids(e2e_pg_pool, e2e_schema.schema_name)
     await asyncio.to_thread(container.start)
     try:
-
-        async def _both_workers_heartbeating() -> bool:
-            count = await e2e_pg_pool.fetchval(
-                f"""
-                SELECT count(*) FROM "{e2e_schema.schema_name}".workers
-                WHERE last_seen_at > now() - interval '10 seconds'
-                  AND last_seen_at > started_at
-                """
-            )
-            return count >= 2
-
         try:
-            await poll_until(
-                _both_workers_heartbeating,
+            await wait_for_worker_ready(
+                e2e_pg_pool,
+                e2e_schema.schema_name,
                 timeout=30.0,
-                description=(
-                    f"2 fresh post-register worker heartbeats in {e2e_schema.schema_name}.workers"
-                ),
+                known_workers=known_workers,
             )
         except TimeoutError:
             logs = _container_logs(container)
             msg = (
-                "second e2e worker failed readiness gate: <2 fresh post-register "
-                f"heartbeats in {e2e_schema.schema_name}.workers within 30s\n{logs}"
+                f"second e2e worker failed readiness gate: no second post-register "
+                f"heartbeat in {e2e_schema.schema_name}.workers within 30s\n{logs}"
             )
             raise RuntimeError(msg) from None
         yield E2EWorker(container=container, schema=e2e_schema.schema_name)

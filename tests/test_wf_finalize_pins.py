@@ -34,6 +34,7 @@ from tests._wf_fixtures import (
     seed_edge,
     seed_flow,
     seed_join,
+    seed_ledger_claim,
     seed_running_node,
 )
 
@@ -57,6 +58,9 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
+    ledger_id, claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=parent, step_key="a", attempt=1, epoch=0
+    )
 
     # The interleave the pin rejects, deterministically: the snapshot
     # read (un-terminal = 1) happens before a finalize's decrement
@@ -79,6 +83,8 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
         attempt=1,
         claim_epoch=0,
         outcome="succeeded",
+        ledger_id=ledger_id,
+        ledger_claimed_at=claimed_at,
     )
     assert result.applied
     after = await node_state(wf_conn, wf_schema, join_id)
@@ -130,6 +136,9 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     join2 = await seed_join(wf_conn, wf_schema, flow_id, step_key="join2", deps=1)
     parent2 = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="b")
     await seed_edge(wf_conn, wf_schema, join2, parent2, flow_id)
+    ledger_id2, claimed_at2 = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=parent2, step_key="b", attempt=1, epoch=0
+    )
     result = await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -140,6 +149,8 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
         attempt=1,
         claim_epoch=0,
         outcome="succeeded",
+        ledger_id=ledger_id2,
+        ledger_claimed_at=claimed_at2,
     )
     assert result.applied
     assert result.fired and result.fired[0].step_key == "join2", (
@@ -264,6 +275,15 @@ async def test_pin_24_finalize_on_cancelled_flow_never_decrements(
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
     worker_id, attempt, epoch = await claim_view(wf_conn, wf_schema, parent)
+    ledger_id, claimed_at = await seed_ledger_claim(
+        wf_conn,
+        wf_schema,
+        flow_id=flow_id,
+        job_id=parent,
+        step_key="a",
+        attempt=attempt,
+        epoch=epoch,
+    )
 
     result = await finalize_node(
         module_pg_pool,
@@ -275,6 +295,8 @@ async def test_pin_24_finalize_on_cancelled_flow_never_decrements(
         attempt=attempt,
         claim_epoch=epoch,
         outcome="succeeded",
+        ledger_id=ledger_id,
+        ledger_claimed_at=claimed_at,
     )
     engine_redlog.red(
         "pin24-flow-status-leg",
@@ -308,6 +330,12 @@ async def test_pin_6_duplicate_finalizes_one_decrement(
     parent_b = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="b")
     await seed_edge(wf_conn, wf_schema, join_id, parent_a, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, parent_b, flow_id)
+    a_ledger, a_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=parent_a, step_key="a", attempt=1, epoch=0
+    )
+    b_ledger, b_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=parent_b, step_key="b", attempt=1, epoch=0
+    )
 
     async def fifty_duplicates(target: JobId, step: str) -> None:
         for _ in range(50):
@@ -326,6 +354,8 @@ async def test_pin_6_duplicate_finalizes_one_decrement(
                 attempt=view[1],
                 claim_epoch=view[2],
                 outcome="succeeded",
+                ledger_id=a_ledger if step == "a" else b_ledger,
+                ledger_claimed_at=a_claimed_at if step == "a" else b_claimed_at,
             )
             assert res.applied is False or res.attempt == view[1]
 
@@ -346,6 +376,8 @@ async def test_pin_6_duplicate_finalizes_one_decrement(
         attempt=b_attempt,
         claim_epoch=b_epoch,
         outcome="succeeded",
+        ledger_id=b_ledger,
+        ledger_claimed_at=b_claimed_at,
     )
     assert result.applied
     state = await node_state(wf_conn, wf_schema, join_id)
@@ -516,6 +548,9 @@ async def test_pin_13_attempt_fence(
     join2 = await seed_join(wf_conn, wf_schema, flow_id, step_key="join2", deps=1)
     node2 = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="b")
     await seed_edge(wf_conn, wf_schema, join2, node2, flow_id)
+    zombie_ledger, zombie_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=node2, step_key="b", attempt=1, epoch=0
+    )
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'pending', locked_by_worker = NULL, "
         "lock_expires_at = NULL WHERE id = $1",
@@ -540,12 +575,17 @@ async def test_pin_13_attempt_fence(
         claim_epoch=0,  # ...its stale epoch
         outcome="succeeded",
         result={"zombie": True},
+        ledger_id=zombie_ledger,
+        ledger_claimed_at=zombie_claimed_at,
     )
     assert not fenced.applied, "the zombie's finalize must be fenced"
     state = await node_state(wf_conn, wf_schema, node2)
     assert state["status"] == "running", state  # the fresh attempt still owns it
     assert await fire_count(wf_conn, wf_schema, join2) == 0, "no zombie decrement"
 
+    fresh_ledger, fresh_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=node2, step_key="b", attempt=2, epoch=7
+    )
     admitted = await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -557,6 +597,8 @@ async def test_pin_13_attempt_fence(
         claim_epoch=7,
         outcome="succeeded",
         result={"fresh": True},
+        ledger_id=fresh_ledger,
+        ledger_claimed_at=fresh_claimed_at,
     )
     assert admitted.applied
     assert await fire_count(wf_conn, wf_schema, join2) == 1, "exactly one fire"

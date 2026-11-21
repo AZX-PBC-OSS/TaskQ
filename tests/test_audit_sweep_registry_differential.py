@@ -207,7 +207,22 @@ class ScriptConn:
         """The workflow rederive arm's summary read. The ZERO summary: no
         join-wait rows in the double's world — the fire arm never engages,
         the pass is one benign read per tick. No legacy sweep calls
-        ``fetchrow`` — this cannot disturb the legacy scenarios."""
+        ``fetchrow`` — this cannot disturb the legacy scenarios. The
+        #718 intent/rotation reads are the EMPTY estate: no rotation
+        cursor row content and no pending intent row (nothing to drain)."""
+        if "wf_emit_intent_rotation" in sql or "wf_emit_capacity" in sql:
+            self.stream.append(("call", "wf_stmt"))
+            # The flows-side RETENTION pass (the run's own retention: the
+            # ledger's doomed flows + the run's own capacity record, D10):
+            # the zero summary — the double's world retains nothing.
+            if "doomed_flows" in sql:
+                return {"deleted": 0, "null_observed": 0, "capacity_gone": 0}
+            return None
+        if "roots_updated" in sql:
+            # The root-maintenance statement's own shape: zero roots
+            # maintained, zero §5.4 fences (the double's world is empty).
+            self.stream.append(("call", "wf_stmt"))
+            return {"roots_updated": 0, "not_draining_fenced": 0}
         return {
             "blocked": 0,
             "blocked_required": 0,
@@ -658,6 +673,13 @@ _WF_ARMS = (
     # TTL (delivered rows are narration, never forever). Pure appends,
     # same as the arms before them.
     "wf_hold_stamp_reconcile",
+    # The #718 bounded recovery arms: the pending-intent drain (the §6
+    # global selection over the durable intents) and the bounded
+    # exact-marker sweep (the omitted terminal seat's completeness
+    # authority). Pure appends, same as every arm before them — the
+    # estate-wake arm they replace is deleted with the shape it served.
+    "wf_emit_intent_drain",
+    "wf_emit_marker_sweep",
     "wf_outbox_retention",
     "wf_loop_budget",
     "wf_phantom_reap",
@@ -678,11 +700,14 @@ def _is_wf_event(entry: Any) -> bool:
 
 
 def _until_wf_arms_sampled(legacy_calls: int) -> Callable[[list[Any]], bool]:
-    """The legacy block's calls are in and all three arms have sampled
-    their duration (the tick reached the table's tail)."""
+    """The legacy block's calls are in and EVERY arm in the tick table has
+    sampled its duration (the tick reached the table's tail)."""
     return lambda events: (
         len(_calls(events)) >= legacy_calls
-        and (len([e for e in events if e[0] == "metric_duration" and e[1].startswith("wf_")]) >= 3)
+        and (
+            len([e for e in events if e[0] == "metric_duration" and e[1].startswith("wf_")])
+            >= len(_WF_ARMS)
+        )
     )
 
 

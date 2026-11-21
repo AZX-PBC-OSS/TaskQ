@@ -31,6 +31,7 @@ from tests._wf_fixtures import (
     seed_edge,
     seed_flow,
     seed_join,
+    seed_ledger_claim,
     seed_running_node,
 )
 
@@ -561,6 +562,9 @@ async def test_pin_4_held_row_invisible_to_the_rederive(
     await seed_edge(wf_conn, wf_schema, held, parent2, flow_id)
 
     # parent1 finalizes legitimately (tx2 decrements: 2 -> 1).
+    p1_ledger, p1_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=parent1, step_key="p1", attempt=1, epoch=0
+    )
     result = await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -571,6 +575,8 @@ async def test_pin_4_held_row_invisible_to_the_rederive(
         attempt=1,
         claim_epoch=0,
         outcome="succeeded",
+        ledger_id=p1_ledger,
+        ledger_claimed_at=p1_claimed_at,
     )
     assert result.applied
     assert (await node_state(wf_conn, wf_schema, held))["deps_pending"] == 1
@@ -742,6 +748,9 @@ async def test_pin_17_empty_join_never_fires(
 
     # P finalizes → J1's counter hits 0 → J1 fires (tx2) — J2's parent is
     # still pending (the fire made J1 claimable, not terminal): J2 waits.
+    p_ledger, p_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=p, step_key="a", attempt=1, epoch=0
+    )
     result = await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -752,6 +761,8 @@ async def test_pin_17_empty_join_never_fires(
         attempt=1,
         claim_epoch=0,
         outcome="succeeded",
+        ledger_id=p_ledger,
+        ledger_claimed_at=p_claimed_at,
     )
     assert result.applied
     assert await fire_count(wf_conn, wf_schema, j1) == 1
@@ -767,6 +778,9 @@ async def test_pin_17_empty_join_never_fires(
         j1,
         j1_worker,
     )
+    j1_ledger, j1_claimed_at = await seed_ledger_claim(
+        wf_conn, wf_schema, flow_id=flow_id, job_id=j1, step_key="j1", attempt=1, epoch=0
+    )
     result = await finalize_node(
         module_pg_pool,
         wf_sql,
@@ -777,6 +791,8 @@ async def test_pin_17_empty_join_never_fires(
         attempt=j1_attempt,
         claim_epoch=j1_epoch,
         outcome="succeeded",
+        ledger_id=j1_ledger,
+        ledger_claimed_at=j1_claimed_at,
     )
     assert result.applied
     assert await fire_count(wf_conn, wf_schema, j2) == 1, "the outer join fires once"

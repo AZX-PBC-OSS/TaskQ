@@ -177,6 +177,17 @@ class FakeConn:
         self.execute_calls.append((sql, args))
         if self._on_execute is not None:
             self._on_execute()
+        normalized = " ".join(sql.split()).upper()
+        # The idempotent re-registration repair (the FK arm's restore): the
+        # command tag is unread on this path - the retried elect is the
+        # authoritative check of whether the row exists - but the shape is
+        # named explicitly per the fail-closed rule.
+        if (
+            normalized.startswith("INSERT INTO")
+            and ".WORKERS" in normalized
+            and "ON CONFLICT (ID) DO NOTHING" in normalized
+        ):
+            return "INSERT 0 1"
         # Why a DELETE tag for the resign: the command tag is the delete
         # count, and resign() now reads it to decide whether the row was
         # actually handed back: a double answering "UPDATE 1" here would
@@ -4680,18 +4691,23 @@ async def test_renew_failure_inside_trust_backs_off_without_demotion(
 async def test_elect_fk_violation_is_fatal_not_transient(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
-    """A ForeignKeyViolationError from the elect INSERT kills the loop
-    deliberately - it is not retried as transient.
+    """A ForeignKeyViolationError that SURVIVES the restore attempt kills the
+    loop deliberately - it is not retried as transient.
 
     The FK constraint means the maintenance_leader row references a
-    workers row that does not exist: this worker never registered (a
-    schema/deploy fault), and no amount of retrying fixes it - a transient
-    classification would spin elect attempts forever, log-storming a
-    permanent fault. The contract: the error event fires once at ERROR
-    level, exactly one elect statement is issued, the worker-wide
-    ``shutdown`` event is set (the TaskGroup siblings unwind), and the
-    loop RETURNS (the task completes - a mutation that retries leaves it
-    running and this test red on both the attempt count and the join).
+    workers row that does not exist. The arm first restores the
+    registration once and retries the elect (the reaped-while-live
+    recovery); the persistent-FK scenario pinned here - a broken FK
+    constraint or a recurrent deletion - raises FK on the retry too, and
+    no amount of further retrying fixes a permanent fault: a transient
+    classification would spin elect attempts forever, log-storming it.
+    The contract: the error event fires once at ERROR level, exactly two
+    elect statements are issued (the initial elect plus its single
+    post-restore retry) with one restore INSERT between them, the
+    worker-wide ``shutdown`` event is set (the TaskGroup siblings
+    unwind), and the loop RETURNS (the task completes - a mutation that
+    retries leaves it running and this test red on both the attempt count
+    and the join).
     """
 
     class _FkViolatingConn(FakeConn):
@@ -4729,14 +4745,536 @@ async def test_elect_fk_violation_is_fatal_not_transient(
         for sql, _ in conn.fetchval_calls
         if _is_lease_statement(sql) and not _is_server_clock_read(sql)
     )
-    assert elect_attempts == 1, (
-        f"the FK violation was retried as transient ({elect_attempts} elect "
-        "attempts) - a permanent fault log-storms forever"
+    assert elect_attempts == 2, (
+        f"expected the initial elect plus its single post-restore retry ({elect_attempts} "
+        "elect attempts) - zero retries would mean the reaped-row recovery never ran, "
+        "more than two means a permanent fault is being retried as transient and "
+        "log-storms forever"
+    )
+    restore_attempts = sum(
+        1
+        for sql, _ in conn.execute_calls
+        if ".WORKERS" in " ".join(sql.split()).upper()
+        and "ON CONFLICT (ID) DO NOTHING" in " ".join(sql.split()).upper()
+    )
+    assert restore_attempts == 1, (
+        f"expected exactly one idempotent restore INSERT between the two elects, "
+        f"got {restore_attempts}"
     )
     assert not deps.is_leader.is_set()
     assert not any(e.get("kind") == "election_attempt_failed" for e in captured), (
         "the FK arm must not route through the transient cleanup - the "
         "deliberate fatal is its own path"
+    )
+    assert not any(e.get("kind") == "worker_registration_restored" for e in captured), (
+        "a restore whose retry still hits the FK never restored anything "
+        "durable - the recovery warning must not fire on this path"
+    )
+
+
+class _FkThenHealthyConn(FakeConn):
+    """Elect raises FK exactly once (the reaped-row shape), then wins.
+
+    The restore INSERT is answered with the configured command tag - both
+    "INSERT 0 1" (this repair landed first) and "INSERT 0 0" (a concurrent
+    repair, the heartbeat's, beat us to the row) are outcomes the recovery
+    must treat as "the row may exist now; the retry elect decides".
+    """
+
+    def __init__(self, *, restore_tag: str = "INSERT 0 1", **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]  # Why: FakeConn kwargs are typed loosely for the doubles; the subclass forwards them unchanged.
+        self._fk_elects_left = 1
+        self.restore_tag = restore_tag
+        self.restore_calls = 0
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql):
+            self.fetchval_calls.append((sql, args))
+            if self._fk_elects_left > 0:
+                self._fk_elects_left -= 1
+                raise asyncpg.ForeignKeyViolationError(
+                    "insert or update on table 'maintenance_leader' violates "
+                    "foreign key constraint 'maintenance_leader_worker_id_fkey'"
+                )
+            return datetime.now(UTC)
+        return await super().fetchval(sql, *args)
+
+    async def execute(self, sql: str, *args: object) -> str:
+        normalized = " ".join(sql.split()).upper()
+        if ".WORKERS" in normalized and "ON CONFLICT (ID) DO NOTHING" in normalized:
+            self.restore_calls += 1
+            return self.restore_tag
+        return await super().execute(sql, *args)
+
+
+@pytest.mark.parametrize("restore_tag", ["INSERT 0 1", "INSERT 0 0"])
+async def test_elect_fk_from_a_reaped_row_restores_and_wins(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+    restore_tag: str,
+) -> None:
+    """A reaped row recovers: restore once, retry the elect once, win.
+
+    The FK violation's usual producer is the stale sweep reaping a LIVE
+    worker's row, not a never-registered deploy fault - so the arm must
+    restore the registration and re-campaign, not shut the process down.
+    Both restore tags are pinned: a concurrent repair's "INSERT 0 0" is
+    not a failure, the retried elect is the authoritative check.
+    """
+    conn = _FkThenHealthyConn(restore_tag=restore_tag)
+    leader, deps, _backend, _leader_conn, _, shutdown = await _make_leader(
+        leader_conn=conn,
+        monkeypatch=monkeypatch,
+    )
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    with structlog.testing.capture_logs() as captured:
+        await wait_for_leader(deps)
+        assert not shutdown.is_set(), (
+            "the live worker must recover and win, not set the process-wide shutdown"
+        )
+    shutdown.set()
+    await task
+
+    assert conn.restore_calls == 1, "expected exactly one restore INSERT"
+    elect_attempts = sum(
+        1
+        for sql, _ in conn.fetchval_calls
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql)
+    )
+    assert elect_attempts == 2, (
+        f"expected the initial elect plus the single post-restore retry, got {elect_attempts}"
+    )
+    restored = [e for e in captured if e.get("kind") == "worker_registration_restored"]
+    assert len(restored) == 1 and restored[0]["log_level"] == "warning", (
+        f"expected exactly one WARNING-level worker-registration-restored, got {restored!r}"
+    )
+    assert restored[0]["source"] == "leader_election"
+    assert not any(e.get("kind") == "leader_upsert_fk_violation" for e in captured)
+
+
+class _RestoreRefusedConn(FakeConn):
+    """Elect raises FK (the reaped-row shape); the restore INSERT is
+    refused permanently (never able to register)."""
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql):
+            self.fetchval_calls.append((sql, args))
+            raise asyncpg.ForeignKeyViolationError(
+                "insert or update on table 'maintenance_leader' violates "
+                "foreign key constraint 'maintenance_leader_worker_id_fkey'"
+            )
+        return await super().fetchval(sql, *args)
+
+    async def execute(self, sql: str, *args: object) -> str:
+        normalized = " ".join(sql.split()).upper()
+        if ".WORKERS" in normalized and "ON CONFLICT (ID) DO NOTHING" in normalized:
+            self.execute_calls.append((sql, args))
+            raise asyncpg.InsufficientPrivilegeError("permission denied for table workers")
+        return await super().execute(sql, *args)
+
+
+async def test_elect_fk_with_a_permanently_refused_restore_fails_closed(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """A restore the server will never accept is a permanent fault: fail
+    closed on the first cycle, with the restore's own cause attached.
+
+    A revoked INSERT privilege or a broken schema cannot recover by
+    retrying - the FK arm's restore attempt must not route the refusal
+    through the transient budget (that would log-storm a permanent fault)
+    and must not log a restoration that never happened.
+    """
+    conn = _RestoreRefusedConn()
+    leader, deps, _backend, _leader_conn, _, shutdown = await _make_leader(
+        leader_conn=conn,
+        monkeypatch=monkeypatch,
+    )
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    with structlog.testing.capture_logs() as captured:
+        done, _pending = await asyncio.wait({task}, timeout=5.0)
+
+    assert task in done, "the permanent refusal must RETURN, not retry"
+    assert shutdown.is_set()
+    fk_events = [e for e in captured if e.get("kind") == "leader_upsert_fk_violation"]
+    assert len(fk_events) == 1 and fk_events[0]["log_level"] == "error", (
+        f"expected exactly one ERROR-level leader_upsert_fk_violation, got {fk_events!r}"
+    )
+    assert "cause" in fk_events[0], (
+        "the refusal's own cause must ride the fatal event - the operator "
+        "has to see what the restore was refused WITH, not just the FK"
+    )
+    elect_attempts = sum(
+        1
+        for sql, _ in conn.fetchval_calls
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql)
+    )
+    assert elect_attempts == 1, (
+        "a refused restore must not retry the elect - the fault is permanent, "
+        f"not a reaped row; got {elect_attempts} elect attempts"
+    )
+    assert not deps.is_leader.is_set()
+    assert not any(e.get("kind") == "worker_registration_restored" for e in captured)
+
+
+class _StopMidElectThenFkConn(FakeConn):
+    """The elect raises FK with the stop signal landing in the same round trip.
+
+    SIGTERM can be observed between the FK arriving and the arm's
+    ``_stopping()`` read - a drain beginning on a pod whose row a peer's
+    sweep has just reaped. The double stamps the stop event as the lease
+    statement goes out and then raises the FK, so the arm's first gate
+    reads a stop that was not set when the attempt started.
+    """
+
+    def __init__(self, stop_event: asyncio.Event) -> None:
+        super().__init__()
+        self._stop_event = stop_event
+        self.elect_in_flight = asyncio.Event()
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql):
+            self.fetchval_calls.append((sql, args))
+            self.elect_in_flight.set()
+            self._stop_event.set()
+            raise asyncpg.ForeignKeyViolationError(
+                "insert or update on table 'maintenance_leader' violates "
+                "foreign key constraint 'maintenance_leader_worker_id_fkey'"
+            )
+        return await super().fetchval(sql, *args)
+
+
+async def test_elect_fk_observed_while_stopping_never_restores_or_fails_closed(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """An FK that arrives after the stop signal must not re-insert a row
+    and must not turn the drain fatal.
+
+    The reaping sweep and a SIGTERM intersect on the very round trip the
+    elect is in: the row is gone, the arm sees the FK, and the drain has
+    already begun. The shutdown-ordering contract, in its election-loop
+    scope, says a stopping campaign never re-inserts a membership row while
+    draining (the heartbeat deliberately keeps restoring, for the attempt
+    attribution the drain's holder CTE reads - clause 6 in ``leader``'s
+    module header); and because the fault is not permanent - it
+    is the stop, not a broken deploy - the fail-closed arm must not fire
+    either, or one reaped row landing inside a deploy's drain would cut
+    every sibling loop short mid hand-back. The loop parks attempt-free
+    for the stop; no further election may be issued.
+    """
+    stop_event = asyncio.Event()
+    conn = _StopMidElectThenFkConn(stop_event)
+    leader, deps, _backend, _leader_conn, _, shutdown = await _make_leader(
+        leader_conn=conn,
+        monkeypatch=monkeypatch,
+    )
+    # The double stamps the event the ``_stopping()`` predicate reads.
+    deps.shutdown_start_event = stop_event
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the stop-race FK arm lives in the election loop itself.
+    shutdown_set_by_loop = False
+    try:
+        with structlog.testing.capture_logs() as captured:
+            await wait_for(conn.elect_in_flight, description="the elect statement to go in flight")
+            # The stop gate drops the loop's liveness registration and parks
+            # on the shutdown event: the observable proof the arm returned to
+            # the top rather than restoring, retrying, or returning fatally.
+            await wait_for_condition(
+                lambda: "leader.election" not in deps.liveness.ages(),
+                description="the stopping election loop to park attempt-free",
+                timeout=5.0,
+            )
+            # Read before this test's own teardown sets the event (which is
+            # the graceful stop, not the fail-closed arm under attack).
+            shutdown_set_by_loop = shutdown.is_set()
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+
+    restore_calls = [
+        (sql, args)
+        for sql, args in conn.execute_calls
+        if ".WORKERS" in " ".join(sql.split()).upper()
+        and "ON CONFLICT (ID) DO NOTHING" in " ".join(sql.split()).upper()
+    ]
+    assert restore_calls == [], (
+        "a stopping worker re-inserted its workers row while draining - the "
+        "FK arm ran its repair past the stop gate instead of parking"
+    )
+    elect_attempts = sum(
+        1
+        for sql, _ in conn.fetchval_calls
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql)
+    )
+    assert elect_attempts == 1, (
+        "a stopping worker re-attempted the election after the FK; the "
+        f"retry belongs to a live campaign, not a drain (got {elect_attempts})"
+    )
+    assert not shutdown_set_by_loop, (
+        "the FK that landed after the stop signal was treated as a permanent "
+        "fault: the fail-closed arm cut the process-wide shutdown during the drain"
+    )
+    assert not any(e.get("kind") == "leader_upsert_fk_violation" for e in captured)
+    assert not any(e.get("kind") == "worker_registration_restored" for e in captured)
+    assert not any(e.get("kind") == "election_attempt_failed" for e in captured), (
+        "the stop-race FK was routed through the transient cleanup - it was "
+        "not an attempt failure, the drain had begun"
+    )
+
+
+class _FkAfterConnNulledMidElectConn(FakeConn):
+    """The elect's round trip nulls ``deps.leader_conn``, THEN raises FK.
+
+    ``reload_credentials``' close-timeout path nulls ``deps.leader_conn``
+    while an await on it is still in flight. This double lands the two in
+    the order the FK arm's re-read exists for: the attribute is already
+    ``None`` when the arm starts, so the arm's own read - not a binding
+    captured before the await - decides what it may write.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.null_leader_conn: Callable[[], None] | None = None
+        self.elect_in_flight = asyncio.Event()
+        self.fk_raised = False
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql):
+            self.fetchval_calls.append((sql, args))
+            self.elect_in_flight.set()
+            if self.null_leader_conn is not None:
+                self.null_leader_conn()
+                self.null_leader_conn = None
+                self.fk_raised = True
+                raise asyncpg.ForeignKeyViolationError(
+                    "insert or update on table 'maintenance_leader' violates "
+                    "foreign key constraint 'maintenance_leader_worker_id_fkey'"
+                )
+            return datetime.now(UTC)
+        return await super().fetchval(sql, *args)
+
+
+async def test_elect_fk_found_with_the_leader_conn_already_nulled_recovers(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """An FK read while ``deps.leader_conn`` is already gone is a reopen.
+
+    ``reload_credentials``' close-timeout path can null ``deps.leader_conn``
+    during the elect's round trip, so the attribute is already ``None`` when
+    the FK arm starts. The arm must then treat the conn as unavailable - no
+    repair written into the vanished connection, no ``AttributeError``, no
+    fail-closed shutdown - and return to the loop top, whose open block
+    rebuilds through ``leader_conn_factory`` with the rotated credentials.
+    The repair belongs to whoever still has a live connection (the heartbeat
+    does), so this pod surviving to campaign again is the recovery that
+    matters.
+    """
+    conn = _FkAfterConnNulledMidElectConn()
+    leader, deps, _backend, _leader_conn, _, shutdown = await _make_leader(
+        leader_conn=conn,
+        monkeypatch=monkeypatch,
+    )
+
+    def null_conn() -> None:
+        deps.leader_conn = None
+
+    conn.null_leader_conn = null_conn
+
+    factory_conns: list[FakeConn] = []
+
+    async def factory() -> asyncpg.Connection:
+        rebuilt = FakeConn(fetchval_result=True)  # the reopened conn wins the elect
+        factory_conns.append(rebuilt)
+        return rebuilt  # type: ignore[return-value]  # Why: FakeConn is a drop-in for asyncpg.Connection in unit tests, the same substitution _make_deps makes.
+
+    deps.leader_conn_factory = factory
+
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    shutdown_set_by_loop = False
+    with structlog.testing.capture_logs() as captured:
+        await wait_for_leader(deps)
+        shutdown_set_by_loop = shutdown.is_set()
+    shutdown.set()
+    await task
+
+    assert conn.fk_raised, "sanity: the nulling+FK interleave must have landed"
+    assert factory_conns, (
+        "the loop never rebuilt leader_conn through the factory: the FK arm "
+        "either dereferenced the nulled attribute or treated it as permanent"
+    )
+    assert deps.leader_conn is factory_conns[0], (
+        "the factory-built connection never became deps.leader_conn - the elect "
+        "recovered on a monitor/cron open, not by reopening the leader_conn"
+    )
+    assert not shutdown_set_by_loop, (
+        "a leader_conn that vanished mid-elect (the reload close-timeout) was "
+        "classified as a permanent fault and shut the process down"
+    )
+    restore_calls = [
+        (sql, args)
+        for sql, args in conn.execute_calls
+        if ".WORKERS" in " ".join(sql.split()).upper()
+        and "ON CONFLICT (ID) DO NOTHING" in " ".join(sql.split()).upper()
+    ]
+    assert restore_calls == [], (
+        "the repair was written into the connection that had already been "
+        "nulled for background termination - its commit is not durable"
+    )
+    assert not any(e.get("kind") == "leader_upsert_fk_violation" for e in captured)
+    assert deps.is_leader.is_set(), "the reopened connection's elect never won"
+
+
+class _NullMidRestoreConn(FakeConn):
+    """The reload lands during the repair INSERT, not before it.
+
+    ``reload_credentials``' close-timeout path nulls ``deps.leader_conn``
+    and only *schedules* the old connection's termination, so there is a
+    real window where the attribute is gone while the old wire still
+    answers ``is_closed() is False``. This double fires at the repair
+    INSERT's round trip - after the FK arm's first re-read and before its
+    second. Every lease statement arriving after the null is recorded
+    regardless of the connection's closed state: the open half is the one
+    a retried elect sent on a stale binding would actually win a lease on.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.null_conn: Callable[[], None] | None = None
+        self.nulled = False
+        self.fk_raised = False
+        self.lease_calls = 0
+        self.lease_stmts_after_null: list[str] = []
+        self.restores = 0
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql):
+            if self.nulled:
+                self.lease_stmts_after_null.append(sql)
+                if self.is_closed():
+                    raise asyncpg.InterfaceError("connection is closed")
+            self.lease_calls += 1
+            if self.lease_calls == 1:
+                self.fk_raised = True
+                raise asyncpg.ForeignKeyViolationError(
+                    "insert or update on table 'maintenance_leader' violates "
+                    "foreign key constraint 'maintenance_leader_worker_id_fkey'"
+                )
+            return datetime.now(UTC)
+        return await super().fetchval(sql, *args)
+
+    async def execute(self, sql: str, *args: object) -> str:
+        normalized = " ".join(sql.split()).upper()
+        tag = await super().execute(sql, *args)
+        if ".WORKERS" in normalized and "ON CONFLICT (ID) DO NOTHING" in normalized:
+            self.restores += 1
+            if self.null_conn is not None:
+                callback, self.null_conn = self.null_conn, None
+                callback()
+        return tag
+
+
+@pytest.mark.parametrize(
+    "terminate_on_null", [True, False], ids=["scheduled-close", "nulled-but-open"]
+)
+async def test_elect_retry_never_runs_on_the_connection_the_reload_nulled(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+    terminate_on_null: bool,
+) -> None:
+    """The FK arm's second re-read: a conn lost during the repair is a reopen.
+
+    ``reload_credentials`` nulls ``deps.leader_conn`` and *schedules* the old
+    connection's termination while the repair INSERT is in flight, so the
+    attribute can be gone while the old wire still answers - the window in
+    which a binding captured before the await is indistinguishable from a
+    live connection by ``is_closed()`` alone. The retried elect must be
+    issued only on a connection re-read from the attribute: the arm returns
+    to the loop top, whose open block rebuilds through
+    ``leader_conn_factory`` with the rotated credentials.
+
+    Both halves of the window are pinned. ``scheduled-close`` terminates in
+    the same callback, where ``is_closed()`` alone catches a stale binding;
+    ``nulled-but-open`` leaves the old wire answering, so only the re-read
+    can - the case a stale ``retry_conn`` binding would win a lease on,
+    holding leadership on a wire already queued for termination (a
+    leader-without-lock window until the next renew notices, with a
+    ``maintenance_leader`` row no peer can take until the lease lapses).
+
+    Regressions pinned (each reachable via a SIGHUP credential reload crossing
+    a reaped registration): a retried elect sent on the connection the reload
+    already nulled, and an ``AttributeError`` from dereferencing the nulled
+    attribute - tolerated by the backstop as an election FAILURE, which the
+    attempt count exposes.
+    """
+    conn = _NullMidRestoreConn()
+    leader, deps, _backend, _leader_conn, _, shutdown = await _make_leader(
+        leader_conn=conn,
+        monkeypatch=monkeypatch,
+    )
+
+    def null_conn() -> None:
+        deps.leader_conn = None
+        if terminate_on_null:
+            # The reload's background termination, already scheduled on the
+            # old conn: asyncpg reports it closed from here on.
+            conn.terminate()
+
+    conn.null_conn = null_conn
+
+    factory_conns: list[FakeConn] = []
+
+    async def factory() -> asyncpg.Connection:
+        rebuilt = FakeConn(fetchval_result=True)  # the reopened conn wins the elect
+        factory_conns.append(rebuilt)
+        return rebuilt  # type: ignore[return-value]  # Why: FakeConn is a drop-in for asyncpg.Connection in unit tests, the same substitution _make_deps makes.
+
+    deps.leader_conn_factory = factory
+
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    shutdown_set_by_loop = False
+    with structlog.testing.capture_logs() as captured:
+        await wait_for_leader(deps)
+        shutdown_set_by_loop = shutdown.is_set()
+    shutdown.set()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert conn.fk_raised, "sanity: the FK must have routed into the repair arm"
+    assert conn.restores == 1, (
+        "sanity: the nulling must land inside the repair INSERT's own await "
+        f"(restores seen: {conn.restores})"
+    )
+    assert conn.lease_calls == 1, (
+        "the retried elect was issued on the old connection after the reload "
+        f"nulled it (lease statements on it: {conn.lease_calls})"
+    )
+    assert conn.lease_stmts_after_null == [], (
+        "a lease statement was sent on the connection the reload had already "
+        f"nulled: {conn.lease_stmts_after_null!r}"
+    )
+    assert factory_conns, (
+        "the loop never rebuilt leader_conn through the factory - the vanished "
+        "connection was treated as usable or as a permanent fault"
+    )
+    assert deps.leader_conn is factory_conns[0], (
+        "the factory-built connection never became deps.leader_conn - the elect "
+        "recovered on a monitor/cron open, not by reopening the leader_conn"
+    )
+    assert deps.is_leader.is_set(), "the reopened connection's elect never won"
+    assert not shutdown_set_by_loop, (
+        "a leader_conn that vanished during the repair was classified as a "
+        "permanent fault and shut the process down"
+    )
+    assert not any(e.get("kind") == "leader_upsert_fk_violation" for e in captured)
+    assert not any(e.get("kind") == "worker_registration_restored" for e in captured), (
+        "a restore whose retry never completed on a live connection claimed the "
+        "durability point the operator warning exists to report"
+    )
+    assert not any(e.get("kind") == "election_attempt_failed" for e in captured), (
+        "the vanished connection was booked as a failed election attempt: a conn "
+        "the reload took away is a reopen, not an error the loop has to budget"
+    )
+    assert not any(e.get("kind") == "loop_unexpected_error" for e in captured), (
+        "the vanished connection reached the unexpected-error backstop (a "
+        "dereference or a write on the dying wire), not the reopen path"
     )
 
 

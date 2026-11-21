@@ -437,3 +437,54 @@ async def test_drive_until_held_bound(
     # The bound is the driver's property, not the run's: the drive
     # returned (never a hang) and the run continues by its own rules.
     _ = JobId  # the runner's ids (the import is the runner's contract)
+
+
+async def test_substep_ledger_carries_the_owning_claim_epoch(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The substep's ledger claim rides the OWNING claim's epoch (the
+    per-claim history law's inner face): the outer job's dispatch claim
+    granted epoch 1, and the inner step's own ledger row records THAT
+    epoch — never a stamped zero collapsing every outer claim's inner
+    history onto one arbiter row."""
+    seen: dict[str, int] = {}
+
+    async def _epoch_witness(ctx: StepContext, params: Ingest) -> Report:
+        seen["ctx_claim_epoch"] = ctx.claim_epoch
+        await ctx.substep("prepare.inner", _echo, {"ref": params.doc_id})
+        return Report(ref=params.doc_id)
+
+    app = WorkflowApp()
+
+    @app.workflow("substep_epoch_flow")
+    def substep_epoch_flow() -> Promise[object]:
+        return build(step(_epoch_witness, Ingest(doc_id="d1"), key="a"))
+
+    runner = FlowRunner(app.get("substep_epoch_flow"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow(input={"doc_id": "d1"})).flow_id
+    assert await runner.drive(flow_id) == "terminal"
+
+    job_row = await wf_conn.fetchrow(
+        f"SELECT attempt::int AS attempt, claim_epoch::bigint AS claim_epoch "
+        f'FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'a'",
+        flow_id,
+    )
+    assert job_row is not None
+    assert job_row["attempt"] == 1 and job_row["claim_epoch"] == 1, dict(job_row)
+    # the body's ctx carries the job's own granted epoch.
+    assert seen == {"ctx_claim_epoch": 1}, seen
+    # the substep's own ledger row: the owning claim's epoch, never 0.
+    substep_rows = await wf_conn.fetch(
+        f"SELECT attempt::int AS attempt, claim_epoch::bigint AS claim_epoch, "
+        f'status::text AS status FROM "{wf_schema}".wf_step_ledger '
+        "WHERE flow_id = $1 AND step_key = 'prepare.inner' "
+        "ORDER BY attempt, claim_epoch, created_at, id",
+        flow_id,
+    )
+    assert len(substep_rows) == 1, [dict(r) for r in substep_rows]
+    assert substep_rows[0]["status"] == "succeeded"
+    assert substep_rows[0]["claim_epoch"] == 1, (
+        f"the substep's ledger claim must carry the owning claim's epoch, "
+        f"got {dict(substep_rows[0])}"
+    )

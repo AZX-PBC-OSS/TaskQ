@@ -18,6 +18,7 @@ containers the fixtures below already own.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -103,3 +104,10 @@ def toxiproxy() -> Iterator[Toxiproxy]:
         yield weather
     finally:
         weather.stop()
+
+
+@pytest.fixture(scope="module")
+def log_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The tier suites' own temp root: every worker log lands here, nowhere
+    else."""
+    return tmp_path_factory.mktemp("p2-system-logs")

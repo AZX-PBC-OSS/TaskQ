@@ -29,6 +29,9 @@ __all__ = [
     "LEASE_CLEAR_SQL",
     "MIN_DEFERRAL_INTERVAL_SQL",
     "PROGRESS_MERGE_SQL",
+    "double_braces",
+    "emit_park_marker_core",
+    "emit_park_predicate",
 ]
 
 # The non-consuming deferral floor, pre-rendered for the two arms that
@@ -165,3 +168,73 @@ PROGRESS_MERGE_SQL: Final[str] = (
     " || (SELECT progress_state FROM params)\n"
     "                              ELSE j.progress_state END"
 )
+
+
+# ── The exact-park predicate P(a) and its marker core C(a) ─────────────
+#
+# One ordered seven-leg list, one renderer, exactly two projections (the
+# #718 correction layer's C4): the COMPLETE predicate P(a) — every park's
+# identity, the status leg first — and the MARKER CORE C(a) — complete
+# minus its first status leg, preserving the other six legs and their
+# order. The core is a projection of the same list, never a second
+# hand-written list. Python surfaces render these leaves; released
+# catalog SQL (the frozen migration) necessarily inlines its own forms;
+# the maintained literal parity control (tests/test_wf_park_predicate_
+# parity.py) owns that unavoidable boundary.
+#
+# Brace encoding is a shallow rendering convention, never another
+# predicate definition: the canonical output is single-brace (the true
+# SQL text); consumers embedding a projection into a template that
+# collapses doubled braces call :func:`double_braces` first.
+_PARK_LEGS: Final[tuple[str, ...]] = (
+    "{q}status = 'scheduled'",
+    '{q}metadata @> \'{"blocking_reason":"backpressure"}\'::jsonb',
+    '{q}metadata @> \'{"wf_deferral":{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}\'::jsonb',
+    '{q}metadata @> \'{"wf_emit_backpressure":{"version":1}}\'::jsonb',
+    "{q}step_key IS NOT NULL",
+    "{q}step_key <> '__flow__'",
+    "{q}metadata ? 'flow_id'",
+)
+
+
+def _render_park_legs(alias: str, first: int) -> str:
+    """The shared walker over the ONE leg list (``first`` = 0 for the
+    complete predicate, 1 for the marker core). An empty alias renders
+    the unqualified form; otherwise the alias qualifies every leg."""
+    q = f"{alias}." if alias else ""
+    return "\n  AND ".join(leg.replace("{q}", q) for leg in _PARK_LEGS[first:])
+
+
+def emit_park_predicate(alias: str) -> str:
+    """The COMPLETE exact-park predicate ``P(a)`` (all seven legs in
+    order, the ``status = 'scheduled'`` leg first) — the representation's
+    own identity: the marker, never a timestamp, discriminates, and
+    ``scheduled_at`` is deliberately absent from park identity (it stores
+    the park instant and is never a due date). Bind the complete
+    predicate only where COMPLETE park identity is required (the drift
+    fence's parks predicate beside its own written flow-filter literal;
+    the exact-park partial index's unqualified form). Single-brace
+    canonical text; double it for a brace-collapsing template."""
+    return _render_park_legs(alias, 0)
+
+
+def emit_park_marker_core(alias: str) -> str:
+    """The MARKER CORE ``C(a)``: the complete predicate minus its first
+    status leg, preserving the other six legs and their order (a
+    projection of the same list, never a second hand-written list). The
+    marker core is the only correct projection for a NOT-(...) exclusion
+    over a row that may be `pending`: a claimable pending row carrying
+    the marker must stay excluded (``NOT core`` is false), while the
+    complete predicate's status leg would make the exclusion evaluate
+    true and ADMIT the row (the migration's guard trigger covers only
+    scheduled -> pending, so the wrong projection is unprotected).
+    Single-brace canonical text; double it for a brace-collapsing
+    template."""
+    return _render_park_legs(alias, 1)
+
+
+def double_braces(text: str) -> str:
+    """The shallow brace-encoding convention for templates that collapse
+    doubled braces (``.format``/``collapse_braces`` consumers). A
+    rendering concern, never a predicate definition."""
+    return text.replace("{", "{{").replace("}", "}}")

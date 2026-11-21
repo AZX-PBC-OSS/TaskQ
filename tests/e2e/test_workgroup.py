@@ -9,7 +9,8 @@ that define the feature:
 1. Spawn + register: both children register in ``{schema}.workers`` with
    the config's ``name`` as ``worker_label`` and the supervisor-generated
    UUIDv7 as ``workgroup_instance`` (run.py ``register_worker``), then
-   heartbeat (fresh ``last_seen_at`` after ``started_at``).
+   heartbeat (each child's own ``last_seen_at`` moving across the
+   readiness gate's samples — the shared second-beat rule).
 2. Process: the supervised fleet dispatches and completes enqueued jobs
    (ground truth: ``e2e_effects`` rows plus ``JobHandle.wait``).
 3. Respawn: SIGKILLing one child's pid (read from its ``workers`` row) is
@@ -70,7 +71,14 @@ from typing import TYPE_CHECKING, NamedTuple
 import pytest
 import pytest_asyncio
 
-from ._assertions import fetch_effects, poll_until, wait_all
+from ._assertions import (
+    fetch_effects,
+    fresh_worker_ids,
+    poll_until,
+    wait_all,
+    wait_for_worker_ready,
+    worker_second_beat_predicate,
+)
 from .actors import WelcomeEmailPayload, send_welcome_email
 
 if TYPE_CHECKING:
@@ -192,12 +200,15 @@ async def workgroup_supervisor(
 
     Writes the workgroup TOML to ``tmp_path``, spawns ``taskq workgroup
     start`` (the console script next to ``sys.executable``; there is no
-    ``taskq.__main__``), and gates readiness on both labels showing a
-    fresh post-register heartbeat (``last_seen_at > started_at``) with a
-    non-NULL ``workgroup_instance`` - the same post-register proof as the
-    container fixtures, so a child stuck between register and the first
-    heartbeat can never satisfy the gate. A prematurely exited supervisor
-    fails fast; on timeout the captured output is dumped into the failure.
+    ``taskq.__main__``), and gates readiness through the shared
+    second-beat rule (``wait_for_worker_ready`` with
+    ``ready_count=len(_WORKER_LABELS)``): both labels' rows are new (the
+    ids already beating before the supervisor start are snapshotted into
+    ``known_workers``), and each must show its OWN post-registration
+    ``last_seen_at`` increase across gate samples — a child stuck between
+    register and the first heartbeat can never satisfy the gate. A
+    prematurely exited supervisor fails fast; on timeout the captured
+    output is dumped into the failure.
 
     Teardown SIGTERMs the supervisor, which forwards SIGTERM to all
     children and reaps them within ``shutdown_grace`` (verified against
@@ -225,6 +236,18 @@ async def workgroup_supervisor(
     log_lines: deque[str] = deque(maxlen=2000)
     drain_task = asyncio.create_task(_drain_stdout(process.stdout, log_lines))
 
+    # Gate on the CHILDREN's own beats: the ids already beating before the
+    # supervisor starts are snapshotted into known_workers, and the fleet
+    # gate needs ready_count NEW workers each showing a second
+    # post-registration beat (the shared rule's fleet shape).
+    known_workers = await fresh_worker_ids(e2e_pg_pool, e2e_schema.schema_name)
+    child_beats = worker_second_beat_predicate(
+        e2e_pg_pool,
+        e2e_schema.schema_name,
+        known_workers=known_workers,
+        ready_count=len(_WORKER_LABELS),
+    )
+
     async def _fleet_ready() -> bool:
         if process.returncode is not None:
             msg = (
@@ -232,17 +255,7 @@ async def workgroup_supervisor(
                 f"during readiness\n{_tail(log_lines)}"
             )
             raise RuntimeError(msg)
-        count = await e2e_pg_pool.fetchval(
-            f"""
-            SELECT count(DISTINCT worker_label) FROM "{e2e_schema.schema_name}".workers
-            WHERE worker_label = ANY($1::text[])
-              AND workgroup_instance IS NOT NULL
-              AND last_seen_at > now() - interval '10 seconds'
-              AND last_seen_at > started_at
-            """,
-            list(_WORKER_LABELS),
-        )
-        return count == len(_WORKER_LABELS)
+        return await child_beats()
 
     try:
         try:
@@ -250,7 +263,7 @@ async def workgroup_supervisor(
                 _fleet_ready,
                 timeout=_READINESS_TIMEOUT_S,
                 description=(
-                    f"{len(_WORKER_LABELS)} workgroup child heartbeats in "
+                    f"{len(_WORKER_LABELS)} workgroup child second beats in "
                     f"{e2e_schema.schema_name}.workers"
                 ),
             )
@@ -334,34 +347,23 @@ async def test_workgroup_supervisor_spawns_and_restarts_workers(
         _WORKER_LABELS[0],
     )
     assert victim is not None, f"no fresh workers row for label {_WORKER_LABELS[0]!r}"
-    victim_id = victim["id"]
     victim_pid = int(victim["pid"])
     assert 0 < victim_pid != os.getpid()
+    # The supervisor respawns the victim (a NEW worker id, the same
+    # label): the ids already beating before the kill (the victim's own
+    # row included — its beat died with the SIGKILL) are snapshotted into
+    # known_workers, so the shared second-beat gate waits for the
+    # RESPAWNED child's own post-registration beat.
+    known_before_kill = await fresh_worker_ids(e2e_pg_pool, e2e_schema.schema_name)
     with contextlib.suppress(ProcessLookupError):
         # An already-exited child is equivalent for the respawn proof below.
         os.kill(victim_pid, signal.SIGKILL)
 
-    async def _respawned() -> bool:
-        count = await e2e_pg_pool.fetchval(
-            f"""
-            SELECT count(*) FROM "{e2e_schema.schema_name}".workers
-            WHERE worker_label = $1
-              AND id <> $2
-              AND last_seen_at > now() - interval '10 seconds'
-              AND last_seen_at > started_at
-            """,
-            _WORKER_LABELS[0],
-            victim_id,
-        )
-        return count >= 1
-
-    await poll_until(
-        _respawned,
+    await wait_for_worker_ready(
+        e2e_pg_pool,
+        e2e_schema.schema_name,
         timeout=_RESPAWN_TIMEOUT_S,
-        description=(
-            f"respawn of {_WORKER_LABELS[0]!r} (new worker id, fresh heartbeat) "
-            f"in {e2e_schema.schema_name}.workers"
-        ),
+        known_workers=known_before_kill,
     )
 
     follow_up = await e2e_client.enqueue(

@@ -125,6 +125,64 @@ The complete precedence, retry, strict-reservation, capacity-owner, deadline,
 legacy default, and failure-boundary law is in
 [the workflows guide](../guides/workflows.md#chain-execution-policy-one-target-resolver).
 
+## Emit backpressure (`max_in_flight`, `EmitBackpressure`)
+
+`@app.workflow(name, ..., max_in_flight=N)` declares the run's whole-page
+materialization bound (`None` is the explicit unbounded; the unset default is
+1000). Every `ctx.emit_batch` call admits its WHOLE page against the run's
+real rows as they stand at the moment of the call — the other live rows plus
+their valid page-width reservations, with the running source's own row
+excluded — once outside the transaction, then again inside it under the
+run's intent/admission lock, so concurrent emitters of one run cannot both
+admit past the bound.
+
+When the page does not fit, `emit_batch` raises
+`taskq.workflows.EmitBackpressure` — a typed capacity control, not an error:
+no child, edge, or cursor row exists when it escapes. The source runner then
+PARKS the claimed source: `status='scheduled'` with `scheduled_at` holding
+the PARK INSTANT (not a due date — no lease, no worker slot, no heartbeat),
+the physical attempt refunded so `max_attempts` is never consumed, the
+current ledger claim resting `awaited` (never `failed`), and the exact
+marker (`metadata.blocking_reason='backpressure'` plus the typed deferral
+and the version-1 record) carrying the page width, bound, outstanding count,
+and `deferrals`/`wakes` counters. The body's `ctx.attempt` does not move.
+
+Wake is a threshold-created durable intent and an event-driven drain: each
+terminal/park event probes the exact marker once; only a marker-positive
+event whose oldest fitting waiter newly fits creates the durable promotion
+intent (plus its accelerator notification) in the same transaction. The
+drain — the producing route's own post-commit call, the maintenance leader's
+notification/leadership/reconnect arms, or the bounded maintenance-interval
+fallback — promotes the oldest fitting real waiter `pending` under the run's
+advisory lock and attaches a durable page-width RESERVATION, removing the
+marker atomically. A reserved replay may present fewer records than its
+reservation and may not present more: the excess raises the public
+`taskq.workflows.EmitReservationExceededError` — nothing is written, and
+the source terminalizes on the first violation through the deterministic
+grant-violation route (no retry budget spent), its reservation removed in
+the same winning terminal statement.
+That error is distinct from a genuine `PageDivergedError` — an idempotency
+arbiter collision whose remedy is a cursor re-sync; a width comparison never
+claims an arbiter collision. A parked source under a terminal root is never
+re-armed; an operator cancel terminalizes and fences it. Real failures (body
+errors, diverged cursors, poisoned pages) are unaffected and still consume
+the ladder. A committed terminal-root failure after a genuine child failure
+exhausted its retry policy — while an exact parked source still holds
+un-emitted work, including the first page when no cursor has committed
+(the absent key means zero pages have committed, not that the park is
+empty) — fences the parked source with durable
+`error_class='WorkflowNotDrainingError'` (a string value, not an
+importable class). The admin surface renders a parked
+source as scheduled with the backpressure marker — `deferred (backpressure)`
+with the park time as the parked-at time, never a next fire — and never as a
+failure.
+
+`ctx.emit_batch(..., backpressure_timeout_s=...)` is accepted for
+compatibility and is diagnostic-age input only: no value of it turns healthy
+saturation into a failure. A page whose width alone can never fit under the
+declared bound raises the immediate `ValueError` (shrink the page or raise
+the bound).
+
 ## The loop (`wf.loop`, `Done`, `Refine`)
 
 `loop(name, body, ...)` wires a LOOP node: each iteration is FRESH jobs
@@ -146,15 +204,19 @@ CONTROL UNION:
   the memo replay would re-thread as a Refine), the loop exhausts with
   the named class, and the flow terminalizes.
 
-**The carry's type is the contract:** the declared carrier-type
-(`carry_type=`, or derived from the `initial=` model instance) is
-re-applied at the ONE point a carry reaches the body — at iteration 0
-AND after EVERY resume and on the memo-replay path (the jsonb round-trip
-is typeless; the driver re-hydrates through the declared type's
-validator: a pydantic model, a dict subclass, or a JSON-native type). A
-declared type the jsonb boundary cannot honor is the loud
-`LoopCarryContractError` — a silent type change is refused. The compile
-side is E8 (the carrier-type check).
+**The carry's type is the contract:** the type-only declaration's
+initial carry is the empty `None` — the body receives `None` until its
+first `Refine` commits one. Every COMMITTED carry is revalidated at each
+boundary — the advance, a resume, the memo replay (`carry_type=`, or
+derived from the `initial=` model instance, is re-applied at the ONE
+point a carry reaches the body; the jsonb round-trip is typeless, so the
+driver re-hydrates through the declared type's validator: a pydantic
+model, a dict subclass, or a JSON-native type). A declared type the
+jsonb boundary cannot honor is the loud `LoopCarryContractError` — a
+silent type change is refused, and a committed `None` against a declared
+model or dict is the same refusal (the pre-first-carry seed is the only
+`None` the contract passes; a JSON-native declared type keeps the
+untyped `None`). The compile side is E8 (the carrier-type check).
 
 **The two walls are different:** `max_iterations` bounds TOTAL SPAWNS
 (the iteration cap); `budget_s` is the TIME wall — and it is BLIND while

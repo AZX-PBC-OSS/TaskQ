@@ -217,3 +217,291 @@ def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
                     f"but lists {len(listed)} ({sorted(listed)})"
                 )
     assert not offenders, "A table-count claim disagrees with its list:\n" + "\n".join(offenders)
+
+
+def test_docs5_the_upgrading_guide_pins_the_folded_backpressure_train() -> None:
+    """The contract §10.8's named PR-3 edit, pinned: the enumeration is
+    exactly `01.00.38_01`, `01.00.41_01`, `01.00.41_02`, `01.00.42_01` (the
+    withdrawn `41_03`/`41_04`/`41_05`/`41_06` identities appear nowhere in
+    the instructions); the exact 'two existing 01.00.41 files' wording
+    stands; the section heading and the one-file instruction are exact."""
+    import re
+    from pathlib import Path
+
+    guide = (Path(__file__).parent.parent / "docs" / "guides" / "upgrading.md").read_text()
+
+    # The section heading (the contract's exact text).
+    heading = "## Slot-free emit backpressure, durable intent, and per-claim ledger (01.00.42_01)"
+    assert heading in guide, "the folded 42_01 section heading is missing or altered"
+    section = guide.split(heading, 1)[1].split("\n## ", 1)[0]
+
+    # The one-file instruction, exact.
+    instruction = (
+        "Apply the one PRE file 01.00.42_01_pre_wf_step_ledger_claim_epoch.sql "
+        "after the 01.00.38 + existing 01.00.41 files and before corrected "
+        "bounded-emit/executor binaries; it installs the derived-capacity "
+        "intent/rotation records, exact-park guard/indexes, and claim-epoch "
+        "arbiter in one migration transaction."
+    )
+    assert " ".join(instruction.split()) in " ".join(section.split()), (
+        "the 42_01 apply instruction must be exact"
+    )
+
+    # The withdrawn identities are never instructed.
+    for withdrawn in ("01.00.41_03", "01.00.41_04", "01.00.41_05", "01.00.41_06"):
+        assert withdrawn not in section, withdrawn
+
+    # The base section's parenthetical carries the exact wording.
+    assert (
+        "Applying the two existing 01.00.41 files (`01.00.41_01` and\n"
+        "`01.00.41_02`) without `01.00.38_01` fails at" in guide
+    ) or (
+        "Applying the two existing 01.00.41 files (`01.00.41_01` and `01.00.41_02`) "
+        "without `01.00.38_01` fails at" in " ".join(guide.split())
+    ), "the parenthetical's exact enumeration wording moved or changed"
+
+    # The enumerated train in the backpressure section: exactly the four
+    # keys (parsed from the section's own file names).
+    files = re.findall(r"01\.00\.\d+_\d+[a-z_]*\.sql", section)
+    assert files == ["01.00.42_01_pre_wf_step_ledger_claim_epoch.sql"], files
+
+
+def test_docs7_the_upgrading_guide_states_the_10_7_operational_facts() -> None:
+    """RULING_718_ROUND3's F9 narrow pins: `upgrading.md`'s §10.7
+    operational-facts paragraph states each binding fact and stays
+    current — the fixed 200/100 ceilings, the scoped sub-second wake
+    target, `parked <= S`, `Theta(live + parked)`, and the non-drainage
+    refusal's durable-only export (the metric counter named, never an
+    importable class)."""
+    text = (_REPO / "docs" / "guides" / "upgrading.md").read_text(encoding="utf-8")
+    section = re.search(
+        r"\*\*Operational facts \(§10\.7\):\*\*(.*?)(?=\n## |\nThe folded file)",
+        text,
+        re.DOTALL,
+    )
+    assert section is not None, "the §10.7 operational-facts paragraph is missing"
+    body = section.group(1)
+    assert "**200** winning" in body, body
+    assert "**100**" in body, body
+    assert "**< 1 s**" in body and "competent fleet" in body, body
+    assert "`parked <= S`" in body, body
+    assert "`Theta(parked) <= Theta(S)`" in body, body
+    assert "`Theta(live + parked)`" in body, body
+    assert "`taskq.workflows.wf_not_draining`" in body, body
+    assert "never as an\nimportable class" in body or "never as an importable class" in body, body
+    assert "maintenance interval" in body, body
+
+
+def test_docs6_author_facing_docs_never_publish_internal_capacity_vocabulary() -> None:
+    """§10.1's API-surface leak pin (D9): the internal capacity vocabulary —
+    the derived-charge token, the intent generations, the derived
+    minimum-waiter width, the internal table names, the rotation cursor,
+    and the validated scalar renderers — is not author-facing API and
+    must not be published in the author-facing docs (the emit
+    backpressure guide and the API reference). Architecture/upgrade
+    material is the documented home for the internal names and is out of
+    this pin's scope; a leak reds with the offending file and token."""
+    import re
+
+    banned = (
+        r"\bcharge\b",
+        r"\bmin_waiting_width\b",
+        r"\bwake_generation\b",
+        r"\bhandled_generation\b",
+        r"\bwf_emit_capacity\b",
+        r"\bwf_emit_intent_rotation\b",
+        r"\bvalidated_park_width\b",
+        r"\bvalidated_reservation_width\b",
+        r"\bafter_flow_id\b",
+    )
+    for doc in (_GUIDE, _API_REF):
+        text = doc.read_text()
+        for token in banned:
+            hits = [text[: match.start()].count("\n") + 1 for match in re.finditer(token, text)]
+            assert not hits, (
+                f"{doc.relative_to(_REPO)} publishes the internal capacity "
+                f"vocabulary {token!r} at line(s) {hits[:5]} — internal "
+                "table names, charge, generations, and min_waiting_width are "
+                "not author-facing API (§10.1); teach the author-facing "
+                "behaviour instead."
+            )
+
+
+# ── the deleted backpressure mechanism's vocabulary ────────────
+
+#: #718's shipped mechanism raises ``EmitBackpressure`` IMMEDIATELY on a
+#: no-fit page — there is no bounded poll at the admission fence — and
+#: the runner parks the source (the ledger records ``awaited``, never a
+#: failure; the park is attempt-free). The phrases below are that
+#: DELETED pre-#718 mechanism's own vocabulary: a bounded poll at the
+#: fence, the failure-ladder-owned stall, the pager's term, the waiting
+#: child. Their reappearance on a current-facing docs page — or on the
+#: product tree's own authoring surfaces (``src/taskq/`` docstrings,
+#: string literals, and comments: a shipped docstring RIDES THE API,
+#: so it is worse-placed than a docs page, not better) — teaches a
+#: behaviour the product no longer has (the final whole-diff review's
+#: KF-1 finding: four pages still taught it, and a fifth sentence of
+#: the same class survived in the ``max_in_flight`` docstring because
+#: the pin then scanned ``docs/`` only). Each phrase is
+#: multi-word and backpressure-fence-specific — generic bounded
+#: polling on an unrelated surface (a test seam, an SSE stream) is not
+#: this pin's subject and does not match.
+#:
+#: The last two members are the fifth surface's own spans, and they
+#: are here on purpose: the docstring sentence read "the stall rides
+#: the CERTIFIED ladder" — the interpolating adjective defeated the
+#: exact-substring match "stall rides the ladder", which is exactly
+#: how the sentence survived both the KF-1 sweep and the six-phrase
+#: list. The spans are added literally (no gap-tolerant regex: a
+#: "stall …ladder" pattern false-positives every file that mentions
+#: both words and would turn the allowlist into a judgment call); the
+#: pre-fix-archive red pins that they fire on the class, and the
+#: green tree pins that they fire on nothing else.
+#:
+#: The last three members are the same class caught one surface later
+#: (the fresh-DeepSeek round-25 finding): the test-family table's own
+#: backpressure row still said "the pager blocks at the declared
+#: bound … the throttle releases under a draining worker" — a WAITING
+#: description of a mechanism that refuses — and the row survived
+#: every sweep because none of its phrases was listed. "the pager
+#: blocks" (the general waiting claim about the pager), "blocks at
+#: the declared bound" (the exact surviving clause) and "the throttle
+#: releases" (the sibling waiting claim) are here for the same reason
+#: the ladder spans are: each is a literal substring of a sentence
+#: that has already survived a review, and the list is the record of
+#: the vocabulary the sweeps have had to convict so far.
+_BACKPRESSURE_LEGACY_PHRASES = (
+    "bounded poll",
+    "ladder-owned stall",
+    "stalls ride the ladder",
+    "stall rides the ladder",
+    "the pager's term",
+    "waits at the fence",
+    "stall rides the certified ladder",
+    "laziness is the pause",
+    "the pager blocks",
+    "blocks at the declared bound",
+    "the throttle releases",
+)
+
+#: Every scanned markdown surface is current-facing (the docs build
+#: publishes all of ``docs/``; the front page and the examples' pages
+#: ship in the repository root and with the sdist's examples), so the
+#: allowlist is EMPTY by construction. A genuinely historical page —
+#: an archived design note kept for provenance — is exempted BY PATH,
+#: with its reason recorded beside it, never by phrase: an exemption
+#: must name the file, and a file that returns to current-facing
+#: teaching must lose the entry.
+_BACKPRESSURE_LEGACY_ALLOWLIST: dict[str, str] = {}
+
+#: The product tree's allowlist, same discipline: keyed BY PATH with the
+#: reason recorded beside the entry, never by phrase, and empty unless an
+#: unrelated surface genuinely forces one. The scan reads the WHOLE
+#: module file (docstrings, string literals, and comments — the
+#: codebase's authoring surfaces), whitespace-collapsed, exactly like
+#: the docs pass.
+_BACKPRESSURE_LEGACY_SRC_ALLOWLIST: dict[str, str] = {
+    "src/taskq/web/admin/jobs.py": (
+        "the admin SSE progress stream's own checkout comment says "
+        "'bounded polls' for the stream's BoundedPool checkouts — "
+        "generic bounded polling on an unrelated surface (the control's "
+        "declared out-of-scope class), not the emit admission fence"
+    ),
+}
+
+
+def test_docs8_no_current_facing_doc_teaches_the_deleted_backpressure_behaviour() -> None:
+    """KF-1's maintained negative control: the deleted pre-#718
+    backpressure mechanism's vocabulary must not reappear on a
+    current-facing surface. The scanned corpus, exactly:
+
+    * every ``*.md`` under ``docs/`` (the docs build publishes all of
+      them; none is an archive);
+    * the repository's front page (``README.md``) and every ``*.md``
+      the shipped ``examples/`` carry — the round-25 review executed
+      the bypass: a banned phrase pasted into either left this pin
+      green while it scanned ``docs/`` only;
+    * every ``*.py`` under ``src/taskq/`` — docstrings, string
+      literals, and comments, the product tree's own authoring
+      surfaces (the ``max_in_flight`` docstring is exactly the surface
+      an author reads when choosing a bound, so the product scan is
+      not a bonus, it is the class's likeliest home).
+
+    Deliberately NOT scanned, by path, with the reason: ``CHANGELOG.md``
+    (append-only release history — a past-tense entry may name the
+    pre-#718 behaviour truthfully), the ``perf-evidence-*.md`` reports
+    (frozen per-run evidence — provenance artifacts, not behaviour
+    teaching), the policy pages (``CONTRIBUTING.md``,
+    ``CODE_OF_CONDUCT.md``, ``SECURITY.md``, ``SUPPORT.md``), and
+    everything outside those roots (build outputs, site-packages, the
+    preserved ``rescue/`` snapshot). The pin's claim is exactly this
+    corpus: a surface that becomes current-facing teaching joins the
+    scan, or its path is exempted below with a written reason.
+
+    The declared residual: this is a LITERAL scanner. It convicts the
+    exact vocabulary the review sweeps have already met (the phrase
+    list is that record) and cannot catch a never-seen paraphrase of
+    the deleted mechanism — "no current-facing surface teaches the
+    deleted behaviour" is enforced here as "no scanned surface uses
+    the convicted phrases". The residual is discharged by the review
+    discipline, not by this pin: each review round re-reads the
+    current-facing surfaces against the shipped mechanism (the KF-1
+    sweep), and every phrase a sweep convicts joins the list.
+
+    The shipped law is the guide's "Slot-free emit backpressure"
+    section — saturation raises ``EmitBackpressure`` immediately and
+    parks the source; nothing polls at the fence and nothing rides
+    the failure ladder.
+
+    The comparison collapses whitespace across the whole file first, so
+    a phrase cannot hide by wrapping across lines — for ``src/`` the
+    whole module file is the unit, exactly like a docs page. Two
+    witnesses keep the read honest: the guide's shipped-mechanism
+    sentence (the docs corpus' anchor) and the ``EmitBackpressure``
+    docstring's own shipped-law sentence (the src corpus' anchor) — if
+    either is deleted or renamed, this pin reds loud instead of passing
+    vacuously on an empty corpus."""
+    guide_text = _GUIDE.read_text(encoding="utf-8")
+    assert "saturation is a park, not a failure" in " ".join(guide_text.split()), (
+        "the guide's shipped-mechanism sentence is gone — the witness "
+        "fails loud (the pin's own subject must exist to be enforceable)"
+    )
+    emit_text = " ".join(
+        (_REPO / "src" / "taskq" / "workflows" / "_emit.py").read_text(encoding="utf-8").split()
+    )
+    assert "deliberately outside ``Snooze``/``RetryAfter`` and the failure ladder" in emit_text, (
+        "the EmitBackpressure docstring's shipped-law sentence is gone — the "
+        "src witness fails loud (the pin's product anchor must exist to be "
+        "enforceable)"
+    )
+    offenders: list[str] = []
+    markdown = sorted((_REPO / "docs").rglob("*.md"))
+    markdown.append(_REPO / "README.md")
+    markdown.extend(sorted((_REPO / "examples").rglob("*.md")))
+    for doc in markdown:
+        key = doc.relative_to(_REPO).as_posix()
+        if key in _BACKPRESSURE_LEGACY_ALLOWLIST:
+            continue
+        text = " ".join(doc.read_text(encoding="utf-8").split())
+        for phrase in _BACKPRESSURE_LEGACY_PHRASES:
+            if phrase in text:
+                offenders.append(f"{key}: {phrase!r}")
+    for module in sorted((_REPO / "src" / "taskq").rglob("*.py")):
+        key = module.relative_to(_REPO).as_posix()
+        if key in _BACKPRESSURE_LEGACY_SRC_ALLOWLIST:
+            continue
+        text = " ".join(module.read_text(encoding="utf-8").split())
+        for phrase in _BACKPRESSURE_LEGACY_PHRASES:
+            if phrase in text:
+                offenders.append(f"{key}: {phrase!r}")
+    assert not offenders, (
+        "A current-facing doc or product surface teaches the DELETED "
+        "pre-#718 backpressure behaviour (a bounded poll at the admission "
+        "fence / a failure-ladder-owned stall). The scanned corpus is "
+        "docs/**/*.md, README.md, examples/**/*.md and src/taskq/**/*.py "
+        "(the docstring records what is deliberately out and why). The "
+        "shipped mechanism raises EmitBackpressure immediately on a "
+        "no-fit page and parks the source (docs/guides/workflows.md, "
+        "'Slot-free emit backpressure: saturation is a park, not a "
+        "failure'); rephrase the surface to the shipped mechanism:\n" + "\n".join(offenders)
+    )

@@ -20,7 +20,7 @@ import json
 import sys
 import types
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -257,6 +257,83 @@ def test_the_deferral_label_bounds_a_hostile_signal_stamp() -> None:
     assert "Snooze" in clean_label and "more characters" not in clean_label
 
 
+def test_the_deferral_label_renders_a_parked_source_without_a_fire_time() -> None:
+    """The PARKED face (the #718 capacity park's own row).
+    REPRESENTATION INVERSION: the park instant is stored in scheduled_at
+    (NOT NULL — the old NULL-timer representation is deleted, and the
+    storage-domain constraint 01.00.41_04 with it). The label reads
+    'deferred (backpressure)' with the parked-at time named as the park
+    time — and never renders a next fire, the unchanged law that a park has
+    no timer."""
+    from taskq.web.admin._wf_rows import RunNode
+
+    parked = RunNode(
+        key="source",
+        status="scheduled",
+        attempt=0,
+        snooze_count=0,
+        scheduled_at=datetime(2026, 11, 15, 9, 30, 0, tzinfo=UTC),
+        deferral={"signal": "EmitBackpressure", "consume_budget": False, "attempt": 0},
+        # THE REAL PARKED ROW'S SHAPE: the park's marker carries
+        # blocking_reason 'backpressure' — the D8 law's own discriminator
+        # (a row without it is a non-park reserved row and renders the
+        # honest deferred face, never the park face).
+        blocking_reason="backpressure",
+    )
+    label = parked.deferral_label
+    assert label is not None, "a parked source sits on a live deferral and renders its label"
+    assert "deferred (backpressure)" in label, (
+        f"the parked source's label must name the deferred (backpressure) park, got {label!r}"
+    )
+    assert "parked at 2026-11-15T09:30:00+00:00" in label, (
+        f"the parked label shows the park instant as the parked-at time, got {label!r}"
+    )
+    assert "next fire" not in label, (
+        f"the parked source's label must never fabricate a next fire, got {label!r}"
+    )
+    assert "EmitBackpressure" in label, (
+        f"the parked label names the signal that parked the row, got {label!r}"
+    )
+
+    # THE NON-PARK ARM (D8): a row carrying the deferral SIGNAL but not
+    # the park's marker (blocking_reason unset — the re-pended reserved
+    # source's real shape) renders the HONEST deferred face with next
+    # fire from its own real due time — never the park label, never
+    # hidden.
+    repended = RunNode(
+        key="source",
+        status="scheduled",
+        attempt=1,
+        snooze_count=0,
+        scheduled_at=datetime(2026, 11, 15, 9, 30, 0, tzinfo=UTC),
+        deferral={"signal": "EmitBackpressure", "consume_budget": False, "attempt": 1},
+        blocking_reason=None,
+    )
+    repended_label = repended.deferral_label
+    assert repended_label is not None, "a non-park reserved row's live deferral renders"
+    assert "deferred (backpressure)" not in repended_label, (
+        f"a non-park row must never render the park label, got {repended_label!r}"
+    )
+    assert "parked at" not in repended_label, (
+        f"a non-park row must never claim a park instant, got {repended_label!r}"
+    )
+    assert "next fire 2026-11-15 09:30:00+00:00" in repended_label, (
+        f"the non-park row's next fire comes from its own due time, got {repended_label!r}"
+    )
+    # The timer deferral beside it keeps its next-fire face (the opposite
+    # direction: the parked branch must not have eaten the timed shape).
+    timed = RunNode(
+        key="solo",
+        status="scheduled",
+        attempt=1,
+        snooze_count=1,
+        scheduled_at="2026-01-01T00:00:02+00:00",
+        deferral={"signal": "Snooze", "consume_budget": False, "attempt": 1},
+    )
+    timed_label = timed.deferral_label
+    assert timed_label is not None and "next fire" in timed_label and "parked" not in timed_label
+
+
 async def test_the_runs_list_exposes_a_pathologically_deferring_run(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -317,10 +394,83 @@ async def test_the_runs_list_exposes_a_pathologically_deferring_run(
     )
 
 
+async def test_the_runs_list_renders_a_parked_source_without_a_fire_time(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    demo_app_module: Any,
+) -> None:
+    """A run whose only deferral is a PARKED source (the capacity park —
+    no timer) renders the badge's parked face ('parked · no timer') and
+    never the literal 'next fire None'. The park is the production park
+    arm (``defer_row_law``'s emit-backpressure disposition) on a really
+    claimed source row."""
+    from taskq.workflows._emit import EmitBackpressure
+    from taskq.workflows.api._runner_defer import defer_row_law
+    from taskq.workflows.engine import render_workflow_sql
+    from taskq.workflows.ledger import claim_step_ledger
+    from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
+
+    schema = module_pg_schema.schema_name
+    flow_id = await seed_flow(clean_pg_conn, schema, status="running")
+    node_id = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="source")
+    worker, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
+    wsql = render_workflow_sql(schema)
+    claim = await claim_step_ledger(
+        clean_pg_conn,
+        wsql,
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="source",
+        map_index=None,
+        attempt=int(attempt),
+        claim_epoch=int(epoch),
+    )
+    verdict = await defer_row_law(
+        module_pg_pool,
+        wsql,
+        job_id=node_id,
+        worker_id=worker,
+        delay=timedelta(0),
+        attempt=int(attempt),
+        claim_epoch=int(epoch),
+        disposition="emit_backpressure",
+        signal_name="EmitBackpressure",
+        ledger_id=claim.ledger_id,
+        ledger_claimed_at=claim.claimed_at,
+        backpressure=EmitBackpressure(page_width=1, bound=1, outstanding=1),
+        source_logical_attempt=1,
+        flow_id=flow_id,
+    )
+    assert verdict.verdict == "deferred", verdict
+
+    app = _make_admin_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/workflows")
+    assert resp.status_code == 200
+    html = resp.text
+    deferring_row = next(
+        (chunk for chunk in html.split("<tr>") if f"/workflows/{flow_id}" in chunk), ""
+    )
+    assert "data-wf-run-deferring" in deferring_row, (
+        "the parked run must be visible from the runs list (the deferral badge)"
+    )
+    # REPRESENTATION INVERSION: the park instant is stored, so the badge
+    # names the deferred (backpressure) face — never a fabricated next fire.
+    assert "deferred (backpressure)" in deferring_row, (
+        f"the parked-only run must render the deferred (backpressure) face, got: {deferring_row[:300]}"
+    )
+    assert "next fire None" not in html, (
+        "the page must never render a NULL next fire (the docs' law)"
+    )
+
+
 async def test_the_runs_list_survives_an_overflow_shaped_deferral_stamp(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
-    clean_pg_conn: Any,
+    clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
     """The cast's bound (the re-review's required residual — the 500): a

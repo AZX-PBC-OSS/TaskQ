@@ -1,6 +1,7 @@
 """Unit tests for heartbeat_loop - pure-Python, no PG required."""
 
 import asyncio
+import json
 import time
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
@@ -448,6 +449,206 @@ async def test_failure_counter_resets_after_success() -> None:
     assert deps.heartbeat_failures == 0
     shutdown.set()
     await task
+
+
+# ── The zero-row liveness write: reaped-row repair ────────────────
+
+
+class _ReapedWorkerConn(FakeConn):
+    """The double for the reaped-row repair path.
+
+    The liveness write - the statement the real stale-sweep reap makes
+    match zero rows - answers the honest ``UPDATE 0`` tag. The repair
+    INSERT that must follow either raises *repair_error* or answers
+    ``INSERT 0 1``; *later_error*, when set, fails the next statement
+    after a successful repair (the in-tx failure shape). The tick's
+    transaction object is captured so the rollback contract is asserted
+    on the real teardown, not inferred from the counter.
+    """
+
+    def __init__(
+        self,
+        *,
+        repair_error: BaseException | None = None,
+        later_error: BaseException | None = None,
+    ) -> None:
+        super().__init__()
+        self.repair_error = repair_error
+        self.later_error = later_error
+        self.repair_attempts = 0
+        self.last_tx: _FakeTransaction | None = None
+
+    def transaction(self) -> _FakeTransaction:
+        tx = super().transaction()
+        self.last_tx = tx
+        return tx
+
+    async def execute(self, sql: str, *args: object) -> str:
+        normalized = " ".join(sql.split()).upper()
+        if normalized.startswith("UPDATE") and ".WORKERS" in normalized:
+            self.execute_calls.append((sql, args))
+            return "UPDATE 0"
+        if ".WORKERS" in normalized and "ON CONFLICT (ID) DO NOTHING" in normalized:
+            self.repair_attempts += 1
+            self.execute_calls.append((sql, args))
+            if self.repair_error is not None:
+                raise self.repair_error
+            return "INSERT 0 1"
+        if self.later_error is not None:
+            self.execute_calls.append((sql, args))
+            raise self.later_error
+        return await super().execute(sql, *args)
+
+
+class _ReapedWorkerPool(FakePool):
+    """FakePool serving one persistent _ReapedWorkerConn (every tick)."""
+
+    def __init__(self, conn: _ReapedWorkerConn) -> None:
+        super().__init__()
+        self.conn = conn
+
+    @asynccontextmanager
+    async def acquire(self, *, timeout: float | None = None) -> AsyncGenerator[FakeConn, None]:  # noqa: ASYNC109 # Why: mirrors the real asyncpg.Pool.acquire signature, same as the parent double.
+        self.acquire_count += 1
+        yield self.conn
+
+
+async def test_a_zero_row_liveness_write_repairs_and_warns_after_commit() -> None:
+    """UPDATE 0 on the liveness write restores the registration in the same
+    transaction and warns only once the commit confirmed.
+
+    The repair INSERT's metadata merges the tick payload under the full
+    registration metadata with the registration keys winning: the restored
+    row must be dispatch-eligible exactly as boot registration stamped it
+    (the capability keys the claim fence reads as data), and must carry
+    this tick's own payload (the stall tally) too - both halves pinned:
+    the tally keys survive the merge, and no tally key can shadow a
+    registration key.
+    """
+    record_calls: list[float] = []
+    await _patch_tick_duration(record_calls.append)
+    conn = _ReapedWorkerConn()
+    pool = _ReapedWorkerPool(conn)
+
+    def _seed(deps: WorkerDeps) -> None:
+        deps.stall_tally.record("send_email", kind="gil_held")
+        deps.stall_tally.record("send_email", kind="gil_held")
+
+    with structlog.testing.capture_logs() as captured:
+        deps, _shutdown = await _run_tick(pool=pool, deps_hook=_seed)
+
+    assert conn.repair_attempts == 1
+    assert conn.last_tx is not None and conn.last_tx.committed
+    restored = [e for e in captured if e.get("kind") == "worker_registration_restored"]
+    assert len(restored) == 1 and restored[0]["log_level"] == "warning", (
+        f"expected exactly one WARNING-level worker-registration-restored, got {restored!r}"
+    )
+    assert restored[0]["source"] == "heartbeat"
+    assert deps.heartbeat_failures == 0
+    # The repair rode the same tick: liveness UPDATE, repair INSERT, then
+    # the rest of the statement sequence, all inside the one budget.
+    repair_args = next(
+        args
+        for sql, args in conn.execute_calls
+        if ".WORKERS" in " ".join(sql.split()).upper()
+        and "ON CONFLICT (ID) DO NOTHING" in " ".join(sql.split()).upper()
+    )
+    merged: dict[str, object] = json.loads(repair_args[6])
+    # The registration half: the capability keys the dispatch fence reads.
+    assert merged["workflow_execution"] is False
+    assert "max_concurrency" in merged and "notify_enabled" in merged
+    # The tick half: this tick's own payload rode the restored row.
+    assert '"send_email":{"gil_held":2}' in str(repair_args[6])
+
+
+async def test_a_failing_repair_insert_is_a_failed_tick_not_a_restoration() -> None:
+    """A repair INSERT the server refuses is a failed tick: rollback, the
+    counter increments toward isolation, and no restoration is reported.
+
+    The repair is not caught-and-swallowed inside the tick - a repair that
+    cannot land is a beat that did not happen, routed through the existing
+    failed-tick arms (the non-transient refusal here lands in the
+    unexpected-error arm).
+    """
+    await _patch_tick_duration(lambda v: None)
+    conn = _ReapedWorkerConn(
+        repair_error=asyncpg.InsufficientPrivilegeError("permission denied for table workers")
+    )
+    deps = _make_deps(heartbeat_pool=_ReapedWorkerPool(conn))
+    shutdown = asyncio.Event()
+    worker_id = new_uuid()
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
+        await _wait_for_heartbeat_failures(deps, at_least=1)
+        assert deps.heartbeat_failures >= 1
+        shutdown.set()
+        await task
+
+    assert conn.repair_attempts == 1
+    assert conn.last_tx is not None and conn.last_tx.rolled_back, (
+        "the failed repair must roll the tick's transaction back - the lease "
+        "renewals it rode in on are re-stamps, but the rollback is what keeps "
+        "a half-applied tick from ever committing"
+    )
+    assert not any(e.get("kind") == "worker_registration_restored" for e in captured), (
+        "a rolled-back repair never restored anything - the warning must not fire"
+    )
+
+
+async def test_a_repair_followed_by_a_later_tick_failure_is_not_a_restoration() -> None:
+    """A successful repair INSERT followed by a later in-transaction
+    failure rolls back with the tick: no commit, no restoration warning.
+
+    The warning's durability boundary is the commit, not the INSERT: a
+    repair that never committed must never be reported as a restoration.
+    """
+    await _patch_tick_duration(lambda v: None)
+    conn = _ReapedWorkerConn(later_error=asyncpg.PostgresConnectionError("boom"))
+    deps = _make_deps(heartbeat_pool=_ReapedWorkerPool(conn))
+    shutdown = asyncio.Event()
+    worker_id = new_uuid()
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
+        await _wait_for_heartbeat_failures(deps, at_least=1)
+        assert deps.heartbeat_failures >= 1
+        shutdown.set()
+        await task
+
+    assert conn.repair_attempts == 1
+    assert conn.last_tx is not None and conn.last_tx.rolled_back
+    assert not any(e.get("kind") == "worker_registration_restored" for e in captured)
+
+
+async def test_a_draining_beat_still_restores_a_reaped_registration() -> None:
+    """The drain does not suppress the zero-row repair, by design.
+
+    The election loop parks on ``shutdown_start_event``; the heartbeat
+    deliberately does not, because the drain's terminal writes resolve
+    ``job_attempts.worker_id`` through the holder ``FOR KEY SHARE`` CTE,
+    which records NULL once the row is gone - a beat that stopped restoring
+    would silently strip the attribution from every attempt a draining,
+    reaped worker hands back. The row it restores is deleted by
+    ``_bootstrap._main``'s ``finally`` after the drain.
+
+    Pinned so that adding a stop gate here for symmetry with the election
+    loop goes red: no other heartbeat test sets ``shutdown_start_event``.
+    """
+
+    def _draining(deps: WorkerDeps) -> None:
+        deps.shutdown_start_event.set()
+
+    conn = _ReapedWorkerConn()
+    with structlog.testing.capture_logs() as captured:
+        deps, _shutdown = await _run_tick(pool=_ReapedWorkerPool(conn), deps_hook=_draining)
+
+    assert deps.shutdown_start_event.is_set(), "sanity: the draining state must be live"
+    assert conn.repair_attempts == 1, (
+        "the draining beat skipped the zero-row repair: a stop gate on the "
+        "heartbeat strips worker attribution from every attempt the drain returns"
+    )
+    assert conn.last_tx is not None and conn.last_tx.committed
+    restored = [e for e in captured if e.get("kind") == "worker_registration_restored"]
+    assert len(restored) == 1 and restored[0]["source"] == "heartbeat"
 
 
 # ── Failed-tick pacing: a failed tick is not a beat ────────────────

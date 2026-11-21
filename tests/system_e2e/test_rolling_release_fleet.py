@@ -2436,17 +2436,28 @@ async def test_corpse_ownership_wait_staged_reads(
     )
 
     async def _staged_reclaim() -> None:
-        await asyncio.sleep(1.0)
-        await clean_pg_conn.execute(
-            f"UPDATE \"{schema}\".jobs SET status = 'pending' WHERE locked_by_worker = $1::uuid",
-            corpse,
-        )
-        await clean_pg_conn.execute(
-            f'UPDATE "{schema}".reservation_slots '
-            "SET lease_expires_at = statement_timestamp() - interval '1s' "
-            "WHERE held_by_worker_id = $1::uuid",
-            corpse,
-        )
+        # THE REAPER'S OWN CONNECTION (the shared-wire fix): the poller
+        # above reads `clean_pg_conn` in its 0.2s loop WHILE this task
+        # runs — two tasks issuing operations on one asyncpg connection
+        # overlap (``InterfaceError: another operation is in progress``,
+        # the lane's diagnosed flake). The staged reclaim's writes are
+        # the same statements on their own wire; the poller's reads and
+        # bounds are unchanged.
+        reaper_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        try:
+            await asyncio.sleep(1.0)
+            await reaper_conn.execute(
+                f"UPDATE \"{schema}\".jobs SET status = 'pending' WHERE locked_by_worker = $1::uuid",
+                corpse,
+            )
+            await reaper_conn.execute(
+                f'UPDATE "{schema}".reservation_slots '
+                "SET lease_expires_at = statement_timestamp() - interval '1s' "
+                "WHERE held_by_worker_id = $1::uuid",
+                corpse,
+            )
+        finally:
+            await reaper_conn.close()
 
     reaper = asyncio.create_task(_staged_reclaim())
     try:
@@ -2492,7 +2503,10 @@ def test_worker_log_drain_joins_at_graceful_stop(tmp_path: Any) -> None:
             "time.sleep(0.3)\n"
             "print('final-line', file=sys.stderr, flush=True)\n",
         ],
-        stdout=sp.PIPE,
+        # stdout is DEVNULL: the probe writes its records to stderr only,
+        # and an unread stdout PIPE (the tee reads stderr) is the wedge
+        # class the drain rule exists to prevent.
+        stdout=sp.DEVNULL,
         stderr=sp.PIPE,
     )
     worker = WorkerProc(

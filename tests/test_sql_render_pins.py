@@ -28,7 +28,7 @@ from taskq.worker.cron_loop import (
     cron_lock_sql,
 )
 from taskq.workflows._sql import TERMINAL_SQL_SET, WorkflowSql
-from taskq.workflows._sql_ledger import LEDGER_TERMINAL_SQL
+from taskq.workflows._sql_ledger import LEDGER_TERMINAL_BY_ID_SQL
 from taskq.workflows._sql_sweep import (
     EDGE_ROOTLESS_RETENTION_SQL,
     render_rootless_retention_sql,
@@ -37,6 +37,7 @@ from taskq.workflows.api._hitl import _HOLD_AWAITED_LEDGER_SQL
 from taskq.workflows.api._hitl import _render as render_hold_sql
 from taskq.workflows.api._sql_loop import LOOP_ADVANCE_SQL, render_loop_sql
 from taskq.workflows.api._sql_runner import (
+    CLAIMABLE_NODES_SQL_TEMPLATE,
     NODE_CLAIM_SQL_TEMPLATE,
 )
 from taskq.workflows.api._sql_runner import (
@@ -44,6 +45,25 @@ from taskq.workflows.api._sql_runner import (
 )
 
 SCHEMAS = ["taskq", "tq_render_pin", "s"]
+
+#: The runner exclusion's rendered marker core, pinned as a WRITTEN
+#: literal — never read back from the shared renderer. This is the exact
+#: text ``_SQL_TOKEN_SUBS`` substitutes for ``{wf_emit_park_core}``: the
+#: renderer's marker-core projection ``C("")`` (the complete predicate
+#: minus its first status leg, unqualified), single-brace canonical text.
+#: A leg, order, alias, or alias-removal mutation in
+#: ``backend/_sql_fragments.py`` reds this pin — the delegation claim
+#: (every runner spelling renders the shared leaf) is only as strong as
+#: an expected value that cannot mutate with the thing it pins.
+_WF_EMIT_PARK_CORE_RENDERED = (
+    'metadata @> \'{"blocking_reason":"backpressure"}\'::jsonb\n'
+    '  AND metadata @> \'{"wf_deferral":'
+    '{"signal":"EmitBackpressure","consume_budget":false,"attempt":0}}\'::jsonb\n'
+    '  AND metadata @> \'{"wf_emit_backpressure":{"version":1}}\'::jsonb\n'
+    "  AND step_key IS NOT NULL\n"
+    "  AND step_key <> '__flow__'\n"
+    "  AND metadata ? 'flow_id'"
+)
 
 
 def test_loop_render_is_the_direct_substitution() -> None:
@@ -58,9 +78,18 @@ def test_loop_render_is_the_direct_substitution() -> None:
 
 
 def test_runner_render_is_the_direct_substitution() -> None:
-    for schema in SCHEMAS:
-        expected = NODE_CLAIM_SQL_TEMPLATE.replace("{schema}", schema)
-        assert render_runner_sql(NODE_CLAIM_SQL_TEMPLATE, schema) == expected
+    """The runner family's direct substitution, BOTH templates: the
+    validated schema, then the exclusion's marker core — the family's
+    two substitutions, in the render's own order. The expected value is
+    built from the written literal above (never the renderer), so the
+    byte-equality claim pins the delegation to a text that cannot drift
+    with the code it pins."""
+    for template in (NODE_CLAIM_SQL_TEMPLATE, CLAIMABLE_NODES_SQL_TEMPLATE):
+        for schema in SCHEMAS:
+            expected = template.replace("{schema}", schema).replace(
+                "{wf_emit_park_core}", _WF_EMIT_PARK_CORE_RENDERED
+            )
+            assert render_runner_sql(template, schema) == expected
 
 
 def test_rootless_render_is_the_direct_substitution() -> None:
@@ -94,20 +123,24 @@ def test_flush_render_is_the_direct_substitution() -> None:
 def test_bundle_render_is_the_direct_substitution() -> None:
     for schema in SCHEMAS:
         expected = (
-            LEDGER_TERMINAL_SQL.replace("{schema}", schema)
-            .replace("{terminal}", TERMINAL_SQL_SET)
+            LEDGER_TERMINAL_BY_ID_SQL.replace("{schema}", schema)
             .replace("{{", "{")
             .replace("}}", "}")
         )
-        assert WorkflowSql.build(schema).ledger_terminal == expected
+        assert WorkflowSql.build(schema).ledger_terminal_by_id == expected
 
 
 def test_same_inputs_render_the_same_sql() -> None:
     """Equal (template, schema) → equal SQL, every call — the shared
     render's behavior contract (the memoised render never drifts from
-    its own first answer for the same inputs)."""
-    first = render(LOOP_ADVANCE_SQL, "tq_render_pin", collapse_braces=True)
-    second = render(LOOP_ADVANCE_SQL, "tq_render_pin", collapse_braces=True)
+    its own first answer for the same inputs). The comparison rides the
+    PRODUCT renderer's exact substitutions (``{terminal}`` is the
+    terminal-status set the loop statements spell) — the canonical
+    renderer is ``render_loop_sql``; the shared render is its one
+    mechanism, called here with the same substitution map."""
+    subs: tuple[tuple[str, str], ...] = (("{terminal}", TERMINAL_SQL_SET),)
+    first = render(LOOP_ADVANCE_SQL, "tq_render_pin", subs=subs, collapse_braces=True)
+    second = render(LOOP_ADVANCE_SQL, "tq_render_pin", subs=subs, collapse_braces=True)
     assert first == second
     assert render_loop_sql(LOOP_ADVANCE_SQL, "tq_render_pin") == first
 

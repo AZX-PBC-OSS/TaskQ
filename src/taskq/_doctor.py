@@ -37,10 +37,13 @@ __all__ = [
 class _StrandedActorJobs:
     """One actor's stranded pending/scheduled rows, by strand shape.
 
-    Mirrors the two shapes the leader's stranded-jobs sweep computes
-    (``_stranded_jobs_loop`` in ``taskq/worker/_leader_sweeps.py``):
-    ``no_actor_config`` rows can never become dispatch candidates, and
-    ``unserved_queue`` rows route to a queue no live worker serves.
+    Mirrors ONLY the two dispatch-invisible shapes the leader's
+    stranded-jobs sweep computes (``_stranded_jobs_loop`` in
+    ``taskq/worker/_leader_sweeps.py``): ``no_actor_config`` rows can
+    never become dispatch candidates, and ``unserved_queue`` rows route
+    to a queue no live worker serves. The sweep's third leg (the
+    run-scoped ``workflow_root_missing`` detector) is not mirrored here —
+    these two fields answer the dispatch question only.
     """
 
     actor: str

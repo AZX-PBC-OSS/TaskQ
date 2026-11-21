@@ -69,6 +69,7 @@ import subprocess
 import sys
 import time
 from datetime import timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import httpx
@@ -92,6 +93,7 @@ from taskq.insights import (
     fetch_wait_distribution,
 )
 from taskq.testing.assertions import plain_cli_output
+from taskq.testing.health import unique_health_sock_path
 from taskq.web.admin import create_router, setup_admin_state
 from tests.system_e2e._harness import (
     BOOT_READY_BOUND_S,
@@ -381,8 +383,18 @@ class AdminUI:
         )
 
 
-def _spawn_admin_process(port: int, dsn: str, schema: str) -> subprocess.Popen[bytes]:
-    """The blocking Popen the async spawn hands to a worker thread."""
+def _spawn_admin_process(port: int, dsn: str, schema: str) -> tuple[subprocess.Popen[bytes], str]:
+    """The blocking Popen the async spawn hands to a worker thread.
+
+    Both streams ride a file sink, never a PIPE: the standalone UI is a
+    long-lived, chatty process (uvicorn's lifecycle and access logs
+    stream for the whole scenario), and a PIPE pair nobody drains fills
+    at 64K and blocks the child mid-log - the harness-manufactured wedge
+    ``_harness.spawn_worker``'s tee exists to prevent. The sink path
+    derives from the tier's unique health-socket namespace (module tag
+    + pid + run token) so the log stays attributable to this spawn; the
+    readiness-failure path reads it back."""
+    log_path = unique_health_sock_path("syse2e-ops-loop-ui").removesuffix(".sock") + ".admin.log"
     env = {
         **os.environ,
         **_UI_ENV,
@@ -390,13 +402,28 @@ def _spawn_admin_process(port: int, dsn: str, schema: str) -> subprocess.Popen[b
         "TASKQ_SCHEMA_NAME": schema,
         "TASKQ_ADMIN_PORT": str(port),
     }
-    return subprocess.Popen(  # noqa: S603  # Why: fixed argv, no shell, this interpreter, project-owned module.
-        [sys.executable, "-m", "taskq", "ui", "serve", "--host", "127.0.0.1", "--port", str(port)],
-        env=env,
-        cwd=_repo_root(),
-        stderr=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-    )
+    sink = open(log_path, "wb")  # noqa: SIM115  # Why: closed right after Popen - the child owns the dup'ed descriptors, the same lifetime spawn_worker's log_sink has.
+    try:
+        proc = subprocess.Popen(  # noqa: S603  # Why: fixed argv, no shell, this interpreter, project-owned module.
+            [
+                sys.executable,
+                "-m",
+                "taskq",
+                "ui",
+                "serve",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+            ],
+            env=env,
+            cwd=_repo_root(),
+            stdout=sink,
+            stderr=sink,
+        )
+    finally:
+        sink.close()
+    return proc, log_path
 
 
 async def spawn_admin_ui(dsn: str, schema: str) -> tuple[AdminUI, httpx.AsyncClient]:
@@ -406,15 +433,15 @@ async def spawn_admin_ui(dsn: str, schema: str) -> tuple[AdminUI, httpx.AsyncCli
     jar and the teardown).
     """
     port = _free_port()
-    proc = await asyncio.to_thread(_spawn_admin_process, port, dsn, schema)
+    proc, log_path = await asyncio.to_thread(_spawn_admin_process, port, dsn, schema)
     client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=10.0)
 
     async def _ready() -> bool:
         if proc.poll() is not None:
-            _stdout, stderr = proc.communicate(timeout=5)
+            log = await asyncio.to_thread(Path(log_path).read_text, errors="replace")
             raise RuntimeError(
-                f"taskq ui serve exited rc={proc.returncode} during startup: "
-                f"{stderr.decode(errors='replace')}"
+                f"taskq ui serve exited rc={proc.returncode} during startup "
+                f"(its log: {log_path}): {log[-20000:]}"
             )
         try:
             resp = await client.get("/admin/workers")

@@ -61,15 +61,19 @@ _QUEUE_LIVE_WORKERS_SQL = (
 
 # Stranded pending/scheduled rows per routing queue - the stranded-jobs
 # detector's SQL shape (worker/_leader_sweeps.py, _stranded_jobs_loop)
-# grouped by the queue dispatch routes on instead of by actor. The
-# routing discriminator (the actor's stored assignment for a re-pended
-# row, the row's own label otherwise) and the mutual exclusion of the two
-# strand shapes are the detector's own: a row whose actor has no
-# actor_config row counts once in the no-config shape and is never tested
-# against the workers table. The pending/scheduled predicate is served
-# index-only by jobs_dispatch_idx / jobs_scheduled_wake_idx (the partial
-# indexes the dispatch CTE uses); the liveness bound by
-# workers_last_seen_idx. No terminal row enters the read.
+# grouped by the queue dispatch routes on instead of by actor. THIS READ
+# MIRRORS ONLY THE DETECTOR'S TWO DISPATCH-INVISIBLE LEGS (no actor_config
+# row; unserved queue) — it does not implement the third leg (the run-
+# scoped workflow_root_missing detector); its comment/UI text must not
+# claim the whole detector. The routing discriminator (the actor's stored
+# assignment for a re-pended row, the row's own label otherwise) and the
+# mutual exclusion of the two strand shapes are the detector's own: a row
+# whose actor has no actor_config row counts once in the no-config shape
+# and is never tested against the workers table. The pending/scheduled
+# predicate is served index-only by jobs_dispatch_idx /
+# jobs_scheduled_wake_idx (the partial indexes the dispatch CTE uses);
+# the liveness bound by workers_last_seen_idx. No terminal row enters
+# the read.
 _QUEUE_STRANDED_SQL = f"""\
 SELECT r.routing_queue AS queue, count(*) AS stranded_count
 FROM (

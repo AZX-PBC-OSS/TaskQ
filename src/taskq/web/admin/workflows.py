@@ -68,6 +68,22 @@ logger = structlog.get_logger("taskq.web.admin.workflows")
 #: when the cap bit).
 _RUNS_PAGE_SIZE = 200
 
+
+def _park_predicate() -> str:
+    """The shared ``P(j)`` predicate (the workflows package's own scalar
+    renderer, the §7 law's one authoritative spelling), imported lazily —
+    the admin module must not couple every page load to the workflows
+    package (the module-scope import the law's pin had caught). The
+    renderer's output carries the doubled-brace .format convention; as a
+    ``format`` VALUE (not part of the template) the braces collapse here —
+    the same collapse the bundle's render pass applies."""
+    from taskq.workflows._sql_finalize import park_predicate as _pp
+
+    _wf_emit_park_predicate = _pp
+
+    return _wf_emit_park_predicate("j").replace("{{", "{").replace("}}", "}")
+
+
 _RUNS_SQL = (
     "SELECT r.id, r.actor, r.status, r.created_at, r.finished_at, r.cancel_requested_at, "
     "r.metadata->>'workflow' AS workflow, "
@@ -87,10 +103,19 @@ _RUNS_SQL = (
     # never equals the row's attempt, the row drops out of the sitting count
     # (the badge's law keeps its discriminator; the page renders). The doubled
     # braces are the .format convention (the JSONB-landmine rule's own face).
-    "d.deferring, d.next_fire, d.snooze_count "
+    "d.deferring, d.next_fire, d.parked, d.snooze_count "
     'FROM "{schema}".jobs r '
     "LEFT JOIN LATERAL ("
-    "    SELECT count(*) AS deferring, min(j.scheduled_at) AS next_fire, "
+    # THE PARK EXCLUSION IS THE SHARED P(j) PREDICATE (§7 rule 4, D8): a
+    # row the exact-park law owns is excluded from the generic
+    # deferring/next-fire aggregates (park time displays separately as
+    # `parked`), keyed on the MARKER — never on the wf_emit_backpressure
+    # blob's presence, which a non-park reserved row (a re-pended
+    # reserved source) also carries and whose live deferral must render
+    # honestly.
+    "    SELECT count(*) FILTER (WHERE NOT ({park_predicate})) AS deferring, "
+    "           min(j.scheduled_at) FILTER (WHERE NOT ({park_predicate})) AS next_fire, "
+    "           count(*) FILTER (WHERE ({park_predicate})) AS parked, "
     "           max(j.snooze_count) AS snooze_count "
     '    FROM "{schema}".jobs j '
     "    WHERE (j.metadata->>'flow_id')::uuid = r.id AND j.metadata ? 'flow_id' "
@@ -242,7 +267,10 @@ def register(router: APIRouter) -> None:
         rows: list[asyncpg.Record] = []
         async with pool.acquire() as conn:
             try:
-                rows = await conn.fetch(_RUNS_SQL.format(schema=schema), _RUNS_PAGE_SIZE)
+                rows = await conn.fetch(
+                    _RUNS_SQL.format(schema=schema, park_predicate=_park_predicate()),
+                    _RUNS_PAGE_SIZE,
+                )
             except UndefinedTableError:
                 logger.debug("workflow-tables-missing")
                 installed = False
@@ -253,9 +281,12 @@ def register(router: APIRouter) -> None:
                 "root_status": r["status"],
                 "created_at": _iso(r["created_at"]),
                 # the badge's inputs — a run with no sitting deferral reads
-                # all-None/0 (the defined absent face).
+                # all-None/0 (the defined absent face). A parked-only run's
+                # next_fire is None (a park has no timer): the badge names
+                # the parked marker instead of rendering a NULL fire time.
                 "deferring": int(r["deferring"] or 0),
                 "next_fire": _iso(r["next_fire"]),
+                "parked": int(r["parked"] or 0),
                 "snooze_count": int(r["snooze_count"] or 0),
             }
             for r in rows

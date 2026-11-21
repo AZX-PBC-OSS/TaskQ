@@ -58,6 +58,7 @@ from taskq.obs import (
     record_lock_expires_in_seconds,
     update_heartbeat_consecutive_failures,
 )
+from taskq.worker._registration import reregister_worker
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker.cancel import CancelController
 from taskq.worker.deps import WorkerDeps
@@ -563,6 +564,12 @@ async def heartbeat_loop(
         deps.liveness.tick("heartbeat", period=interval)
         _in_tx_failed = False
         _tick_failed = False
+        # Set when this tick's liveness UPDATE matched zero rows and the
+        # in-transaction re-registration below restored the row: the
+        # "worker-registration-restored" warning is emitted only after the
+        # commit confirms, so a rolled-back repair never reports a
+        # durability that did not happen.
+        restored_registration = False
         tick_start = time.monotonic()
         try:
             _tick_raised = False
@@ -624,11 +631,51 @@ async def heartbeat_loop(
                             if idle_window is not None:
                                 metadata_payload["loop_idle"] = idle_window.as_metadata()
                                 _loop_idle_fraction.record(idle_window.idle_fraction)
-                            await conn.execute(
+                            liveness_tag = await conn.execute(
                                 update_worker_liveness_sql,
                                 worker_id,
                                 jsonb_param(metadata_payload),
                             )
+                            if parse_rowcount(liveness_tag) == 0:
+                                # The liveness UPDATE matched zero rows: the
+                                # row boot registration inserted is gone (the
+                                # stale sweep reaped it while this process was
+                                # alive - a stalled tick or a slow phase can
+                                # cross the grace). A bare UPDATE reports
+                                # success here, the exact failure that looks
+                                # like a success; restore the registration
+                                # idempotently inside this same transaction
+                                # (it shares the tick's command budget and
+                                # commits atomically with the lease renewals)
+                                # and merge this tick's payload under the
+                                # full registration metadata, registration
+                                # keys winning so a tick payload can never
+                                # shadow the capability keys the dispatch
+                                # fence reads. A concurrent repair (the
+                                # leader election's own FK recovery) no-ops
+                                # via ON CONFLICT; any error from the repair
+                                # is this tick's failure and rolls back into
+                                # the failed-tick arms below, never a catch
+                                # here - a repair that cannot land must count
+                                # as a beat that did not happen. No stop gate
+                                # here, unlike the election loop's FK arm: the
+                                # drain's terminal writes resolve
+                                # job_attempts.worker_id through the holder
+                                # FOR KEY SHARE CTE, which records NULL when the
+                                # row is gone, so a beat that stopped restoring
+                                # would silently strip the attribution from
+                                # every attempt a draining, reaped worker hands
+                                # back. The row restored here lives only until
+                                # _bootstrap._main's finally runs
+                                # deregister_worker.
+                                await reregister_worker(
+                                    conn,
+                                    worker_id,
+                                    deps.settings,
+                                    workflow_execution=deps.workflow_execution_capable,
+                                    tick_metadata=metadata_payload,
+                                )
+                                restored_registration = True
                             renewal_at = time.monotonic()
                             # The gated renewal: binds the threshold as
                             # $4. Rows with a per-job heartbeat_timeout, rows
@@ -737,6 +784,20 @@ async def heartbeat_loop(
                             # the next tick re-reconciles it.
                             if lost_rows:
                                 deps.disowned_jobs.update(lost_ids)  # pyright: ignore[reportPossiblyUnboundVariable]  # Why: lost_ids is bound exactly when lost_rows is truthy - the same guard guards both; the pair is not reassigned between.
+                            if restored_registration:
+                                # Post-commit: the durability boundary the
+                                # disown already uses. The warning names the
+                                # restoration for whoever operates the
+                                # system - the repaired row IS a fresh
+                                # started_at and a reaped-and-returned row,
+                                # and an operator tracking reap churn reads
+                                # this line's rate.
+                                logger.warning(
+                                    "worker-registration-restored",
+                                    kind="worker_registration_restored",
+                                    worker_id=str(worker_id),
+                                    source="heartbeat",
+                                )
                     except BaseException:
                         # Teardown, bounded by the same budget's
                         # remainder, deliberately outside the expired

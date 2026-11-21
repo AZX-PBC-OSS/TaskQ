@@ -13,6 +13,9 @@ from __future__ import annotations
 
 from typing import Final
 
+from taskq.backend._sql_fragments import double_braces, emit_park_predicate
+from taskq.workflows._sql_claim import current_claim_join
+
 #: the collect's ``failures`` jsonb truncates here — over the cap the join row
 #: compacts to the bounded summary (the ``__truncated__`` marker + the ledger
 #: pointer); the full detail stays on the ledger/attempts. Sized to keep a
@@ -20,7 +23,102 @@ from typing import Final
 #: never compact.
 FANIN_FAILURES_BYTE_CAP: Final[int] = 64 * 1024
 
-#: the bounded collect's join row carries the ``__truncated__`` count in its
+
+def park_predicate(alias: str) -> str:
+    """THE SHARED ``P(a)`` PREDICATE (§7's one authoritative spelling) — the
+    public seam for the product's own read surfaces (the admin's runs list)
+    that must key their park exclusions on the SAME predicate the engine
+    uses, never a re-spelled copy (the drift the red team named). The
+    private alias remains the bundle renderers' own name."""
+    return _wf_emit_park_predicate(alias)
+
+
+def validated_reservation_width(alias: str) -> str:
+    """THE SHARED VALIDATED OLD-WIDTH RENDERER (§2.4's capture semantics)
+    — the public seam beside :func:`park_predicate` for the statement
+    templates that capture a winner's old reservation width (the cancel
+    seats' additive ``released_emit_reservation_width`` event detail):
+    NULL when the key is absent, the validated positive-or-zero width
+    otherwise, and the row-dependent fail-closed arm on a malformed key —
+    the same expression the terminal mark captures, never a re-spelled
+    copy."""
+    return _wf_emit_validated_reservation_width(alias)
+
+
+def _wf_emit_park_predicate(alias: str) -> str:
+    """The bundle renderers' own name for the shared exact-park predicate
+    ``P(a)``: the neutral renderer's complete output (the one ordered
+    seven-leg leaf owned by ``backend/_sql_fragments.py``), encoded in
+    THIS module's doubled-brace render convention — the bundle's collapse
+    pass un-doubles it. There is exactly one predicate definition; the
+    released catalog SQL (the frozen migration) necessarily inlines its
+    own forms, and the maintained literal parity control
+    (``tests/test_wf_park_predicate_parity.py``) owns that boundary."""
+    return double_braces(emit_park_predicate(alias))
+
+
+def _wf_emit_validated_park_width(alias: str) -> str:
+    """The shared inline scalar ``validated_park_width(a)``: NULL when the row
+    is not an exact park; otherwise only the validated positive-or-zero
+    ``wf_emit_backpressure.page_width``. Malformed values refuse (the
+    row-dependent arm — a uuid-text cast cannot constant-fold) rather than
+    coerce; constant raise arms such as ``1/0`` are forbidden because
+    PostgreSQL folds them at plan time."""
+    a = alias
+    width_text = f"{a}.metadata->'wf_emit_backpressure'->>'page_width'"
+    return (
+        "CASE WHEN NOT (" + _wf_emit_park_predicate(a) + ")\n"
+        "     THEN NULL\n"
+        f"     WHEN jsonb_typeof({a}.metadata->'wf_emit_backpressure'->'page_width') = 'number'\n"
+        f"          AND {width_text} ~ '^[0-9]+$'\n"
+        f"     THEN ({width_text})::bigint\n"
+        f"     ELSE ({a}.id::text)::integer\n"
+        "END"
+    )
+
+
+def _wf_emit_validated_marker_bound(alias: str) -> str:
+    """The shared inline scalar validator for the exact-park marker's own
+    ``bound`` (a positive integer). Row-dependent fail-closed arm."""
+    a = alias
+    bound_text = f"{a}.metadata->'wf_emit_backpressure'->>'bound'"
+    return (
+        "CASE WHEN NOT (" + _wf_emit_park_predicate(a) + ")\n"
+        "     THEN NULL\n"
+        f"     WHEN jsonb_typeof({a}.metadata->'wf_emit_backpressure'->'bound') = 'number'\n"
+        f"          AND {bound_text} ~ '^[1-9][0-9]*$'\n"
+        f"     THEN ({bound_text})::bigint\n"
+        f"     ELSE ({a}.id::text)::integer\n"
+        "END"
+    )
+
+
+def _wf_emit_validated_reservation_width(alias: str) -> str:
+    """The shared inline scalar ``validated_reservation_width(a)``: NULL when
+    the reservation key is absent; otherwise exactly the two-key object
+    ``{"version":1,"width":W}`` with validated positive-or-zero integer
+    width. Unknown keys, wrong types, null, bool, float, negative widths, and
+    version drift fail closed; no reservation is valid on an exact park."""
+    a = alias
+    res = f"{a}.metadata->'wf_emit_reservation'"
+    return (
+        f"CASE WHEN NOT ({a}.metadata ? 'wf_emit_reservation')\n"
+        "     THEN NULL\n"
+        "     WHEN (" + _wf_emit_park_predicate(a) + ")\n"
+        "          -- No reservation is valid on an exact park.\n"
+        f"          OR jsonb_typeof({res}) <> 'object'\n"
+        f"          OR ({res}) - '{{\"version\",\"width\"}}'::text[] <> '{{}}'::jsonb\n"
+        f"          OR jsonb_typeof({res}->'version') <> 'number'\n"
+        f"          OR ({res}->>'version') <> '1'\n"
+        f"          OR jsonb_typeof({res}->'width') <> 'number'\n"
+        f"          OR ({res}->>'width') !~ '^[0-9]+$'\n"
+        f"     THEN ({a}.id::text)::integer\n"
+        f"     ELSE ({res}->>'width')::bigint\n"
+        "END"
+    )
+
+
+#: The bounded collect's join row carries the ``__truncated__`` count in its
 #: metadata (``wf_collect_truncated``) alongside the envelope's own markers —
 #: the decode unwraps the envelope at the consumer's typed boundary (the
 #: declared ``list[...]`` arrives), so the count must surface where the reads
@@ -31,8 +129,23 @@ SET metadata = metadata || $2::jsonb
 WHERE id = $1
 """
 
-TERMINAL_MARK_SQL = """\
-WITH upd AS (
+TERMINAL_MARK_SQL = (
+    """\
+-- THE RESERVATION CAPTURE (§2.4): the winning row's OLD reservation fact is
+-- captured in its own CTE before the terminal UPDATE removes the key — the
+-- VALIDATED old width (the shared validated_reservation_width scalar: NULL
+-- when absent, fail-closed on a malformed key), never a raw unvalidated
+-- blob — and the diagnostics count only captured winners, never an
+-- already-converted row and never a Python pre-read.
+WITH target AS (
+    SELECT j.id,
+           (j.metadata ? 'wf_emit_reservation') AS had_reservation,
+           """
+    + _wf_emit_validated_reservation_width("j")
+    + """ AS old_reservation
+    FROM {schema}.jobs j
+    WHERE j.id = $1
+), upd AS (
     UPDATE {schema}.jobs
     SET status = $2::"{schema}".job_status,
         finished_at = clock_timestamp(),
@@ -41,6 +154,9 @@ WITH upd AS (
         error_class = $5,
         error_message = $6,
         error_traceback = $7,
+        -- THE TERMINAL REMOVES THE RESERVATION KEY (§2.4): no key survives
+        -- a terminal row for re-arm; a row without one is unchanged.
+        metadata = metadata - 'wf_emit_reservation',
         -- THE RESULT'S EXPIRY (the vanilla mark_succeeded's
         -- lateral equivalent): the SUCCEEDED terminal stamps
         -- result_expires_at from the ROW'S OWN COHORT's stored
@@ -103,6 +219,11 @@ att AS (
 ),
 -- THE STATE_CHANGE EVENT rides the same transaction (the audit trail's
 -- law: a terminal transition an events reader cannot see never happened).
+-- F10's PRODUCTION CONSUMER: the captured old reservation width rides the
+-- terminal's own event as the optional bounded
+-- `released_emit_reservation_width` detail (jsonb_strip_nulls omits it for
+-- a key-absent winner while a valid ZERO width stays visible) — the
+-- capture has a durable consumer, never a test-only echo.
 evt AS (
     INSERT INTO {schema}.job_events
     (job_id, occurred_at, kind, detail)
@@ -110,11 +231,16 @@ evt AS (
            jsonb_strip_nulls(jsonb_build_object('from_state', 'running',
                                                 'to_state', $2::text,
                                                 'worker_id', $8::text,
-                                                'error_class', $5::text))
+                                                'error_class', $5::text,
+                                                'released_emit_reservation_width',
+                                                t.old_reservation))
     FROM upd
+    JOIN target t ON t.id = upd.id
 )
-SELECT id, status, attempt, payload, trace_id FROM upd
+SELECT upd.id, upd.status, upd.attempt, upd.payload, upd.trace_id
+FROM upd
 """
+)
 
 
 # tx2's guarded decrement: one atomic statement, the decrement owned
@@ -313,38 +439,443 @@ SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
 # the cursor checkpoint — the fence carrier. A zombie source (its claim
 # superseded by the reclaim + re-claim) updates NOTHING → the emit
 # refuses (EmitFencedError) → the children above roll back with the tx.
+# The commit also removes the page-width RESERVATION key (§2.4's reserved-
+# replay disposition: a committed page converts the reservation — the next
+# derived charge changes by W' - W; unreserved emits carry no key and are
+# unchanged).
 EMIT_CURSOR_SQL = """\
 UPDATE {schema}.jobs
-SET metadata = metadata || $2::jsonb
+SET metadata = (metadata - 'wf_emit_reservation') || $2::jsonb
 WHERE id = $1
   AND status = 'running'
   AND locked_by_worker = $3
   AND attempt = $4
   AND claim_epoch = $5
+  AND cancel_phase = 0
+  AND NOT metadata ? 'cancel_phase'
+  AND NOT EXISTS (
+      SELECT 1 FROM {schema}.jobs AS root
+      WHERE root.id = ({schema}.jobs.metadata->>'flow_id')::uuid
+        AND root.status IN ('succeeded','failed','cancelled','crashed','abandoned')
+  )
 RETURNING id
 """
 
 
-# the run's non-terminal row count (the ledger's truth), excluding the source's
-# own claim row — the admission's arithmetic input, read inside the tx under
-# the lock.
-EMIT_IN_FLIGHT_SQL = """\
-SELECT count(*) FROM {schema}.jobs
-WHERE (metadata->>'flow_id')::uuid = $1
-  AND metadata ? 'flow_id'
-  AND step_key <> '__flow__'
-  AND id <> $2::uuid
-  AND status IN ('pending', 'scheduled', 'running')
+#: The derived observation — the sole capacity authority and the folded home
+#: of the legacy in-flight count. The status leg is HOISTED outside the
+#: aggregate so the scan stays on ``jobs_wf_flow_nodes_idx`` (its required
+#: key: the flow uuid, then the full pending/scheduled/running domain); the
+#: examined rows are the live non-root rows plus exact parks admitted by
+#: those predicates — never terminal history, so the observation is
+#: ``Theta(live + parked)``. ``$2`` is the running source's own id for
+#: unreserved admission (the single authoritative own-row exclusion) and
+#: NULL for terminal, park, and drain observations — in particular the park
+#: observation includes its own newly written row. No persisted charge
+#: exists to drift: every counted leg derives from these real rows.
+WF_EMIT_CAPACITY_OBSERVATION_SQL = (
+    "WITH observed AS MATERIALIZED (\n"
+    "    SELECT\n"
+    "        (" + _wf_emit_park_predicate("j") + ") AS is_park,\n"
+    "        " + _wf_emit_validated_park_width("j") + " AS park_width,\n"
+    "        " + _wf_emit_validated_reservation_width("j") + " AS reservation_width\n"
+    "    FROM {schema}.jobs AS j\n"
+    "    WHERE (j.metadata->>'flow_id')::uuid = $1::uuid\n"
+    "      AND j.status IN ('pending', 'scheduled', 'running')\n"
+    "      AND j.metadata ? 'flow_id'\n"
+    "      AND j.step_key IS NOT NULL\n"
+    "      AND j.step_key <> '__flow__'\n"
+    "      AND ($2::uuid IS NULL OR j.id <> $2::uuid)\n"
+    ")\n"
+    "SELECT count(*) FILTER (WHERE NOT is_park) AS live_rows,\n"
+    "       coalesce(sum(reservation_width), 0)::bigint AS reservations,\n"
+    "       min(park_width) FILTER (WHERE is_park) AS min_waiting_width\n"
+    "FROM observed\n"
+)
+
+#: The per-terminal exact-marker existence probe (the event rule's step 1):
+#: one indexed zero-row query through ``jobs_wf_emit_park_idx`` for a
+#: non-crossing terminal; no count, no intent, no notify follows a zero-row
+#: probe.
+WF_EMIT_PARK_EXISTS_SQL = (
+    "SELECT 1\n"
+    "FROM {schema}.jobs AS j\n"
+    "WHERE (j.metadata->>'flow_id')::uuid = $1::uuid\n"
+    "  AND " + _wf_emit_park_predicate("j") + "\n"
+    "LIMIT 1\n"
+)
+
+#: The single authoritative candidate comparison (the drain's own): the
+#: oldest FITTING waiter on real rows — a non-fitting older row can never
+#: block a smaller follower. The drain supplies the already-derived
+#: ``$charge``; the fit comparison rides the ``jobs_wf_emit_park_idx``
+#: (flow, created_at, id) partial index, so the scan is
+#: ``Theta(parked) <= Theta(S)``.
+WF_EMIT_CANDIDATE_SQL = (
+    "SELECT j.id, " + _wf_emit_validated_park_width("j") + " AS width\n"
+    "FROM {schema}.jobs AS j\n"
+    "WHERE (j.metadata->>'flow_id')::uuid = $1::uuid\n"
+    "  AND " + _wf_emit_park_predicate("j") + "\n"
+    "  AND $2::bigint + " + _wf_emit_validated_park_width("j") + " <= $3::bigint\n"
+    "ORDER BY j.created_at, j.id\n"
+    "LIMIT 1\n"
+)
+
+#: The bounded run's capacity/intent record — bound and wake intents only.
+#: There is no persisted live-row charge, waiter count, cached head, or
+#: cached minimum width anywhere: capacity is derived from ``jobs`` rows.
+WF_EMIT_INTENT_LOCK_SQL = """\
+SELECT bound, wake_generation, handled_generation
+FROM {schema}.wf_emit_capacity
+WHERE flow_id = $1
+FOR UPDATE
 """
 
+#: The stamp at create/adoption: ``bound`` is immutable from the run's
+#: compiled declaration. A conflicting existing bound is corruption and is
+#: refused by the caller's read-back check.
+WF_EMIT_INTENT_STAMP_SQL = """\
+INSERT INTO {schema}.wf_emit_capacity (flow_id, bound, wake_generation, handled_generation)
+VALUES ($1, $2, 0, 0)
+ON CONFLICT (flow_id) DO NOTHING
+RETURNING flow_id
+"""
 
-# one run's emitters serialize on this transaction-scoped advisory lock — the
-# concurrent emitters' count+insert is atomic per run.
+#: The adopted record's bound read-back (the missing/mismatched fail-closed
+#: check before feature use).
+WF_EMIT_INTENT_BOUND_SQL = """\
+SELECT bound FROM {schema}.wf_emit_capacity WHERE flow_id = $1
+"""
+
+#: The threshold crossing: one durable generation bump, only when no intent
+#: is already pending. The near-overflow refusal is named and fail-closed —
+#: the bigint domains never wrap or reset.
+WF_EMIT_INTENT_GENERATION_SQL = """\
+UPDATE {schema}.wf_emit_capacity
+SET wake_generation = wake_generation + 1
+WHERE flow_id = $1
+  AND wake_generation = handled_generation
+  AND wake_generation < 9223372036854775806::bigint
+RETURNING wake_generation
+"""
+
+#: Completion: the drain transaction that observed no fitting candidate marks
+#: the generation handled. CAS-gated so a concurrent terminal's newer
+#: generation survives.
+WF_EMIT_INTENT_HANDLED_SQL = """\
+UPDATE {schema}.wf_emit_capacity
+SET handled_generation = wake_generation
+WHERE flow_id = $1
+  AND wake_generation > handled_generation
+RETURNING flow_id
+"""
+
+#: The rotation bound (L-3's ONE shared constant): the global
+#: pending-intent selection's SQL ``LIMIT``, the marker sweep's per-call
+#: flow batch, and both Python short-selection checks all read THIS value
+#: — if the SQL LIMIT ever exceeded the Python literal, every selection
+#: would look "short", the rotation cursor would reset, and flows past the
+#: first batch would never be offered. The SQL constants render their
+#: ``LIMIT`` from it and the controls compare against it.
+WF_EMIT_ROTATION_BATCH: Final[int] = 100
+
+#: The global pending-intent selection: at most 100 distinct flow ids in one
+#: short indexed read (the pending-generation partial index), ordered,
+#: rotated by the persistent ``after_flow_id`` cursor, and holding no row
+#: lock past the read.
+WF_EMIT_PENDING_INTENTS_SQL = (
+    """\
+SELECT flow_id, bound, wake_generation, handled_generation
+FROM {schema}.wf_emit_capacity
+WHERE wake_generation > handled_generation
+  AND flow_id > $1::uuid
+ORDER BY flow_id
+LIMIT """
+    + str(WF_EMIT_ROTATION_BATCH)
+    + "\n"
+)
+
+#: The fairness rotation's singleton: one row, one ``after_flow_id``, never
+#: growing with run cardinality.
+WF_EMIT_ROTATION_READ_SQL = """\
+SELECT after_flow_id FROM {schema}.wf_emit_intent_rotation WHERE id = true
+"""
+
+#: The rotation is committed independently of the per-flow work. The
+#: write is an UPSERT: a schema whose singleton row was truncated (the
+#: per-test reset's own law) re-seeds it on the first write, and the
+#: read tolerates the missing row (NULL → the zero-UUID start).
+WF_EMIT_ROTATION_WRITE_SQL = """\
+INSERT INTO {schema}.wf_emit_intent_rotation (id, after_flow_id)
+VALUES (true, $1::uuid)
+ON CONFLICT (id) DO UPDATE
+SET after_flow_id = $1::uuid
+"""
+
+#: The bounded exact-marker sweep's selection (D7): a KEYSET rotation over
+#: the ``jobs_wf_emit_park_idx`` partial index — the distinct marked flow
+#: ids whose intent record is ABSENT (the omitted seat) or NOT PENDING
+#: (``wake = handled`` — a vanilla-writer release freed a live row and the
+#: parked waiter may now fit); an intent that is already PENDING is the
+#: drain arms' own to observe (never double-selected). Ordered by flow id,
+#: at most 100 per call, continuing after ``$1`` (the caller's persisted
+#: cursor). It is never a parked-estate seq scan or a due-time wake. The
+#: per-flow width/bound validation lives in the caller's ISOLATED per-flow
+#: repair transaction (a malformed marker poisons only its own flow's
+#: repair, with a bounded diagnostic, and the rest repair on) — the
+#: selection itself aggregates nothing and can never abort on one row's
+#: malformed width.
+WF_EMIT_MARKER_SWEEP_SQL = (
+    "SELECT DISTINCT (j.metadata->>'flow_id')::uuid AS flow_id\n"
+    "FROM {schema}.jobs AS j\n"
+    "WHERE " + _wf_emit_park_predicate("j") + "\n"
+    "  AND (j.metadata->>'flow_id')::uuid > $1::uuid\n"
+    "  AND NOT EXISTS (\n"
+    "      SELECT 1 FROM {schema}.wf_emit_capacity c\n"
+    "      WHERE c.flow_id = (j.metadata->>'flow_id')::uuid\n"
+    "        AND c.wake_generation > c.handled_generation\n"
+    "  )\n"
+    "ORDER BY flow_id\n"
+    "LIMIT " + str(WF_EMIT_ROTATION_BATCH) + "\n"
+)
+
+#: The isolated per-flow repair's own bound read (D7): the flow's marker
+#: bound through the validated scalar — a malformed marker bound raises
+#: (row-dependent) inside the flow's own repair transaction, quarantining
+#: the poison to that flow's bounded diagnostic.
+WF_EMIT_MARKER_FLOW_BOUND_SQL = (
+    "SELECT " + _wf_emit_validated_marker_bound("j") + " AS bound\n"
+    "FROM {schema}.jobs AS j\n"
+    "WHERE (j.metadata->>'flow_id')::uuid = $1::uuid\n"
+    "  AND " + _wf_emit_park_predicate("j") + "\n"
+    "LIMIT 1\n"
+)
+
+#: The loud non-drainage refusal: on the committed terminal-root proof (a
+#: genuine child failure exhausted its declared retry policy and the root
+#: terminal ``failed`` committed, while an exact parked source still holds
+#: un-emitted work — INCLUDING a first-page park with no committed
+#: ``emit_cursor``: the absent key means zero pages have committed and the
+#: default/initial cursor identifies the first page; it does not make the
+#: park empty or abandonable), the same failure-cascade transaction fences
+#: every such parked source. No logical attempt is spent, no ladder retry
+#: is created, and the causal child's genuine error is never overwritten.
+#: The ledger fence is the EXACT current-claim association (the shared
+#: renderer: job + current epoch + step_key + null-safe map_index, status
+#: ``awaited``, and the strict single-row maximality — one winner can
+#: never fence two rows) — older epochs, sibling ``ctx.substep`` rows,
+#: map siblings, and terminal history are never rewritten.
+WF_NOT_DRAINING_FENCE_SQL = (
+    "WITH parks AS (\n"
+    "    SELECT j.id\n"
+    "    FROM {schema}.jobs AS j\n"
+    "    WHERE (j.metadata->>'flow_id')::uuid = $1::uuid\n"
+    "      AND "
+    + _wf_emit_park_predicate("j")
+    + "\n"  # Why: the shared predicate renderer is the module's own constant text; the schema token is the render's validated substitution.
+    "), fenced AS (\n"
+    "    UPDATE {schema}.jobs AS j\n"
+    "    SET status = 'failed',\n"
+    "        finished_at = clock_timestamp(),\n"
+    "        error_class = $2,\n"
+    "        error_message = $3,\n"
+    "        metadata = (j.metadata - 'blocking_reason' - 'wf_emit_reservation')\n"
+    "            || jsonb_build_object(\n"
+    "                'wf_not_draining', jsonb_build_object(\n"
+    "                    'reason', 'terminal_root_after_child_failure_exhaustion',\n"
+    "                    'root_id', $1::uuid,\n"
+    "                    'child_id', $4::uuid,\n"
+    "                    'at', to_char(clock_timestamp() AT TIME ZONE 'UTC',\n"
+    '                                  \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\')\n'
+    "                )\n"
+    "            )\n"
+    "    FROM parks\n"
+    "    WHERE j.id = parks.id\n"
+    "    RETURNING j.id, j.claim_epoch, j.step_key, j.map_index\n"
+    "), ledger AS (\n"
+    "    UPDATE {schema}.wf_step_ledger AS l\n"
+    "    SET status = 'fenced',\n"
+    "        error_class = $2,\n"
+    "        updated_at = clock_timestamp()\n"
+    "    FROM fenced\n"
+    "    WHERE " + current_claim_join("fenced", "l", ("awaited",)) + "\n"
+    "    RETURNING l.id\n"
+    "), evt AS (\n"
+    "    INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)\n"
+    "    SELECT fenced.id, clock_timestamp(), 'state_change',\n"
+    "           jsonb_build_object('from_state', 'scheduled',\n"
+    "                              'to_state', 'failed',\n"
+    "                              'error_class', $2::text,\n"
+    "                              'reason',\n"
+    "                              'terminal_root_after_child_failure_exhaustion')\n"
+    "    FROM fenced\n"
+    ")\n"
+    "SELECT (SELECT count(*) FROM fenced)::int AS fenced_count\n"
+)
+
 EMIT_ADMISSION_LOCK_SQL = """\
 SELECT pg_advisory_xact_lock(hashtext($1::text))
 """
 
+#: THE LIVE ROOT LOCK (§3.1's canonical order, D1): every drain chunk's
+#: transaction locks the run's LIVE root row — ``step_key='__flow__'``
+#: — before the intent row and any candidate CAS. The root-failure and
+#: maintenance seats (the failure cascade's ``flow_failed`` update and
+#: ``WORKFLOW_ROOT_MAINTAIN_SQL``'s ``FOR UPDATE`` roots scan) hold this
+#: same row lock, so the drain and the root-failure fence can no longer
+#: interleave: a maintenance pass either runs before the drain (the
+#: §5.4 fence fences the still-parked source) or after it (the promoted
+#: source is unresolved live work and the root legitimately does not
+#: finalize). Without this lock the fence's park re-evaluation could
+#: lose the race to the promotion CAS and strand a pending reserved
+#: source under a terminal root forever.
+EMIT_ROOT_LOCK_SQL = """\
+SELECT id FROM {schema}.jobs
+WHERE id = $1::uuid AND step_key = '__flow__'
+FOR UPDATE
+"""
 
+# A dedicated ordinary-capacity park, intentionally separate from
+# NODE_DEFER_SQL's delay/GREATEST/snooze/provider-retry machinery. The job and
+# current ledger update commit or roll back together. The caller validates the
+# descriptor before entry and fails the transaction if the exact current
+# ledger id+claim instant does not take the single awaited transition.
+EMIT_BACKPRESSURE_PARK_SQL = """\
+WITH params AS (
+    SELECT $1::uuid AS job_id, $2::uuid AS worker_id,
+           $3::int AS physical_attempt, $4::bigint AS claim_epoch,
+           $5::int AS page_width, $6::int AS bound,
+           $7::int AS logical_attempt, $8::int AS outstanding,
+           $9::uuid AS ledger_id, $10::timestamptz AS ledger_claimed_at
+), parked AS (
+    UPDATE {schema}.jobs AS j
+    SET status = 'scheduled',
+        -- THE PARK INSTANT, not a due date: scheduled_at stays NOT NULL and
+        -- is deliberately absent from park identity and claim eligibility —
+        -- the marker, never the timestamp, is the discriminator.
+        scheduled_at = clock_timestamp(),
+        finished_at = NULL,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        cancel_phase = 0,
+        cancel_requested_at = NULL,
+        attempt = 0,
+        assignment_routed = true,
+        -- A park strips any stale reservation key: no reservation is valid
+        -- on an exact park (the derived observation's own invariant).
+        metadata = (j.metadata - 'wf_emit_reservation') || jsonb_build_object(
+            'blocking_reason', 'backpressure',
+            'wf_source_logical_attempt', (SELECT logical_attempt FROM params),
+            'wf_deferral', jsonb_build_object(
+                'signal', 'EmitBackpressure',
+                'consume_budget', false,
+                'attempt', 0
+            ),
+            'wf_emit_backpressure',
+                COALESCE(j.metadata->'wf_emit_backpressure', '{}'::jsonb)
+                || jsonb_build_object(
+                    'version', 1,
+                    'page_width', (SELECT page_width FROM params),
+                    'bound', (SELECT bound FROM params),
+                    'outstanding', (SELECT outstanding FROM params),
+                    'deferrals', COALESCE(NULLIF(
+                        j.metadata #>> '{wf_emit_backpressure,deferrals}', ''
+                    )::int, 0) + 1,
+                    'wakes', COALESCE(NULLIF(
+                        j.metadata #>> '{wf_emit_backpressure,wakes}', ''
+                    )::int, 0),
+                    'deferred_at', to_char(
+                        clock_timestamp() AT TIME ZONE 'UTC',
+                        'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                    )
+                )
+        )
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT physical_attempt FROM params)
+      AND j.claim_epoch = (SELECT claim_epoch FROM params)
+      AND j.cancel_phase = 0
+      AND NOT j.metadata ? 'cancel_phase'
+    RETURNING j.id
+), current_ledger AS (
+    UPDATE {schema}.wf_step_ledger AS l
+    SET status = 'awaited'
+    WHERE l.id = (SELECT ledger_id FROM params)
+      AND l.job_id = (SELECT id FROM parked)
+      AND l.updated_at = (SELECT ledger_claimed_at FROM params)
+      AND l.status IN ('running', 'awaited', 'crashed')
+    RETURNING l.id
+)
+SELECT 'parked'::text AS verdict, p.id,
+       (SELECT count(*) FROM current_ledger)::int AS ledger_count
+FROM parked AS p
+UNION ALL
+SELECT 'cancel_fenced'::text, j.id, 0
+FROM {schema}.jobs AS j
+WHERE j.id = (SELECT job_id FROM params)
+  AND j.status = 'running'
+  AND j.locked_by_worker = (SELECT worker_id FROM params)
+  AND j.attempt = (SELECT physical_attempt FROM params)
+  AND j.claim_epoch = (SELECT claim_epoch FROM params)
+  AND (j.metadata ? 'cancel_phase' OR j.cancel_phase <> 0)
+  AND NOT EXISTS (SELECT 1 FROM parked)
+"""
+
+
+#: The promotion CAS (the one commit-acknowledged, run-targeted promotion
+#: primitive's row law): a fitted waiter's exact real row goes ``scheduled ->
+#: pending`` and carries a durable page-width RESERVATION — a woken source
+#: cannot be barged into another no-fit re-park. The CAS requires the
+#: candidate id, ``P(j)``, absence of an existing reservation, and a
+#: nonterminal root; it emits the effective queue wake only on a winning
+#: row. ``$2`` is the candidate's validated page width (read from the same
+#: row by the candidate comparison). ``attempt = 0`` and ``claim_epoch`` are
+#: untouched. The reservation is not a dispatch slot, worker reservation,
+#: lease, or execution permission: ordinary queue claim remains the sole
+#: execution grant.
+# Why S608-safe: the schema token is the render's validated substitution
+# (require_schema); every caller value is $N-bound.
+EMIT_BACKPRESSURE_WAKE_SQL = f"""\
+UPDATE {{schema}}.jobs AS j
+SET status = 'pending',
+    scheduled_at = clock_timestamp(),
+    assignment_routed = true,
+    metadata = (
+        (j.metadata - 'blocking_reason')
+        || jsonb_build_object(
+            'wf_emit_reservation',
+            jsonb_build_object('version', 1, 'width', $2::int)
+        )
+    )
+    || jsonb_build_object(
+        'wf_emit_backpressure',
+        (j.metadata->'wf_emit_backpressure')
+        || jsonb_build_object(
+            'wakes', COALESCE(NULLIF(
+                j.metadata #>> '{{wf_emit_backpressure,wakes}}', ''
+            )::int, 0) + 1,
+            'last_wake_at', to_char(
+                clock_timestamp() AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+            )
+        )
+    )
+WHERE j.id = $1
+  AND NOT j.metadata ? 'wf_emit_reservation'
+  AND {_wf_emit_park_predicate("j")}
+  AND EXISTS (
+      SELECT 1 FROM {{schema}}.jobs AS root
+      WHERE root.id = (j.metadata->>'flow_id')::uuid
+        AND root.step_key = '__flow__'
+        AND root.status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
+  )
+RETURNING COALESCE(
+    (SELECT ac.queue FROM {{schema}}.actor_config AS ac WHERE ac.actor = j.actor),
+    j.queue
+) AS effective_queue
+"""
 FORK_JOIN_NODE_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,
@@ -419,15 +950,34 @@ SELECT id, status FROM {schema}.jobs WHERE id = $1
 #     outcome reads the same way whichever path produced it) + the
 #     structured record in metadata.peer_cancel
 #     ({by: 'peer_failure', cascade_from: <the failed node>});
-#   * the workflow → failed (§17.2's cascade): the flow root's flip, the
-#     linearization point every flow-status leg then reads.
+#   * THE COMPLETE PEER TERMINAL TRANSITION (R4/A9.4): one root-ordered
+#     atomic transition per actual peer winner — the job terminal, the
+#     reservation removal, the winner's EXACT current-claim ledger fence
+#     (the ONE shared association core, status domain running/awaited/
+#     crashed, then the captured ledger id + pre-update instant), and
+#     exactly one ordinary job_events state_change with the winner's
+#     captured pre-update from_state, the peer-failure cause, and the
+#     additive non-narrowing claim_attempt / released-width details. The
+#     later worker finalization is never needed to complete this
+#     audit/fence; a never-claimed pending peer still terminalises,
+#     removes its reservation, and writes its event (the winner set owns
+#     the event cardinality, never the ledger match); no ledger row is
+#     fabricated; stale/already-terminal non-winners, older epochs,
+#     sibling ctx.substep rows, map siblings, and terminal history are
+#     untouched.
+#   * the workflow → failed: the SEPARATE gated statement
+#     (`WF_FLOW_FAILED_GATED_SQL`, N1's fresh-snapshot gate) — this
+#     statement's blocked stamp and peer cancellation are NOT conditional
+#     on the root flip, and the §5.4 fence is.
+#
+# The root row lock is the CALLER's entry lock (R2/A9.2) — this
+# statement's own acquisitions (the blocked join rows, then the peer
+# rows) follow it, never precede it.
 #
 # Every write is guarded: the block only join-wait rows not already
-# stamped; the cancel only pending/scheduled/running rows; the flow flip
-# only a non-terminal root and only when the cascade actually blocked a
-# join (no fail_closed edge → no cascade → the collect-only failure never
-# touches the flow). A re-run of this statement after a rolled-back tx is
-# idempotent — a fenced/terminal state updates nothing.
+# stamped; the cancel only pending/scheduled/running rows. A re-run of
+# this statement after a rolled-back tx is idempotent — a fenced/terminal
+# state updates nothing.
 FAIL_CLOSED_CASCADE_SQL = """\
 WITH edges AS (
     SELECT e.child_id
@@ -446,37 +996,143 @@ blocked AS (
       AND NOT j.metadata @> '{{"blocking_reason": "failed_parent"}}'::jsonb
     RETURNING j.id
 ),
+peer_targets AS (
+    -- THE PRE-UPDATE CAPTURE (the same law the cancel templates obey):
+    -- the winner's actual pre-update status and its validated old
+    -- page-width reservation, locked (FOR UPDATE) — the event's
+    -- from_state is the row's own prior state, never a post-update read.
+    -- The winner set is the joins' OTHER parents (EXISTS — a peer
+    -- parented to two blocked joins appears exactly once, never
+    -- duplicated into a second event), not join-wait themselves.
+    SELECT p.id,
+           p.status::text AS from_state,
+           {wf_emit_validated_reservation_width}
+    FROM {schema}.jobs p
+    WHERE p.id <> $1::uuid
+      AND p.status IN ('pending', 'scheduled', 'running')
+      AND NOT (p.deps_pending > 0
+               AND p.metadata @> '{{"blocking_reason": "join"}}'::jsonb)
+      AND EXISTS (
+          SELECT 1
+          FROM {schema}.wf_edge sib
+          WHERE sib.parent_id = p.id
+            AND sib.child_id IN (SELECT child_id FROM edges)
+      )
+    FOR UPDATE
+),
 peers AS (
     UPDATE {schema}.jobs p
     SET status = 'cancelled',
         finished_at = clock_timestamp(),
         error_class = $3::text,
-        metadata = p.metadata || $4::jsonb
-    FROM edges e
-    JOIN {schema}.wf_edge sib ON sib.child_id = e.child_id
-    WHERE p.id = sib.parent_id
-      AND p.id <> $1::uuid
-      AND p.status IN ('pending', 'scheduled', 'running')
-      AND NOT (p.deps_pending > 0
-               AND p.metadata @> '{{"blocking_reason": "join"}}'::jsonb)
-    RETURNING p.id
+        -- THE TERMINAL REMOVES THE RESERVATION KEY (§2.4): the peer
+        -- cancel's terminal removes any held page-width reservation in
+        -- the same winning statement (the cancel-origin marker still
+        -- rides the same metadata write).
+        metadata = (p.metadata - 'wf_emit_reservation') || $4::jsonb
+    FROM peer_targets pt
+    WHERE p.id = pt.id
+    RETURNING p.id, pt.from_state, pt.released_emit_reservation_width
 ),
-flow_failed AS (
+current_claim AS (
+    -- THE ONE SHARED ASSOCIATION CORE (`_sql_claim.current_claim_join`):
+    -- job_id + the CURRENT claim_epoch + the exact step_key + the
+    -- null-safe map_index — no attempt-equality leg (every non-consuming
+    -- release refunds the displayed ordinal below the recorded claim's
+    -- attempt while the current epoch stands) and no park-metadata test
+    -- (the epoch identifies the current claim across every refund
+    -- representation) — with this disposition's own nonterminal status
+    -- domain AND the strict single-row maximality: the ledger's arbiter
+    -- makes same-job/same-epoch/same-step/same-map rows with different
+    -- attempts distinct, so the maximality probe (highest attempt, then
+    -- the latest updated_at, then the highest id) is what makes ONE job
+    -- winner unable to associate two rows — two fences and two events
+    -- for one winner is the defect the probe closes. The captured ledger
+    -- id + pre-update instant are the exact fence; the captured attempt
+    -- is a NON-NARROWING recorded fact.
+    SELECT f.id AS job_id, l.id AS ledger_id, l.updated_at AS claimed_at,
+           l.attempt AS claim_attempt
+    FROM peers AS f
+    JOIN {schema}.jobs AS j ON j.id = f.id
+    JOIN {schema}.wf_step_ledger AS l
+      ON {current_claim_join}
+),
+fenced_ledger AS (
+    -- The exact writer fence: ONLY the captured current row (its own id +
+    -- its pre-update instant) changes to `fenced`; older epochs, sibling
+    -- substeps, map siblings, and terminal history are byte-for-byte
+    -- untouched.
+    UPDATE {schema}.wf_step_ledger AS l
+    SET status = 'fenced', error_class = $3::text,
+        updated_at = clock_timestamp()
+    FROM current_claim AS c
+    WHERE l.id = c.ledger_id
+      AND l.updated_at = c.claimed_at
+    RETURNING l.id
+), evt AS (
+    -- THE AUDIT LEG: exactly one state_change per ACTUAL peer winner,
+    -- driven from the peers winner set (never through an inner join to
+    -- current_claim — a never-claimed pending peer still records its
+    -- event), with the captured pre-update from_state, the peer-failure
+    -- cause, and the optional non-narrowing details under
+    -- jsonb_strip_nulls (a valid zero width stays visible; an absent
+    -- current claim omits its field).
+    INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
+    SELECT f.id, clock_timestamp(), 'state_change',
+           jsonb_strip_nulls(jsonb_build_object(
+               'from_state', f.from_state,
+               'to_state', 'cancelled',
+               'error_class', $3::text,
+               'peer_cancel', jsonb_build_object(
+                   'by', 'peer_failure', 'cascade_from', $1::uuid::text
+               ),
+               'claim_attempt', c.claim_attempt,
+               'released_emit_reservation_width', f.released_emit_reservation_width
+           ))
+    FROM peers AS f
+    LEFT JOIN current_claim AS c ON c.job_id = f.id
+)
+SELECT (SELECT count(*) FROM blocked) AS blocked,
+       (SELECT count(*) FROM peers) AS peers_cancelled
+""".replace(
+    "{current_claim_join}", current_claim_join("j", "l", ("running", "awaited", "crashed"))
+).replace(
+    "{wf_emit_validated_reservation_width}",
+    validated_reservation_width("p") + " AS released_emit_reservation_width",
+)
+
+#: THE ROOT'S OWN GATED FAILURE (N1): its own statement — its own fresh
+#: snapshot, taken after the root lock's grant — so the unresolved-live
+#: gate decides from the ROWS AS THEY STAND NOW (a promotion the drain
+#: committed while this transaction waited on the root is visible). The
+#: maintenance seat's own law, applied at the cascade seat: a live
+#: unresolved node (a promoted pending source, a running node) withholds
+#: the root's failure; the maintenance's later pass owns the finalize once
+#: the live work rests. The root ROW LOCK itself is the caller's ENTRY
+#: lock (R2/A9.2 — `_resolve_failed_parent` takes `emit_root_lock` before
+#: the cascade; the maintenance seat's roots scan holds it per row): this
+#: statement deliberately carries NO second lock-acquisition CTE — one
+#: root-lock owner per transaction, never two.
+WF_FLOW_FAILED_GATED_SQL = """\
+WITH failed AS (
     UPDATE {schema}.jobs f
     SET status = 'failed',
         finished_at = clock_timestamp(),
-        error_class = $3::text
-    WHERE f.id = $5::uuid
-      AND f.status NOT IN {terminal}
-      -- The flow fails only when the cascade actually RESOLVED a
-      -- fail_closed join of this parent: no fail_closed edge → no
-      -- cascade → the collect-only failure never touches the flow.
-      AND EXISTS (SELECT 1 FROM blocked)
+        error_class = $2::text
+    WHERE f.id = $1::uuid
+      AND f.status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
+      AND NOT EXISTS (
+          SELECT 1 FROM {schema}.jobs n
+          WHERE (n.metadata->>'flow_id')::uuid = f.id
+            AND n.metadata ? 'flow_id'
+            AND n.step_key <> '__flow__'
+            AND n.id <> f.id
+            AND n.status IN ('pending', 'scheduled', 'running')
+            AND NOT (n.metadata ? 'blocking_reason')
+      )
     RETURNING f.id
 )
-SELECT (SELECT count(*) FROM blocked) AS blocked,
-       (SELECT count(*) FROM peers) AS peers_cancelled,
-       (SELECT count(*) FROM flow_failed) AS flow_failed
+SELECT (SELECT count(*) FROM failed)::int AS flow_failed
 """
 
 
@@ -500,7 +1156,7 @@ WITH history AS (
                    'attempt', l.attempt,
                    'error_class', l.error_class,
                    'error_message', l.error_message
-               ) ORDER BY l.attempt
+               ) ORDER BY l.attempt, l.claim_epoch, l.created_at, l.id
            ) AS attempts
     FROM {schema}.wf_step_ledger l
     WHERE l.flow_id = $2::uuid
