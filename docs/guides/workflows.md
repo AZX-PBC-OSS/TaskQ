@@ -2221,19 +2221,22 @@ that triggers one catalog read of the five carriers (`jobs`,
 `jobs_archive`, `wf_step_ledger`, `wf_outbox`, `wf_signals`); once the
 atomic POST migration widens all five to `bigint`, the resolved bound is
 `BIGINT_MAX` (9223372036854775807) and records past 32767 stream without
-restart. Ordinary `0..32767` pages pay no catalog read. Every door that
-asserts or persists the identity — `emit_batch`, the map fork,
-`insert_fork`, `insert_node`, and the admin panel — consults that
-resolved bound and fails closed with `MapIndexSchemaError` when the five
-carriers are missing, mixed, `NOT NULL`, or of an unsupported type. A
-record past the resolved bound raises the named
-`MapIndexExhaustedError`; its valid page-mates still commit. The join
-counter `jobs.deps_pending` stays a `smallint` and is a separate bound:
-widening the identity does not make one join over more than 32767
-children legal. That counter — not the identity — is a **route** fork's
-binding limit: a route (or map) over more than 32767 children is refused
-inside the finalize with `FanInBoundExceededError`, before any row is
-written.
+restart. Ordinary `0..32767` pages pay no catalog read, so they do not
+detect a broken carrier shape either. A candidate above 32767 makes the
+authoring doors — `emit_batch`, the map fork, `insert_fork`, and
+`insert_node` — consult that resolved bound, and they fail closed with
+`MapIndexSchemaError` (the admin panel answers HTTP 503) when the five
+carriers are missing, mixed, `NOT NULL`, or of an unsupported type. The
+hold door enforces the identity's type and non-negative lower bound; its
+identity is either absent or a row-derived value the authoring doors
+already checked, so it does not re-resolve the upper bound. A record
+past the resolved bound raises the named `MapIndexExhaustedError`; its
+valid page-mates still commit. The join counter `jobs.deps_pending` stays a `smallint` and is a
+separate bound: widening the identity does not make one join over more
+than 32767 children legal. That counter — not the identity — is a
+**route** fork's binding limit: a route (or map) over more than 32767
+children is refused inside the finalize with `FanInBoundExceededError`,
+before any row is written.
 
 ### The router: conditional edges, total or refused
 

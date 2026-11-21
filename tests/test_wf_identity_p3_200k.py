@@ -2,7 +2,9 @@
 
 The default invocation is exactly 200,000 records. ``TASKQ_P3_TEST_RECORDS`` is
 only an explicit developer-debug override; final evidence uses the default and
-asserts that persisted count. The source always pages from its durable cursor,
+asserts that persisted count, and only the default writes (and claims) the
+obligated ``p3-identity-scale`` capture — a debug run's short capture never
+becomes that stem's live claim. The source always pages from its durable cursor,
 1000 records per page, and the workflow leaves max_in_flight at its shipped
 1000 default. Two production-configured worker pods share real dispatch claims;
 this is not represented as a two-process worker soak.
@@ -336,7 +338,6 @@ async def _exercise(pg_dsn: str, record_count: int) -> dict[str, object]:
             "server_version_num": await control.fetchval("SHOW server_version_num"),
         }
         print("P3_IDENTITY_SCALE_FACTS=" + json.dumps(facts, default=str))
-        write_band_artifact("p3-identity-scale.json", facts)
         return facts
     finally:
         if pool is not None:
@@ -351,9 +352,21 @@ async def _exercise(pg_dsn: str, record_count: int) -> dict[str, object]:
 @pytest.mark.xdist_group("wf_identity_p3_scale")
 async def test_real_200k_unique_records_at_shipped_default_bound(pg_dsn: str) -> None:
     configured = os.environ.get("TASKQ_P3_TEST_RECORDS")
-    count = _RECORDS if configured is None else int(configured)
+    count = int(configured) if configured is not None else _RECORDS
     facts = await _exercise(pg_dsn, count)
+    records = facts["records"]
+    assert isinstance(records, dict), records
     assert facts["requested_records"] == count
-    # An if-free default guard: final output identifies any debug override and
-    # cannot pass it off as the obligated 200k artifact.
-    assert configured is not None or count == _RECORDS
+    assert int(records["rows"]) == count
+    assert int(records["identities"]) == count
+    # The obligated evidence run is the 200,000 default: the default arm pins
+    # the persisted count to that number, so a shortened ``_RECORDS`` cannot
+    # pass itself off as the artifact. An explicit override is a debug run and
+    # is asserted against its own configured target above.
+    assert configured is not None or int(records["rows"]) == 200_000
+    if configured is None:
+        # The obligated capture, and the manifest claim it appends, belong to
+        # the 200,000 default alone, recorded only once this run's own verdict
+        # is green: the evidence verifier reads a stem's NEWEST claim, so a
+        # debug override's capture must never become that stem's live claim.
+        write_band_artifact("p3-identity-scale.json", facts)

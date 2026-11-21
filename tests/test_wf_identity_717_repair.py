@@ -898,3 +898,80 @@ async def test_high_identity_signal_holds_discriminate_map_siblings(
             timeout_s=120.0,
             map_index=BIGINT_MAX,
         )
+
+
+async def test_hold_doors_refuse_negative_and_bool_identity(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+) -> None:
+    """Both hold doors refuse a negative or bool identity before any bind.
+
+    ``wf_signals_hold_identity_uniq`` is keyed on ``COALESCE(map_index, -1)``,
+    so a ``-1`` identity is the SAME arbiter key as the plain step's ``None``:
+    admitting it mints a row that later blocks the ordinary hold for that
+    ``(workflow, node_key, signal_name, hold_epoch)`` with a driver
+    ``UniqueViolationError``. ``-999`` and ``True`` are the same non-negative /
+    exact-int hole. The refusal must be typed at the door, before a row or an
+    idempotency key exists, and the legitimate ``None`` and non-negative
+    identities must stay unchanged.
+    """
+    from taskq.workflows.api._hitl import register_hold, register_timer_hold
+
+    payload_schema: dict[str, object] = {"Approval": {"type": "object", "properties": {}}}
+    flow = await seed_flow(wf_conn, wf_schema)
+    node = await seed_running_node(wf_conn, wf_schema, flow, step_key="review")
+
+    for bad, match in ((-1, "non-negative"), (-999, "non-negative"), (True, "exact int")):
+        with pytest.raises(ValueError, match=match):
+            await register_hold(
+                wf_conn,
+                schema=wf_schema,
+                workflow_id=flow,
+                node_id=node,
+                node_key="review",
+                signal_name="Approval",
+                hold_epoch=0,
+                call_id=f"call:bad-{bad!r}",
+                payload_schema=payload_schema,
+                timeout_s=120.0,
+                map_index=bad,
+            )
+
+    stored = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_signals WHERE workflow_id = $1',
+        flow,
+    )
+    assert int(stored or 0) == 0, "a refused identity minted a hold row"
+
+    # The NULL sentinel is free: the ordinary plain-step hold still mints.
+    plain = await register_hold(
+        wf_conn,
+        schema=wf_schema,
+        workflow_id=flow,
+        node_id=node,
+        node_key="review",
+        signal_name="Approval",
+        hold_epoch=0,
+        call_id="call:plain",
+        payload_schema=payload_schema,
+        timeout_s=120.0,
+        map_index=None,
+    )
+    assert plain is not None
+
+    # The timer door shares the same identity contract, and must refuse
+    # before delegating an invalid identity to the insert.
+    with pytest.raises(ValueError, match="non-negative"):
+        await register_timer_hold(
+            wf_conn,
+            schema=wf_schema,
+            workflow_id=flow,
+            node_id=node,
+            node_key="deadline",
+            signal_name="timer:deadline",
+            hold_epoch=0,
+            absolute=None,
+            relative=60.0,
+            payload_schema=payload_schema,
+            map_index=-1,
+        )

@@ -52,7 +52,7 @@ from taskq.backend._protocol import ConnLike, JobId
 from taskq.exceptions import ReservedTimerNamespaceError
 from taskq.obs import get_logger
 from taskq.workflows._capture import redact_hold_context
-from taskq.workflows._types import duration_seconds
+from taskq.workflows._types import duration_seconds, validate_map_index_identity
 
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
@@ -541,7 +541,11 @@ async def register_hold(
     and keeps the pre-fix identity exactly. The resume addresses the
     hold's own node by the hold id stamped into that node's metadata —
     one hold, one node, one resume; a resolve can never wake a
-    sibling.
+    sibling. The identity's type/lower-bound half of the contract is
+    enforced HERE (the authoring doors own the schema's upper bound): a
+    bool, float, string or negative index is refused typed before the
+    INSERT, so a caller-supplied ``-1`` can never alias the sentinel's
+    own arbiter key.
 
     the CONTEXT RIDES the INSERT'S own TRANSACTION (the crash-window fix
     — the crash-window's closure): reason/tool/args pass the redact
@@ -580,6 +584,8 @@ async def register_hold(
             "without a declared contract is the audit hole (the typed "
             "door refuses to mint one)"
         )
+    if map_index is not None:
+        validate_map_index_identity(map_index)
     hold_id = JobId(new_uuid())
     deadline = await _deadline_expr(conn, timeout_s, expires_at=expires_at)
     # the masked dict is the insert's payload (a mask that broke the JSON shape
