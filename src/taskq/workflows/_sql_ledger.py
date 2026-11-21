@@ -56,7 +56,7 @@ SELECT attempt, status, result, error_class, error_message, job_id
 FROM {schema}.wf_step_ledger
 WHERE flow_id = $1
   AND step_key = $2
-  AND ((map_index = $3::smallint) OR ($3::smallint IS NULL AND map_index IS NULL))
+  AND ((map_index = $3::bigint) OR ($3::bigint IS NULL AND map_index IS NULL))
   AND status IN ('succeeded', 'failed')
 ORDER BY attempt DESC, claim_epoch DESC, created_at DESC, id DESC
 LIMIT 1

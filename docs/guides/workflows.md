@@ -2206,14 +2206,34 @@ design.
 The per-record identity rides **`map_index`, stamped at emit** (with the
 record's `trace_id`). The certified fork's idempotency key
 (`wf:{flow}:emit:{map_index}:{step}`) and the step-ledger's claim
-arbiter (`(flow, step_key, COALESCE(map_index,-1), attempt)`) BOTH
-discriminate siblings by it — the pre-stamp shape emitted 200
-applications without it and observed **198 UniqueViolations**: every
-record's `enrich` child collided onto one row. `EmitChild` therefore
-REQUIRES both stamps (a child without them is refused before any row
-exists), and `chain_start` carries them forward. Every row of one
-record's chain shares its `trace_id` — the operator's drill-down is one
-query.
+arbiter (`(flow, step_key, COALESCE(map_index,-1), attempt,
+claim_epoch)`) BOTH discriminate siblings by it — the pre-stamp shape
+emitted 200 applications without it and observed **198
+UniqueViolations**: every record's `enrich` child collided onto one row.
+`EmitChild` therefore REQUIRES both stamps (a child without them is
+refused before any row exists), and `chain_start` carries them forward.
+Every row of one record's chain shares its `trace_id` — the operator's
+drill-down is one query.
+
+The identity's upper bound is **resolved from the schema**, never a
+compile-time constant. `MAP_INDEX_CEILING` (32767) is only the threshold
+that triggers one catalog read of the five carriers (`jobs`,
+`jobs_archive`, `wf_step_ledger`, `wf_outbox`, `wf_signals`); once the
+atomic POST migration widens all five to `bigint`, the resolved bound is
+`BIGINT_MAX` (9223372036854775807) and records past 32767 stream without
+restart. Ordinary `0..32767` pages pay no catalog read. Every door that
+asserts or persists the identity — `emit_batch`, the map fork,
+`insert_fork`, `insert_node`, and the admin panel — consults that
+resolved bound and fails closed with `MapIndexSchemaError` when the five
+carriers are missing, mixed, `NOT NULL`, or of an unsupported type. A
+record past the resolved bound raises the named
+`MapIndexExhaustedError`; its valid page-mates still commit. The join
+counter `jobs.deps_pending` stays a `smallint` and is a separate bound:
+widening the identity does not make one join over more than 32767
+children legal. That counter — not the identity — is a **route** fork's
+binding limit: a route (or map) over more than 32767 children is refused
+inside the finalize with `FanInBoundExceededError`, before any row is
+written.
 
 ### The router: conditional edges, total or refused
 

@@ -946,8 +946,10 @@ async def test_hostile_inputs_on_every_door_are_typed_refusals(
     clean_pg_conn: asyncpg.Connection,
     cure_app_module: Any,
 ) -> None:
-    """The doors' last hostile shapes, walked: a map_index beyond the
-    smallint is the typed 400 (never the int2 codec's overflow 500); a
+    """The doors' last hostile shapes, walked: a map_index past the
+    schema-resolved bigint ceiling is a genuine identity (the widened
+    schema's truthful 404 when no such child exists), a value beyond
+    bigint is the typed 400 (never the int8 codec's overflow 500); a
     NUL node key on the READ door is a 404; the deliver door's audited
     refusal with a NUL node key in its detail lands ITS OWN ROW (the
     leaf's NUL law covers the detail's strings — the audited refusal
@@ -960,9 +962,10 @@ async def test_hostile_inputs_on_every_door_are_typed_refusals(
     ) as http:
         await http.get("/queues")  # the CSRF cookie's set
         csrf = _csrf_of(http)
-        overflow = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 40000})
-        assert overflow.status_code == 400, (
-            f"the smallint overflow is a typed 400: {overflow.status_code}"
+        widened = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 40000})
+        assert widened.status_code == 404, (
+            f"40000 is a valid widened identity; the read's truthful answer is "
+            f"the 404 (no such child): {widened.status_code}"
         )
         huge = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 10**20})
         assert huge.status_code == 400

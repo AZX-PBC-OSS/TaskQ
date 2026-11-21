@@ -20,7 +20,15 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._sql import WorkflowSql
-from taskq.workflows._types import ForkSpec, _join_metadata, _jsonb, _row_metadata
+from taskq.workflows._types import (
+    MAP_INDEX_CEILING,
+    ForkSpec,
+    _join_metadata,
+    _jsonb,
+    _row_metadata,
+    resolve_map_index_domain,
+    validate_map_index_identity,
+)
 from taskq.workflows.definitions import validate_fork
 
 if TYPE_CHECKING:
@@ -48,6 +56,37 @@ async def insert_fork(
     terminal mark, the children, and the join share one tx, one now()."""
     validate_fork(fork)  # the empty fork is a build-time refusal, never a runtime dragon
     children = fork.children
+    for child in children:
+        if child.map_index is not None:
+            validate_map_index_identity(child.map_index)
+    consumers = fork.join.consumers if fork.join is not None else ()
+    for consumer in consumers:
+        if consumer.map_index is not None:
+            validate_map_index_identity(consumer.map_index)
+    high = [
+        child.map_index
+        for child in children
+        if child.map_index is not None and child.map_index > MAP_INDEX_CEILING
+    ] + [
+        consumer.map_index
+        for consumer in consumers
+        if consumer.map_index is not None and consumer.map_index > MAP_INDEX_CEILING
+    ]
+    if high:
+        # One caller-connection/all-five read per fork. A consistent bigint
+        # schema admits high identities (including BIGINT_MAX); all-smallint
+        # keeps the old refusal, while missing/unknown/mixed schemas fail closed
+        # before any child, edge, join or consumer write.
+        from taskq.workflows._emit import MapIndexExhaustedError
+
+        bound = await resolve_map_index_domain(conn, wsql.schema)
+        poison = [value for value in high if value > bound]
+        if poison:
+            raise MapIndexExhaustedError(
+                f"the fork's children/consumers carry map_index {poison!r} past "
+                f"the schema's resolved five-carrier upper bound ({bound}) — "
+                "the fork refuses BEFORE writing children, edges or a join"
+            )
     child_ids = [JobId(new_uuid()) for _ in children]
 
     for start in range(0, len(children), FORK_CHUNK):

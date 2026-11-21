@@ -16,11 +16,13 @@ from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ErrorInfo, JobId, RetryKind
+from taskq.constants import BIGINT_MAX, SMALLINT_MAX
 from taskq.retry import RetryPolicy
 from taskq.workflows._capability import validate_required_worker_schema
 from taskq.workflows._sql import BLOCKING_REASON_JOIN
 
 if TYPE_CHECKING:
+    from taskq.backend._protocol import ConnLike
     from taskq.workflows._policy import RetrySpec
 
 
@@ -52,6 +54,7 @@ __all__ = [
     "FiredJoin",
     "ForkSpec",
     "JoinSpec",
+    "MapIndexSchemaError",
     "NodeSpec",
     "_consumer_binding",
     "_consumer_bindings",
@@ -62,21 +65,189 @@ __all__ = [
     "_row_metadata",
     "_seconds_or_none",
     "duration_seconds",
+    "resolve_map_index_ceiling",
+    "resolve_map_index_domain",
+    "validate_map_index_identity",
 ]
 
-#: The map_index ceiling — the wire-format fact the ceiling error
-#: documents: ``jobs.map_index`` is a smallint (the ledger's claim
-#: arbiter column, 01.00.23_05), so a record's per-run identity tops out
-#: at 32767. Without the door, record #32768 is the raw DataError the
-#: smallint cast raises mid-transaction, taking the valid page-mates down
-#: with it (an accidental untyped ceiling — the whole page rolls back
-#: and the raw error ladders as transient). The engine refuses the
-#: poison record at the door (:class:`taskq.workflows._emit.
-#: MapIndexExhaustedError` — named, loud, the record named): the valid
-#: page-mates COMMIT (the batch semantics — a poison record kills
-#: itself loudly, never its mates), and the deterministic death
-#: terminalizes the source with the ceiling documented here.
-MAP_INDEX_CEILING: Final[int] = 32767
+#: Conservative pre-migration ``map_index`` ceiling. It is deliberately not
+#: a guess that every schema is smallint forever: only a HIGH candidate pays
+#: for the all-five catalog read, which activates ``BIGINT_MAX`` after the
+#: atomic POST migration and refuses mixed/corrupt schemas before the whole
+#: authoring unit. No door may use this as the resolved bound for a
+#: candidate above it.
+MAP_INDEX_CEILING: Final[int] = SMALLINT_MAX
+
+#: The five columns that jointly carry a non-null record identity. The
+#: effective ceiling is the domain agreed by ALL of them: archive mirrors a
+#: job, the outbox carries a fire's identity to the consumer insert, and
+#: signals key their hold arbiter on the same value, so a widened ``jobs``
+#: alone is not permission to write a high identity.
+_MAP_INDEX_IDENTITY_TABLES: Final[tuple[str, ...]] = (
+    "jobs",
+    "jobs_archive",
+    "wf_step_ledger",
+    "wf_outbox",
+    "wf_signals",
+)
+
+#: Exactly the two supported ``map_index`` column domains. Anything else
+#: (``integer``, a domain type, an absent column) is a deployment/schema
+#: error — never interpreted as permission to write the bigint domain.
+_MAP_INDEX_COLUMN_BOUNDS: Final[dict[str, int]] = {
+    "smallint": SMALLINT_MAX,
+    "bigint": BIGINT_MAX,
+}
+
+#: One parameter-bound catalog read for all five carriers. The schema is the
+#: caller's validated identifier (``$1``); the table set is ``$2``.
+_MAP_INDEX_SCHEMA_SQL: Final[str] = (
+    "SELECT c.table_name, c.data_type, c.is_nullable "
+    "FROM information_schema.columns AS c "
+    "JOIN pg_catalog.pg_namespace AS n ON n.nspname = c.table_schema "
+    "JOIN pg_catalog.pg_class AS t "
+    "ON t.relnamespace = n.oid AND t.relname = c.table_name "
+    "JOIN pg_catalog.pg_attribute AS a "
+    "ON a.attrelid = t.oid AND a.attname = c.column_name "
+    "AND a.attnum > 0 AND NOT a.attisdropped "
+    "JOIN pg_catalog.pg_type AS ty ON ty.oid = a.atttypid "
+    "WHERE c.table_schema = $1 AND c.table_name = ANY($2::text[]) "
+    "AND c.column_name = 'map_index' "
+    "AND t.relkind = 'r' AND ty.typtype = 'b' AND ty.typbasetype = 0"
+)
+
+
+class MapIndexSchemaError(RuntimeError):
+    """The schema cannot safely carry a non-null record identity.
+
+    Raised when any of the five identity carriers is missing its
+    ``map_index`` column, the carriers disagree on width, or a column has an
+    unsupported type. The resolver never guesses bigint permission from a
+    partial or hand-edited schema, and it never wraps a transport fault as a
+    schema verdict: connection-level failures propagate unchanged so the
+    ordinary retry/reclaim ladder owns them.
+    """
+
+
+def validate_map_index_identity(value: object, *, what: str = "map_index") -> int:
+    """Refuse a non-null identity before any key render or SQL bind.
+
+    The identity is an exact Python ``int`` (``bool`` is not an int here) and
+    non-negative. The destination schema's upper bound is resolved later at
+    the async DB door; this is the type/lower-bound half of the contract. No
+    coercion: a float or string that merely looks numeric would otherwise
+    format a different idempotency key or reach the SQL codec mid-transaction.
+    """
+    if type(value) is not int:
+        raise ValueError(
+            f"{what} must be an exact int (bool, float and string are refused; "
+            f"no value coercion), got {type(value).__name__}"
+        )
+    if value < 0:
+        raise ValueError(f"{what} must be non-negative, got {value}")
+    return value
+
+
+async def _map_index_columns(conn: ConnLike, schema: str) -> dict[str, str]:
+    """Read and validate the five real base-table columns in one statement.
+
+    The catalog joins deliberately exclude views, dropped columns and domains:
+    their spelling in ``information_schema`` alone is not proof that the five
+    physical application carriers have the supported shape. Nullability is part
+    of that shape because the migration must preserve NULL ordinary identities.
+    """
+    rows = await conn.fetch(
+        _MAP_INDEX_SCHEMA_SQL,
+        schema,
+        list(_MAP_INDEX_IDENTITY_TABLES),
+    )
+
+    found: dict[str, str] = {}
+    for row in rows:
+        table = row["table_name"]
+        data_type = row["data_type"]
+        nullable = row["is_nullable"]
+        if (
+            not isinstance(table, str)
+            or not isinstance(data_type, str)
+            or not isinstance(nullable, str)
+        ):
+            raise MapIndexSchemaError(
+                f"the map_index catalog answer for schema {schema!r} is malformed: {row!r}"
+            )
+        if table in found:
+            raise MapIndexSchemaError(
+                f"the map_index catalog answer for schema {schema!r} is "
+                f"ambiguous on {table!r}: duplicate physical column answers"
+            )
+        if nullable != "YES":
+            raise MapIndexSchemaError(
+                f"schema {schema!r} has an unsupported NOT NULL map_index identity "
+                f"carrier {table!r}; the five carriers must remain nullable"
+            )
+        found[table] = data_type
+
+    missing = [table for table in _MAP_INDEX_IDENTITY_TABLES if table not in found]
+    if missing:
+        raise MapIndexSchemaError(
+            f"schema {schema!r} is missing the map_index identity column on "
+            f"{missing!r}; all five real base-table carriers are required before "
+            "a non-null record identity can be written"
+        )
+    unsupported = {
+        table: data_type
+        for table, data_type in found.items()
+        if data_type not in _MAP_INDEX_COLUMN_BOUNDS
+    }
+    if unsupported:
+        raise MapIndexSchemaError(
+            f"schema {schema!r} has an unsupported map_index type on "
+            f"{unsupported!r}; only smallint and bigint base types are valid "
+            "identity carriers (integer, domains, views and other shapes are "
+            "refused rather than guessed)"
+        )
+    return found
+
+
+async def resolve_map_index_ceiling(conn: ConnLike, schema: str) -> int:
+    """Return the minimum upper bound over all five identity carriers.
+
+    This diagnostic deliberately retains the minimum on a mixed-width schema
+    (the inspection contract). Authoring doors must instead use
+    :func:`resolve_map_index_domain`, which rejects that mixed state rather
+    than treating it as the supported all-smallint schema.
+    """
+    found = await _map_index_columns(conn, schema)
+    return min(_MAP_INDEX_COLUMN_BOUNDS[found[table]] for table in _MAP_INDEX_IDENTITY_TABLES)
+
+
+async def resolve_map_index_domain(conn: ConnLike, schema: str) -> int:
+    """Resolve the activated authoring domain from one five-carrier read.
+
+    Exactly all-smallint and exactly all-bigint are supported. Mixed widths
+    are a typed deployment/schema error even though the diagnostic minimum
+    helper above returns 32767 for them. Both functions share the same one
+    statement; neither caches an answer or infers permission from a subset of
+    carriers.
+
+    A live read that observes a different width than the cached emit-capability
+    verdict invalidates that verdict, so a worker that booted before the POST
+    widening cannot keep serving a stale pre-POST OK past it.
+    """
+    from taskq.workflows._capability import note_emit_carrier_width
+
+    found = await _map_index_columns(conn, schema)
+    widths = {found[table] for table in _MAP_INDEX_IDENTITY_TABLES}
+    if len(widths) != 1:
+        raise MapIndexSchemaError(
+            f"schema {schema!r} has partially widened/mixed map_index identity "
+            f"carriers: {found!r}; apply the atomic five-carrier POST migration "
+            "or restore a consistent schema before authoring a high identity"
+        )
+    width = next(iter(widths))
+    note_emit_carrier_width(schema, width)
+    return _MAP_INDEX_COLUMN_BOUNDS[width]
+
 
 #: A join edge's declared failure policy (the two semantics):
 #:
@@ -149,6 +320,10 @@ class ConsumerBinding:
     def retry_policy(self) -> RetryPolicy | None:
         return self.retry.policy if self.retry is not None else None
 
+    def __post_init__(self) -> None:
+        if self.map_index is not None:
+            validate_map_index_identity(self.map_index)
+
 
 @dataclass(frozen=True, slots=True)
 class ChildSpec:
@@ -202,6 +377,10 @@ class ChildSpec:
     def resolved_retry_kind(self) -> RetryKind | None:
         return self.retry.policy.kind if self.retry is not None else None
 
+    def __post_init__(self) -> None:
+        if self.map_index is not None:
+            validate_map_index_identity(self.map_index)
+
 
 @dataclass(frozen=True, slots=True)
 class EmitChild:
@@ -244,6 +423,9 @@ class EmitChild:
     @property
     def retry_policy(self) -> RetryPolicy | None:
         return self.retry.policy if self.retry is not None else None
+
+    def __post_init__(self) -> None:
+        validate_map_index_identity(self.map_index)
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,6 +534,8 @@ class NodeSpec:
     def __post_init__(self) -> None:
         from taskq.workflows._policy import canonical_retry_kind
 
+        if self.map_index is not None:
+            validate_map_index_identity(self.map_index)
         if self.required_worker_schema is not None:
             validate_required_worker_schema(self.required_worker_schema)
         if self.retry is not None:
