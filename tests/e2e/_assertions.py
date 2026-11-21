@@ -33,6 +33,7 @@ __all__ = [
     "wait_for_handle_status",
     "wait_for_worker_ready",
     "wait_terminal_with_diagnostics",
+    "worker_second_beat_predicate",
 ]
 
 _EFFECTS_COLUMNS = "seq, at, actor, job_id, attempt, kind, detail"
@@ -287,16 +288,66 @@ async def fresh_worker_ids(pool: asyncpg.Pool, schema: str) -> set[UUID]:
     return {row["id"] for row in rows}
 
 
+def worker_second_beat_predicate(
+    pool: asyncpg.Pool,
+    schema: str,
+    *,
+    known_workers: frozenset[UUID] | set[UUID] = frozenset(),
+    ready_count: int = 1,
+) -> Callable[[], Awaitable[bool]]:
+    """The readiness gate's beat rule as a pollable predicate — the ONE
+    readiness mechanism's own probe, shared by every e2e worker gate
+    (the hygiene control keeps the row-presence predicate out of every
+    other tests/e2e file).
+
+    Satisfied when *ready_count* NEW workers (never the ids in
+    *known_workers*) have each shown a SECOND BEAT: their own
+    ``last_seen_at`` strictly increasing across the predicate's samples —
+    the registration INSERT stamps ``last_seen_at = clock_timestamp()``
+    (the statement's own instant) while ``started_at`` carries the
+    table's ``now()`` default (the transaction's start), so row presence
+    proves nothing; a moving ``last_seen_at`` is a live heartbeat loop's
+    tick. A worker that crashes mid-bootstrap (after
+    ``register_worker`` but before its first tick) never satisfies the
+    predicate. The beaten set is cumulative: once a worker has shown the
+    increase it stays counted across later samples."""
+    seen_beats: dict[UUID, datetime] = {}
+    beaten: set[UUID] = set()
+
+    async def _second_beat() -> bool:
+        rows = await pool.fetch(
+            f"""
+            SELECT id, last_seen_at FROM "{schema}".workers
+            WHERE last_seen_at > now() - interval '10 seconds'
+              AND last_seen_at > started_at
+              AND NOT (id = ANY($1::uuid[]))
+            """,
+            sorted(known_workers),
+        )
+        for row in rows:
+            prior = seen_beats.get(row["id"])
+            if prior is not None and row["last_seen_at"] > prior:
+                beaten.add(row["id"])
+            if prior is None or row["last_seen_at"] > prior:
+                seen_beats[row["id"]] = row["last_seen_at"]
+        return len(beaten) >= ready_count
+
+    return _second_beat
+
+
 async def wait_for_worker_ready(
     pool: asyncpg.Pool,
     schema: str,
     *,
-    timeout: float = 30.0,  # noqa: ASYNC109  # Why: forwarded to poll_until as a polling deadline, not an asyncio.timeout-style wrapper.
+    timeout: float = 30.0,  # noqa: ASYNC109  # Why: deadline budget consumed internally by the polling loop; asyncio.timeout() doesn't fit a poll-and-report-elapsed pattern.
     known_workers: frozenset[UUID] | set[UUID] = frozenset(),
+    ready_count: int = 1,
 ) -> None:
-    """Readiness gate: poll ``{schema}.workers`` until a NEW worker shows
-    a SECOND BEAT - its own ``last_seen_at`` strictly increasing across
-    two gate samples.
+    """Readiness gate: poll ``{schema}.workers`` until *ready_count* NEW
+    worker(s) show a SECOND BEAT — their own ``last_seen_at`` strictly
+    increasing across two gate samples (the beat rule is
+    :func:`worker_second_beat_predicate`, this module's one readiness
+    mechanism).
 
     The beat rule, not row presence: the registration INSERT stamps
     ``last_seen_at = clock_timestamp()`` (the statement's own instant)
@@ -318,33 +369,18 @@ async def wait_for_worker_ready(
     the gate started (:func:`fresh_worker_ids`); the gate waits for a
     beat from some OTHER worker, so a second container on a schema whose
     first worker is alive is gated on its own readiness, never on its
-    sibling's."""
-
-    seen_beats: dict[UUID, datetime] = {}
-
-    async def _second_beat() -> bool:
-        rows = await pool.fetch(
-            f"""
-            SELECT id, last_seen_at FROM "{schema}".workers
-            WHERE last_seen_at > now() - interval '10 seconds'
-              AND last_seen_at > started_at
-              AND NOT (id = ANY($1::uuid[]))
-            """,
-            sorted(known_workers),
-        )
-        for row in rows:
-            prior = seen_beats.get(row["id"])
-            if prior is not None and row["last_seen_at"] > prior:
-                return True
-            if prior is None or row["last_seen_at"] > prior:
-                seen_beats[row["id"]] = row["last_seen_at"]
-        return False
+    sibling's. *ready_count* > 1 gates a FLEET (the workgroup
+    supervisor's children): every counted worker is a new worker's own
+    second beat, never a sibling's."""
 
     await poll_until(
-        _second_beat,
+        worker_second_beat_predicate(
+            pool, schema, known_workers=known_workers, ready_count=ready_count
+        ),
         timeout=timeout,
         description=(
             f"a second post-registration beat (last_seen_at increasing across "
-            f"samples) from a new worker in {schema}.workers"
+            f"samples) from {ready_count} new worker{'s' if ready_count != 1 else ''} "
+            f"in {schema}.workers"
         ),
     )

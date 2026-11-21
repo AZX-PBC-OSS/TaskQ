@@ -268,6 +268,55 @@ def test_testing_pkg_no_module_level_schema_constant() -> None:
     )
 
 
+# ── the e2e worker-readiness gate's one mechanism ────────────────────────
+# The tier fix stamped the registration INSERT's ``last_seen_at`` from
+# ``clock_timestamp()`` (src/taskq/backend/_sql.py
+# WORKER_REGISTRATION_SQL_TEMPLATE) while ``started_at`` keeps the table's
+# ``now()`` transaction-start default — so the legacy row-presence
+# predicate is TRUE ON THE REGISTRATION ROW ITSELF and a gate keyed on it
+# admits a worker that is still between ``register_worker`` and its later
+# bootstrap steps. The one readiness mechanism is
+# ``tests/e2e._assertions.wait_for_worker_ready``'s SECOND-BEAT rule (the
+# row's own ``last_seen_at`` strictly increasing across gate samples —
+# something only a live heartbeat loop produces); its home also carries
+# the two legitimate row-presence uses (``fresh_worker_ids``' known-workers
+# snapshot and the gate's own freshness pre-filter). This guard keeps it
+# the ONE mechanism: the predicate may appear in no other tests/e2e file,
+# so a future readiness gate cannot quietly reintroduce the
+# mid-bootstrap admission (the diagnosed mechanism of test_cron's
+# "worker startup did not register the cron schedule" reds).
+
+_E2E_DIR = _TESTS_DIR / "e2e"
+_E2E_CENTRAL_READINESS = _E2E_DIR / "_assertions.py"
+_WORKER_READY_ROW_PRESENCE_RE = re.compile(r"last_seen_at\s*>\s*started_at")
+
+
+def test_no_inline_worker_readiness_predicate_outside_the_central_gate() -> None:
+    """The row-presence predicate (``last_seen_at > started_at``) over
+    ``{schema}.workers`` is part of the central e2e readiness mechanism
+    and may appear in exactly one place: ``tests/e2e/_assertions.py``.
+    Any other tests/e2e file carrying the predicate is an inline
+    readiness gate that admits the registration ROW (see the tier fix's
+    mechanism note above) — gate through ``wait_for_worker_ready`` (or
+    its shared beat-rule predicate) instead."""
+    offenders = [
+        str(p.relative_to(_TESTS_DIR))
+        for p in sorted(_E2E_DIR.rglob("*.py"))
+        if p != _E2E_CENTRAL_READINESS and _WORKER_READY_ROW_PRESENCE_RE.search(p.read_text())
+    ]
+    assert not offenders, (
+        "Found inline worker-readiness predicate(s) (last_seen_at > started_at) in:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + f"\n\nThe predicate is satisfied by the REGISTRATION row itself (the INSERT "
+        f"stamps last_seen_at = clock_timestamp(), strictly greater than started_at's "
+        f"now() transaction-start default), so an inline gate keyed on it admits a "
+        f"worker that is still mid-bootstrap. Gate through "
+        f"tests/e2e/_assertions.wait_for_worker_ready (the second-beat rule) instead; "
+        f"the predicate's only legitimate home is the central mechanism: "
+        f"{_E2E_CENTRAL_READINESS.relative_to(_TESTS_DIR)}."
+    )
+
+
 # ── taskq.testing submodule __all__ contracts ────────────────────────────
 # The otel.py incident: the module's ``__all__`` was exactly inverted - it
 # advertised six underscore-private helpers (the ``_save_*`` snapshots,

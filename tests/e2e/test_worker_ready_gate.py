@@ -1,14 +1,20 @@
 """The e2e readiness gate's own controls.
 
-``wait_for_worker_ready`` is the one gate every e2e worker fixture
-yields through; its contract (its docstring) is that only a worker whose
-heartbeat loop is ALIVE satisfies it - a worker that crashes
-mid-bootstrap (after ``register_worker`` but before its first tick)
-never does. The registration INSERT itself stamps
-``last_seen_at = clock_timestamp()``, which is strictly greater than
-``started_at = now()`` (the transaction's start) - so a gate keyed on
-``last_seen_at > started_at`` admits the registration ROW, not a
-heartbeat TICK, and a fixture can yield while the boot is still between
+``wait_for_worker_ready`` is the one readiness mechanism every e2e
+worker gate flows through: the container fixtures gate through it
+(conftest's ``running_worker``, the three ``e2e_worker_second`` copies),
+the workgroup supervisor's fleet gate and the respawn gate flow through
+its own beat rule (``worker_second_beat_predicate``), and the suite
+hygiene control (``test_no_inline_worker_readiness_predicate_outside_the_central_gate``)
+keeps the row-presence predicate out of every other tests/e2e file. Its
+contract (its docstring) is that only a worker whose heartbeat loop is
+ALIVE satisfies it - a worker that crashes mid-bootstrap (after
+``register_worker`` but before its first tick) never does. The
+registration INSERT itself stamps ``last_seen_at = clock_timestamp()``,
+strictly greater than ``started_at``'s ``now()`` transaction-start
+default - so a gate keyed on mere row presence (any ``last_seen_at``
+after ``started_at``) admits the registration ROW, not a heartbeat
+TICK, and a fixture can yield while the boot is still between
 ``register_worker`` and its later bootstrap steps (the diagnosed
 mechanism of test_cron's "worker startup did not register the cron
 schedule" reds). The gate therefore requires a SECOND BEAT: the row's
