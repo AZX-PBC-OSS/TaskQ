@@ -178,8 +178,9 @@ async def test_pre_post_schema_keeps_the_typed_ceiling_and_admits_low_pages(
     wsql = render_workflow_sql(schema)
     assert set(await _carrier_widths(conn, schema)) == set(CARRIERS)
 
-    # The widened ::bigint[] identity binds work against the still-smallint
-    # columns for the whole legacy window (0..32767).
+    # The widened ::bigint[] emit-door binds work against the still-smallint
+    # columns for the whole legacy window (0..32767); the scalar doors' own
+    # cast pins live in tests/test_wf_identity_warm_cache_scalar_binds.py.
     await _emit_page(pre_only_pool, wsql, conn, schema, [0, SMALLINT_MAX])
 
     with pytest.raises(MapIndexExhaustedError, match=str(SMALLINT_MAX)):
@@ -211,6 +212,38 @@ async def test_mixed_carrier_shape_refuses_the_whole_batch_before_writing(
         )
     rows = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs WHERE parent_id = $1', source)
     assert int(rows or 0) == 0, "a mixed carrier shape wrote rows before refusing"
+
+
+async def test_supported_mixed_width_shape_refuses_the_whole_batch_before_writing(
+    pre_only_schema: tuple[asyncpg.Connection, str],
+    pre_only_pool: asyncpg.Pool,
+) -> None:
+    """A genuinely mixed width over the two SUPPORTED column types — one
+    carrier widened to bigint, the rest still smallint — is a half-applied
+    POST. The write door must refuse typed before writing rather than infer
+    permission from the widened subset."""
+    conn, schema = pre_only_schema
+    wsql = render_workflow_sql(schema)
+    await conn.execute(f'ALTER TABLE "{schema}".jobs_archive ALTER COLUMN map_index TYPE bigint')
+    assert set((await _carrier_widths(conn, schema)).values()) == {"smallint", "bigint"}
+    flow = await seed_flow(conn, schema)
+    source = await seed_running_node(conn, schema, flow, step_key="source")
+    worker, attempt, epoch = await claim_view(conn, schema, source)
+
+    with pytest.raises(MapIndexSchemaError, match="mixed"):
+        await emit_batch(
+            pre_only_pool,
+            wsql,
+            flow_id=flow,
+            source_id=source,
+            worker_id=worker,
+            attempt=attempt,
+            claim_epoch=epoch,
+            children=_page([0, 32768]),
+            cursor={"page": 0},
+        )
+    rows = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs WHERE parent_id = $1', source)
+    assert int(rows or 0) == 0, "a supported mixed-width shape wrote rows before refusing"
 
 
 async def test_post_migration_preserves_rows_and_activates_high_identity(

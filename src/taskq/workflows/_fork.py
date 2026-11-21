@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, JobId
+from taskq.constants import SMALLINT_MAX
 from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import (
@@ -29,7 +30,7 @@ from taskq.workflows._types import (
     resolve_map_index_domain,
     validate_map_index_identity,
 )
-from taskq.workflows.definitions import validate_fork
+from taskq.workflows.definitions import FanInBoundExceededError, validate_fork
 
 if TYPE_CHECKING:
     pass
@@ -165,13 +166,30 @@ async def insert_fork(
         # second insert (the plain insert's idempotency collision killed the
         # second demo run's fork). The engine's raw shapes (no static row) keep
         # the insert path.
-        join_id = await conn.fetchval(
-            f"SELECT id FROM {wsql.schema}.jobs WHERE step_key = $1 "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is $-bound.
+        join_row = await conn.fetchrow(
+            f"SELECT id, deps_pending FROM {wsql.schema}.jobs WHERE step_key = $1 "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is $-bound.
             "AND (metadata->>'flow_id')::uuid = $2",
             fork.join.step_key,
             flow_id,
         )
-        if join_id is not None:
+        if join_row is not None:
+            join_id = JobId(join_row["id"])
+            # The counter is a COUNT of unterminal parents (a smallint, never
+            # the widened record identity), and the pre-created join already
+            # carries its own source edge's weight: the adoption adds the
+            # children's to it, so the domain check must read the row's
+            # current value — refusing typed before the UPDATE writes.
+            existing_deps = int(join_row["deps_pending"])
+            if existing_deps + len(children) > SMALLINT_MAX:
+                raise FanInBoundExceededError(
+                    f"join {fork.join.step_key!r} adoption adds {len(children)} "
+                    f"children to {existing_deps} existing deps — above "
+                    f"jobs.deps_pending's smallint domain ({SMALLINT_MAX}); the "
+                    "adoption refuses before the counter write, and the caller's "
+                    "transaction unwinds the fork's child inserts. "
+                    "Partition the source into smaller forks — widening the "
+                    "record identity does not widen the join counter."
+                )
             # the pre-created row (the drain-precreated shape — the flow link +
             # the cohort stamp, no join-wait marker) leaves the adoption UPDATE
             # carrying the marker and the run's cohort (the source row's

@@ -3,10 +3,10 @@
 These pins attack the assumptions behind the #717 widening that the door-level
 repair pins do not exercise: the identity must stay continuous across
 32767→32768 *through the live runner* (claim, ladder, fork, ledger), the widened
-identity binds must read back on the memoized/replay face, the new bigint SQL
-binds must still serve the supported pre-POST window, and a real broken carrier
-shape (a half-applied widening) must converge to a deterministic terminal
-instead of looping reclaim.
+identity binds must read back on the memoized/replay face, the new array/drain
+bigint binds must still serve the supported pre-POST window, and a real broken
+carrier shape (a half-applied widening) must converge to a deterministic
+terminal instead of looping reclaim.
 
 Real PostgreSQL; the house ``wf_*`` fixtures (fully migrated, all-bigint) and
 throwaway PRE-only schemas built by the product migration runner.
@@ -225,9 +225,11 @@ async def test_memoized_terminal_lookup_reads_a_widened_identity(
 
 
 async def test_low_identity_fork_and_outbox_drain_on_a_pre_post_schema(pg_dsn: str) -> None:
-    """The supported mixed-version window: the release's new ``::bigint``
-    binds must still serve a not-yet-widened (all-smallint) schema for every
-    low identity, so a new binary is safe before the POST applies."""
+    """The supported mixed-version window: the release's new ``::bigint[]``
+    array bind (``insert_fork``) and the drain's read still serve a
+    not-yet-widened (all-smallint) schema for every low identity, so a new
+    binary is safe before the POST applies. The scalar doors' cast pins live
+    in tests/test_wf_identity_warm_cache_scalar_binds.py."""
     schema = "prepost_probe_" + new_base62(8, precision="random").lower()
     conn = await asyncpg.connect(pg_dsn)
     pool = await asyncpg.create_pool(pg_dsn)

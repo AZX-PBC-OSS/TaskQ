@@ -182,7 +182,7 @@ _NODE_PANEL_CHILD_SQL = (
     "payload, result, "
     "created_at, started_at, finished_at "
     'FROM "{schema}".jobs WHERE step_key = $1 '
-    "AND (metadata->>'flow_id')::uuid = $2 AND map_index = $3 "
+    "AND (metadata->>'flow_id')::uuid = $2 AND map_index = $3::bigint "
     "AND step_key <> '__flow__'"
 )
 

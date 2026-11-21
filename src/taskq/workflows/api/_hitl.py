@@ -308,7 +308,7 @@ _HOLD_INSERT_SQL = """\
 INSERT INTO {schema}.wf_signals
     (id, workflow_id, node_key, signal_name, hold_epoch, map_index, call_id,
      payload, payload_schema, status, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, 'held', $10)
+VALUES ($1, $2, $3, $4, $5, $6::bigint, $7, $8::jsonb, $9::jsonb, 'held', $10)
 RETURNING created_at
 """
 

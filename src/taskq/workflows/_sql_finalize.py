@@ -308,7 +308,7 @@ JOIN {schema}.jobs j ON j.id = w.join_job_id
 OUTBOX_INSERT_SQL = """\
 INSERT INTO {schema}.wf_outbox
     (id, join_job_id, flow_id, consumer_step_key, map_index, bindings)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+VALUES ($1, $2, $3, $4, $5::bigint, $6::jsonb)
 """
 
 
@@ -340,7 +340,7 @@ INSERT INTO {schema}.jobs
      idempotency_scope, idempotency_key, priority, start_to_close, fairness_key,
      required_worker_schema, retry_base_seconds, retry_cap_seconds,
      retry_backoff, retry_jitter)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8::bigint, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 """
 
 
