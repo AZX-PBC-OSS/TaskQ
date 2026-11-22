@@ -269,10 +269,14 @@ forward.
 32767 raises `MapIndexExhaustedError` (deterministic, named). A candidate
 above 32767 against a schema whose five carriers are mixed, missing,
 `NOT NULL`, or of an unsupported type raises `MapIndexSchemaError` before any
-row is written — a deployment error, not permission. An ordinary page at or
-below 32767 takes the no-catalog-read path, so it writes rather than detecting
-a broken carrier shape; inspect the five columns yourself before relying on
-low-identity writes against a schema you have not verified. A hand-run `ALTER`
+row is written — a deployment error, not permission. An ordinary unbounded
+page at or below 32767 takes the no-catalog-read path, so it writes rather than
+detecting a broken carrier shape; inspect the five columns yourself before
+relying on low-identity writes against a schema you have not verified.
+Unbounded is the EXPLICIT opt-out (`max_in_flight=None`): bounded emit is the
+default, and its capability preflight re-reads the five carriers on every call,
+so a bounded low page refuses the same broken shape with
+`WorkflowWorkerCapabilityError` before any write. A hand-run `ALTER`
 that widened the column without recreating
 the claim arbiter leaves the stored `int4` coercion in place; the ledger's
 `ON CONFLICT` then fails with PostgreSQL `42P10`, and the bounded-emit

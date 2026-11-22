@@ -231,8 +231,12 @@ async def resolve_map_index_domain(conn: ConnLike, schema: str) -> int:
     carriers.
 
     A live read that observes a different width than the cached emit-capability
-    verdict invalidates that verdict, so a worker that booted before the POST
-    widening cannot keep serving a stale pre-POST OK past it.
+    verdict invalidates that verdict, so no worker can keep serving a stale
+    pre-POST OK once it re-reads the carriers. The high-identity authoring
+    doors call this resolver directly, and the bounded-emit preflight
+    (:func:`taskq.workflows._capability.verify_emit_capacity_objects`) calls it
+    at entry on every call, so a low-only worker that never authors a high
+    identity still re-reads the five carriers before serving its cache.
     """
     from taskq.workflows._capability import note_emit_carrier_width
 
@@ -242,7 +246,9 @@ async def resolve_map_index_domain(conn: ConnLike, schema: str) -> int:
         raise MapIndexSchemaError(
             f"schema {schema!r} has partially widened/mixed map_index identity "
             f"carriers: {found!r}; apply the atomic five-carrier POST migration "
-            "or restore a consistent schema before authoring a high identity"
+            "or restore a consistent schema. Until the five carriers agree, the "
+            "high-identity authoring doors AND every bounded-emit preflight "
+            "refuse — including a low-identity run's create and drive adoption"
         )
     width = next(iter(widths))
     note_emit_carrier_width(schema, width)

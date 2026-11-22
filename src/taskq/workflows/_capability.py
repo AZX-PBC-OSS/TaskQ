@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Final
 import asyncpg
 
 from taskq.backend._protocol import JobId
+from taskq.constants import SMALLINT_MAX
 from taskq.workflows.api._runner_errors import WorkflowRunError
 
 if TYPE_CHECKING:
@@ -143,11 +144,14 @@ async def create_guarded_flow(
 
 
 #: The post-fold `01.00.42_01` object set's cached per-schema verdict: maps a
-#: schema to the ``wf_step_ledger.map_index`` width the verdict was verified
-#: against (``"smallint"`` or ``"bigint"``). A bounded run's feature use
-#: refuses before any body, child, cursor, or park write when ANY part of the
-#: object set is missing (the §2.1 whole-object -set test — never a single-key
-#: or to_regclass-only check).
+#: schema to the ``map_index`` width the verdict was verified against
+#: (``"smallint"`` or ``"bigint"``). Steps 2-8 are cached per schema+width; the
+#: entry of :func:`verify_emit_capacity_objects` revalidates the five-carrier
+#: width with one catalog read per call, so a low-only bounded worker cannot
+#: keep serving a stale pre-POST verdict past a widening or partial widening.
+#: A bounded run's feature use refuses before any body, child, cursor, or park
+#: write when ANY part of the object set is missing (the §2.1 whole-object -set
+#: test — never a single-key or to_regclass-only check).
 _EMIT_OBJECTS_OK: Final[dict[str, str]] = {}
 
 
@@ -343,8 +347,9 @@ def _expected_park_indexdef(schema: str, *, status_type_visible: bool) -> str:
 
 
 async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
-    """The §2.1 whole-object-set catalog preflight (fail-closed, cached per
-    schema).
+    """The §2.1 whole-object-set catalog preflight (fail-closed; the object-set
+    checks are cached per schema and width, the width itself is re-read on
+    every call).
 
     New bounded-emit code refuses before a body, child, cursor, or park
     write when the schema lacks ANY part of the post-fold ``01.00.42_01``
@@ -352,8 +357,30 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     ``pg_constraint`` / ``pg_index`` / ``pg_proc`` / ``pg_trigger`` facts
     and ``pg_get_indexdef`` text: mere ledger-key presence or
     ``to_regclass`` presence of one object is insufficient. Ordinary
-    unbounded behavior never runs this and pays nothing."""
-    if schema in _EMIT_OBJECTS_OK:
+    unbounded behavior never runs this and pays nothing.
+
+    Every call revalidates the five-carrier ``map_index`` width with one
+    catalog read before consulting the cached verdict, and the object-set
+    checks themselves are cached per schema and width. A low-only bounded
+    worker never resolves a high identity, so this entry revalidation is the
+    only live width read that can drop its stale pre-POST OK after a widening
+    or a partial widening."""
+    from taskq.workflows._types import MapIndexSchemaError, resolve_map_index_domain
+
+    try:
+        domain = await resolve_map_index_domain(conn, schema)
+    except MapIndexSchemaError as exc:
+        # A missing, NOT NULL, unsupported, or mixed-width carrier set is the
+        # same capability refusal as a missing object: never let the resolver's
+        # raw schema error escape the bounded-emit door, and never keep a
+        # stale verdict the mixed schema has invalidated.
+        _EMIT_OBJECTS_OK.pop(schema, None)
+        raise WorkflowWorkerCapabilityError(
+            f"{exc}. No body, child, cursor, or park write was made.",
+            required_worker_schema=None,
+        ) from exc
+    width = "smallint" if domain == SMALLINT_MAX else "bigint"
+    if _EMIT_OBJECTS_OK.get(schema) == width:
         return
 
     def _fail(detail: str, *, remedy: str | None = None) -> WorkflowWorkerCapabilityError:
@@ -370,19 +397,8 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
             required_worker_schema=None,
         )
 
-    # 1. the identity carrier's width: the claim arbiter's required rendering
-    #    depends on it, and only the two supported base types are accepted.
-    width = await conn.fetchval(
-        """SELECT format_type(atttypid, atttypmod) FROM pg_attribute
-           WHERE attrelid = ($1 || '.wf_step_ledger')::regclass
-             AND attname = 'map_index' AND NOT attisdropped""",
-        f'"{schema}"',
-    )
-    if width not in ("smallint", "bigint"):
-        raise _fail(
-            "wf_step_ledger.map_index is missing or has an unsupported type "
-            f"({width!r}); only smallint (pre-POST) and bigint (post-POST) are valid"
-        )
+    # 1. the identity carrier's width (already resolved by the entry
+    #    revalidation): the claim arbiter's required rendering depends on it.
     arbiter_template = (
         _LEDGER_ARBITER_INDEXDEF if width == "smallint" else _LEDGER_ARBITER_INDEXDEF_BIGINT
     )

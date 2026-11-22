@@ -325,7 +325,7 @@ async def test_real_mixed_carrier_schema_error_terminalizes_on_the_first_attempt
         name = f"x4_{new_uuid().hex}"
         app = WorkflowApp()
 
-        @app.workflow(name)
+        @app.workflow(name, max_in_flight=None)
         def flow() -> object:
             return build(chain_source(chain, source_body, key="source", max_attempts=2))
 
@@ -346,6 +346,176 @@ async def test_real_mixed_carrier_schema_error_terminalizes_on_the_first_attempt
             dict(source),  # pyright: ignore[reportCallIssue]  # Why: the same runtime-mapping read.
         )
     finally:
+        await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_bounded_create_flow_refuses_a_mixed_carrier_schema(pg_dsn: str) -> None:
+    """The default bounded run refuses a mixed carrier schema at the create door.
+
+    Bounded emit is the default (``EMIT_MAX_IN_FLIGHT_DEFAULT``), and every
+    chain-source workflow's ``create_flow`` runs the capability preflight in
+    its own transaction. A new five-carrier width read makes that preflight
+    see a half-applied POST that the old ``wf_step_ledger``-only read missed,
+    so creation refuses with the typed capability error carrying the
+    resolver's deterministic ``MapIndexSchemaError`` as ``__cause__`` — the
+    authoring failure is never retried, and no page is written.
+
+    An explicitly unbounded run keeps the high-candidate resolver leg pinned
+    above (``max_in_flight=None``): only the source body's own high emit
+    reaches the resolver, so the run exists and its source terminalizes with
+    ``error_class == "MapIndexSchemaError"`` on the first attempt.
+
+    The refusal must also leave NOTHING behind: it fires inside the create's
+    own transaction, so a retry of the same run key after the schema is fixed
+    is a fresh create, never an orphan root that squats the key.
+    """
+    from taskq.workflows import DONE, Chain, FlowRunner, Route, Step, WorkflowApp, build
+    from taskq.workflows._capability import WorkflowWorkerCapabilityError
+    from taskq.workflows._types import MapIndexSchemaError
+    from taskq.workflows.api._runner_ladder import is_deterministic_authoring_failure
+
+    schema = "x4_bounded_create_" + new_base62(8, precision="random").lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool = await asyncpg.create_pool(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema, phase="pre")
+        await conn.execute(
+            f'ALTER TABLE "{schema}".jobs_archive ALTER COLUMN map_index TYPE integer'
+        )
+
+        async def body(ctx: Any, item: object) -> Ok:
+            del ctx, item
+            return Ok.OK
+
+        chain = Chain(
+            name=f"x4-bounded-{new_uuid().hex}",
+            start="s1",
+            steps={"s1": Step(body=body, outcomes=Ok, route=Route({Ok.OK: DONE}))},
+        )
+
+        async def source_body(ctx: Any) -> None:
+            del ctx
+
+        name = f"x4_bounded_{new_uuid().hex}"
+        app = WorkflowApp()
+
+        # No max_in_flight argument: bounded emit is the shipped default.
+        @app.workflow(name)
+        def flow() -> object:
+            return build(chain_source(chain, source_body, key="source"))
+
+        runner = FlowRunner(app.get(name), pool, schema)
+        run_key = f"x4-bounded-key-{new_uuid()}"
+        with pytest.raises(
+            WorkflowWorkerCapabilityError, match=r"unsupported map_index type"
+        ) as excinfo:
+            await runner.create_flow(key=run_key)
+        refusal = excinfo.value
+        assert isinstance(refusal.__cause__, MapIndexSchemaError), type(refusal.__cause__)
+        assert is_deterministic_authoring_failure(refusal) is True, (
+            "the create-door refusal no longer carries the deterministic class: "
+            "the retry ladder would re-run a deployment error on every attempt"
+        )
+        # The refusal rides the create's transaction: no root, no node, no
+        # squatted run key. An orphan root here would make the post-fix retry
+        # an existing-running replay of a run whose wiring never landed.
+        assert await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs') == 0, (
+            "the refused create persisted rows — a retry of its run key would "
+            "adopt an orphan root that squats the key"
+        )
+        await conn.execute(
+            f'ALTER TABLE "{schema}".jobs_archive ALTER COLUMN map_index TYPE smallint'
+        )
+        retried = await runner.create_flow(key=run_key)
+        assert retried.created is True, retried.kind
+        assert await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs') == 2, (
+            "the retried create did not land exactly the root and its one static node"
+        )
+    finally:
+        await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_bounded_drive_adoption_refuses_a_mixed_carrier_schema_without_stranding(
+    pg_dsn: str,
+) -> None:
+    """The drive door's adoption seat refuses a schema broken mid-run, and the
+    same run resumes once the schema is consistent again.
+
+    ``FlowRunner.drive`` stamps/reads the capacity record in its own
+    transaction (the §2.1 adoption). A hand-run partial widening after the run
+    was created makes that preflight see five mixed carriers, so the drive
+    refuses with the typed capability error before any node write — and the
+    refusal is a rollback, not a wedged run: the root is untouched and the
+    SAME run terminalizes after the carrier widths are consistent again.
+    """
+    from taskq.workflows import DONE, Chain, FlowRunner, Route, Step, WorkflowApp, build
+    from taskq.workflows._capability import (
+        WorkflowWorkerCapabilityError,
+        reset_emit_capability_cache,
+    )
+    from taskq.workflows._types import MapIndexSchemaError
+
+    schema = "x4_bounded_drive_" + new_base62(8, precision="random").lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool = await asyncpg.create_pool(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema, phase="pre")
+
+        async def body(ctx: Any, item: object) -> Ok:
+            del ctx, item
+            return Ok.OK
+
+        chain = Chain(
+            name=f"x4-bounded-drive-{new_uuid().hex}",
+            start="s1",
+            steps={"s1": Step(body=body, outcomes=Ok, route=Route({Ok.OK: DONE}))},
+        )
+
+        async def source_body(ctx: Any) -> None:
+            del ctx
+
+        name = f"x4_bounded_drive_{new_uuid().hex}"
+        app = WorkflowApp()
+
+        @app.workflow(name)
+        def flow() -> object:
+            return build(chain_source(chain, source_body, key="source"))
+
+        runner = FlowRunner(app.get(name), pool, schema)
+        claim = await runner.create_flow()
+        assert claim.created is True
+
+        # Break the schema mid-run: the adoption seat must refuse, not write.
+        await conn.execute(f'ALTER TABLE "{schema}".jobs ALTER COLUMN map_index TYPE bigint')
+        with pytest.raises(
+            WorkflowWorkerCapabilityError, match=r"partially widened/mixed"
+        ) as excinfo:
+            await runner.drive(claim.flow_id, max_ticks=1)
+        assert isinstance(excinfo.value.__cause__, MapIndexSchemaError), type(
+            excinfo.value.__cause__
+        )
+        root = await conn.fetchrow(
+            f'SELECT status FROM "{schema}".jobs WHERE id = $1', claim.flow_id
+        )
+        assert root is not None and root["status"] in ("pending", "running"), (
+            f"the refused adoption moved the live run: {dict(root) if root else None}"
+        )
+
+        # Restore consistency: the SAME run must drive on to its terminal with
+        # NO cache intervention. The refusal already dropped the verdict it
+        # invalidated (``verify_emit_capacity_objects`` pops the schema on the
+        # resolver's ``MapIndexSchemaError``), so a fleet that fixes the schema
+        # resumes in-process rather than needing a restart or a manual reset.
+        await conn.execute(f'ALTER TABLE "{schema}".jobs ALTER COLUMN map_index TYPE smallint')
+        assert await runner.drive(claim.flow_id, max_ticks=50) == "terminal"
+    finally:
+        reset_emit_capability_cache(schema)
         await pool.close()
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()

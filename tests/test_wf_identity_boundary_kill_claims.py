@@ -83,11 +83,39 @@ _LANE = Path(__file__).with_name("system_e2e") / "test_wf_identity_boundary_kill
 #: the join text so an alias rename survives.
 _LEDGER_JOIN_RE = re.compile(r"\bwf_step_ledger(?:\s+(?:AS\s+)?(\w+))?", re.IGNORECASE)
 
-#: A status predicate in SQL text (``status = 'fenced'``, ``l.status IN (...)``
-#: — a comparison or membership test, never the bare word, so prose inside the
-#: expression cannot trip it).
+#: A status predicate in SQL text, in either operand order: ``status = ...``,
+#: ``'fenced' = status``, a table-qualified or cast ``status``, ``IN (...)``,
+#: ``NOT IN (...)``, ``[NOT] LIKE``/``BETWEEN``/``SIMILAR TO``, a regex match,
+#: ``IS [NOT] NULL``/``DISTINCT FROM``/``TRUE|FALSE|UNKNOWN``, and
+#: ``= ANY(status)``. The bare word in prose never trips it (``IS``/``IN`` are
+#: recognised only in their SQL predicate shapes). EVERY form is banned on the
+#: corpse's ledger subset: any status filter narrows that subset to what the
+#: filter selects, so the fence equality against it proves nothing.
 _STATUS_PREDICATE_RE = re.compile(
-    r"\bstatus\b\s*(?:::\s*[\w\s]+?)?\s*(?:=|<>|!=|IN\b)", re.IGNORECASE
+    r"(?:(?:\b\w+\s*\.\s*)?\bstatus\b\s*(?:::\s*[\w\s()]+?)?\s*"
+    r"(?:\bNOT\s+)?"
+    r"(?:=|<>|!=|<=|>=|<|>|\bIN\b(?=\s*\()|\bI?LIKE\b|\bBETWEEN\b"
+    r"|\bIS\s+(?:NOT\s+)?(?:NULL\b|DISTINCT\s+FROM\b|TRUE\b|FALSE\b|UNKNOWN\b)"
+    r"|\bSIMILAR\s+TO\b|!?~\*?)"
+    r"|(?:=|<>|!=|<=|>=|<|>|\bI?LIKE\b|\bIS\s+(?:NOT\s+)?DISTINCT\s+FROM\b|!?~\*?)\s*"
+    r"(?:(?:ANY|ALL)\s*\(\s*)?(?:\bNOT\s+)?(?:\b\w+\s*\.\s*)?\bstatus\b)",
+    re.IGNORECASE,
+)
+
+#: A positive ``status = 'fenced'`` filter in either operand order (bare or
+#: table-qualified, with an optional cast). This is the fenced query's own
+#: provenance, never a tautology.
+_FENCED_STATUS_FILTER_RE = re.compile(
+    r"(?:(?:\b\w+\s*\.\s*)?\bstatus\b\s*(?:::\s*[\w\s()]+?)?\s*"
+    r"(?:=\s*'fenced'|IS\s+NOT\s+DISTINCT\s+FROM\s*'fenced')"
+    r"|'fenced'\s*(?:=\s*(?:\b\w+\s*\.\s*)?\bstatus\b"
+    r"|IS\s+NOT\s+DISTINCT\s+FROM\s*(?:\b\w+\s*\.\s*)?\bstatus\b))",
+    re.IGNORECASE,
+)
+
+#: A ``job_id`` projection in a ``SELECT`` list, bare or table-qualified.
+_SELECTS_JOB_ID_RE = re.compile(
+    r"SELECT\s+[^;]*?(?:\b\w+\s*\.\s*)?\bjob_id\b", re.IGNORECASE | re.DOTALL
 )
 
 #: The maximum gap between the census stamp and ``assert_balanced``. The
@@ -169,6 +197,78 @@ def _is_eq(compare: ast.Compare) -> bool:
     return any(isinstance(op, ast.Eq) for op in compare.ops)
 
 
+def _conjunctive_leaves(node: ast.AST) -> list[ast.AST]:
+    """The leaves of a top-level ``and`` conjunction (a bare node otherwise).
+
+    A disjunction yields no leaves: a branch that can satisfy the assertion
+    without the child (``... or True``) proves nothing, so it must not
+    discharge a non-vacuity contract.
+    """
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+        leaves: list[ast.AST] = []
+        for value in node.values:
+            leaves.extend(_conjunctive_leaves(value))
+        return leaves
+    return [node]
+
+
+def _exact_int(node: ast.AST) -> int | None:
+    """An exact (non-bool) integer literal, or ``None``."""
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return node.value
+    return None
+
+
+def _len_of(node: ast.AST, names: set[str]) -> bool:
+    """Whether *node* is ``len(<one of names>)``."""
+    return (
+        isinstance(node, ast.Call)
+        and _call_name(node) == "len"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id in names
+    )
+
+
+def _forces_nonempty(leaf: ast.AST, names: set[str]) -> bool:
+    """Whether *leaf* mathematically forces ``len(set) >= 1``.
+
+    Accepts a bare truthy name or a ``len(s)`` comparison against an exact
+    non-bool integer that cannot hold at zero (``> 0``, ``>= 1``, ``!= 0`` and
+    their mirrored forms). ``>= 0`` and bool constants are refused: both are
+    satisfied by the empty set, which is the vacuous green this contract
+    exists to prevent."""
+    if isinstance(leaf, ast.Name) and leaf.id in names:
+        return True
+    if not isinstance(leaf, ast.Compare) or len(leaf.ops) != 1:
+        return False
+    op = leaf.ops[0]
+    left, right = leaf.left, leaf.comparators[0]
+    if _len_of(left, names):
+        bound = _exact_int(right)
+        if bound is None:
+            return False
+        if isinstance(op, ast.Gt):
+            return bound >= 0
+        if isinstance(op, ast.GtE):
+            return bound >= 1
+        if isinstance(op, ast.NotEq):
+            return bound == 0
+        return False
+    if _len_of(right, names):
+        bound = _exact_int(left)
+        if bound is None:
+            return False
+        if isinstance(op, ast.Lt):
+            return bound >= 0
+        if isinstance(op, ast.LtE):
+            return bound >= 1
+        if isinstance(op, ast.NotEq):
+            return bound == 0
+        return False
+    return False
+
+
 def _corpse_set_names(source: str, tree: ast.Module) -> set[str]:
     """The snapshot of the victim's running record rows, by query provenance."""
     return _assigned_names_matching(
@@ -180,15 +280,44 @@ def _corpse_set_names(source: str, tree: ast.Module) -> set[str]:
     )
 
 
+def _fenced_query_assignments(
+    source: str, tree: ast.Module
+) -> dict[str, ast.Assign | ast.AnnAssign]:
+    """The assignments that read the fenced ``wf_step_ledger`` job ids.
+
+    Identified structurally, not by literal tokens: any table alias, either
+    operand order, and an optional cast on ``status`` are accepted, because a
+    table alias on correct SQL is a semantics-preserving rewrite. Positive
+    provenance is still required (``status`` filtered to ``'fenced'``), so
+    ordinary running rows cannot leak into the fenced set. The corpse's own
+    ledger-claimed subset is excluded: it is status-UNFILTERED by design, and
+    a status predicate there is the tautology the fence pin forbids.
+    """
+    ledger_names = _assigned_names_matching(
+        source, tree, "wf_step_ledger", *_corpse_set_names(source, tree)
+    )
+    found: dict[str, ast.Assign | ast.AnnAssign] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        names = _assigned_names(node)
+        if not names or names & ledger_names:
+            continue
+        segment = _segment(source, node)
+        if "wf_step_ledger" not in segment:
+            continue
+        if not _SELECTS_JOB_ID_RE.search(segment):
+            continue
+        if not _FENCED_STATUS_FILTER_RE.search(segment):
+            continue
+        for name in names:
+            found[name] = node
+    return found
+
+
 def _fenced_set_names(source: str, tree: ast.Module) -> set[str]:
     """The fenced ``wf_step_ledger`` job ids, by query provenance."""
-    return _assigned_names_matching(
-        source,
-        tree,
-        "SELECT job_id",
-        "wf_step_ledger",
-        "status = 'fenced'",
-    )
+    return set(_fenced_query_assignments(source, tree))
 
 
 def _retried_set_names(source: str, tree: ast.Module) -> set[str]:
@@ -502,18 +631,8 @@ def test_lane_forces_a_nonzero_corpse_claim_set() -> None:
     # And the lane must assert the snapshot is non-empty, not just print it.
     def _has_nonempty_corpse_guard() -> bool:
         for assertion in _asserts(tree):
-            test = assertion.test
-            segment = _segment(source, assertion)
-            if not (_names(test) & corpse_names or any(name in segment for name in corpse_names)):
-                continue
-            if isinstance(test, ast.Name) and test.id in corpse_names:
-                return True
-            for node in ast.walk(test):
-                if (
-                    isinstance(node, ast.Compare)
-                    and _names(node) & corpse_names
-                    and any(isinstance(op, (ast.Gt, ast.GtE, ast.NotEq)) for op in node.ops)
-                ):
+            for leaf in _conjunctive_leaves(assertion.test):
+                if _forces_nonempty(leaf, corpse_names):
                     return True
         return False
 
@@ -538,17 +657,8 @@ def test_lane_forces_a_nonzero_corpse_claim_set() -> None:
     terminal_line = min(call.lineno for call in terminal_calls)
 
     def _is_nonempty_ledger_guard(assertion: ast.Assert) -> bool:
-        test = assertion.test
-        # A bare truthiness check names the set and is equally non-vacuous.
-        if isinstance(test, ast.Name) and test.id in ledger_names:
-            return True
-        if not isinstance(test, ast.Compare) or not (_names(test) & ledger_names):
-            return False
         return any(
-            isinstance(op, (ast.Gt, ast.GtE, ast.NotEq))
-            for node in ast.walk(test)
-            if isinstance(node, ast.Compare)
-            for op in node.ops
+            _forces_nonempty(leaf, ledger_names) for leaf in _conjunctive_leaves(assertion.test)
         )
 
     before = [

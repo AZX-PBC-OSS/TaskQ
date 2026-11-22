@@ -1,9 +1,13 @@
 """The widening runbook's fail-closed claim and the shipped probe policy agree.
 
 The five-carrier identity check is gated on a candidate above
-``MAP_INDEX_CEILING`` (32767): an ordinary page takes the no-catalog-read fast
-path by design, so it does not detect a missing, mixed, ``NOT NULL`` or
-unsupported carrier shape. The docs name that conditional contract —
+``MAP_INDEX_CEILING`` (32767): an ordinary UNBOUNDED page takes the
+no-catalog-read fast path by design, so it does not detect a missing, mixed,
+``NOT NULL`` or unsupported carrier shape. Bounded emit is the shipped default
+(``max_in_flight`` is ``EMIT_MAX_IN_FLIGHT_DEFAULT`` unless a workflow declares
+``None``) and its capability preflight re-reads the five carriers on every
+call, so this pin's low leg drives the explicit unbounded declaration. The
+docs name that conditional contract —
 ``docs/guides/workflows.md`` says "A candidate above 32767 makes the authoring
 doors ... consult that resolved bound, and they fail closed with
 ``MapIndexSchemaError`` ..." and names the hold door's type/lower-bound-only
@@ -11,10 +15,10 @@ contract; ``docs/guides/upgrading.md``'s POST runbook states the same condition.
 
 This pin holds the two halves together on a real half-migrated schema: a HIGH
 candidate is refused with ``MapIndexSchemaError`` before any row is written, and
-an ordinary page is written without paying the catalog read. A door that stops
-refusing the high candidate, a low page that starts probing (the shipped
-fast-path contract regressing), or a doc that drifts back to the unconditional
-"every door fails closed" sentence all red this.
+an ordinary unbounded page is written without paying the catalog read. A door
+that stops refusing the high candidate, a low unbounded page that starts probing
+(the shipped fast-path contract regressing), or a doc that drifts back to the
+unconditional "every door fails closed" sentence all red this.
 """
 
 from __future__ import annotations
@@ -39,7 +43,7 @@ _DOC_FAILURE_CLASS = (
     "when the five carriers are missing, mixed, `NOT NULL`, or of an unsupported type"
 )
 _UPGRADING_CLAIM = "A candidate above 32767 against a schema whose five carriers are mixed"
-_UPGRADING_LOW_PATH = "An ordinary page at or below 32767 takes the no-catalog-read path"
+_UPGRADING_LOW_PATH = "An ordinary unbounded page at or below 32767 takes the no-catalog-read path"
 
 
 async def _emit_page(
@@ -105,7 +109,8 @@ async def test_the_docs_fail_closed_claim_matches_the_shipped_low_page_behaviour
     upgrading = _normalized_doc("upgrading.md")
     assert _UPGRADING_CLAIM in upgrading and _UPGRADING_LOW_PATH in upgrading, (
         "docs/guides/upgrading.md's POST runbook must scope MapIndexSchemaError to "
-        "a candidate above 32767 and name the low-identity no-catalog-read path"
+        "a candidate above 32767 and name the low-identity unbounded "
+        "no-catalog-read path"
     )
 
     schema = "docs_failclosed_" + new_base62(8, precision="random").lower()
