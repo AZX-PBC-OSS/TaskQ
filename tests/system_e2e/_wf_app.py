@@ -71,6 +71,9 @@ from taskq.workflows.chain import DONE, Chain, Route, Step
 from tests.system_e2e import (
     _p5_cancel_app as _p5_cancel_app_module,  # registers the effect fleet's definitions
 )
+from tests.system_e2e._harness import (  # pyright: ignore[reportPrivateUsage]  # Why: the fleet env is the tier's shared constant; the parked cohort derives from the cadence the workers actually boot with.
+    _BASE_ENV,
+)
 
 #: The march pods' queues: both the vanilla actors' system_e2e and the
 #: flows' framework-default queue (the join nodes the API creates are
@@ -563,6 +566,17 @@ BOUNDARY_STEP = "record"
 #: BEFORE the first statement emitting the successor ordinal: the exact kill
 #: window (the test releases it only once the crash's durable state is read).
 BOUNDARY_GATE = "identity-boundary"
+#: The record leg's own release gate — the synchronization seam the source leg
+#: already has. The parked record cohort below holds it, so the kill window
+#: contains claims that cannot finalize and the SIGKILL cannot miss them.
+BOUNDARY_RECORD_GATE = "identity-boundary-record"
+#: The parked record cohort: the fleet's WHOLE free record capacity. Two pods
+#: x ``TASKQ_MAX_CONCURRENCY`` free slots, minus the one slot the parked
+#: source already holds. By pigeonhole the victim's remaining slots can hold
+#: nothing else, so every record claim it rotates into is a parked,
+#: unfinalizable body. Derived from ``_BASE_ENV`` — not written as a bare
+#: number — so a cadence move cannot silently un-park the victim.
+BOUNDARY_RECORD_COHORT = 2 * int(_BASE_ENV["TASKQ_MAX_CONCURRENCY"]) - 1
 #: The lane's dispatcher ordering: the SOURCE outranks its own records, so the
 #: reclaim is dispatched ahead of the emitted backlog. The FIFO alternative
 #: would make the reclaim bound a function of 32,768 queued rows rather than of
@@ -577,7 +591,12 @@ class BoundaryOutcome(enum.Enum):
 
 async def _boundary_record_body(ctx: Any, item: dict[str, object]) -> BoundaryOutcome:
     """The records' leaf: trivial by design — the boundary lane's subject is
-    the identity, never the body."""
+    the identity, never the body. The parked cohort (the fleet's whole free
+    record capacity, the lowest ordinals) holds the record gate so the kill
+    window's claims cannot finalize; every record above the cohort is trivial
+    again and the settle price is untouched."""
+    if int(item["record_id"]) < BOUNDARY_RECORD_COHORT:
+        await _await_test_release(BOUNDARY_RECORD_GATE)
     return BoundaryOutcome.OK
 
 

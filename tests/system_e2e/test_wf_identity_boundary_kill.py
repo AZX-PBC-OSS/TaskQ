@@ -39,8 +39,10 @@ WHAT IS ASSERTED, and why each leg can FAIL:
   per ordinal, with distinct trace ids and idempotency keys, and one SUCCEEDED
   ledger terminal per identity. The reclaim re-executes EVERY record row the
   corpse held in flight when it died — the boundary's zero-loss direction,
-  asserted exactly. A dispatcher claims rows beside the body it runs, so a
-  pre-kill claim gate (a bounded ``_wait_for``) steers the SIGKILL onto a
+  asserted exactly. A dispatcher claims rows beside the body it runs, and the
+  record leg's parked cohort — the fleet's whole free record capacity, holding
+  the record release gate — leaves the victim no claim that can finalize, so
+  the pre-kill claim gate (a bounded ``_wait_for``) steers the SIGKILL onto a
   window where the victim provably holds at least one LEDGERED record claim —
   the set is snapshotted at the kill as one ``(id, attempt)`` mapping and
   asserted non-empty. Attempt > 1 is NOT treated as crash-only: the
@@ -123,6 +125,8 @@ from tests.system_e2e._wf_app import (
     BOUNDARY_FIRST_WIDE_ORDINAL,
     BOUNDARY_GATE,
     BOUNDARY_LAST_NARROW_ORDINAL,
+    BOUNDARY_RECORD_COHORT,
+    BOUNDARY_RECORD_GATE,
     BOUNDARY_RECORDS,
     BOUNDARY_STEP,
     MARCH_FLOWS,
@@ -172,13 +176,15 @@ _RECORD_SETTLE_BOUND_S = RECLAIM_BOUND_S + BOUNDARY_RECORDS * _RECORD_PRICE_S
 #: sweep's own batching.
 _PHANTOM_FENCE_BOUND_S = SWEEP_INTERVAL_S * 10.0 * TIER_LOAD_STRETCH
 
-#: The pre-kill claim gate's bound, in the lane's own shape: a record's
-#: stretched price (``_RECORD_PRICE_S``) is the per-row settle cost, and one
-#: dispatch cycle is a poll interval (``TASKQ_POLL_INTERVAL``, 50 ms in this
-#: fleet) that claims up to the victim's four slots — so 128 record prices is
-#: dozens of rotations of those slots, far above the one cycle the gate needs
-#: and far below the page budget. Measured beside it at the gate; never a bare
-#: constant.
+#: The pre-kill claim gate's bound. The parked record cohort makes the
+#: gate's target a standing state, not a fleeting one, so the wait is one
+#: claim round landing a parked ordinal on the victim: a
+#: ``TASKQ_POLL_INTERVAL`` tick (50 ms in this fleet), the claim CAS and the
+#: ledger claim's round trip. The multiple stays the shipped generous
+#: ``* 128.0`` of the stretched record price — dozens of claim rounds of
+#: margin, far below the page budget; the value is unchanged, because the
+#: park makes the gate's target a standing state, not a slower one. Measured
+#: beside it at the gate; never a bare constant.
 _CLAIM_GATE_BOUND_S = _RECORD_PRICE_S * 128.0
 
 _DB_CLOCK_SQL = "SELECT clock_timestamp()"
@@ -403,9 +409,10 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
             f"the boundary lane requires the fully widened schema (remedy A); got {types}"
         )
 
-        # ── ARRANGE: the release gate (closed), then the run.
+        # ── ARRANGE: the release gates (closed), then the run.
         await conn.execute(e2e_release_gate_ddl(schema))
         await seed_e2e_release_gate(conn, schema, BOUNDARY_GATE)
+        await seed_e2e_release_gate(conn, schema, BOUNDARY_RECORD_GATE)
         runner = FlowRunner(MARCH_FLOWS["identity_boundary_kill"], pool, schema)  # pyright: ignore[reportArgumentType]  # Why: the compiled graph's module identity is the march app's; the runner accepts the CompiledWorkflow face.
         flow_id = (await runner.create_flow()).flow_id
         await tag_run_rows(pool, schema, flow_id, _TAG)
@@ -470,9 +477,11 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
         # provably holds a LEDGERED record claim, so the SIGKILL interrupts a
         # non-empty claim set and the retry/fence legs run with n > 0 instead
         # of passing vacuously on ∅ == ∅. The predicate is an aggregate EXISTS
-        # over the claim join — never a second id-set snapshot — and minimal
-        # work (a liveness check + one heartbeat read) sits between gate-true
-        # and the signal, so the victim cannot rotate the claim away first.
+        # over the claim join, restricted to the parked cohort — never a
+        # second id-set snapshot. The cohort is what holds the window: the
+        # parked record bodies occupy every free slot the fleet owns on the
+        # record gate, so a claim observed here cannot finalize, and nothing
+        # is awaited between gate-true and the signal.
         async def _victim_holds_a_ledgered_record() -> bool:
             return bool(
                 await conn.fetchval(
@@ -482,10 +491,12 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
                                        ON l.flow_id = $1::uuid AND l.step_key = $2
                                       AND l.job_id = j.id AND l.attempt = j.attempt
                             WHERE j.locked_by_worker = $3::uuid AND j.step_key = $2
-                              AND j.status = 'running' AND l.status = 'running')""",
+                              AND j.status = 'running' AND l.status = 'running'
+                              AND j.map_index < $4::bigint)""",
                     flow_id,
                     BOUNDARY_STEP,
                     victim_worker,
+                    BOUNDARY_RECORD_COHORT,
                 )
             )
 
@@ -525,12 +536,17 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
         assert victim_proc.poll() is None, (
             f"the victim {victim} (pid {victim_pid}) is not alive before the SIGKILL"
         )
-        heartbeat_before = await conn.fetchval(
-            f'SELECT last_seen_at FROM "{schema}".workers WHERE id = $1::uuid', victim_worker
-        )
         fleet[victim].proc.send_signal(signal.SIGKILL)
         reap(fleet[victim])
         del fleet[victim]
+        # The heartbeat read is POST-reap, deliberately: reap() kills and
+        # waits, so nothing can renew the row after this read and the frozen
+        # heartbeat assertion below compares the value at death, not a
+        # mid-window sample a parked victim's live heartbeat would keep
+        # advancing.
+        heartbeat_before = await conn.fetchval(
+            f'SELECT last_seen_at FROM "{schema}".workers WHERE id = $1::uuid', victim_worker
+        )
         killed_at = await conn.fetchval(_DB_CLOCK_SQL)
         assert isinstance(killed_at, datetime)
         assert victim_proc.returncode == -9, (
@@ -627,9 +643,12 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
         fleet.update(await spawn_wf_fleet(conn, pg_dsn, schema, ["w1b"], log_sink=None))
         print(f"[boundary] restarted -> w1b (pids {sorted(p.proc.pid for p in fleet.values())})")
 
-        # ── THE RELEASE: the gate opens only after the observation above, so
-        # the reclaimed attempt is the one that emits the successor page.
+        # ── THE RELEASE: the gates open only after the observation above, so
+        # the reclaimed attempt is the one that emits the successor page. The
+        # record gate frees the parked cohort's bodies the same way the
+        # source gate frees the source.
         await open_e2e_release_gate(conn, schema, BOUNDARY_GATE)
+        await open_e2e_release_gate(conn, schema, BOUNDARY_RECORD_GATE)
 
         # ── THE RECLAIM: the source's own row is re-pended and re-claimed
         # exactly once; its successor page commits.
@@ -890,35 +909,39 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
         # fenced (zero lost phantoms) and no corpse row fenced beyond its
         # own ledger claims (a claimed-but-unledgered row has no phantom to
         # fence — status-unfiltered, snapshotted (job_id, attempt) pairs,
-        # never joined to post-reclaim jobs.attempt). The subset was
-        # asserted non-empty at the kill; re-assert it here so the equality
-        # can never be ∅ == ∅.
-        fenced_ids = {
-            str(r["job_id"])
+        # never joined to post-reclaim jobs.attempt). The fenced set is read
+        # at the SAME (job_id, attempt) pair level as the snapshot, and the
+        # equality is scoped on the FENCED side, so a fence at a wrong
+        # attempt on a corpse row lands in the compared set and fails loudly
+        # instead of being filtered away. The subset was asserted non-empty
+        # at the kill; re-assert it here so the equality can never be
+        # ∅ == ∅.
+        fenced_pairs = {
+            (str(r["job_id"]), int(r["attempt"]))
             for r in await conn.fetch(
-                f"""SELECT job_id FROM "{schema}".wf_step_ledger
+                f"""SELECT job_id, attempt FROM "{schema}".wf_step_ledger
                     WHERE flow_id = $1 AND step_key = $2 AND status = 'fenced'""",
                 flow_id,
                 BOUNDARY_STEP,
             )
         }
+        # The buried-phantom leg keeps the job-id view of the same pairs.
+        fenced_ids = {job_id for job_id, _ in fenced_pairs}
         assert len(corpse_ledger_claims) > 0, (
             "the corpse's wf_step_ledger claim subset is empty at the fence "
             "leg: the equality below would be vacuous"
         )
         print(
             f"[boundary] fence sets: corpse_records={len(corpse_records)} "
-            f"ledger-claimed={len(corpse_ledger_claims)} fenced_ids={len(fenced_ids)}"
+            f"ledger-claimed={len(corpse_ledger_claims)} fenced_pairs={len(fenced_pairs)}"
         )
-        assert (fenced_ids & set(corpse_records)) == {
-            job_id for job_id, _ in corpse_ledger_claims
-        }, (
+        corpse_scoped_fences = {pair for pair in fenced_pairs if pair[0] in corpse_records}
+        assert corpse_scoped_fences == corpse_ledger_claims, (
             f"the fenced ledger phantoms are not exactly the corpse's "
-            f"ledger-claimed subset within the corpse's rows: "
-            f"lost phantoms="
-            f"{sorted({job_id for job_id, _ in corpse_ledger_claims} - fenced_ids)}, "
+            f"ledger-claimed (job_id, attempt) pairs: lost phantoms="
+            f"{sorted(corpse_ledger_claims - fenced_pairs)}, "
             f"fenced beyond the corpse's ledger claims="
-            f"{sorted(fenced_ids & set(corpse_records) - {job_id for job_id, _ in corpse_ledger_claims})}"
+            f"{sorted(corpse_scoped_fences - corpse_ledger_claims)}"
         )
         # NO BURIED PHANTOM: every fenced row is a claim the run moved past
         # and RE-EXECUTED — a fence on a never-re-executed row is a lost
@@ -959,6 +982,9 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
         await _stop_fleet(fleet)
         with contextlib.suppress(asyncpg.PostgresError):
             # Why: the schema may already be gone on a failed module teardown.
+            # The gate rows must not outlive their test (the shared module
+            # schema's other tests seed their own).
             await clear_e2e_release_gate(conn, schema, BOUNDARY_GATE)
+            await clear_e2e_release_gate(conn, schema, BOUNDARY_RECORD_GATE)
         await conn.close()
         await pool.close()
