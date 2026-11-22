@@ -37,17 +37,31 @@ WHAT IS ASSERTED, and why each leg can FAIL:
   recomputed, never modulo;
 * zero lost / zero duplicated: the record set is exactly ``0..32768``, one row
   per ordinal, with distinct trace ids and idempotency keys, and one SUCCEEDED
-  ledger terminal per identity. The reclaim re-executes EXACTLY the record rows
-  the corpse held in flight when it died (a dispatcher claims rows beside the
-  body it runs, so that set may be empty or non-empty — snapshotted at the kill
-  and compared as a SET, in both directions: an extra retry would be a
-  duplicated execution, a missing one a lost claim);
+  ledger terminal per identity. The reclaim re-executes EVERY record row the
+  corpse held in flight when it died — the boundary's zero-loss direction,
+  asserted exactly. A dispatcher claims rows beside the body it runs, so a
+  pre-kill claim gate (a bounded ``_wait_for``) steers the SIGKILL onto a
+  window where the victim provably holds at least one LEDGERED record claim —
+  the set is snapshotted at the kill as one ``(id, attempt)`` mapping and
+  asserted non-empty. Attempt > 1 is NOT treated as crash-only: the
+  machinery's own at-least-once reclaim (a lapsed lease handed back
+  mid-flight, a heartbeat-lost isolation, a repend with backoff) can
+  re-execute a row the corpse never held, so the re-executed set is bounded
+  (one re-execution per row) and terminal-deduped (one succeeded terminal per
+  identity), and every re-executed row's abandoned ledger claim must fence.
+  The fenced phantoms: every corpse ledger claim fenced (zero lost phantoms),
+  no corpse row fenced beyond its own ledger claims (a claimed-but-
+  unledgered row has no phantom to fence), and every fenced row one the run
+  re-executed (a fence on a never-re-executed row is a lost record wearing a
+  fence);
 * the successor is not double-created: exactly one row (live or archived) for
   ordinal 32768, exactly one succeeded ledger row, no join-delivery outbox row,
   no hold row;
 * the boundary PAIR (ordinals 32767 and 32768) reconciles across
   ``jobs``/``jobs_archive``/``wf_step_ledger``/``wf_outbox``/``wf_signals``,
-  and the run's tagged population closes the tier's shared invariants.
+  and the run's tagged population — re-stamped and coverage-asserted (tagged
+  count == run-row count) immediately before the read, per
+  ``tag_run_rows``' census contract — closes the tier's shared invariants.
 
 THE RODE INFRASTRUCTURE (named, per the obligation): ``spawn_wf_fleet`` /
 ``_wf_entry``'s real subprocess pods with the march registry (``_wf_app``);
@@ -90,7 +104,7 @@ import json
 import signal
 import subprocess
 import time
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 import asyncpg
@@ -157,6 +171,15 @@ _RECORD_SETTLE_BOUND_S = RECLAIM_BOUND_S + BOUNDARY_RECORDS * _RECORD_PRICE_S
 #: fenced-attempt reap fires once the flow is terminal. Stretched twice for the
 #: sweep's own batching.
 _PHANTOM_FENCE_BOUND_S = SWEEP_INTERVAL_S * 10.0 * TIER_LOAD_STRETCH
+
+#: The pre-kill claim gate's bound, in the lane's own shape: a record's
+#: stretched price (``_RECORD_PRICE_S``) is the per-row settle cost, and one
+#: dispatch cycle is a poll interval (``TASKQ_POLL_INTERVAL``, 50 ms in this
+#: fleet) that claims up to the victim's four slots — so 128 record prices is
+#: dozens of rotations of those slots, far above the one cycle the gate needs
+#: and far below the page budget. Measured beside it at the gate; never a bare
+#: constant.
+_CLAIM_GATE_BOUND_S = _RECORD_PRICE_S * 128.0
 
 _DB_CLOCK_SQL = "SELECT clock_timestamp()"
 
@@ -442,6 +465,66 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
             f"the source's holder pid {victim_pid} is not a fleet pod "
             f"(pids: {[(n, p.proc.pid) for n, p in fleet.items()]})"
         )
+
+        # ── THE CLAIM GATE: wait (bounded, derived) until the victim
+        # provably holds a LEDGERED record claim, so the SIGKILL interrupts a
+        # non-empty claim set and the retry/fence legs run with n > 0 instead
+        # of passing vacuously on ∅ == ∅. The predicate is an aggregate EXISTS
+        # over the claim join — never a second id-set snapshot — and minimal
+        # work (a liveness check + one heartbeat read) sits between gate-true
+        # and the signal, so the victim cannot rotate the claim away first.
+        async def _victim_holds_a_ledgered_record() -> bool:
+            return bool(
+                await conn.fetchval(
+                    f"""SELECT EXISTS (
+                            SELECT 1 FROM "{schema}".jobs j
+                                     JOIN "{schema}".wf_step_ledger l
+                                       ON l.flow_id = $1::uuid AND l.step_key = $2
+                                      AND l.job_id = j.id AND l.attempt = j.attempt
+                            WHERE j.locked_by_worker = $3::uuid AND j.step_key = $2
+                              AND j.status = 'running' AND l.status = 'running')""",
+                    flow_id,
+                    BOUNDARY_STEP,
+                    victim_worker,
+                )
+            )
+
+        async def _dump_victim_claims() -> None:
+            await _dump_boundary(conn, schema, flow_id, source_id)
+            rows = await conn.fetch(
+                f"""SELECT j.id::text, j.attempt, (l.job_id IS NOT NULL) AS ledgered
+                    FROM "{schema}".jobs j
+                             LEFT JOIN "{schema}".wf_step_ledger l
+                                    ON l.flow_id = $1::uuid AND l.step_key = $2
+                                   AND l.job_id = j.id AND l.attempt = j.attempt
+                    WHERE j.locked_by_worker = $3::uuid AND j.step_key = $2
+                      AND j.status = 'running'""",
+                flow_id,
+                BOUNDARY_STEP,
+                victim_worker,
+            )
+            print(
+                f"[boundary] CLAIM-GATE EXPIRED: victim {victim_worker} "
+                f"running claims={[dict(r) for r in rows]}"
+            )
+
+        claim_wait = await _wait_for(
+            _victim_holds_a_ledgered_record,
+            interval_s=0.02,
+            deadline_s=_CLAIM_GATE_BOUND_S,
+            what="the victim to hold a ledgered in-flight record claim",
+            on_expiry=_dump_victim_claims,
+        )
+        print(f"[boundary] claim-gate: measured={claim_wait:.2f}s bound={_CLAIM_GATE_BOUND_S:.2f}s")
+
+        # ── THE KILL: the REAL OS process that holds the source claim,
+        # witnessed: alive immediately before the signal, dead BY the signal
+        # after it (reap() would kill a survivor itself, so only the liveness
+        # half attributes the death to the lane's SIGKILL).
+        victim_proc = fleet[victim].proc
+        assert victim_proc.poll() is None, (
+            f"the victim {victim} (pid {victim_pid}) is not alive before the SIGKILL"
+        )
         heartbeat_before = await conn.fetchval(
             f'SELECT last_seen_at FROM "{schema}".workers WHERE id = $1::uuid', victim_worker
         )
@@ -450,16 +533,27 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
         del fleet[victim]
         killed_at = await conn.fetchval(_DB_CLOCK_SQL)
         assert isinstance(killed_at, datetime)
-        print(f"[boundary] SIGKILL -> {victim} (pid {victim_pid}) at {killed_at.isoformat()}")
+        assert victim_proc.returncode == -9, (
+            f"the SIGKILLed worker exited with {victim_proc.returncode}, not -9 "
+            f"— the death was not the lane's own signal"
+        )
+        print(
+            f"[boundary] SIGKILL witnessed -> {victim} (pid {victim_pid}): "
+            f"alive before, returncode {victim_proc.returncode}, at {killed_at.isoformat()}"
+        )
 
-        # ── THE CORPSE'S IN-FLIGHT RECORD CLAIMS, snapshotted now: a worker's
-        # dispatcher claims rows beside the body it runs, so the SIGKILL can
-        # interrupt record attempts too. Whatever this set is, the reclaim must
-        # re-execute EXACTLY it and nothing else (asserted at the end).
+        # ── THE CORPSE'S IN-FLIGHT RECORD CLAIMS, snapshotted now as ONE
+        # (job id -> crashed attempt) mapping: a worker's dispatcher claims
+        # rows beside the body it runs, so the SIGKILL can interrupt record
+        # attempts too. Whatever this mapping is, the reclaim must re-execute
+        # EVERY one of its ids (the zero-loss leg, asserted at the end); extra
+        # re-executions belong to the machinery's at-least-once path and are
+        # bounded below. The fence leg keys on the SAME crashed attempt —
+        # never post-reclaim ``jobs.attempt``, which the reclaim advances to 2.
         corpse_records = {
-            str(r["id"])
+            str(r["id"]): int(r["attempt"])
             for r in await conn.fetch(
-                f"""SELECT id FROM "{schema}".jobs
+                f"""SELECT id, attempt FROM "{schema}".jobs
                     WHERE locked_by_worker = $1::uuid AND step_key = $2
                       AND status = 'running'""",
                 victim_worker,
@@ -467,6 +561,40 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
             )
         }
         print(f"[boundary] corpse in-flight record claims: {len(corpse_records)}")
+        # Fail-closed: the claim gate forced a non-empty set at the kill; if
+        # the victim rotated into an all-unledgered batch anyway, red here —
+        # never let the set legs compare ∅ == ∅.
+        assert len(corpse_records) > 0, (
+            "the corpse held no in-flight record claim at the SIGKILL — the "
+            "retry and fence legs would be vacuous; the pre-kill claim gate "
+            "should have forced n > 0"
+        )
+
+        # ── THE CORPSE'S LEDGER-CLAIMED SUBSET (fail-closed, read before the
+        # ~500s settle): which snapshotted (job_id, attempt) pairs already
+        # have a wf_step_ledger row — status-UNFILTERED (a status predicate
+        # would make the fence leg a tautology) and derived from the ONE
+        # snapshot, never joined to post-reclaim jobs.attempt. Only these
+        # rows are phantoms PHANTOM_REAP_SQL can fence; a claimed-but-
+        # unledgered row has no phantom and must be allowed none.
+        corpse_ledger_claims = {
+            (str(r["job_id"]), int(r["attempt"]))
+            for r in await conn.fetch(
+                f"""SELECT job_id, attempt FROM "{schema}".wf_step_ledger
+                    WHERE flow_id = $1 AND step_key = $2""",
+                flow_id,
+                BOUNDARY_STEP,
+            )
+        } & {(job_id, corpse_records[job_id]) for job_id in corpse_records}
+        print(
+            f"[boundary] corpse ledger-claimed subset: {len(corpse_ledger_claims)} "
+            f"of {len(corpse_records)} record claims"
+        )
+        assert len(corpse_ledger_claims) > 0, (
+            "the corpse's ledger-claimed subset is empty at the kill — the "
+            "fence leg would compare ∅ == ∅ (corpse claims: "
+            f"{sorted(corpse_records)})"
+        )
 
         # ── THE LEASE DISPOSITION, asserted immediately (before any reclaim):
         # the corpse still owns a running row whose lease had NOT lapsed —
@@ -480,10 +608,17 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
         )
         assert corpse["attempt"] == 1, f"the attempt advanced before the reclaim: {corpse}"
         assert corpse["lock_expires_at"] is not None, corpse
-        remaining_s = (corpse["lock_expires_at"] - datetime.now(UTC)).total_seconds()
+        # DB-clock-to-DB-clock: the lease's expiry and the kill instant both
+        # come from the database (clock_timestamp()), so no host clock — and
+        # no host/DB skew — can enter this disposition.
+        remaining_s = (corpse["lock_expires_at"] - killed_at).total_seconds()
         assert 0.0 < remaining_s <= MARCH_LOCK_LEASE_S, (
             f"the corpse's lease is not the fleet's own lease window "
             f"(remaining {remaining_s:.2f}s, lease {MARCH_LOCK_LEASE_S}s): {corpse}"
+        )
+        print(
+            f"[boundary] lease: remaining={remaining_s:.2f}s of {MARCH_LOCK_LEASE_S}s "
+            f"(DB clock only)"
         )
 
         # ── THE RESTART: the orchestrator's own recovery — the crashed
@@ -588,11 +723,10 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
         assert final["minimum"] == 0 and final["maximum"] == BOUNDARY_FIRST_WIDE_ORDINAL, final
         assert int(final["terminal_rows"]) == BOUNDARY_RECORDS, final
         assert int(final["unfinished"]) == 0, final
-        # The reclaim re-executed EXACTLY the corpse's in-flight record
-        # attempts — its whole set, and nothing the corpse never held (a
-        # re-execution of an unclaimed row would be the duplication the
-        # boundary forbids; a corpse-held row left un-retried would be the
-        # loss).
+        # ── THE RETRY LEG: every record the corpse held in flight is
+        # re-executed (zero lost), every re-execution is bounded, and every
+        # terminal is deduped — the three directions the reclaim machinery
+        # actually owns (below).
         retried = {
             str(r["id"])
             for r in await conn.fetch(
@@ -602,11 +736,26 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
                 BOUNDARY_STEP,
             )
         }
-        assert retried == corpse_records, (
-            f"the re-executed record set ({len(retried)}) is not the corpse's "
-            f"in-flight claim set ({len(corpse_records)}): "
-            f"unexpected retries={sorted(retried - corpse_records)}, "
-            f"lost corpse claims={sorted(corpse_records - retried)}"
+        # The reclaim re-executed EVERY record the corpse held in flight —
+        # the boundary's ZERO-LOSS direction, exact.
+        lost = set(corpse_records) - retried
+        assert not lost, (
+            f"the reclaim lost {len(lost)} of the corpse's in-flight record "
+            f"claims (never re-executed): {sorted(lost)}"
+        )
+        # A re-execution beyond the corpse's claims is the machinery's own
+        # at-least-once reclaim (a lapsed lease handed back mid-flight, a
+        # heartbeat-lost isolation, a repend with backoff) — the mechanism
+        # does not promise attempt > 1 means corpse-held (measured: one
+        # non-corpse re-claim in a 450s settle, zero lost, one terminal per
+        # identity). It is BOUNDED: each row re-executes at most once more
+        # (beyond_reclaim below), its terminal is deduped by the ledger
+        # (the exactly-one-succeeded legs below), and its abandoned claim
+        # must fence beside the corpse's (the fence leg).
+        print(
+            f"[boundary] re-executed: {len(retried)} rows — corpse claims "
+            f"{len(corpse_records)}, machinery re-claims "
+            f"{len(retried - set(corpse_records))}"
         )
         beyond_reclaim = await conn.fetchval(
             f"""SELECT count(*) FROM "{schema}".jobs
@@ -737,6 +886,13 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
             f"the record ledger carries rows that are neither successes nor the "
             f"corpse's fenced phantoms: {record_ledger}"
         )
+        # ── THE FENCE LEG: the corpse's ledger-claimed subset must ALL be
+        # fenced (zero lost phantoms) and no corpse row fenced beyond its
+        # own ledger claims (a claimed-but-unledgered row has no phantom to
+        # fence — status-unfiltered, snapshotted (job_id, attempt) pairs,
+        # never joined to post-reclaim jobs.attempt). The subset was
+        # asserted non-empty at the kill; re-assert it here so the equality
+        # can never be ∅ == ∅.
         fenced_ids = {
             str(r["job_id"])
             for r in await conn.fetch(
@@ -746,11 +902,56 @@ async def test_sigkill_between_ordinal_32767_and_32768_reclaims_with_cursor_hand
                 BOUNDARY_STEP,
             )
         }
-        assert fenced_ids == corpse_records, (
-            f"the fenced ledger phantoms ({len(fenced_ids)}) are not exactly the "
-            f"corpse's in-flight record claims ({len(corpse_records)}): "
-            f"foreign={sorted(fenced_ids - corpse_records)}, "
-            f"unfenced corpse claims={sorted(corpse_records - fenced_ids)}"
+        assert len(corpse_ledger_claims) > 0, (
+            "the corpse's wf_step_ledger claim subset is empty at the fence "
+            "leg: the equality below would be vacuous"
+        )
+        print(
+            f"[boundary] fence sets: corpse_records={len(corpse_records)} "
+            f"ledger-claimed={len(corpse_ledger_claims)} fenced_ids={len(fenced_ids)}"
+        )
+        assert (fenced_ids & set(corpse_records)) == {
+            job_id for job_id, _ in corpse_ledger_claims
+        }, (
+            f"the fenced ledger phantoms are not exactly the corpse's "
+            f"ledger-claimed subset within the corpse's rows: "
+            f"lost phantoms="
+            f"{sorted({job_id for job_id, _ in corpse_ledger_claims} - fenced_ids)}, "
+            f"fenced beyond the corpse's ledger claims="
+            f"{sorted(fenced_ids & set(corpse_records) - {job_id for job_id, _ in corpse_ledger_claims})}"
+        )
+        # NO BURIED PHANTOM: every fenced row is a claim the run moved past
+        # and RE-EXECUTED — a fence on a never-re-executed row is a lost
+        # record wearing a fence. (The machinery's own re-claims fence
+        # beside the corpse's: their abandoned attempt-1 claims are
+        # fenceable at the terminal flow, so fenced_ids ⊆ retried, with the
+        # corpse's subset asserted above and the terminals deduped below.)
+        unexecuted_fences = fenced_ids - retried
+        assert not unexecuted_fences, (
+            f"{len(unexecuted_fences)} fenced ledger phantoms name rows the "
+            f"run never re-executed — a buried claim, not a fenced one: "
+            f"{sorted(unexecuted_fences)}"
+        )
+
+        # ── THE CENSUS: re-stamp immediately before the invariant read (the
+        # harness's contract — the tag is a census, not a birthright; emitted
+        # children do not inherit the source's tag) and assert the stamp's
+        # coverage: the tagged population equals the run's row count (the
+        # root, the source and 32,769 records), both numbers printed.
+        await tag_run_rows(pool, schema, flow_id, _TAG)
+        census = await conn.fetchrow(
+            f"""SELECT count(*)::bigint AS run_rows,
+                       count(*) FILTER (WHERE tags @> ARRAY[$2::text])::bigint AS tagged
+                FROM "{schema}".jobs WHERE (metadata->>'flow_id')::uuid = $1::uuid""",
+            flow_id,
+            _TAG,
+        )
+        assert census is not None and census["run_rows"] == census["tagged"] > 0, (
+            f"the tagged census does not cover the run's rows: {dict(census) if census else None}"
+        )
+        print(
+            f"[boundary] census coverage: tagged={census['tagged']} "
+            f"of run_rows={census['run_rows']}"
         )
         await assert_balanced(sys_ledger, schema, _TAG)
         print("[boundary] invariants: balanced")
