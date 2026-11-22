@@ -274,8 +274,9 @@ page at or below 32767 takes the no-catalog-read path, so it writes rather than
 detecting a broken carrier shape; inspect the five columns yourself before
 relying on low-identity writes against a schema you have not verified.
 Unbounded is the EXPLICIT opt-out (`max_in_flight=None`): bounded emit is the
-default, and its capability preflight re-reads the five carriers on every call,
-so a bounded low page refuses the same broken shape with
+default, and both of its paths — unreserved admission and reserved replay —
+run the capability preflight, which re-reads the five carriers on every
+call, so a bounded low page refuses the same broken shape with
 `WorkflowWorkerCapabilityError` before any write. A hand-run `ALTER`
 that widened the column without recreating
 the claim arbiter leaves the stored `int4` coercion in place; the ledger's

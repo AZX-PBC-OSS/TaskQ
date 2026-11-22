@@ -350,3 +350,205 @@ async def test_low_only_bounded_emit_serves_the_correctly_widened_post_schema(
         await pool.close()
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
+
+
+async def test_low_reserved_replay_refuses_a_botched_post_schema(
+    pg_dsn: str,
+) -> None:
+    """A reserved replay is a BOUNDED low page: it must run the same
+    five-carrier capability preflight as the unreserved admission.
+
+    The source was promoted with a page-width reservation, so the emit takes
+    the grant-governed branch instead of the shared-bound admission. That
+    branch still writes a low-identity page under a declared ``max_in_flight``
+    (bounded emit is the default), so it is inside the capability contract the
+    guides state for every bounded low page: a broken carrier shape must be
+    refused with the typed ``WorkflowWorkerCapabilityError`` before any row is
+    written. On the shipped bytes this branch opened its own transaction and
+    called ``_emit_tx`` directly, so a cached pre-POST verdict, the POST
+    applied, and the botched int4 arbiter restored let two children commit —
+    the next ledger claim then dies with raw PostgreSQL ``42P10``.
+
+    The window hook pins the ORDERING the contract claims: a refusal that ran
+    after ``_emit_tx`` would roll the same transaction back and leave the same
+    zero rows, so the child count alone cannot distinguish it. The hook fires
+    only from inside ``_emit_tx``; recording no window proves the preflight
+    refused before the emit body. The metadata assertions prove the refused
+    replay left its reservation (and no cursor) behind, so the source can
+    resume once the arbiter remedy is applied.
+    """
+    schema = "cap_activation_reserved_" + new_base62(8, precision="random").lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool = await asyncpg.create_pool(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema, phase="pre")
+
+        # The low-only worker's pre-POST verdict caches as "smallint".
+        await verify_emit_capacity_objects(conn, schema)
+
+        from taskq.workflows._emit import emit_batch
+        from taskq.workflows._types import EmitChild
+        from taskq.workflows.engine import render_workflow_sql
+        from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
+
+        wsql = render_workflow_sql(schema)
+        flow = await seed_flow(conn, schema)
+        source = await seed_running_node(conn, schema, flow, step_key="source")
+        worker, attempt, epoch = await claim_view(conn, schema, source)
+        # The page-width reservation selects the reserved-replay branch.
+        await conn.execute(
+            f'UPDATE "{schema}".jobs SET metadata = metadata || $2::jsonb WHERE id = $1',  # noqa: S608  # Why: the throwaway schema identifier is validated by apply_pending; the value is $2-bound.
+            source,
+            '{"wf_emit_reservation":{"version":1,"width":2}}',
+        )
+
+        # The POST widens the five carriers, then the hand-run botch restores
+        # the old int4 coercion in the claim arbiter.
+        await apply_pending(conn, schema=schema, target=POST_MIGRATION)
+        await _recreate_botched_int4_arbiter(conn, schema)
+
+        children = [
+            EmitChild(
+                step_key="record",
+                actor="wf",
+                queue="default",
+                payload={"record": index},
+                trace_id=f"reserved-{index}",
+                map_index=index,
+            )
+            for index in (0, 1)
+        ]
+
+        # The window hook fires only from inside ``_emit_tx``; recording it
+        # proves the refusal happened BEFORE the emit body, not merely that a
+        # late refusal rolled the writes back inside the same transaction.
+        windows: list[str] = []
+
+        async def record_window(name: str, _conn: object) -> None:
+            windows.append(name)
+
+        refusal: WorkflowWorkerCapabilityError | None = None
+        try:
+            await emit_batch(
+                pool,
+                wsql,
+                flow_id=flow,
+                source_id=source,
+                worker_id=worker,
+                attempt=attempt,
+                claim_epoch=epoch,
+                children=children,
+                cursor={"page": 1},
+                max_in_flight=8,
+                _window_hook=record_window,
+            )
+        except WorkflowWorkerCapabilityError as exc:
+            refusal = exc
+        rows = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".jobs WHERE parent_id = $1',  # noqa: S608  # Why: the throwaway schema identifier is validated by apply_pending; the value is $1-bound.
+            source,
+        )
+        assert refusal is not None, (
+            f"the reserved replay wrote {rows} child rows instead of refusing "
+            "with WorkflowWorkerCapabilityError before any write — the "
+            "bounded reserved path bypassed the five-carrier capability "
+            "preflight"
+        )
+        assert "01.00.42_02" in str(refusal), str(refusal)
+        assert rows == 0, f"the refused reserved replay still wrote {rows} child rows"
+        assert windows == [], f"the refused reserved replay entered _emit_tx windows {windows}"
+        metadata = await conn.fetchval(
+            f'SELECT metadata FROM "{schema}".jobs WHERE id = $1',  # noqa: S608  # Why: the throwaway schema identifier is validated by apply_pending; the value is $1-bound.
+            source,
+        )
+        assert "emit_cursor" not in metadata, metadata
+        assert "wf_emit_reservation" in metadata, (
+            "the refused replay consumed the reservation — the source can no "
+            f"longer resume after the remedy: {metadata}"
+        )
+    finally:
+        reset_emit_capability_cache(schema)
+        await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_valid_reserved_replay_commits_without_adopting_a_capacity_bound(
+    pg_dsn: str,
+) -> None:
+    """The positive counterpart of the pin above: a CORRECTLY widened POST
+    schema still serves the reserved replay, and the reserved branch stays
+    charge-neutral — it preflights like the unreserved admission but never
+    adopts a capacity bound, so ``wf_emit_capacity`` keeps zero rows for the
+    flow (adopting one would be ``ensure_emit_capacity``'s signature, which
+    the negative pin alone cannot distinguish)."""
+    schema = "cap_activation_reserved_ok_" + new_base62(8, precision="random").lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool = await asyncpg.create_pool(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema, phase="pre")
+
+        # The pre-POST verdict caches as "smallint".
+        await verify_emit_capacity_objects(conn, schema)
+
+        from taskq.workflows._emit import emit_batch
+        from taskq.workflows._types import EmitChild
+        from taskq.workflows.engine import render_workflow_sql
+        from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
+
+        wsql = render_workflow_sql(schema)
+        flow = await seed_flow(conn, schema)
+        source = await seed_running_node(conn, schema, flow, step_key="source")
+        worker, attempt, epoch = await claim_view(conn, schema, source)
+        await conn.execute(
+            f'UPDATE "{schema}".jobs SET metadata = metadata || $2::jsonb WHERE id = $1',  # noqa: S608  # Why: the throwaway schema identifier is validated by apply_pending; the value is $2-bound.
+            source,
+            '{"wf_emit_reservation":{"version":1,"width":2}}',
+        )
+
+        await apply_pending(conn, schema=schema, target=POST_MIGRATION)
+
+        children = [
+            EmitChild(
+                step_key="record",
+                actor="wf",
+                queue="default",
+                payload={"record": index},
+                trace_id=f"reserved-ok-{index}",
+                map_index=index,
+            )
+            for index in (0, 1)
+        ]
+        child_ids = await emit_batch(
+            pool,
+            wsql,
+            flow_id=flow,
+            source_id=source,
+            worker_id=worker,
+            attempt=attempt,
+            claim_epoch=epoch,
+            children=children,
+            cursor={"page": 1},
+            max_in_flight=8,
+        )
+        rows = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".jobs WHERE parent_id = $1',  # noqa: S608  # Why: the throwaway schema identifier is validated by apply_pending; the value is $1-bound.
+            source,
+        )
+        assert rows == 2, f"the correctly widened POST wrote {rows} rows, not 2"
+        assert len(child_ids) == 2
+        adopted = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".wf_emit_capacity WHERE flow_id = $1',  # noqa: S608  # Why: the throwaway schema identifier is validated by apply_pending; the value is $1-bound.
+            flow,
+        )
+        assert adopted == 0, (
+            "the reserved replay adopted a capacity bound — it is governed by "
+            "its reservation, not by the shared admission's record"
+        )
+    finally:
+        reset_emit_capability_cache(schema)
+        await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()

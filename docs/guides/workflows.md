@@ -2227,14 +2227,16 @@ it fails to detect a broken carrier shape there. Bounded emit is the DEFAULT
 (`max_in_flight` is `EMIT_MAX_IN_FLIGHT_DEFAULT`, 1000, unless a workflow
 declares `None`), and its capability preflight revalidates the five-carrier
 width on every call — at flow creation, at each runner drive's adoption, and
-at every emit, terminal/park, drain-chunk and marker-sweep seat: one catalog
+at every emit, terminal/park, drain-chunk and marker-sweep seat (both bounded
+emit paths, unreserved admission and reserved replay, preflight before any
+write): one catalog
 read per call, two on the composite park-adopt and marker-sweep paths that
 invoke two preflighted entry points. It refuses a mixed, malformed, or botched
-schema with `WorkflowWorkerCapabilityError` — the resolver's
-`MapIndexSchemaError` chained as its `__cause__`, so the runner's
-deterministic leg still reads the deployment class — before any body, child,
-cursor, or park write; the object-set checks themselves stay cached per schema
-and width. A candidate above 32767 makes the
+schema with `WorkflowWorkerCapabilityError` before any body, child, cursor, or
+park write — a mixed or malformed carrier set preserves the resolver's
+`MapIndexSchemaError` as its `__cause__`, the deployment class the runner's
+deterministic leg reads — and the object-set checks themselves stay cached per
+schema and width. A candidate above 32767 makes the
 authoring doors — `emit_batch`, the map fork, `insert_fork`, and
 `insert_node` — consult that resolved bound, and they fail closed with
 `MapIndexSchemaError` (the admin panel answers HTTP 503) when the five

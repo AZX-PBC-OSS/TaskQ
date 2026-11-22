@@ -26,8 +26,15 @@ children and edges roll back with the tx — a zombie cannot emit.
 
 The five identity carriers determine the active upper bound: 32767 before
 their atomic POST widening, BIGINT_MAX (9223372036854775807) when all five
-are bigint. A high candidate pays for one all-five catalog statement;
-ordinary low pages pay for none. A page whose record crosses the resolved
+are bigint. A high candidate pays for one all-five catalog statement; an
+ordinary low page's catalog cost follows the declared bound — a BOUNDED LOW
+page (reserved replay or unreserved admission) runs the five-carrier
+capability preflight before any write and refuses a missing, mixed or botched
+shape with :class:`WorkflowWorkerCapabilityError`, while an explicit unbounded
+(``max_in_flight=None``) low page deliberately pays no catalog read (a high
+candidate's authoring-door resolve refuses a missing or mixed shape as
+:class:`MapIndexSchemaError` first). A page
+whose record crosses the resolved
 bound raises :class:`MapIndexExhaustedError` at the emit door; valid
 page-mates commit first (the poison record kills itself, never its mates).
 Missing, unknown and mixed carrier shapes instead refuse the whole batch as
@@ -692,7 +699,14 @@ async def _emit_tx(
     collided again — the ladder burned to a raw-typed death. Here the
     arbiter's refusal is :class:`PageDivergedError` — the named, loud
     death carrying the remedy (re-sync the cursor) — and the tx rolls
-    back WHOLE (the divergent page wrote nothing)."""
+    back WHOLE (the divergent page wrote nothing).
+
+    The five-carrier capability preflight is the CALLER's, on the bounded
+    paths only: the reserved replay calls ``verify_emit_capacity_objects``
+    on its transaction connection, the unreserved admission runs it inside
+    ``ensure_emit_capacity``, and the explicit unbounded
+    (``max_in_flight=None``) path deliberately enters with no catalog
+    read."""
     # Function-local, never module level (the module's own TYPE_CHECKING
     # import law — the runtime name is needed only at the except).
     import asyncpg
@@ -884,6 +898,10 @@ async def emit_batch(
     is governed by its grant instead of the shared bound: a smaller or equal
     page commits and converts the reservation; a wider page raises
     :class:`EmitReservationExceededError` — the excess was never granted.
+    Both bounded paths — the reserved replay and the unreserved admission —
+    run the five-carrier capability preflight before any write; the explicit
+    unbounded (``max_in_flight=None``) path deliberately pays no catalog read
+    for a low page.
 
     Returns the minted child ids (uuid7 via the seam). Raises
     :class:`EmitFencedError` when the claim was superseded (nothing
@@ -899,7 +917,11 @@ async def emit_batch(
     ITSELF loudly, never its mates — the valid work SURVIVES on the record).
     Raises :class:`taskq.workflows._types.MapIndexSchemaError` before writing
     anything when a high candidate meets a missing, mixed or unsupported
-    carrier shape."""
+    carrier shape. Raises :class:`WorkflowWorkerCapabilityError` before any
+    write on a bounded LOW page — reserved replay or unreserved admission —
+    against a missing, mixed or botched carrier shape (a high candidate's
+    authoring-door resolve refuses a missing or mixed shape as
+    :class:`MapIndexSchemaError` first)."""
     for child in children:
         if child.map_index is None:  # pyright: ignore[reportUnnecessaryComparison]  # Why: the runtime guard behind the typed door — EmitChild.map_index's int type is the declaration; a hand-built child carrying None must be refused here (the refuted-claim discipline), never trusted to the checker.
             raise ValueError(
@@ -982,6 +1004,9 @@ async def emit_batch(
                     presented=len(valid),
                 )
             async with pool.acquire() as conn, conn.transaction():
+                from taskq.workflows._capability import verify_emit_capacity_objects
+
+                await verify_emit_capacity_objects(conn, wsql.schema)
                 await _emit_tx(
                     conn,
                     wsql,
