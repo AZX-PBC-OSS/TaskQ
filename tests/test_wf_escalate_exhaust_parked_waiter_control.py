@@ -74,7 +74,7 @@ from taskq.workflows import (
 )
 from taskq.workflows._emit import EmitWakeResult, wake_emit_backpressure
 from taskq.workflows._sql import WorkflowSql
-from taskq.workflows._sweep import drain_outbox
+from taskq.workflows._sweep import DEFAULT_BATCH_SIZE, drain_outbox
 from taskq.workflows.api._loop import ESCALATION_STEP_KEY
 from tests.test_wf_emit_parking_controls import (
     _chain,
@@ -292,7 +292,18 @@ async def _run_escalate_exhaust_estate(
     gate_event = asyncio.Event()
     waiting_ticks: set[asyncio.Task[Any]] = set()
 
-    async def _gated_sweep_drain(pool: asyncpg.Pool, wsql: WorkflowSql) -> int:
+    async def _gated_sweep_drain(
+        pool: asyncpg.Pool,
+        wsql: WorkflowSql,
+        *,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        default_max_attempts: int = 3,
+        default_retry_kind: str = "transient",
+    ) -> int:
+        # The signature MIRRORS the real ``drain_outbox`` (the house's
+        # double-signature gate: a double that is narrower than the callable
+        # it replaces would silently stop standing in for it) and every
+        # parameter is forwarded to it unchanged.
         # Waiting BEFORE any connection or transaction is acquired: a held
         # gate pins no pool slot and no row lock.
         tick = asyncio.current_task()
@@ -306,7 +317,13 @@ async def _run_escalate_exhaust_estate(
                 gate_event.set()
         try:
             await gate_event.wait()
-            return await real_sweep_drain(pool, wsql)
+            return await real_sweep_drain(
+                pool,
+                wsql,
+                batch_size=batch_size,
+                default_max_attempts=default_max_attempts,
+                default_retry_kind=default_retry_kind,
+            )
         finally:
             if tick is not None:
                 waiting_ticks.discard(tick)
