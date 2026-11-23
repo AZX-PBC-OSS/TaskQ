@@ -193,24 +193,21 @@ jobs:
     # stand-in until the org's larger-runner labels exist: the pinned
     # labels matched no runner and queued these legs forever.
     #
-    # STAGED FLIP, measured 2026-10-06 (local A/B, same commit, CI-exact
-    # invocation; the CI-runtime measurement PR). Still NOT active: the
-    # org's larger-runner labels match no runner (see above), so -n 2 on
-    # the 4-core standard runner remains the measured optimum here —
-    # flipping -n WITHOUT the runner is the measured regression. When the
-    # org's 8-core larger-runner label exists, flip BOTH halves of these
-    # three legs together (runner AND -n; either half alone is measured
-    # harm):
+    # FLIPPED, the staged measurement is now active: all three full-suite
+    # lanes (test, coverage, slow-suite) run on the org's 8-core larger
+    # runner at -n 4. Both halves flip together because the measurement
+    # says either half alone is harm: -n 4 without the dedicated cores
+    # oversubscribes (the moving-red class), and the 8-core runner at
+    # -n 2 leaves three cores idle.
     #
-    #     test:       runs-on: <the org's 8-core label>   -n 2 -> -n 4
-    #     coverage:   runs-on: <the org's 8-core label>   -n 2 -> -n 4
-    #     slow-suite: runs-on: <the org's 8-core label>   -n 2 -> -n 4
+    #     test:       runs-on: ubuntu-latest-8-core   -n 2 -> -n 4
+    #     coverage:   runs-on: ubuntu-latest-8-core   -n 2 -> -n 4
+    #     slow-suite: runs-on: ubuntu-latest-8-core   -n 2 -> -n 4
     #
-    # i.e. this leg becomes:
-    #
-    #     runs-on: <the org's 8-core larger-runner label>
-    #     ...
-    #     run: uv run --no-sync pytest -n 4 -m "not slow and not load_sensitive" -o faulthandler_timeout=300
+    # Recorded basis (2026-10-06 local A/B, same commit, CI-exact
+    # invocation): fast leg 2343.9s at -n 2 -> 1303.0s at -n 4 (-44.4%),
+    # 12,557 passed both ways, workers 96.5-99.0% busy; slow lane
+    # 203.2s -> 100.9s (-50.3%).
     #
     # The numbers behind the flip: fast leg 2343.9s at -n 2 -> 1303.0s at
     # -n 4 (−44.4%), 12,557 passed both ways, workers 96.5-99.0% busy —
@@ -230,8 +227,8 @@ jobs:
     # HANGS (faulthandler 300s is the per-test net) — a 15-minute margin
     # over the honest runtime still catches the hang class without
     # racing the weather.
-    runs-on: ubuntu-latest
-    timeout-minutes: 55
+    runs-on: ubuntu-latest-8-core
+    timeout-minutes: 45
     # fail-fast off: the matrix exists to answer "which interpreters still
     # pass" in one run — cancelling the surviving legs on the first red
     # hides exactly that (the 2026-10-10 run 38024700612: one leg's red
@@ -300,7 +297,7 @@ jobs:
         # faulthandler timer cannot see and would dump on every run.
         # Dump-only on purpose: a worker that exits on the dump would turn
         # pytest-timeout's graceful per-test failure into a lost worker.
-        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
+        run: uv run --no-sync pytest -n 4 -m "not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
 
       # THE ADVERSARIAL PROBES' GATE (the constitution's law: a regression
       # test outside your gate is not a defense). The probes are
@@ -500,7 +497,7 @@ jobs:
     # stays at -n 2: every test here is xdist-safe by construction (this lane
     # has always run -n 2), and the wall-clock scenarios must not tighten
     # further under heavier packing.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-core
     timeout-minutes: 45
     steps:
       # fetch-depth 0 is REQUIRED: the docs-honesty pins resolve the
@@ -522,7 +519,7 @@ jobs:
       - uses: ./.github/actions/setup-uv-env
 
       - name: Run the slow suite
-        run: uv run --no-sync pytest -n 2 -m "slow and not load_sensitive and not timescale"
+        run: uv run --no-sync pytest -n 4 -m "slow and not load_sensitive and not timescale"
 
   load-sensitive:
     # The wall-clock/timing guards (watchdog lag sampling, terminal-write
@@ -651,7 +648,7 @@ jobs:
     # the step's own teardown - a green leg killed by a cap that prices
     # the median where the weather lands. 60 gives the measured 38-45
     # band its headroom.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-core
     # 60, not 45: the cap priced "~37min" median, but the #606 head's green
     # run was killed at 45m04s - the suite itself had already PASSED
     # (12036 passed, 95.87% >= 90%) four seconds earlier, and the job's
@@ -689,7 +686,7 @@ jobs:
         # matrix's lane (its step comment holds the full rationale; this
         # lane matches the same mark filter, so no 2700s slow-tier trial
         # can trip the timer).
-        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive and not timescale" --cov=taskq --cov-report=term-missing --cov-fail-under=90 -o faulthandler_timeout=300
+        run: uv run --no-sync pytest -n 4 -m "not slow and not load_sensitive and not timescale" --cov=taskq --cov-report=term-missing --cov-fail-under=90 -o faulthandler_timeout=300
 
   e2e:
     # Containerized e2e tier: workers built from the packaged wheel run
