@@ -174,10 +174,13 @@ jobs:
 
   test:
     # The full suite runs as four runner-isolated shards on the dev interpreter;
-    # the supported floor and ceiling run the cheap non-integration tier. Measured
-    # before sharding: the whole-suite legs were 41-53 min at -n 2 (runs 45116516991,
-    # 45064054688, 44842729835); a shard runs a quarter of the same modules at the
-    # same density, so the wall divides by four without widening co-tenancy.
+    # the floor and ceiling run the non-integration tier (the matrix `include`
+    # gives only 3.13 `scope: full`). Measured before sharding: whole-suite legs
+    # 41-53 min at -n 2 (45116516991: 53:24/53:07/41:26; 45064054688: 53:18),
+    # and the 55-minute cap cancelled a 3.13 leg mid-suite twice with no failure
+    # inside it (45123557316 attempts 1 and 2); on main it cancelled a leg whose
+    # suite had already passed 14246 in 54:37 (44848562462). A shard runs a
+    # quarter of the same modules at the same density, so the wall divides by four.
     name: test (${{ matrix.python-version }}, ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -186,9 +189,6 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
         shard: [1, 2, 3, 4]
-        # The dev interpreter carries the full suite (four shards); the floor and
-        # ceiling carry the non-integration tier, which is why this is an `include`
-        # rather than a fifth matrix key: only 3.13's combinations get `scope`.
         include:
           - { python-version: "3.13", scope: full }
     steps:
@@ -484,9 +484,9 @@ jobs:
         run: uv run --no-sync pytest -n 2 -m "slow and not load_sensitive and not timescale"
 
   load-sensitive:
-    # Sharded by module across runner-isolated jobs: the lane's serial law is about
-    # CO-TENANCY inside one runner, so each shard keeps the serial invocation and
-    # every marked test still runs exactly once.
+    # Sharded by module across runner-isolated jobs: the lane's serial law is
+    # about co-tenancy inside one runner, so each shard keeps the serial
+    # invocation and every marked test still runs exactly once.
     name: load-sensitive (${{ matrix.shard }}/4)
     # The wall-clock/timing guards (watchdog lag sampling, terminal-write
     # budget, cron commit gates, otel overhead, bootstrap slots, and the
@@ -573,16 +573,11 @@ jobs:
           fi
 
   coverage-shard:
-    # Four runner-isolated instrumented shards: the same selection and the same -n 2
-    # density, a quarter of the modules each. Measured before sharding: the green
-    # leg ran 58:55 against a 60-minute cap (run 45123557316).
+    # The coverage lane as four runner-isolated instrumented shards: the same
+    # selection and the same -n 2 density, a quarter of the modules each. The
+    # green leg measured 59:09 (44777648403) and the 60-minute cap already
+    # killed one at 98% on main (44848562462).
     name: coverage-shard (${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
     # The coverage lane is the single longest CI job (the whole suite, one
     # leg). The 8-core larger runner at -n 4 keeps the per-worker core
     # density identical to -n 2 on 4 cores (the timing-sensitive tests'
@@ -640,7 +635,11 @@ jobs:
     # CANCELLED verdict was pure wall-clock, not a test failure. The head
     # room a lane needs is measured from its worst observed run plus the
     # report steps, not its median.
-    timeout-minutes: 60
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       # fetch-depth 0: the breaking-change marker guard reads the branch's
       # own commits against the base (git log <base>..HEAD). A shallow PR
@@ -687,7 +686,7 @@ jobs:
   coverage:
     # The required gate: combine the four shards' data files and apply the unchanged
     # --cov-fail-under=90 floor. `coverage combine` needs the parallel suffix, so each
-    # shard's `.coverage` is renamed by shard number before combining.
+    # shard's `.coverage` is renamed by shard number first.
     name: coverage
     needs: [coverage-shard]
     if: always() && needs.coverage-shard.result == 'success'
