@@ -222,16 +222,20 @@ jobs:
     # +32.8% (per-worker setup duplication), and the coverage leg's tracer
     # taxes density-starved workers +22-55% wall (2026-09-22, below).
     # -n 4 is a win only with a dedicated core per worker.
-    # timeout 55: the suite's honest -n 2 runtime measured 39-41 min
-    # (2026-10-10: 39:16, 40:39, 41:33 across the runs) — the 45-min cap's
-    # 5-minute margin lost to runner variance twice (the runs
-    # 38049228451/38072348161: both test 3.12/3.14 legs cancelled at
-    # ~45:00 mid-suite, no failure inside them). The cap exists to catch
-    # HANGS (faulthandler 300s is the per-test net) — a 15-minute margin
-    # over the honest runtime still catches the hang class without
-    # racing the weather.
+    # timeout 70: the cap exists to catch HANGS (faulthandler 300s is the
+    # per-test net), so it is a margin over the suite's HONEST -n 2
+    # runtime — never a substitute for it. The measured runtime grew with
+    # the suite: the 2026-10-10 note recorded 39-41 min, but the recent
+    # completed legs are 3.13: 53:18 (45116516991), 53:18
+    # (45064054688), 41:47 (44842729835); 3.12/3.14: 44:02/44:06, 51:24,
+    # 49:25. At 55 min the 3.13 leg was cancelled mid-suite with NO
+    # failure inside it (45123557316 attempt 2, annotation "exceeded the
+    # maximum execution time of 55m0s"; same shape in the 2026-11-22
+    # run). 70 keeps a ~14-minute margin over the slowest honest leg,
+    # so runner variance cannot red a green suite while a real hang
+    # still reds through the per-test faulthandler.
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 70
     # fail-fast off: the matrix exists to answer "which interpreters still
     # pass" in one run — cancelling the surviving legs on the first red
     # hides exactly that (the 2026-10-10 run 38024700612: one leg's red
@@ -652,13 +656,15 @@ jobs:
     # the median where the weather lands. 60 gives the measured 38-45
     # band its headroom.
     runs-on: ubuntu-latest
-    # 60, not 45: the cap priced "~37min" median, but the #606 head's green
-    # run was killed at 45m04s - the suite itself had already PASSED
-    # (12036 passed, 95.87% >= 90%) four seconds earlier, and the job's
-    # CANCELLED verdict was pure wall-clock, not a test failure. The head
-    # room a lane needs is measured from its worst observed run plus the
-    # report steps, not its median.
-    timeout-minutes: 60
+    # 75, not 60: the worst observed green leg is now 58:55 (run
+    # 45123557316, 07:22:53Z -> 08:21:48Z, 95% gate green) - one minute
+    # inside the 60-minute cap it was measured against, which is exactly
+    # the wall-clock kill this comment has already recorded twice (45m04s
+    # on run 36600780724; the 55-minute test-lane cap on 45123557316).
+    # Head room is priced from the worst observed leg plus the report
+    # steps: 75 leaves ~16 minutes over 58:55 while the suite's own bounds
+    # stay untouched.
+    timeout-minutes: 75
     steps:
       # fetch-depth 0: the breaking-change marker guard reads the branch's
       # own commits against the base (git log <base>..HEAD). A shallow PR
