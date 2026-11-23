@@ -27,7 +27,9 @@ ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
 
 #: The per-module fixtures whose lifecycle cost dominates a DB module's setup.
-_DB_FIXTURES = re.compile(r"\b(pg_dsn|pg_pool|pg_conn|clean_pg_conn|module_pg_schema|wf_schema|wf_pool|load_sensitive|system)\b")
+_DB_FIXTURES = re.compile(
+    r"\b(pg_dsn|pg_pool|pg_conn|clean_pg_conn|module_pg_schema|wf_schema|wf_pool|load_sensitive|system)\b"
+)
 _TEST_DEF = re.compile(r"^\s*(?:async\s+)?def test_", re.M)
 #: The fixed cost of a module that provisions its own database, in test-equivalents.
 _DB_SETUP_WEIGHT = 20
