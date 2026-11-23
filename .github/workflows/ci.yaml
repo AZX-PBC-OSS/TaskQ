@@ -173,75 +173,24 @@ jobs:
         run: uv run --no-sync pytest tests/test_docs_examples.py tests/test_docs_no_exec_apis.py -q --timeout=300
 
   test:
-    # The per-interpreter suite: ALL extras installed, the whole test suite
-    # -n 2, not -n 4: the lanes were calibrated for the 8-core larger
-    # runner (a dedicated core per worker) but run on the 4-core standard
-    # runner (the labels matched none): at -n 4 the four workers plus the
-    # PG and Redis containers all contend for 4 cores, and every
-    # sub-second settle budget in the suite becomes a lottery (the
-    # moving-red class of 2026-09-24/25: a different test each run, all
-    # green solo). The 451 precedent: the density is the defect.
-
-    # except the load-sensitive family (which owns its serial lane below).
-    # One leg per Python version — a 12-leg matrix (3 x 4
-    # extra-sets, each re-running the same 9,000 tests with different skips)
-    # is the shape this replaced:
-    # the extras' tests were the only per-leg difference, and they have
-    # their own spot-check legs below. The intended lane is the 4-core
-    # larger runner at -n 4 (the same per-core density the fast lanes
-    # always ran, a dedicated core per worker); the standard runner is the
-    # stand-in until the org's larger-runner labels exist: the pinned
-    # labels matched no runner and queued these legs forever.
-    #
-    # STAGED FLIP, measured 2026-10-06 (local A/B, same commit, CI-exact
-    # invocation; the CI-runtime measurement PR). Still NOT active: the
-    # org's larger-runner labels match no runner (see above), so -n 2 on
-    # the 4-core standard runner remains the measured optimum here —
-    # flipping -n WITHOUT the runner is the measured regression. When the
-    # org's 8-core larger-runner label exists, flip BOTH halves of these
-    # three legs together (runner AND -n; either half alone is measured
-    # harm):
-    #
-    #     test:       runs-on: <the org's 8-core label>   -n 2 -> -n 4
-    #     coverage:   runs-on: <the org's 8-core label>   -n 2 -> -n 4
-    #     slow-suite: runs-on: <the org's 8-core label>   -n 2 -> -n 4
-    #
-    # i.e. this leg becomes:
-    #
-    #     runs-on: <the org's 8-core larger-runner label>
-    #     ...
-    #     run: uv run --no-sync pytest -n 4 -m "not slow and not load_sensitive" -o faulthandler_timeout=300
-    #
-    # The numbers behind the flip: fast leg 2343.9s at -n 2 -> 1303.0s at
-    # -n 4 (−44.4%), 12,557 passed both ways, workers 96.5-99.0% busy —
-    # the packing survives the wider pool. Slow lane 203.2s -> 100.9s
-    # (−50.3%; at -n 2 its second worker idles 61.3% of the session behind
-    # the soak module, and -n 4 splits that load). Stopping short of the
-    # runner flip is measured harm, not caution: -n 8 on shared cores
-    # reproduced the moving-red class above AND inflated summed work
-    # +32.8% (per-worker setup duplication), and the coverage leg's tracer
-    # taxes density-starved workers +22-55% wall (2026-09-22, below).
-    # -n 4 is a win only with a dedicated core per worker.
-    # timeout 55: the suite's honest -n 2 runtime measured 39-41 min
-    # (2026-10-10: 39:16, 40:39, 41:33 across the runs) — the 45-min cap's
-    # 5-minute margin lost to runner variance twice (the runs
-    # 38049228451/38072348161: both test 3.12/3.14 legs cancelled at
-    # ~45:00 mid-suite, no failure inside them). The cap exists to catch
-    # HANGS (faulthandler 300s is the per-test net) — a 15-minute margin
-    # over the honest runtime still catches the hang class without
-    # racing the weather.
+    # The full suite runs as four runner-isolated shards on the dev interpreter;
+    # the supported floor and ceiling run the cheap non-integration tier. Measured
+    # before sharding: the whole-suite legs were 41-53 min at -n 2 (runs 45116516991,
+    # 45064054688, 44842729835); a shard runs a quarter of the same modules at the
+    # same density, so the wall divides by four without widening co-tenancy.
+    name: test (${{ matrix.python-version }}, ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    timeout-minutes: 55
-    # fail-fast off: the matrix exists to answer "which interpreters still
-    # pass" in one run — cancelling the surviving legs on the first red
-    # hides exactly that (the 2026-10-10 run 38024700612: one leg's red
-    # orphan-terminated the 3.13/3.14 suites mid-run at 39m50, three
-    # "failures" none of which were interpreter defects). Same discipline
-    # as the PG deploy matrix below.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
+        shard: [1, 2, 3, 4]
+        # The dev interpreter carries the full suite (four shards); the floor and
+        # ceiling carry the non-integration tier, which is why this is an `include`
+        # rather than a fifth matrix key: only 3.13's combinations get `scope`.
+        include:
+          - { python-version: "3.13", scope: full }
     steps:
       # fetch-depth 0: same reason as the coverage job — history-sensitive
       # guards (tests/test_breaking_change_markers.py) walk the branch's
@@ -300,7 +249,16 @@ jobs:
         # faulthandler timer cannot see and would dump on every run.
         # Dump-only on purpose: a worker that exits on the dump would turn
         # pytest-timeout's graceful per-test failure into a lost worker.
-        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.scope }}" = "full" ]; then
+            mapfile -t files < <(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)
+            echo "full shard ${{ matrix.shard }}/4: ${#files[@]} modules"
+            uv run --no-sync pytest "${files[@]}" -n 2 -m "not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
+          else
+            echo "smoke leg on ${{ matrix.python-version }}: the non-integration tier"
+            uv run --no-sync pytest -n 2 -m "not integration and not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
+          fi
 
       # THE ADVERSARIAL PROBES' GATE (the constitution's law: a regression
       # test outside your gate is not a defense). The probes are
@@ -320,6 +278,7 @@ jobs:
       # failure mode, so it gates in the load-sensitive lane below, in
       # its own serial explicit-node invocation.
       - name: Run the adversarial probes (explicit paths, serial, zero-skip)
+        if: matrix.scope == 'full' && matrix.shard == 1
         run: |
           set -euo pipefail
           if ! command -v initdb >/dev/null 2>&1; then
@@ -525,6 +484,10 @@ jobs:
         run: uv run --no-sync pytest -n 2 -m "slow and not load_sensitive and not timescale"
 
   load-sensitive:
+    # Sharded by module across runner-isolated jobs: the lane's serial law is about
+    # CO-TENANCY inside one runner, so each shard keeps the serial invocation and
+    # every marked test still runs exactly once.
+    name: load-sensitive (${{ matrix.shard }}/4)
     # The wall-clock/timing guards (watchdog lag sampling, terminal-write
     # budget, cron commit gates, otel overhead, bootstrap slots, and the
     # PR #695/#698 convicted families: the retention scale pin, the cron
@@ -555,7 +518,11 @@ jobs:
     # also collects the system-e2e tier via --system-e2e, is the one
     # place the rest of the family runs.
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       # fetch-depth 0: the evidence-estate read face (tests/_evidence.py) —
       # same reason as the slow-suite lane above: the docs-honesty pins'
@@ -574,7 +541,11 @@ jobs:
       - uses: ./.github/actions/setup-uv-env
 
       - name: Run the load-sensitive suite serially
-        run: uv run --no-sync pytest --system-e2e -m "load_sensitive and not timescale" --timeout=900
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)
+          echo "load shard ${{ matrix.shard }}/4: ${#files[@]} modules"
+          uv run --no-sync pytest "${files[@]}" --system-e2e -m "load_sensitive and not timescale" --timeout=900
 
       # The panel latency benchmark's OWN lane. The probe is
       # collect-ignored (tests/conftest.py's collect_ignore_glob), so the
@@ -584,6 +555,7 @@ jobs:
       # requires EXACTLY one passed and zero skipped — a missing
       # collection (the file renamed, the node id stale) cannot be green.
       - name: Run the panel latency benchmark (serial, exactly one probe)
+        if: matrix.shard == 1
         run: |
           set -euo pipefail
           rc=0
@@ -600,7 +572,17 @@ jobs:
             exit 1
           fi
 
-  coverage:
+  coverage-shard:
+    # Four runner-isolated instrumented shards: the same selection and the same -n 2
+    # density, a quarter of the modules each. Measured before sharding: the green
+    # leg ran 58:55 against a 60-minute cap (run 45123557316).
+    name: coverage-shard (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     # The coverage lane is the single longest CI job (the whole suite, one
     # leg). The 8-core larger runner at -n 4 keeps the per-worker core
     # density identical to -n 2 on 4 cores (the timing-sensitive tests'
@@ -689,7 +671,48 @@ jobs:
         # matrix's lane (its step comment holds the full rationale; this
         # lane matches the same mark filter, so no 2700s slow-tier trial
         # can trip the timer).
-        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive and not timescale" --cov=taskq --cov-report=term-missing --cov-fail-under=90 -o faulthandler_timeout=300
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)
+          echo "coverage shard ${{ matrix.shard }}/4: ${#files[@]} modules"
+          uv run --no-sync pytest "${files[@]}" -n 2 -m "not slow and not load_sensitive and not timescale" --cov=taskq --cov-report=term-missing -o faulthandler_timeout=300
+      - name: Upload this shard's coverage data
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-data-${{ matrix.shard }}
+          path: .coverage
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage:
+    # The required gate: combine the four shards' data files and apply the unchanged
+    # --cov-fail-under=90 floor. `coverage combine` needs the parallel suffix, so each
+    # shard's `.coverage` is renamed by shard number before combining.
+    name: coverage
+    needs: [coverage-shard]
+    if: always() && needs.coverage-shard.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv-env
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: coverage-data-*
+          path: covdata
+      - name: Combine the shards and apply the floor
+        run: |
+          set -euo pipefail
+          ls -l covdata
+          index=0
+          for dir in covdata/*/; do
+            index=$((index + 1))
+            if [ -f "$dir/.coverage" ]; then
+              mv "$dir/.coverage" "$dir/.coverage.$index"
+            fi
+          done
+          uv run --no-sync python -m coverage combine covdata/*/
+          uv run --no-sync python -m coverage report --fail-under=90
 
   e2e:
     # Containerized e2e tier: workers built from the packaged wheel run
