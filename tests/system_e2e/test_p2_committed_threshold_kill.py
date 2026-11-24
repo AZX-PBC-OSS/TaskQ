@@ -793,6 +793,8 @@ async def test_emit_rollback_kill_never_parks_and_reclaims_once(
         await pool.close()
 
 
+@pytest.mark.load_sensitive  # 437 s of a 240 s wait when co-tenanted (45123557316, 45278245099);
+# the freeze is a wall-clock window, so the control belongs in the serial lane
 async def test_mid_chunk_kill_completes_from_committed_wins_and_real_rows(
     pg_dsn: str, module_pg_schema: ModulePgSchema, log_dir: Any
 ) -> None:
