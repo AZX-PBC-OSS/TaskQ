@@ -40,6 +40,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.backend._sweeps import sweep_expired_locks
 from taskq.exceptions import SignalTimeoutError
+from taskq.migrate import apply_pending
 from taskq.workflows import Expired, FlowRunner, Promise, StepContext, WorkflowApp, build, step
 from taskq.workflows._sweep import sweep_hold_stamps
 from taskq.workflows.api._hitl import HitlClient, reassert_hold
@@ -335,32 +336,48 @@ async def test_a_refused_delivery_on_a_stamped_running_node_names_the_row(
 
 
 @pytest.mark.integration
-async def test_a_corrupt_flow_link_is_a_typed_refusal_not_a_cast_error(
-    wf_conn: asyncpg.Connection,
-    wf_schema: str,
-    wf_pool: asyncpg.Pool,
-) -> None:
+async def test_a_corrupt_flow_link_is_a_typed_refusal_not_a_cast_error(pg_dsn: str) -> None:
     """A stamped node whose ``metadata.flow_id`` is malformed must refuse
     typed. Both casts are fail-isolated: the hold→node lookup finds no node
     (the door refuses before the resume), and the refusal's own row read
     reports the node state with an unreadable flow — neither raises an
-    asyncpg cast error."""
+    asyncpg cast error.
+
+    This runs in its OWN throwaway schema. The schema's expression index
+    (``jobs_wf_flow_nodes_idx``) casts the flow link on every write, so a
+    malformed value is normally UNREPRESENTABLE; dropping that index on the
+    shared module schema and recreating it after the corrupt write is unsafe
+    under parallel xdist — a peer worker's open transaction keeps an older
+    ``OldestXmin``, and the recreated ``CREATE INDEX`` then evaluates the
+    recently-dead ``"not-a-uuid"`` heap tuple. Here the index is dropped, the
+    legacy/restored-backup shape is staged, and the whole schema is DROPPED,
+    so no index build ever sees the corrupt value and the shared schema is
+    never mutated."""
     from taskq.workflows.api._hitl import (
         _resume_refusal_reason,  # pyright: ignore[reportPrivateUsage]  # Why: the refusal read is the unit under test (the only path that reads the flow link inside the refusal).
     )
 
-    flow_id, node_id, hold_id = await _stamped_running_node(wf_conn, wf_pool, wf_schema)
-    # The schema's own expression index casts the flow link on every write
-    # (`jobs_wf_flow_nodes_idx`), so a malformed value is normally
-    # UNREPRESENTABLE. Drop it for the staging, then restore the row and the
-    # index in the `finally` — the corruption is the legacy/restored-backup
-    # shape every read-side guard exists for.
-    await wf_conn.execute(f'DROP INDEX IF EXISTS "{wf_schema}".jobs_wf_flow_nodes_idx')
+    corrupt_schema = f"tq_corrupt_{new_uuid().hex[:10]}"
+    control = await asyncpg.connect(pg_dsn)
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+    blocker = await asyncpg.connect(pg_dsn)
     try:
+        await control.execute(f'DROP SCHEMA IF EXISTS "{corrupt_schema}" CASCADE')
+        await apply_pending(control, schema=corrupt_schema)
+
+        # The CI shape: a peer connection holding an older xmin across the
+        # test. Nothing here builds an index over the corrupt tuple, so it is
+        # inert — held so a reintroduced shared-schema rebuild reproduces the
+        # parallel failure instead of hiding it.
+        await blocker.execute("BEGIN")
+        await blocker.fetchval("SELECT txid_current()")
+
+        _flow_id, node_id, hold_id = await _stamped_running_node(control, pool, corrupt_schema)
+        await control.execute(f'DROP INDEX IF EXISTS "{corrupt_schema}".jobs_wf_flow_nodes_idx')
         # The cohort check keeps `fairness_key` equal to `metadata.flow_id`:
         # the corruption moves both, exactly as a bad writer would.
-        await wf_conn.execute(
-            f'UPDATE "{wf_schema}".jobs '
+        await control.execute(
+            f'UPDATE "{corrupt_schema}".jobs '
             "SET metadata = jsonb_set(metadata, '{flow_id}', '\"not-a-uuid\"'::jsonb), "
             "fairness_key = 'not-a-uuid' WHERE id = $1",
             node_id,
@@ -369,7 +386,7 @@ async def test_a_corrupt_flow_link_is_a_typed_refusal_not_a_cast_error(
         # The public door: the stamped row's flow link no longer resolves, so
         # the hold's node lookup finds nothing — the delivery is refused, not
         # raised.
-        verdict = await HitlClient(wf_pool, schema=wf_schema).resolve(
+        verdict = await HitlClient(pool, schema=corrupt_schema).resolve(
             hold_id, {"verdict": "approve"}, principal="pin"
         )
         assert verdict.status == "refused", verdict
@@ -378,20 +395,13 @@ async def test_a_corrupt_flow_link_is_a_typed_refusal_not_a_cast_error(
         # The refusal's row read (the branch a found node reaches, via the
         # helper directly — the lookup above cannot find this row): the CASE
         # guard yields NULL for the malformed link and the message says so.
-        reason = await _resume_refusal_reason(wf_conn, wf_schema, str(node_id))
+        reason = await _resume_refusal_reason(control, corrupt_schema, str(node_id))
         assert "not resumable" in reason, reason
         assert "flow status is unreadable" in reason, reason
         assert "flow died" not in reason, reason
     finally:
-        await wf_conn.execute(
-            f'UPDATE "{wf_schema}".jobs '
-            "SET metadata = jsonb_set(metadata, '{flow_id}', to_jsonb($2::text)), "
-            "fairness_key = $2::text WHERE id = $1",
-            node_id,
-            str(flow_id),
-        )
-        await wf_conn.execute(
-            f'CREATE INDEX IF NOT EXISTS jobs_wf_flow_nodes_idx ON "{wf_schema}".jobs '
-            "(((metadata->>'flow_id')::uuid), status) "
-            "WHERE step_key IS NOT NULL AND metadata ? 'flow_id'"
-        )
+        await blocker.execute("ROLLBACK")
+        await blocker.close()
+        await pool.close()
+        await control.execute(f'DROP SCHEMA IF EXISTS "{corrupt_schema}" CASCADE')
+        await control.close()
