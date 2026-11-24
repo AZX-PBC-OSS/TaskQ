@@ -213,16 +213,31 @@ def _bounded_collect(values: list[object]) -> dict[str, object]:
     envelope: dict[str, object] = {"value": values}
     if len(_jsonb(envelope).encode("utf-8")) <= FANIN_FAILURES_BYTE_CAP:
         return envelope
+    # The fitting pass is LINEAR in the fitted prefix: measure the fixed shell
+    # once, serialise each candidate item once, and keep a running byte total.
+    # JSON array serialisation is ``[`` item (``,`` item)* ``]``, so the row's
+    # bytes are the shell + each item's own serialised bytes + one comma
+    # between items. The ``__truncated__`` digit width is re-added per step
+    # because it SHRINKS as the kept prefix grows (``10000`` -> ``9999``); the
+    # measure still matches the greedy prefix the pre-linear loop kept.
+    shell_head = '{"value":['
+    shell_mid = '],"__truncated__":'
+    shell_tail = ',"detail_home":' + dumps_jsonb_str(detail_home) + "}"
+    shell_bytes = len((shell_head + shell_mid + shell_tail).encode("utf-8"))
     kept: list[object] = []
+    items_bytes = 0
     for value in values:
-        candidate = {
-            "value": [*kept, value],
-            "__truncated__": len(values) - len(kept) - 1,
-            "detail_home": detail_home,
-        }
-        if len(_jsonb(candidate).encode("utf-8")) > FANIN_FAILURES_BYTE_CAP:
+        # Measure through ``_jsonb`` (never ``_jsonb(value)``: a bare ``str``
+        # is returned RAW, not JSON-quoted) — a single-element array is the
+        # item's exact serialised width, minus its two brackets.
+        item_bytes = len(_jsonb([value]).encode("utf-8")) - 2
+        candidate_items_bytes = items_bytes + item_bytes + (1 if kept else 0)
+        remaining = len(values) - len(kept) - 1
+        candidate_bytes = shell_bytes + candidate_items_bytes + len(str(remaining))
+        if candidate_bytes > FANIN_FAILURES_BYTE_CAP:
             break
         kept.append(value)
+        items_bytes = candidate_items_bytes
     return {
         "value": kept,
         "__truncated__": len(values) - len(kept),

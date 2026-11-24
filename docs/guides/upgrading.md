@@ -764,13 +764,20 @@ result passed the 64 KiB envelope cap used to fork only the prefix the
 join row still spelled, and the run ended `succeeded` on partial data.
 It now forks one child per collected item. Past 1000 items the source
 node terminal-fails with `FanInBoundExceededError` unless the map
-declares `child_driven=True`; past 32,767 items it terminal-fails even
-with `child_driven`, on the join counter's `FanInBoundExceededError`.
+declares `child_driven=True`; on a widened (POST) schema — or at exactly
+32,768 items on any schema — it terminal-fails even with `child_driven`,
+on the join counter's `FanInBoundExceededError`.
 While the identity carriers are still `smallint`, a map past 32,768
 items fails first with `error_class='MapIndexExhaustedError'`,
 `child_driven` or not. Partition the source to stay under the bounds.
 A join that finalized before the upgrade keeps the children it already
-forked.
+forked. Until the upgrade wave reaches every worker, a join CLAIMED by a
+still-running pre-upgrade worker keeps the old behaviour: it forks only
+the truncated prefix and the run still ends `succeeded` with no error.
+To audit runs from before (or during) the upgrade, look for the
+`"__truncated__"` marker on a join row's result envelope — and the
+`wf_collect_truncated` receipt in its metadata — which identify a join
+whose envelope was capped.
 
 ### Dispatch-path malformed payloads fail immediately
 
