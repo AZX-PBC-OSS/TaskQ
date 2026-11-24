@@ -148,7 +148,7 @@ loop_ledger AS (
     WHERE (SELECT flow_id FROM loop_row) IS NOT NULL
       AND l.flow_id = (SELECT flow_id FROM loop_row)
       AND l.step_key = $8::text
-      AND COALESCE(l.map_index, -1) IS NOT DISTINCT FROM COALESCE($9::int, -1)
+      AND COALESCE(l.map_index, -1) IS NOT DISTINCT FROM COALESCE($9::bigint, -1)
       AND l.attempt IS NOT DISTINCT FROM $6::int
       AND l.claim_epoch IS NOT DISTINCT FROM $7::bigint
       AND l.status IN ('running', 'awaited', 'crashed')
@@ -191,7 +191,7 @@ WITH batch AS (
     SELECT b.loop_id, b.error_class, b.exhaust_meta, b.message,
            b.worker, b.attempt, b.claim_epoch, b.step_key, b.map_index, b.ord
     FROM unnest($1::uuid[], $2::text[], $3::jsonb[], $4::text[],
-                $5::uuid[], $6::int[], $7::bigint[], $8::text[], $9::int[])
+                $5::uuid[], $6::int[], $7::bigint[], $8::text[], $9::bigint[])
         WITH ORDINALITY AS b(loop_id, error_class, exhaust_meta, message, worker, attempt, claim_epoch, step_key, map_index, ord)
 ),
 loop_row AS (

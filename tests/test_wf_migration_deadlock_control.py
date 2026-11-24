@@ -231,7 +231,11 @@ async def test_migration_deadlock_handshake_is_victim_agnostic(pg_dsn: str) -> N
 
         async def apply_migration() -> None:
             try:
-                await apply_pending(migration_conn, schema=schema)
+                # Scoped to 42_01: this control exercises THAT file's deadlock
+                # handshake and catalog set. The later 42_02 POST widens
+                # map_index and re-creates the arbiter, which would move the
+                # smallint rendering asserted below.
+                await apply_pending(migration_conn, schema=schema, target="01.00.42_01")
                 outcome["migration"] = "committed"
             except asyncpg.PostgresError as exc:
                 outcome["migration"] = exc
@@ -349,7 +353,7 @@ async def test_migration_deadlock_handshake_is_victim_agnostic(pg_dsn: str) -> N
             # one record.
             await probe.close()
             conn2 = await asyncpg.connect(pg_dsn)
-            await apply_pending(conn2, schema=schema)
+            await apply_pending(conn2, schema=schema, target="01.00.42_01")
             await conn2.close()
             probe = await asyncpg.connect(pg_dsn)
             record = await probe.fetchval(

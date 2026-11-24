@@ -32,7 +32,7 @@ from __future__ import annotations
 LEDGER_CLAIM_SQL = """\
 INSERT INTO {schema}.wf_step_ledger
     (id, flow_id, job_id, step_key, map_index, attempt, claim_epoch, status)
-VALUES ($1, $2, $3, $4, $5, $6, $7, 'running')
+VALUES ($1, $2, $3, $4, $5::bigint, $6, $7, 'running')
 ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt, claim_epoch) DO UPDATE
     SET updated_at = clock_timestamp()
 RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
@@ -56,7 +56,7 @@ SELECT attempt, status, result, error_class, error_message, job_id
 FROM {schema}.wf_step_ledger
 WHERE flow_id = $1
   AND step_key = $2
-  AND ((map_index = $3::smallint) OR ($3::smallint IS NULL AND map_index IS NULL))
+  AND ((map_index = $3::bigint) OR ($3::bigint IS NULL AND map_index IS NULL))
   AND status IN ('succeeded', 'failed')
 ORDER BY attempt DESC, claim_epoch DESC, created_at DESC, id DESC
 LIMIT 1
