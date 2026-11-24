@@ -49,7 +49,9 @@ from taskq.workflows import (
     step,
 )
 from taskq.workflows.api._hitl import HitlClient
+from taskq.workflows.engine import render_workflow_sql
 from taskq.workflows.ledger import memoized_substep_result
+from tests._wf_fixtures import seed_flow, seed_running_node
 
 
 class Item(BaseModel):
@@ -1053,3 +1055,32 @@ async def test_a_failing_self_named_substep_never_counts_against_the_node_ladder
         "failed",
         "succeeded",
     ], rows
+
+
+async def test_a_map_child_past_smallint_reads_its_substep_memo(
+    wf_conn: asyncpg.Connection, wf_schema: str
+) -> None:
+    """#717 widened ``map_index`` to bigint. The substep memo binds it as
+    bigint too, so a map child at 32768 reads its own record instead of
+    failing at bind (``value out of int16 range``)."""
+    flow_id = await seed_flow(wf_conn, wf_schema)
+    job_id = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="m")
+    key = f"{job_id}/x"
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".wf_step_ledger '
+        "(id, flow_id, job_id, step_key, map_index, attempt, claim_epoch, status, result) "
+        "VALUES ($1, $2, $3, $4, 32768, 1, 1, 'succeeded', to_jsonb('v'::text))",
+        new_uuid(),
+        flow_id,
+        job_id,
+        key,
+    )
+    memo = await memoized_substep_result(
+        wf_conn,
+        render_workflow_sql(wf_schema),
+        flow_id=flow_id,
+        job_id=job_id,
+        step_keys=[key, "x"],
+        map_index=32768,
+    )
+    assert memo is not None and (memo.step_key, memo.result) == (key, "v"), memo

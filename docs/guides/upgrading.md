@@ -543,7 +543,9 @@ shapes cannot be recovered as written:
 **The executor cutover (required).** This change has no migration, so
 nothing forces the cutover. Do not run old and new workflow executors on
 the same workflow queues at the same time: drain and stop the old
-executors, then start the new ones. In a mixed window an old executor
+executors, then start the new ones. That holds in the pre-POST window of
+the `01.00.42_02` `map_index` widening too, which otherwise allows a mixed
+old/new wave. In a mixed window an old executor
 that retries, reclaims or resumes a node misses the scoped record and
 re-runs the side effect, and it can still adopt another node's bare row.
 Both failures are silent: no error and no log line. (The

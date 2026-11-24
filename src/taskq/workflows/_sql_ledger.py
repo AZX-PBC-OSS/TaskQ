@@ -80,7 +80,7 @@ FROM {schema}.wf_step_ledger
 WHERE flow_id = $1
   AND step_key = ANY($2::text[])
   AND job_id = $3
-  AND ((map_index = $4::smallint) OR ($4::smallint IS NULL AND map_index IS NULL))
+  AND ((map_index = $4::bigint) OR ($4::bigint IS NULL AND map_index IS NULL))
   AND status IN ('succeeded', 'failed')
   AND (step_key = $2[1] OR $5::text IS NULL OR created_at >= (
         SELECT min(i.created_at) FROM {schema}.wf_step_ledger AS i
