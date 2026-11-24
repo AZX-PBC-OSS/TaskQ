@@ -66,6 +66,7 @@ from taskq.workflows._policy import (
     WorkflowRetryOverride,
 )
 from taskq.workflows._progress_read import keyed_display, run_display
+from taskq.workflows._types import MapIndexSchemaError
 from taskq.workflows.api import (
     CompiledWorkflow,
     Exit,
@@ -153,6 +154,7 @@ __all__ = [
     "HoldExpired",
     "HoldResolved",
     "LoopWaitShapeError",
+    "MapIndexSchemaError",
     "ProgressBackfilled",
     "ProgressEvent",
     "ProgressListener",

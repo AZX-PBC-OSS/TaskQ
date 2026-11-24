@@ -52,7 +52,7 @@ DEADLINE_ERROR_MESSAGE: Final[str] = "start_to_close"
 #: one statement, two consumers — never a drifted pair of inline strings.
 _FAILED_COUNT_SQL = (
     "SELECT count(*) FROM {schema}.wf_step_ledger WHERE flow_id = $1 "
-    "AND step_key = $2 AND COALESCE(map_index, -1) = COALESCE($3::smallint, -1) "
+    "AND step_key = $2 AND COALESCE(map_index, -1) = COALESCE($3::bigint, -1) "
     "AND status = 'failed'"
 )
 
@@ -103,6 +103,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         PageDivergedError,
     )
     from taskq.workflows._progress import ProgressRefusedError
+    from taskq.workflows._types import MapIndexSchemaError
     from taskq.workflows.api._runner_errors import DuplicateSubstepError, VanishedNodeError
     from taskq.workflows.definitions import FanInBoundExceededError
 
@@ -112,6 +113,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         EmitReservationExceededError,
         EmitCapacityCorruptionError,
         MapIndexExhaustedError,
+        MapIndexSchemaError,
         FanInBoundExceededError,
         ReservedTimerNamespaceError,
         SpawnDepthExceededError,

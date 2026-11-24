@@ -534,13 +534,14 @@ async def test_map_index_poison_record_its_mates_commit(
     wf_sql: Any,
     redlog: RedLog,
 ) -> None:
-    """RECORD #32768'S FIX (the batch semantics): a page carrying a
-    poison record (map_index past the smallint ceiling) emits the VALID
-    page-mates — their tx COMMITS, the valid work survives on the
+    """The batch semantics on the widened identity: a page carrying a
+    poison record (map_index past the schema-resolved bigint ceiling) emits
+    the VALID page-mates — their tx COMMITS, the valid work survives on the
     record — then raises :class:`MapIndexExhaustedError` NAMING the
     offender. RED (the raw-escape shape): the raw DataError escaped
     MID-TX and the whole page rolled back — the valid mates died with
     the poison record (the accidental untyped ceiling)."""
+    from taskq.constants import BIGINT_MAX
     from taskq.workflows._emit import MapIndexExhaustedError, emit_batch
     from tests._wf_fixtures import claim_view, seed_running_node
 
@@ -557,9 +558,9 @@ async def test_map_index_poison_record_its_mates_commit(
             trace_id=f"app-{i}",
             map_index=map_index,
         )
-        for i, map_index in enumerate((0, 1, 32768))
+        for i, map_index in enumerate((0, 1, BIGINT_MAX + 1))
     ]
-    with pytest.raises(MapIndexExhaustedError, match="32768"):
+    with pytest.raises(MapIndexExhaustedError, match=str(BIGINT_MAX + 1)):
         await emit_batch(
             wf_pool,
             wf_sql,
@@ -579,7 +580,7 @@ async def test_map_index_poison_record_its_mates_commit(
     )
     redlog.red(
         "t20-poison-record-mates",
-        "the smallint ceiling as the raw DataError MID-TX: the whole page "
+        "the identity ceiling as the raw DataError MID-TX: the whole page "
         "rolled back — the valid page-mates died with the poison record",
         {"committed_mates": [r["map_index"] for r in mates]},
     )
@@ -605,6 +606,7 @@ async def test_map_index_all_poison_page_refused_before_work(
 ) -> None:
     """An ALL-poison page is refused before any work — nothing written,
     the ceiling named, no tx opened."""
+    from taskq.constants import BIGINT_MAX
     from taskq.workflows._emit import MapIndexExhaustedError, emit_batch
     from tests._wf_fixtures import claim_view, seed_running_node
 
@@ -619,7 +621,7 @@ async def test_map_index_all_poison_page_refused_before_work(
             queue="default",
             payload={"application": {"app_id": i}},
             trace_id=f"app-{i}",
-            map_index=32768 + i,
+            map_index=BIGINT_MAX + 1 + i,
         )
         for i in range(2)
     ]
