@@ -252,12 +252,26 @@ def record_step_laddered(span: Span, exc: Exception, *, retried: bool) -> None:
     the distinction the row's ledger carries and the span echoes.
 
     A non-recording span takes nothing: rendering is the dominant cost
-    of a failed attempt (``_record_scrubbed_error``'s own law)."""
+    of a failed attempt (``_record_scrubbed_error``'s own law).
+
+    the ``error_class`` is the RECORD'S OWN TRUTH (#743 W-1): a
+    deterministic refusal can travel inside an ``ExceptionGroup`` (the
+    shape a body's ``asyncio.TaskGroup`` produces), and the row names the
+    deterministic LEAF's class. The span must agree with the row it
+    mirrors, never ``ExceptionGroup``. The leaf helper is imported at
+    call time — ``api._runner_ladder`` imports modules that in turn import
+    this one, so a module-level import would cycle."""
     if not span.is_recording():
         return
+    # Deferred: see the docstring (the ladder module's own import chain).
+    from taskq.workflows.api._runner_ladder import deterministic_failure_leaf
+
     span.add_event(
         "wf.laddered",
-        attributes={"error_class": type(exc).__qualname__, "retried": retried},
+        attributes={
+            "error_class": type(deterministic_failure_leaf(exc)).__qualname__,
+            "retried": retried,
+        },
     )
     record_exception_text(span, render_exception(exc))
 

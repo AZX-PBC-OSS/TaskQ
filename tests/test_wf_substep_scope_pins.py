@@ -887,7 +887,7 @@ async def test_a_duplicate_substep_in_a_loop_body_exhausts_the_loop_naming_the_c
             for r in await _ledger_rows(wf_conn, wf_schema, flow_id)
             if r["step_key"].endswith(".iter0/x")
         ]
-        if substep_rows:
+        if substep_rows and all(r["status"] != "running" for r in substep_rows):
             break
         await asyncio.sleep(0.05)
     assert fns == ["slow"], fns

@@ -24,7 +24,7 @@ from taskq.backend._protocol import JobId
 from taskq.constants import ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
-from taskq.workflows._progress import ProgressEmitter
+from taskq.workflows._progress import MESSAGE_TERMINAL_MAX, ProgressEmitter
 from taskq.workflows._types import FinalizeResult
 from taskq.workflows.api._attempt import AttemptClaim, repend_attempt
 from taskq.workflows.api._ctx import build_step_context
@@ -641,7 +641,8 @@ class LoopOps(_LoopHost):
                         flow_id,
                         row,
                         LOOP_ERROR_BODY,
-                        f"the loop body failed: {type(recorded).__name__}: {str(recorded)[:200]}",
+                        f"the loop body failed: {type(recorded).__name__}: "
+                        f"{str(recorded)[:MESSAGE_TERMINAL_MAX]}",
                         worker_id=self._worker_id,
                         attempt=attempt,
                         claim_epoch=claim_epoch,

@@ -506,7 +506,7 @@ one body (for example, both in one `asyncio.gather`) used to run both
 first one running. Uncaught, the error fails the
 node on its first attempt without spending the retry budget; in a loop
 body the loop exhausts as a body failure whose message names it.
-Fix the collision rather than retrying the node: the refused call is not
+Fix the collision rather than retrying the node: the running call is not
 cancelled, so an operator retry can run its effect a second time while
 the first call is still inside `fn`.
 `idempotent=False` calls write no row and are exempt.
@@ -516,12 +516,14 @@ or `<job id>.iter<n>/<name>` in a loop body. SQL that selected substep
 rows with `step_key = '<name>'` must select
 `step_key = job_id::text || '/<name>'` instead, or
 `step_key = job_id::text || '.iter<n>/<name>'` for loop iteration `<n>`.
-To match the name in every shape, loops included, select
+To match the name in every post-upgrade shape, loops included, select
 `starts_with(step_key, job_id::text) AND substr(step_key, strpos(step_key, '/') + 1) = '<name>'`.
 Node rows keep the node key. Rows written before the upgrade keep the
-bare name, so a query that must span the drain window also tests
-`OR step_key = '<name>'`; the replacement predicate alone can never
-match a bare row because it tests the row against its own `job_id`.
+bare name, so a query that must span the drain window selects the
+complete parenthesized predicate
+`((starts_with(step_key, job_id::text) AND substr(step_key, strpos(step_key, '/') + 1) = '<name>') OR step_key = '<name>')`;
+the post-upgrade predicate alone can never match a bare row because it
+tests the row against its own `job_id`.
 
 **Runs in flight across the upgrade.** A substep the old code recorded
 under the bare name is still replayed by its own node job (the read is

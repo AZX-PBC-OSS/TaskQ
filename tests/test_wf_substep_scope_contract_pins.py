@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""Three contract legs of the ``ctx.substep`` scope change.
+"""Four contract legs of the ``ctx.substep`` scope change.
 
 Each pin below passes on the shipped code and dies when the leg it names is
 mutated. The mutations reversed the memo's ``ORDER BY``, logged the legacy
@@ -24,9 +24,19 @@ suite (``test_wf_substep_scope_pins.py`` + the five updated selectors' files,
    Every committed loop pin asserts per-iteration BEHAVIOUR, which any
    distinct-per-iteration spelling satisfies; changing the scope's ``.iter``
    segment leaves them green and the published SQL silently empty.
+4. ``WorkflowSteps._record_terminal``'s fenced refusal trace. The terminal
+   write is ``UPDATE ... RETURNING id``; a ``None`` return means another
+   writer fenced the claim while ``fn`` was still executing (the phantom
+   reap's live-orphan shape). The warning must carry the flow, the job, the
+   row and the outcome it could not record. Reading an ``execute`` tag as if
+   it were the returning value drops the trace, and shadowing the ``status``
+   parameter records the driver's tag in place of the caller's outcome.
 """
 
 from __future__ import annotations
+
+import asyncio
+from typing import Any
 
 import asyncpg
 import structlog
@@ -46,6 +56,7 @@ from taskq.workflows import (
     step,
 )
 from taskq.workflows.api._hitl import HitlClient
+from taskq.workflows.engine import render_workflow_sql
 
 _LEGACY_EVENT = "workflow-substep-legacy-replay"
 
@@ -176,3 +187,95 @@ async def test_a_loop_bodys_substep_rows_carry_the_published_iteration_key(
     )
     substep_keys = sorted(r["step_key"] for r in keys if r["step_key"].startswith(str(job_id)))
     assert substep_keys == [f"{job_id}.iter0/x", f"{job_id}.iter1/x"], substep_keys
+
+
+async def test_a_fenced_substep_terminal_write_logs_the_flow_job_and_outcome(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The phantom reap fences a substep row whose ``fn`` is still running —
+    the node already terminalized, the flow terminal, this worker alive
+    inside the call. When ``fn`` returns, the guarded terminal write
+    (``LEDGER_TERMINAL_BY_ID_SQL``'s ``status IN (...)`` arm) matches no row.
+    The refusal must be traceable: one ``workflow-substep-terminal-refused``
+    warning naming the flow, the job, the substep key, the ledger row and
+    the outcome it could not record (``succeeded``), so a completed effect is
+    not silently reported as abandoned."""
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    started: list[str] = []
+    tasks: list[asyncio.Task[Any]] = []
+
+    async def slow() -> str:
+        started.append("slow")
+        entered.set()
+        await release.wait()
+        return "slow"
+
+    async def fast() -> str:
+        return "fast"
+
+    async def body(ctx: StepContext) -> list[str]:
+        first = asyncio.create_task(ctx.substep("x", slow))
+
+        async def second() -> Any:
+            # `first` must have committed its 'running' ledger row and entered
+            # `slow()` before the duplicate is raised, or the refusal can race
+            # the claim and this test pins the wrong thing.
+            await asyncio.wait_for(entered.wait(), timeout=10)
+            return await ctx.substep("x", fast)
+
+        other = asyncio.create_task(second())
+        tasks.extend((first, other))
+        return [str(v) for v in await asyncio.gather(first, other)]
+
+    app = WorkflowApp()
+
+    @app.workflow("substep_terminal_refused")
+    def wf() -> Promise[object]:
+        return build(step(body, key="dup", max_attempts=3))
+
+    runner = FlowRunner(app.get("substep_terminal_refused"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id, max_ticks=500) == "terminal"
+
+    try:
+        assert started == ["slow"], f"the refusal's shape changed: {started}"
+
+        job_id = await wf_conn.fetchval(
+            f'SELECT id FROM "{wf_schema}".jobs '
+            "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'dup'",
+            flow_id,
+        )
+        assert job_id is not None
+        substep_key = f"{job_id}/x"
+        row = await wf_conn.fetchrow(
+            f'SELECT id, status FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 AND step_key = $2',
+            flow_id,
+            substep_key,
+        )
+        assert row is not None and row["status"] == "running", row
+
+        reaped = await wf_conn.fetch(render_workflow_sql(wf_schema).phantom_reap)
+        assert [str(r["flow_id"]) for r in reaped if str(r["flow_id"]) == str(flow_id)] == [
+            str(flow_id)
+        ], f"the reaper did not fence the live substep row: {reaped}"
+
+        with structlog.testing.capture_logs() as logs:
+            release.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        refused = [e for e in logs if e["event"] == "workflow-substep-terminal-refused"]
+        assert len(refused) == 1, logs
+        entry = refused[0]
+        assert entry["flow_id"] == str(flow_id), entry
+        assert entry["job_id"] == str(job_id), entry
+        assert entry["step_key"] == substep_key, entry
+        assert entry["ledger_id"] == str(row["id"]), entry
+        assert entry["status"] == "succeeded", entry
+        assert entry["error_class"] is None, entry
+        assert entry["reason"] == "fenced", entry
+    finally:
+        # Never leave `slow` parked on `release.wait()` behind a failed
+        # assertion: the detached call is the thing under test, not a leak.
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)

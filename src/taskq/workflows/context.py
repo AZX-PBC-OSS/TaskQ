@@ -171,11 +171,16 @@ class WorkflowSteps:
         error_message: str | None,
     ) -> None:
         """The step ledger's terminal write on ITS own acquisition (the
-        the LedgerWatch F4 fix, leg 2: the terminal never rides a connection held from
+        LedgerWatch F4 fix, leg 2: the terminal never rides a connection held from
         the claim). The write keys the claim's OWN row id AND its own claim
         instant — the strongest identity there is
         (``claim_step_ledger`` returns a nonnull id and a nonnull
-        ``updated_at``; no four-expression fallback exists)."""
+        ``updated_at``; no four-expression fallback exists).
+
+        ``ledger_terminal_by_id`` is ``UPDATE ... RETURNING id``: the write
+        returns the row it touched, so a ``None`` here means the guard
+        matched nothing — another writer fenced the claim while this
+        execution was still inside ``fn``."""
         if claim.ledger_id is None or claim.claimed_at is None:
             # A memo/read projection (no actual claim behind it) has no
             # terminal of its own to record — manufacturing an identity
@@ -186,7 +191,7 @@ class WorkflowSteps:
                 "read projection and records no terminal"
             )
         async with self._pool.acquire() as conn:
-            status = await conn.execute(
+            written = await conn.fetchval(
                 self._wsql.ledger_terminal_by_id,
                 claim.ledger_id,
                 status,
@@ -196,17 +201,22 @@ class WorkflowSteps:
                 None,
                 claim.claimed_at,
             )
-        if status == "UPDATE 0":
+        if written is None:
             # The guarded write matched no row (#743 W-3): another writer
             # fenced the claim while this execution was still inside ``fn``
             # (the phantom reap's subject set is "the worker died", which a
             # terminalized node's live orphan can still enter). Silence here
             # records a completed effect as abandoned with no trace; the
-            # record's own value is already lost, so at least name it.
+            # record's own value is already lost, so at least name it —
+            # with the flow, the job, the row and the outcome the caller
+            # asked to record.
             logger.warning(
                 "workflow-substep-terminal-refused",
+                flow_id=str(self._flow_id),
+                job_id=str(self._job_id),
                 step_key=name,
                 ledger_id=str(claim.ledger_id),
                 status=status,
-                error_class="LedgerTerminalFenced",
+                error_class=error_class,
+                reason="fenced",
             )

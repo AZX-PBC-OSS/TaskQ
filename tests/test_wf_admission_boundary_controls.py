@@ -974,7 +974,7 @@ async def test_grouped_deterministic_error_terminals_on_the_first_violation(
         await asyncio.sleep(0.05)
     assert verdict is not None, "the grouped replay never terminalized"
     # THE DETERMINISTIC RECORD'S OWN CLASS (N2, tightened per L-1): the
-    # terminal names the deterministic LEAF (`_deterministic_error_class`)
+    # terminal names the deterministic LEAF (`deterministic_failure_leaf`)
     # — the wrapper's own name never reaches the durable row, and the
     # ledger check below is the second leg of the same law. A permissive
     # `or verdict == ("failed", "ExceptionGroup")` arm here would be dead

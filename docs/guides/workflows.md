@@ -397,7 +397,7 @@ running (for example, both inside one `asyncio.gather`) raises
 `DuplicateSubstepError` before it claims anything, and the running call
 is left alone. Uncaught, the error fails the node on its first attempt;
 in a loop body the loop exhausts as a body failure whose message names
-it. Fix the collision instead of retrying the node: because the refused
+it. Fix the collision instead of retrying the node: because the running
 call is not cancelled, a retry can run that effect a second time while
 the first call is still inside `fn`. `idempotent=False` calls write no
 row and are exempt. Give
