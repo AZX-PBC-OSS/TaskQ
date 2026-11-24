@@ -1984,8 +1984,8 @@ all-members semantics at the flow level.
 
 **The spawn's atomicity face.** The default
 slot is CLAIMED in one atomic statement (the increment of the attempt's
-cursor, which restarts at slot 0 on every claim (`claim_epoch`), and the
-returned slot are one row-CAS), so K CONCURRENT
+cursor, which restarts at slot 0 under each new claim (`claim_epoch`) and
+counts up within it, and the returned slot are one row-CAS), so K CONCURRENT
 spawns — `asyncio.gather(*[ctx.spawn_flow(...) for t in tenants])`, the
 natural fan-out spelling — take K DISTINCT slots and mint K DISTINCT
 children, each carrying its own input. A cursor read/write race would
@@ -1996,7 +1996,10 @@ concurrent spawn ADOPTS the same child (the arbiter's run-key CAS) and
 every caller receives THAT child's handle — the shared face.
 A deferral's re-run (`Snooze`, `RetryAfter(consume_budget=False)`) keeps
 the attempt number but is a new claim, so it re-derives slot 0 and
-adopts the child it already minted.
+adopts the child it already minted. A loop body is the exception: its
+iterations share the loop row's cursor, so after a resume or a deferral an
+unkeyed spawn in a later iteration re-derives slot 0 and adopts iteration
+0's child. A loop body that spawns passes a per-iteration `key=`.
 One discipline applies: a concurrent fan-out that must join STABLY
 across the resume passes `key=` (the slot's allocation order is the
 scheduler's; the author's identity is the caller's — a resumed body
@@ -2703,7 +2706,10 @@ The machinery, and the laws each piece carries:
   with the WAKE as the payload (`fired_by='timer'`, the timer's
   `key`, the `scheduled` and `fired_at` instants). The `'held' →
   'delivered'` CAS is the fence: a twice-fired timer is
-  unrepresentable, and a cancelled flow's timer never wakes.
+  unrepresentable, and a cancelled flow's timer never wakes. The sweep
+  is the wake's only owner: the fleet never claims a held row, so a due
+  timer, or a timed wait past its `timeout_s`, resumes on the next leader
+  sweep tick (`sweep_interval`, default 30 s) plus a dispatch poll.
 - **The durability is the design:** a worker DEATH mid-wait changes
   nothing — the hold row's expiry arms the reclaim, the successor's
   sweep fires the wake, the body resumes from the top (the

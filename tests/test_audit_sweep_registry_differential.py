@@ -767,3 +767,37 @@ async def test_audit_wf_arms_are_pure_appends_after_the_legacy_block(
     for name in _WF_ARMS:
         assert ("metric_rows", name, 0) in capable_events
         assert ("success", name) in capable_events
+
+
+async def test_audit_the_hold_stamp_reconcile_drains_within_its_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #748: the fleet's dispatch fence never claims a stamped row, so
+    the hold-stamp reconcile is the only repair for a dead stamp. A burst
+    wider than one batch clears within the tick (the bounded drain), never
+    one batch per ``sweep_interval``."""
+    import taskq.workflows._sweep as wf_sweep
+
+    script = deque([3, 0])
+    seen: list[int] = []
+
+    async def scripted(*_args: object, **_kwargs: object) -> int:
+        rows = script.popleft() if script else 0
+        seen.append(rows)
+        return rows
+
+    monkeypatch.setattr(wf_sweep, "sweep_hold_stamps", scripted)
+    capable_backend = ScriptedBackend(_success_scripts())
+    capable_backend.workflow_sweeps_capable = True  # type: ignore[reportAttributeAccessIssue]  # Why: the capability probe is a plain hasattr — the double declares the marker the real backend's class carries.
+    events = await _run_one_tick(
+        new_sweeps,
+        monkeypatch,
+        backend=capable_backend,
+        conn=_success_conn(),
+        until=_until_wf_arms_sampled(_all_success_calls()),
+    )
+    assert seen == [3, 0], (
+        f"the reconcile ran {seen} in one tick: a non-empty batch must engage the "
+        "in-tick drain until a pass clears nothing"
+    )
+    assert ("metric_rows", "wf_hold_stamp_reconcile", 3) in events

@@ -24,10 +24,11 @@ The per-claim spawn cursor on the executing node's
 row (``metadata.spawn_slot_{attempt}`` holds the claim's ``claim_epoch``
 beside the counter): every execution, including a re-claim at a refunded
 attempt number (a ``Snooze``, the lost-claim refund), restarts at slot 0,
-so the re-run re-derives the same slots and the arbiter adopts. The
-loop's iteration is ITS own node row (``<loop>.iter<i>``),
-so one rule covers the fan-out in a loop body: distinct iteration rows
-carry distinct cursors. An explicit ``key=`` overrides the slot (the
+so the re-run re-derives the same slots and the arbiter adopts. A loop's
+iterations run on the loop node's own row, so they share its cursor: after a
+resume or a deferral an unkeyed spawn in iteration k >= 1 re-derives slot 0
+and adopts iteration 0's child, so a loop body that spawns passes a
+per-iteration ``key=``. An explicit ``key=`` overrides the slot (the
 author's identity).
 
 The parent's node row
@@ -448,7 +449,9 @@ class CtxSpawnOps(_SpawnHost):
         refuses a terminal-less child (the join could never read a
         result). ``key=`` overrides the slot (the author's identity);
         the default slot is the per-claim spawn cursor (every execution
-        restarts at slot 0, so a retry or a deferral's re-run adopts).
+        restarts at slot 0, so a retry or a deferral's re-run adopts; a
+        loop body's iterations share the loop row's cursor, so a loop body
+        passes a per-iteration ``key=``).
         ``max_depth=`` raises the spawn's default depth bound
         (:data:`DEFAULT_SPAWN_MAX_DEPTH`) for a fan-out that genuinely
         needs it — the bound's typed arm is
@@ -619,16 +622,20 @@ WHERE id = $1
 #: the UPDATE. Concurrent claims serialize on the row lock and each receives
 #: a DISTINCT slot; a same-key spawn never reaches this statement (the
 #: explicit key bypasses the slot). One key per attempt number keeps the
-#: metadata bounded under a polling deferral, and a stale lapsed-lease body
-#: runs at a lower attempt, so it never resets the live claim's counter.
+#: metadata bounded under a polling deferral. The stored epoch only moves
+#: forward: a writer with an older epoch on the same key (a stale body whose
+#: lease lapsed, sharing the attempt number as a chain source's logical
+#: attempt does) takes the next slot and never resets the live claim's
+#: counter, or the live claim's next spawn would re-derive slot 0 and adopt
+#: its own first child.
 _SPAWN_SLOT_CLAIM_SQL = """
 UPDATE {schema}.jobs
 SET metadata = jsonb_set(
     metadata,
     ARRAY[$2::text],
     jsonb_build_object(
-        'epoch', $3::bigint,
-        'n', CASE WHEN (metadata->$2->>'epoch')::bigint = $3::bigint
+        'epoch', GREATEST($3::bigint, (metadata->$2->>'epoch')::bigint),
+        'n', CASE WHEN (metadata->$2->>'epoch')::bigint >= $3::bigint
                   THEN (metadata->$2->>'n')::int + 1 ELSE 0 END
     )
 )

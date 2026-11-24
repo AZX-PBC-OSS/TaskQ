@@ -1179,17 +1179,18 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             # SIGKILL wedge's repair): the hold's state decides — still 'held' →
             # the held representation stands; delivered/abandoned/
             # cancelled/absent → the stamp cleared + the row re-claims.
-            # not a drain: the predicate self-consumes (a cleared row
-            # loses the stamp; a live hold never takes a batch slot), a
-            # second pass returns zero, and the statement is batch-bounded
-            # by LIMIT.
+            # a drain (issue #748): the fleet's dispatch fence never claims
+            # a stamped row, so this arm is a dead stamp's only repair; the
+            # predicate self-consumes (a cleared row loses the stamp; a live
+            # hold never takes a batch slot), so the drain stops on the
+            # first empty pass.
             name="wf_hold_stamp_reconcile",
             call=wf_hold_stamp_reconcile_call,
             warn_event="sweep-wf-hold-stamp-reconcile-failed",
             warn_kind="sweep_wf_hold_stamp_reconcile_failed",
             gated_on=("workflow_sweeps_capable",),
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
-            drain=False,
+            drain=True,
             dbg_tick=_dbg_tick("wf_hold_stamp_reconcile_tick"),
         ),
         _SweepSpec(

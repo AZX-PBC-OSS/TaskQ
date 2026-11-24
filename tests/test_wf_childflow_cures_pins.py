@@ -3,7 +3,7 @@ concurrency, recursion, retention, crash, and redeploy.
 
 * the ASYNCIO.GATHER CONTRACT: the natural
   fan-out spelling ``gather(*[ctx.spawn_flow(...) for t in tenants])``
-  mints K children with K distinct verdicts — the per-attempt spawn
+  mints K children with K distinct verdicts — the per-claim spawn
   cursor's read/write is atomic (non-atomic, K
   concurrent spawns all adopt the same slot (run key), and the
   arbiter's conflict path hands every caller the one child's handle:

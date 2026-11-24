@@ -44,13 +44,15 @@ from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.backend._protocol import JobId
 from taskq.backend._sql_templates import render
 from taskq.backend._sweeps import sweep_expired_locks, sweep_scheduled_to_pending
-from taskq.exceptions import Snooze
+from taskq.exceptions import RetryAfter, Snooze
 from taskq.settings import WorkerSettings
 from taskq.worker.run import register_worker
 from taskq.workflows import Done, FlowRunner, Promise, StepContext, WorkflowApp, build, loop, step
 from taskq.workflows._sql import WorkflowSql
-from taskq.workflows._sweep import sweep_join_rederive
+from taskq.workflows._sweep import sweep_hold_stamps, sweep_join_rederive
+from taskq.workflows.api._ctx import build_step_context
 from taskq.workflows.api._hitl import sweep_child_joins
+from taskq.workflows.engine import render_workflow_sql
 
 
 class _Leaf(BaseModel):
@@ -321,15 +323,18 @@ async def test_a_reentered_join_on_its_own_standing_hold_parks_the_row(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("deferral", ["snooze", "retry_after"])
 async def test_a_deferred_spawning_body_re_runs_onto_its_own_child(
+    deferral: str,
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_pool: asyncpg.Pool,
     pg_dsn: str,
 ) -> None:
-    """``Snooze`` after an unkeyed spawn: the deferral refunds the claim's
-    attempt (a deferral did not execute), so the re-run carries the same
-    ``attempt`` as the first execution. The spawn's default slot is the
+    """``Snooze`` (or ``RetryAfter(consume_budget=False)``) after an unkeyed
+    spawn: the deferral refunds the claim's attempt (a deferral did not
+    execute), so the re-run carries the same ``attempt`` as the first
+    execution. The spawn's default slot is the
     per-execution cursor's: the re-run adopts the child it already minted."""
     suffix = new_uuid().hex[:12]
     child_name = f"i748_child_{suffix}"
@@ -339,7 +344,9 @@ async def test_a_deferred_spawning_body_re_runs_onto_its_own_child(
         handle = await ctx.spawn_flow(child_name, result=_Leaf)
         entries.append((ctx.attempt, str(handle.flow_id)))
         if len(entries) == 1:  # the entry count, never ctx.attempt: the refund repeats it
-            raise Snooze(timedelta(0))
+            if deferral == "snooze":
+                raise Snooze(timedelta(0))
+            raise RetryAfter(timedelta(0), consume_budget=False)
         return 0
 
     child_c, parent_c = _compile(suffix, wrap)
@@ -368,9 +375,9 @@ async def test_a_deferred_spawning_body_re_runs_onto_its_own_child(
     children = await _children(wf_conn, wf_schema, flow_id)
     assert entries[0][1] == entries[1][1] and children == 1, (
         f"the re-run under the refunded attempt minted a NEW child: entries={entries}, "
-        f"child roots={children}. The default slot is the spawn_cursor_{{attempt}} "
-        "counter, which the first execution already advanced; a deferral's refund "
-        "hands the next execution the same attempt number"
+        f"child roots={children}. The default slot must restart at 0 for every claim: "
+        "a deferral's refund hands the next execution the same attempt number, so a "
+        "counter keyed by the attempt alone has already moved"
     )
     # The slot cursor's shape: the attempt's key carries the claim that last
     # spawned under it, so a claim_epoch dropped on the way to the context
@@ -726,3 +733,129 @@ async def test_an_in_process_reentry_re_parks_onto_its_standing_hold(
         f"{after['status']!r} locked by {after['locked_by_worker']} with stamp "
         f"{_meta(after['metadata']).get('hold')!r} (standing hold {standing['id']})"
     )
+
+
+@pytest.mark.integration
+async def test_a_stale_writer_sharing_the_attempt_never_collapses_the_live_claim_s_slots(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+) -> None:
+    """Two executions can share one attempt number while both run: a chain
+    source's ``ctx.attempt`` is its logical attempt, which a lease reclaim
+    never advances. The live claim's first unkeyed spawn adopts slot 0 (the
+    re-run law); a stale body's later spawn must not reset the counter under
+    it, or the live claim's next spawn re-derives slot 0 and adopts its own
+    first child (the silent fabricated result). The epoch only moves forward:
+    the stale writer takes the next slot instead (base's duplicate)."""
+    suffix = new_uuid().hex[:12]
+    child_name = f"i748_child_{suffix}"
+
+    async def wrap(ctx: StepContext) -> int:
+        return 0
+
+    _child_c, parent_c = _compile(suffix, wrap)
+    flow_id = (await FlowRunner(parent_c, wf_pool, wf_schema).create_flow()).flow_id
+    wrap_id = JobId((await _wrap(wf_conn, wf_schema, flow_id))["id"])
+    wsql = render_workflow_sql(wf_schema)
+
+    def ctx_at(epoch: int) -> StepContext:
+        return build_step_context(
+            flow_id=flow_id,
+            job_id=wrap_id,
+            node_key="wrap",
+            attempt=1,
+            pool=wf_pool,
+            wsql=wsql,
+            input=None,
+            claim_epoch=epoch,
+        )
+
+    stale, live = ctx_at(1), ctx_at(2)
+    s1 = await stale.spawn_flow(child_name, result=_Leaf)  # before its lease lapsed
+    l1 = await live.spawn_flow(child_name, result=_Leaf)  # the re-run adopts slot 0
+    s2 = await stale.spawn_flow(child_name, result=_Leaf)
+    l2 = await live.spawn_flow(child_name, result=_Leaf)
+    meta = _meta((await _wrap(wf_conn, wf_schema, flow_id))["metadata"])
+    assert l1.flow_id == s1.flow_id  # the adoption law, unchanged
+    assert len({l1.flow_id, s2.flow_id, l2.flow_id}) == 3, (
+        "an older claim_epoch reset the attempt's slot counter under the live "
+        f"claim: live=({l1.flow_id}, {l2.flow_id}) stale=({s1.flow_id}, {s2.flow_id}) "
+        f"spawn_slot_1={meta.get('spawn_slot_1')}"
+    )
+    assert meta.get("spawn_slot_1") == {"epoch": 2, "n": 2}
+
+
+@pytest.mark.integration
+async def test_a_delivery_inside_the_reentry_window_is_repaired_by_the_reconcile(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    pg_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The accepted race: a delivery commits between the re-entered wait's
+    standing-hold read and its re-park. The deliver finds no stamped node to
+    resume, the re-park then stamps a hold that is no longer 'held', and the
+    fleet refuses the stamped row. The leader's hold-stamp reconcile is the
+    repair: one pass clears the dead stamp and the next claim completes the
+    body on the delivered answer."""
+    import taskq.workflows.api._hitl as hitl
+
+    suffix = new_uuid().hex[:12]
+    stalled = asyncio.Event()
+    release = asyncio.Event()
+
+    async def wrap(ctx: StepContext) -> str:
+        if ctx.attempt == 1:
+            stalled.set()
+            await release.wait()
+        answer = await ctx.wait_signal(_Approval)
+        assert isinstance(answer, _Approval)
+        return answer.verdict
+
+    child_c, parent_c = _compile(suffix, wrap)
+    flow_id = (await FlowRunner(parent_c, wf_pool, wf_schema).create_flow()).flow_id
+    worker_id = await _fleet(wf_conn, wf_pool, wf_schema, pg_dsn)
+    runners = {
+        "parent": FlowRunner(parent_c, wf_pool, wf_schema, worker_id=worker_id),
+        "child": FlowRunner(child_c, wf_pool, wf_schema, worker_id=worker_id),
+    }
+    standing = await _lapse_into_unstamped_hold(
+        wf_conn, wf_schema, runners, worker_id, flow_id, stalled, release
+    )
+
+    real_reassert = hitl.reassert_hold
+    raced: list[str] = []
+
+    async def deliver_first(conn: Any, **kw: Any) -> None:
+        result = await hitl.HitlClient(wf_pool, schema=wf_schema).resolve(
+            kw["hold_id"], {"verdict": "approve"}, principal="pin"
+        )
+        raced.append(result.status)
+        await real_reassert(conn, **kw)
+
+    monkeypatch.setattr(hitl, "reassert_hold", deliver_first)
+    again = await _claim(wf_conn, wf_schema, worker_id, limit=10)
+    wraps = [r for r in again if r["step_key"] == "wrap"]
+    assert len(wraps) == 1 and wraps[0]["attempt"] == 2
+    assert await _run(runners, wraps[0]) == "held"
+    monkeypatch.setattr(hitl, "reassert_hold", real_reassert)
+    assert raced == ["refused"]  # the CAS committed; no stamped node to resume
+
+    parked = await _wrap(wf_conn, wf_schema, flow_id)
+    signal = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".wf_signals WHERE id = $1', standing["id"]
+    )
+    assert (parked["status"], _meta(parked["metadata"]).get("hold"), signal) == (
+        "pending",
+        str(standing["id"]),
+        "delivered",
+    )
+    probed = len(await wf_conn.fetch(render(wf_schema).dispatch_claimable_probe, ["default"]))
+    assert (probed, await _claim(wf_conn, wf_schema, worker_id, limit=10)) == (0, [])
+
+    assert await sweep_hold_stamps(wf_pool, render_workflow_sql(wf_schema)) == 1
+    resumed = await _claim(wf_conn, wf_schema, worker_id, limit=10)
+    assert [(r["step_key"], r["attempt"]) for r in resumed] == [("wrap", 3)]
+    assert await _run(runners, resumed[0]) == "succeeded"

@@ -513,7 +513,7 @@ async def reassert_hold(
     *,
     schema: str,
     node_id: JobId,
-    hold_id: object,
+    hold_id: JobId,
     signal_name: str,
     expires_at: datetime | None,
     claim_epoch: int,
@@ -522,14 +522,23 @@ async def reassert_hold(
     its own standing hold, so the node is parked onto it exactly as the mint
     parked it (pending, unlocked, the stamp, the hold's deadline, a loop's
     budget paused). Claim-fenced: a row that already rests held, or that a
-    newer claim now runs (a stale body whose lease lapsed), matches nothing."""
-    await conn.execute(
+    newer claim now runs (a stale body whose lease lapsed), matches nothing.
+    A delivery that lands between the caller's standing-hold read and this
+    park leaves a dead stamp; the leader's hold-stamp reconcile clears it."""
+    parked = await conn.fetchval(
         _render(_HOLD_HOLD_NODE_SQL, schema),
         node_id,
         dumps_jsonb_str({"hold": str(hold_id), "held_signal": signal_name}),
         expires_at,
         claim_epoch,
     )
+    if parked is None:
+        logger.debug(
+            "wf-hold-reassert-fenced",
+            node_id=str(node_id),
+            hold_id=str(hold_id),
+            claim_epoch=claim_epoch,
+        )
 
 
 async def register_hold(
