@@ -167,6 +167,16 @@ async def _children(conn: asyncpg.Connection, schema: str, flow_id: JobId) -> in
     )
 
 
+async def _child_keys(conn: asyncpg.Connection, schema: str, flow_id: JobId) -> list[str]:
+    """The child roots' run keys (the spawn's identity the arbiter remembers)."""
+    rows = await conn.fetch(
+        f"SELECT idempotency_key FROM \"{schema}\".jobs WHERE step_key = '__flow__' "
+        "AND metadata->>'parent_flow_id' = $1::text ORDER BY idempotency_key",
+        str(flow_id),
+    )
+    return [str(r["idempotency_key"]) for r in rows]
+
+
 async def _held_signals(conn: asyncpg.Connection, schema: str, flow_id: JobId) -> list[str]:
     rows = await conn.fetch(
         f'SELECT id FROM "{schema}".wf_signals WHERE workflow_id = $1 '
@@ -389,6 +399,8 @@ async def test_a_deferred_spawning_body_re_runs_onto_its_own_child(
         "a deferral's refund hands the next execution the same attempt number, so a "
         "counter keyed by the attempt alone has already moved"
     )
+    # a step outside a loop keeps its pre-#748 run key byte for byte
+    assert await _child_keys(wf_conn, wf_schema, flow_id) == [f"childflow:{flow_id}:wrap:0"]
     # The slot cursor's shape: the attempt's key carries the claim that last
     # spawned under it, so a claim_epoch dropped on the way to the context
     # (the 0 default) is visible here, never a silent per-attempt fallback.
@@ -872,16 +884,20 @@ async def test_a_delivery_inside_the_reentry_window_is_repaired_by_the_reconcile
 
 
 @pytest.mark.integration
-async def test_a_loop_body_s_per_iteration_key_survives_a_deferred_iteration(
+@pytest.mark.parametrize("keyed", [False, True], ids=["unkeyed", "keyed"])
+async def test_a_deferred_loop_iteration_re_runs_onto_its_own_iteration_s_child(
+    keyed: bool,
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_pool: asyncpg.Pool,
     pg_dsn: str,
 ) -> None:
-    """The documented discipline for a spawning loop body: its iterations share
-    the loop row's cursor, so the body passes a per-iteration ``key=``. With
-    it, a ``Snooze`` in iteration 1 re-runs onto iteration 1's own child, and
-    iteration 0's child is never adopted in its place."""
+    """A loop's iterations run on the loop node's one row, under one attempt
+    and claim. A ``Snooze`` in iteration 1 refunds the attempt; the re-run
+    replays iteration 0 from the memo and re-runs iteration 1, whose spawn must
+    adopt iteration 1's own child, never iteration 0's (the unkeyed spawn
+    scopes its slot cursor and its run key to the iteration) and never a
+    fresh duplicate. An explicit ``key=`` keeps the author's run key as is."""
     suffix = new_uuid().hex[:12]
     child_name = f"i748_child_{suffix}"
     spawns: list[tuple[int, str]] = []
@@ -893,7 +909,8 @@ async def test_a_loop_body_s_per_iteration_key_survives_a_deferred_iteration(
 
     async def body(ctx: StepContext, carry: object) -> object:
         iteration = 0 if carry is None else int(str(carry))
-        handle = await ctx.spawn_flow(child_name, result=_Leaf, key=f"it{iteration}")
+        key = f"it{iteration}" if keyed else None
+        handle = await ctx.spawn_flow(child_name, result=_Leaf, key=key)
         spawns.append((iteration, str(handle.flow_id)))
         if iteration == 0:
             return Refine(1)
@@ -926,5 +943,12 @@ async def test_a_loop_body_s_per_iteration_key_survives_a_deferred_iteration(
     assert [r["attempt"] for r in again] == [1]  # the refunded attempt number
     await _run(runners, again[0])
     assert [i for i, _ in spawns] == [0, 1, 1]  # iteration 0 replayed from the memo
-    assert spawns[2][1] == spawns[1][1] != spawns[0][1], spawns
+    assert spawns[2][1] == spawns[1][1] != spawns[0][1], (
+        "iteration 1's re-run after its Snooze did not adopt iteration 1's own "
+        f"child (0 = iteration 0's, 1 = iteration 1's first run, 2 = the re-run): {spawns}"
+    )
     assert await _children(wf_conn, wf_schema, flow_id) == 2
+    scopes = ["wrap:it0", "wrap:it1"] if keyed else ["wrap.iter0:0", "wrap.iter1:0"]
+    assert await _child_keys(wf_conn, wf_schema, flow_id) == [
+        f"childflow:{flow_id}:{scope}" for scope in scopes
+    ]

@@ -1996,10 +1996,16 @@ concurrent spawn ADOPTS the same child (the arbiter's run-key CAS) and
 every caller receives THAT child's handle — the shared face.
 A deferral's re-run (`Snooze`, `RetryAfter(consume_budget=False)`) keeps
 the attempt number but is a new claim, so it re-derives slot 0 and
-adopts the child it already minted. A loop body is the exception: its
-iterations share the loop row's cursor, so after a resume or a deferral an
-unkeyed spawn in a later iteration re-derives slot 0 and adopts iteration
-0's child. A loop body that spawns passes a per-iteration `key=`.
+adopts the child it already minted. In a loop body the cursor and the
+default run key are per iteration (`<key>.iter<i>`, the ledger's iteration
+key), so a resume or a deferral that re-runs iteration k adopts k's own
+children; `key=` stays available there as anywhere. Upgrading from a
+release whose loop iterations shared the cursor: a loop run that spawned
+unkeyed under the old release and re-runs that iteration after the upgrade
+derives the new key and mints the iteration's unkeyed children once more
+(the duplicate the old release already minted on a deferral); during a
+rolling deploy old and new workers derive different keys, so it can happen
+in either direction. Keyed spawns and spawns outside a loop keep their keys.
 One discipline applies: a concurrent fan-out that must join STABLY
 across the resume passes `key=` (the slot's allocation order is the
 scheduler's; the author's identity is the caller's — a resumed body

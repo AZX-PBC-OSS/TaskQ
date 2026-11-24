@@ -60,6 +60,7 @@ def build_step_context(
     budget_remaining_ms: int | None = None,
     physical_attempt: int | None = None,
     run_priority: int | None = None,
+    loop_iteration: int | None = None,
 ) -> StepContext:
     """The one context construction (the claim seam's factory): the
     runner's step path and the loop driver's iteration path build the
@@ -74,6 +75,7 @@ def build_step_context(
         _wsql=wsql,
         _map_index=map_index,
         _is_loop=is_loop,
+        _loop_iteration=loop_iteration,
         _ledger_id=ledger_id,
         _workflow_name=workflow_name,
         _redact=redact,
@@ -116,6 +118,9 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     _wsql: WorkflowSql
     _map_index: int | None = None
     _is_loop: bool = False
+    #: The loop body's iteration (``None`` outside a loop body): an unkeyed
+    #: spawn's slot cursor and run key are scoped to it.
+    _loop_iteration: int | None = None
     _ledger_id: JobId | None = None
     #: The registered workflow's name (D1 — the signal-model catalog's
     #: key; the hold-context redact hook's resolution).
