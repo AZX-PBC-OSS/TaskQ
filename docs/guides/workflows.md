@@ -1996,16 +1996,21 @@ concurrent spawn ADOPTS the same child (the arbiter's run-key CAS) and
 every caller receives THAT child's handle — the shared face.
 A deferral's re-run (`Snooze`, `RetryAfter(consume_budget=False)`) keeps
 the attempt number but is a new claim, so it re-derives slot 0 and
-adopts the child it already minted. In a loop body the cursor and the
-default run key are per iteration (`<key>.iter<i>`, the ledger's iteration
-key), so a resume or a deferral that re-runs iteration k adopts k's own
-children; `key=` stays available there as anywhere. Upgrading from a
-release whose loop iterations shared the cursor: a loop run that spawned
-unkeyed under the old release and re-runs that iteration after the upgrade
-derives the new key and mints the iteration's unkeyed children once more
-(the duplicate the old release already minted on a deferral); during a
-rolling deploy old and new workers derive different keys, so it can happen
-in either direction. Keyed spawns and spawns outside a loop keep their keys.
+adopts the child it already minted. In a loop body the default spawn is
+per iteration: the cursor is `spawn_slot_<attempt>.iter<i>` and the run
+key's node segment is `<key>.iter<i>` (the ledger's iteration key), so a
+resume or a deferral that re-runs iteration k adopts k's own children.
+An explicit `key=` is the author's identity and is never scoped to an
+iteration: a constant key in a loop body names ONE child, which every
+iteration adopts, so a body that wants a child per iteration puts the
+iteration in its key. Upgrading from a release whose loop iterations
+shared the cursor: an iteration that spawned unkeyed under the old
+release and runs again after the upgrade (a deferral, a hold or join
+resume, a reclaim; iteration 0 too) derives the new key and mints its
+unkeyed children once more, and a join resumed that way waits on the new
+child while the first one's result goes unread. During a rolling deploy
+old and new workers derive different keys, so it can happen in either
+direction. Keyed spawns and spawns outside a loop keep their keys.
 One discipline applies: a concurrent fan-out that must join STABLY
 across the resume passes `key=` (the slot's allocation order is the
 scheduler's; the author's identity is the caller's — a resumed body

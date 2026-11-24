@@ -1251,6 +1251,15 @@ raises, so nothing points you at the call site; audit for them explicitly.
   and it reports the dropped remainder count. The bound follows
   `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` when raised.
 
+* **An unkeyed `ctx.spawn_flow` in a loop body gets a per-iteration run key.**
+  The default run key's node segment is now `<key>.iter<i>`, so a re-run of
+  iteration k adopts k's own children. A loop run in flight across the
+  upgrade that spawned unkeyed under the old release mints that iteration's
+  unkeyed children once more when the iteration runs again, and during a
+  rolling deploy it can happen in either direction. Keyed spawns and spawns
+  outside a loop keep their keys. See the spawn's atomicity face in
+  [Workflows](workflows.md) §3b.
+
 ### Terminal outcome writes raise on drift instead of falling through silently
 
 > **Unreleased.** Backend implementors and test-twin drivers see a new

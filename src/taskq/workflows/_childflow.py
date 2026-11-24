@@ -29,8 +29,8 @@ so the re-run re-derives the same slots and the arbiter adopts. A loop's
 iterations run on the loop node's own row under one claim, so each iteration
 keeps its own cursor (``spawn_slot_{attempt}.iter{i}``) and its own run keys:
 a resume or a deferral that re-runs iteration k restarts at k's slot 0 and
-adopts k's child. An explicit ``key=`` overrides the slot (the author's
-identity).
+adopts k's children. An explicit ``key=`` overrides the slot (the author's
+identity, never scoped to an iteration).
 
 The parent's node row
 carries the child's flow id (``metadata.child_flows`` — the idempotent
@@ -449,11 +449,12 @@ class CtxSpawnOps(_SpawnHost):
         ``result=`` is the child's typed result contract (type[BaseModel])
         — the join's ``ChildOk.result`` re-validates into it; the spawn
         refuses a terminal-less child (the join could never read a
-        result). ``key=`` overrides the slot (the author's identity);
-        the default slot is the per-claim spawn cursor (every execution
-        restarts at slot 0, so a retry or a deferral's re-run adopts; in a
-        loop body the cursor and the run key are per iteration, so a re-run
-        iteration adopts its own children).
+        result). ``key=`` overrides the slot (the author's identity, the
+        same key in every loop iteration unless the author puts the
+        iteration in it); the default slot is the per-claim spawn cursor
+        (every execution restarts at slot 0, so a retry or a deferral's
+        re-run adopts; in a loop body the cursor and the run key are per
+        iteration, so a re-run of iteration k adopts k's own children).
         ``max_depth=`` raises the spawn's default depth bound
         (:data:`DEFAULT_SPAWN_MAX_DEPTH`) for a fan-out that genuinely
         needs it — the bound's typed arm is
@@ -542,9 +543,9 @@ class CtxSpawnOps(_SpawnHost):
         else:
             # a loop's iterations share one row and one claim: the cursor and
             # the key carry the iteration (the ledger's <key>.iter<i>), so a
-            # re-run of iteration k restarts at k's slot 0 and adopts k's child
-            iteration = "" if self._loop_iteration is None else f".iter{self._loop_iteration}"
-            cursor_key = f"spawn_slot_{self.attempt}{iteration}"
+            # re-run of iteration k restarts at k's slot 0 and adopts k's children
+            iter_suffix = "" if self._loop_iteration is None else f".iter{self._loop_iteration}"
+            cursor_key = f"spawn_slot_{self.attempt}{iter_suffix}"
             async with self._pool.acquire() as conn:
                 slot = await conn.fetchval(
                     render_sql(_SPAWN_SLOT_CLAIM_SQL, self._wsql.schema),
@@ -553,7 +554,7 @@ class CtxSpawnOps(_SpawnHost):
                     self.claim_epoch,
                 )
             assert slot is not None  # the claim's UPDATE hit the executing node's row
-            spawn_key = f"childflow:{self.flow_id}:{self.node_key}{iteration}:{int(slot)}"
+            spawn_key = f"childflow:{self.flow_id}:{self.node_key}{iter_suffix}:{int(slot)}"
 
         from taskq.workflows.api._runner import FlowRunner
 
@@ -627,14 +628,15 @@ WHERE id = $1
 #: and restarts at 0 under any other, and the allocated slot returns from
 #: the UPDATE. Concurrent claims serialize on the row lock and each receives
 #: a DISTINCT slot; a same-key spawn never reaches this statement (the
-#: explicit key bypasses the slot). One key per attempt number (per attempt
-#: and iteration in a loop body, the same order as the ``child_flows``
-#: receipts) keeps the metadata bounded under a polling deferral. The stored
-#: epoch only moves forward: a writer with an older epoch on the same key (a stale body whose
-#: lease lapsed, sharing the attempt number as a chain source's logical
-#: attempt does) takes the next slot and never resets the live claim's
-#: counter, or the live claim's next spawn would re-derive slot 0 and adopt
-#: its own first child.
+#: explicit key bypasses the slot). One key per attempt number keeps the
+#: metadata bounded under a polling deferral; a loop body keys per attempt
+#: and iteration, so a spawning loop adds one key per spawning iteration,
+#: growing at the rate of the ``child_flows`` receipts those spawns append.
+#: The stored epoch only moves forward: a writer with an older epoch on the
+#: same key (a stale body whose lease lapsed, sharing the attempt number as
+#: a chain source's logical attempt does) takes the next slot and never
+#: resets the live claim's counter, or the live claim's next spawn would
+#: re-derive slot 0 and adopt its own first child.
 _SPAWN_SLOT_CLAIM_SQL = """
 UPDATE {schema}.jobs
 SET metadata = jsonb_set(

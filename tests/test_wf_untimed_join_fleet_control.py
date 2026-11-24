@@ -894,10 +894,12 @@ async def test_a_deferred_loop_iteration_re_runs_onto_its_own_iteration_s_child(
 ) -> None:
     """A loop's iterations run on the loop node's one row, under one attempt
     and claim. A ``Snooze`` in iteration 1 refunds the attempt; the re-run
-    replays iteration 0 from the memo and re-runs iteration 1, whose spawn must
-    adopt iteration 1's own child, never iteration 0's (the unkeyed spawn
-    scopes its slot cursor and its run key to the iteration) and never a
-    fresh duplicate. An explicit ``key=`` keeps the author's run key as is."""
+    resumes at iteration 1 from the row's counter (iteration 0 never runs
+    again), and iteration 1's two spawns must adopt iteration 1's own two
+    children in order, never iteration 0's (the unkeyed spawn scopes its slot
+    cursor and its run key to the iteration, and the cursor still counts up
+    within it) and never a fresh duplicate. An explicit ``key=`` keeps the
+    author's run key as is."""
     suffix = new_uuid().hex[:12]
     child_name = f"i748_child_{suffix}"
     spawns: list[tuple[int, str]] = []
@@ -914,7 +916,10 @@ async def test_a_deferred_loop_iteration_re_runs_onto_its_own_iteration_s_child(
         spawns.append((iteration, str(handle.flow_id)))
         if iteration == 0:
             return Refine(1)
-        if len(spawns) == 2:  # iteration 1's first execution defers
+        # a second spawn in the same iteration takes the iteration's next slot
+        second = await ctx.spawn_flow(child_name, result=_Leaf, key=f"{key}b" if keyed else None)
+        spawns.append((iteration, str(second.flow_id)))
+        if len(spawns) == 3:  # iteration 1's first execution defers
             raise Snooze(timedelta(0))
         return Done({"ok": True})
 
@@ -942,13 +947,86 @@ async def test_a_deferred_loop_iteration_re_runs_onto_its_own_iteration_s_child(
     ]
     assert [r["attempt"] for r in again] == [1]  # the refunded attempt number
     await _run(runners, again[0])
-    assert [i for i, _ in spawns] == [0, 1, 1]  # iteration 0 replayed from the memo
-    assert spawns[2][1] == spawns[1][1] != spawns[0][1], (
-        "iteration 1's re-run after its Snooze did not adopt iteration 1's own "
-        f"child (0 = iteration 0's, 1 = iteration 1's first run, 2 = the re-run): {spawns}"
+    # the re-run resumes at iteration 1 (the row's counter): iteration 0 never re-runs
+    assert [i for i, _ in spawns] == [0, 1, 1, 1, 1]
+    flows = [f for _, f in spawns]
+    assert len(set(flows[:3])) == 3 and flows[3:] == flows[1:3], (
+        "iteration 1's re-run after its Snooze did not adopt iteration 1's own two "
+        f"children in order (0 = iteration 0's, 1-2 = iteration 1's first run, "
+        f"3-4 = the re-run): {spawns}"
     )
-    assert await _children(wf_conn, wf_schema, flow_id) == 2
-    scopes = ["wrap:it0", "wrap:it1"] if keyed else ["wrap.iter0:0", "wrap.iter1:0"]
+    assert await _children(wf_conn, wf_schema, flow_id) == 3
+    scopes = (
+        ["wrap:it0", "wrap:it1", "wrap:it1b"]
+        if keyed
+        else ["wrap.iter0:0", "wrap.iter1:0", "wrap.iter1:1"]
+    )
     assert await _child_keys(wf_conn, wf_schema, flow_id) == [
         f"childflow:{flow_id}:{scope}" for scope in scopes
     ]
+
+
+@pytest.mark.integration
+async def test_a_join_resumed_loop_iteration_adopts_its_own_iteration_s_child(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    wf_sql: WorkflowSql,
+    pg_dsn: str,
+) -> None:
+    """The resume face of the same law: iteration 1 spawns unkeyed and holds
+    on its child's join; the join's wake resumes the loop row under a new
+    claim (attempt 2, a fresh cursor key), iteration 1 runs again, and its
+    spawn must return iteration 1's child, never iteration 0's, never a
+    third child."""
+    suffix = new_uuid().hex[:12]
+    child_name = f"i748_child_{suffix}"
+    spawns: list[tuple[int, str]] = []
+
+    async def unused(ctx: StepContext) -> int:
+        return 0
+
+    child_c, _ = _compile(suffix, unused)
+
+    async def body(ctx: StepContext, carry: object) -> object:
+        iteration = 0 if carry is None else int(str(carry))
+        handle = await ctx.spawn_flow(child_name, result=_Leaf)
+        spawns.append((iteration, str(handle.flow_id)))
+        if iteration == 0:
+            return Refine(1)
+        await handle.wait()  # iteration 1 holds on its own child's join
+        return Done({"ok": True})
+
+    parent_c = _compile_loop(suffix, body)
+    flow_id = (await FlowRunner(parent_c, wf_pool, wf_schema).create_flow()).flow_id
+    worker_id = await _fleet(wf_conn, wf_pool, wf_schema, pg_dsn)
+    runners = {
+        "parent": FlowRunner(parent_c, wf_pool, wf_schema, worker_id=worker_id),
+        "child": FlowRunner(child_c, wf_pool, wf_schema, worker_id=worker_id),
+    }
+    first = [
+        r for r in await _claim(wf_conn, wf_schema, worker_id, limit=10) if r["step_key"] == "wrap"
+    ]
+    assert [r["attempt"] for r in first] == [1]
+    assert await _run(runners, first[0]) in ("held", "loop")
+    leaves = await _claim(wf_conn, wf_schema, worker_id, limit=10)
+    assert sorted(r["step_key"] for r in leaves) == ["leaf", "leaf"], leaves
+    for leaf in leaves:
+        assert await _run(runners, leaf) == "succeeded"
+    await sweep_join_rederive(wf_pool, wf_sql)
+    assert await sweep_child_joins(wf_pool, wf_sql) == 1
+    resumed = [
+        r for r in await _claim(wf_conn, wf_schema, worker_id, limit=10) if r["step_key"] == "wrap"
+    ]
+    assert [r["attempt"] for r in resumed] == [2]
+    await _run(runners, resumed[0])
+    assert [i for i, _ in spawns] == [0, 1, 1], spawns
+    assert spawns[2][1] == spawns[1][1] != spawns[0][1], (
+        f"the join-resumed iteration 1 did not adopt iteration 1's own child: {spawns}"
+    )
+    assert await _children(wf_conn, wf_schema, flow_id) == 2
+    assert await _child_keys(wf_conn, wf_schema, flow_id) == [
+        f"childflow:{flow_id}:wrap.iter0:0",
+        f"childflow:{flow_id}:wrap.iter1:0",
+    ]
+    assert (await _wrap(wf_conn, wf_schema, flow_id))["status"] == "succeeded"
