@@ -103,7 +103,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         PageDivergedError,
     )
     from taskq.workflows._progress import ProgressRefusedError
-    from taskq.workflows.api._runner_errors import VanishedNodeError
+    from taskq.workflows.api._runner_errors import DuplicateSubstepError, VanishedNodeError
     from taskq.workflows.definitions import FanInBoundExceededError
 
     return (
@@ -117,6 +117,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         SpawnDepthExceededError,
         ChildFlowLostError,
         VanishedNodeError,
+        DuplicateSubstepError,
     )
 
 

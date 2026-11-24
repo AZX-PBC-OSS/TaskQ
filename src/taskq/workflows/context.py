@@ -5,11 +5,14 @@ claim's user-facing shape. Default idempotent (ON) — silent double-runs are
 the failure class this layer exists to prevent; ``idempotent=False`` opts a
 step out (harmless redelivery, or a payload too large to key).
 
-The replay contract: the retried step's key is
-``(workflow, step_key[, map_index])`` → the claim path returns the
-recorded result rather than re-executing. The node's own finalize records
-the ledger terminal (riding tx1 — the ledger-terminal-atomic rule);
-``ctx.substep``'s claim is the attempt's grant of work.
+The replay contract: a record belongs to the calling node execution (its
+job row and, in a loop body, its iteration) under its own name — the
+ledger key is ``<job id>[.iter<n>]/<name>`` (#743) → a retry of that unit
+replays the recorded ``succeeded`` result rather than re-executing. The
+same name in another node, map child or iteration is a different record.
+The node's own finalize records the ledger terminal (riding tx1 — the
+ledger-terminal-atomic rule); ``ctx.substep``'s claim is the attempt's
+grant of work.
 
 the claim and the terminal write are ~1 ms statements, each on its own
 acquisition — the body runs with no pool connection held. The pre-fix
@@ -39,7 +42,7 @@ from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.ledger import (
     LedgerClaim,
     claim_step_ledger,
-    memoized_step_result,
+    memoized_substep_result,
 )
 
 __all__ = ["WorkflowSteps"]
@@ -65,6 +68,8 @@ class WorkflowSteps:
         map_index: int | None = None,
         attempt: int = 1,
         claim_epoch: int = 0,
+        legacy_step_key: str | None = None,
+        legacy_iteration_key: str | None = None,
     ) -> None:
         self._pool = pool
         self._wsql = wsql
@@ -73,6 +78,8 @@ class WorkflowSteps:
         self._map_index = map_index
         self._attempt = attempt
         self._claim_epoch = claim_epoch
+        self._legacy_step_key = legacy_step_key
+        self._legacy_iteration_key = legacy_iteration_key
 
     async def step(
         self,
@@ -82,21 +89,24 @@ class WorkflowSteps:
         idempotent: bool = True,
         **kwargs: Any,
     ) -> Any:
-        """Run *fn* once per (flow, step key); replay returns the recorded
-        result. ``idempotent=False`` opts out (the body re-runs on
-        redelivery — its redelivery is declared harmless)."""
+        """Run *fn* once per *name*, the owning unit's scoped ledger key; a
+        ``succeeded`` record replays (a re-call after a ``failed`` one in the
+        same attempt re-runs *fn*). ``idempotent=False`` opts out (the body
+        re-runs on redelivery — its redelivery is declared harmless)."""
         if not idempotent:
             return await fn(*args, **kwargs)
 
         # the memoized read + the claim are ~1 ms statements; the connection
         # releases the moment they land — the body runs unwired.
         async with self._pool.acquire() as conn:
-            memo = await memoized_step_result(
+            memo = await memoized_substep_result(
                 conn,
                 self._wsql,
                 flow_id=self._flow_id,
-                step_key=name,
+                job_id=self._job_id,
+                step_keys=[name] + ([self._legacy_step_key] if self._legacy_step_key else []),
                 map_index=self._map_index,
+                legacy_iteration_key=self._legacy_iteration_key,
             )
             if memo is not None and memo.status == "succeeded":
                 return memo.result

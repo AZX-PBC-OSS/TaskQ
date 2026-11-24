@@ -478,7 +478,7 @@ async def test_substep_ledger_carries_the_owning_claim_epoch(
     substep_rows = await wf_conn.fetch(
         f"SELECT attempt::int AS attempt, claim_epoch::bigint AS claim_epoch, "
         f'status::text AS status FROM "{wf_schema}".wf_step_ledger '
-        "WHERE flow_id = $1 AND step_key = 'prepare.inner' "
+        "WHERE flow_id = $1 AND step_key = job_id::text || '/prepare.inner' "
         "ORDER BY attempt, claim_epoch, created_at, id",
         flow_id,
     )

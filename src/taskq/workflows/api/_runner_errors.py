@@ -7,6 +7,7 @@ refused loudly; never a silent wedge."""
 from __future__ import annotations
 
 __all__ = [
+    "DuplicateSubstepError",
     "VanishedNodeError",
     "WorkflowRootMissingError",
     "WorkflowRunCancelledError",
@@ -62,6 +63,15 @@ class VanishedNodeError(WorkflowRunError):
     truth — never an eternal zombie (a ``running`` root over a
     forever-pending node, parked budget-free, surfaced only in a
     detector's log)."""
+
+
+class DuplicateSubstepError(WorkflowRunError):
+    """One node execution issued ``ctx.substep(name, ...)`` while a call
+    with the same name was still running in it (#743). Both calls would
+    claim one ledger row, and the second claim's re-stamp drops the first
+    call's record. Every retry re-runs the same body, so the refusal is
+    DETERMINISTIC: the node fails on its first attempt with this class on
+    the record. Concurrent substeps need distinct names."""
 
 
 class WorkflowRootMissingError(WorkflowRunError):

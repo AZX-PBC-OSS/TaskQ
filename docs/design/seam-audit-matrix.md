@@ -166,6 +166,28 @@ above.
 | lease and sweep deadlines | worker clock skew | the comparisons are server-side (`clock_timestamp()`); the same clock that stamped the lease judges it | `test_heartbeat.py` (the gated statement's server-side threshold), `test_rt_sweeps_*` |
 | harness seed aging | timing-sensitive choreography | seeds anchor to the PG clock instead of wall-clock sleeps | the sweep pins' seeding discipline |
 
+## 11. Workflow step ledger identity
+
+The seam: `StepContext.substep` → `WorkflowSteps.step` → `wf_step_ledger`
+(the substep memo read and the claim arbiter). Callers: step bodies, map
+children, chain and join bodies, loop iterations, on both drivers (the
+in-process `_run_node` and the fleet door `run_fleet_claimed_step`). The
+invariant for every row (#743): a substep record is owned by exactly one
+execution unit (the calling job and, in a loop body, its iteration), and
+a `ctx.substep` call claims and replays only records of its own unit
+under its own name. The key `<job id>[.iter<n>]/<name>` is injective in
+(unit, name) and disjoint from every node claim key, and within one
+execution there are never two live claims on one key.
+
+| seam / caller | interleaving | invariant | pin |
+|---|---|---|---|
+| two nodes, two map children, two maps or two loop iterations | the same substep name in each | each owner runs its own `fn` and keeps its own record | `test_wf_substep_scope_pins.py::test_two_nodes_sharing_a_substep_name_each_run_their_own`, `::test_two_maps_sharing_a_substep_name_keep_their_own_values`, `::test_loop_iterations_sharing_a_substep_name_run_per_iteration` |
+| two concurrent nodes | the second claims while the first's claim is `running` | two rows, each holding its own value | `::test_concurrent_nodes_sharing_a_substep_name_get_separate_records` |
+| one body | the same name issued concurrently | the duplicate refuses before any SQL with `DuplicateSubstepError`; the node fails on attempt 1; the first record lands; a sequential re-call replays; `idempotent=False` is exempt | `::test_concurrent_same_name_substeps_in_one_body_refuse_the_second`, `::test_concurrent_same_name_substeps_fail_the_node_on_its_first_attempt` |
+| a substep named after a node key or a loop iteration key | the name equals an upstream node, the node itself, or `<loop>.iter<n>` | the substep never reads or re-stamps a node or iteration claim row; the node's retries and ladder count are its own | `::test_a_substep_named_after_an_upstream_node_runs_its_own_fn`, `::test_a_substep_named_after_its_own_node_keeps_the_node_record`, `::test_a_self_named_substep_replays_across_node_retries`, `::test_a_substep_named_after_a_loop_iteration_key_runs_its_own_fn`, `::test_a_substep_named_after_its_own_iteration_key_never_adopts_a_lapsed_claim`, `::test_a_failing_self_named_substep_never_counts_against_the_node_ladder`, `::test_separator_bearing_node_keys_and_names_never_collide` |
+| a node retry, a hold resume, a loop hold resume, a direct attempt then a fleet attempt | the body re-runs after a recorded substep | the recorded `succeeded` result replays; `fn` ran once | `::test_a_self_named_substep_replays_across_node_retries`, `::test_a_substep_replays_across_a_hold_resume`, `::test_a_loop_iteration_replays_its_substep_across_a_hold_resume`, `::test_a_substep_recorded_on_the_direct_driver_replays_on_the_fleet_door` |
+| runs in flight across the upgrade | a pre-#743 bare-name row of this node, of another node, or of a loop iteration | an own row replays; another node's row is never adopted; a loop's bare row replays only in the iteration that recorded it | `::test_a_legacy_bare_row_owned_by_this_node_replays_without_rerunning`, `::test_a_legacy_bare_row_owned_by_another_node_is_never_adopted`, `::test_a_loop_held_mid_iteration_across_the_upgrade_replays_only_that_iteration` |
+
 ## What remains open
 
 Four rows read "no pin": the `resolve_claim`/`mark_claimed` bare-id intent

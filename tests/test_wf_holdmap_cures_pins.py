@@ -309,7 +309,7 @@ async def test_the_substep_does_not_hold_the_pool_connection_across_the_body(
         # re-execution).
         rows = await pool.fetch(
             f'SELECT step_key, status FROM "{wf_schema}".wf_step_ledger '
-            "WHERE flow_id = $1 AND step_key LIKE 'enrich:%'",
+            "WHERE flow_id = $1 AND step_key LIKE job_id::text || '/enrich:%'",
             fid,
         )
         assert len(rows) == 6 and all(r["status"] == "succeeded" for r in rows), rows

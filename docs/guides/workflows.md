@@ -386,6 +386,20 @@ arbiter physically blocks double-recording, and map children of one step
 key are DIFFERENT claims. `ctx.substep("name", fn)` is the user-facing
 shape: default idempotent ON, `idempotent=False` opts a step out.
 
+**A substep record belongs to the node execution that made it.** The
+owner is the calling node's job row and, inside a loop body, the loop
+iteration. The same name in two nodes, two map children, two maps or two
+iterations is a different record, so each runs its own `fn`. Within one
+execution, calling the same name again replays a `succeeded` record. A
+re-call after a failed one in the same attempt runs `fn` again. Two
+concurrent calls with one name (for example, both inside one
+`asyncio.gather`) fail the node on its first attempt with
+`DuplicateSubstepError`; give concurrent substeps distinct names. The
+row's `step_key` is `<job id>/<name>`, or `<job id>.iter<n>/<name>` in a
+loop body. Upgrading a fleet across this change needs a workflow-executor
+cutover: see
+[the upgrading entry](upgrading.md#ctxsubstep-names-are-scoped-to-the-calling-node).
+
 **The substep holds no connection across the body** (the measured tax,
 stated so nobody re-pays it): the claim and the
 terminal write are ~1 ms statements, each on its OWN pool acquisition;
@@ -3106,7 +3120,7 @@ Every workflow fact is a row in the same database; the CLI and the explorer are 
 Reconstructing a run's story from the surfaces (no app source, no logs):
 
 1. **The shape:** `taskq flows status <run_id>` — the nodes, the derived status, every stuck row's why + remedy.
-2. **The attempts:** each node's `attempt` vs `max_attempts` is the ladder; the LEDGER is the per-attempt record. The CLI's node read (and the explorer's node panel) renders the attempt ledger per node; in SQL: `SELECT step_key, attempt, status, error_class, created_at FROM taskq.wf_step_ledger WHERE flow_id = '<run_id>' ORDER BY created_at` — every attempt's outcome, in order, with the class of every death.
+2. **The attempts:** each node's `attempt` vs `max_attempts` is the ladder; the LEDGER is the per-attempt record. The CLI's node read (and the explorer's node panel) renders the attempt ledger per node; in SQL: `SELECT step_key, attempt, status, error_class, created_at FROM taskq.wf_step_ledger WHERE flow_id = '<run_id>' ORDER BY created_at` — every attempt's outcome, in order, with the class of every death. The same query returns `ctx.substep` records beside the node attempts. A row whose `step_key` begins with its own `job_id` (`<job id>/<name>`, or `<job id>.iter<n>/<name>` in a loop body) is a substep record of that node job; join `taskq.jobs` on `job_id` for the node's key. (A `/` alone does not mark one: a loop's own key may contain `/`.)
 3. **The vanilla events:** `taskq job events <job_id>` — the state changes (`lock_expired` reclaims carry the dead worker's id).
 4. **The cache hits:** a node row with `metadata.wf_cache_hit` (rendered by `taskq job show <job_id>` as `cache_hit:` and by the explorer's node panel) NEVER executed — the body ran in the receipt's `run_id`, and `wf_step_cache` holds the delivered result (`SELECT content_address, run_id, created_at FROM taskq.wf_step_cache WHERE content_address = '<address>'`). A bad cached result is evicted by deleting the address's row; the next run re-executes and re-fills it:
    `DELETE FROM taskq.wf_step_cache WHERE content_address = '<address>';`

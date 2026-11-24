@@ -44,6 +44,7 @@ a raising reducer rolls tx2 back and the body RE-RUNS on re-fire.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
@@ -70,6 +71,7 @@ __all__ = [
     "claim_step_ledger",
     "insert_flow_run",
     "memoized_step_result",
+    "memoized_substep_result",
     "run_idempotency_scope",
     "step_idempotency_key",
     "step_idempotency_scope",
@@ -275,6 +277,44 @@ async def memoized_step_result(
         flow_id=flow_id,
         job_id=JobId(rec["job_id"]),
         step_key=step_key,
+        map_index=map_index,
+        attempt=rec["attempt"],
+        status=rec["status"],
+        result=_decode_jsonb(rec["result"]),
+        error_class=rec["error_class"],
+        error_message=rec["error_message"],
+    )
+
+
+async def memoized_substep_result(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    job_id: JobId,
+    step_keys: Sequence[str],
+    map_index: int | None,
+    legacy_iteration_key: str | None = None,
+) -> LedgerClaim | None:
+    """The ``ctx.substep`` memo: the latest TERMINAL row of *job_id* under
+    ``step_keys[0]`` (the scoped key) or a pre-#743 bare name after it.
+    *legacy_iteration_key* (``<loop>.iter<n>``) attributes a bare row to
+    the loop iteration that recorded it. ``None`` when no terminal row
+    exists."""
+    rec = await conn.fetchrow(
+        wsql.ledger_substep_memoized,
+        flow_id,
+        list(step_keys),
+        job_id,
+        map_index,
+        legacy_iteration_key,
+    )
+    if rec is None:
+        return None
+    return LedgerClaim(
+        flow_id=flow_id,
+        job_id=JobId(rec["job_id"]),
+        step_key=step_keys[0],
         map_index=map_index,
         attempt=rec["attempt"],
         status=rec["status"],

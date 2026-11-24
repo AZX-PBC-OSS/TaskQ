@@ -28,7 +28,9 @@ and no park-metadata test (the epoch already identifies the current
 claim across every refund representation). The epoch identifies the
 current physical claim generation; the step and null-safe map legs
 exclude inner ``ctx.substep``/loop-iteration rows and map siblings that
-share the job and epoch. No ``COALESCE`` sentinel and no job-wide or
+share the job and epoch (a substep's key is ``<job id>[.iter<n>]/<name>``,
+which no node key can equal, so the exclusion holds by construction —
+#743). No ``COALESCE`` sentinel and no job-wide or
 flow-wide match is permitted.
 
 THE STRICT SINGLE-ROW ASSOCIATION (round-4 NEW-6) — the single-row

@@ -46,11 +46,11 @@ async def test_ctx_step_opts_out_of_idempotency_and_reruns(wf_pool: Any, wf_sche
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     assert calls["n"] == 1
-    # no claim row for the opted-out step (the node's own claim row exists —
-    # the filter names the step).
+    # no claim row for the opted-out step, in any key shape: the node's own
+    # claim rows (step_key 'solo') are the flow's only ledger rows.
     rows = await wf_pool.fetch(
         f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 '
-        "AND step_key = 'side-effect'",
+        "AND step_key <> 'solo'",
         flow_id,
     )
     assert int(rows[0][0]) == 0

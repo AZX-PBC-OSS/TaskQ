@@ -433,6 +433,69 @@ never diverge.
 > else changes). To name the map's node, name the SOURCE
 > (`step(source_body, key=…)`) — the join's key follows.
 
+### `ctx.substep` names are scoped to the calling node
+
+> **Unreleased.** Breaking for workflows that reuse a `ctx.substep` name
+> in more than one node, map, or loop iteration, for SQL that reads
+> substep rows from `wf_step_ledger` by their bare name, and for any
+> deploy that runs old and new workflow executors at the same time.
+
+**The behaviour change.** A `ctx.substep` record now belongs to the node
+execution that made it: the calling node's job row and, inside a loop
+body, the loop iteration. Before, the record was keyed by the bare name
+across the whole run. A second node calling `ctx.substep("x")` replayed
+the first node's result and skipped its own side effect; a substep named
+after a node key returned that node's stored envelope; two concurrent
+nodes shared one row; and a loop's later iterations replayed iteration
+0's value, so the loop never advanced. Now each owner runs its own `fn`.
+Cross-node sharing was never documented. If code relied on it, move the
+shared effect into one node. Two concurrent calls with one name inside
+one body (for example, both in one `asyncio.gather`) used to run both
+`fn`s silently. They now fail the node on its first attempt with
+`DuplicateSubstepError` (a `WorkflowRunError`), and the retry budget is
+not spent.
+
+**The row shape.** A substep row's `step_key` is now `<job id>/<name>`,
+or `<job id>.iter<n>/<name>` in a loop body. SQL that selected substep
+rows with `step_key = '<name>'` must select
+`step_key = job_id::text || '/<name>'` instead. Node rows keep the node
+key.
+
+**Runs in flight across the upgrade.** A substep the old code recorded
+under the bare name is still replayed by its own node job (the read is
+owner-checked, so another node's bare row is never adopted). Inside a
+loop, a bare row is replayed only by the iteration that recorded it, and
+later iterations run their own `fn`. Three pre-upgrade shapes cannot be
+recovered as written:
+
+- A substep named after its own node. The old code wrote it onto the
+  node's own claim row, and such a node was already wedged. After the
+  upgrade its reclaim re-runs the substep once.
+- One row that two concurrent nodes shared. The node that owns the row
+  replays the value it holds, and the other node's retry re-runs its
+  side effect once.
+- A bare row that one node wrote under another node's key, when that
+  other node had not run yet. The other node's claim still lands on that
+  row, as before the upgrade, so the run keeps the old behaviour for that
+  one row.
+
+**The executor cutover (required).** This change has no migration, so
+nothing forces the cutover. Do not run old and new workflow executors on
+the same workflow queues at the same time: drain and stop the old
+executors, then start the new ones. In a mixed window an old executor
+that retries, reclaims or resumes a node misses the scoped record and
+re-runs the side effect, and it can still adopt another node's bare row.
+Both failures are silent: no error and no log line.
+
+**Rollback is not safe for live runs.** A pre-upgrade binary runs
+workflow rows, and every live node it retries, reclaims or resumes
+re-runs, once, each substep the new code recorded. Draining first does
+not help runs parked on a hold or a timer. Either keep the workflow
+queues quarantined (no old binary subscribed to them, as in
+[the quarantine step](#rolling-taskq-py-back-with-live-workflows-the-quarantine-step))
+until the fleet rolls forward again, or accept one re-run per recorded
+substep.
+
 ### Queue and actor names are bounded at 255 characters
 
 > **Unreleased.** Breaking for anyone enqueueing to a queue name longer
@@ -3146,7 +3209,9 @@ the step that can still fix it:
    safe against every running worker.
 4. **Roll the workers.** The mixed fleet is safe in this window: old
    workers read the new row shape unchanged; new workers read the old
-   rows unchanged.
+   rows unchanged. One exception: workflow executors across the
+   `ctx.substep` scope change must not overlap; see
+   [its cutover rule](#ctxsubstep-names-are-scoped-to-the-calling-node).
 5. **The post phase, once, by hand**: `taskq migrate up --phase post` —
    after the LAST worker is up. Never a bare `taskq migrate up` ahead of
    the roll: the post phase lands immediately and old workers lose the
