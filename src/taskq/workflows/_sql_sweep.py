@@ -538,7 +538,10 @@ SELECT count(*) FROM reaped
 # window would starve every newer dead stamp forever, and the fleet's
 # dispatch fence never claims a stamped row. It is a NOT EXISTS because
 # FOR UPDATE refuses the nullable side of an outer join. The LIMIT bounds
-# the rows cleared; the read is linear in open holds.
+# the rows cleared; the read is one pass over the stamped jobs rows plus
+# one pass over wf_signals (the anti-join's hash side, filtered
+# status = 'held') — measured as a Hash Anti Join, so its cost tracks the
+# signal table's population, not only the open holds.
 HOLD_STAMP_RECONCILE_SQL = """\
 WITH stamped AS (
     SELECT j.id, j.metadata->>'hold' AS hold_id
@@ -563,7 +566,7 @@ FROM stamped s
 LEFT JOIN {schema}.wf_signals sig ON sig.id::text = s.hold_id
 WHERE j.id = s.id
   AND (sig.id IS NULL OR sig.status <> 'held')
-RETURNING j.id, (sig.id IS NULL) AS hold_absent
+RETURNING j.id, (j.metadata->>'flow_id') AS flow_id, (sig.id IS NULL) AS hold_absent
 """
 
 

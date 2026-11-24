@@ -1459,7 +1459,9 @@ class WorkerSettings(TaskQSettings):
         "stranded-jobs detector sweeps — the leader's warning checks for "
         "pending/scheduled rows that cannot make progress. The closed "
         "reason set: no_actor_config and unserved_queue (the two "
-        "dispatch-invisible rows) and workflow_root_missing (a workflow "
+        "dispatch-invisible rows), stamp_unresolved (a dead metadata.hold "
+        "stamp the dispatch fence refuses until the reconcile clears it), and "
+        "workflow_root_missing (a workflow "
         "row whose run has lost its own __flow__ root row — control-plane "
         "corruption; see the runbook for the restore-or-quarantine "
         "remedy).",

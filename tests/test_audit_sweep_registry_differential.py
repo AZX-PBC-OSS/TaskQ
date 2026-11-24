@@ -775,15 +775,23 @@ async def test_audit_the_hold_stamp_reconcile_drains_within_its_tick(
     """Issue #748: the fleet's dispatch fence never claims a stamped row, so
     the hold-stamp reconcile is the only repair for a dead stamp. A burst
     wider than one batch clears within the tick (the bounded drain), never
-    one batch per ``sweep_interval``."""
+    one batch per ``sweep_interval``.
+
+    The batch size at the wiring is pinned too: the arm passes
+    ``settings.event_writer_batch_size`` (100 at the defaults) rather than
+    ``sweep_hold_stamps``' own signature default (200), so the production
+    per-tick ceiling is ``event_writer_batch_size * sweep_drain_batches`` =
+    800 — the number both the arm's docstring and the runbook publish."""
     import taskq.workflows._sweep as wf_sweep
 
     script = deque([3, 0])
     seen: list[int] = []
+    batch_sizes: list[object] = []
 
-    async def scripted(*_args: object, **_kwargs: object) -> int:
+    async def scripted(*_args: object, **kwargs: object) -> int:
         rows = script.popleft() if script else 0
         seen.append(rows)
+        batch_sizes.append(kwargs.get("batch_size"))
         return rows
 
     monkeypatch.setattr(wf_sweep, "sweep_hold_stamps", scripted)
@@ -801,3 +809,8 @@ async def test_audit_the_hold_stamp_reconcile_drains_within_its_tick(
         "in-tick drain until a pass clears nothing"
     )
     assert ("metric_rows", "wf_hold_stamp_reconcile", 3) in events
+    assert set(batch_sizes) == {100}, (
+        f"the reconcile's batches were {batch_sizes}, not the production "
+        "event_writer_batch_size (100): an arm whose only repair path this is "
+        "must run the knob production runs, not the function's own default"
+    )

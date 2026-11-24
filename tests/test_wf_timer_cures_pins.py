@@ -905,3 +905,72 @@ async def test_a_timer_hold_in_a_map_sibling_context_gets_its_own_identity(
         "register_timer_hold → register_hold",
         {"timer_holds": len(rows), "map_indexes": indexes},
     )
+
+
+async def test_the_expiry_arm_clears_one_batch_per_tick(pg_dsn: str) -> None:
+    """The timer section's latency sentence covers TWO arms with different
+    per-tick bounds. `wait_until`'s timer arm drains its whole due set within
+    one tick (`sweep_due_timers(..., drain=True)`); a
+    `wait_signal(timeout_s=...)` expiry is resolved by `wf_signal_sweep`
+    (`sweep_expired_signals`, one `LIMIT 100` pass, `drain=False`), so a
+    burst of N expired human holds resumes over `ceil(N/100)` ticks. This
+    pins both halves of the documented sentence at a burst of 250."""
+    from taskq._ids import new_base62, new_uuid
+    from taskq.migrate import apply_pending
+    from taskq.workflows.api._hitl import sweep_expired_signals
+
+    burst = 250
+    schema = f"expiry_tick_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    await apply_pending(conn, schema=schema)
+    await conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)', "wf", "default"
+    )
+    await conn.execute(
+        f'INSERT INTO "{schema}".workers (id, hostname, pid, queues, last_seen_at) '
+        "VALUES ($1, 'probe', 1, ARRAY[$2]::text[], clock_timestamp())",
+        new_uuid(),
+        "default",
+    )
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+
+    async def _seed(*, timer: bool) -> None:
+        rows = [(new_uuid(), new_uuid()) for _ in range(burst)]
+        await conn.executemany(
+            f'INSERT INTO "{schema}".wf_signals '
+            "(id, workflow_id, node_key, signal_name, hold_epoch, call_id, status, expires_at) "
+            "VALUES ($1, $2, 'review', $3, 1, 'call', 'held', "
+            "clock_timestamp() - interval '1 minute')",
+            [(hold, flow, "__timer__t" if timer else "_Approval") for hold, flow in rows],
+        )
+        await conn.executemany(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, queue, payload, status, scheduled_at, max_attempts, retry_kind, "
+            "metadata, step_key, fairness_key) "
+            "VALUES ($1, 'wf', 'default', '{\"v\": 1}'::jsonb, 'pending', clock_timestamp(), "
+            "3, 'transient', jsonb_build_object('hold', $2::text, 'flow_id', $3::text), "
+            "'review', $3::text)",
+            [(new_uuid(), str(hold), str(flow)) for hold, flow in rows],
+        )
+
+    try:
+        # Control: the timer arm empties the same-sized burst in one call.
+        await _seed(timer=True)
+        assert await sweep_due_timers(pool, schema=schema, drain=True) == burst
+
+        # The expiry arm: one LIMIT-100 pass per call, so 250 clears in 3.
+        await _seed(timer=False)
+        passes = [await sweep_expired_signals(pool, schema=schema) for _ in range(3)]
+        assert passes == [100, 100, 50], (
+            f"the expiry arm cleared {passes} of {burst} expired human holds over "
+            "three calls — the documented per-tick bound is one batch of "
+            "`sweep_expired_signals`' default 100, so a burst resumes over "
+            "ceil(N/100) ticks (30 s per 100 after the deadline). If this is "
+            "[250], the arm now drains like its timer twin: update the "
+            "workflows guide's §4b latency sentence"
+        )
+    finally:
+        await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()

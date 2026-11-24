@@ -776,6 +776,14 @@ arms off):
   The cache's own retention: the expired rows pruned (the in-DB TTL's dead weight; the
   freshness decision is the lookup's — the pruner never touches a fresh
   row).
+* `wf_hold_stamp_reconcile` — the hold-stamp reconcile (issue #748): a node
+  parked on a `metadata.hold` stamp whose hold is no longer `held` is
+  unclaimable by the dispatch fence, so this arm clears the dead stamp and
+  re-pends the row (the body's re-execution lands the next named state). The
+  live hold is left standing. It drains within its tick: up to
+  `sweep_drain_batches` batches of `event_writer_batch_size` rows (800 at the
+  defaults), and each heal emits `wf-hold-stamp-reclaimed` with the cleared
+  `job_ids`/`flow_ids`.
 * `wf_edge_retention` / `wf_join_fire_retention` /
   `wf_step_ledger_retention` / `wf_signals_retention` /
   `wf_node_progress_retention` — THE FIVE FLOW-HISTORY ARMS (below).
@@ -2803,8 +2811,14 @@ The machinery, and the laws each piece carries:
   'delivered'` CAS is the fence: a twice-fired timer is
   unrepresentable, and a cancelled flow's timer never wakes. The sweep
   is the wake's only owner: the fleet never claims a held row, so a due
-  timer, or a timed wait past its `timeout_s`, resumes on the next leader
-  sweep tick (`sweep_interval`, default 30 s) plus a dispatch poll.
+  timer resumes on the next leader sweep tick (`sweep_interval`, default
+  30 s) plus a dispatch poll. The two arms that resolve a held row have
+  different per-tick bounds: `wait_until`'s timer arm drains its whole due
+  set within one tick (`sweep_due_timers(..., drain=True)`), whereas a
+  `wait_signal(timeout_s=...)` expiry is resolved by the one-batch
+  `wf_signal_sweep` arm (`sweep_expired_signals`, `drain=False`: one
+  `LIMIT 100` pass per tick), so a burst of N expired human holds resumes
+  over `ceil(N/100)` ticks — 30 s per 100 after the deadline.
 - **The durability is the design:** a worker DEATH mid-wait changes
   nothing — the hold row's expiry arms the reclaim, the successor's
   sweep fires the wake, the body resumes from the top (the

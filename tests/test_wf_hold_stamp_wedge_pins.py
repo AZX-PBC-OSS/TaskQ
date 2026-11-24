@@ -18,11 +18,25 @@ sentinel).
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Mapping
+from typing import Any, cast
+from unittest.mock import Mock
+
 import asyncpg
+import pytest
 import structlog.testing
 from pydantic import BaseModel
 
+from taskq._ids import new_base62, new_uuid
 from taskq.backend._protocol import JobId
+from taskq.backend.clock import SystemClock
+from taskq.migrate import apply_pending
+from taskq.settings import WorkerSettings
+from taskq.testing.pg import RowVisitCounter, install_row_visit_counter
+from taskq.worker._leader_shared import SweepContext
+from taskq.worker._leader_sweeps import _stranded_jobs_loop
+from taskq.worker.deps import WorkerDeps
 from taskq.workflows import (
     FlowRunner,
     GateDecl,
@@ -378,3 +392,209 @@ async def _node_and_hold(
     )
     assert node_id and hold_id
     return JobId(node_id), JobId(hold_id)
+
+
+# ── the arm's operability surface (issue #748's review) ─────────────────
+
+
+async def test_the_reclaimed_event_names_the_row_it_healed(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The heal's own comment claims the operator "can correlate it with the
+    process death that stamped it" — a count cannot. The event carries the
+    cleared batch's node ids and its flow ids, so a heal is attributable."""
+    flow_id, node_id, hold_id, _runner = await _held_flow(
+        wf_pool, wf_schema, name="wedge_named_flow"
+    )
+    await _plant_wedge(wf_pool, wf_schema, node_id, hold_id, signal_status="delivered")
+
+    with structlog.testing.capture_logs() as captured:
+        cleared = await sweep_hold_stamps(wf_pool, render_workflow_sql(wf_schema))
+    assert cleared == 1
+    records = [e for e in captured if e["event"] == "wf-hold-stamp-reclaimed"]
+    assert records, [e["event"] for e in captured]
+    record = records[0]
+    assert record["job_ids"] == [str(node_id)], record
+    assert record["flow_ids"] == [str(flow_id)], record
+
+
+class _DetectorDeps:
+    """Duck-typed WorkerDeps for ``_stranded_jobs_loop``: the fields its body
+    reads."""
+
+    def __init__(self, settings: WorkerSettings, pool: asyncpg.Pool) -> None:
+        self.settings = settings
+        self.worker_pool = pool
+        self.heartbeat_pool = pool
+        self.dispatcher_pool = pool
+        self.is_leader = asyncio.Event()
+        self.is_leader.set()
+        self.liveness = Mock()
+        self.leader_term = None
+
+    def leading(self) -> bool:
+        return bool(WorkerDeps.leading(cast(WorkerDeps, self)))
+
+
+async def test_a_dead_stamped_row_is_reported_as_stamp_unresolved(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    pg_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shape issue #748 creates: the row is ``pending``, due, and no
+    dispatch round will ever claim it (the fence's ``AND NOT metadata ?
+    'hold'``). The detector's charter is "pending/scheduled jobs that cannot
+    make progress, with the reason each carries" — so the dead stamp is its
+    own reason, ``stamp_unresolved``, and it is visible on the gauge."""
+    flow_id, node_id, hold_id, _runner = await _held_flow(
+        wf_pool, wf_schema, name="wedge_detect_flow"
+    )
+    await _plant_wedge(wf_pool, wf_schema, node_id, hold_id, signal_status="delivered")
+
+    # The routing legs must be satisfied, or the row would classify as one of
+    # them instead: an actor_config row exists and a live worker serves the
+    # row's queue.
+    row = await wf_conn.fetchrow(
+        f'SELECT actor, queue FROM "{wf_schema}".jobs WHERE id = $1', node_id
+    )
+    assert row is not None
+    actor, queue = str(row["actor"]), str(row["queue"])
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".actor_config (actor, queue) VALUES ($1, $2) '
+        "ON CONFLICT (actor) DO NOTHING",
+        actor,
+        queue,
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".workers (id, hostname, pid, queues, last_seen_at) '
+        "VALUES (gen_random_uuid(), 'probe', 1, ARRAY[$1]::text[], clock_timestamp())",
+        queue,
+    )
+    try:
+        settings = WorkerSettings.load_from_dict(
+            {
+                "TASKQ_PG_DSN": pg_dsn,
+                "TASKQ_SCHEMA_NAME": wf_schema,
+                "TASKQ_STRANDED_JOBS_INTERVAL": "0.05",
+            },
+            validate=False,
+        )
+        ctx = SweepContext(
+            deps=_DetectorDeps(settings, wf_pool),  # type: ignore[arg-type]  # Why: duck-typed deps carrying exactly the fields the loop reads.
+            backend=None,  # type: ignore[arg-type]  # Why: the stranded loop never touches ctx.backend.
+            clock=SystemClock(),
+            worker_id=JobId(new_uuid()),
+        )
+        published: list[dict[tuple[str, str], int]] = []
+
+        def _capture(data: Mapping[tuple[str, str], int]) -> None:
+            published.append(dict(data))
+
+        monkeypatch.setattr("taskq.worker._leader_sweeps.update_stranded_jobs_cache", _capture)
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(_stranded_jobs_loop(ctx, shutdown))
+        try:
+            for _ in range(200):
+                if published:
+                    break
+                await asyncio.sleep(0.02)
+            assert published, "the detector loop never published a tick"
+        finally:
+            shutdown.set()
+            await asyncio.wait_for(task, timeout=5.0)
+
+        stranded = {reason: count for (_actor, reason), count in published[-1].items() if count}
+        assert stranded.get("stamp_unresolved", 0) >= 1, (
+            "the stranded-jobs detector published no stamp_unresolved reason for "
+            f"the dead-stamped run {flow_id} (node {node_id}): its actor has an "
+            f"actor_config row, queue {queue!r} is served by a live worker, and "
+            "its run root exists — so all the old legs pass it, while the "
+            f"fleet's dispatch fence refuses it. Published: {stranded}"
+        )
+    finally:
+        await wf_conn.execute(f'DELETE FROM "{wf_schema}".workers WHERE hostname = $1', "probe")
+
+
+class _SinglePool:
+    """One asyncpg connection wearing the ``pool.acquire()`` shape."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+
+    def acquire(self, **_kwargs: object) -> Any:
+        conn = self._conn
+
+        class _Ctx:
+            async def __aenter__(self) -> asyncpg.Connection:
+                return conn
+
+            async def __aexit__(self, *exc: object) -> Any:
+                return None
+
+        return _Ctx()
+
+
+async def test_reconcile_read_cost_stays_a_single_pass_over_the_two_tables(pg_dsn: str) -> None:
+    """The arm runs on every leader tick (``sweep_interval``, default 30 s)
+    and, with ``drain=True``, up to ``sweep_drain_batches`` times per tick.
+
+    The statement plans as a Hash Anti Join, so its read is one pass over the
+    stamped ``jobs`` rows plus one pass over ``wf_signals`` (a seq scan with
+    ``status = 'held'`` — the cast ``live.id::text`` cannot be an index
+    condition). What this pins is the PASS COUNT: a rewrite that turns the
+    ``NOT EXISTS`` into a per-candidate probe pays
+    ``candidates x |wf_signals|`` on an arm that now runs unattended on the
+    leader."""
+    holds, history = 1_000, 20_000
+    schema = f"hsprobe_cost_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        await install_row_visit_counter(conn, schema, table="jobs")
+        await install_row_visit_counter(conn, schema, table="wf_signals")
+        await conn.execute(
+            f'INSERT INTO "{schema}".wf_signals '  # Why: generated identifier; values $-bound.
+            "(id, workflow_id, node_key, signal_name, hold_epoch, call_id, status) "
+            "SELECT gen_random_uuid(), gen_random_uuid(), 'review', 'Approval', 1, "
+            "'call', 'held' FROM generate_series(1, $1::int)",
+            holds,
+        )
+        await conn.execute(
+            f'INSERT INTO "{schema}".wf_signals '  # Why: generated identifier; values $-bound.
+            "(id, workflow_id, node_key, signal_name, hold_epoch, call_id, status) "
+            "SELECT gen_random_uuid(), gen_random_uuid(), 'review', 'Approval', 1, "
+            "'call', 'delivered' FROM generate_series(1, $1::int)",
+            history,
+        )
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '  # Why: generated identifier; values $-bound.
+            "(id, actor, queue, payload, status, priority, scheduled_at, "
+            "max_attempts, retry_kind, metadata, step_key, fairness_key) "
+            "SELECT gen_random_uuid(), 'wf', 'default', '{\"v\": 1}'::jsonb, 'pending', 0, "
+            "clock_timestamp() - interval '5 minutes', 3, 'transient', "
+            "jsonb_build_object('hold', live.id::text, 'flow_id', live.id::text), "
+            f"'review', live.id::text FROM \"{schema}\".wf_signals live "
+            "WHERE live.status = 'held'",
+        )
+        await conn.execute(f'VACUUM (ANALYZE) "{schema}".jobs')
+        await conn.execute(f'VACUUM (ANALYZE) "{schema}".wf_signals')
+
+        counter = RowVisitCounter(_SinglePool(conn), schema, method="fetch")
+        sql = HOLD_STAMP_RECONCILE_SQL.replace("{schema}", schema)
+        async with counter.acquire() as counted:
+            rows = await counted.fetch(sql, 100)
+        visits = counter.per_statement[-1]
+        assert rows == [], "the steady state has no dead stamp to clear"
+        budget = 4 * (holds + history)
+        assert visits <= budget, (
+            f"the reconcile read {visits} rows for {holds} stamped rows and "
+            f"{history + holds} signal rows (budget {budget}): a per-candidate "
+            "probe instead of one pass over wf_signals, on a leader-tick arm "
+            "that runs up to sweep_drain_batches times every sweep_interval"
+        )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
