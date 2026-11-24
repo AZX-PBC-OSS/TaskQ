@@ -704,6 +704,21 @@ name against its own (pre-keyed) registry — the row PARKS budget-free
 upgraded workers claim it. The row is never admitted unprotected and
 never lost; the run resumes when the upgrade wave reaches its queue.
 
+### A map on a truncated join or `gather` forks every collected item
+
+> **Unreleased.** Breaking for workflows whose run succeeded on the
+> truncated prefix.
+
+A `map_source` wired directly on a map join or `gather` whose collected
+result passed the 64 KiB envelope cap used to fork only the prefix the
+join row still spelled, and the run ended `succeeded` on partial data.
+It now forks one child per collected item. Past 1000 items the source
+node terminal-fails with `FanInBoundExceededError` unless the map
+declares `child_driven=True`; past 32,768 items it terminal-fails with
+`error_class='MapIndexExhaustedError'`, which `child_driven` does not
+lift. Partition the source to stay under either bound. A join that
+finalized before the upgrade keeps the children it already forked.
+
 ### Dispatch-path malformed payloads fail immediately
 
 > **Unreleased.** Breaking for callers that relied on invalid payloads

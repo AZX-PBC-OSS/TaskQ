@@ -170,14 +170,18 @@ above.
 
 | seam / caller | interleaving | invariant | pin |
 |---|---|---|---|
-| the join's bounded collect (`_bounded_collect` in `workflows/api/_runner.py`), callers: the consumer decode (`_decode_with_detail`, from `_parent_results` and `result()`), the map fork (`_execute_claimed_tail` threads the join's pack to `_finalize_success`, then `_map_fork`) | the collect is over 64 KiB, so the join row holds a truncated envelope | the row stays bounded; the fork reads the join's pack, never the row's prefix; the fan-in bound and the `map_index` ceiling count the true total and terminal-fail the source node by name through the ladder | `test_wf_finalize_pins.py::test_pin_fanin_envelope_within_the_estate_result_cap`, `::test_pin_fanin_truncated_envelope_unwraps_at_the_consumer_decode`, `::test_pin_map_on_truncated_join_forks_every_collected_item`, `::test_pin_map_on_truncated_gather_forks_every_flattened_item`, `::test_pin_map_on_gather_of_truncated_joins_forks_every_item`, `::test_pin_map_on_truncated_gather_counts_the_true_total_against_the_fan_in_bound`, `::test_pin_child_driven_map_on_truncated_gather_forks_every_item_past_the_bound`, `::test_pin_map_on_gather_past_the_map_index_ceiling_fails_by_name`, `::test_pin_map_source_past_the_map_index_ceiling_fails_by_name` |
+| the join's bounded collect (`_bounded_collect` in `workflows/api/_runner.py`), callers: the consumer decode (`_decode_with_detail`, from `_parent_results` and `result()`), the map fork (`_execute_claimed_tail` threads the join's pack to `_finalize_success`, then `_map_fork`) | the collect is over 64 KiB, so the join row holds a truncated envelope | the row stays bounded; the fork reads the join's pack, never the row's prefix (the pack is whole when each parent's one-level detail re-read is, see the next row); the fan-in bound and the `map_index` ceiling count the pack's total and terminal-fail the source node by name through the ladder, on a cache hit as on a miss | `test_wf_finalize_pins.py::test_pin_fanin_envelope_within_the_estate_result_cap`, `::test_pin_fanin_truncated_envelope_unwraps_at_the_consumer_decode`, `::test_pin_map_on_truncated_join_forks_every_collected_item`, `::test_pin_map_on_truncated_gather_forks_every_flattened_item`, `::test_pin_map_on_gather_of_truncated_joins_forks_every_item`, `::test_pin_map_on_truncated_gather_counts_the_true_total_against_the_fan_in_bound`, `::test_pin_child_driven_map_on_truncated_gather_forks_every_item_past_the_bound`, `::test_pin_map_on_gather_past_the_map_index_ceiling_fails_by_name`, `::test_pin_map_source_past_the_map_index_ceiling_fails_by_name`, `::test_pin_cache_hit_map_fork_past_the_fan_in_bound_fails_by_name` |
+| the other readers of a join row: the one-level detail re-read itself (`_decode_with_detail` decodes each re-read row with plain `decode_result`), `_flow_state` (the dispatch-time predicate's view) and the child-flow terminal read (`_ok_result` in `workflows/_childflow.py`) | the row a reader decodes is itself a truncated envelope | every reader sees every collected item | no pin (open: these reads get the row's prefix, so a consumer over a `gather` of truncated joins, a map on a `gather` over a `gather` of truncated map joins, a guard reading a truncated join's result and a child flow ending on a truncated join all see a prefix) |
 
 ## What remains open
 
-Four rows read "no pin": the `resolve_claim`/`mark_claimed` bare-id intent
+Five rows read "no pin": the `resolve_claim`/`mark_claimed` bare-id intent
 mutation (section 1.1), the cancel ladder's detach-delivery shape
-(section 4), the reconcile's claim-time attempt refund (section 6.1), and
-the tx-path SystemExit task boundary (section 6.1). Each row states the
-invariant and the pin's shape; a PR touching those seams owes the pin.
+(section 4), the reconcile's claim-time attempt refund (section 6.1),
+the tx-path SystemExit task boundary (section 6.1), and the join-row
+readers that still decode a truncated envelope's prefix (section 11).
+Each row states the invariant and the pin's shape; a PR touching those
+seams owes the pin. The section 11 row is a known loss as well as a
+missing pin: its readers need the fix before the pin can go green.
 The matrix's pinned verdicts are grep-and-read verdicts over the named
 test files, not re-runs of every cited suite.

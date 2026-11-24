@@ -232,9 +232,9 @@ remedy: the child-driven escape below, or partition the map. A map wired
 on a join or `gather` counts the true item count, not the prefix the
 join row spells under the size cap (below): past 1000 items it
 terminal-fails `FanInBoundExceededError` unless the map declares
-`child_driven=True`, and past 32,768 items it terminal-fails
-`MapIndexExhaustedError`, which `child_driven` does not lift (partition
-the source).
+`child_driven=True`, and past 32,768 items it terminal-fails with
+`error_class='MapIndexExhaustedError'`, which `child_driven` does not
+lift (partition the source).
 
 THE HONEST DERIVATION (never a line through points that
 don't share one): the three measured points — 200 → 14.9 ms, 1000 →
@@ -371,11 +371,15 @@ compacted row stays bounded forever (a later append increments the
 marker). The collected result envelope of a map join or `gather` follows
 the same 64 KiB cap: past it the row keeps the prefix that fits,
 `__truncated__: N` and a `detail_home` pointer, and the full collect
-stays on the child rows. A map wired directly on the join forks one
-child per item the join packed, and a consumer step's argument re-reads
-the child rows. Both reads go one level deep: a consumer over a `gather`
-of truncated map joins, and either read over a `gather` whose parent is
-a truncated `gather`, still sees a prefix.
+stays on the rows it was collected from (a map join's `.item` children,
+a `gather`'s parents). A map wired directly on the join forks one child
+per item the join packed, and a consumer step's argument re-reads those
+rows. The re-read goes one level deep: a consumer over a `gather` whose
+parent is itself a truncated join (a map join or a `gather`) still sees
+that parent's prefix. The map sees one level further, because the join
+built its pack through the same re-read: it sees a prefix only two
+truncated levels down, as in a map on a `gather` over a `gather` of
+truncated map joins.
 
 ## The three cancel legs
 

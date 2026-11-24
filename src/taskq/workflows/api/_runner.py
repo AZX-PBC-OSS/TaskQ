@@ -1403,9 +1403,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # machinery recovery, never another author-classified body attempt.
         chain_success: tuple[Any, object, dict[str, object]] | None = None
 
-        # the miss path's envelope, None on the hit path (the hit's finalize is
-        # the tail's — below — and returns before the miss finalize reads
-        # this).
+        # the miss path's envelope, None on the hit path (the tail's finalize,
+        # below, reads the cached envelope instead).
         result: dict[str, object] | None = None
         collected: list[object] | None = None  # the join's full pack before the cap (#744)
         logical_attempt = attempt
@@ -1775,34 +1774,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     ledger_claimed_at=ledger_claimed_at,
                 )
                 return "succeeded"
-            if cache_hit is not None:
-                # a fault escaping this finalize is the machinery's seat, never
-                # the body's — the body never ran, and the identical fault on
-                # the miss path (below) escapes through this exact tail (the
-                # escape-point contract: the machinery boundary's classifier
-                # reads WHERE the error escaped). The pre-fix seat routed the
-                # hit's finalize fault through the body ladder: a transient
-                # blip terminal-failed a max_attempts=1 step whose body never
-                # ran (the live node failed, InterfaceError on the record, the
-                # run killed UnabsorbedNodeFailure). One fault, one seat: the
-                # infra class — the reclaim, the ladder unburned.
-                final = await self._finalize_success(
-                    flow_id,
-                    row,
-                    attempt,
-                    node,
-                    cache_hit.envelope,
-                    claim_epoch=claim_epoch,
-                    run_priority=run_priority,
-                    ledger_id=ledger_id,
-                    ledger_claimed_at=ledger_claimed_at,
-                )
-                if final.applied:
-                    await self._write_cache_receipt(
-                        JobId(row["id"]), row["step_key"], flow_id, cache_hit
-                    )
-                return "succeeded"
-                # the map fork's build (and the fork's own validation,
+            # a cache hit's fault escaping this finalize is the machinery's
+            # seat, never the body's — the body never ran, and the identical
+            # fault on the miss path escapes through this exact tail (the
+            # escape-point contract: the machinery boundary's classifier
+            # reads WHERE the error escaped). The pre-fix seat routed the
+            # hit's finalize fault through the body ladder: a transient
+            # blip terminal-failed a max_attempts=1 step whose body never
+            # ran (the live node failed, InterfaceError on the record, the
+            # run killed UnabsorbedNodeFailure). One fault, one seat: the
+            # infra class — the reclaim, the ladder unburned.
+            # The map fork's build (and the fork's own validation,
             # insert_fork's door) runs inside _finalize_success — before this
             # wrapper, the fan-in bound's exceed escaped the ladder's boundary,
             # the finalize tx rolled back, and the reclaim re-crashed the node
@@ -1811,14 +1793,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # are deterministic authoring failures: the ladder's deterministic
             # route terminal-fails them on the first attempt, the error class
             # on the record — the reclaim path heals or fails named, never
-            # wedges.
+            # wedges. Both faces: the cache addresses the body and its args,
+            # never the wiring, so a hit can replay a list whose fork crosses
+            # either bound.
             try:
                 final = await self._finalize_success(
                     flow_id,
                     row,
                     attempt,
                     node,
-                    result,
+                    cache_hit.envelope if cache_hit is not None else result,
                     claim_epoch=claim_epoch,
                     prebuilt_route_fork=route_fork,
                     run_priority=run_priority,
@@ -1844,6 +1828,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 if route in ("cancelled", "fenced"):
                     return route
                 return "laddered"
+            if cache_hit is not None:
+                if final.applied:
+                    await self._write_cache_receipt(
+                        JobId(row["id"]), row["step_key"], flow_id, cache_hit
+                    )
+                return "succeeded"
                 # the miss ran the body — the cache fill happens only on the
             # terminal that actually landed (a fenced write is a zombie's,
             # never a terminal-succeeded). The CAS inside the store keeps one

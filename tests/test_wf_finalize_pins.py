@@ -993,15 +993,16 @@ async def test_pin_map_on_gather_of_truncated_joins_forks_every_item(
 
 
 async def _mj_node(pool: asyncpg.Pool, schema: str, flow_key: str, step_key: str) -> Any:
-    """``step_key``'s row in the run that owns the (test-unique) ``flow_key``
-    step: a failed run raises out of ``wf.run`` before it hands back a flow id."""
+    """``step_key``'s row in the newest run that owns the ``flow_key`` step:
+    a failed run raises out of ``wf.run`` before it hands back a flow id."""
     # S608 is per-file-ignored for this pack (the fixture's schema identifier).
     return await pool.fetchrow(
         f"SELECT j.status::text AS status, j.error_class, j.attempt, "
         f"(SELECT count(*) FROM \"{schema}\".jobs c WHERE c.step_key = j.step_key || '.item' "
         "AND c.metadata->>'flow_id' = j.metadata->>'flow_id') AS forked "
         f"FROM \"{schema}\".jobs j WHERE j.step_key = $2 AND j.metadata->>'flow_id' = "
-        f"(SELECT metadata->>'flow_id' FROM \"{schema}\".jobs WHERE step_key = $1)",
+        f"(SELECT metadata->>'flow_id' FROM \"{schema}\".jobs WHERE step_key = $1 "
+        "ORDER BY id DESC LIMIT 1)",
         flow_key,
         step_key,
     )
@@ -1176,6 +1177,58 @@ async def test_pin_map_source_past_the_map_index_ceiling_fails_by_name(
     assert (node["status"], node["error_class"], node["attempt"], node["forked"]) == (
         "failed",
         "MapIndexExhaustedError",
+        1,
+        0,
+    ), dict(node)
+
+
+_MJ_CACHE_CALLS: dict[str, int] = {}
+
+
+async def _mj_cached_ints(ctx: Any) -> list[int]:
+    _MJ_CACHE_CALLS["n"] = _MJ_CACHE_CALLS.get("n", 0) + 1
+    return list(range(1200))
+
+
+@pytest.mark.integration
+async def test_pin_cache_hit_map_fork_past_the_fan_in_bound_fails_by_name(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """#744, the same route's cache-hit face: the step cache addresses the
+    body and its args, never the wiring, so a 1200-item list cached under
+    a plain wiring replays into a map wiring whose fork crosses
+    ``MAX_FAN_IN_PER_JOIN``. The hit terminal-fails the source by name on
+    attempt 1, like the miss path. Before the route covered the hit it
+    raised ``FanInBoundExceededError`` raw out of ``wf.run`` with the
+    source row left running."""
+    import taskq.workflows as wf
+    from taskq.workflows import Promise, WorkflowApp, WorkflowRunError, build, map_source, step
+
+    app = WorkflowApp()
+
+    @app.workflow("cache_plain_ints")
+    def cache_plain_ints() -> Promise[object]:
+        return build(step(_mj_cached_ints, key="cache_ints", cache=True))
+
+    @app.workflow("cache_hit_map_over_the_fan_in_bound")
+    def cache_hit_map_over_the_fan_in_bound() -> Promise[object]:
+        return build(map_source(step(_mj_cached_ints, key="cache_ints", cache=True), _mj_int))
+
+    _MJ_CACHE_CALLS.clear()
+    await wf.run(app.get("cache_plain_ints"), wf_pool, wf_schema)
+    with pytest.raises(
+        WorkflowRunError,
+        match=r"node 'cache_ints' terminal-failed: \[FanInBoundExceededError\] "
+        r"join 'cache_ints\.join' fans in 1200 children",
+    ):
+        await wf.run(app.get("cache_hit_map_over_the_fan_in_bound"), wf_pool, wf_schema)
+    assert _MJ_CACHE_CALLS == {"n": 1}, "the mapped run must be a cache hit (the body never reran)"
+    node = await _mj_node(wf_pool, wf_schema, "cache_ints", "cache_ints")
+    assert node is not None
+    assert (node["status"], node["error_class"], node["attempt"], node["forked"]) == (
+        "failed",
+        "FanInBoundExceededError",
         1,
         0,
     ), dict(node)
