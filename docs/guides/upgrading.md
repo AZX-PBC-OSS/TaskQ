@@ -2013,7 +2013,12 @@ WHERE n.metadata ? 'flow_id'
   AND n.step_key LIKE '%.join.join'
   AND n.idempotency_key = 'wf:' || n.step_key
   AND n.status NOT IN ('pending', 'cancelled')
-  AND n.deps_pending = 0
+  AND EXISTS (
+    SELECT 1 FROM jobs f
+    WHERE f.metadata->>'flow_id' = n.metadata->>'flow_id'
+      AND f.step_key = n.step_key
+      AND f.id <> n.id
+  )
   AND EXISTS (
     SELECT 1 FROM jobs m
     WHERE m.metadata->>'flow_id' = n.metadata->>'flow_id'
