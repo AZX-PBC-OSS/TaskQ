@@ -73,7 +73,9 @@ class DuplicateSubstepError(WorkflowRunError):
     DETERMINISTIC: uncaught, the node fails on its first attempt with this
     class on the record (a loop body exhausts the loop as a body failure,
     the class named in its message). Concurrent substeps need distinct
-    names."""
+    names. Fix the collision rather than retrying the node: the refused
+    call is not cancelled, so a retry can run its effect again while the
+    first call is still inside ``fn``."""
 
 
 class WorkflowRootMissingError(WorkflowRunError):

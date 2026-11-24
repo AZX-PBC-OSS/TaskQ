@@ -506,6 +506,9 @@ one body (for example, both in one `asyncio.gather`) used to run both
 first one running. Uncaught, the error fails the
 node on its first attempt without spending the retry budget; in a loop
 body the loop exhausts as a body failure whose message names it.
+Fix the collision rather than retrying the node: the refused call is not
+cancelled, so an operator retry can run its effect a second time while
+the first call is still inside `fn`.
 `idempotent=False` calls write no row and are exempt.
 
 **The row shape.** A substep row's `step_key` is now `<job id>/<name>`,
@@ -516,7 +519,9 @@ rows with `step_key = '<name>'` must select
 To match the name in every shape, loops included, select
 `starts_with(step_key, job_id::text) AND substr(step_key, strpos(step_key, '/') + 1) = '<name>'`.
 Node rows keep the node key. Rows written before the upgrade keep the
-bare name.
+bare name, so a query that must span the drain window also tests
+`OR step_key = '<name>'`; the replacement predicate alone can never
+match a bare row because it tests the row against its own `job_id`.
 
 **Runs in flight across the upgrade.** A substep the old code recorded
 under the bare name is still replayed by its own node job (the read is

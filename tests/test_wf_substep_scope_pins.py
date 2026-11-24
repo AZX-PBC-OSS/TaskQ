@@ -501,7 +501,7 @@ async def _seed_bare_substep_row(
     )
 
 
-@pytest.mark.parametrize("name", ["x", ""])
+@pytest.mark.parametrize("name", ["x", ""], ids=["named", "empty"])
 async def test_a_legacy_bare_row_owned_by_this_node_replays_without_rerunning(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, name: str
 ) -> None:
@@ -878,15 +878,22 @@ async def test_a_duplicate_substep_in_a_loop_body_exhausts_the_loop_naming_the_c
         "LoopBodyFailure",
     ), dict(node)
     assert "DuplicateSubstepError" in node["error_message"], dict(node)
-    # the orphaned first call finishes in the background; wait for its record.
+    # the orphaned first call finishes in the background; wait for its record
+    # and assert it, so a lost terminal write fails here (#743 W-10).
+    substep_rows: list[dict[str, Any]] = []
     for _ in range(100):
-        if any(
-            r["step_key"].endswith(".iter0/x") and r["status"] == "succeeded"
+        substep_rows = [
+            r
             for r in await _ledger_rows(wf_conn, wf_schema, flow_id)
-        ):
+            if r["step_key"].endswith(".iter0/x")
+        ]
+        if substep_rows:
             break
         await asyncio.sleep(0.05)
     assert fns == ["slow"], fns
+    assert [(r["status"], r["result"]) for r in substep_rows] == [("succeeded", '"slow"')], (
+        substep_rows
+    )
 
 
 async def test_a_substep_replays_across_a_hold_resume(

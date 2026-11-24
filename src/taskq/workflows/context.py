@@ -186,7 +186,7 @@ class WorkflowSteps:
                 "read projection and records no terminal"
             )
         async with self._pool.acquire() as conn:
-            await conn.execute(
+            status = await conn.execute(
                 self._wsql.ledger_terminal_by_id,
                 claim.ledger_id,
                 status,
@@ -195,4 +195,18 @@ class WorkflowSteps:
                 error_message,
                 None,
                 claim.claimed_at,
+            )
+        if status == "UPDATE 0":
+            # The guarded write matched no row (#743 W-3): another writer
+            # fenced the claim while this execution was still inside ``fn``
+            # (the phantom reap's subject set is "the worker died", which a
+            # terminalized node's live orphan can still enter). Silence here
+            # records a completed effect as abandoned with no trace; the
+            # record's own value is already lost, so at least name it.
+            logger.warning(
+                "workflow-substep-terminal-refused",
+                step_key=name,
+                ledger_id=str(claim.ledger_id),
+                status=status,
+                error_class="LedgerTerminalFenced",
             )

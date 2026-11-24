@@ -165,6 +165,20 @@ def find_embedded_exception[T: BaseException](
     return _walk(exc)
 
 
+def deterministic_failure_leaf(exc: BaseException) -> BaseException:
+    """The error object the terminal record must describe (#743 W-1).
+
+    A deterministic refusal can travel inside an ``ExceptionGroup`` or a
+    ``__cause__`` wrapper (the shapes a body's ``asyncio.TaskGroup`` or
+    ``gather`` produce). The record names the deterministic LEAF's class, so
+    its message must be the leaf's own text — otherwise the row says
+    ``DuplicateSubstepError`` and the operator reads ``unhandled errors in a
+    TaskGroup``. Falls back to the raised object when no deterministic leaf is
+    embedded, which leaves every non-grouped message byte for byte."""
+    leaf = find_embedded_exception(exc, _deterministic_classes())
+    return leaf if leaf is not None else exc
+
+
 def _find_deterministic_leaf(exc: BaseException) -> str | None:
     """The FIRST deterministic leaf's own class name (the shared walker's
     deterministic face); None when nothing deterministic is carried."""
@@ -466,7 +480,7 @@ class LadderOps(_LadderHost):
             # (the refusal the remedy names), never the group's own
             # wrapper name.
             error_class=_deterministic_error_class(exc),
-            error_message=str(exc)[:MESSAGE_TERMINAL_MAX],
+            error_message=str(deterministic_failure_leaf(exc))[:MESSAGE_TERMINAL_MAX],
             capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the compile (the workflow decorator's declaration); the host protocol's compiled is the runner's Any-typed field.
             map_index=row["map_index"],
             ledger_id=ledger_id,

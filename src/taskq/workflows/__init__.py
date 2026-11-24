@@ -108,6 +108,7 @@ from taskq.workflows.api._runner import (
     WorkflowRunCancelledError,
     WorkflowRunError,
 )
+from taskq.workflows.api._runner_errors import DuplicateSubstepError
 from taskq.workflows.api._runner_exit import cancel_workflow_run, retry_workflow_node
 from taskq.workflows.chain import (
     DONE,
@@ -137,6 +138,7 @@ __all__ = [
     "CompiledWorkflow",
     "DeliveryResult",
     "Done",
+    "DuplicateSubstepError",
     "EmitBackpressure",
     "EmitReservationExceededError",
     "ExecutionPolicy",
