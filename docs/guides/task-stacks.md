@@ -174,7 +174,10 @@ async def enrich_item(ctx: Any, doc_id: str, deps: EnrichClient) -> Summary | Un
     return Summary(doc_id=doc_id, text=text)
 ```
 
-`ctx.attempt` is the body's own view of the ladder. And the infra-fault
+`ctx.attempt` is the body's own attempt ordinal; crashes and hold resumes
+advance it too, while the ladder counts only `failed` attempts
+([Retries §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count)).
+And the infra-fault
 rule rides the same machinery: a lease reclaim (the worker died) re-runs
 the attempt WITHOUT burning the ladder — infra fault is not body
 failure. The retry policy itself is the retries guide's subject
