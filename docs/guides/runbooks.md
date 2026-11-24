@@ -998,7 +998,7 @@ The warning's `frame` field is `file:line:function` of the deepest non-taskq fra
 **How to remediate.**
 
 1. The run holds on a human: `taskq flows resolve <hold_id> '<decision json>' --app myapp.workflows:app` (the typed door — a wrong payload is refused with the named error and the hold survives).
-2. A node failed: `taskq flows retry <run_id> <node>` (the ledger is kept; neither count resets, so a node whose ladder ran out gets one more body attempt and its first crash is terminal; the blocked closure re-opens).
+2. A node failed: `taskq flows retry <run_id> <node>` (the ledger is kept; neither count resets, so a transient node whose ladder ran out gets one more body attempt and its first crash is terminal; the blocked closure re-opens).
 3. A join waiting on the fence's record (`failed_parent`/`orphan_parent`/`flow_dead`): the parent's retry re-opens it; a `flow_dead` join is the flow's own death — the run is terminal, start a new run.
 4. The run should never finish: `taskq flows cancel <run_id> --reason ...` (the cascade resolves the held signals in the same snapshot; the audit row carries the reason).
 

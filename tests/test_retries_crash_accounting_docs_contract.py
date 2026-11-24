@@ -204,8 +204,8 @@ def test_retries_guide_states_the_workflow_step_budgets() -> None:
             "§7 step 3 must call `attempt` vs `max_attempts` the claim headroom",
         ),
         (
-            "neither count resets (a node whose ladder ran out gets one more body attempt, "
-            "and its first crash is terminal)",
+            "neither count resets (a transient node whose ladder ran out gets one more "
+            "body attempt, and its first crash is terminal)",
             "§7 step 3's manual resume (the manual-retry pin)",
         ),
         (
@@ -243,6 +243,11 @@ def test_retries_guide_states_the_workflow_step_budgets() -> None:
         (
             "the failures name the claim headroom",
             "the stuck-run walk-through must name the claim headroom",
+        ),
+        (
+            "neither count resets, so a transient node whose ladder ran out gets one more "
+            "body attempt and its first crash is terminal",
+            "the stuck-run remedy's manual retry (the manual-retry pin)",
         ),
         (
             "is live (not terminal-failed), unknown to run",
