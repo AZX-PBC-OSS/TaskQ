@@ -947,8 +947,13 @@ async def test_a_duplicate_substep_in_a_loop_body_exhausts_the_loop_naming_the_c
         fns.append("fast")
         return "fast"
 
+    orphans: list[asyncio.Task[Any]] = []
+
     async def body(ctx: StepContext, carry: object) -> object:
-        return Done(list(await asyncio.gather(ctx.substep("x", slow), ctx.substep("x", fast))))
+        # the gather leaves the first call running; keep its task so the test can await it
+        first = asyncio.create_task(ctx.substep("x", slow))
+        orphans.append(first)
+        return Done(list(await asyncio.gather(first, ctx.substep("x", fast))))
 
     app = WorkflowApp()
 
@@ -971,18 +976,16 @@ async def test_a_duplicate_substep_in_a_loop_body_exhausts_the_loop_naming_the_c
         "LoopBodyFailure",
     ), dict(node)
     assert "DuplicateSubstepError" in node["error_message"], dict(node)
-    # the orphaned first call finishes in the background; wait for its record
-    # and assert it, so a lost terminal write fails here (#743 W-10).
-    substep_rows: list[dict[str, Any]] = []
-    for _ in range(100):
-        substep_rows = [
-            r
-            for r in await _ledger_rows(wf_conn, wf_schema, flow_id)
-            if r["step_key"].endswith(".iter0/x")
-        ]
-        if substep_rows and all(r["status"] != "running" for r in substep_rows):
-            break
-        await asyncio.sleep(0.05)
+    # the orphaned first call finishes in the background; await the task itself
+    # (a row-status poll can break before its pool release ends), then assert
+    # its record, so a lost terminal write fails here (#743 W-10).
+    (orphan,) = orphans
+    await asyncio.wait_for(orphan, 5)
+    substep_rows = [
+        r
+        for r in await _ledger_rows(wf_conn, wf_schema, flow_id)
+        if r["step_key"].endswith(".iter0/x")
+    ]
     assert fns == ["slow"], fns
     assert [(r["status"], r["result"]) for r in substep_rows] == [("succeeded", '"slow"')], (
         substep_rows
