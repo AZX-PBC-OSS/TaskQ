@@ -1,0 +1,21 @@
+{
+  "bulkclone_mig_full_usargw72_id_idx": {
+    "partial_bytes": 8192,
+    "full_bytes": 3178496,
+    "ratio": 0.002577319587628866
+  },
+  "bulkclone_mig_full_usargw72_parent_id_id_idx": {
+    "partial_bytes": 8192,
+    "full_bytes": 3178496,
+    "ratio": 0.002577319587628866
+  },
+  "bulkclone_mig_full_usargw72_parent_id_idx": {
+    "partial_bytes": 8192,
+    "full_bytes": 3178496,
+    "ratio": 0.002577319587628866
+  },
+  "_red_drill": {
+    "note": "the full control index against the smallest partial is the rejected shape; its ratio is the RED the pin exists to flag"
+  },
+  "head_sha": "ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8"
+}

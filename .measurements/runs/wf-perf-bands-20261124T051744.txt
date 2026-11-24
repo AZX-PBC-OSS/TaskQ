@@ -1,0 +1,6 @@
+# the bands leg (tests/test_wf_schema_migration.py + tests/test_wf_perf_bands.py + tests/test_wf_status_pins.py, full marks: the band-writer tests execute) at the re-stamp head ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8
+$ -m pytest tests/test_wf_perf_bands.py tests/test_wf_schema_migration.py tests/test_wf_status_pins.py -q -p no:cacheprovider --basetemp=/tmp/opencode/bt-restamp-bands
+.........................................                                [100%]
+41 passed in 38.59s
+rc=0
+head: ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8

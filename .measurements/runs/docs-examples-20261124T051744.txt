@@ -1,0 +1,13 @@
+# the docs examples (make test-docs-examples: pytest -m docs_examples, TASKQ_DOCS_EXAMPLES=1) at the re-stamp head ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8
+$ -m pytest -m docs_examples -q -p no:cacheprovider --basetemp=/tmp/opencode/bt-restamp-docs
+........................................................................ [ 66%]
+....................................                                     [100%]
+=============================== warnings summary ===============================
+src/taskq/testing/job_context.py:34
+  /tmp/opencode/restamp-wt/src/taskq/testing/job_context.py:34: PytestCollectionWarning: cannot collect test class 'JobContext' because it has a __init__ constructor (from: tests/test_job_context_mirror_field_parity.py)
+    @dataclass(frozen=True, slots=True)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+108 passed, 14722 deselected, 1 warning in 92.26s (0:01:32)
+rc=0
+head: ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8

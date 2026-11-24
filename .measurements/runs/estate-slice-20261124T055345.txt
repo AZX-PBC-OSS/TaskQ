@@ -1,0 +1,14 @@
+# the estate slice x3 (content-door, docs-exemption, door-contract, staging-hygiene, wf-evidence-chain) at the re-stamp head ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8
+$ -m pytest tests/test_evidence_content_door_pins.py tests/test_evidence_docs_exemption_pins.py tests/test_evidence_door_contract_pins.py tests/test_evidence_staging_hygiene.py tests/test_wf_evidence_chain_pins.py -q -p no:cacheprovider --basetemp=/tmp/opencode/bt-restamp-estate0
+........................................................                 [100%]
+56 passed in 16.42s
+rc=0
+$ -m pytest tests/test_evidence_content_door_pins.py tests/test_evidence_docs_exemption_pins.py tests/test_evidence_door_contract_pins.py tests/test_evidence_staging_hygiene.py tests/test_wf_evidence_chain_pins.py -q -p no:cacheprovider --basetemp=/tmp/opencode/bt-restamp-estate1
+........................................................                 [100%]
+56 passed in 15.77s
+rc=0
+$ -m pytest tests/test_evidence_content_door_pins.py tests/test_evidence_docs_exemption_pins.py tests/test_evidence_door_contract_pins.py tests/test_evidence_staging_hygiene.py tests/test_wf_evidence_chain_pins.py -q -p no:cacheprovider --basetemp=/tmp/opencode/bt-restamp-estate2
+........................................................                 [100%]
+56 passed in 15.79s
+rc=0
+head: ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8

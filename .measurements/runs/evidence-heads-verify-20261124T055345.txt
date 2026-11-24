@@ -1,0 +1,5 @@
+# evidence-heads-verify — the verifier's receipt at the re-stamp head at the re-stamp head ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8
+$ python scripts/verify_evidence_heads.py
+the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/restamp-wt/.measurements/runs is recorded at THIS head (ffcb61fb37d6) or explicitly superseded
+rc=0
+head: ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8

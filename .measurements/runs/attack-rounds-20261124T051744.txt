@@ -1,0 +1,47 @@
+# the attack rounds' FILL (tests/test_attack*.py + tests/test_wf_attack*.py + tests/probes_*.py, -n 4) at the re-stamp head ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8
+$ -m pytest /tmp/opencode/restamp-wt/tests/test_attack_accepted_checksums_redteam.py /tmp/opencode/restamp-wt/tests/test_attack_bare_key_lookups.py /tmp/opencode/restamp-wt/tests/test_attack_baseexception_boundaries.py /tmp/opencode/restamp-wt/tests/test_attack_body_interrupts.py /tmp/opencode/restamp-wt/tests/test_attack_clock_back_sweep_health.py /tmp/opencode/restamp-wt/tests/test_attack_clock_forward_herd.py /tmp/opencode/restamp-wt/tests/test_attack_double_run_seams.py /tmp/opencode/restamp-wt/tests/test_attack_fence_integration.py /tmp/opencode/restamp-wt/tests/test_attack_firehose_pins.py /tmp/opencode/restamp-wt/tests/test_attack_fork_inherit.py /tmp/opencode/restamp-wt/tests/test_attack_fork_inherit_pg.py /tmp/opencode/restamp-wt/tests/test_attack_fsm_fuzz.py /tmp/opencode/restamp-wt/tests/test_attack_fsm_fuzz_pg.py /tmp/opencode/restamp-wt/tests/test_attack_heartbeat_ledger.py /tmp/opencode/restamp-wt/tests/test_attack_history_keyset_delete_pg.py /tmp/opencode/restamp-wt/tests/test_attack_input_env_boundaries.py /tmp/opencode/restamp-wt/tests/test_attack_input_monsters.py /tmp/opencode/restamp-wt/tests/test_attack_insights_rec.py /tmp/opencode/restamp-wt/tests/test_attack_leader_gaps.py /tmp/opencode/restamp-wt/tests/test_attack_lifecycle_edges.py /tmp/opencode/restamp-wt/tests/test_attack_live_migration.py /tmp/opencode/restamp-wt/tests/test_attack_livelock_pins.py /tmp/opencode/restamp-wt/tests/test_attack_liveness_resume.py /tmp/opencode/restamp-wt/tests/test_attack_loop_liveness.py /tmp/opencode/restamp-wt/tests/test_attack_no_live_job_delete.py /tmp/opencode/restamp-wt/tests/test_attack_notify_delivery.py /tmp/opencode/restamp-wt/tests/test_attack_poison_pill.py /tmp/opencode/restamp-wt/tests/test_attack_poison_pill_pg.py /tmp/opencode/restamp-wt/tests/test_attack_provenance.py /tmp/opencode/restamp-wt/tests/test_attack_prune_ghost.py /tmp/opencode/restamp-wt/tests/test_attack_reclaim_race_pins.py /tmp/opencode/restamp-wt/tests/test_attack_redis_lies.py /tmp/opencode/restamp-wt/tests/test_attack_result_size_gate_pg.py /tmp/opencode/restamp-wt/tests/test_attack_retention_gap_events_pg.py /tmp/opencode/restamp-wt/tests/test_attack_retention_gap_events_twin.py /tmp/opencode/restamp-wt/tests/test_attack_retry_fence.py /tmp/opencode/restamp-wt/tests/test_attack_rt_heartbeat_integration.py /tmp/opencode/restamp-wt/tests/test_attack_rt_retention_integration.py /tmp/opencode/restamp-wt/tests/test_attack_twin_atomic.py /tmp/opencode/restamp-wt/tests/test_attack_twin_pg_differential.py /tmp/opencode/restamp-wt/tests/test_attack_zombie_tx.py /tmp/opencode/restamp-wt/tests/test_wf_attack_admin.py /tmp/opencode/restamp-wt/tests/test_wf_attack_cancel.py /tmp/opencode/restamp-wt/tests/test_wf_attack_cli.py /tmp/opencode/restamp-wt/tests/test_wf_attack_demo.py /tmp/opencode/restamp-wt/tests/test_wf_attack_emit.py /tmp/opencode/restamp-wt/tests/test_wf_attack_engine.py /tmp/opencode/restamp-wt/tests/test_wf_attack_loop.py /tmp/opencode/restamp-wt/tests/test_wf_attack_loop_docs.py /tmp/opencode/restamp-wt/tests/test_wf_attack_progress.py /tmp/opencode/restamp-wt/tests/test_wf_attack_runkey.py /tmp/opencode/restamp-wt/tests/probes_admin_actions_under_fire.py /tmp/opencode/restamp-wt/tests/probes_cli_races.py /tmp/opencode/restamp-wt/tests/probes_coverage_closers.py /tmp/opencode/restamp-wt/tests/probes_failed_parent_cascade.py /tmp/opencode/restamp-wt/tests/probes_fanin_and_pruner.py /tmp/opencode/restamp-wt/tests/probes_held_drive_livelock.py /tmp/opencode/restamp-wt/tests/probes_hold_identity.py /tmp/opencode/restamp-wt/tests/probes_loop_machinery.py /tmp/opencode/restamp-wt/tests/probes_nothing_stuck_shapes.py /tmp/opencode/restamp-wt/tests/probes_nothing_stuck_teeth.py /tmp/opencode/restamp-wt/tests/probes_teardown_endstate.py /tmp/opencode/restamp-wt/tests/probes_validator_rules.py -n 4 -q -p no:cacheprovider --basetemp=/tmp/opencode/bt-restamp-attack
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 10%]
+........................................................................ [ 21%]
+.......s................................................................ [ 32%]
+........................................................................ [ 43%]
+........................................................................ [ 54%]
+........................................................................ [ 65%]
+.............s.......................................................... [ 76%]
+........................................................................ [ 86%]
+........................................................................ [ 97%]
+...............                                                          [100%]
+=============================== warnings summary ===============================
+tests/test_attack_fork_inherit.py: 16 warnings
+  /tmp/opencode/restamp-wt/tests/test_attack_fork_inherit.py:102: DeprecationWarning: This process (pid=4077240) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit.py::test_parent_stamp_is_set_by_the_fork_and_consumed_once
+  /tmp/opencode/restamp-wt/tests/test_attack_fork_inherit.py:216: DeprecationWarning: This process (pid=4077240) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit.py::test_guarded_wire_refuses_in_the_child_before_the_socket
+  /tmp/opencode/restamp-wt/tests/test_attack_fork_inherit.py:102: DeprecationWarning: This process (pid=4077230) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit_pg.py::test_forked_child_inherits_the_pools_sockets_and_is_refused
+  /tmp/opencode/restamp-wt/tests/test_attack_fork_inherit_pg.py:166: DeprecationWarning: This process (pid=4077236) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit_pg.py::test_fork_in_a_job_body_refuses_reports_and_keeps_consuming
+  /tmp/opencode/restamp-wt/tests/test_attack_fork_inherit_pg.py:101: DeprecationWarning: This process (pid=4077230) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/test_attack_fork_inherit_pg.py::test_forked_child_is_refused_on_the_live_copy_wire
+  /tmp/opencode/restamp-wt/tests/test_attack_fork_inherit_pg.py:241: DeprecationWarning: This process (pid=4077230) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/probes_nothing_stuck_teeth.py:279: needs a restartable cluster (ATTACK4_PG_DATA + the port; the capture ran with the probe's own PG on :5711)
+SKIPPED [1] tests/test_attack_insights_rec.py:244: uvloop is not installed
+661 passed, 2 skipped, 21 warnings in 96.55s (0:01:36)
+rc=0
+head: ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8

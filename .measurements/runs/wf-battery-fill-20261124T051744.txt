@@ -1,0 +1,101 @@
+# the wf battery's FILL (test-wf-cov's selection, -n 4, under --cov=src/taskq/workflows --cov-branch) at the re-stamp head ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8
+$ -m pytest /tmp/opencode/restamp-wt/tests/test_wf_3am_pins.py /tmp/opencode/restamp-wt/tests/test_wf_admission_boundary_controls.py /tmp/opencode/restamp-wt/tests/test_wf_api_fixround_pins.py /tmp/opencode/restamp-wt/tests/test_wf_api_surface_pins.py /tmp/opencode/restamp-wt/tests/test_wf_attack_admin.py /tmp/opencode/restamp-wt/tests/test_wf_attack_cancel.py /tmp/opencode/restamp-wt/tests/test_wf_attack_cli.py /tmp/opencode/restamp-wt/tests/test_wf_attack_demo.py /tmp/opencode/restamp-wt/tests/test_wf_attack_emit.py /tmp/opencode/restamp-wt/tests/test_wf_attack_engine.py /tmp/opencode/restamp-wt/tests/test_wf_attack_loop.py /tmp/opencode/restamp-wt/tests/test_wf_attack_loop_docs.py /tmp/opencode/restamp-wt/tests/test_wf_attack_progress.py /tmp/opencode/restamp-wt/tests/test_wf_attack_runkey.py /tmp/opencode/restamp-wt/tests/test_wf_attempt_dispositions.py /tmp/opencode/restamp-wt/tests/test_wf_boot_gate_diagnosis.py /tmp/opencode/restamp-wt/tests/test_wf_cache_cures_pins.py /tmp/opencode/restamp-wt/tests/test_wf_cancel_capture_lock_race.py /tmp/opencode/restamp-wt/tests/test_wf_cancel_park_races.py /tmp/opencode/restamp-wt/tests/test_wf_cancel_refund_representation_matrix.py /tmp/opencode/restamp-wt/tests/test_wf_capability_exact_preflight.py /tmp/opencode/restamp-wt/tests/test_wf_capability_guard.py /tmp/opencode/restamp-wt/tests/test_wf_capacity_enforcement_pins.py /tmp/opencode/restamp-wt/tests/test_wf_capacity_retention_and_reads.py /tmp/opencode/restamp-wt/tests/test_wf_capacity_surface.py /tmp/opencode/restamp-wt/tests/test_wf_cascade_drain_race_control.py /tmp/opencode/restamp-wt/tests/test_wf_causal_child_control.py /tmp/opencode/restamp-wt/tests/test_wf_childflow_contracts.py /tmp/opencode/restamp-wt/tests/test_wf_childflow_cures_pins.py /tmp/opencode/restamp-wt/tests/test_wf_childflow_pins.py /tmp/opencode/restamp-wt/tests/test_wf_cli_pins.py /tmp/opencode/restamp-wt/tests/test_wf_context_contract.py /tmp/opencode/restamp-wt/tests/test_wf_counters_preregistered.py /tmp/opencode/restamp-wt/tests/test_wf_coverage_closing.py /tmp/opencode/restamp-wt/tests/test_wf_coverage_closing2.py /tmp/opencode/restamp-wt/tests/test_wf_coverage_gate.py /tmp/opencode/restamp-wt/tests/test_wf_crashed_terminal_wedge.py /tmp/opencode/restamp-wt/tests/test_wf_create_seam_pins.py /tmp/opencode/restamp-wt/tests/test_wf_ctx_annotation_pins.py /tmp/opencode/restamp-wt/tests/test_wf_declared_term_seams.py /tmp/opencode/restamp-wt/tests/test_wf_demo_legs.py /tmp/opencode/restamp-wt/tests/test_wf_deps_pins.py /tmp/opencode/restamp-wt/tests/test_wf_docshelf_cures_pins.py /tmp/opencode/restamp-wt/tests/test_wf_drain_ceiling_controls.py /tmp/opencode/restamp-wt/tests/test_wf_embedded_backpressure_control.py /tmp/opencode/restamp-wt/tests/test_wf_emit_backpressure_pins.py /tmp/opencode/restamp-wt/tests/test_wf_emit_capacity_controls.py /tmp/opencode/restamp-wt/tests/test_wf_emit_diagnostic_contract.py /tmp/opencode/restamp-wt/tests/test_wf_emit_parking_controls.py /tmp/opencode/restamp-wt/tests/test_wf_emit_tx_pins.py /tmp/opencode/restamp-wt/tests/test_wf_emit_wake_recovery.py /tmp/opencode/restamp-wt/tests/test_wf_engine_claim_fences.py /tmp/opencode/restamp-wt/tests/test_wf_engine_units.py /tmp/opencode/restamp-wt/tests/test_wf_enginefaces_pins.py /tmp/opencode/restamp-wt/tests/test_wf_ergonomics_contract.py /tmp/opencode/restamp-wt/tests/test_wf_error_exports.py /tmp/opencode/restamp-wt/tests/test_wf_escalate_exhaust_parked_waiter_control.py /tmp/opencode/restamp-wt/tests/test_wf_escape_loop_policy_controls.py /tmp/opencode/restamp-wt/tests/test_wf_evidence_chain_pins.py /tmp/opencode/restamp-wt/tests/test_wf_execution_policy.py /tmp/opencode/restamp-wt/tests/test_wf_execution_py.py /tmp/opencode/restamp-wt/tests/test_wf_fairness_pins.py /tmp/opencode/restamp-wt/tests/test_wf_fan_in_adoption_bound.py /tmp/opencode/restamp-wt/tests/test_wf_fan_in_adoption_boundary.py /tmp/opencode/restamp-wt/tests/test_wf_fanin_bound_pins.py /tmp/opencode/restamp-wt/tests/test_wf_finalize_pins.py /tmp/opencode/restamp-wt/tests/test_wf_first_page_park_fence.py /tmp/opencode/restamp-wt/tests/test_wf_flow_rate_limit_pins.py /tmp/opencode/restamp-wt/tests/test_wf_flows_demo.py /tmp/opencode/restamp-wt/tests/test_wf_fork_pins.py /tmp/opencode/restamp-wt/tests/test_wf_guard_overhead_control.py /tmp/opencode/restamp-wt/tests/test_wf_hitl_pins.py /tmp/opencode/restamp-wt/tests/test_wf_hitl_pubsub_pins.py /tmp/opencode/restamp-wt/tests/test_wf_hitl_web_demo.py /tmp/opencode/restamp-wt/tests/test_wf_hold_stamp_wedge_pins.py /tmp/opencode/restamp-wt/tests/test_wf_holdmap_cures_pins.py /tmp/opencode/restamp-wt/tests/test_wf_identity_717_capability_activation.py /tmp/opencode/restamp-wt/tests/test_wf_identity_717_diagnosis.py /tmp/opencode/restamp-wt/tests/test_wf_identity_717_docs_failclosed.py /tmp/opencode/restamp-wt/tests/test_wf_identity_717_redteam.py /tmp/opencode/restamp-wt/tests/test_wf_identity_717_repair.py /tmp/opencode/restamp-wt/tests/test_wf_identity_717_route_body_boundary.py /tmp/opencode/restamp-wt/tests/test_wf_identity_boundary_kill_claims.py /tmp/opencode/restamp-wt/tests/test_wf_identity_boundary_kill_claims_teeth.py /tmp/opencode/restamp-wt/tests/test_wf_identity_p3_200k.py /tmp/opencode/restamp-wt/tests/test_wf_identity_p3_carriers.py /tmp/opencode/restamp-wt/tests/test_wf_identity_p3_rollout.py /tmp/opencode/restamp-wt/tests/test_wf_identity_p3_warm_cache.py /tmp/opencode/restamp-wt/tests/test_wf_identity_warm_cache_ctx_doors.py /tmp/opencode/restamp-wt/tests/test_wf_identity_warm_cache_enqueue_retry.py /tmp/opencode/restamp-wt/tests/test_wf_identity_warm_cache_scalar_binds.py /tmp/opencode/restamp-wt/tests/test_wf_keyed_admission_pins.py /tmp/opencode/restamp-wt/tests/test_wf_loop_carry_none_seed.py /tmp/opencode/restamp-wt/tests/test_wf_loop_pins.py /tmp/opencode/restamp-wt/tests/test_wf_loop_refusal_release_controls.py /tmp/opencode/restamp-wt/tests/test_wf_maintenance_liveness.py /tmp/opencode/restamp-wt/tests/test_wf_max_pending_impossibility.py /tmp/opencode/restamp-wt/tests/test_wf_migration_deadlock_control.py /tmp/opencode/restamp-wt/tests/test_wf_not_draining_refusal.py /tmp/opencode/restamp-wt/tests/test_wf_occupancy_and_latency.py /tmp/opencode/restamp-wt/tests/test_wf_otel_pins.py /tmp/opencode/restamp-wt/tests/test_wf_outbox_retention_pins.py /tmp/opencode/restamp-wt/tests/test_wf_p5_cancellation_effects.py /tmp/opencode/restamp-wt/tests/test_wf_park_envelope_control.py /tmp/opencode/restamp-wt/tests/test_wf_park_predicate_parity.py /tmp/opencode/restamp-wt/tests/test_wf_perf_bands.py /tmp/opencode/restamp-wt/tests/test_wf_phantom_fence_scope_pins.py /tmp/opencode/restamp-wt/tests/test_wf_phase3_cure_pins.py /tmp/opencode/restamp-wt/tests/test_wf_policy_fleet.py /tmp/opencode/restamp-wt/tests/test_wf_pre_workflow_tolerance_pins.py /tmp/opencode/restamp-wt/tests/test_wf_priority_pins.py /tmp/opencode/restamp-wt/tests/test_wf_progress_atomicity.py /tmp/opencode/restamp-wt/tests/test_wf_progress_close.py /tmp/opencode/restamp-wt/tests/test_wf_progress_emission.py /tmp/opencode/restamp-wt/tests/test_wf_progress_faces.py /tmp/opencode/restamp-wt/tests/test_wf_progress_gate_cures.py /tmp/opencode/restamp-wt/tests/test_wf_progress_identity_pins.py /tmp/opencode/restamp-wt/tests/test_wf_progress_persistence.py /tmp/opencode/restamp-wt/tests/test_wf_progress_push_pins.py /tmp/opencode/restamp-wt/tests/test_wf_projection_memo.py /tmp/opencode/restamp-wt/tests/test_wf_propagation_pins.py /tmp/opencode/restamp-wt/tests/test_wf_pruner_pins.py /tmp/opencode/restamp-wt/tests/test_wf_read_surface_agreement.py /tmp/opencode/restamp-wt/tests/test_wf_reconnect_backfill_control.py /tmp/opencode/restamp-wt/tests/test_wf_reservation_key_fate.py /tmp/opencode/restamp-wt/tests/test_wf_reservation_terminal_families.py /tmp/opencode/restamp-wt/tests/test_wf_retention_arms.py /tmp/opencode/restamp-wt/tests/test_wf_retention_migration_pins.py /tmp/opencode/restamp-wt/tests/test_wf_root_first_lock_order.py /tmp/opencode/restamp-wt/tests/test_wf_root_missing_control.py /tmp/opencode/restamp-wt/tests/test_wf_root_missing_runbook_recovery.py /tmp/opencode/restamp-wt/tests/test_wf_root_race_control.py /tmp/opencode/restamp-wt/tests/test_wf_route_cures.py /tmp/opencode/restamp-wt/tests/test_wf_router_pins.py /tmp/opencode/restamp-wt/tests/test_wf_run_verdict_seams.py /tmp/opencode/restamp-wt/tests/test_wf_run_view_pins.py /tmp/opencode/restamp-wt/tests/test_wf_runner_pins.py /tmp/opencode/restamp-wt/tests/test_wf_scenario_pins.py /tmp/opencode/restamp-wt/tests/test_wf_schema_migration.py /tmp/opencode/restamp-wt/tests/test_wf_skip_locked_exemptions.py /tmp/opencode/restamp-wt/tests/test_wf_snooze_pins.py /tmp/opencode/restamp-wt/tests/test_wf_source_attempts.py /tmp/opencode/restamp-wt/tests/test_wf_source_terminal_fence.py /tmp/opencode/restamp-wt/tests/test_wf_start_to_close_pins.py /tmp/opencode/restamp-wt/tests/test_wf_state_event_totality.py /tmp/opencode/restamp-wt/tests/test_wf_status_pins.py /tmp/opencode/restamp-wt/tests/test_wf_status_property.py /tmp/opencode/restamp-wt/tests/test_wf_step_cache_contract_pins.py /tmp/opencode/restamp-wt/tests/test_wf_step_cache_pins.py /tmp/opencode/restamp-wt/tests/test_wf_step_rate_limit_pins.py /tmp/opencode/restamp-wt/tests/test_wf_sweep_pins.py /tmp/opencode/restamp-wt/tests/test_wf_teardown_contract.py /tmp/opencode/restamp-wt/tests/test_wf_timer_contract_pins.py /tmp/opencode/restamp-wt/tests/test_wf_timer_cures_pins.py /tmp/opencode/restamp-wt/tests/test_wf_timer_pins.py /tmp/opencode/restamp-wt/tests/test_wf_type_tagged_route_refutation.py /tmp/opencode/restamp-wt/tests/test_wf_typed_route_contract_pins.py /tmp/opencode/restamp-wt/tests/test_wf_typed_route_pins.py /tmp/opencode/restamp-wt/tests/test_wf_validate_pins.py /tmp/opencode/restamp-wt/tests/test_wf_versioning_pins.py tests/test_fv_redlog_guard.py tests/test_worker_execution_seam.py tests/probes_validator_rules.py tests/probes_coverage_closers.py -n 4 --cov=src/taskq/workflows --cov-branch --cov-report=term -q -p no:cacheprovider --basetemp=/tmp/opencode/bt-restamp-battery
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [  5%]
+........................................................................ [ 10%]
+........................................................................ [ 15%]
+........................................................................ [ 20%]
+........................................................................ [ 25%]
+........................................................................ [ 30%]
+........................................................................ [ 35%]
+........................................................................ [ 40%]
+........................................................................ [ 45%]
+........................................................................ [ 50%]
+........................................................................ [ 55%]
+........................................................................ [ 60%]
+........................................................................ [ 66%]
+........................................................................ [ 71%]
+........................................................................ [ 76%]
+........................................................................ [ 81%]
+........................................................................ [ 86%]
+........................................................................ [ 91%]
+........................................................................ [ 96%]
+..................................................                       [100%]
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/restamp-wt/src/taskq/workflows/_progress.py:352: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.14.10-final-0 _______________
+
+Name                                          Stmts   Miss Branch BrPart  Cover
+-------------------------------------------------------------------------------
+src/taskq/workflows/__init__.py                  19      0      0      0   100%
+src/taskq/workflows/_cache.py                    52      1      4      1    96%
+src/taskq/workflows/_capability.py              122     10     44     10    88%
+src/taskq/workflows/_capture.py                  75      4     36      5    92%
+src/taskq/workflows/_childflow.py               140      6     26      7    92%
+src/taskq/workflows/_cli.py                     216     17     88     11    89%
+src/taskq/workflows/_effects.py                  61      2     14      2    95%
+src/taskq/workflows/_emit.py                    353     33    116     25    87%
+src/taskq/workflows/_fork.py                     55      1     26      1    98%
+src/taskq/workflows/_obs.py                      74      3     36      4    94%
+src/taskq/workflows/_policy.py                  314     47    140     31    81%
+src/taskq/workflows/_progress.py                147      8     30      2    94%
+src/taskq/workflows/_progress_read.py           151      4     54      8    94%
+src/taskq/workflows/_reducers.py                 24      0      6      0   100%
+src/taskq/workflows/_sql.py                     102      0      0      0   100%
+src/taskq/workflows/_sql_claim.py                 7      0      0      0   100%
+src/taskq/workflows/_sql_finalize.py             64      0      0      0   100%
+src/taskq/workflows/_sql_ledger.py                7      0      0      0   100%
+src/taskq/workflows/_sql_progress.py             12      0      0      0   100%
+src/taskq/workflows/_sql_status.py                8      0      0      0   100%
+src/taskq/workflows/_sql_sweep.py                25      0      0      0   100%
+src/taskq/workflows/_status.py                   46      0     12      0   100%
+src/taskq/workflows/_sweep.py                   249      8     52     10    94%
+src/taskq/workflows/_types.py                   266     14     66     13    92%
+src/taskq/workflows/_version.py                  10      0      0      0   100%
+src/taskq/workflows/_worker_execution.py        325     35    140     12    88%
+src/taskq/workflows/api/__init__.py               4      0      0      0   100%
+src/taskq/workflows/api/_app.py                 171      5     54      4    96%
+src/taskq/workflows/api/_attempt.py              94      9     36      8    87%
+src/taskq/workflows/api/_ctx.py                  85      0      8      2    98%
+src/taskq/workflows/api/_ctx_timer.py            63      7     16      6    84%
+src/taskq/workflows/api/_ctx_wait.py             51      0      4      0   100%
+src/taskq/workflows/api/_deps.py                 12      3      2      1    71%
+src/taskq/workflows/api/_graph.py               258     14     94     13    91%
+src/taskq/workflows/api/_hints.py                48      2     14      2    94%
+src/taskq/workflows/api/_hitl.py                387     14    148     17    94%
+src/taskq/workflows/api/_hitl_listen.py         108     12     28      7    85%
+src/taskq/workflows/api/_listen_pump.py         189     31     54     14    78%
+src/taskq/workflows/api/_loop.py                 58      0      8      0   100%
+src/taskq/workflows/api/_mermaid.py              55      2     28      2    95%
+src/taskq/workflows/api/_progress_listen.py     102     13     24      5    84%
+src/taskq/workflows/api/_run.py                  63      7     14      1    87%
+src/taskq/workflows/api/_runner.py              752     49    246     29    92%
+src/taskq/workflows/api/_runner_chain.py         28      0      0      0   100%
+src/taskq/workflows/api/_runner_codec.py         96      5     44      5    93%
+src/taskq/workflows/api/_runner_defer.py        134     10     54      7    90%
+src/taskq/workflows/api/_runner_errors.py        16      0      0      0   100%
+src/taskq/workflows/api/_runner_exit.py         101      2     24      4    95%
+src/taskq/workflows/api/_runner_ladder.py       138      1     48      5    97%
+src/taskq/workflows/api/_runner_loop.py         194     10     54      8    93%
+src/taskq/workflows/api/_sql_loop.py             25      0      0      0   100%
+src/taskq/workflows/api/_sql_runner.py           52      0      0      0   100%
+src/taskq/workflows/api/_validate.py            614     23    400     25    95%
+src/taskq/workflows/chain.py                    109      5     38      2    95%
+src/taskq/workflows/context.py                   47      2     10      2    93%
+src/taskq/workflows/definitions.py               69      1     16      1    98%
+src/taskq/workflows/engine.py                   174     11     66      8    91%
+src/taskq/workflows/ledger.py                    85      1     18      2    97%
+-------------------------------------------------------------------------------
+TOTAL                                          7306    432   2440    322    92%
+1418 passed, 1 warning in 681.17s (0:11:21)
+rc=0
+head: ffcb61fb37d63e2bb1f96314e8d76fa097b1a7f8
