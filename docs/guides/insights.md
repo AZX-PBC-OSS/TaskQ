@@ -361,7 +361,7 @@ vocabulary below is what such a proposal would cite.
 | Fairness strand | `taskq_jobs_oldest_due_age_seconds` grows while utilization ≤ 1 — then split by `fetch_actor_backlog.saturation`. Utilization is a ONE-WAVE measure (due depth ÷ one wave of capacity): running work and job DURATION are invisible to it, so a fleet of long jobs at max concurrency pins the ratio at ≤ 1 while wait time climbs toward a full job duration | Saturation **< 1** (slots free, work waiting) → **investigate dispatch/priority**, not fleet size. Saturation **= 1 sustained** (all admitted slots held, claims immediate, age still growing) → the configured cap IS the constraint: **raise the routed actors' `max_concurrent`** (the admission damper reads it directly) or add workers — this is row 1's starvation in long-job clothing, and utilization never exceeds 1 to say so |
 | Overprovisioned | `overprovisioned == true` over three consecutive windows (`fetch_overprovisioning`: `live_workers`, `depth`, `terminalisations` — live workers, zero due depth, fewer terminalisations than workers). **Duration confound:** long jobs make the terminalisation rate low on a FULLY BUSY fleet (4 workers on 2-hour jobs finish < 4 jobs/hour fleet-wide) — cross-check `fetch_worker_busy_ratio.busy_ratio` before acting | `busy_ratio` low too → **consolidate: scale down.** One window is a hypothesis; three is a fleet to shrink. `busy_ratio` high → the workers are occupied, not idle — the fleet is small for the job DURATION (the Fairness strand row's saturation = 1 shape), not large for the work |
 | Idle workers | `busy_ratio ≈ 0` sustained on still-heartbeating workers (`fetch_worker_busy_ratio.busy_ratio`) | **Consolidate the pool** |
-| Saturated actor, growing backlog | `saturation` at 1 while `unservable_backlog > 0` sustained (`fetch_actor_backlog.saturation`, `.unservable_backlog`) | **Raise the actor's `max_concurrent`** — the one lever that lifts the admission damper under either enforcement model — **or move the actor to a queue with headroom** (re-route in `actor_config`); adding workers alone may not lift a pinned actor cap (see the denominator caveat below) |
+| Saturated actor, growing backlog | `saturation` at 1 while `unservable_backlog > 0` sustained (`fetch_actor_backlog.saturation`, `.unservable_backlog`). Not on `wf`: its `running` also counts each live workflow run's root row, which the dispatch cap does not count ([Workflows](workflows.md)), so `wf` can read saturated while dispatch still admits its steps | **Raise the actor's `max_concurrent`** — the one lever that lifts the admission damper under either enforcement model — **or move the actor to a queue with headroom** (re-route in `actor_config`); adding workers alone may not lift a pinned actor cap (see the denominator caveat below) |
 | Runaway cron schedule | `runaway_trending == true` (`fetch_cron_ledger`: fires > cleared in BOTH the current and prior window) | **Do not scale for this alone** — feed the schedule; read against `dst_strategy` (an `allof` overlap-hour double-fire is by design) |
 | Drain budget | `eta_seconds` against the intended change window (`fetch_drain_estimates.eta_seconds`; `has_traffic == false` ⇒ undefined — widen the window first) | **Size the scaling action** to finish inside the window, then re-read |
 
@@ -370,7 +370,8 @@ clears starvation on its own.** The denominator
 (`effective_capacity` = routed `sum(max_concurrent)` × live workers)
 is the dispatch admission damper's OVER-DISPATCH ceiling, not a hard
 cap: a claim round admits up to `max_concurrent − in_flight` where
-`in_flight` counts the actor's running rows FLEET-WIDE, so concurrent
+`in_flight` counts the actor's running rows FLEET-WIDE (on `wf`, minus
+each live workflow run's root row), so concurrent
 dispatchers each admit against a stale count and the realized ceiling
 saturates toward the documented over-dispatch bound
 (`(producers − 1) × max_concurrent` — see `capped_running` in
@@ -381,7 +382,8 @@ while the actor's configured cap holds the queue to roughly two
 concurrent jobs. Read utilization WITH its two sisters, never alone:
 `fetch_actor_backlog.saturation` at 1 means the configured cap is the
 binding constraint (only raising `max_concurrent` — or re-routing to
-actors with headroom — lifts it), and a growing
+actors with headroom — lifts it), except on `wf`, whose `running` still
+counts run roots; and a growing
 `taskq_jobs_oldest_due_age_seconds` means the queue is not draining
 however small the ratio looks.
 

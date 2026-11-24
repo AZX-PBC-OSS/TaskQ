@@ -170,7 +170,7 @@ above.
 
 | seam / caller | interleaving | invariant | pin |
 |---|---|---|---|
-| `capped_running.in_flight` (`backend/_dispatch_sql.py`), read by `per_actor_capacity`, `repend_capacity` and the `eligible` re-limit | N live runs on a capped `wf`, with a re-pended `wf` step | a flow root never holds a unit of an actor's cap; running steps and vanilla running rows do | `tests/test_wf_root_actor_cap_pins.py` |
+| `capped_running.in_flight` (`backend/_dispatch_sql.py`), read by `per_actor_capacity`, `repend_capacity` and the `eligible` re-limit | N live runs on a capped `wf`, with a re-pended `wf` step | a flow root never holds a unit of `wf`'s cap; running steps and vanilla running rows do. The subtraction is the literal `'wf'`, so it relies on every root being written on `wf` (`FlowEntryShim.actor`) | `tests/test_wf_root_actor_cap_pins.py` |
 
 ## What remains open
 

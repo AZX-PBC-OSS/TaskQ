@@ -117,8 +117,8 @@ The geometry below pins each stage to the round's own constants:
   index-only on all-visible pages; the planner may still pick either
   ``jobs_actor_running_idx`` or the
   ``jobs_locked_by_worker_running_idx`` partial; ``wf``'s flow-root
-  subtraction is the one heap read, priced and run at most once per
-  statement), never a fleet-wide
+  subtraction is the one heap read, one tuple per running ``wf`` row,
+  priced and run at most once per statement), never a fleet-wide
   materialization per round and never a
   per-claimed-row recount (O(oversample x cap^2) per round: measured 28/648/2550/10100
   running-index rows at caps 5/25/50/100, ~cap/2 after this CTE).
@@ -594,7 +594,8 @@ rr_tail_keys AS (
 -- wf's count subtracts its live flow roots, which are running but never
 -- claimed, as an uncorrelated InitPlan so the planner prices that heap
 -- read once per statement, not once per driver row (the in-SQL comment
--- below has the measurement).
+-- below has the measurement). The read itself visits one heap tuple per
+-- running wf row, roots and steps, so it grows with wf's live runs.
 --
 -- MATERIALIZED is the fence: referenced three times, an inlined CTE
 -- would re-run the counts at every reference site, re-creating the
@@ -662,15 +663,14 @@ capped_running AS MATERIALIZED (
 -- claim round, referenced three times, so Postgres could not inline it
 --, at a cost proportional to the fleet's TOTAL running rows, paid
 -- whether or not a single actor declared a cap. The per-actor running
--- count now lives in the capacity CTEs' residual expression as a
--- correlated count gated on `ac.max_concurrent IS NOT NULL` (see
--- per_actor_capacity): an uncapped fleet pays zero running-row work per
--- round, and a capped one pays only its own capped actors' running rows
---, each a scan over the running-row partial indexes (the planner
--- picks jobs_actor_running_idx or the jobs_locked_by_worker_running_idx
--- partial at its own cost discretion, heap-visiting either way), never the
--- fleet's. The best-effort TOCTOU doctrine the CTE's comment carried
--- moves with the count.)
+-- count now lives in capped_running above, gated on
+-- `max_concurrent IS NOT NULL`: an uncapped fleet pays zero running-row
+-- work per round, and a capped one pays only its own capped actors'
+-- running rows, each a scan over the running-row partial indexes (the
+-- planner picks jobs_actor_running_idx or the
+-- jobs_locked_by_worker_running_idx partial at its own cost discretion,
+-- index-only on all-visible pages), never the fleet's. The best-effort
+-- TOCTOU doctrine the CTE's comment carried moves with the count.)
 -- Best-effort under concurrent dispatchers: this snapshot is read once at
 -- the start of the CTE and is not re-checked after `locked` takes its
 -- FOR UPDATE SKIP LOCKED row locks, so two dispatchers running this query

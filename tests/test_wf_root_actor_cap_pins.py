@@ -69,6 +69,7 @@ _LEASE = timedelta(seconds=30)
 _QUEUE = "default"
 _FLOW = "wf_root_cap_flow"
 _TWO_STEP_FLOW = "wf_root_cap_two_step_flow"
+_PLACED_FLOW = "wf_root_cap_placed_flow"
 
 _VARIANTS = [
     pytest.param("strict_fifo", DISPATCH_STRICT_FIFO_SQL, id="strict_fifo"),
@@ -111,6 +112,10 @@ def _app() -> WorkflowApp:
     def two_steps() -> Promise[object]:  # pyright: ignore[reportUnusedFunction]  # Why: registered by the decorator, read back through app.get.
         # left and right are both born due (deps 0); the join waits on both.
         return build(step(_join, step(_left, key="left"), step(_right, key="right"), key="join"))
+
+    @app.workflow(_PLACED_FLOW, actor="wf_root_cap_placed")
+    def placed() -> Promise[object]:  # pyright: ignore[reportUnusedFunction]  # Why: registered by the decorator, read back through app.get.
+        return build(step(_only, key="only"))
 
     return app
 
@@ -430,6 +435,22 @@ async def test_live_roots_are_not_subtracted_from_other_actors(
     ]
 
 
+# ── the root's actor ─────────────────────────────────────────────────────
+
+
+async def test_a_placed_workflows_root_still_lives_on_wf(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+) -> None:
+    """``capped_running`` subtracts roots on the literal ``'wf'`` only, which
+    holds because every root is written with ``FlowEntryShim``'s actor. The
+    placement face (``@app.workflow(actor=...)``) moves a definition's loop
+    and escalation rows; a root it moved would refill that actor's cap."""
+    flows = await _create_runs(wf_pool, wf_schema, _PLACED_FLOW, 1)
+    await _assert_roots_live(wf_conn, wf_schema, flows)
+
+
 # ── the live-root JIT oracle ─────────────────────────────────────────────
 
 _ORACLE_ROOTS = 10_000
@@ -537,6 +558,8 @@ async def test_live_roots_keep_the_claim_under_jit_above_cost(
         await tr.start()
         try:
             await wf_conn.execute("SET LOCAL jit = on")
+            # The default threshold, the one the ~3k-root crossing is measured against.
+            await wf_conn.execute("SET LOCAL jit_above_cost = 100000")
             above = float(await wf_conn.fetchval("SELECT current_setting('jit_above_cost')"))
             raw = await wf_conn.fetchval(
                 "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql.format(schema=schema), *args

@@ -555,7 +555,9 @@ async def fetch_actor_backlog(
 
     * ``backlog`` — the actor's pending + scheduled rows (the
       ``max_pending`` backpressure counter's own population).
-    * ``running`` — the actor's in-flight rows.
+    * ``running`` — the actor's in-flight rows. On ``wf`` this includes
+      each live workflow run's root row, which the dispatch cap does not
+      count, so ``wf`` can read saturated while its steps are admitted.
     * ``max_concurrent`` — the actor's cached ceiling.
     * ``saturation`` — running ÷ max_concurrent; NULL when the actor
       has no cap (unbounded).
