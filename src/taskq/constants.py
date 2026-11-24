@@ -13,6 +13,7 @@ from typing import Final
 from uuid import UUID
 
 __all__ = [
+    "BIGINT_MAX",
     "BTREE_MAX_ITEM_BYTES",
     "BUDGET_EXHAUSTED_MESSAGE",
     "CANCEL_ORIGIN_ABANDONED",
@@ -658,6 +659,14 @@ event payload.
 
 SMALLINT_MIN: Final[int] = -32768
 """Lower bound of the Postgres ``smallint`` domain."""
+
+BIGINT_MAX: Final[int] = 2**63 - 1
+"""Upper bound of the Postgres ``bigint`` domain.
+
+The ``map_index`` record identity widens to ``bigint`` on all five
+carriers via the POST migration; this is the activated upper bound the
+engine resolves from the live schema once that migration commits.
+"""
 
 SMALLINT_MAX: Final[int] = 32767
 """Upper bound of the Postgres ``smallint`` domain.

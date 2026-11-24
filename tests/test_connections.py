@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 import structlog.testing
-from asyncpg.exceptions import InternalClientError
+from asyncpg.exceptions import InternalClientError, InvalidCachedStatementError
 
 from taskq.connections import (
     _POOL_RELEASE_RESET_TIMEOUT_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the checkout's release bound is the unit under test; the constant is the seam the assertion reads.
@@ -515,7 +515,9 @@ async def test_fresh_connection_retry_retries_only_once() -> None:
 async def test_fresh_connection_retry_passes_other_errors_through_untried() -> None:
     """The catch is deliberately narrow: the database's own error types
     are the call site's to classify (the drain retries deadlocks itself),
-    so the wrapper neither retries nor rewrites them."""
+    so the wrapper neither retries nor rewrites them — the one named
+    exception is the migration-aftermath ``InvalidCachedStatementError``
+    (pinned below), never a general widening."""
     calls = 0
 
     async def op(guard: object) -> None:
@@ -527,6 +529,49 @@ async def test_fresh_connection_retry_passes_other_errors_through_untried() -> N
         await _with_fresh_connection_retry(_FakePool(), op, operation="unit-probe")
 
     assert calls == 1
+
+
+async def test_fresh_connection_retry_retries_once_on_an_invalidated_cached_statement() -> None:
+    """The migration-aftermath branch: a DDL change invalidated a long-lived
+    pool's prepared statement, so the next drive raises
+    ``InvalidCachedStatementError``. The wrapper re-drives once (asyncpg's own
+    cache clear and re-prepare own the next drive), logs it under its own
+    event so an operator can tell the two recovery causes apart, and still
+    refuses the retry once a write has been acknowledged."""
+    calls = 0
+
+    async def retried(guard: _RetryGuard) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise InvalidCachedStatementError("cached statement plan is invalid")
+        return "done"
+
+    with structlog.testing.capture_logs() as logs:
+        result = await _with_fresh_connection_retry(_FakePool(), retried, operation="unit-probe")
+
+    assert result == "done"
+    assert calls == 2
+    warnings = [e for e in logs if e.get("event") == "pool-prepared-statement-invalidated"]
+    assert len(warnings) == 1
+    assert warnings[0]["kind"] == "pool_prepared_statement_invalidated"
+    assert warnings[0]["operation"] == "unit-probe"
+
+    refused_calls = 0
+
+    async def after_write(guard: _RetryGuard) -> str:
+        nonlocal refused_calls
+        refused_calls += 1
+        guard.mark_wrote()
+        raise InvalidCachedStatementError("invalidated after the write was acknowledged")
+
+    with pytest.raises(InvalidCachedStatementError):
+        await _with_fresh_connection_retry(_FakePool(), after_write, operation="enqueue")
+
+    assert refused_calls == 1, (
+        "re-driving an acknowledged write on the invalidated cache re-issues it: "
+        "the no-durable-write rule applies to this branch too"
+    )
 
 
 async def test_fresh_connection_retry_logs_the_retry_with_the_operation_name() -> None:
