@@ -233,25 +233,27 @@ async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
     assert await read_cursor(wf_conn, wf_schema, source_id) == {"page": 0}
 
 
-# ── the map_index int16 ceiling ────────────────────────────────
+# ── the map_index identity domain ceiling ────────────────────────────────
 
 
 async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """The ceiling is real (``jobs.map_index smallint``, 01.00.23) and
-    UNDOCUMENTED where an author reads. The law the door already lives
-    by (the map_index-None refusal: a ``ValueError`` before any row
-    exists) is exactly the shape the ceiling refusal must take — typed,
-    named, naming the ceiling's number, and the number in the docs."""
+    """The resolved bigint ceiling remains typed, named and documented.
+
+    The old all-smallint 32767/32768 pair lives on in the dedicated pre-only
+    activation control; this full-schema pin moves the same poison/mate window
+    to BIGINT_MAX without deleting its persisted-row and cursor assertions.
+    """
+    from taskq.constants import BIGINT_MAX
+
     flow_id = await seed_flow(wf_conn, wf_schema)
     source_id = await make_source(wf_conn, wf_sql, flow_id)
     worker, attempt, epoch = await claim_source(wf_conn, wf_schema, source_id)
 
     raised: Exception | None = None
     try:
-        # A page pairing a valid record (32767, the smallint max) with
-        # the record that crosses the ceiling (32768).
+        # The exact last bigint identity and its first invalid successor.
         await emit_batch(
             wf_pool,
             wf_sql,
@@ -260,25 +262,25 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
             worker_id=worker,
             attempt=attempt,
             claim_epoch=epoch,
-            children=page_children([32767, 32768]),
+            children=page_children([BIGINT_MAX, BIGINT_MAX + 1]),
             cursor={"page": 0},
         )
     except Exception as exc:
         raised = exc
-    assert raised is not None, "Map_index=32768 LANDED — the smallint ceiling is gone?!"
-    assert "asyncpg" not in type(raised).__module__, (
-        f"The int16 ceiling surfaced as the RAW driver/codec error "
-        f"{type(raised).__module__}.{type(raised).__name__} "
-        f"({str(raised)[:120]!r}) — it must be a typed, NAMED refusal at the "
-        "emit door (the door's own ValueError idiom or a dedicated error)"
+    assert raised is not None, "Map_index=BIGINT_MAX+1 LANDED — the domain gate is gone?!"
+    assert type(raised).__name__ == "MapIndexExhaustedError", (
+        f"The domain ceiling surfaced as {type(raised).__module__}."
+        f"{type(raised).__name__} ({str(raised)[:120]!r}) — it must be exactly "
+        "MapIndexExhaustedError at the emit door, never a raw driver/codec "
+        "error that merely happens not to live in the asyncpg module"
     )
-    assert "32767" in str(raised), (
-        "The ceiling refusal must NAME the ceiling (32767) — an author "
+    assert str(BIGINT_MAX) in str(raised), (
+        "The ceiling refusal must NAME the resolved bigint ceiling — an author "
         "reading 'map_index out of range' learns nothing"
     )
     # MapIndexExhaustedError's own contract. the poison record kills itself,
-    # never its mates — the valid page-mate (32767) committed first (its tx
-    # landed), then the raise. The old whole-page-atomicity leg predates the
+    # never its mates — the valid page-mate (BIGINT_MAX) committed first (its
+    # tx landed), then the raise. The old whole-page-atomicity leg predates the
     # typed fix.
     assert await committed_children(wf_conn, wf_schema, source_id) == 1, (
         "the valid page-mate must SURVIVE the poison record — the emit's "
@@ -305,12 +307,11 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
     }
     guide = Path(__file__).resolve().parents[1] / "docs" / "guides" / "workflows.md"  # noqa: ASYNC240  # Why: the doc corpus's one read at the pin's setup — the file is static documentation, never a hot-path artifact
     guide_text = guide.read_text() if guide.exists() else ""
-    documented = any("32767" in text for text in surfaces.values()) or any(
+    documented = any(str(BIGINT_MAX) in text for text in surfaces.values()) or any(
         "map_index" in guide_text[max(0, m.start() - 200) : m.start() + 200]
-        for m in re.finditer(r"32767", guide_text)
+        for m in re.finditer(str(BIGINT_MAX), guide_text)
     )
     assert documented, (
-        "The int16 ceiling (32767) is documented NOWHERE a map/chain "
-        "author reads — not the emit module, not the chain module, not the "
-        "EmitChild contract, not the workflows guide's map_index prose"
+        "The resolved bigint ceiling is documented NOWHERE a map/chain author "
+        "reads — not the emit module, chain module, EmitChild contract or guide"
     )

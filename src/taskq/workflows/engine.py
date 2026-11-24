@@ -100,6 +100,7 @@ from taskq.workflows._sql import (
 )
 from taskq.workflows._sql_finalize import FANIN_FAILURES_BYTE_CAP
 from taskq.workflows._types import (
+    MAP_INDEX_CEILING,
     DecrementHit,
     FailureInfo,
     FinalizeResult,
@@ -110,6 +111,8 @@ from taskq.workflows._types import (
     _join_metadata,
     _jsonb,
     _metadata,
+    resolve_map_index_domain,
+    validate_map_index_identity,
 )
 
 __all__ = [
@@ -166,6 +169,21 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
             f"deps_pending must equal the declared parent count "
             f"(deps_pending={spec.deps_pending}, parents={len(spec.parents)})"
         )
+    if spec.map_index is not None:
+        validate_map_index_identity(spec.map_index)
+    if spec.map_index is not None and spec.map_index > MAP_INDEX_CEILING:
+        # One all-five read on the caller's actual connection, never a nested
+        # pool acquisition. All-bigint activates without restart; mixed widths
+        # are a MapIndexSchemaError before this node or any declared edge writes.
+        from taskq.workflows._emit import MapIndexExhaustedError
+
+        bound = await resolve_map_index_domain(conn, wsql.schema)
+        if spec.map_index > bound:
+            raise MapIndexExhaustedError(
+                f"the node {spec.step_key!r} carries map_index {spec.map_index} "
+                f"past the schema's resolved five-carrier upper bound ({bound}) — "
+                "the node insert refuses before writing the row"
+            )
     node_id = JobId(new_uuid())
     await conn.execute(
         wsql.node_insert,

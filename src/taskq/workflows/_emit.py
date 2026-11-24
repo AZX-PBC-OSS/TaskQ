@@ -24,13 +24,22 @@ duplicate one. the FENCE IS the CLAIM: a zombie source (its attempt
 superseded) updates nothing in step 3 → :class:`EmitFencedError` → the
 children and edges roll back with the tx — a zombie cannot emit.
 
-The ledger's
-claim-arbiter column is a SMALLINT — the ceiling is 32767. A page whose
-record's map_index crosses it raises :class:`MapIndexExhaustedError` at
-the emit door (typed, named, the ceiling's number on the record); the
-valid page-mates' tx commits first (the poison record kills itself,
-never its mates), and the deterministic route terminalizes the source.
-The ceiling is per-map-index, not per-run.
+The five identity carriers determine the active upper bound: 32767 before
+their atomic POST widening, BIGINT_MAX (9223372036854775807) when all five
+are bigint. A high candidate pays for one all-five catalog statement; an
+ordinary low page's catalog cost follows the declared bound — a BOUNDED LOW
+page (reserved replay or unreserved admission) runs the five-carrier
+capability preflight before any write and refuses a missing, mixed or botched
+shape with :class:`WorkflowWorkerCapabilityError`, while an explicit unbounded
+(``max_in_flight=None``) low page deliberately pays no catalog read (a high
+candidate's authoring-door resolve refuses a missing or mixed shape as
+:class:`MapIndexSchemaError` first). A page
+whose record crosses the resolved
+bound raises :class:`MapIndexExhaustedError` at the emit door; valid
+page-mates commit first (the poison record kills itself, never its mates).
+Missing, unknown and mixed carrier shapes instead refuse the whole batch as
+:class:`MapIndexSchemaError`. The bound is per-map-index, not per-run and
+not a fan-in counter bound.
 
 ``emit_batch`` accepts ``_window_hook``
 (the attack suite's seam), fired
@@ -79,7 +88,13 @@ from taskq.obs import get_logger, get_meter
 from taskq.workflows._fork import FORK_CHUNK
 from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
 from taskq.workflows._sql_finalize import WF_EMIT_ROTATION_BATCH
-from taskq.workflows._types import MAP_INDEX_CEILING, EmitChild, _jsonb, _row_metadata
+from taskq.workflows._types import (
+    MAP_INDEX_CEILING,
+    EmitChild,
+    _jsonb,
+    _row_metadata,
+    resolve_map_index_domain,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -216,13 +231,9 @@ class EmitStaleClaimError(EmitFencedError):
     """The attempt's claim identity no longer owns the source row."""
 
 
-#: ``jobs.map_index`` is a smallint — the ceiling is 32767. A page whose
-#: record's map_index crosses it raises :class:`MapIndexExhaustedError` at the
-#: emit door (typed, named, the ceiling's number on the record); the valid
-#: page-mates' tx commits first (the poison record kills itself, never its
-#: mates), and the deterministic route terminalizes the source. The ceiling is
-#: per-map-index, not per-run: a map's children count against the same smallint
-#: the ledger's claim-arbiter keys on.
+#: The active bound comes from all five carriers (32767 all-smallint;
+#: BIGINT_MAX all-bigint), never from a widened subset. This is independent of
+#: jobs.deps_pending's unchanged smallint child-count bound.
 
 
 class PageDivergedError(RuntimeError):
@@ -257,18 +268,19 @@ class PageDivergedError(RuntimeError):
 
 
 class MapIndexExhaustedError(RuntimeError):
-    """A page carried a record whose ``map_index`` is past the smallint
-    ceiling (:data:`taskq.workflows._types.MAP_INDEX_CEILING` — 32767;
-    the ledger's claim-arbiter column is a smallint). the BATCH
-    SEMANTICS: a poison record kills ITSELF loudly, never ITS MATES —
-    the emit emits the VALID page-mates first (their tx commits; the
-    valid work survives), then raises THIS naming the offending record.
-    The smallint cast's raw DataError escaped
-    MID-TX and rolled the whole page back — the valid page-mates died
-    with the poison record, an accidental untyped ceiling. The
-    deterministic route terminalizes the source with the ceiling on the
-    record (re-running cannot grow a record's identity past the
-    column's own domain)."""
+    """A page carried a record whose non-null identity is invalid.
+
+    The identity must be an exact non-negative ``int`` within the
+    schema-derived upper bound (32767 on the all-smallint schema;
+    BIGINT_MAX = 2**63-1 = 9223372036854775807 after all five carriers widen;
+    a high candidate checks the actual schema once). Bool, float and string
+    are refused without coercion: coercing one would format a different
+    idempotency key or reach the SQL codec mid-transaction. the BATCH
+    SEMANTICS: a poison record kills ITSELF loudly, never ITS MATES — the
+    emit emits the VALID page-mates first (their tx commits; the valid work
+    survives), then raises THIS naming the offending identity. An all-poison
+    page writes nothing. The deterministic route terminalizes the source with
+    the bound on the record."""
 
 
 EMIT_REFUSAL_STATUS_SQL_TEMPLATE = """\
@@ -687,7 +699,14 @@ async def _emit_tx(
     collided again — the ladder burned to a raw-typed death. Here the
     arbiter's refusal is :class:`PageDivergedError` — the named, loud
     death carrying the remedy (re-sync the cursor) — and the tx rolls
-    back WHOLE (the divergent page wrote nothing)."""
+    back WHOLE (the divergent page wrote nothing).
+
+    The five-carrier capability preflight is the CALLER's, on the bounded
+    paths only: the reserved replay calls ``verify_emit_capacity_objects``
+    on its transaction connection, the unreserved admission runs it inside
+    ``ensure_emit_capacity``, and the explicit unbounded
+    (``max_in_flight=None``) path deliberately enters with no catalog
+    read."""
     # Function-local, never module level (the module's own TYPE_CHECKING
     # import law — the runtime name is needed only at the except).
     import asyncpg
@@ -797,18 +816,40 @@ async def _emit_tx(
         )
 
 
-def _raise_poison(flow_id: JobId, source_id: JobId, poison: list[EmitChild]) -> None:
+def _poison_detail(poison: Sequence[EmitChild], bound: int) -> str:
+    """Name each invalid-identity class once (the direct values, never
+    dataclass/payload equality)."""
+    bad_types = [c.map_index for c in poison if type(c.map_index) is not int]
+    negative = [c.map_index for c in poison if type(c.map_index) is int and c.map_index < 0]
+    over = [c.map_index for c in poison if type(c.map_index) is int and c.map_index > bound]
+    parts: list[str] = []
+    if bad_types:
+        parts.append(
+            f"non-integer identities {bad_types!r} (the door requires an "
+            "exact int; bool, float and string are refused, never coerced)"
+        )
+    if negative:
+        parts.append(f"negative identities {negative!r}")
+    if over:
+        parts.append(f"identities past the supported upper bound ({bound}) {over!r}")
+    return "; ".join(parts)
+
+
+def _raise_poison(flow_id: JobId, source_id: JobId, poison: list[EmitChild], *, bound: int) -> None:
     """Name the page's poison records and raise (the ceiling's loud
     terminal — after the valid page-mates' tx committed, so the valid
     work survives on the record; the batch semantics, the error's
     docstring)."""
     raise MapIndexExhaustedError(
-        f"the page's records past the map_index smallint ceiling "
-        f"({MAP_INDEX_CEILING}): flow {flow_id}, source {source_id}, the "
-        f"offending records' step keys {sorted({c.step_key for c in poison})}, "
-        f"map_indexes {[c.map_index for c in poison]} — the VALID "
-        "page-mates COMMITTED above (a poison record kills itself loudly, "
-        "never its mates); the ceiling is documented on MAP_INDEX_CEILING"
+        f"the page carries invalid map_index identity: flow {flow_id}, "
+        f"source {source_id}, the offending records' step keys "
+        f"{sorted({c.step_key for c in poison})}, "
+        f"{_poison_detail(poison, bound)} — the VALID page-mates COMMITTED "
+        "above (a poison record kills itself loudly, never its mates); the "
+        f"page's effective identity upper bound is {bound} (a high candidate "
+        "resolves it from the five live carriers). On an all-smallint schema "
+        "an explicit retry is valid only after the operator-gated POST; above "
+        "BIGINT_MAX the exhaustion remains deterministic"
     )
 
 
@@ -857,6 +898,10 @@ async def emit_batch(
     is governed by its grant instead of the shared bound: a smaller or equal
     page commits and converts the reservation; a wider page raises
     :class:`EmitReservationExceededError` — the excess was never granted.
+    Both bounded paths — the reserved replay and the unreserved admission —
+    run the five-carrier capability preflight before any write; the explicit
+    unbounded (``max_in_flight=None``) path deliberately pays no catalog read
+    for a low page.
 
     Returns the minted child ids (uuid7 via the seam). Raises
     :class:`EmitFencedError` when the claim was superseded (nothing
@@ -867,9 +912,16 @@ async def emit_batch(
     :class:`PageDivergedError` when the page's rows already exist (the
     cursor diverged from the row history — the tx rolled back, nothing
     written). Raises :class:`MapIndexExhaustedError` when a record's
-    ``map_index`` is past the smallint ceiling — after emitting the
-    valid page-mates (the batch semantics: a poison record kills ITSELF
-    loudly, never its mates — the valid work SURVIVES on the record)."""
+    ``map_index`` is invalid or past the schema-resolved upper bound — after
+    emitting the valid page-mates (the batch semantics: a poison record kills
+    ITSELF loudly, never its mates — the valid work SURVIVES on the record).
+    Raises :class:`taskq.workflows._types.MapIndexSchemaError` before writing
+    anything when a high candidate meets a missing, mixed or unsupported
+    carrier shape. Raises :class:`WorkflowWorkerCapabilityError` before any
+    write on a bounded LOW page — reserved replay or unreserved admission —
+    against a missing, mixed or botched carrier shape (a high candidate's
+    authoring-door resolve refuses a missing or mixed shape as
+    :class:`MapIndexSchemaError` first)."""
     for child in children:
         if child.map_index is None:  # pyright: ignore[reportUnnecessaryComparison]  # Why: the runtime guard behind the typed door — EmitChild.map_index's int type is the declaration; a hand-built child carrying None must be refused here (the refuted-claim discipline), never trusted to the checker.
             raise ValueError(
@@ -886,28 +938,37 @@ async def emit_batch(
                 "the per-record trace (the one-query lineage)"
             )
 
-    # jobs.map_index is a smallint — a record past :data:`MAP_INDEX_CEILING`
-    # used to die as the raw DataError mid-tx, taking the valid page-mates down
-    # with the rollback (an accidental untyped ceiling). the batch semantics:
-    # the poison record kills itself loudly, never its mates — the valid
-    # page-mates emit (their tx commits below), then the poison is named and
-    # raised (the deterministic route terminalizes the source). An all-poison
-    # page is refused before any work.
-    poison = [c for c in children if not 0 <= int(c.map_index) <= MAP_INDEX_CEILING]
-    if not poison:
-        valid = list(children)
-    else:
-        valid = [c for c in children if c not in poison]
-        if not valid:
-            raise MapIndexExhaustedError(
-                f"the emit's page is entirely past the map_index smallint "
-                f"ceiling ({MAP_INDEX_CEILING}): flow {flow_id}, source "
-                f"{source_id}, the offending records' step keys "
-                f"{sorted({c.step_key for c in poison})}, map_indexes "
-                f"{[c.map_index for c in poison]} — nothing was written "
-                "(the record's identity cannot ride the ledger's smallint "
-                "arbiter; the ceiling is documented on MAP_INDEX_CEILING)"
-            )
+    # The identity is an exact, non-negative int. A high candidate probes the
+    # ACTUAL five-carrier schema once (not once per row, and never for an
+    # ordinary in-range page). All-smallint preserves the poison/mate rule;
+    # all-bigint activates immediately, with no restart or cached permission.
+    # Missing, unknown or mixed carriers refuse the whole batch before writing.
+    # The partition compares direct values — never dataclass/payload equality.
+    needs_schema_probe = any(
+        type(c.map_index) is int and c.map_index > MAP_INDEX_CEILING for c in children
+    )
+    bound = MAP_INDEX_CEILING
+    if needs_schema_probe:
+        async with pool.acquire() as probe_conn:
+            bound = await resolve_map_index_domain(probe_conn, wsql.schema)
+
+    valid: list[EmitChild] = []
+    poison: list[EmitChild] = []
+    for child in children:
+        value = child.map_index
+        if type(value) is not int or value < 0 or value > bound:
+            poison.append(child)
+        else:
+            valid.append(child)
+    if not valid and poison:
+        raise MapIndexExhaustedError(
+            f"the emit's page carries invalid map_index identity: flow "
+            f"{flow_id}, source {source_id}, the offending records' step keys "
+            f"{sorted({c.step_key for c in poison})}, "
+            f"{_poison_detail(poison, bound)} — nothing was written (the "
+            f"record's identity cannot ride the ledger's arbiter; the page's "
+            f"effective identity upper bound is {bound})"
+        )
 
     child_ids = [JobId(new_uuid()) for _ in valid]
     # Compatibility only: wait age belongs to observability, not a provider or
@@ -943,6 +1004,9 @@ async def emit_batch(
                     presented=len(valid),
                 )
             async with pool.acquire() as conn, conn.transaction():
+                from taskq.workflows._capability import verify_emit_capacity_objects
+
+                await verify_emit_capacity_objects(conn, wsql.schema)
                 await _emit_tx(
                     conn,
                     wsql,
@@ -961,7 +1025,7 @@ async def emit_batch(
                 )
             bump_emit_census("admission_decisions")
             if poison:
-                _raise_poison(flow_id, source_id, poison)
+                _raise_poison(flow_id, source_id, poison, bound=bound)
             return tuple(child_ids)
 
         # The single authoritative unreserved admission: `$2 = source_id` plus
@@ -1013,7 +1077,7 @@ async def emit_batch(
                 )
             bump_emit_census("admission_decisions")
             if poison:
-                _raise_poison(flow_id, source_id, poison)
+                _raise_poison(flow_id, source_id, poison, bound=bound)
             return tuple(child_ids)
         except _AdmissionLostError:
             raise EmitBackpressure(
@@ -1039,7 +1103,7 @@ async def emit_batch(
         )
     # the poison's loud death is outside the tx (the valid work committed).
     if poison:
-        _raise_poison(flow_id, source_id, poison)
+        _raise_poison(flow_id, source_id, poison, bound=bound)
     return tuple(child_ids)
 
 

@@ -51,3 +51,16 @@ def test_spawn_result_model_error_is_a_top_level_workflow_export() -> None:
 
     assert "SpawnResultModelError" in wf.__all__
     assert SpawnResultModelError is childflow.SpawnResultModelError
+
+
+def test_map_index_schema_error_is_a_top_level_workflow_export() -> None:
+    """``MapIndexSchemaError`` is a top-level ``taskq.workflows`` export by the
+    same convention: the docs' deployment-error guidance names it, so the
+    package surface must carry it. Importable from the root, IDENTICAL to its
+    defining-module class (a re-export, never a shadow), and in ``__all__``."""
+    import taskq.workflows as wf
+    import taskq.workflows._types as types_module
+    from taskq.workflows import MapIndexSchemaError
+
+    assert "MapIndexSchemaError" in wf.__all__
+    assert MapIndexSchemaError is types_module.MapIndexSchemaError
