@@ -207,10 +207,9 @@ The claim's three kinds carry the whole API-contract story:
 `existing-terminal` → **409, the refused-to-reuse verdict** — a terminal
 run's key is never silently re-fired, the prior run's id + status ride
 the envelope, and the re-run is the caller's documented choice of a NEW
-key. The step level carries the same discipline: `ctx.substep("name", fn)`
-records one ledger row per (calling node execution, loop iteration, name,
-attempt) — the replayed body's side effects dedup against the ledger, ON
-by default.
+key. The step level carries the same discipline: `ctx.step("name", fn)`
+records one ledger row per (flow, step, map index, attempt) — the
+replayed body's side effects dedup against the ledger, ON by default.
 
 ## The human gate in the middle
 
