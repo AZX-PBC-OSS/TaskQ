@@ -47,7 +47,17 @@ from taskq.backend._sweeps import sweep_expired_locks, sweep_scheduled_to_pendin
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.settings import WorkerSettings
 from taskq.worker.run import register_worker
-from taskq.workflows import Done, FlowRunner, Promise, StepContext, WorkflowApp, build, loop, step
+from taskq.workflows import (
+    Done,
+    FlowRunner,
+    Promise,
+    Refine,
+    StepContext,
+    WorkflowApp,
+    build,
+    loop,
+    step,
+)
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sweep import sweep_hold_stamps, sweep_join_rederive
 from taskq.workflows.api._ctx import build_step_context
@@ -859,3 +869,62 @@ async def test_a_delivery_inside_the_reentry_window_is_repaired_by_the_reconcile
     resumed = await _claim(wf_conn, wf_schema, worker_id, limit=10)
     assert [(r["step_key"], r["attempt"]) for r in resumed] == [("wrap", 3)]
     assert await _run(runners, resumed[0]) == "succeeded"
+
+
+@pytest.mark.integration
+async def test_a_loop_body_s_per_iteration_key_survives_a_deferred_iteration(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    pg_dsn: str,
+) -> None:
+    """The documented discipline for a spawning loop body: its iterations share
+    the loop row's cursor, so the body passes a per-iteration ``key=``. With
+    it, a ``Snooze`` in iteration 1 re-runs onto iteration 1's own child, and
+    iteration 0's child is never adopted in its place."""
+    suffix = new_uuid().hex[:12]
+    child_name = f"i748_child_{suffix}"
+    spawns: list[tuple[int, str]] = []
+
+    async def unused(ctx: StepContext) -> int:
+        return 0
+
+    child_c, _ = _compile(suffix, unused)
+
+    async def body(ctx: StepContext, carry: object) -> object:
+        iteration = 0 if carry is None else int(str(carry))
+        handle = await ctx.spawn_flow(child_name, result=_Leaf, key=f"it{iteration}")
+        spawns.append((iteration, str(handle.flow_id)))
+        if iteration == 0:
+            return Refine(1)
+        if len(spawns) == 2:  # iteration 1's first execution defers
+            raise Snooze(timedelta(0))
+        return Done({"ok": True})
+
+    parent_c = _compile_loop(suffix, body)
+    flow_id = (await FlowRunner(parent_c, wf_pool, wf_schema).create_flow()).flow_id
+    worker_id = await _fleet(wf_conn, wf_pool, wf_schema, pg_dsn)
+    runners = {
+        "parent": FlowRunner(parent_c, wf_pool, wf_schema, worker_id=worker_id),
+        "child": FlowRunner(child_c, wf_pool, wf_schema, worker_id=worker_id),
+    }
+
+    first = [
+        r for r in await _claim(wf_conn, wf_schema, worker_id, limit=10) if r["step_key"] == "wrap"
+    ]
+    assert [r["attempt"] for r in first] == [1]
+    await _run(runners, first[0])
+    deferred = await _wrap(wf_conn, wf_schema, flow_id)
+    assert (deferred["status"], deferred["attempt"]) == ("scheduled", 0)  # the refund
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs SET scheduled_at = now() WHERE id = $1', first[0]["id"]
+    )
+    assert await sweep_scheduled_to_pending(wf_conn, schema=wf_schema) == 1
+    again = [
+        r for r in await _claim(wf_conn, wf_schema, worker_id, limit=10) if r["step_key"] == "wrap"
+    ]
+    assert [r["attempt"] for r in again] == [1]  # the refunded attempt number
+    await _run(runners, again[0])
+    assert [i for i, _ in spawns] == [0, 1, 1]  # iteration 0 replayed from the memo
+    assert spawns[2][1] == spawns[1][1] != spawns[0][1], spawns
+    assert await _children(wf_conn, wf_schema, flow_id) == 2
