@@ -72,8 +72,10 @@ LIMIT 1
 # iteration's claim key ``<loop>.iter<n>`` inside a loop body (NULL
 # elsewhere): the iteration's first claim row is inserted before its body
 # runs, so a bare row is this iteration's only when it is no older than that.
-# The ordering is the claim history's own, as in LEDGER_MEMOIZED_SQL; step_key
-# says which leg answered.
+# The latest CLAIM answers: claim_epoch first, because the job's epoch only
+# rises (+1 per claim, never reset) while an emit park resets the physical
+# attempt to 0, so attempt-first let a pre-park failure outrank every later
+# success. step_key says which leg answered.
 LEDGER_SUBSTEP_MEMOIZED_SQL = """\
 SELECT attempt, status, result, error_class, error_message, job_id, step_key
 FROM {schema}.wf_step_ledger
@@ -85,7 +87,7 @@ WHERE flow_id = $1
   AND (step_key = $2[1] OR $5::text IS NULL OR created_at >= (
         SELECT min(i.created_at) FROM {schema}.wf_step_ledger AS i
         WHERE i.flow_id = $1 AND i.job_id = $3 AND i.step_key = $5))
-ORDER BY attempt DESC, claim_epoch DESC, created_at DESC, id DESC
+ORDER BY claim_epoch DESC, attempt DESC, created_at DESC, id DESC
 LIMIT 1
 """
 

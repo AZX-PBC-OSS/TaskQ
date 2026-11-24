@@ -7,9 +7,9 @@ warning unconditionally and respelled the loop key; the whole substep-touching
 suite (``test_wf_substep_scope_pins.py`` + the five updated selectors' files,
 110 tests) stayed green under them before these pins existed.
 
-1. ``LEDGER_SUBSTEP_MEMOIZED_SQL``'s ``ORDER BY attempt DESC, claim_epoch DESC,
-   created_at DESC, id DESC``. The statement's own comment calls the ordering
-   "the claim history's own"; it decides WHICH terminal row answers when one
+1. ``LEDGER_SUBSTEP_MEMOIZED_SQL``'s ``ORDER BY claim_epoch DESC, attempt DESC,
+   created_at DESC, id DESC``: the latest claim answers (the emit-park leg is
+   ``test_wf_substep_chain_source_pins.py``); it decides WHICH terminal row answers when one
    scoped key has more than one. Reversed to ``ASC``, every committed pin stays
    green and a hold resume replays an EARLIER attempt's ``failed`` row, so the
    substep re-runs its side effect.
