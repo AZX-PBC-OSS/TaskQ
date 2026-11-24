@@ -564,7 +564,11 @@ async def fetch_actor_backlog(
     * ``unservable_backlog`` — backlog beyond the actor's free
       capacity right now: rows that will still be waiting after the
       next full wave of claims.  Zero or negative means one claim
-      wave can absorb the backlog.
+      wave can absorb the backlog.  On ``wf`` this overstates what
+      the next wave leaves, because ``running`` includes the live
+      flow roots the dispatch cap does not count (the root rows are
+      not units of the cap, so dispatch can still admit steps while
+      this reads positive).
 
     The queue column is the actor's ROUTED queue
     (``actor_config.queue``), not the enqueued row's label: capacity

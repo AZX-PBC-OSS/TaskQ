@@ -3061,7 +3061,8 @@ get_meter().create_observable_gauge(
         "Running jobs per actor, sampled by every worker with taskq.jobs.by_status. "
         "Beside taskq.worker.active_jobs (per process) and "
         "taskq.jobs.oldest_pending_age_seconds, says which actors hold the "
-        "fleet's slots while pending work waits."
+        "fleet's slots while pending work waits. On wf this includes each live "
+        "workflow run's root row, which holds no dispatch slot."
     ),
     unit="1",
     callbacks=[_observe_jobs_running],

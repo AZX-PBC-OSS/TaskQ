@@ -46,6 +46,14 @@ async def _dispatch_batch(
 ) -> list[JobRow]:
     now = self._clock.now()
 
+    # The running count DIVERGES from PG's capped_running since #747: PG
+    # subtracts wf's live flow roots (status='running' AND
+    # step_key='__flow__') from wf's in-flight count, because a root is a
+    # cache the dispatch fence never claims. The twin cannot express that
+    # distinction: JobRow carries no step_key, so this loop counts every
+    # running row. No test can see the gap today (the twin has no
+    # workflow-execution surface), but a future in-memory workflow runner
+    # inherits PG's law, not this count.
     running_per_actor: dict[str, int] = {}
     running_identities: set[tuple[str, str]] = set()
     for row in self._jobs.values():
