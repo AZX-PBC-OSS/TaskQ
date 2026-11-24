@@ -1930,6 +1930,69 @@ is still emitted, so dashboards and any rules you wrote against it keep
 working, but if you overrode the bundled alert's threshold, re-express
 the override in seconds of oldest-pending age.
 
+### A map on another fan-out's join: the nested join has one row
+
+> **Unreleased.** Silent; runs whose outer fork ran on an earlier release
+> can still show the old behaviour.
+
+A `map_source` placed on another map's or route's join used to get two
+`<join>.join` rows: the nested fork's own, and a second one the outbox
+drain inserted under `idempotency_key = 'wf:<step_key>'`. Depending on
+which landed first, the second row stayed `pending` on a finished run
+(`taskq flows list` showed `pending root=succeeded`), ran the join work a
+second time, or ran before the nested fork existed. In that last case the
+run either wedged `running` forever, or the step after the nested map ran
+on an empty join and the run succeeded with a wrong result. The outer
+fork no longer lists the nested join as a consumer, so the nested fork
+writes the only row.
+
+The fix covers runs whose outer fork runs on the new release. A run whose
+outer fork ran on an earlier release, including on an old worker during a
+rolling deploy, keeps the old binding and can still show any of the
+behaviours above. Nothing repairs those rows automatically. Two read-only
+queries find them. The first finds second rows left `pending` on a
+finished or pruned run:
+
+```sql
+SELECT n.id, n.metadata->>'flow_id' AS run_id, n.step_key, r.status AS root_status
+FROM jobs n
+LEFT JOIN jobs r
+  ON r.id = (n.metadata->>'flow_id')::uuid AND r.step_key = '__flow__'
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status = 'pending'
+  AND (r.id IS NULL OR r.status NOT IN ('pending', 'scheduled', 'running'));
+```
+
+Cancel each one with `taskq job cancel <id>`. The row goes straight to
+`cancelled`; the root keeps its status and the run's result does not
+change. `taskq flows list` then shows the run as `cancelled
+root=succeeded` instead of `pending root=succeeded`.
+
+The second finds second rows that ran before the nested fork and were then
+adopted by it:
+
+```sql
+SELECT n.id, n.metadata->>'flow_id' AS run_id, n.step_key, n.deps_pending,
+       r.status AS root_status
+FROM jobs n
+LEFT JOIN jobs r
+  ON r.id = (n.metadata->>'flow_id')::uuid AND r.step_key = '__flow__'
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status = 'succeeded'
+  AND n.deps_pending > 0;
+```
+
+If `root_status` is `running`, the run is wedged: stop it with
+`taskq flows cancel <run_id>`. If it is `succeeded`, the step after the
+nested map ran on an empty join, so treat that run's result as suspect and
+re-run it. A run whose second row ran while the nested fork's children
+were still running ends with two `succeeded` rows and the right result;
+neither query lists it and nothing needs repair.
+
 ---
 
 ## Bounded inputs

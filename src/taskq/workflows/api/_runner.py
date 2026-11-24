@@ -2488,6 +2488,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             )
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
+            # a map on this join: its join is the nested fork's own row (#745)
+            and self.compiled.nodes[downstream].kind != "map_join"
         )
         return ForkSpec(
             children=tuple(
@@ -2656,6 +2658,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             )
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
+            # a map on this join: its join is the nested fork's own row (#745)
+            and self.compiled.nodes[downstream].kind != "map_join"
         )
         children: list[ChildSpec] = []
         for i, element in enumerate(items):

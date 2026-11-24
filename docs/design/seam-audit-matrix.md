@@ -102,6 +102,7 @@ separate phases).
 | deadline sweep (heartbeat arm) | a slow-but-live worker near the deadline | the phantom-cancel window: a failed tick retries promptly so the recovery beat lands inside the 2x floor | `test_heartbeat.py::test_one_fast_transient_failure_is_one_miss_retried_promptly` |
 | archive / retention sweeps | retention bounds vs live readers | bounded batches, event TTL carve-out for reclaim events | `test_attack_rt_retention_integration.py`, `test_sweepaudit_bounded_writes.py` |
 | sweep liveness under long batches | a sweep batch outlasts the staleness budget | `_drain_bounded` renews the detector stamp mid-sweep | `test_drain_liveness.py`, `test_rt_worker_sweep_telemetry.py` |
+| the fork/drain consumer-binding seam (the fork's join `consumers` → the fire's outbox → `drain_outbox`), callers: `_map_fork`, `_route_fork` | the outbox drain lands before or after a nested map's fork on the outer join (#745) | a join row has one writer, its own source's fork: no binding names a `map_join` node, so the drain never mints a join row | `test_wf_map_on_join_pins.py` |
 
 ## 6. State machines
 

@@ -120,12 +120,15 @@ async def insert_fork(
 
     join_id: JobId | None = None
     if fork.join is not None:
-        # the API's create_flow pre-inserted every node — the join included
-        # (deps 1: its source edge). When the row exists, the fork adopts it:
-        # add the items' weight to the counter + stamp the consumers — never a
-        # second insert (the plain insert's idempotency collision killed the
-        # second demo run's fork). The engine's raw shapes (no static row) keep
-        # the insert path.
+        # The DSL never pre-inserts a join (create_flow skips map joins), and
+        # since #745 no binding names one. The probe can still find a row
+        # minted by an outbox drain from a binding stamped before #745 (an
+        # in-flight run), or one an engine-level caller inserted itself
+        # through insert_node. The fork adopts it: add the items' weight to
+        # the counter + stamp the consumers, never a second insert. The probe
+        # has no status guard: adopting a row that already ran leaves the
+        # consumers' reserved deps unreleased (the run wedges or reads an
+        # empty join). Every other shape takes the insert path.
         join_id = await conn.fetchval(
             f"SELECT id FROM {wsql.schema}.jobs WHERE step_key = $1 "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is $-bound.
             "AND (metadata->>'flow_id')::uuid = $2",
