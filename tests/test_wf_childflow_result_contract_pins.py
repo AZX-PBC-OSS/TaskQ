@@ -205,6 +205,8 @@ class TestSpawnResultGuardIsFirst:
         message = str(exc_info.value)
         assert shown in message, message
         assert hidden is None or hidden not in message, message
+        # the remedy survives the loop boundary's 200-char cut (_runner_loop.py).
+        assert "pass that class" in message[:200], message
 
 
 def test_the_refusal_is_a_deterministic_type_error() -> None:

@@ -470,10 +470,11 @@ class CtxSpawnOps(_SpawnHost):
                 if isinstance(result, BaseModel)
                 else repr(result)
             )
+            # remedy before the value: the loop boundary keeps only 200 chars.
             raise SpawnResultModelError(
                 f"ctx.spawn_flow({name!r}): result= must be a subclass of pydantic "
-                "BaseModel, not BaseModel itself (the child's typed result contract); "
-                f"declare the child's result as a model and pass that class; got {got}"
+                "BaseModel, not BaseModel itself; declare the child's result as a "
+                f"model and pass that class; got {got}"
             )
         from taskq.workflows._worker_execution import get_compiled_workflow
 
