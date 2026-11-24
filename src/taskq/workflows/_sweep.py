@@ -330,7 +330,7 @@ def _outbox_priority(row: asyncpg.Record, binding: ConsumerBinding) -> int:
     return binding.priority if binding.priority is not None else int(row["priority"])
 
 
-async def drain_outbox(
+async def _drain_outbox_once(
     pool: asyncpg.Pool,
     wsql: WorkflowSql,
     *,
@@ -476,6 +476,38 @@ async def drain_outbox(
         )
         await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
     return len(rows)
+
+
+async def drain_outbox(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    default_max_attempts: int = 3,
+    default_retry_kind: str = "transient",
+) -> int:
+    """Drain with one local retry for a real warm-cache 0A000 only.
+
+    A ``map_index`` widening can invalidate the already-prepared SELECT inside
+    the drain's transaction. Its rollback has no writes; repeating the complete
+    bounded transaction once on the same pool lets asyncpg re-prepare against
+    the new row shape. No other exception is retried and no new pool/cap is
+    introduced. The delivery contract the pass executes (exactly-once fire,
+    idempotent consumer insert, pin 20) lives in :func:`_drain_outbox_once`.
+    """
+    for final_attempt in (False, True):
+        try:
+            return await _drain_outbox_once(
+                pool,
+                wsql,
+                batch_size=batch_size,
+                default_max_attempts=default_max_attempts,
+                default_retry_kind=default_retry_kind,
+            )
+        except asyncpg.InvalidCachedStatementError:
+            if final_attempt:
+                raise
+    raise AssertionError("the bounded outbox cache retry always returns or raises")
 
 
 async def sweep_progress_ring_prune(

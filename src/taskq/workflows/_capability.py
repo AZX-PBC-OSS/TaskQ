@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Final
 import asyncpg
 
 from taskq.backend._protocol import JobId
+from taskq.constants import SMALLINT_MAX
 from taskq.workflows.api._runner_errors import WorkflowRunError
 
 if TYPE_CHECKING:
@@ -142,11 +143,16 @@ async def create_guarded_flow(
     )
 
 
-#: The post-fold `01.00.42_01` object set's cached per-schema verdict: a
-#: bounded run's feature use refuses before any body, child, cursor, or park
-#: write when ANY part of the object set is missing (the §2.1 whole-object
-#: -set test — never a single-key or to_regclass-only check).
-_EMIT_OBJECTS_OK: Final[set[str]] = set()
+#: The post-fold `01.00.42_01` object set's cached per-schema verdict: maps a
+#: schema to the ``map_index`` width the verdict was verified against
+#: (``"smallint"`` or ``"bigint"``). Steps 2-8 are cached per schema+width; the
+#: entry of :func:`verify_emit_capacity_objects` revalidates the five-carrier
+#: width with one catalog read per call, so a low-only bounded worker cannot
+#: keep serving a stale pre-POST verdict past a widening or partial widening.
+#: A bounded run's feature use refuses before any body, child, cursor, or park
+#: write when ANY part of the object set is missing (the §2.1 whole-object -set
+#: test — never a single-key or to_regclass-only check).
+_EMIT_OBJECTS_OK: Final[dict[str, str]] = {}
 
 
 def reset_emit_capability_cache(schema: str | None = None) -> None:
@@ -159,19 +165,44 @@ def reset_emit_capability_cache(schema: str | None = None) -> None:
     if schema is None:
         _EMIT_OBJECTS_OK.clear()
     else:
-        _EMIT_OBJECTS_OK.discard(schema)
+        _EMIT_OBJECTS_OK.pop(schema, None)
+
+
+def note_emit_carrier_width(schema: str, width: str) -> None:
+    """Drop a cached preflight verdict that was verified at another width.
+
+    A live five-carrier read is the authority on the schema's current
+    ``map_index`` domain. A worker that verified the pre-POST (``smallint``)
+    object set must re-verify once the POST widening lands, or it would serve
+    the stale OK and bypass the recreated-arbiter check (the botched-widening
+    ``42P10`` state)."""
+    cached = _EMIT_OBJECTS_OK.get(schema)
+    if cached is not None and cached != width:
+        _EMIT_OBJECTS_OK.pop(schema, None)
 
 
 #: The folded arbiter's EXACT definition (the §2.1 catalog fingerprint the
 #: preflight's ``pg_get_indexdef`` comparison requires): the five-expression
-#: claim arbiter, written in PostgreSQL's own ``pg_get_indexdef`` output
-#: format (measured on PostgreSQL 18.6) with only the schema token
-#: substituted. The comparison normalizes whitespace and quote characters
-#: on both sides and requires FULL equality — a five-name substring check
-#: accepted a wrong five-expression arbiter whose claim then failed 42P10.
+#: claim arbiter over a ``smallint`` identity, written in PostgreSQL's own
+#: ``pg_get_indexdef`` output format (measured on PostgreSQL 18.6) with only
+#: the schema token substituted. The comparison normalizes whitespace and
+#: quote characters on both sides and requires FULL equality — a five-name
+#: substring check accepted a wrong five-expression arbiter whose claim then
+#: failed 42P10.
 _LEDGER_ARBITER_INDEXDEF: Final[str] = (
     "CREATE UNIQUE INDEX wf_step_ledger_claim_uniq ON {schema}.wf_step_ledger "
     "USING btree (flow_id, step_key, COALESCE((map_index)::integer, '-1'::integer), "
+    "attempt, claim_epoch)"
+)
+
+#: The same arbiter over a widened (``bigint``) identity. PostgreSQL preserves
+#: the OLD int4 coercion in the stored index expression across ``ALTER TYPE``,
+#: so the POST migration drops and recreates the arbiter; this is the exact
+#: recreated rendering (measured on PostgreSQL 18.7). A bigint column carrying
+#: the smallint rendering is the botched-widening state whose claim fails 42P10.
+_LEDGER_ARBITER_INDEXDEF_BIGINT: Final[str] = (
+    "CREATE UNIQUE INDEX wf_step_ledger_claim_uniq ON {schema}.wf_step_ledger "
+    "USING btree (flow_id, step_key, COALESCE(map_index, ('-1'::integer)::bigint), "
     "attempt, claim_epoch)"
 )
 
@@ -316,8 +347,9 @@ def _expected_park_indexdef(schema: str, *, status_type_visible: bool) -> str:
 
 
 async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
-    """The §2.1 whole-object-set catalog preflight (fail-closed, cached per
-    schema).
+    """The §2.1 whole-object-set catalog preflight (fail-closed; the object-set
+    checks are cached per schema and width, the width itself is re-read on
+    every call).
 
     New bounded-emit code refuses before a body, child, cursor, or park
     write when the schema lacks ANY part of the post-fold ``01.00.42_01``
@@ -325,20 +357,60 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     ``pg_constraint`` / ``pg_index`` / ``pg_proc`` / ``pg_trigger`` facts
     and ``pg_get_indexdef`` text: mere ledger-key presence or
     ``to_regclass`` presence of one object is insufficient. Ordinary
-    unbounded behavior never runs this and pays nothing."""
-    if schema in _EMIT_OBJECTS_OK:
+    unbounded behavior never runs this and pays nothing.
+
+    Every call revalidates the five-carrier ``map_index`` width with one
+    catalog read before consulting the cached verdict, and the object-set
+    checks themselves are cached per schema and width. A low-only bounded
+    worker never resolves a high identity, so this entry revalidation is the
+    only live width read that can drop its stale pre-POST OK after a widening
+    or a partial widening."""
+    from taskq.workflows._types import MapIndexSchemaError, resolve_map_index_domain
+
+    try:
+        domain = await resolve_map_index_domain(conn, schema)
+    except MapIndexSchemaError as exc:
+        # A missing, NOT NULL, unsupported, or mixed-width carrier set is the
+        # same capability refusal as a missing object: never let the resolver's
+        # raw schema error escape the bounded-emit door, and never keep a
+        # stale verdict the mixed schema has invalidated.
+        _EMIT_OBJECTS_OK.pop(schema, None)
+        raise WorkflowWorkerCapabilityError(
+            f"{exc}. No body, child, cursor, or park write was made.",
+            required_worker_schema=None,
+        ) from exc
+    width = "smallint" if domain == SMALLINT_MAX else "bigint"
+    if _EMIT_OBJECTS_OK.get(schema) == width:
         return
 
-    def _fail(detail: str) -> WorkflowWorkerCapabilityError:
+    def _fail(detail: str, *, remedy: str | None = None) -> WorkflowWorkerCapabilityError:
         return WorkflowWorkerCapabilityError(
             "the schema lacks part of the 01.00.42_01 emit-capability object "
-            f"set ({detail}); apply 01.00.42_01_pre_wf_step_ledger_claim_epoch.sql "
-            "(the one folded PRE migration) before running bounded emit "
-            "workflows. No body, child, cursor, or park write was made.",
+            f"set ({detail}); "
+            + (
+                remedy
+                if remedy is not None
+                else "apply 01.00.42_01_pre_wf_step_ledger_claim_epoch.sql "
+                "(the one folded PRE migration) before running bounded emit "
+                "workflows. No body, child, cursor, or park write was made."
+            ),
             required_worker_schema=None,
         )
 
-    # 1. the ledger claim_epoch column (pg_attribute).
+    # 1. the identity carrier's width (already resolved by the entry
+    #    revalidation): the claim arbiter's required rendering depends on it.
+    arbiter_template = (
+        _LEDGER_ARBITER_INDEXDEF if width == "smallint" else _LEDGER_ARBITER_INDEXDEF_BIGINT
+    )
+    arbiter_remedy = (
+        None
+        if width == "smallint"
+        else "apply 01.00.42_02_post_wf_map_index_bigint.sql (the POST migration "
+        "that recreates the bigint claim arbiter) before running bounded emit "
+        "workflows. No body, child, cursor, or park write was made."
+    )
+
+    # 2. the ledger claim_epoch column (pg_attribute).
     epoch_col = await conn.fetchval(
         """SELECT 1 FROM pg_attribute
            WHERE attrelid = ($1 || '.wf_step_ledger')::regclass
@@ -348,20 +420,24 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     if epoch_col is None:
         raise _fail("wf_step_ledger.claim_epoch is missing")
 
-    # 2. the five-expression arbiter (pg_get_indexdef, EXACT definition
+    # 3. the five-expression arbiter (pg_get_indexdef, EXACT definition
     # equality — D4: a five-NAME substring check accepted a wrong
-    # five-expression arbiter whose claim then failed 42P10).
+    # five-expression arbiter whose claim then failed 42P10). The rendering is
+    # width-matched: a smallint column must carry the int4-cast expression and
+    # a bigint column the recreated int8 expression.
     arbiter = await conn.fetchval(
         "SELECT pg_get_indexdef(($1 || '.wf_step_ledger_claim_uniq')::regclass)", f'"{schema}"'
     )
     if arbiter is None or _normalized_indexdef(arbiter) != _normalized_indexdef(
-        _LEDGER_ARBITER_INDEXDEF.replace("{schema}", f'"{schema}"')
+        arbiter_template.replace("{schema}", f'"{schema}"')
     ):
         raise _fail(
-            "wf_step_ledger_claim_uniq is not the exact five-expression claim_epoch arbiter"
+            "wf_step_ledger_claim_uniq is not the exact five-expression claim_epoch "
+            f"arbiter for the {width} identity",
+            remedy=arbiter_remedy,
         )
 
-    # 3. wf_emit_capacity's typed columns, NOT NULL flags, PRIMARY KEY,
+    # 4. wf_emit_capacity's typed columns, NOT NULL flags, PRIMARY KEY,
     #    and its own two CHECK constraints — each CHECK validated by
     #    NAME, contype, and EXACT normalized body (D4's equality law):
     #    a COUNT of CHECK constraints accepted a same-name CHECK (true)
@@ -403,7 +479,7 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     if pk is not None:
         raise _fail(pk)
 
-    # 4. the rotation singleton's WHOLE shape — its typed columns, its
+    # 5. the rotation singleton's WHOLE shape — its typed columns, its
     #    id PRIMARY KEY, and its own CHECK (id), each validated with the
     #    same name+body rigour (a same-name CHECK (true) would admit a
     #    second id=false row beside the singleton) — then the singleton
@@ -443,7 +519,7 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     if rotation is None:
         raise _fail("wf_emit_intent_rotation's singleton row is missing")
 
-    # 5. the pending-generation index (EXACT definition equality — D4).
+    # 6. the pending-generation index (EXACT definition equality — D4).
     pending = await conn.fetchval(
         "SELECT pg_get_indexdef(($1 || '.wf_emit_capacity_pending_idx')::regclass)",
         f'"{schema}"',
@@ -453,7 +529,7 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     ):
         raise _fail("wf_emit_capacity_pending_idx is not the exact pending-generation index")
 
-    # 6. the guard function (pg_proc) and trigger (pg_trigger).
+    # 7. the guard function (pg_proc) and trigger (pg_trigger).
     fn = await conn.fetchval(
         """SELECT 1 FROM pg_proc p
            JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -471,7 +547,7 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     if trig is None:
         raise _fail("the wf_emit_park_guard trigger is missing on jobs")
 
-    # 7. the exact-park partial index (EXACT definition equality via
+    # 8. the exact-park partial index (EXACT definition equality via
     # pg_get_indexdef — D4: the substring check accepted a same-name
     # wrong index whose probe then planned a Seq Scan on jobs). Read
     # pg_type_is_visible in the same query so the comparison matches
@@ -494,4 +570,4 @@ async def verify_emit_capacity_objects(conn: ConnLike, schema: str) -> None:
     ):
         raise _fail("jobs_wf_emit_park_idx is not the exact-park partial index definition")
 
-    _EMIT_OBJECTS_OK.add(schema)
+    _EMIT_OBJECTS_OK[schema] = width

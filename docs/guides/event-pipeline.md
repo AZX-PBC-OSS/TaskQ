@@ -28,12 +28,10 @@ the children, the edges, and the cursor checkpoint — as one transaction:
 async def _screen_source_body(ctx: Any) -> None:
     """The chain source's paged generator: ONE yield = ONE page's emit
     tx (the children + the edges + the cursor checkpoint)."""
-    for doc_id in DEMO_DOCS:
+    for ordinal, doc_id in enumerate(DEMO_DOCS):
         from taskq.workflows.chain import chain_start
 
-        child = chain_start(
-            SCREEN_CHAIN, doc_id, map_index=abs(hash(doc_id)) % 32000, trace_id=doc_id
-        )
+        child = chain_start(SCREEN_CHAIN, doc_id, map_index=ordinal, trace_id=doc_id)
         # THE CURSOR IS THE BODY'S OWN BOOKKEEPING: the emit's tx
         # checkpoints it (the resume continues from the last COMMITTED
         # page — the crash-recovery contract).
@@ -145,8 +143,8 @@ CHAIN = Chain(
 async def source_body(ctx: StepContext) -> None:
     from taskq.workflows.chain import chain_start
 
-    for record in _CORPUS:
-        child = chain_start(CHAIN, record, map_index=abs(hash(record)) % 32000, trace_id=record)
+    for ordinal, record in enumerate(_CORPUS):
+        child = chain_start(CHAIN, record, map_index=ordinal, trace_id=record)
         # THE CURSOR IS THE BODY'S OWN BOOKKEEPING: the emit's tx
         # checkpoints it (the resume continues from the last COMMITTED
         # page — the crash re-emits exactly the lost page).

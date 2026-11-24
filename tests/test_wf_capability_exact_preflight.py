@@ -92,13 +92,43 @@ async def test_preflight_refuses_a_wrong_same_name_arbiter(pg_dsn: str) -> None:
     try:
         await _fresh_migrated(conn, schema)
         await conn.execute(f'DROP INDEX "{schema}".wf_step_ledger_claim_uniq')
+        # The COALESCE leg is spelled exactly as the widened arbiter renders
+        # it, so the mutant isolates the (claim_epoch + 0) leg alone.
         await conn.execute(
             f'CREATE UNIQUE INDEX wf_step_ledger_claim_uniq ON "{schema}".wf_step_ledger '
-            "USING btree (flow_id, step_key, COALESCE((map_index)::integer, '-1'::integer), "
+            "USING btree (flow_id, step_key, COALESCE(map_index, -1), "
             "attempt, (claim_epoch + 0))"
         )
         reset_emit_capability_cache(schema)
         with pytest.raises(WorkflowWorkerCapabilityError, match="wf_step_ledger_claim_uniq"):
+            await verify_emit_capacity_objects(conn, schema)
+        reset_emit_capability_cache(schema)
+    finally:
+        reset_emit_capability_cache(schema)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_preflight_refuses_the_stale_int4_arbiter_on_a_bigint_identity(
+    pg_dsn: str,
+) -> None:
+    """The botched-widening state: a bigint ``map_index`` whose claim arbiter
+    still renders the OLD int4 coercion (a hand-run ALTER that never recreated
+    the index). PostgreSQL preserves that expression across ``ALTER TYPE``, so
+    the real claim's ON CONFLICT fails 42P10 against it. The width-aware
+    preflight must refuse and name the POST file that recreates the arbiter."""
+    schema = "cap4_stale_int4_arbiter"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _fresh_migrated(conn, schema)
+        await conn.execute(f'DROP INDEX "{schema}".wf_step_ledger_claim_uniq')
+        await conn.execute(
+            f'CREATE UNIQUE INDEX wf_step_ledger_claim_uniq ON "{schema}".wf_step_ledger '
+            "USING btree (flow_id, step_key, COALESCE((map_index)::integer, '-1'::integer), "
+            "attempt, claim_epoch)"
+        )
+        reset_emit_capability_cache(schema)
+        with pytest.raises(WorkflowWorkerCapabilityError, match=r"01\.00\.42_02"):
             await verify_emit_capacity_objects(conn, schema)
         reset_emit_capability_cache(schema)
     finally:

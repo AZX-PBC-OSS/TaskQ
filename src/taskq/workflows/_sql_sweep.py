@@ -363,7 +363,7 @@ INSERT INTO {schema}.jobs
 SELECT delivery.*, root.required_worker_schema
 FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
-    $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
+    $6::text[], $7::uuid[], $8::bigint[], $9::text[], $10::text[],
     $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[],
     $16::text[], $17::double precision[], $18::double precision[],
     $19::text[], $20::double precision[]

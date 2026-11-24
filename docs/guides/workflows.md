@@ -2213,14 +2213,68 @@ design.
 The per-record identity rides **`map_index`, stamped at emit** (with the
 record's `trace_id`). The certified fork's idempotency key
 (`wf:{flow}:emit:{map_index}:{step}`) and the step-ledger's claim
-arbiter (`(flow, step_key, COALESCE(map_index,-1), attempt)`) BOTH
-discriminate siblings by it — the pre-stamp shape emitted 200
-applications without it and observed **198 UniqueViolations**: every
-record's `enrich` child collided onto one row. `EmitChild` therefore
-REQUIRES both stamps (a child without them is refused before any row
-exists), and `chain_start` carries them forward. Every row of one
-record's chain shares its `trace_id` — the operator's drill-down is one
-query.
+arbiter (`(flow, step_key, COALESCE(map_index,-1), attempt,
+claim_epoch)`) BOTH discriminate siblings by it — the pre-stamp shape
+emitted 200 applications without it and observed **198
+UniqueViolations**: every record's `enrich` child collided onto one row.
+`EmitChild` therefore REQUIRES both stamps (a child without them is
+refused before any row exists), and `chain_start` carries them forward.
+Every row of one record's chain shares its `trace_id` — the operator's
+drill-down is one query.
+
+The identity's upper bound is **resolved from the schema**, never a
+compile-time constant. `MAP_INDEX_CEILING` (32767) is only the threshold
+that triggers one catalog read of the five carriers (`jobs`,
+`jobs_archive`, `wf_step_ledger`, `wf_outbox`, `wf_signals`); once the
+atomic POST migration widens all five to `bigint`, the resolved bound is
+`BIGINT_MAX` (9223372036854775807) and records past 32767 stream without
+restart. Only the EXPLICIT unbounded declaration (`max_in_flight=None`)
+keeps the no-catalog-read fast path for an ordinary `0..32767` page, so only
+it fails to detect a broken carrier shape there. Bounded emit is the DEFAULT
+(`max_in_flight` is `EMIT_MAX_IN_FLIGHT_DEFAULT`, 1000, unless a workflow
+declares `None`), and its capability preflight revalidates the five-carrier
+width on every call — at flow creation, at each runner drive's adoption, and
+at every emit, terminal/park, drain-chunk and marker-sweep seat (both bounded
+emit paths, unreserved admission and reserved replay, preflight before any
+write): one catalog
+read per call, two on the composite park-adopt and marker-sweep paths that
+invoke two preflighted entry points. It refuses a mixed, malformed, or botched
+schema with `WorkflowWorkerCapabilityError` before any body, child, cursor, or
+park write — a mixed or malformed carrier set preserves the resolver's
+`MapIndexSchemaError` as its `__cause__`, the deployment class the runner's
+deterministic leg reads — and the object-set checks themselves stay cached per
+schema and width. A candidate above 32767 makes the
+authoring doors — `emit_batch`, the map fork, `insert_fork`, and
+`insert_node` — consult that resolved bound, and they fail closed with
+`MapIndexSchemaError` (the admin panel answers HTTP 503) when the five
+carriers are missing, mixed, `NOT NULL`, or of an unsupported type. The
+hold door enforces the identity's type and non-negative lower bound; its
+identity is either absent or a row-derived value the authoring doors
+already checked, so it does not re-resolve the upper bound. A record
+past the resolved bound raises the named `MapIndexExhaustedError`; its
+valid page-mates still commit. The join counter `jobs.deps_pending` stays a `smallint` and is a
+separate bound: widening the identity does not make one join over more
+than 32767 children legal. That counter — not the identity — limits a
+join-bearing fork, alongside the declared `MAX_FAN_IN_PER_JOIN` (1,000
+unless `child_driven=True`); `definitions.validate_fork` enforces both
+only when `fork.join is not None`, so a joinless engine
+`ForkSpec(join=None)` and streaming `chain_source`/`emit_batch` have no
+join counter to exceed (only the resolved `map_index` domain applies). A
+typed `route` (`FlowRunner._route_fork`) validates its join-bearing fork
+on the **body path**, before the finalize, and an oversized route fails
+deterministically with `FanInBoundExceededError` before any row is
+written. A `map_source` (`FlowRunner._map_fork`) runs inside
+`_finalize_success` after the identity-domain check: more than
+`ceiling + 1` items fails first with `MapIndexExhaustedError`, and
+`insert_fork` then enforces `validate_fork`'s join bounds with
+`FanInBoundExceededError` before the children are written. On a
+pre-created-join adoption, `insert_fork` additionally refuses
+`existing_deps + len(children) > 32767` inside the finalize transaction
+before the counter `UPDATE`; the raise unwinds the transaction's child
+inserts. `definitions.validate_join_spec` is an exported standalone
+build-time helper (the same `MAX_FAN_IN_PER_JOIN` bound, raising
+`FanInBoundExceededError`) that no shipped authoring path (`insert_node`,
+`insert_fork`, `WorkflowCompiled.validate`) invokes automatically.
 
 ### The router: conditional edges, total or refused
 

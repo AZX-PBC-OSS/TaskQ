@@ -256,7 +256,7 @@ class CtxTimerOps(WaitHost):
                 render_sql(
                     "SELECT id, payload, hold_epoch FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
-                    "AND map_index IS NOT DISTINCT FROM $4 "
+                    "AND map_index IS NOT DISTINCT FROM $4::bigint "
                     "AND status = 'delivered' ORDER BY hold_epoch ",
                     self._wsql.schema,
                 ),
@@ -309,7 +309,7 @@ class CtxTimerOps(WaitHost):
                 render_sql(
                     "SELECT id, signal_name, expires_at FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
-                    "AND map_index IS NOT DISTINCT FROM $4 "
+                    "AND map_index IS NOT DISTINCT FROM $4::bigint "
                     "AND status = 'held' ORDER BY hold_epoch DESC LIMIT 1",
                     self._wsql.schema,
                 ),
@@ -340,7 +340,7 @@ class CtxTimerOps(WaitHost):
                 render_sql(
                     "SELECT COALESCE(MAX(hold_epoch), 0) + 1 FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 "
-                    "AND map_index IS NOT DISTINCT FROM $3",
+                    "AND map_index IS NOT DISTINCT FROM $3::bigint",
                     self._wsql.schema,
                 ),
                 self.flow_id,
