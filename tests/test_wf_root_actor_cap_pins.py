@@ -558,7 +558,7 @@ async def test_live_roots_keep_the_claim_under_jit_above_cost(
         await tr.start()
         try:
             await wf_conn.execute("SET LOCAL jit = on")
-            # The default threshold, the one the ~3k-root crossing is measured against.
+            # The default threshold, the one this oracle's arithmetic assumes.
             await wf_conn.execute("SET LOCAL jit_above_cost = 100000")
             above = float(await wf_conn.fetchval("SELECT current_setting('jit_above_cost')"))
             raw = await wf_conn.fetchval(
