@@ -451,6 +451,71 @@ on them ships, cheap to apply online):
 
 ---
 
+## 4. `wf` flow-root subtraction in `capped_running` (#747)
+
+### Finding
+
+`capped_running` subtracts `wf`'s live flow roots
+(`status = 'running' AND step_key = '__flow__'`) from its running count,
+because a root is a cache the dispatch fence never claims. The subtraction
+is an uncorrelated `InitPlan`, so the planner prices it once per statement
+rather than once per driver row. It cannot be index-only: no running-row
+index carries `step_key` (`jobs_actor_running_idx` is `ON jobs (actor)
+WHERE status = 'running'` with no `INCLUDE`), so the count heap-fetches,
+and on a `jobs` table holding only the roots the planner answers it with a
+whole-table Seq Scan. `jobs_locked_by_worker_running_idx`
+(`ON jobs (locked_by_worker, id) WHERE status = 'running'`) has no `actor`
+column and cannot serve an actor-filtered count at all.
+
+### Measured price
+
+Against the pre-change text, on the integration fixture's PostgreSQL
+(`EXPLAIN (ANALYZE, BUFFERS)`, `jit = off`, all-visible pages, `wf`
+`max_concurrent = 25` with one pending step, median of five runs):
+
+| live roots | pre-change | shipped | delta | round-time multiplier |
+|---:|---:|---:|---:|---:|
+| 1 | 0.49–0.57 ms | 0.57–0.68 ms | +0.07–0.11 ms | 1.2x |
+| 1 000 | 0.39 ms | 0.80–0.84 ms | +0.41–0.46 ms | 2.1x |
+| 10 000 | 0.92–0.98 ms | 2.87–3.40 ms | +1.9–2.4 ms | 3.1–3.5x |
+| 20 000 | 1.52–1.68 ms | 5.25–9.01 ms | +3.7–7.3 ms | 3.5–5.4x |
+
+Every producer runs this round, so 1 000 live workflow runs — a small
+deployment, not a stress fixture — already doubles it. The plan-node shapes
+measured across the three renders (`strict_fifo`, `strict_fifo_cursor`,
+`round_robin`) and three populations were Index Scan on
+`jobs_actor_running_idx`, Bitmap Heap Scan, and a whole-table Seq Scan
+(358 buffers = every page of a 10 000-root table). The subtraction is
+~1 % of the statement's Total Cost at 20 000 roots.
+
+### The pre-existing JIT axis
+
+The arm does not arm JIT. The correlated, root-blind running count is
+~93 % of the estimate (98 191 of 105 402 at 20 000 roots) and is what
+crosses the default `jit_above_cost = 100000`: at ~19 000 live roots when
+`jobs` holds only the roots, or ~32 000 beside a 100k-row pending backlog.
+The change adds ~1 116 cost units (~1 %) and moves the crossing by ~200
+roots. Nothing caps live roots, so the threshold is reachable by an
+unbounded population; operators seeing dispatch JIT spikes should look at
+the root population and the root-blind count, not at this subtraction.
+
+### Considered and declined: an index lever
+
+Making the subtraction index-only would remove most of its per-round
+price:
+
+- `INCLUDE (step_key)` on `jobs_actor_running_idx`, or
+- a partial index `ON jobs (actor) WHERE status = 'running' AND step_key =
+  '__flow__'`.
+
+Both were considered and declined for this change. Each is a migration on
+the hottest table, and the partial index would add write-path maintenance
+to every claim/terminalization for a count that is ~1 % of the statement's
+estimate. If the live-root population grows, revisit this entry before
+widening the subtraction again.
+
+---
+
 ## Appendix: reproduction
 
 ```sh

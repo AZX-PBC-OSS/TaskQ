@@ -113,12 +113,18 @@ The geometry below pins each stage to the round's own constants:
   branch subquery is evaluated only when its branch is taken, so an
   uncapped fleet materializes an empty CTE and does ZERO running-row
   work per round, and a capped fleet pays one bounded count per capped
-  live actor (a scan over that actor's running-row partial indexes,
-  index-only on all-visible pages; the planner may still pick either
-  ``jobs_actor_running_idx`` or the
-  ``jobs_locked_by_worker_running_idx`` partial; ``wf``'s flow-root
-  subtraction is the one heap read, one tuple per running ``wf`` row,
-  priced and run at most once per statement), never a fleet-wide
+  live actor (a scan over that actor's running-row partial index,
+  ``jobs_actor_running_idx``, index-only on all-visible pages; ``wf``'s
+  flow-root subtraction must heap-fetch because no running-row index
+  carries ``step_key``, reading one tuple per running ``wf`` row in the
+  common shape and a whole-table Seq Scan when ``jobs`` holds only the
+  roots, priced and run at most once per statement as an uncorrelated
+  InitPlan at ~1 % of the statement's estimate; the pre-existing
+  correlated root-blind count is ~93 % and is what arms JIT, at ~19 000
+  roots-only or ~32 000 beside a 100k-row backlog, while the
+  subtraction's per-round price is ~2.1x at 1 000 live roots and
+  ~3.1-3.5x at 10 000 — measured in
+  docs/design/sql-hotpath-followups.md), never a fleet-wide
   materialization per round and never a
   per-claimed-row recount (O(oversample x cap^2) per round: measured 28/648/2550/10100
   running-index rows at caps 5/25/50/100, ~cap/2 after this CTE).
@@ -586,16 +592,23 @@ rr_tail_keys AS (
 -- from the round's own population keeps the registry read one
 -- primary-key probe per live actor - the same probe per_actor_capacity
 -- and repend_capacity pay - and the count subplan one bounded scan of
--- the actor's own running-row partial indexes (jobs_actor_running_idx
--- or jobs_locked_by_worker_running_idx, the planner's cost discretion,
+-- the actor's own running-row partial index (jobs_actor_running_idx,
 -- index-only on all-visible pages), bounded by that actor's running
 -- rows, never the fleet's.
 --
 -- wf's count subtracts its live flow roots, which are running but never
 -- claimed, as an uncorrelated InitPlan so the planner prices that heap
--- read once per statement, not once per driver row (the in-SQL comment
--- below has the measurement). The read itself visits one heap tuple per
--- running wf row, roots and steps, so it grows with wf's live runs.
+-- read once per statement, not once per driver row. It MUST heap-fetch:
+-- jobs_actor_running_idx carries neither step_key nor an INCLUDE, so no
+-- running-row index can prove the predicate, and on a jobs table holding
+-- only the roots the planner answers it with a whole-table Seq Scan.
+-- Measured (jit off, all-visible pages, median of five) the
+-- subtraction's per-round price is ~2.1x the pre-change text at 1 000
+-- live roots and ~3.1-3.5x at 10 000; the arm itself is ~1 % of the
+-- claim's estimate, and the pre-existing root-blind count (~93 %) is what
+-- arms jit_above_cost, at ~19 000 roots-only or ~32 000 beside a
+-- 100k-row pending backlog. The considered-and-declined index lever and
+-- the measurement table are in docs/design/sql-hotpath-followups.md.
 --
 -- MATERIALIZED is the fence: referenced three times, an inlined CTE
 -- would re-run the counts at every reference site, re-creating the
@@ -624,12 +637,17 @@ capped_running AS MATERIALIZED (
                       AND rj.status = 'running')
                    -- #747: a flow ROOT is a cache, never work (the fence's
                    -- ROOT-MARKER leg), so it holds no unit of the cap. Every
-                   -- root lives on 'wf' (FlowEntryShim.actor). Uncorrelated on
-                   -- purpose: an InitPlan is priced once per statement and runs
-                   -- at most once, only when wf's capped branch reaches it. A
-                   -- count correlated to live.actor that reads step_key is
-                   -- priced once per estimated driver row (~202), and from
-                   -- ~3k live roots that crosses jit_above_cost.
+                   -- root the engine writes lives on 'wf' (FlowEntryShim.actor).
+                   -- Uncorrelated on purpose: an InitPlan is priced once per
+                   -- statement and runs at most once, only when wf's capped
+                   -- branch reaches it (~1% of the statement's estimate). It
+                   -- MUST heap-fetch (no running-row index carries step_key),
+                   -- and on a roots-only jobs table the planner scans the whole
+                   -- table. The pre-existing correlated root-blind count is what
+                   -- arms jit_above_cost: ~19k roots-only, ~32k with a 100k-row
+                   -- pending backlog. Per-round price: ~2.1x at 1k roots,
+                   -- ~3.1-3.5x at 10k
+                   -- (docs/design/sql-hotpath-followups.md has the table).
                    - CASE WHEN live.actor = 'wf'
                           THEN (SELECT count(*) FROM "{schema}".jobs rf
                                 WHERE rf.actor = 'wf'
@@ -666,10 +684,9 @@ capped_running AS MATERIALIZED (
 -- count now lives in capped_running above, gated on
 -- `max_concurrent IS NOT NULL`: an uncapped fleet pays zero running-row
 -- work per round, and a capped one pays only its own capped actors'
--- running rows, each a scan over the running-row partial indexes (the
--- planner picks jobs_actor_running_idx or the
--- jobs_locked_by_worker_running_idx partial at its own cost discretion,
--- index-only on all-visible pages), never the fleet's. The best-effort
+-- running rows, each a scan over the running-row partial index
+-- (jobs_actor_running_idx, actor-filtered, index-only on all-visible
+-- pages), never the fleet's. The best-effort
 -- TOCTOU doctrine the CTE's comment carried moves with the count.)
 -- Best-effort under concurrent dispatchers: this snapshot is read once at
 -- the start of the CTE and is not re-checked after `locked` takes its
