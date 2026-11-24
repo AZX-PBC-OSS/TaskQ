@@ -765,11 +765,12 @@ join row still spelled, and the run ended `succeeded` on partial data.
 It now forks one child per collected item. Past 1000 items the source
 node terminal-fails with `FanInBoundExceededError` unless the map
 declares `child_driven=True`; past 32,767 items it terminal-fails even
-with `child_driven`, on the join counter's `FanInBoundExceededError` (or
-`error_class='MapIndexExhaustedError'` past 32,768 items while the
-identity carriers are still `smallint`). Partition the source to stay
-under the bounds. A join that
-finalized before the upgrade keeps the children it already forked.
+with `child_driven`, on the join counter's `FanInBoundExceededError`.
+While the identity carriers are still `smallint`, a map past 32,768
+items fails first with `error_class='MapIndexExhaustedError'`,
+`child_driven` or not. Partition the source to stay under the bounds.
+A join that finalized before the upgrade keeps the children it already
+forked.
 
 ### Dispatch-path malformed payloads fail immediately
 

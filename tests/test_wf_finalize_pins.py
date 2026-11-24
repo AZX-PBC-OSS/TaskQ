@@ -987,9 +987,12 @@ async def test_pin_map_on_gather_of_truncated_joins_forks_every_item(
 
 
 # ── #744: the fork's bounds count the TRUE total, refused by name ───────
-# (the fan-in bound and the map_index ceiling run on the list the fork
-# reads, so a fork over the full pack can newly cross them; both must
-# terminal-fail the source node through the ladder, never escape it.)
+# (the 1000 fan-in bound, the join counter's smallint domain and the
+# resolved map_index bound run on the list the fork reads, so a fork over
+# the full pack can newly cross them; each must terminal-fail the source
+# node through the ladder, never escape it. This module's schema is
+# bigint, so the identity bound's smallint face is pinned on a pre-POST
+# schema in test_wf_identity_717_repair.py.)
 
 
 async def _mj_node(pool: asyncpg.Pool, schema: str, flow_key: str, step_key: str) -> Any:
@@ -1112,10 +1115,11 @@ async def test_pin_child_driven_map_on_gather_past_the_join_counter_fails_by_nam
     join counter's smallint domain (32767), which ``child_driven`` does
     not lift. The fork's ``FanInBoundExceededError`` names the true
     total and terminal-fails the gather on attempt 1 through the ladder.
-    The identity bound is resolved from the pack's width too: read off
-    the capped row's prefix it stays at 32767 and the fork raises
-    ``MapIndexExhaustedError`` on the widened schema instead. The
-    pre-fix fork saw the row's prefix and forked it."""
+    The identity bound is resolved from the pack's width too: a probe
+    reading the capped row's prefix (under 32,769 items, as the 64 KiB
+    cap guarantees) keeps the 32767 default and the fork raises
+    ``MapIndexExhaustedError`` on this module's bigint schema instead.
+    The pre-fix fork saw the row's prefix and forked it."""
     import taskq.workflows as wf
     from taskq.workflows import (
         Promise,
@@ -1157,9 +1161,11 @@ async def test_pin_child_driven_map_source_past_the_join_counter_fails_by_name(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
 ) -> None:
-    """#744, the same route's body face: a step returning 32,769 items to
-    its own ``child_driven`` map terminal-fails by name on attempt 1, the
-    join counter's ``FanInBoundExceededError`` on the record."""
+    """A control for main's refusal route (#737) on a step source: a step
+    returning 32,769 items to its own ``child_driven`` map terminal-fails
+    by name on attempt 1, the join counter's ``FanInBoundExceededError``
+    on the record. No join collect is involved, so it passes without
+    #744's fix too."""
     import taskq.workflows as wf
     from taskq.workflows import Promise, WorkflowApp, WorkflowRunError, build, map_source, step
 
@@ -1198,13 +1204,12 @@ async def test_pin_cache_hit_map_fork_past_the_fan_in_bound_fails_by_name(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
 ) -> None:
-    """#744, the same route's cache-hit face: the step cache addresses the
-    body and its args, never the wiring, so a 1200-item list cached under
-    a plain wiring replays into a map wiring whose fork crosses
-    ``MAX_FAN_IN_PER_JOIN``. The hit terminal-fails the source by name on
-    attempt 1, like the miss path. Before the route covered the hit it
-    raised ``FanInBoundExceededError`` raw out of ``wf.run`` with the
-    source row left running."""
+    """A control for main's refusal route (#737) on the cache-hit face:
+    the step cache addresses the body and its args, never the wiring, so
+    a 1200-item list cached under a plain wiring replays into a map
+    wiring whose fork crosses ``MAX_FAN_IN_PER_JOIN``. The hit
+    terminal-fails the source by name on attempt 1, like the miss path.
+    A join is never cached, so this pin passes without #744's fix too."""
     import taskq.workflows as wf
     from taskq.workflows import Promise, WorkflowApp, WorkflowRunError, build, map_source, step
 

@@ -233,10 +233,10 @@ on a join or `gather` counts the true item count, not the prefix the
 join row spells under the size cap (below): past 1000 items it
 terminal-fails `FanInBoundExceededError` unless the map declares
 `child_driven=True`, and past 32,767 items it terminal-fails even with
-`child_driven` on the join counter's own `FanInBoundExceededError`
-(on a schema whose identity is still `smallint`, past 32,768 items
-`error_class='MapIndexExhaustedError'` fails first). Partition the
-source.
+`child_driven` on the join counter's own `FanInBoundExceededError`.
+While the identity carriers are still `smallint`, a map past 32,768
+items fails first with `error_class='MapIndexExhaustedError'`,
+`child_driven` or not. Partition the source.
 
 THE HONEST DERIVATION (never a line through points that
 don't share one): the three measured points — 200 → 14.9 ms, 1000 →
@@ -379,9 +379,9 @@ per item the join packed, and a consumer step's argument re-reads those
 rows. The re-read goes one level deep: a consumer over a `gather` whose
 parent is itself a truncated join (a map join or a `gather`) still sees
 that parent's prefix. The map sees one level further, because the join
-built its pack through the same re-read: it sees a prefix only two
-truncated levels down, as in a map on a `gather` over a `gather` of
-truncated map joins.
+built its pack through the same re-read: it sees a prefix only when
+both levels below its source are truncated joins, as in a map on a
+`gather` over a `gather` of truncated map joins.
 
 ## The three cancel legs
 
