@@ -991,14 +991,14 @@ The warning's `frame` field is `file:line:function` of the deepest non-taskq fra
 
 **The stuck-run walk-through** (the run-level face of the same alert — a run whose nodes are blocked is what this alert measures):
 
-- CLI: `taskq flows status <run_id>` — every stuck node names its waiting-on state + its remedy (the held rows name the gate + the hold id + the deadline; the join-waits name the deps counter; the failures name the ladder headroom).
+- CLI: `taskq flows status <run_id>` — every stuck node names its waiting-on state + its remedy (the held rows name the gate + the hold id + the deadline; the join-waits name the deps counter; the failures name the claim headroom, `attempt` vs `max_attempts`, which the CLI labels "ladder headroom").
 - CLI: `taskq flows holds <run_id>` — the pending HITL holds. A hold past its `expires_at` is the expiry sweep's input (the sweep resolves it `expired` per the gate's `on_timeout`).
 - Admin: the run page (`/taskq/workflows/<id>`) renders the same derivation + the audit trail (who resolved what, when).
 
 **How to remediate.**
 
 1. The run holds on a human: `taskq flows resolve <hold_id> '<decision json>' --app myapp.workflows:app` (the typed door — a wrong payload is refused with the named error and the hold survives).
-2. A node failed with ladder headroom: `taskq flows retry <run_id> <node>` (the ledger is kept; the ceiling raises; the blocked closure re-opens).
+2. A node failed: `taskq flows retry <run_id> <node>` (the ledger is kept; neither count resets, so a node whose ladder ran out gets one more body attempt and its first crash is terminal; the blocked closure re-opens).
 3. A join waiting on the fence's record (`failed_parent`/`orphan_parent`/`flow_dead`): the parent's retry re-opens it; a `flow_dead` join is the flow's own death — the run is terminal, start a new run.
 4. The run should never finish: `taskq flows cancel <run_id> --reason ...` (the cascade resolves the held signals in the same snapshot; the audit row carries the reason).
 
@@ -1033,7 +1033,7 @@ top to bottom.
    sweep's counters move.
 3. **What the reclaim does with the killed child**: the row re-pends
    (`running→scheduled→pending`) while retry budget remains — the
-   attempt ladder continues, the ledger's idempotency absorbs any
+   next claim advances `attempt` (the body-failure ladder is untouched), the ledger's idempotency absorbs any
    partially-written effects of the killed attempt (safe by the step
    ledger). Budget exhausted (`attempt >= max_attempts`) → the row
    terminalizes `crashed` (the FAILED class — see the workflow guide's
@@ -1044,13 +1044,13 @@ top to bottom.
    arms, the fleet's workers execute the re-pended work), or keep a
    worker running; the re-pended rows dispatch like any work.
    The kill-retry cycle is bounded by the child's claim counter
-   (`attempt < max_attempts`), not by its body-failure ladder
+   (`attempt < max_attempts` on a transient step), not by its body-failure ladder
    ([retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count))
    — budget `max_attempts=` for the crashes you expect, knowing the same
    setting also sizes the ladder.
 5. **The manual verbs refuse live rows**: `taskq flows
    retry <run_id> <node>` refuses a node that is not terminal-FAILED
-   ("is live … or spent past the attempt ceiling"), and `taskq job
+   ("is live (not terminal-failed), unknown to run …, or is the run's own root"), and `taskq job
    retry` refuses a running job — retrying a live row would double-run
    it. A `running` row under a dead lease is
    step 2's patient, not a retry target. A terminal-FAILED child (the
