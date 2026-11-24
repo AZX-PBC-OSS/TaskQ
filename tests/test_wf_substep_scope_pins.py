@@ -780,6 +780,99 @@ async def test_a_substep_named_after_its_own_iteration_key_never_adopts_a_lapsed
     assert await runner.result(flow_id) == {"got": "note1"}
 
 
+async def test_a_substep_named_after_a_later_iteration_key_never_adopts_that_iterations_row(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A later iteration's key: a lease-lapsed driver still in iteration 1's
+    body sees its reclaimed winner's terminal ``ticker.iter2`` row. That row
+    is no older than iteration 1's first claim, so only the self-name skip
+    (every iteration number, not just the current one) keeps
+    ``ctx.substep("ticker.iter2")`` from adopting that iteration record."""
+    calls: list[int] = []
+
+    async def note(i: int) -> str:
+        calls.append(i)
+        return f"note{i}"
+
+    async def body(ctx: StepContext, carry: object) -> object:
+        i = 0 if carry is None else int(str(carry))
+        if i == 0:
+            return Refine(1)
+        # the reclaimed winner's terminal on iteration 2's claim row.
+        await wf_pool.execute(
+            f'INSERT INTO "{wf_schema}".wf_step_ledger '
+            "(id, flow_id, job_id, step_key, map_index, attempt, claim_epoch, status, result) "
+            "VALUES ($1, $2, $3, 'ticker.iter2', NULL, 1, 0, 'succeeded', "
+            """'{"done": false, "feedback": 99}'::jsonb)""",
+            new_uuid(),
+            ctx.flow_id,
+            ctx.job_id,
+        )
+        return Done({"got": await ctx.substep("ticker.iter2", note, i)})
+
+    app = WorkflowApp()
+
+    @app.workflow("substep_scope_later_iter_named")
+    def wf() -> Promise[object]:
+        return build(loop("ticker", body, max_iterations=5))
+
+    runner = FlowRunner(app.get("substep_scope_later_iter_named"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id, max_ticks=500) == "terminal"
+    assert calls == [1], f"the substep adopted a later iteration's claim row: {calls}"
+    assert await runner.result(flow_id) == {"got": "note1"}
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["ticker.iter²", "ticker.iter٣", "ticker.iter05"],
+    ids=["superscript-digit", "arabic-indic-digit", "leading-zero"],
+)
+async def test_a_legacy_row_spelled_unlike_an_iteration_key_replays_in_its_iteration(
+    name: str, wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The self-name skip matches only the driver's own spelling
+    ``<loop>.iter<n>`` (ASCII digits, no leading zero). A pre-upgrade bare
+    row whose name merely looks like one (``str.isdigit`` is true for
+    ``²`` and ``٣``; the driver writes ``iter5``, never ``iter05``) is a
+    substep record: the iteration that wrote it replays it across the
+    upgrade and never re-runs fn."""
+    calls: list[int] = []
+
+    async def tick(i: int) -> int:
+        calls.append(i)
+        return i
+
+    async def body(ctx: StepContext, carry: object) -> object:
+        i = 0 if carry is None else int(str(carry))
+        got = await ctx.substep(name, tick, i)
+        await ctx.wait_signal(Approval, timeout_s=120.0)
+        return Done({"got": got})
+
+    app = WorkflowApp()
+
+    @app.workflow("substep_scope_iter_lookalike")
+    def wf() -> Promise[object]:
+        return build(loop("ticker", body, max_iterations=5, budget_s=600.0, gates=_GATES))
+
+    runner = FlowRunner(app.get("substep_scope_iter_lookalike"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    client = HitlClient(wf_pool, schema=wf_schema)
+    assert await runner.drive(flow_id, until="held") == "held"
+    # the pre-fix shape of iteration 0's record: the bare name.
+    renamed = await wf_conn.execute(
+        f'UPDATE "{wf_schema}".wf_step_ledger SET step_key = $2 '
+        "WHERE flow_id = $1 AND step_key = job_id::text || '.iter0/' || $2",
+        flow_id,
+        name,
+    )
+    assert renamed == "UPDATE 1", renamed
+    await _resolve_all_holds(client, flow_id)
+    assert await runner.drive(flow_id, max_ticks=500) == "terminal"
+    assert calls == [0], f"the pre-upgrade bare row {name!r} was not replayed: {calls}"
+    assert await runner.result(flow_id) == {"got": 0}
+
+
 async def test_concurrent_same_name_substeps_fail_the_node_on_its_first_attempt(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:

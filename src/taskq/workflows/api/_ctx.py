@@ -391,12 +391,17 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         key = f"{scope}/{name}"
         # pre-#743 rows carried the bare name (remove this leg once no pre-#743
         # live run can exist); the node's own claim rows and a loop's
-        # <key>.iter<n> rows share that spelling, so they are never a legacy record
+        # <key>.iter<n> rows (every n: a lapsed driver can see a later one) share
+        # that spelling, so they are never a legacy record; n is the driver's
+        # canonical ASCII integer, so a look-alike name keeps its legacy leg
         iter_prefix = f"{self.node_key}.iter"
+        n = name[len(iter_prefix) :]
         self_named = name == self.node_key or (
             self._loop_iteration is not None
             and name.startswith(iter_prefix)
-            and name[len(iter_prefix) :].isdigit()
+            and n.isascii()
+            and n.isdigit()
+            and (n == "0" or n[0] != "0")
         )
         steps = WorkflowSteps(
             self._pool,

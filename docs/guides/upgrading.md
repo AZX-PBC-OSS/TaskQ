@@ -533,7 +533,7 @@ later iterations run their own `fn`. Each such replay logs a
 `workflow-substep-legacy-replay` warning with the run, the job and the
 bare key. Only pre-upgrade code writes bare rows, so the warnings stop
 once no pre-upgrade run is in flight. One for a run started after the
-upgrade means an old executor ran part of that run. Three pre-upgrade
+upgrade means an old executor ran part of that run. Four pre-upgrade
 shapes cannot be recovered as written:
 
 - A substep named after its own node. The old code wrote it onto the
@@ -546,6 +546,11 @@ shapes cannot be recovered as written:
   other node had not run yet. The other node's claim still lands on that
   row, as before the upgrade, so the run keeps the old behaviour for that
   one row.
+- A substep in a loop body named like one of that loop's iteration keys:
+  `<loop>.iter<n>`, with `<n>` written the way the driver writes it
+  (ASCII digits, no leading zero). Its bare row is spelled like the
+  loop's own iteration rows, so it is never read as a substep record,
+  and the iteration re-runs the substep once.
 
 **The executor cutover (required).** This change has no migration, so
 nothing forces the cutover. Do not run old and new workflow executors on
