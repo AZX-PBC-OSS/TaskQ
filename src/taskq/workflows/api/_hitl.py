@@ -322,9 +322,14 @@ async def _resume_refusal_reason(conn: ConnLike, schema: str, node_id: str | Non
         )
     row = await conn.fetchrow(
         _render(
+            # The flow link's cast is fail-isolated: a malformed/absent
+            # ``flow_id`` must not turn a typed refusal into an exception.
             "SELECT j.status AS node_status, j.claim_epoch AS claim_epoch, "
             "f.status AS flow_status FROM {schema}.jobs j "
-            "LEFT JOIN {schema}.jobs f ON f.id = (j.metadata->>'flow_id')::uuid "
+            "LEFT JOIN {schema}.jobs f ON f.id = CASE "
+            "WHEN j.metadata->>'flow_id' ~* "
+            "'^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}$' "
+            "THEN (j.metadata->>'flow_id')::uuid END "
             "WHERE j.id = $1",
             schema,
         ),

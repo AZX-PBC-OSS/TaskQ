@@ -2876,9 +2876,10 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
       and recreate the run — see the runbook); actor registration and
       queue moves do not repair it. Root-missing takes PRECEDENCE for a
       row that also carries a dispatch-invisible condition; among the
-      dispatch-invisible legs a dead stamp takes precedence over the
-      routing conditions (its repair is the reconcile arm, and a row on an
-      unserved queue must still be named once). One row owns one reason,
+      dispatch-invisible legs the routing conditions keep precedence and
+      the dead stamp is the residual shape (a row that is otherwise
+      ROUTABLE — config row present, a live worker on its routing queue —
+      which the fence alone makes invisible). One row owns one reason,
       never a double count.
 
     The unserved-queue predicate is fleet-wide by construction: the
@@ -2923,9 +2924,9 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     # row classifies ONLY as workflow_root_missing (one row, one reason),
     # so this exclusivity comment describes the THREE DISPATCH-INVISIBLE
     # legs; the root-missing leg is the global precedence rule above
-    # them. Among those three, a dead stamp (stamp_unresolved) takes
-    # precedence over the routing conditions: the reconcile arm can clear
-    # it now, and a row on an unserved queue must still count once.
+    # them. Among those three, the routing legs keep precedence and the
+    # dead stamp is the residual (otherwise routable) shape: a no-config
+    # or unserved row would not dispatch after the heal either.
     _stranded_sql = """\
     SELECT s.actor,
            count(*) AS cnt,
@@ -2956,11 +2957,9 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                -- its routing, so the row never double-counts in the
                -- dispatch-invisible categories.
                r.no_actor_config_raw AND NOT r.workflow_root_missing
-                 AND NOT r.stamp_unresolved_raw
                  AS no_actor_config,
                NOT r.no_actor_config_raw
                  AND NOT r.workflow_root_missing
-                 AND NOT r.stamp_unresolved_raw
                  AND NOT EXISTS (
                    SELECT 1 FROM "{schema}".workers w
                    WHERE r.routing_queue = ANY(w.queues)
@@ -2972,12 +2971,22 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                      -- own liveness setting.
                      AND w.last_seen_at > statement_timestamp() - make_interval(secs => $1)
                  ) AS unserved_queue,
-               -- A dead stamp is the reconcile arm's to repair; it takes
-               -- precedence over the routing legs (the row would be
-               -- unclaimable either way, and this reason names the arm that
-               -- can make progress now).
-               r.stamp_unresolved_raw AND NOT r.workflow_root_missing
-                 AS stamp_unresolved,
+               -- A dead stamp is the residual dispatch-invisible shape: the
+               -- row is otherwise ROUTABLE (its actor has a config row and a
+               -- live worker serves its routing queue) yet the fence refuses
+               -- it until the reconcile clears the stamp. The routing legs
+               -- keep precedence: a no-config or unserved row would not
+               -- dispatch even after the heal, so its operator condition is
+               -- the more actionable reason (the reconcile clears the stamp
+               -- independently either way).
+               r.stamp_unresolved_raw
+                 AND NOT r.workflow_root_missing
+                 AND NOT r.no_actor_config_raw
+                 AND EXISTS (
+                   SELECT 1 FROM "{schema}".workers w
+                   WHERE r.routing_queue = ANY(w.queues)
+                     AND w.last_seen_at > statement_timestamp() - make_interval(secs => $1)
+                 ) AS stamp_unresolved,
                r.workflow_root_missing,
                r.flow_id
         FROM (
