@@ -753,7 +753,7 @@ definition) never executed.
 
 ## The sweep arms (wired)
 
-Four healing arms register in the leader's maintenance sweep loop
+The healing arms register in the leader's maintenance sweep loop
 (the `_SweepSpec` tick table), gated on the backend's workflow capability
 marker (`workflow_sweeps_capable` — the same `hasattr` seam every
 maintenance sweep is admitted through, each capability its own marker; a
@@ -764,6 +764,13 @@ arms off):
   the join-wait children, count un-terminal parents from the edge ledger,
   reconcile the cache, stamp orphans, fire the firable) + the set-based
   fire;
+* `wf_signal_sweep` — the held rows' clock: the expiry arm (an overdue
+  `timeout_s` hold → the defined `abandoned` state, one batch of 100 per
+  tick) and the timer arm (`__timer__` holds due now → resolved
+  `delivered` with the wake record, drained to empty per tick);
+* `wf_child_join_wake` — the child flow's terminal as its join hold's
+  resolver (the held parent node resumes, the pointer-only transport
+  knocks);
 * `wf_outbox_drain` — the delivery half: consumer rows inserted
   idempotently on the composite arbiter, the undelivered flag flipped in
   the insert's transaction;
