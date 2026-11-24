@@ -166,6 +166,12 @@ above.
 | lease and sweep deadlines | worker clock skew | the comparisons are server-side (`clock_timestamp()`); the same clock that stamped the lease judges it | `test_heartbeat.py` (the gated statement's server-side threshold), `test_rt_sweeps_*` |
 | harness seed aging | timing-sensitive choreography | seeds anchor to the PG clock instead of wall-clock sleeps | the sweep pins' seeding discipline |
 
+## 11. Dispatch admission
+
+| seam / caller | interleaving | invariant | pin |
+|---|---|---|---|
+| `capped_running.in_flight` (`backend/_dispatch_sql.py`), read by `per_actor_capacity`, `repend_capacity` and the `eligible` re-limit | N live runs on a capped `wf`, with a re-pended `wf` step | a flow root never holds a unit of an actor's cap; running steps and vanilla running rows do | `tests/test_wf_root_actor_cap_pins.py` |
+
 ## What remains open
 
 Four rows read "no pin": the `resolve_claim`/`mark_claimed` bare-id intent

@@ -113,10 +113,12 @@ The geometry below pins each stage to the round's own constants:
   branch subquery is evaluated only when its branch is taken, so an
   uncapped fleet materializes an empty CTE and does ZERO running-row
   work per round, and a capped fleet pays one bounded count per capped
-  live actor (a scan over that actor's running-row partial indexes, the
-  planner picks ``jobs_actor_running_idx`` or the
-  ``jobs_locked_by_worker_running_idx`` partial at its own cost
-  discretion, heap-visiting either way), never a fleet-wide
+  live actor (a scan over that actor's running-row partial indexes,
+  index-only on all-visible pages; the planner may still pick either
+  ``jobs_actor_running_idx`` or the
+  ``jobs_locked_by_worker_running_idx`` partial; ``wf``'s flow-root
+  subtraction is the one heap read, priced and run at most once per
+  statement), never a fleet-wide
   materialization per round and never a
   per-claimed-row recount (O(oversample x cap^2) per round: measured 28/648/2550/10100
   running-index rows at caps 5/25/50/100, ~cap/2 after this CTE).
@@ -522,9 +524,11 @@ pa_actors AS (
 -- because capped_running's driver reads its DISTINCT actor set.)
 rr_tail_keys AS (
   -- NO dispatch fence here, deliberately: this enumeration is the
-  -- RE-PENDED population's cohort walk (assignment_routed only), and a
-  -- workflow row is never assignment_routed (the engine's enqueue paths
-  -- never set the marker) — the fence's admission sites are the
+  -- RE-PENDED population's cohort walk (assignment_routed only). The
+  -- engine's enqueue paths never set the marker, but a workflow STEP
+  -- re-pended by a deferral, an emit park or wake, a lease reclaim or a
+  -- drain hand-back is assignment_routed; a flow root never is (it is
+  -- never claimed). The fence's admission sites are the
   -- candidates laterals, the lock steps, the terminal race guard, and
   -- this probe's capacity question is answered per actor, not per row.
   (
@@ -584,8 +588,13 @@ rr_tail_keys AS (
 -- and repend_capacity pay - and the count subplan one bounded scan of
 -- the actor's own running-row partial indexes (jobs_actor_running_idx
 -- or jobs_locked_by_worker_running_idx, the planner's cost discretion,
--- heap-visiting either way), bounded by that actor's running rows,
--- never the fleet's.
+-- index-only on all-visible pages), bounded by that actor's running
+-- rows, never the fleet's.
+--
+-- wf's count subtracts its live flow roots, which are running but never
+-- claimed, as an uncorrelated InitPlan so the planner prices that heap
+-- read once per statement, not once per driver row (the in-SQL comment
+-- below has the measurement).
 --
 -- MATERIALIZED is the fence: referenced three times, an inlined CTE
 -- would re-run the counts at every reference site, re-creating the
@@ -612,6 +621,21 @@ capped_running AS MATERIALIZED (
               ELSE (SELECT count(*) FROM "{schema}".jobs rj
                     WHERE rj.actor = live.actor
                       AND rj.status = 'running')
+                   -- #747: a flow ROOT is a cache, never work (the fence's
+                   -- ROOT-MARKER leg), so it holds no unit of the cap. Every
+                   -- root lives on 'wf' (FlowEntryShim.actor). Uncorrelated on
+                   -- purpose: an InitPlan is priced once per statement and runs
+                   -- at most once, only when wf's capped branch reaches it. A
+                   -- count correlated to live.actor that reads step_key is
+                   -- priced once per estimated driver row (~202), and from
+                   -- ~3k live roots that crosses jit_above_cost.
+                   - CASE WHEN live.actor = 'wf'
+                          THEN (SELECT count(*) FROM "{schema}".jobs rf
+                                WHERE rf.actor = 'wf'
+                                  AND rf.status = 'running'
+                                  AND rf.step_key = '__flow__')
+                          ELSE 0
+                     END
          END AS in_flight
   FROM (
     SELECT pa.actor, ac.max_concurrent
