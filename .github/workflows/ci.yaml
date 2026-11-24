@@ -256,8 +256,8 @@ jobs:
             echo "full shard ${{ matrix.shard }}/4: ${#files[@]} modules"
             uv run --no-sync pytest "${files[@]}" -n 2 -m "not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
           else
-            echo "smoke leg on ${{ matrix.python-version }}: the non-integration tier"
-            uv run --no-sync pytest -n 2 -m "not integration and not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
+            echo "smoke shard ${{ matrix.shard }}/4 on ${{ matrix.python-version }}: the non-integration tier"
+            uv run --no-sync pytest "${files[@]}" -n 2 -m "not integration and not slow and not load_sensitive and not timescale" -o faulthandler_timeout=300
           fi
 
       # THE ADVERSARIAL PROBES' GATE (the constitution's law: a regression
