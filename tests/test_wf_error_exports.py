@@ -39,3 +39,15 @@ def test_emit_reservation_exceeded_error_is_a_top_level_workflow_export() -> Non
     assert "EmitReservationExceededError" in wf.__all__
     assert EmitReservationExceededError is emit_module.EmitReservationExceededError
     assert EmitReservationExceededError.__bases__ == (Exception,)
+
+
+def test_spawn_result_model_error_is_a_top_level_workflow_export() -> None:
+    """``SpawnResultModelError`` (the spawn's ``result=`` refusal, #749)
+    is a top-level ``taskq.workflows`` export, IDENTICAL to its
+    defining-module class and a member of ``__all__``."""
+    import taskq.workflows as wf
+    import taskq.workflows._childflow as childflow
+    from taskq.workflows import SpawnResultModelError
+
+    assert "SpawnResultModelError" in wf.__all__
+    assert SpawnResultModelError is childflow.SpawnResultModelError

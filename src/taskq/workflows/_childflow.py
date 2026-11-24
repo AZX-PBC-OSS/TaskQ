@@ -97,6 +97,7 @@ __all__ = [
     "ChildOk",
     "ChildOutcome",
     "ChildWorkflowUnknownError",
+    "SpawnResultModelError",
 ]
 
 from taskq.workflows.api._hitl import CHILD_JOIN_SIGNAL_PREFIX
@@ -142,6 +143,13 @@ class SpawnDepthExceededError(ValueError):
     never burns; the node terminal-fails with this class on the record.
     The remedy: bound the fan-out (raise ``max_depth=`` at the spawn
     site, or flatten the recursion into a loop over a ledgered step)."""
+
+
+class SpawnResultModelError(TypeError):
+    """``ctx.spawn_flow(result=…)`` is not a pydantic model class — the
+    child's typed result contract the join's hold schema and ChildOk
+    decode read. A DETERMINISTIC authoring failure: refused before the
+    slot claim and the child create, the retry ladder never burns."""
 
 
 #: the ancestor chain the spawn walks is bounded here; a deeper fan-out is the
@@ -427,8 +435,10 @@ class CtxSpawnOps(_SpawnHost):
         retry ADOPTS the same child, never duplicates.
 
         ``result=`` is the child's typed result contract (type[BaseModel])
-        — the join's ``ChildOk.result`` re-validates into it; the spawn
-        refuses a terminal-less child (the join could never read a
+        — the join's ``ChildOk.result`` re-validates into it; a value that
+        is not a pydantic model class is refused with
+        :class:`SpawnResultModelError` before anything is read or written.
+        The spawn refuses a terminal-less child (the join could never read a
         result). ``key=`` overrides the slot (the author's identity);
         the default slot is the per-attempt spawn cursor (stable across
         retries). ``max_depth=`` raises the spawn's default depth bound
@@ -451,6 +461,12 @@ class CtxSpawnOps(_SpawnHost):
         verdict. A CONCURRENT fan-out that must join STABLY across the
         resume passes ``key=`` (the slot's allocation order is the
         scheduler's, the author's identity is the caller's)."""
+        if not (isinstance(result, type) and issubclass(result, BaseModel)) or result is BaseModel:  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the type[G] bound is checker-only; this is its runtime half (#749).
+            raise SpawnResultModelError(
+                f"ctx.spawn_flow({name!r}): result= must be a pydantic BaseModel "
+                "subclass (the child's typed result contract); declare the child's "
+                f"result as a model and pass that class; got {result!r}"
+            )
         from taskq.workflows._worker_execution import get_compiled_workflow
 
         try:

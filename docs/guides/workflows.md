@@ -2010,6 +2010,13 @@ links (a corrupted/operator-written link cannot run the walk forever —
 the same bound fires, the message names it). A fan-out that genuinely
 needs more depth declares `max_depth=` at the spawn site.
 
+**The result contract.** `result=` must be a pydantic model class. Any
+other value, including a plain type such as `int` or bare `BaseModel`,
+is refused before the child is created, with `SpawnResultModelError` (a
+`TypeError`). The refusal terminal-fails the node without spending the
+retry ladder. Inside a loop body the loop exhausts with
+`LOOP_ERROR_BODY`, and the class name is in the message.
+
 **The retention interplay (the operator's rule).** The cancel cascade
 cancels the family; the retention purge must WALK THE PARENT LINKS the
 same way — purging a child's rows while its parent still runs leaves a
