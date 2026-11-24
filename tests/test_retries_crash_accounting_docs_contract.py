@@ -74,3 +74,98 @@ def test_retries_guide_marks_indefinite_max_attempts_as_inert() -> None:
         "retries.md must tell the operator how the admin UI renders the "
         "inert max_attempts on an indefinite-kind job: — (indefinite)"
     )
+
+
+def test_retries_guide_states_the_workflow_step_budgets() -> None:
+    """#746: a workflow step keeps two budgets. The lease reclaim re-pends a
+    crash only while ``attempt < max_attempts`` (every claim counts), while
+    the runner's ladder counts only the step's ``failed`` ledger rows, so a
+    crash never spends the ladder and the two stack. The shipped behaviour
+    is pinned by ``tests/test_wf_step_crash_retry_budget_pins.py``; the
+    retries guide must state it, and every guide line that called
+    ``attempt`` vs ``max_attempts`` "the ladder" (or bounded crashes by the
+    ladder) must say which budget it means. One substring per guide edit, so
+    reverting any one of them fails here."""
+    retries = _normalized(_DOCS / "guides" / "retries.md")
+    for phrase, why in (
+        (
+            "counts crashes and body failures separately",
+            "a workflow step counts crashes and body failures separately: the "
+            "plain-actor arithmetic ('two crashes leave one attempt') is wrong "
+            "for workflow steps",
+        ),
+        (
+            "For the default `transient` kind",
+            "the two-budget arithmetic holds for the transient kind; permanent "
+            "and indefinite differ",
+        ),
+        (
+            "`max_attempts - 1` crashes followed by `max_attempts` body failures",
+            "the workflow step's worst case: max_attempts - 1 crashes followed "
+            "by max_attempts body failures",
+        ),
+        ("`2 * max_attempts - 1`", "the worst case's execution count"),
+        (
+            "two body failures followed by a crash end the step `crashed`",
+            "the order effect: a crash at the claim ceiling is terminal with ladder left",
+        ),
+        (
+            "each resume after a hold is a claim",
+            "a hold's resume spends crash headroom",
+        ),
+        (
+            "re-pends the step with no `attempt` ceiling",
+            "the post-body infrastructure fault re-pends outside both budgets",
+        ),
+        (
+            "a workflow step keeps the two budgets apart (§12)",
+            "§13's 'a crashed worker spends an attempt' must point workflow steps at §12",
+        ),
+        (
+            "it counts failed attempts only, so crashes are budgeted apart",
+            "§14's 'the SAME ladder' must say the workflow ladder counts failed attempts only",
+        ),
+    ):
+        assert phrase in retries, f"retries.md must say {phrase!r}: {why}"
+
+    workflows = _normalized(_DOCS / "guides" / "workflows.md")
+    assert "retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count" in workflows, (
+        "workflows.md must point at retries.md §12 for the step's two budgets"
+    )
+    for phrase, why in (
+        ("`2 * max_attempts - 1`", "the retry knob must state the step's execution bound"),
+        (
+            "counting crashes and body failures alone",
+            "the retry knob's bound must be qualified: holds, defers and the "
+            "machinery re-pend fall outside it",
+        ),
+        (
+            "the body-failure ladder counts the node's",
+            "§7.2's audit recipe must name the ladder's own count",
+        ),
+        (
+            "its claim headroom",
+            "§7 step 3 must call `attempt` vs `max_attempts` the claim headroom",
+        ),
+        (
+            "each resume is still a claim, so it spends crash headroom",
+            "the 'My holds ate the retry budget' row must say a resume spends crash headroom",
+        ),
+    ):
+        assert phrase in workflows, f"workflows.md must say {phrase!r}: {why}"
+    for phrase in (
+        "is the ladder; the LEDGER is the per-attempt record",
+        "the ladder's headroom (`attempt` vs `max_attempts`)",
+    ):
+        assert phrase not in workflows, (
+            f"workflows.md must not say {phrase!r}: the ladder counts the "
+            "step's failed ledger rows, `attempt` counts every claim"
+        )
+
+    runbooks = _normalized(_DOCS / "guides" / "runbooks.md")
+    assert "bounded by the child's claim counter" in runbooks, (
+        "the kill runbook must bound the kill-retry cycle by the claim counter"
+    )
+    assert "bounded by the child's ladder" not in runbooks, (
+        "the kill runbook must not bound crashes by the ladder: crashes never spend it"
+    )

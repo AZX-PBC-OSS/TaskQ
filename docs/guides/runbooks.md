@@ -1043,8 +1043,11 @@ top to bottom.
    on a runner (the orchestration-only drive — the tick runs the sweep
    arms, the fleet's workers execute the re-pended work), or keep a
    worker running; the re-pended rows dispatch like any work.
-   The kill-retry cycle is bounded by the child's ladder — budget
-   `max_attempts=` for the crashes you expect.
+   The kill-retry cycle is bounded by the child's claim counter
+   (`attempt < max_attempts`), not by its body-failure ladder
+   ([retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count))
+   — budget `max_attempts=` for the crashes you expect, knowing the same
+   setting also sizes the ladder.
 5. **The manual verbs refuse live rows**: `taskq flows
    retry <run_id> <node>` refuses a node that is not terminal-FAILED
    ("is live … or spent past the attempt ceiling"), and `taskq job

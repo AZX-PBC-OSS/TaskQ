@@ -1370,7 +1370,7 @@ the engine's evidence runs; the counts live there and nowhere else
 | "`deliver()` dropped my payload" | The signal row CARRIES the payload; the resumed body reads it | HITL |
 | "A second hold on the same name exploded" | A new hold mints a NEW epoch — the identity is the hold epoch, not the name; the same signal can hold again | HITL |
 | "The guard was decided at create time" | Skip guards are evaluated **at dispatch**, against the flow's state | flow API |
-| "My holds ate the retry budget" | RESUME-NOT-RETRY: a hold's resume consumes NO ladder attempts — the ladder counts failures only | HITL |
+| "My holds ate the retry budget" | RESUME-NOT-RETRY: a hold's resume consumes NO ladder attempts — the ladder counts failures only; each resume is still a claim, so it spends crash headroom ([retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count)) | HITL |
 | "The parent came from splitting a string" | The parent is a COLUMN; bad node-key spelling is refused at compile, never mis-derived (this engine — verified) | the core |
 | "`create_flow` took no input" | The run carries its input; bodies read `ctx.input` | flow API |
 | "Everything was a dict at the boundary" | Bodies are annotated; the compile reads the annotations; an unannotated actor is a compile error | flow API |
@@ -1586,6 +1586,15 @@ The retry knob: `step(..., retry_kind=..., max_attempts=...)`
 — `retry_kind="permanent"` takes NO ladder; a transient failure's
 attempts re-pend with backoff and emit NO terminal until exhaustion
 (P3 rule 7), then the failed-parent propagation takes over.
+A worker crash does not spend this ladder: on a transient step the crash
+reclaim gates on the row's claim counter (`attempt < max_attempts`) while
+the ladder counts the step's `failed` ledger rows, so the two budgets
+stack and, counting crashes and body failures alone, a step that never
+holds or defers can run up to `2 * max_attempts - 1` times (a `permanent`
+step's first crash is terminal too). An infrastructure fault in the
+runner's own bookkeeping after the body returned re-pends outside both
+budgets — see
+[retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count).
 
 ### THE CONTROL-FLOW SIGNALS (the same typed signals the vanilla bodies raise)
 
@@ -3061,7 +3070,7 @@ A workflow is stuck. The order of questions:
 
 1. **What is the run's state?** `taskq flows status <run_id>` — the derivation over the node rows; every stuck node names its waiting-on state + its remedy. The root row's own status is a CACHE (the rows are the truth — the page says so beside the derived status).
 2. **Is it waiting on a human?** `taskq flows holds <run_id>` — the pending holds with their deadlines. A hold with NO deadline is the W1 warning's subject (a workflow that waits forever on a human is a support ticket — the deadline is `timeout_s=`, explicit). The operator's reply: `taskq flows resolve <hold_id> '<json>' --app myapp.workflows:app` (the payload validates through the hold's declared models before anything moves; a wrong shape is refused and the hold survives).
-3. **Is a node failed?** The status names it + the ladder's headroom (`attempt` vs `max_attempts`). The manual resume: `taskq flows retry <run_id> <node>` — the ledger is KEPT (the spent attempts stay recorded), the ceiling raises past the spent attempt, the blocked closure re-opens.
+3. **Is a node failed?** The status names it + its claim headroom (`attempt` vs `max_attempts`; the CLI labels it "ladder headroom", but on a workflow step it is the crash reclaim's budget, and the body-failure ladder counts `failed` ledger rows: [retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count)). The manual resume: `taskq flows retry <run_id> <node>` — the ledger is KEPT (the spent attempts stay recorded), the ceiling raises past the spent attempt, the blocked closure re-opens.
 4. **Is it a join that can never fire?** The status renders the join-wait rows with the deps counter. A join blocked `failed_parent` re-opens when the failed parent's retry lands; a join blocked `orphan_parent`/`flow_dead` is the fence's record — see the failure-propagation section.
 5. **Still stuck?** The admin's run page renders the SAME derivation + the node panel's attempt ledger + the audit trail. The rows-alone law: if the CLI and the page disagree, the ROWS decide — file it as a defect with both outputs.
 6. **Is the work slow or is the holder dead? (the stuck-vs-slow triage.)** A body that hangs inside its own code (a long wait, a dead dependency) is never a stuck finding — its row is `running`, which no why-stuck arm names. `flows status` gives running rows their own face: each running row older than a minute prints its running AGE (since `started_at`) and the lease check. The lease check is the verdict:
@@ -3106,7 +3115,7 @@ Every workflow fact is a row in the same database; the CLI and the explorer are 
 Reconstructing a run's story from the surfaces (no app source, no logs):
 
 1. **The shape:** `taskq flows status <run_id>` — the nodes, the derived status, every stuck row's why + remedy.
-2. **The attempts:** each node's `attempt` vs `max_attempts` is the ladder; the LEDGER is the per-attempt record. The CLI's node read (and the explorer's node panel) renders the attempt ledger per node; in SQL: `SELECT step_key, attempt, status, error_class, created_at FROM taskq.wf_step_ledger WHERE flow_id = '<run_id>' ORDER BY created_at` — every attempt's outcome, in order, with the class of every death.
+2. **The attempts:** each node's `attempt` vs `max_attempts` is the claim count the crash reclaim gates on, while the body-failure ladder counts the node's `failed` ledger rows ([retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count)); the LEDGER is the per-attempt record. The CLI's node read (and the explorer's node panel) renders the attempt ledger per node; in SQL: `SELECT step_key, attempt, status, error_class, created_at FROM taskq.wf_step_ledger WHERE flow_id = '<run_id>' ORDER BY created_at` — every attempt's outcome, in order, with the class of every death.
 3. **The vanilla events:** `taskq job events <job_id>` — the state changes (`lock_expired` reclaims carry the dead worker's id).
 4. **The cache hits:** a node row with `metadata.wf_cache_hit` (rendered by `taskq job show <job_id>` as `cache_hit:` and by the explorer's node panel) NEVER executed — the body ran in the receipt's `run_id`, and `wf_step_cache` holds the delivered result (`SELECT content_address, run_id, created_at FROM taskq.wf_step_cache WHERE content_address = '<address>'`). A bad cached result is evicted by deleting the address's row; the next run re-executes and re-fills it:
    `DELETE FROM taskq.wf_step_cache WHERE content_address = '<address>';`
