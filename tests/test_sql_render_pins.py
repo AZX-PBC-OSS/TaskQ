@@ -18,6 +18,7 @@ progress flush. The pins hold the contracts the unification owes:
 """
 
 import re
+from collections import Counter
 
 import pytest
 
@@ -139,6 +140,19 @@ def test_bundle_render_is_the_direct_substitution() -> None:
         assert WorkflowSql.build(schema).ledger_terminal_by_id == expected
 
 
+#: The dispatch claim renders' SEAT INVENTORY (issue #748's review, W2): five
+#: admission seats carry the fence — four candidate/lock laterals aliased
+#: ``j2`` and the terminal UPDATE's race guard aliased ``j``. A seat added
+#: with the fence raises the count; a seat (and its capability InitPlan and
+#: hold leg) silently dropped lowers it. The per-alias split is what makes a
+#: dropped PAIR visible even if another seat is added in the same change: a
+#: net-zero swap still moves the split.
+_CLAIM_FENCE_SEATS = {"j2": 4, "j": 1}
+#: The claimable probe renders' seat inventory: two seats, both aliased ``j``
+#: (the producer-placed and assignment-routed arms).
+_PROBE_FENCE_SEATS = {"j": 2}
+
+
 @pytest.mark.parametrize(
     "sql",
     [DISPATCH_STRICT_FIFO_SQL, DISPATCH_STRICT_FIFO_CURSOR_SQL, DISPATCH_ROUND_ROBIN_SQL],
@@ -148,10 +162,27 @@ def test_every_dispatch_fence_render_refuses_a_stamped_row(sql: str) -> None:
     """Issue #748: every rendered dispatch fence (the candidates and
     re-pended laterals, the lock steps, the terminal UPDATE's race guard)
     carries the hold-stamp leg, the in-process claim CAS's twin. The
-    capability InitPlan line is rendered once per fence, so it counts them."""
+    capability InitPlan line is rendered once per fence, so it counts them.
+
+    The SEAT INVENTORY is exact: five seats, split four ``j2`` + one ``j``. A new
+    seat must state its own count here (and its hold leg), and a seat that
+    loses its leg — or is dropped whole with its leg and capability probe —
+    fails this check instead of passing a self-referential
+    ``len(legs) == fences``. The escalation row's placement guarantee is
+    pinned behaviourally by
+    ``tests/test_dispatch_fence_hold_backlog_depth.py::
+    test_claim_fence_and_probe_fence_agree_on_a_row_shape`` (the held
+    escalation-on-terminal-flow shape)."""
     fences = sql.count("(SELECT wf_exec.capable FROM wf_exec_capable wf_exec)")
     legs = re.findall(r"AND NOT (\w+)\.metadata \? 'hold'", sql)
-    assert fences > 0 and len(legs) == fences, (fences, legs)
+    seats = sql.count(".step_key IS NULL")
+    by_alias = dict(Counter(legs))
+    assert by_alias == _CLAIM_FENCE_SEATS, (
+        f"the claim render's hold-stamp seats moved: {by_alias} (expected "
+        f"{_CLAIM_FENCE_SEATS}). Every admission seat must carry the leg; a "
+        "new seat is a deliberate inventory update, never a silent append"
+    )
+    assert (fences, seats, len(legs)) == (5, 5, 5), (fences, seats, legs)
     assert set(legs) == {"j", "j2"}  # the race guard (j) and the lateral/lock sites (j2)
 
 
@@ -162,10 +193,15 @@ def test_every_dispatch_fence_render_refuses_a_stamped_row(sql: str) -> None:
 )
 def test_every_claimable_probe_render_refuses_a_stamped_row(sql: str) -> None:
     """The probe fence agrees with the claim fence on held rows: a stamped
-    row is never counted as routable work."""
+    row is never counted as routable work. Two seats, both aliased ``j`` —
+    an exact inventory, not a self-referential count."""
     fences = sql.count("THE DISPATCH FENCE, P3 leg only")
     legs = re.findall(r"OR (\w+)\.metadata \? 'hold'", sql)
-    assert fences > 0 and len(legs) == fences, (fences, legs)
+    by_alias = dict(Counter(legs))
+    assert by_alias == _PROBE_FENCE_SEATS, (
+        f"the probe render's hold-stamp seats moved: {by_alias} (expected {_PROBE_FENCE_SEATS})"
+    )
+    assert (fences, len(legs)) == (2, 2), (fences, legs)
 
 
 def test_same_inputs_render_the_same_sql() -> None:

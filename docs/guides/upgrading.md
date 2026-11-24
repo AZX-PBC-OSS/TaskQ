@@ -1251,6 +1251,25 @@ raises, so nothing points you at the call site; audit for them explicitly.
   and it reports the dropped remainder count. The bound follows
   `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` when raised.
 
+* **The dispatch fence refuses every row stamped `metadata.hold`, and that
+  refusal costs a heap visit per standing held row per dispatch round.** A
+  stamped row is the held representation (the in-process claim CAS already
+  refused it; the fleet now agrees), so a dead stamp can no longer be
+  re-claimed. The predicate is not indexable (`jobs`' only GIN index serves
+  `@>`, not `?`), so on a HITL-heavy queue with deep standing untimed holds
+  both dispatch statements' row work grows linearly with the held rows ahead
+  of the first routable one, on every round, for as long as those holds
+  stand — measured in `perf-evidence-dispatch.md` (repo root)
+  and pinned by `tests/test_dispatch_fence_hold_backlog_depth.py`. The old
+  depth-flat contract still holds for vanilla and routable rows.
+  **The trade-off:** a queue whose pending population is mostly parked on
+  human holds now pays a proportional read at the dispatch poll cadence.
+  Keep standing untimed holds bounded where you can (timed waits expire; the
+  reconcile clears dead stamps), and size a HITL-heavy fleet from the
+  measured held-backlog numbers, not the vanilla depth curve. An indexable
+  marker (a partial index on the pending population, or the stamp mirrored
+  into a column) is the future migration that restores the old bound.
+
 * **An unkeyed `ctx.spawn_flow` in a loop body gets a per-iteration run key,
   and a map item's unkeyed spawn gets a per-item run key.** The default run
   key's node segment is now `<key>.iter<i>` in a loop body, so a re-run of

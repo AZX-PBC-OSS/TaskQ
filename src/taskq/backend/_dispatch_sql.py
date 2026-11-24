@@ -300,12 +300,23 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # widen the cancel transaction's write set. Refusal is the cheap,
 # recoverable direction; that is the asymmetry the doctrine prefers.
 #
-# plan shape (serviceable, EXPLAIN-verified): the leg short-circuits
-# on the step_key probe — vanilla rows (step_key is NULL, the fleet's whole
-# population in the depth oracles) evaluate no subplan, so the candidate
-# chain's row-visit counts and the depth contract are unchanged; workflow
-# rows pay one primary-key EXISTS probe each (a bounded per-row probe, the
-# same cost class as the reservation-headroom fold's pkey laterals).
+# plan shape (serviceable, EXPLAIN-verified): the flow-status/root legs
+# short-circuit on the step_key probe — vanilla rows (step_key is NULL, the
+# fleet's whole population in the depth oracles) evaluate no subplan, so the
+# candidate chain's row-visit counts and the depth contract are unchanged;
+# workflow rows pay one primary-key EXISTS probe each (a bounded per-row
+# probe, the same cost class as the reservation-headroom fold's pkey
+# laterals). THE HOLD-STAMP LEG IS THE ONE EXCEPTION: ``metadata ? 'hold'``
+# is not indexable (the only GIN index on jobs.metadata is jsonb_path_ops,
+# which serves @> and not ?), so it can only be a heap-level Filter — a
+# Filter does not let a LIMIT stop a scan. A standing held backlog that sorts
+# ahead of the routable rows is therefore visited and discarded on every
+# round, and the statement's row work is proportional to that held backlog,
+# not to the round's bound. That is the accepted trade of issue #748 (the
+# fence is what stops a stamped row being re-claimed), priced in
+# perf-evidence-dispatch.md and measured by
+# tests/test_dispatch_fence_hold_backlog_depth.py; the depth contract holds
+# for the population the depth oracles seed (vanilla and routable rows).
 # Rendered per alias by _wf_dispatch_fence; the tokens are substituted in
 # _render_dispatch_sql (never .format — the templates keep {schema} for the
 # call-site render).
@@ -362,7 +373,10 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
               -- THE HOLD-STAMP LEG: a stamped row is the held representation
               -- (the in-process claim CAS's twin; the wake clears the stamp).
               -- ANDed outside the terminal-flow group, so it fences a stamped
-              -- escalation row too while its stamp stands.
+              -- escalation row too while its stamp stands. The leg is not
+              -- indexable (a Filter after a heap visit) — the accepted
+              -- per-round cost on a standing held backlog, priced in
+              -- perf-evidence-dispatch.md.
               AND NOT __WF_ALIAS__.metadata ? 'hold'
               AND (SELECT wf_exec.capable FROM wf_exec_capable wf_exec)
               AND (
