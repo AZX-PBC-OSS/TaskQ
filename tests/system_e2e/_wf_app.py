@@ -71,6 +71,9 @@ from taskq.workflows.chain import DONE, Chain, Route, Step
 from tests.system_e2e import (
     _p5_cancel_app as _p5_cancel_app_module,  # registers the effect fleet's definitions
 )
+from tests.system_e2e._harness import (  # pyright: ignore[reportPrivateUsage]  # Why: the fleet env is the tier's shared constant; the parked cohort derives from the cadence the workers actually boot with.
+    _BASE_ENV,
+)
 
 #: The march pods' queues: both the vanilla actors' system_e2e and the
 #: flows' framework-default queue (the join nodes the API creates are
@@ -546,6 +549,126 @@ def drift_target() -> Promise[object]:
     long_node = step(long_node_body, Kickoff(query="1"), key="long")
     gone = step(downstream_body, long_node, key="gone", actor="wf-drift", queue="nowhere_queue")
     return build(gone)
+
+
+# ── the identity boundary lane: the widened space's own ordinal ─────────
+
+#: The boundary lane's page split — the two ordinals this scenario exists to
+#: cross. Page one ENDS on the last ordinal the pre-widening (all-smallint)
+#: schema admitted; page two BEGINS on the first ordinal only the widened
+#: (all-bigint) space admits. One record past the boundary is the whole
+#: successor page: the lane's subject is the split, not the volume.
+BOUNDARY_LAST_NARROW_ORDINAL = 32767
+BOUNDARY_FIRST_WIDE_ORDINAL = 32768
+BOUNDARY_RECORDS = BOUNDARY_FIRST_WIDE_ORDINAL + 1
+BOUNDARY_STEP = "record"
+#: The release gate the source body parks on AFTER page one commits and
+#: BEFORE the first statement emitting the successor ordinal: the exact kill
+#: window (the test releases it only once the crash's durable state is read).
+BOUNDARY_GATE = "identity-boundary"
+#: The record leg's own release gate — the synchronization seam the source leg
+#: already has. The parked record cohort below holds it, so the kill window
+#: contains claims that cannot finalize and the SIGKILL cannot miss them.
+BOUNDARY_RECORD_GATE = "identity-boundary-record"
+#: The parked record cohort: the fleet's WHOLE free record capacity. Two pods
+#: x ``TASKQ_MAX_CONCURRENCY`` free slots, minus the one slot the parked
+#: source already holds. By pigeonhole the victim's remaining slots can hold
+#: nothing else, so every record claim it rotates into is a parked,
+#: unfinalizable body. Derived from ``_BASE_ENV`` — not written as a bare
+#: number — so a cadence move cannot silently un-park the victim.
+BOUNDARY_RECORD_COHORT = 2 * int(_BASE_ENV["TASKQ_MAX_CONCURRENCY"]) - 1
+#: The lane's dispatcher ordering: the SOURCE outranks its own records, so the
+#: reclaim is dispatched ahead of the emitted backlog. The FIFO alternative
+#: would make the reclaim bound a function of 32,768 queued rows rather than of
+#: the lease — and the lane's subject is the boundary, not queue depth. The
+#: page split, the record count and the kill window are untouched.
+BOUNDARY_SOURCE_PRIORITY = 10
+
+
+class BoundaryOutcome(enum.Enum):
+    OK = "ok"
+
+
+async def _boundary_record_body(ctx: Any, item: dict[str, object]) -> BoundaryOutcome:
+    """The records' leaf: trivial by design — the boundary lane's subject is
+    the identity, never the body. The parked cohort (the fleet's whole free
+    record capacity, the lowest ordinals) holds the record gate so the kill
+    window's claims cannot finalize; every record above the cohort is trivial
+    again and the settle price is untouched."""
+    if int(item["record_id"]) < BOUNDARY_RECORD_COHORT:
+        await _await_test_release(BOUNDARY_RECORD_GATE)
+    return BoundaryOutcome.OK
+
+
+BOUNDARY_CHAIN = Chain(
+    name="identity-boundary-records",
+    start=BOUNDARY_STEP,
+    steps={
+        BOUNDARY_STEP: Step(
+            body=_boundary_record_body,
+            outcomes=BoundaryOutcome,
+            route=Route({BoundaryOutcome.OK: DONE}),
+        )
+    },
+)
+
+
+async def boundary_source(ctx: Any) -> None:
+    """The paged source whose page split IS the widened identity boundary.
+
+    Page one emits ordinals ``0..32767`` — a full 32,768-record page whose
+    LAST row is the pre-widening ceiling — then parks on the test's release
+    gate: the exact window where page one's commit (children + edges + the
+    cursor checkpoint) is durable and the body has not begun the successor
+    page nor emitted ordinal 32768. The test SIGKILLs the real worker process
+    there. The reclaim's attempt re-reads the DURABLE cursor and emits page
+    two only (ordinal 32768): the handoff is the checkpoint's, never a
+    recomputation, never a modulo.
+
+    The page width is the boundary itself, so the workflow declares
+    ``max_in_flight=None`` — a 32,768-record page can fit no bounded default
+    by construction."""
+    cursor = await ctx.cursor()
+    next_ordinal = int(cursor.get("next", 0))
+    if next_ordinal <= BOUNDARY_LAST_NARROW_ORDINAL:
+        await ctx.emit_batch(
+            [
+                chain_start(
+                    BOUNDARY_CHAIN,
+                    {"record_id": index},
+                    map_index=index,
+                    trace_id=f"boundary-{index}",
+                )
+                for index in range(BOUNDARY_FIRST_WIDE_ORDINAL)
+            ],
+            cursor={"next": BOUNDARY_FIRST_WIDE_ORDINAL},
+        )
+        await _await_test_release(BOUNDARY_GATE)
+    if next_ordinal < BOUNDARY_RECORDS:
+        await ctx.emit_batch(
+            [
+                chain_start(
+                    BOUNDARY_CHAIN,
+                    {"record_id": index},
+                    map_index=index,
+                    trace_id=f"boundary-{index}",
+                )
+                for index in range(BOUNDARY_FIRST_WIDE_ORDINAL, BOUNDARY_RECORDS)
+            ],
+            cursor={"next": BOUNDARY_RECORDS},
+        )
+
+
+@matrix_app.workflow("identity_boundary_kill", max_in_flight=None)
+def identity_boundary_kill() -> Promise[object]:
+    return build(
+        chain_source(
+            BOUNDARY_CHAIN,
+            boundary_source,
+            key="source",
+            policy=ExecutionPolicy(priority=BOUNDARY_SOURCE_PRIORITY),
+        )
+    )
 
 
 # ── execution-policy fleet controls (generic records only) ──────────────
@@ -1102,6 +1225,7 @@ MARCH_FLOWS: dict[str, Any] = {
     "triage_chain": march_app.get("triage_chain"),
     "doc_ingest_march": ingest_app.get("doc_ingest_march"),
     "reclaim_target": matrix_app.get("reclaim_target"),
+    "identity_boundary_kill": matrix_app.get("identity_boundary_kill"),
     "drain_map": matrix_app.get("drain_map"),
     "drain_loop": matrix_app.get("drain_loop"),
     "drain_hold": matrix_app.get("drain_hold"),
