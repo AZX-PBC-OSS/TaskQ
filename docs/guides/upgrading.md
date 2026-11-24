@@ -558,6 +558,20 @@ re-runs the side effect, and it can still adopt another node's bare row.
 Both failures are silent: no error and no log line. (The
 `workflow-substep-legacy-replay` warning fires only when a new executor
 later replays a bare row; it does not see either failure.)
+A new executor can re-run a side effect in that window too. If an old
+executor's call is still inside `fn` when a new executor's later attempt
+runs the same substep and fails, the read prefers that later attempt's
+scoped `failed` row to the bare `succeeded` row the old call writes when
+it returns. The next attempt then runs `fn` again, repeating an effect
+the old call already completed.
+The drain is the only fence. This change does not raise the workflow
+execution-schema level, so the capability gate does not keep old
+executors out. That gate fails a claim with `WF001` when the worker is
+below the run's `required_worker_schema`, but any such stamp also makes
+the in-process `FlowRunner` refuse the run, and `ctx.substep` use is not
+declared per workflow. Using the gate here would mean stamping every run
+and refusing every direct `taskq.workflows.run()` or
+`FlowRunner.drive()` call.
 
 **Rollback is not safe for live runs.** A pre-upgrade binary runs
 workflow rows, and every live node it retries, reclaims or resumes
