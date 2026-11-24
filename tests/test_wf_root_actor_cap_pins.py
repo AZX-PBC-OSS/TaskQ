@@ -30,6 +30,11 @@ leg and cannot see the defect.
   locked rows to ``max_concurrent - in_flight`` with steps running;
 * the scope pin: the root subtraction applies to ``wf`` only, never to a
   capped vanilla actor beside live roots;
+* the terminal-root pin: a FINISHED run's root is not running, so it is
+  never subtracted (dropping ``rf.status = 'running'`` over-admits by the
+  number of terminal roots in the retention window);
+* the placement pin: a workflow's declared ``actor=`` moves its loop rows,
+  but its root still lives on ``wf``;
 * the live-root JIT oracle: the root subtraction is priced once per
   statement, so 10 000 live roots on all-visible pages keep the claim's
   estimate under ``jit_above_cost`` (a count correlated to the driver's
@@ -42,7 +47,7 @@ FIFO with a claim-cursor bound, and round robin.
 
 from __future__ import annotations
 
-# ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier, not user input; every value is $-bound.
+# ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier, not user input; the catalog-derived double-quoted {col_list} column identifiers come from this schema's own information_schema.columns; every value is $-bound.
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
@@ -61,7 +66,17 @@ from taskq.backend._dispatch_sql import (
 )
 from taskq.backend._protocol import JobId
 from taskq.testing.pg import create_pending_job, create_running_job
-from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
+from taskq.workflows import (
+    Done,
+    FlowRunner,
+    Promise,
+    Refine,
+    StepContext,
+    WorkflowApp,
+    build,
+    loop,
+    step,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -101,6 +116,10 @@ async def _join(ctx: StepContext, left: int, right: int) -> int:
     return left + right  # pragma: no cover - the pins claim, never execute
 
 
+async def _placed_loop_body(ctx: StepContext, carry: object) -> Done[int] | Refine[int]:
+    return Done(1)  # pragma: no cover - the pins claim, never execute
+
+
 def _app() -> WorkflowApp:
     app = WorkflowApp()
 
@@ -115,16 +134,21 @@ def _app() -> WorkflowApp:
 
     @app.workflow(_PLACED_FLOW, actor="wf_root_cap_placed")
     def placed() -> Promise[object]:  # pyright: ignore[reportUnusedFunction]  # Why: registered by the decorator, read back through app.get.
-        return build(step(_only, key="only"))
+        # A loop node carries the definition's declared placement
+        # (``graph.declared_actor``), so this workflow has a row that
+        # actually lands on ``wf_root_cap_placed`` — the treatment the
+        # placement pin asserts beside the root's ``wf``.
+        return build(loop("placed_loop", _placed_loop_body, max_iterations=2))
 
     return app
 
 
 async def _seed(conn: asyncpg.Connection, schema: str, mode: str, cap: int | None) -> UUID:
-    """The queue's mode row, ``wf``'s stored cap (UPSERT: the reset may
-    already hold a ``wf`` row, and a DO NOTHING insert would leave it
-    uncapped), and one workflow_execution-capable worker on the queue
-    (the dispatch fence's execution leg admits wf rows only for it)."""
+    """The queue's mode row, ``wf``'s stored cap (UPSERT so ``_seed`` is
+    idempotent across repeat calls and the cap stays authoritative
+    regardless of what seeded the row), and one workflow_execution-capable
+    worker on the queue (the dispatch fence's execution leg admits wf rows
+    only for it)."""
     await conn.execute(
         f'INSERT INTO "{schema}".queues (name, mode) VALUES ($1, $2) '
         "ON CONFLICT (name) DO UPDATE SET mode = $2",
@@ -435,6 +459,56 @@ async def test_live_roots_are_not_subtracted_from_other_actors(
     ]
 
 
+# ── the terminal-root pin: only LIVE roots are subtracted ────────────────
+
+
+async def _finish_run(conn: asyncpg.Connection, schema: str, flow_id: object) -> None:
+    """Put a run's own rows into the terminal state every finished run
+    holds: the root and its node ``succeeded`` (a node row links to its
+    root through ``metadata->>'flow_id'``). Asserted, so a future schema
+    change cannot make the pin pass by updating nothing."""
+    finished = await conn.fetchval(
+        f"WITH u AS (UPDATE \"{schema}\".jobs SET status = 'succeeded' "
+        "WHERE id = $1::uuid OR (metadata->>'flow_id')::uuid = $1::uuid RETURNING 1) "
+        "SELECT count(*) FROM u",
+        flow_id,
+    )
+    assert finished == 2, (
+        f"finished {finished!r} rows for run {flow_id} — expected the root and its node"
+    )
+
+
+@pytest.mark.parametrize(("mode", "sql"), _VARIANTS)
+async def test_a_finished_runs_root_does_not_offset_the_wf_cap(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    mode: str,
+    sql: str,
+) -> None:
+    """One earlier run has finished (its root and node are terminal and
+    still in the table); one two-step run is live under ``wf``
+    ``max_concurrent = 1``. The live root takes no unit of the cap and the
+    finished root is not running, so the residual is the full 1 and the
+    round claims exactly one step. Subtracting every ``__flow__`` row
+    regardless of status reads ``in_flight = -1`` and admits both."""
+    worker_id = await _seed(wf_conn, wf_schema, mode, cap=1)
+    finished = await _create_runs(wf_pool, wf_schema, _FLOW, 1)
+    await _finish_run(wf_conn, wf_schema, finished[0])
+
+    flows = await _create_runs(wf_pool, wf_schema, _TWO_STEP_FLOW, 1)
+    await _assert_roots_live(wf_conn, wf_schema, flows)
+
+    claimed = await _dispatch(wf_conn, sql, wf_schema, worker_id)
+
+    assert len(claimed) == 1 and claimed[0]["step_key"] in ("left", "right"), (
+        f"{mode}: one finished run beside one live run under wf max_concurrent=1 "
+        f"claimed {[r['step_key'] for r in claimed]} — a finished run's root was "
+        "subtracted from wf's running count, widening the cap by the number of "
+        "terminal __flow__ rows in the table"
+    )
+
+
 # ── the root's actor ─────────────────────────────────────────────────────
 
 
@@ -444,11 +518,21 @@ async def test_a_placed_workflows_root_still_lives_on_wf(
     wf_pool: asyncpg.Pool,
 ) -> None:
     """``capped_running`` subtracts roots on the literal ``'wf'`` only, which
-    holds because every root is written with ``FlowEntryShim``'s actor. The
-    placement face (``@app.workflow(actor=...)``) moves a definition's loop
-    and escalation rows; a root it moved would refill that actor's cap."""
+    holds because every root the engine writes carries ``FlowEntryShim``'s
+    actor. The placement face (``@app.workflow(actor=...)``) moves a
+    definition's loop and escalation rows; this flow's loop row must land on
+    ``wf_root_cap_placed`` while its root stays on ``wf``. Both halves are
+    asserted, so deleting the placement declaration reds the treatment."""
     flows = await _create_runs(wf_pool, wf_schema, _PLACED_FLOW, 1)
     await _assert_roots_live(wf_conn, wf_schema, flows)
+
+    rows = await wf_conn.fetch(
+        f'SELECT step_key, actor FROM "{wf_schema}".jobs '
+        "WHERE id = $1::uuid OR (metadata->>'flow_id')::uuid = $1::uuid",
+        flows[0],
+    )
+    actors = {str(r["step_key"]): str(r["actor"]) for r in rows}
+    assert actors == {"__flow__": "wf", "placed_loop": "wf_root_cap_placed"}, actors
 
 
 # ── the live-root JIT oracle ─────────────────────────────────────────────

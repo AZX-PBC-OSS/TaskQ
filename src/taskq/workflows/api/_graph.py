@@ -1086,6 +1086,18 @@ def step[R](
     # non-positive bound is refused at the wiring, before any row exists.
     # ``None`` rides (nothing declared — the row's column NULL).
     check_start_to_close_decl(start_to_close, what=f"step {node_key!r}'s")
+    # the engine's reserved root marker is not a user node key: a
+    # ``__flow__`` step row is excluded from the dispatch fence
+    # (``step_key <> '__flow__'``) and from the nodeless-root reap's
+    # node-existence check, so declaring one wedges the run and then fails
+    # it under a false "create was not atomic" story.
+    if node_key == "__flow__":
+        raise WorkflowBuildError(
+            f"node key {node_key!r} is the engine's reserved run-root marker "
+            "(step_key = '__flow__'): a node sharing it is never claimed and "
+            "is invisible to the nodeless-root reap, so the run wedges and "
+            "then fails under a false cause; rename the node"
+        )
     # a dotted wiring key is refused — the fork's derived namespace
     # (``<key>.item``, ``<key>.join``, ``<key>.iter<i>``) owns the dot; a
     # wiring key carrying one collides with the engine's own derived keys (the

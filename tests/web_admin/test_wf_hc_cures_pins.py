@@ -881,6 +881,34 @@ def test_the_wiring_key_refuses_the_affordance_hostile_charset() -> None:
         _compile_with_key("bad.key")
 
 
+def test_the_wiring_key_refuses_the_engine_reserved_root_marker() -> None:
+    """W8: ``step(key="__flow__")`` is refused at the compile. A node
+    sharing the run root's marker is never claimed (the dispatch fence
+    excludes ``step_key = '__flow__'``) and is invisible to the
+    nodeless-root reap's node-existence check, so the run wedges and then
+    fails under a false "create did not commit atomically" story.
+    ``__flow__`` is not a user key; the refusal names the reserved
+    marker and the remedy."""
+    from taskq.workflows import WorkflowBuildError
+
+    async def body(ctx: Any, params: Any) -> str:
+        return "ok"
+
+    app = WorkflowApp()
+
+    @app.workflow("hc8_reserved_key_flow")
+    def reserved_key_flow() -> Promise[object]:
+        return build(step(body, key="__flow__"))
+
+    with pytest.raises(WorkflowBuildError) as exc_info:
+        app.get("hc8_reserved_key_flow")
+
+    message = str(exc_info.value)
+    assert "__flow__" in message, message
+    assert "reserved" in message, message
+    assert "rename" in message, message
+
+
 def test_the_mermaid_label_writer_escapes_quotes_and_newlines() -> None:
     """H-C8 (the rows half): the mermaid label writer escapes ``"`` and
     newlines in labels — a hostile row's key can neither KILL the render
