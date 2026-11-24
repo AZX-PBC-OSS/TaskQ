@@ -3016,7 +3016,13 @@ cancel-restart is the escape.
 same claim-time resolution — the pin covers the second):
 
 - **A run mid-LOOP**: the iteration's body re-resolves at the resume —
-  the next iteration (and the resumed one) runs the NEW code.
+  the next iteration (and the resumed one) runs the NEW code. If the body
+  SPAWNS, the iteration's unkeyed child run keys are derived by whichever
+  release executes the iteration (§3b's per-iteration key and the spawn-key
+  upgrade note in [Upgrading](upgrading.md)): an iteration that re-runs
+  across the redeploy can mint its unkeyed children once more. Drain the
+  run, or cancel-and-restart it, when a duplicated child side effect is
+  unacceptable — this section's two escape hatches are the same rule.
 - **A run mid-WAIT**: the timer's wake or the human
   delivery's resume re-enters the NEW body — a wake is a resume like
   any other, and the claim-time resolution is the only body source.

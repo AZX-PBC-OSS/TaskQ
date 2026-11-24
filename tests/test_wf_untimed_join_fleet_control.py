@@ -58,10 +58,12 @@ from taskq.workflows import (
     loop,
     step,
 )
+from taskq.workflows._childflow import FLOW_WORKFLOW_NAME_SQL_TEMPLATE
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sweep import sweep_hold_stamps, sweep_join_rederive
 from taskq.workflows.api._ctx import build_step_context
 from taskq.workflows.api._hitl import sweep_child_joins
+from taskq.workflows.api._sql_runner import render_sql
 from taskq.workflows.engine import render_workflow_sql
 
 
@@ -127,12 +129,31 @@ async def _claim(
 
 
 async def _run(runners: dict[str, FlowRunner], row: dict[str, Any]) -> str:
-    """The worker door's dispatch: the claimed row's own flow picks the runner."""
+    """The worker door's dispatch: the claimed row's own flow picks the runner.
+
+    Production resolves the runner from the run root's stamped workflow NAME
+    (``_worker_execution._runner_for``), never from the row's step key. This
+    helper reads the same stamp for the row's ``flow_id`` and selects the
+    table's runner by that name (the table's values carry the compiled
+    workflows; its keys are labels only)."""
     meta = row["metadata"]
     meta = json.loads(meta) if isinstance(meta, str) else meta
     flow_id = JobId(meta["flow_id"])
-    name = "parent" if row["step_key"] == "wrap" else "child"
-    return await runners[name].run_fleet_claimed_step(
+    by_name = {str(runner.compiled.name): runner for runner in runners.values()}
+    probe = next(iter(runners.values()))
+    name = await probe.pool.fetchval(
+        render_sql(FLOW_WORKFLOW_NAME_SQL_TEMPLATE, probe.schema), flow_id
+    )
+    assert name is not None, (
+        f"the claimed row's flow {flow_id} stamps no workflow name — the body "
+        "cannot resolve from the registry (D1)"
+    )
+    runner = by_name.get(str(name))
+    assert runner is not None, (
+        f"the claimed row's flow {flow_id} is workflow {name!r}, which this "
+        f"test's runner table does not carry ({sorted(by_name)})"
+    )
+    return await runner.run_fleet_claimed_step(
         flow_id,
         row,
         attempt=int(row["attempt"]),

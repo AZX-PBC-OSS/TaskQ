@@ -829,7 +829,10 @@ async def test_a_timer_hold_in_a_map_sibling_context_gets_its_own_identity(
         return [0, 1]
 
     async def item_body(ctx: Any, item: int) -> TimerNote:
-        wake = await ctx.wait_until(0.05, key="item-tick")
+        # Long enough that both siblings mint their rows before any deadline
+        # can fire inside the pin's window (the identity is the subject; the
+        # deadline is moved by time travel below).
+        wake = await ctx.wait_until(2.0, key="item-tick")
         if isinstance(wake, Expired):
             raise AssertionError("the timer expired inside the pin's window")
         return TimerNote(index=ctx.map_index)
@@ -873,8 +876,16 @@ async def test_a_timer_hold_in_a_map_sibling_context_gets_its_own_identity(
 
     # drive past the deadline; the sweep fires both timers; the run completes
     # with both siblings' notes (a sibling that never woke is the wedged
-    # variant's face).
-    await asyncio.sleep(0.2)
+    # variant's face). The deadline is moved rather than slept through: the
+    # pin's subject is the two holds' identity, not the clock.
+    await wf_conn.execute(
+        render_sql(
+            "UPDATE {schema}.wf_signals SET expires_at = clock_timestamp() - interval '1 second' "
+            "WHERE workflow_id = $1 AND status = 'held'",
+            wf_schema,
+        ),
+        flow_id,
+    )
     from taskq.workflows.api._hitl import sweep_due_timers
 
     await sweep_due_timers(wf_pool, schema=wf_schema)
