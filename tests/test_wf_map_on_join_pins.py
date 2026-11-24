@@ -187,8 +187,11 @@ async def test_a_late_drain_never_mints_a_second_nested_join_row(
     flow_id = (await runner.create_flow()).flow_id
 
     real_drain = sweep_module.drain_outbox
+    muted_calls = 0
 
     async def _muted_drain(*_a: object, **_k: object) -> int:
+        nonlocal muted_calls
+        muted_calls += 1
         return 0
 
     # the leader's drain lags the dispatch (the sweep cadence): mute it — the
@@ -206,6 +209,10 @@ async def test_a_late_drain_never_mints_a_second_nested_join_row(
         monkeypatch.setattr(sweep_module, "drain_outbox", real_drain)
     assert await runner.drive(flow_id) == "terminal"
     monkeypatch.setattr(sweep_module, "drain_outbox", real_drain)
+    # the mute works only while tick() reads drain_outbox off the module at
+    # call time; a hoisted import would leave it inert and these arms would
+    # silently run the in-process order.
+    assert muted_calls > 0, "tick() never called the muted drain"
     assert await runner.result(flow_id) == expected
     await real_drain(wf_pool, runner.wsql)  # the leader's late tick
 

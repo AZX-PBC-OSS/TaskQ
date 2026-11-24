@@ -2398,7 +2398,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         one per list element — fresh jobs, per-item ledger identity) +
         the join whose consumers are the wiring's downstream nodes (the
         outbox carries the consumer bindings — the cascade
-        fix). ``None`` when the body returned no list (the map over
+        fix), except a nested map's join, which its own fork writes
+        (#745). ``None`` when the body returned no list (the map over
         nothing — the join fires empty, the collect states it).
 
         ``run_priority`` is the RUN's per-call override (the wf-priority

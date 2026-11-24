@@ -1949,7 +1949,7 @@ writes the only row.
 The fix covers runs whose outer fork runs on the new release. A run whose
 outer fork ran on an earlier release, including on an old worker during a
 rolling deploy, keeps the old binding and can still show any of the
-behaviours above. Nothing repairs those rows automatically. Two read-only
+behaviours above. Nothing repairs those rows automatically. Three read-only
 queries find them. The first finds second rows left `pending` on a
 finished or pruned run:
 
@@ -1986,12 +1986,44 @@ WHERE n.metadata ? 'flow_id'
   AND n.deps_pending > 0;
 ```
 
+The row is `succeeded` with `deps_pending > 0` because the nested fork
+adopted it after it had already run, so its children's count never drains.
 If `root_status` is `running`, the run is wedged: stop it with
 `taskq flows cancel <run_id>`. If it is `succeeded`, the step after the
 nested map ran on an empty join, so treat that run's result as suspect and
-re-run it. A run whose second row ran while the nested fork's children
-were still running ends with two `succeeded` rows and the right result;
-neither query lists it and nothing needs repair.
+re-run it. If it is `failed` or `cancelled` (a run you stopped with
+`taskq flows cancel` stays on the list), the run ended without a result;
+re-run it if you still need one.
+
+A second row that ran while the nested fork's children were still running
+is harmless when the nested map is the last fan-out: the run ends with two
+`succeeded` rows and the right result, and nothing needs repair. It is not
+harmless when another map sits on the nested map's join (three levels or
+more). The second row forks that map again with no items, so the step after
+it can run on an empty join, and the real nested join's own fork then fails
+on a duplicate `wf_edge` row. The third query finds these runs:
+
+```sql
+SELECT n.id, n.metadata->>'flow_id' AS run_id, n.step_key, n.status,
+       r.status AS root_status
+FROM jobs n
+LEFT JOIN jobs r
+  ON r.id = (n.metadata->>'flow_id')::uuid AND r.step_key = '__flow__'
+WHERE n.metadata ? 'flow_id'
+  AND n.step_key LIKE '%.join.join'
+  AND n.idempotency_key = 'wf:' || n.step_key
+  AND n.status NOT IN ('pending', 'cancelled')
+  AND n.deps_pending = 0
+  AND EXISTS (
+    SELECT 1 FROM jobs m
+    WHERE m.metadata->>'flow_id' = n.metadata->>'flow_id'
+      AND m.step_key = n.step_key || '.join'
+  );
+```
+
+If `root_status` is `running`, stop the run with
+`taskq flows cancel <run_id>` (it stays on the list). Whatever its status,
+treat the run's result as suspect and re-run it.
 
 ---
 
