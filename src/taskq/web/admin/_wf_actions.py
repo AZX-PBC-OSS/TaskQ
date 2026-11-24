@@ -59,6 +59,7 @@ from taskq._json import dumps_str as _json_dumps_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
 from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.constants import BIGINT_MAX, SMALLINT_MAX
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
 from taskq.web._sse_limit import acquire_sse_slot, release_after, session_gate
@@ -181,7 +182,7 @@ _NODE_PANEL_CHILD_SQL = (
     "payload, result, "
     "created_at, started_at, finished_at "
     'FROM "{schema}".jobs WHERE step_key = $1 '
-    "AND (metadata->>'flow_id')::uuid = $2 AND map_index = $3 "
+    "AND (metadata->>'flow_id')::uuid = $2 AND map_index = $3::bigint "
     "AND step_key <> '__flow__'"
 )
 
@@ -976,11 +977,32 @@ def register_actions(router: APIRouter) -> None:
         ``children`` census, so the operator can click through to the
         child whose story they are watching (the demo README's
         observation: ``watch doc-doomed's attempt go 1 → 2``)."""
-        if map_index is not None and (map_index < 0 or map_index > 32767):
-            # The column is a smallint: a value beyond its range can
-            # never name a real map sibling — the typed 400, not the
-            # int2 codec's overflow 500.
-            raise HTTPException(status_code=400, detail="map_index must be 0..32767")
+        if map_index is not None and (map_index < 0 or map_index > BIGINT_MAX):
+            # The identity is a non-negative bigint. A value outside that range
+            # can never name a real map sibling — refuse before the driver's
+            # codec, never the int8 overflow 500.
+            raise HTTPException(status_code=400, detail=f"map_index must be 0..{BIGINT_MAX}")
+        if map_index is not None and map_index > SMALLINT_MAX:
+            # The read binds the identity against the live column domain. A
+            # pre-POST (all-smallint) schema can never name this child; a
+            # missing/mixed carrier shape is a typed deployment refusal, never
+            # an uncaught 500.
+            from taskq.workflows._types import (
+                MapIndexSchemaError,
+                resolve_map_index_domain,
+            )
+
+            async with pool.acquire() as probe_conn:
+                try:
+                    ceiling = await resolve_map_index_domain(probe_conn, schema)
+                except MapIndexSchemaError as exc:
+                    raise HTTPException(status_code=503, detail=str(exc)) from exc
+            if map_index > ceiling:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"map_index must be 0..{ceiling}",
+                )
+
         if "\x00" in node_key:
             # A NUL byte can never name a declared node (the keys are
             # identifiers); the read binds it raw — refuse before the

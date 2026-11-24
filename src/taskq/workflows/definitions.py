@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from taskq.backend._protocol import JobId
+from taskq.constants import SMALLINT_MAX
 from taskq.workflows._types import ForkSpec
 
 __all__ = [
@@ -234,6 +235,19 @@ def validate_fork(fork: ForkSpec) -> None:
             "(JoinSpec(child_driven=True) — the fire counts terminal "
             "children from the edge ledger, never a per-joined-row edge "
             "list) is the escape."
+        )
+        # The join's counter cache is ``jobs.deps_pending`` (a smallint) — a
+    # COUNT of unterminal parents, not record identity. Widening the identity
+    # never widens this bound: a child-driven join still cannot carry more
+    # than SMALLINT_MAX children in the unchanged counter, so refuse before any
+    # row writes and name the counter's own domain (the separate X3 guard).
+    if fork.join is not None and len(fork.children) > SMALLINT_MAX:
+        raise FanInBoundExceededError(
+            f"join {fork.join.step_key!r} fans in {len(fork.children)} "
+            f"children — above jobs.deps_pending's smallint domain "
+            f"({SMALLINT_MAX}); the fork refuses before any row writes. "
+            "Partition the source into smaller forks — widening the record "
+            "identity does not widen the join counter."
         )
 
 

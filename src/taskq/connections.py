@@ -436,17 +436,29 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
 
     An ``InternalClientError`` from the retry is a real driver state bug,
     not this race, and propagates.
+
+    The MIGRATION PREPARED-CACHE aftermath rides the same boundary: a
+    long-lived pool whose prepared statement a DDL change invalidated
+    (a column type widened, an arbiter replaced) fails its next statement
+    with ``asyncpg.InvalidCachedStatementError`` — asyncpg aborts the
+    block, clears its cache, and the re-prepare on the NEXT drive
+    succeeds. The same one-bounded-re-drive and the same no-durable-write
+    rule apply: retry only when ``guard.wrote`` is false (the failed
+    statement wrote nothing), never after a committed/ambiguous write,
+    and never for the schema errors the re-prepare would honestly raise
+    again (a real schema fault is not a cache artifact; its second raise
+    propagates).
     """
     # Why deferred: this module is import-light by design (no asyncpg or
     # taskq runtime imports at module scope), and both names serve only
     # this cold path, the same discipline ``with_connection_init``
     # follows for its close helper.
-    from asyncpg.exceptions import InternalClientError
+    from asyncpg.exceptions import InternalClientError, InvalidCachedStatementError
 
     guard = _RetryGuard(pool, operation)
     try:
         return await op(guard)
-    except InternalClientError as exc:
+    except (InternalClientError, InvalidCachedStatementError) as exc:
         if guard.wrote:
             # A write from this attempt is already acknowledged; re-running
             # op would re-issue it with the same identity: against the
@@ -460,11 +472,18 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
         from taskq.obs import get_logger
 
         get_logger(__name__).warning(
-            "pool-conn-dead-on-acquire",
-            kind="pool_conn_dead_on_acquire",
+            "pool-conn-dead-on-acquire"
+            if isinstance(exc, InternalClientError)
+            else "pool-prepared-statement-invalidated",
+            kind="pool_conn_dead_on_acquire"
+            if isinstance(exc, InternalClientError)
+            else "pool_prepared_statement_invalidated",
             operation=operation,
             error=repr(exc),
         )
+        # The single bounded re-drive: asyncpg's own cache invalidation /
+        # re-prepare owns the next statement. A genuine schema fault
+        # re-raises on this drive and propagates — no retry loop hides it.
         return await op(_RetryGuard(pool, operation))
 
 

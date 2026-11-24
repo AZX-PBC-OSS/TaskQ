@@ -308,7 +308,7 @@ JOIN {schema}.jobs j ON j.id = w.join_job_id
 OUTBOX_INSERT_SQL = """\
 INSERT INTO {schema}.wf_outbox
     (id, join_job_id, flow_id, consumer_step_key, map_index, bindings)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+VALUES ($1, $2, $3, $4, $5::bigint, $6::jsonb)
 """
 
 
@@ -340,7 +340,7 @@ INSERT INTO {schema}.jobs
      idempotency_scope, idempotency_key, priority, start_to_close, fairness_key,
      required_worker_schema, retry_base_seconds, retry_cap_seconds,
      retry_backoff, retry_jitter)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8::bigint, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 """
 
 
@@ -366,7 +366,7 @@ INSERT INTO {schema}.jobs
 SELECT fanout.*, parent.required_worker_schema
 FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
-    $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
+    $6::text[], $7::uuid[], $8::bigint[], $9::text[], $10::text[],
     $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[],
     $16::text[], $17::double precision[], $18::double precision[],
     $19::text[], $20::double precision[]
@@ -416,7 +416,7 @@ INSERT INTO {schema}.jobs
 SELECT page.*, source.required_worker_schema
 FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
-    $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
+    $6::text[], $7::uuid[], $8::bigint[], $9::text[], $10::text[],
     $11::jsonb[], $12::text[], $13::text[], $14::text[],
     $15::smallint[], $16::interval[], $17::double precision[],
     $18::double precision[], $19::text[], $20::double precision[]
@@ -1161,7 +1161,7 @@ WITH history AS (
     FROM {schema}.wf_step_ledger l
     WHERE l.flow_id = $2::uuid
       AND l.step_key = $3::text
-      AND COALESCE(l.map_index, -1) = COALESCE($4::smallint, -1)
+      AND COALESCE(l.map_index, -1) = COALESCE($4::bigint, -1)
       AND l.status IN ('succeeded', 'failed')
 )
 SELECT j.id AS join_job_id,

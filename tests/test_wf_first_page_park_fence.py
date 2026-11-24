@@ -123,7 +123,7 @@ async def _seed_awaited_ledger(
     await conn.execute(
         f'INSERT INTO "{schema}".wf_step_ledger (id, flow_id, job_id, step_key, '
         "map_index, attempt, claim_epoch, status, created_at, updated_at) "
-        "VALUES ($1, $2, $3, $4, $5::smallint, $6::int, $7::bigint, 'awaited', "
+        "VALUES ($1, $2, $3, $4, $5::bigint, $6::int, $7::bigint, 'awaited', "
         "clock_timestamp(), clock_timestamp())",
         ledger_id,
         flow_id,

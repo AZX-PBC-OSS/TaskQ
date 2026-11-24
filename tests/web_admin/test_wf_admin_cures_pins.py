@@ -946,8 +946,10 @@ async def test_hostile_inputs_on_every_door_are_typed_refusals(
     clean_pg_conn: asyncpg.Connection,
     cure_app_module: Any,
 ) -> None:
-    """The doors' last hostile shapes, walked: a map_index beyond the
-    smallint is the typed 400 (never the int2 codec's overflow 500); a
+    """The doors' last hostile shapes, walked: a map_index past the
+    schema-resolved bigint ceiling is a genuine identity (the widened
+    schema's truthful 404 when no such child exists), a value beyond
+    bigint is the typed 400 (never the int8 codec's overflow 500); a
     NUL node key on the READ door is a 404; the deliver door's audited
     refusal with a NUL node key in its detail lands ITS OWN ROW (the
     leaf's NUL law covers the detail's strings — the audited refusal
@@ -960,9 +962,10 @@ async def test_hostile_inputs_on_every_door_are_typed_refusals(
     ) as http:
         await http.get("/queues")  # the CSRF cookie's set
         csrf = _csrf_of(http)
-        overflow = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 40000})
-        assert overflow.status_code == 400, (
-            f"the smallint overflow is a typed 400: {overflow.status_code}"
+        widened = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 40000})
+        assert widened.status_code == 404, (
+            f"40000 is a valid widened identity; the read's truthful answer is "
+            f"the 404 (no such child): {widened.status_code}"
         )
         huge = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 10**20})
         assert huge.status_code == 400
@@ -1000,3 +1003,58 @@ async def test_hostile_inputs_on_every_door_are_typed_refusals(
             f"the deliver refusal targets THE RUN, not a phantom hold: {row}"
         )
         assert row["target_id"] == str(run_id), f"the pointer is the canonical run spelling: {row}"
+
+
+async def test_node_panel_answers_the_typed_503_only_above_the_smallint_window(
+    pg_dsn: str,
+) -> None:
+    """The panel's fail-closed face is CONDITIONAL and typed — the exact
+    contract ``docs/guides/workflows.md`` states beside the authoring doors.
+
+    A candidate above 32767 makes the read resolve the five-carrier domain,
+    so a half-applied/unsupported carrier shape answers HTTP 503 naming the
+    deployment error rather than escaping as an uncaught 500. An ordinary
+    identity at or below 32767 pays no catalog read: the same broken shape
+    is not detected and the read reaches the rows (the truthful 404 for a
+    run that does not exist). Both legs are the guide's sentence — drop the
+    panel's ``MapIndexSchemaError`` mapping and the high leg is a 500 the
+    runbook never names; make the low leg probe and every panel click on an
+    unverified schema starts refusing.
+    """
+    from taskq._ids import new_base62, new_uuid
+    from taskq.migrate import apply_pending
+
+    schema = "panel_carrier_" + new_base62(8, precision="random").lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool = await asyncpg.create_pool(pg_dsn)
+    try:
+        await apply_pending(conn, schema=schema, phase="pre")
+        # A half-applied/unsupported carrier shape: one of the five is `integer`.
+        await conn.execute(
+            f'ALTER TABLE "{schema}".jobs_archive ALTER COLUMN map_index TYPE integer'
+        )
+        app = _make_admin_app(pool, schema)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            high = await http.get(
+                f"/api/runs/{new_uuid()}/nodes/review", params={"map_index": 40000}
+            )
+            assert high.status_code == 503, (
+                f"the panel's high identity against a broken carrier shape is the "
+                f"typed 503 the guide names, never an uncaught 500: "
+                f"{high.status_code} {high.text}"
+            )
+            assert "jobs_archive" in high.text, (
+                f"the refusal names the offending carrier: {high.text}"
+            )
+            low = await http.get(f"/api/runs/{new_uuid()}/nodes/review", params={"map_index": 0})
+            assert low.status_code == 404, (
+                f"an ordinary identity pays no catalog read, so the same broken "
+                f"shape is not detected and the read answers the truthful 404: "
+                f"{low.status_code} {low.text}"
+            )
+    finally:
+        await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()

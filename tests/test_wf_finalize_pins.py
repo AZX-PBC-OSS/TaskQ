@@ -1104,16 +1104,18 @@ async def _mj_int(ctx: Any, x: int) -> int:
 
 
 @pytest.mark.integration
-async def test_pin_map_on_gather_past_the_map_index_ceiling_fails_by_name(
+async def test_pin_child_driven_map_on_gather_past_the_join_counter_fails_by_name(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
 ) -> None:
     """#744: 34 x 1000 small ints — the gather packs 34,000, past the
-    ``map_index`` smallint ceiling. The fork's ``MapIndexExhaustedError``
-    terminal-fails the gather by name on attempt 1 through the ladder;
-    unrouted, it escaped ``wf.run`` raw and left the gather row running
-    (a reclaim-and-re-crash wedge on a worker). The pre-fix fork saw
-    the row's prefix and failed the fan-in bound instead."""
+    join counter's smallint domain (32767), which ``child_driven`` does
+    not lift. The fork's ``FanInBoundExceededError`` names the true
+    total and terminal-fails the gather on attempt 1 through the ladder.
+    The identity bound is resolved from the pack's width too: read off
+    the capped row's prefix it stays at 32767 and the fork raises
+    ``MapIndexExhaustedError`` on the widened schema instead. The
+    pre-fix fork saw the row's prefix and forked it."""
     import taskq.workflows as wf
     from taskq.workflows import (
         Promise,
@@ -1127,56 +1129,57 @@ async def test_pin_map_on_gather_past_the_map_index_ceiling_fails_by_name(
 
     app = WorkflowApp()
 
-    @app.workflow("map_on_gather_past_the_map_index_ceiling")
-    def map_on_gather_past_the_map_index_ceiling() -> Promise[object]:
+    @app.workflow("child_driven_map_on_gather_past_the_join_counter")
+    def child_driven_map_on_gather_past_the_join_counter() -> Promise[object]:
         ints = gather([step(_mj_ints, key=f"ceil_{k}") for k in range(34)])
-        return build(map_source(ints, _mj_int))
+        return build(map_source(ints, _mj_int, child_driven=True))
 
     with pytest.raises(
         WorkflowRunError,
-        match=r"node 'gather' terminal-failed: \[MapIndexExhaustedError\] "
-        r"the map source 'gather' returned 34000 items",
+        match=r"node 'gather' terminal-failed: \[FanInBoundExceededError\] "
+        r"join 'gather.join' fans in 34000 children — above jobs.deps_pending's",
     ):
-        await wf.run(app.get("map_on_gather_past_the_map_index_ceiling"), wf_pool, wf_schema)
+        await wf.run(
+            app.get("child_driven_map_on_gather_past_the_join_counter"), wf_pool, wf_schema
+        )
     node = await _mj_node(wf_pool, wf_schema, "ceil_0", "gather")
     assert node is not None
     assert (node["status"], node["error_class"], node["attempt"], node["forked"]) == (
         "failed",
-        "MapIndexExhaustedError",
+        "FanInBoundExceededError",
         1,
         0,
     ), dict(node)
 
 
 @pytest.mark.integration
-async def test_pin_map_source_past_the_map_index_ceiling_fails_by_name(
+async def test_pin_child_driven_map_source_past_the_join_counter_fails_by_name(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
 ) -> None:
     """#744, the same route's body face: a step returning 32,769 items to
-    its own map terminal-fails by name on attempt 1. Before the route it
-    raised ``MapIndexExhaustedError`` raw out of ``wf.run`` with the
-    source row left running."""
+    its own ``child_driven`` map terminal-fails by name on attempt 1, the
+    join counter's ``FanInBoundExceededError`` on the record."""
     import taskq.workflows as wf
     from taskq.workflows import Promise, WorkflowApp, WorkflowRunError, build, map_source, step
 
     app = WorkflowApp()
 
-    @app.workflow("map_source_past_the_map_index_ceiling")
-    def map_source_past_the_map_index_ceiling() -> Promise[object]:
-        return build(map_source(step(_mj_too_many, key="ceil_src"), _mj_int))
+    @app.workflow("child_driven_map_source_past_the_join_counter")
+    def child_driven_map_source_past_the_join_counter() -> Promise[object]:
+        return build(map_source(step(_mj_too_many, key="ceil_src"), _mj_int, child_driven=True))
 
     with pytest.raises(
         WorkflowRunError,
-        match=r"node 'ceil_src' terminal-failed: \[MapIndexExhaustedError\] "
-        r"the map source 'ceil_src' returned 32769 items",
+        match=r"node 'ceil_src' terminal-failed: \[FanInBoundExceededError\] "
+        r"join 'ceil_src.join' fans in 32769 children — above jobs.deps_pending's",
     ):
-        await wf.run(app.get("map_source_past_the_map_index_ceiling"), wf_pool, wf_schema)
+        await wf.run(app.get("child_driven_map_source_past_the_join_counter"), wf_pool, wf_schema)
     node = await _mj_node(wf_pool, wf_schema, "ceil_src", "ceil_src")
     assert node is not None
     assert (node["status"], node["error_class"], node["attempt"], node["forked"]) == (
         "failed",
-        "MapIndexExhaustedError",
+        "FanInBoundExceededError",
         1,
         0,
     ), dict(node)
