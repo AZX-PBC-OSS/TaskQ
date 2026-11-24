@@ -2006,25 +2006,45 @@ concurrent spawn ADOPTS the same child (the arbiter's run-key CAS) and
 every caller receives THAT child's handle — the shared face.
 A deferral's re-run (`Snooze`, `RetryAfter(consume_budget=False)`) keeps
 the attempt number but is a new claim, so it re-derives slot 0 and
-adopts the child it already minted. In a loop body the default spawn is
+adopts the child it already minted **provided no other execution has
+advanced the same key since that child was minted**. The slot indexes
+the key's ARRIVAL order across every writer, not one execution's
+logical spawn ordinal: a stale body that interleaves a spawn (its lease
+lapsed, sharing the attempt number), or a concurrent unkeyed fan-out
+whose CAS order permutes, shifts the order a later claim walks, so its
+k-th spawn can adopt a child another execution minted for a different
+input. A deferral or hold-resume of a serial body re-derives its own
+slots in order; a fan-out that must join STABLY across resumes passes
+`key=` (the slot's allocation order is the scheduler's; the author's
+identity is the caller's — a resumed body re-executes the gather and
+the adoption follows the KEYS).
+In a loop body the default spawn is
 per iteration: the cursor is `spawn_slot_<attempt>.iter<i>` and the run
 key's node segment is `<key>.iter<i>` (the ledger's iteration key), so a
 resume or a deferral that re-runs iteration k adopts k's own children.
+A map item is its own job row, so its cursor is already per-sibling
+(`spawn_slot_<attempt>`) — but every map item of one node shares a
+`step_key`, so the run key's node segment carries the item:
+`<key>.item<m>`. Two items of one map never adopt each other's child.
 An explicit `key=` is the author's identity and is never scoped to an
 iteration: a constant key in a loop body names ONE child, which every
 iteration adopts, so a body that wants a child per iteration puts the
-iteration in its key. Upgrading from a release whose loop iterations
+iteration in its key. `key=` may not be a bare decimal string (`"0"`,
+`"12"`): that spelling is the default key's slot segment, so the spawn
+refuses it (`ValueError`) rather than let a numeric key alias the node's
+first unkeyed spawn. Upgrading from a release whose loop iterations
 shared the cursor: an iteration that spawned unkeyed under the old
 release and runs again after the upgrade (a deferral, a hold or join
 resume, a reclaim; iteration 0 too) derives the new key and mints its
 unkeyed children once more, and a join resumed that way waits on the new
 child while the first one's result goes unread. During a rolling deploy
 old and new workers derive different keys, so it can happen in either
-direction. Keyed spawns and spawns outside a loop keep their keys.
-One discipline applies: a concurrent fan-out that must join STABLY
-across the resume passes `key=` (the slot's allocation order is the
-scheduler's; the author's identity is the caller's — a resumed body
-re-executes the gather and the adoption follows the KEYS).
+direction. Upgrading from a release whose map items shared one run key
+(the release before this one): every map item's unkeyed spawn now
+derives `<key>.item<m>`, so an in-flight map item re-run after the
+upgrade mints its child once more and adopts the item-keyed child from
+then on — with the same rolling-deploy ambiguity, in either direction.
+Keyed spawns (whose keys are not bare decimals) keep their keys.
 
 **The depth bound.** A self-spawning flow (a workflow that spawns
 itself, directly or through a cycle of children) cannot mint a
