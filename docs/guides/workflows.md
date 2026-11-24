@@ -2012,10 +2012,13 @@ needs more depth declares `max_depth=` at the spawn site.
 
 **The result contract.** `result=` must be a pydantic model class. Any
 other value, including a plain type such as `int` or bare `BaseModel`,
-is refused before the child is created, with `SpawnResultModelError` (a
-`TypeError`). The refusal terminal-fails the node without spending the
-retry ladder. Inside a loop body the loop exhausts with
-`LOOP_ERROR_BODY`, and the class name is in the message.
+is refused with `SpawnResultModelError` (a `TypeError`). The check is
+the spawn's first act: it runs before the child is created and ahead of
+the spawn's other refusals, and it fires even when the handle is never
+waited on. The refusal terminal-fails the node without spending the
+retry ladder, and a declared `on_exhaustion` effect does not fire (a
+deterministic refusal is not an exhaustion). Inside a loop body the loop
+exhausts with `LoopBodyFailure`, and the class name is in the message.
 
 **The retention interplay (the operator's rule).** The cancel cascade
 cancels the family; the retention purge must WALK THE PARENT LINKS the

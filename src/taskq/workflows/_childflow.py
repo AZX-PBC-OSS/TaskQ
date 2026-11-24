@@ -146,10 +146,11 @@ class SpawnDepthExceededError(ValueError):
 
 
 class SpawnResultModelError(TypeError):
-    """``ctx.spawn_flow(result=…)`` is not a pydantic model class — the
-    child's typed result contract the join's hold schema and ChildOk
-    decode read. A DETERMINISTIC authoring failure: refused before the
-    slot claim and the child create, the retry ladder never burns."""
+    """``ctx.spawn_flow(result=…)`` is not a pydantic model subclass (bare
+    ``BaseModel`` is refused too). That class is the child's typed result
+    contract, which the join's hold schema and the ChildOk decode read. A
+    DETERMINISTIC authoring failure: refused before the slot claim and the
+    child create, the retry ladder never burns."""
 
 
 #: the ancestor chain the spawn walks is bounded here; a deeper fan-out is the
@@ -436,8 +437,9 @@ class CtxSpawnOps(_SpawnHost):
 
         ``result=`` is the child's typed result contract (type[BaseModel])
         — the join's ``ChildOk.result`` re-validates into it; a value that
-        is not a pydantic model class is refused with
-        :class:`SpawnResultModelError` before anything is read or written.
+        is not a pydantic model subclass (bare ``BaseModel`` included) is
+        refused with :class:`SpawnResultModelError` before anything is read
+        or written.
         The spawn refuses a terminal-less child (the join could never read a
         result). ``key=`` overrides the slot (the author's identity);
         the default slot is the per-attempt spawn cursor (stable across
@@ -462,10 +464,16 @@ class CtxSpawnOps(_SpawnHost):
         resume passes ``key=`` (the slot's allocation order is the
         scheduler's, the author's identity is the caller's)."""
         if not (isinstance(result, type) and issubclass(result, BaseModel)) or result is BaseModel:  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the type[G] bound is checker-only; this is its runtime half (#749).
+            # an instance is named by class: the message is persisted unredacted.
+            got = (
+                f"an instance of {type(result).__name__}"
+                if isinstance(result, BaseModel)
+                else repr(result)
+            )
             raise SpawnResultModelError(
-                f"ctx.spawn_flow({name!r}): result= must be a pydantic BaseModel "
-                "subclass (the child's typed result contract); declare the child's "
-                f"result as a model and pass that class; got {result!r}"
+                f"ctx.spawn_flow({name!r}): result= must be a subclass of pydantic "
+                "BaseModel, not BaseModel itself (the child's typed result contract); "
+                f"declare the child's result as a model and pass that class; got {got}"
             )
         from taskq.workflows._worker_execution import get_compiled_workflow
 

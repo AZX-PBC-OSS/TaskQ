@@ -182,6 +182,30 @@ class TestSpawnResultGuardIsFirst:
                 cast("CtxSpawnOps", object()), _UNREGISTERED, result=cast("Any", result), key=key
             )
 
+    @pytest.mark.parametrize(
+        ("result", "shown", "hidden"),
+        [
+            (SubReport(findings=["i749-canary"]), "an instance of SubReport", "i749-canary"),
+            (list[SubReport], "list[", None),
+            (int, "<class 'int'>", None),
+        ],
+        ids=["instance", "alias", "plain-type"],
+    )
+    async def test_the_message_names_an_instance_by_class_never_by_its_values(
+        self, result: object, shown: str, hidden: str | None
+    ) -> None:
+        """The message lands verbatim in the durable ``error_message`` (job
+        row and ledger), outside the capture's redact chain: an instance is
+        named by its class, never by its field values; types and aliases
+        keep their repr (the useful half of the message)."""
+        with pytest.raises(SpawnResultModelError) as exc_info:
+            await CtxSpawnOps.spawn_flow(
+                cast("CtxSpawnOps", object()), _UNREGISTERED, result=cast("Any", result)
+            )
+        message = str(exc_info.value)
+        assert shown in message, message
+        assert hidden is None or hidden not in message, message
+
 
 def test_the_refusal_is_a_deterministic_type_error() -> None:
     """The ladder routes the refusal deterministic (one tuple member);
