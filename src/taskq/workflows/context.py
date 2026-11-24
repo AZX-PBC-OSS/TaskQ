@@ -179,8 +179,10 @@ class WorkflowSteps:
 
         ``ledger_terminal_by_id`` is ``UPDATE ... RETURNING id``: the write
         returns the row it touched, so a ``None`` here means the guard
-        matched nothing — another writer fenced the claim while this
-        execution was still inside ``fn``."""
+        matched nothing — another writer re-stamped the claim (a fence or a
+        newer claim) while this execution was still inside ``fn``. The
+        phantom reap's fence is not one of them: it keeps a substep row's
+        claim instant, and this write lands over it (#743)."""
         if claim.ledger_id is None or claim.claimed_at is None:
             # A memo/read projection (no actual claim behind it) has no
             # terminal of its own to record — manufacturing an identity
@@ -203,13 +205,12 @@ class WorkflowSteps:
             )
         if written is None:
             # The guarded write matched no row (#743 W-3): another writer
-            # fenced the claim while this execution was still inside ``fn``
-            # (the phantom reap's subject set is "the worker died", which a
-            # terminalized node's live orphan can still enter). Silence here
-            # records a completed effect as abandoned with no trace; the
-            # record's own value is already lost, so at least name it —
-            # with the flow, the job, the row and the outcome the caller
-            # asked to record.
+            # re-stamped the claim while this execution was still inside
+            # ``fn`` (a final fence or a newer claim; the phantom reap's
+            # provisional fence does not refuse it). Silence here records a
+            # completed effect as abandoned with no trace; the record's own
+            # value is already lost, so at least name it — with the flow,
+            # the job, the row and the outcome the caller asked to record.
             logger.warning(
                 "workflow-substep-terminal-refused",
                 flow_id=str(self._flow_id),

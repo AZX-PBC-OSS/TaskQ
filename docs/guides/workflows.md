@@ -789,7 +789,9 @@ arms off):
   idempotently on the composite arbiter, the undelivered flag flipped in
   the insert's transaction;
 * `wf_phantom_reap` — 'running' ledger rows on terminal flows fenced (the
-  rows-alone reconstruction reconciles).
+  rows-alone reconstruction reconciles). A `ctx.substep` row's fence is
+  provisional: a call still inside `fn` when it is reaped records its own
+  outcome over the fence when it returns.
 * `wf_nodeless_root_reap` — the orphan root's belt: a flow root with
   ZERO node rows (the create-atomicity's debris shape) is
   reaped `failed` past the grace — the derivation can never develop it.

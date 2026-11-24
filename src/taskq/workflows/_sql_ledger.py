@@ -116,7 +116,13 @@ SET status = $2,
     capture = $6::jsonb,
     updated_at = clock_timestamp()
 WHERE id = $1
-  AND status IN ('running', 'awaited', 'crashed')
+  AND (status IN ('running', 'awaited', 'crashed')
+       -- the phantom reap's provisional fence on a ctx.substep row (#743):
+       -- the reap keeps that row's claim instant (PHANTOM_REAP_SQL), so the
+       -- call whose fn outlived its node still records its outcome. Node
+       -- and loop rows never take this arm; every other fence re-stamps
+       -- updated_at, and the guard below refuses it.
+       OR (status = 'fenced' AND starts_with(step_key, job_id::text)))
   -- The re-mint guard: the caller presents its OWN claim's RETURNING
   -- instant (``claim_step_ledger``'s updated_at — the claim's instance
   -- identity) and writes ONLY the row that claim actually wrote, at the

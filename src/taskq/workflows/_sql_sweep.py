@@ -416,7 +416,14 @@ RETURNING id
 PHANTOM_REAP_SQL = """\
 UPDATE {schema}.wf_step_ledger l
 SET status = 'fenced',
-    updated_at = clock_timestamp()
+    -- A ctx.substep row (its key starts with its own job id, #743) keeps
+    -- its claim instant: the exclusion below reads the OWNING job's lease,
+    -- which a substep can outlive (the duplicate refusal's orphan is still
+    -- inside fn after its node failed). Its fence is provisional: the
+    -- claimant's own id+instant terminal write may still land over it
+    -- (LEDGER_TERMINAL_BY_ID_SQL). Every other row is re-stamped, final.
+    updated_at = CASE WHEN starts_with(l.step_key, l.job_id::text)
+                      THEN l.updated_at ELSE clock_timestamp() END
 WHERE l.status IN ('running', 'awaited', 'crashed')
   AND EXISTS (
       SELECT 1 FROM {schema}.jobs f
@@ -429,7 +436,8 @@ WHERE l.status IN ('running', 'awaited', 'crashed')
   -- reaper must never fence it (a fenced record over a heartbeating
   -- attempt is the ledger lie: the deadline's own disposition would then
   -- refuse its truthful write). The reaper's subjects are the rows whose
-  -- worker died: a lapsed lease, a non-running job, a refunded park.
+  -- worker died: a lapsed lease, a non-running job, a refunded park. A
+  -- substep row can be live under a non-running job; see the SET above.
   AND NOT EXISTS (
       SELECT 1 FROM {schema}.jobs j2
       WHERE j2.id = l.job_id
