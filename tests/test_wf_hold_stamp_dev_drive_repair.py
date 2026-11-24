@@ -174,49 +174,51 @@ async def _accepted_race(
 
 
 @pytest.mark.integration
-async def test_the_accepted_race_strands_a_row_the_dev_drive_never_repairs(
+async def test_the_accepted_race_is_repaired_by_the_dev_drive_s_own_tick(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_pool: asyncpg.Pool,
 ) -> None:
-    """The dev shape's repair contract: the driver that runs the re-park must
-    also heal the dead stamp it can leave. ``FlowRunner.tick`` runs no
-    hold-stamp reconcile, so the row is unclaimable (the claim CAS's
-    ``AND NOT metadata ? 'hold'``) and the drive spins to ``max_ticks`` with
-    the run alive-but-stopped and nothing said above debug."""
+    """The dev shape's repair contract, enforced: the driver that can leave a
+    dead stamp (the re-park's accepted race) also heals it. ``FlowRunner.tick``
+    runs ``sweep_hold_stamps`` beside the join/child/expiry/timer arms, so the
+    unclaimable row (the claim CAS's ``AND NOT metadata ? 'hold'``) is cleared
+    on the next tick, the delivered answer replays, and the run reaches
+    terminal — never ``max_ticks`` with the run alive-but-stopped."""
     suffix = new_uuid().hex[:12]
     stalled, release = asyncio.Event(), asyncio.Event()
     flow = _compile(suffix, stalled, release)
     flow_id = (await FlowRunner(flow, wf_pool, wf_schema).create_flow()).flow_id
     driver = FlowRunner(flow, wf_pool, wf_schema)
     stranded = await _accepted_race(wf_conn, wf_pool, wf_schema, flow_id, driver, stalled, release)
-    # the state the docstring's accepted race leaves, asserted first so a
-    # setup drift cannot masquerade as the finding.
+    # the state the accepted race leaves, asserted first so a setup drift
+    # cannot masquerade as the pin.
     assert (stranded["status"], stranded["stamp"], stranded["signal_status"]) == (
         "pending",
         stranded["hold_id"],
         "delivered",
     )
 
-    outcome = await driver.drive(flow_id, until="terminal", max_ticks=5, tick=0.0)
+    outcome = await driver.drive(flow_id, until="terminal", max_ticks=50, tick=0.0)
     after = await _wrap(wf_conn, wf_schema, flow_id)
     assert outcome == "terminal", (
-        "the in-process driver has no arm for the dead stamp its own re-park leaves: "
+        "the in-process driver did not heal the dead stamp its own re-park leaves: "
         f"drive ended {outcome!r} with the node row {after['status']!r}, stamped "
-        f"{_meta(after['metadata']).get('hold')!r} on a {stranded['signal_status']!r} hold — "
-        "the row is unclaimable by the claim CAS and the run stops with no signal. "
-        "FlowRunner.tick's sweep block runs the join/child/expiry/timer arms and not "
-        "sweep_hold_stamps, whose only production caller is the leader's sweep table."
+        f"{_meta(after['metadata']).get('hold')!r} on a {stranded['signal_status']!r} hold. "
+        "FlowRunner.tick's sweep block must run sweep_hold_stamps beside the "
+        "join/child/expiry/timer arms; without it the row is unclaimable by the "
+        "claim CAS and the run stops with no signal."
     )
+    assert after["status"] == "succeeded", after["status"]
 
 
 @pytest.mark.integration
-async def test_the_leader_reconcile_is_the_only_arm_that_clears_the_stamp(
+async def test_the_leader_reconcile_clears_the_stamp_and_the_run_completes(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_pool: asyncpg.Pool,
 ) -> None:
-    """The same stranded state, repaired by the arm the docstring names: one
+    """The same stranded state, repaired by the fleet's arm: one
     ``sweep_hold_stamps`` pass clears the dead stamp, the re-claim replays the
     delivered answer from the queue, and the run completes — so the flow was
     never dead, only unrepaired."""
@@ -265,3 +267,131 @@ async def test_a_refused_delivery_on_a_live_flow_never_names_a_dead_flow(
         "flow's — and the run goes on to complete once the stamp is reconciled (see the "
         "sibling probe)."
     )
+
+
+async def _stamped_running_node(
+    conn: asyncpg.Connection, pool: asyncpg.Pool, schema: str
+) -> tuple[JobId, JobId, JobId]:
+    """A flow driven to its hold, then the node row put back to ``running``
+    with its stamp KEPT — the state ``_DELIVER_RESUME_SQL``'s ``AND status =
+    'pending'`` gate refuses, and the one that reaches the refusal's row read
+    (the hold's stamp still names the node)."""
+    suffix = new_uuid().hex[:12]
+    stalled, release = asyncio.Event(), asyncio.Event()
+    release.set()  # the attempt-1 body is past its stall: it waits immediately
+    flow = _compile(suffix, stalled, release)
+    flow_id = (await FlowRunner(flow, pool, schema).create_flow()).flow_id
+    driver = FlowRunner(flow, pool, schema)
+    assert await driver.drive(flow_id, until="held") == "held"
+    row = await _wrap(conn, schema, flow_id)
+    assert row["status"] == "pending" and "hold" in _meta(row["metadata"])
+    hold = await conn.fetchrow(
+        f"SELECT id FROM \"{schema}\".wf_signals WHERE workflow_id = $1 AND status = 'held'",
+        flow_id,
+    )
+    assert hold is not None
+    await conn.execute(
+        f"UPDATE \"{schema}\".jobs SET status = 'running', claim_epoch = $2, "
+        "locked_by_worker = $3, lock_expires_at = now() + interval '60 seconds' "
+        "WHERE id = $1",
+        row["id"],
+        7,
+        new_uuid(),
+    )
+    return JobId(flow_id), JobId(row["id"]), JobId(hold["id"])
+
+
+@pytest.mark.integration
+async def test_a_refused_delivery_on_a_stamped_running_node_names_the_row(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+) -> None:
+    """The stamped row's refusal reads the row: a node the flow is currently
+    RUNNING (under claim epoch 7) matches the resume's ``status = 'pending'``
+    gate with nothing, while the flow is alive, so the refusal must name the
+    node's status and claim — never "the flow died"."""
+    flow_id, node_id, hold_id = await _stamped_running_node(wf_conn, wf_pool, wf_schema)
+    verdict = await HitlClient(wf_pool, schema=wf_schema).resolve(
+        hold_id, {"verdict": "approve"}, principal="pin"
+    )
+    assert verdict.status == "refused", verdict
+    reason = verdict.reason or ""
+    assert "flow died" not in reason, reason
+    assert "'running'" in reason, reason
+    assert "claim epoch 7" in reason, reason
+    assert "its flow is 'running'" in reason, reason
+    assert str(node_id) in reason or "the node row is" in reason, reason
+    # the answer is recorded (the resolve CAS won) — the responder is told the
+    # truth: it stands, and the run resumes once the row is claimable.
+    delivered = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".wf_signals WHERE id = $1', hold_id
+    )
+    assert delivered == "delivered"
+    flow_status = await wf_conn.fetchval(
+        f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+    )
+    assert flow_status == "running", "the fixture's flow must be live"
+
+
+@pytest.mark.integration
+async def test_a_corrupt_flow_link_is_a_typed_refusal_not_a_cast_error(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+) -> None:
+    """A stamped node whose ``metadata.flow_id`` is malformed must refuse
+    typed. Both casts are fail-isolated: the hold→node lookup finds no node
+    (the door refuses before the resume), and the refusal's own row read
+    reports the node state with an unreadable flow — neither raises an
+    asyncpg cast error."""
+    from taskq.workflows.api._hitl import (
+        _resume_refusal_reason,  # pyright: ignore[reportPrivateUsage]  # Why: the refusal read is the unit under test (the only path that reads the flow link inside the refusal).
+    )
+
+    flow_id, node_id, hold_id = await _stamped_running_node(wf_conn, wf_pool, wf_schema)
+    # The schema's own expression index casts the flow link on every write
+    # (`jobs_wf_flow_nodes_idx`), so a malformed value is normally
+    # UNREPRESENTABLE. Drop it for the staging, then restore the row and the
+    # index in the `finally` — the corruption is the legacy/restored-backup
+    # shape every read-side guard exists for.
+    await wf_conn.execute(f'DROP INDEX IF EXISTS "{wf_schema}".jobs_wf_flow_nodes_idx')
+    try:
+        # The cohort check keeps `fairness_key` equal to `metadata.flow_id`:
+        # the corruption moves both, exactly as a bad writer would.
+        await wf_conn.execute(
+            f'UPDATE "{wf_schema}".jobs '
+            "SET metadata = jsonb_set(metadata, '{flow_id}', '\"not-a-uuid\"'::jsonb), "
+            "fairness_key = 'not-a-uuid' WHERE id = $1",
+            node_id,
+        )
+
+        # The public door: the stamped row's flow link no longer resolves, so
+        # the hold's node lookup finds nothing — the delivery is refused, not
+        # raised.
+        verdict = await HitlClient(wf_pool, schema=wf_schema).resolve(
+            hold_id, {"verdict": "approve"}, principal="pin"
+        )
+        assert verdict.status == "refused", verdict
+        assert "flow died" not in (verdict.reason or ""), verdict.reason
+
+        # The refusal's row read (the branch a found node reaches, via the
+        # helper directly — the lookup above cannot find this row): the CASE
+        # guard yields NULL for the malformed link and the message says so.
+        reason = await _resume_refusal_reason(wf_conn, wf_schema, str(node_id))
+        assert "not resumable" in reason, reason
+        assert "flow status is unreadable" in reason, reason
+        assert "flow died" not in reason, reason
+    finally:
+        await wf_conn.execute(
+            f'UPDATE "{wf_schema}".jobs '
+            "SET metadata = jsonb_set(metadata, '{flow_id}', to_jsonb($2::text)), "
+            "fairness_key = $2::text WHERE id = $1",
+            node_id,
+            str(flow_id),
+        )
+        await wf_conn.execute(
+            f'CREATE INDEX IF NOT EXISTS jobs_wf_flow_nodes_idx ON "{wf_schema}".jobs '
+            "(((metadata->>'flow_id')::uuid), status) "
+            "WHERE step_key IS NOT NULL AND metadata ? 'flow_id'"
+        )

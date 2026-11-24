@@ -312,13 +312,16 @@ async def _resume_refusal_reason(conn: ConnLike, schema: str, node_id: str | Non
     run. The held hold's answer is already committed and replays from the
     queue; the row simply is not claimable yet.
 
-    Only an absent row whose flow is absent/terminal (or a node on a terminal
-    flow) keeps the dead-flow wording — the shape the original message was
-    written for."""
+    The dead-flow wording survives only for a row that is GONE, or a node whose
+    flow is actually terminal — the shape the original message was written for.
+    A NULL flow status (a malformed/absent ``metadata.flow_id``, or a root row
+    that is gone) is not proof of death, so it reports the node's own state
+    instead: the cast is fail-isolated and never raises."""
     if node_id is None:
         return (
-            "the held node is not resumable (the hold's node row is not stamped "
-            "with it — the answer is recorded and stands)"
+            "the held node is not resumable (the hold's node row was not found by "
+            "its stamp — a cleared stamp, or a corrupted metadata.flow_id; the "
+            "answer is recorded and stands)"
         )
     row = await conn.fetchrow(
         _render(
@@ -328,21 +331,28 @@ async def _resume_refusal_reason(conn: ConnLike, schema: str, node_id: str | Non
             "f.status AS flow_status FROM {schema}.jobs j "
             "LEFT JOIN {schema}.jobs f ON f.id = CASE "
             "WHEN j.metadata->>'flow_id' ~* "
-            "'^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}$' "
+            "'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "
             "THEN (j.metadata->>'flow_id')::uuid END "
             "WHERE j.id = $1",
             schema,
         ),
         node_id,
     )
-    if row is None or row["flow_status"] is None or row["flow_status"] in TERMINAL_STATUSES:
+    if row is None:
+        return "the held node is not resumable (the flow died)"
+    flow_status = row["flow_status"]
+    if flow_status is not None and flow_status in TERMINAL_STATUSES:
         return "the held node is not resumable (the flow died)"
     node_status = str(row["node_status"])
+    flow_part = (
+        f"its flow is {flow_status!r}"
+        if flow_status is not None
+        else "its flow status is unreadable (metadata.flow_id)"
+    )
     return (
         f"the held node is not resumable (the node row is {node_status!r} under "
-        f"claim epoch {int(row['claim_epoch'])} while its flow is "
-        f"{row['flow_status']!r}; the answer is recorded and the run resumes "
-        "once the row is claimable)"
+        f"claim epoch {int(row['claim_epoch'])} while {flow_part}; the answer is "
+        "recorded and the run resumes once the row is claimable)"
     )
 
 
@@ -395,10 +405,15 @@ RETURNING id
 # the hold id the register stamped into the node's metadata — one hold, one
 # node. The pre-fix lookup matched `metadata ? 'hold'` alone, which every
 # holding sibling satisfied: a resolve woke an arbitrary one (the map siblings'
-# shared step key made the match ambiguous).
+# shared step key made the match ambiguous). The flow link's cast is
+# fail-isolated (the same CASE guard as `_resume_refusal_reason`): a corrupted
+# `metadata.flow_id` makes this lookup find NO node — a typed refusal — instead
+# of raising an asyncpg cast error on the deliver path.
 _HELD_NODE_BY_HOLD_SQL = """\
 SELECT id FROM {schema}.jobs WHERE step_key = $1 \
-AND (metadata->>'flow_id')::uuid = $2 \
+AND CASE WHEN (metadata->>'flow_id') ~*
+  '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  THEN (metadata->>'flow_id')::uuid END = $2::uuid \
 AND metadata->>'hold' = $3 \
 """
 

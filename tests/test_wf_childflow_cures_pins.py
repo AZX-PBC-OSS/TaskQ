@@ -158,7 +158,7 @@ async def _node_row(
     wf_conn: asyncpg.Connection, wf_schema: str, flow_id: JobId, step_key: str
 ) -> dict[str, Any]:
     row = await wf_conn.fetchrow(
-        f'SELECT id, status, metadata, error_class FROM "{wf_schema}".jobs '
+        f'SELECT id, status, attempt, metadata, error_class FROM "{wf_schema}".jobs '
         "WHERE step_key = $1 AND (metadata->>'flow_id')::uuid = $2",
         step_key,
         flow_id,
@@ -1071,4 +1071,61 @@ async def test_a_zero_claim_epoch_is_refused_by_the_spawn_slot_claim(
     with pytest.raises(WorkflowRunError) as refused:
         await ctx.spawn_flow(child_name, result=_MapLeaf)
     assert "claim_epoch" in str(refused.value), refused.value
+    assert await _spawn_keys(wf_conn, wf_schema, flow_id) == []
+
+
+async def test_a_bare_decimal_spawn_key_terminal_fails_on_attempt_one(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The reserved-key refusal is a DETERMINISTIC authoring failure: an
+    uncaught ``ctx.spawn_flow(..., key="0")`` terminal-fails the node on
+    attempt 1 with the typed class on the record, and the retry budget is
+    not burned (re-executing cannot change the key)."""
+    from taskq.workflows import SpawnKeyReservedError
+
+    suffix = new_uuid().hex[:12]
+    child_name = f"k5_child_{suffix}"
+
+    child_app = WorkflowApp()
+
+    @child_app.workflow(child_name)
+    def child() -> Promise[object]:
+        async def leaf(ctx: StepContext) -> _MapLeaf:
+            return _MapLeaf(n=1)
+
+        return build(step(leaf, key="leaf"))
+
+    child_app.get(child_name)
+
+    async def unguarded(ctx: StepContext) -> int:
+        await ctx.spawn_flow(child_name, result=_MapLeaf, key="0")
+        return 0
+
+    parent_app = WorkflowApp()
+
+    @parent_app.workflow(f"k5_parent_{suffix}")
+    def flow() -> Promise[object]:
+        return build(step(unguarded, key="wrap", max_attempts=3))
+
+    runner = FlowRunner(parent_app.get(f"k5_parent_{suffix}"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id, until="terminal", max_ticks=100) == "terminal"
+
+    node = await _node_row(wf_conn, wf_schema, flow_id, "wrap")
+    assert (node["status"], node["attempt"], node["error_class"]) == (
+        "failed",
+        1,
+        "SpawnKeyReservedError",
+    ), (node["status"], node["attempt"], node["error_class"])
+    assert issubclass(SpawnKeyReservedError, ValueError)
+    ledger = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 AND step_key = $2',
+        flow_id,
+        "wrap",
+    )
+    assert ledger == 1, (
+        f"the deterministic refusal burned {ledger} ledger attempts (expected 1): "
+        "a retryable classification spends the max_attempts=3 budget on a defect "
+        "re-running cannot fix"
+    )
     assert await _spawn_keys(wf_conn, wf_schema, flow_id) == []

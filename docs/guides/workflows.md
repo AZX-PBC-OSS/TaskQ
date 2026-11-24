@@ -2046,8 +2046,10 @@ iteration: a constant key in a loop body names ONE child, which every
 iteration adopts, so a body that wants a child per iteration puts the
 iteration in its key. `key=` may not be a bare decimal string (`"0"`,
 `"12"`): that spelling is the default key's slot segment, so the spawn
-refuses it (`ValueError`) rather than let a numeric key alias the node's
-first unkeyed spawn. Upgrading from a release whose loop iterations
+refuses it with the typed `SpawnKeyReservedError` (a `ValueError`; a
+deterministic authoring failure, so an uncaught one terminal-fails the node
+on attempt 1) rather than let a numeric key alias the node's first unkeyed
+spawn. Upgrading from a release whose loop iterations
 shared the cursor: an iteration that spawned unkeyed under the old
 release and runs again after the upgrade (a deferral, a hold or join
 resume, a reclaim; iteration 0 too) derives the new key and mints its
@@ -3024,12 +3026,14 @@ same claim-time resolution — the pin covers the second):
 
 - **A run mid-LOOP**: the iteration's body re-resolves at the resume —
   the next iteration (and the resumed one) runs the NEW code. If the body
-  SPAWNS, the iteration's unkeyed child run keys are derived by whichever
-  release executes the iteration (§3b's per-iteration key and the spawn-key
-  upgrade note in [Upgrading](upgrading.md)): an iteration that re-runs
-  across the redeploy can mint its unkeyed children once more. Drain the
-  run, or cancel-and-restart it, when a duplicated child side effect is
-  unacceptable — this section's two escape hatches are the same rule.
+  SPAWNS, the iteration's (or map item's) unkeyed child run keys are derived
+  by whichever release executes it — the loop body's `<key>.iter<i>` and the
+  map item's `<key>.item<m>` (§3b's per-iteration/per-item key, and the
+  spawn-key upgrade note in [Upgrading](upgrading.md)). An iteration or item
+  that re-runs across the redeploy can mint its unkeyed children once more.
+  Drain the run, or cancel-and-restart it, when a duplicated child side
+  effect is unacceptable — this section's two escape hatches are the same
+  rule.
 - **A run mid-WAIT**: the timer's wake or the human
   delivery's resume re-enters the NEW body — a wake is a resume like
   any other, and the claim-time resolution is the only body source.

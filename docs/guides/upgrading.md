@@ -1293,12 +1293,13 @@ raises, so nothing points you at the call site; audit for them explicitly.
 
   ```sql
   -- rows the previous release left mid-spawn (the old cursor key family)
-  SELECT id, step_key, metadata->>'flow_id' AS flow_id
+  SELECT id, step_key, status, metadata->>'flow_id' AS flow_id
   FROM jobs
   WHERE step_key <> '__flow__'
+    AND status IN ('pending', 'scheduled', 'running')
     AND EXISTS (
       SELECT 1 FROM jsonb_object_keys(metadata) AS k
-      WHERE k LIKE 'spawn_cursor_%'
+      WHERE starts_with(k, 'spawn_cursor_')
     );
   ```
 
@@ -1309,10 +1310,13 @@ raises, so nothing points you at the call site; audit for them explicitly.
   `key=str(i)` and any all-digit key reproduced the default run key's slot
   segment byte for byte, so a numeric key silently aliased the node's first
   unkeyed spawn (a plain node with two spawn sites handed one caller the
-  other's child). The spawn now raises `ValueError` naming the fix; every
-  non-decimal key keeps its byte-identical run key, so only a caller that was
-  already colliding observes the change. Rename the key (`f"item-{i}"`) or
-  drop `key=` to use the slot.
+  other's child). The spawn now raises `SpawnKeyReservedError` (a
+  `ValueError` subclass, so callers that guarded the older shape keep
+  working) naming the fix; every non-decimal key keeps its byte-identical run
+  key, so only a caller that was already colliding observes the change. The
+  refusal is DETERMINISTIC — an uncaught one terminal-fails the node on
+  attempt 1 without burning the retry budget. Rename the key
+  (`f"item-{i}"`) or drop `key=` to use the slot.
 
 ### Terminal outcome writes raise on drift instead of falling through silently
 

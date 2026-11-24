@@ -95,7 +95,11 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
     predicate and the terminal's own record-class helper consume (one
     truth, never a second spelling to drift)."""
     from taskq.exceptions import ReservedTimerNamespaceError
-    from taskq.workflows._childflow import ChildFlowLostError, SpawnDepthExceededError
+    from taskq.workflows._childflow import (
+        ChildFlowLostError,
+        SpawnDepthExceededError,
+        SpawnKeyReservedError,
+    )
     from taskq.workflows._emit import (
         EmitCapacityCorruptionError,
         EmitReservationExceededError,
@@ -117,6 +121,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         FanInBoundExceededError,
         ReservedTimerNamespaceError,
         SpawnDepthExceededError,
+        SpawnKeyReservedError,
         ChildFlowLostError,
         VanishedNodeError,
     )

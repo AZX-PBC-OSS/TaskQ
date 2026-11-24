@@ -109,6 +109,7 @@ __all__ = [
     "ChildOk",
     "ChildOutcome",
     "ChildWorkflowUnknownError",
+    "SpawnKeyReservedError",
 ]
 
 from taskq.workflows.api._hitl import CHILD_JOIN_SIGNAL_PREFIX
@@ -162,6 +163,22 @@ class SpawnDepthExceededError(ValueError):
     never burns; the node terminal-fails with this class on the record.
     The remedy: bound the fan-out (raise ``max_depth=`` at the spawn
     site, or flatten the recursion into a loop over a ledgered step)."""
+
+
+class SpawnKeyReservedError(ValueError):
+    """``ctx.spawn_flow(key=...)`` named a BARE DECIMAL string (``"0"``,
+    ``"12"``) — a spelling the unkeyed derivation owns as its slot segment.
+
+    The keyed run key ``childflow:{flow}:{node}:{key}`` and the unkeyed
+    ``childflow:{flow}:{node}:{int(slot)}`` are one string for such a key,
+    so it would alias the node's first unkeyed spawn (or a numeric keyed
+    site's) and hand a caller another site's child. A DETERMINISTIC
+    authoring failure (the ladder's routing never burns a retry):
+    re-executing cannot change the key, so the node terminal-fails with
+    this class on the record. ``ValueError``'s subclass, so a caller that
+    only guarded the older refusal shape keeps working. The remedy: give
+    the key an unmistakable shape (``f"item-{i}"``) or drop ``key=`` to use
+    the slot."""
 
 
 #: the ancestor chain the spawn walks is bounded here; a deeper fan-out is the
@@ -566,7 +583,7 @@ class CtxSpawnOps(_SpawnHost):
             # the slot segment. A bare decimal key is refused because it WOULD
             # be that segment.
             if _BARE_DECIMAL_KEY_RE.fullmatch(key):
-                raise ValueError(
+                raise SpawnKeyReservedError(
                     f"spawn key {key!r} on node {self.node_key!r} is a bare decimal "
                     "string — the unkeyed run key's slot segment is exactly that "
                     "spelling, so this key would alias the node's first unkeyed "

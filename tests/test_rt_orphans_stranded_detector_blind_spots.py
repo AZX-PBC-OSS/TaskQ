@@ -777,7 +777,12 @@ async def _seed_third_leg_estate(conn: asyncpg.Connection, schema: str) -> dict[
     * an ordinary no_actor_config row and an ordinary unserved_queue row
       (the two existing legs, un-degraded);
     * a workflow row whose root IS present (the negative direction: a
-      served workflow row never enters the new leg)."""
+      served workflow row never enters the new leg).
+
+    The detector's fourth dispatch-invisible leg, stamp_unresolved (a dead
+    ``metadata.hold`` stamp the reconcile repairs), is another estate's:
+    every row here is otherwise routable or root-conditioned, so none
+    classifies under it — this fixture stays exact."""
     await conn.execute(
         f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
         _ACTOR_PRESENT,

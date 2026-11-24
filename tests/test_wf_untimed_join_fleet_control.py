@@ -828,6 +828,27 @@ async def test_a_stale_writer_sharing_the_attempt_never_collapses_the_live_claim
     )
     assert meta.get("spawn_slot_1") == {"epoch": 2, "n": 2}
 
+    # WHAT THE NEXT CLAIM ADOPTS is the documented price of the forward-only
+    # rule: an epoch-3 re-run resets the counter to 0 and walks the slots in
+    # ARRIVAL order across the writers that took them — slot 0 is s1 (which
+    # l1 adopted), slot 1 is the STALE body's second child s2, slot 2 is the
+    # live claim's l2. Its second LOGICAL spawn therefore adopts s2, a child
+    # from another execution; the guide states this and prescribes `key=` for
+    # a fan-out that must stay stable across resumes.
+    rerun = ctx_at(3)
+    r1 = await rerun.spawn_flow(child_name, result=_Leaf)  # logical #1 -> slot 0
+    r2 = await rerun.spawn_flow(child_name, result=_Leaf)  # logical #2 -> slot 1
+    assert r1.flow_id == s1.flow_id
+    assert r2.flow_id == s2.flow_id and r2.flow_id != l2.flow_id, (
+        "the epoch-3 re-run's second logical spawn should take slot 1 (the stale "
+        f"body's first child s2={s2.flow_id}); got {r2.flow_id} "
+        f"(live #2 l2={l2.flow_id}). The slot index is the ARRIVAL order across "
+        "every writer of the key, so a re-run's logical #2 adopts another "
+        "execution's child — the documented rule a stable fan-out avoids with key="
+    )
+    meta = _meta((await _wrap(wf_conn, wf_schema, flow_id))["metadata"])
+    assert meta.get("spawn_slot_1") == {"epoch": 3, "n": 1}
+
 
 @pytest.mark.integration
 async def test_a_delivery_inside_the_reentry_window_is_repaired_by_the_reconcile(
