@@ -69,7 +69,7 @@ from taskq.workflows._capability import (
     postgres_capability_error,
     validate_required_worker_schema,
 )
-from taskq.workflows._emit import EmitBackpressure
+from taskq.workflows._emit import EmitBackpressure, MapIndexExhaustedError
 from taskq.workflows._obs import (
     finish_step_span,
     record_step_deferred,
@@ -1407,6 +1407,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # the tail's — below — and returns before the miss finalize reads
         # this).
         result: dict[str, object] | None = None
+        collected: list[object] | None = None  # the join's full pack before the cap (#744)
         logical_attempt = attempt
         if node is not None and node.kind == "chain_source":
             from taskq.workflows.api._attempt import resolve_source_logical_attempt
@@ -1522,6 +1523,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # __truncated__ marker, the detail on the child
                 # rows). Under the cap: byte-identical.
                 result = _bounded_collect(parents_values)
+                collected = parents_values
             else:
                 deps_tail = self._deps_tail(body, len(args))
                 deadline_s = self._body_deadline_seconds(row)
@@ -1805,10 +1807,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # wrapper, the fan-in bound's exceed escaped the ladder's boundary,
             # the finalize tx rolled back, and the reclaim re-crashed the node
             # forever (the wedge the finding named). The typed
-            # FanInBoundExceededError is a deterministic authoring failure: the
-            # ladder's deterministic route terminal-fails it on the first
-            # attempt, the error class on the record — the reclaim path heals
-            # or fails named, never wedges.
+            # FanInBoundExceededError and the fork's MapIndexExhaustedError
+            # are deterministic authoring failures: the ladder's deterministic
+            # route terminal-fails them on the first attempt, the error class
+            # on the record — the reclaim path heals or fails named, never
+            # wedges.
             try:
                 final = await self._finalize_success(
                     flow_id,
@@ -1821,8 +1824,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     run_priority=run_priority,
                     ledger_id=ledger_id,
                     ledger_claimed_at=ledger_claimed_at,
+                    collected=collected,
                 )
-            except FanInBoundExceededError as exc:
+            except (FanInBoundExceededError, MapIndexExhaustedError) as exc:
                 await emitter.aclose()
                 route = await self._ladder_or_fail(
                     flow_id,
@@ -2171,6 +2175,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         run_priority: int | None = None,
         ledger_id: JobId | None = None,
         ledger_claimed_at: Any = None,
+        collected: list[object] | None = None,
     ) -> FinalizeResult:
         """The success finalize (the fenced terminal + the ledger row +
         the fork): the FinalizeResult is RETURNED now — the
@@ -2178,10 +2183,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         merge both key on ``applied`` (a fenced write is a zombie's,
         never a terminal-succeeded). ``run_priority`` threads the RUN's
         per-call override into the fork build (the priority surface —
-        the map's children resolve it as the law's first level)."""
+        the map's children resolve it as the law's first level).
+        ``collected`` is the body-less join's full pack, which the map
+        fork reads in place of the capped envelope."""
         fork: ForkSpec | None = None
         if node is not None and node.map_item is not None:
-            fork = self._map_fork(row, node, result, run_priority=run_priority)
+            # the fork covers every item the join packed, never the capped row's prefix (#744)
+            fork_source: dict[str, object] | None = (
+                {"value": collected} if collected is not None else result
+            )
+            fork = self._map_fork(row, node, fork_source, run_priority=run_priority)
         elif node is not None and node.map_arms is not None and prebuilt_route_fork is not None:
             # the typed route's fork — built at the body path from
             # the live elements (the arm dispatch reads the element's

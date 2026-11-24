@@ -166,6 +166,12 @@ above.
 | lease and sweep deadlines | worker clock skew | the comparisons are server-side (`clock_timestamp()`); the same clock that stamped the lease judges it | `test_heartbeat.py` (the gated statement's server-side threshold), `test_rt_sweeps_*` |
 | harness seed aging | timing-sensitive choreography | seeds anchor to the PG clock instead of wall-clock sleeps | the sweep pins' seeding discipline |
 
+## 11. Workflow join collects
+
+| seam / caller | interleaving | invariant | pin |
+|---|---|---|---|
+| the join's bounded collect (`_bounded_collect` in `workflows/api/_runner.py`), callers: the consumer decode (`_decode_with_detail`, from `_parent_results` and `result()`), the map fork (`_execute_claimed_tail` threads the join's pack to `_finalize_success`, then `_map_fork`) | the collect is over 64 KiB, so the join row holds a truncated envelope | the row stays bounded; the fork reads the join's pack, never the row's prefix; the fan-in bound and the `map_index` ceiling count the true total and terminal-fail the source node by name through the ladder | `test_wf_finalize_pins.py::test_pin_fanin_envelope_within_the_estate_result_cap`, `::test_pin_fanin_truncated_envelope_unwraps_at_the_consumer_decode`, `::test_pin_map_on_truncated_join_forks_every_collected_item`, `::test_pin_map_on_truncated_gather_forks_every_flattened_item`, `::test_pin_map_on_gather_of_truncated_joins_forks_every_item`, `::test_pin_map_on_truncated_gather_counts_the_true_total_against_the_fan_in_bound`, `::test_pin_child_driven_map_on_truncated_gather_forks_every_item_past_the_bound`, `::test_pin_map_on_gather_past_the_map_index_ceiling_fails_by_name`, `::test_pin_map_source_past_the_map_index_ceiling_fails_by_name` |
+
 ## What remains open
 
 Four rows read "no pin": the `resolve_claim`/`mark_claimed` bare-id intent

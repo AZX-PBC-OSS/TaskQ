@@ -781,3 +781,401 @@ async def test_pin_fanin_truncated_envelope_unwraps_at_the_consumer_decode(
         "swallowed by the decode's unwrap"
     )
     assert int(receipt["count"]) == 700 - spelled, receipt
+
+
+# ── #744: a map placed DIRECTLY on a truncated join forks every item ────
+# (the F4 read side's fork face: the consumer's decode re-reads the full
+# collect off the child rows; a second map_source on the join is the other
+# reader of the same envelope. Module-level bodies for the body-hints walk.)
+
+
+class _MjSeedsIn(BaseModel):
+    seeds: int = 10
+    n: int = 200
+    size: int = 100
+    offset: int = 0
+
+
+async def _mj_seeds(ctx: Any, params: _MjSeedsIn) -> list[dict[str, int]]:
+    seeds = range(params.offset, params.offset + params.seeds)
+    return [{"seed": s, "n": params.n, "size": params.size} for s in seeds]
+
+
+async def _mj_expand(ctx: Any, seed: dict[str, int]) -> list[str]:
+    # ~20 KB per child: ten of them overflow the join's 64 KiB envelope.
+    return [f"s{seed['seed']}-{k:05d}-".ljust(seed["size"], "x") for k in range(seed["n"])]
+
+
+async def _mj_ident(ctx: Any, x: list[str]) -> list[str]:
+    return x
+
+
+async def _mj_count(ctx: Any, xs: list[list[str]]) -> dict[str, int]:
+    return {"n_received": len(xs), "n_flat": sum(len(x) for x in xs)}
+
+
+async def _mj_results(pool: asyncpg.Pool, schema: str, flow_id: Any, step_key: str) -> list[Any]:
+    """The step's raw result envelopes in ``map_index`` order, flow-scoped
+    (the module's schema is shared, and ``gather`` takes no key)."""
+    # S608 is per-file-ignored for this pack (the fixture's schema identifier).
+    rows = await pool.fetch(
+        f'SELECT result FROM "{schema}".jobs '
+        "WHERE step_key = $1 AND (metadata->>'flow_id')::uuid = $2 ORDER BY map_index",
+        step_key,
+        flow_id,
+    )
+    return [json.loads(r["result"]) if isinstance(r["result"], str) else r["result"] for r in rows]
+
+
+def _mj_fingerprints(children: list[Any]) -> list[tuple[str, int]]:
+    # each _mj_ident child's list, named by its first item's stem and its length.
+    return [(doc["value"][0].rstrip("x"), len(doc["value"])) for doc in children]
+
+
+def _mj_truncated(doc: Any) -> int:
+    return int(doc.get("__truncated__", 0)) if isinstance(doc, dict) else 0
+
+
+@pytest.mark.integration
+async def test_pin_map_on_truncated_join_forks_every_collected_item(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """#744: ``map_source`` wired directly on a map's join. The join's
+    envelope is bounded (``_bounded_collect`` keeps the prefix that fits
+    under ``FANIN_FAILURES_BYTE_CAP`` and counts the rest in
+    ``__truncated__``); the full collect lives on the child rows. The
+    consumer decode honours that (the pin above). The nested map's fork
+    must too: it forks one child per item the join COLLECTED, never one
+    per item the bounded row still spells. The pre-fix fork read
+    ``result["value"]`` and forked the kept prefix (3 of 10 here) while
+    the run still ended succeeded."""
+    import taskq.workflows as wf
+    from taskq.workflows import Promise, WorkflowApp, build, map_source, step
+
+    app = WorkflowApp()
+
+    @app.workflow("map_on_truncated_join")
+    def map_on_truncated_join() -> Promise[object]:
+        first = map_source(step(_mj_seeds, _MjSeedsIn(), key="seeds"), _mj_expand)
+        return build(step(_mj_count, map_source(first, _mj_ident), key="final"))
+
+    result = await wf.run(app.get("map_on_truncated_join"), wf_pool, wf_schema)
+    async with wf_pool.acquire() as conn:
+        # S608 is per-file-ignored for this pack (the schema identifier is
+        # the fixture's own settings-validated identifier; values $-bound).
+        join_raw = await conn.fetchval(
+            f'SELECT result FROM "{wf_schema}".jobs '
+            "WHERE step_key = 'seeds.join' AND (metadata->>'flow_id')::uuid = $1",
+            result.flow_id,
+        )
+        forked = await conn.fetchval(
+            f'SELECT count(*) FROM "{wf_schema}".jobs '
+            "WHERE step_key = 'seeds.join.item' AND (metadata->>'flow_id')::uuid = $1",
+            result.flow_id,
+        )
+    join_doc: Any = json.loads(join_raw) if isinstance(join_raw, str) else join_raw
+    # the precondition: the source join's row IS the truncated envelope.
+    assert isinstance(join_doc, dict) and int(join_doc.get("__truncated__", 0)) > 0, (
+        f"the fixture must overflow the join's envelope cap: {str(join_doc)[:200]}"
+    )
+    spelled = len(join_doc["value"])
+    assert int(forked) == 10, (
+        f"the map on the join forked {forked} children for 10 collected "
+        f"items (the bounded row spells {spelled}, __truncated__="
+        f"{join_doc['__truncated__']}): the fork read the kept prefix, "
+        "not the full collect on the child rows"
+    )
+    # identity and order: child k carries the join's k-th item (ORDER BY p.id).
+    children = await _mj_results(wf_pool, wf_schema, result.flow_id, "seeds.join.item")
+    assert _mj_fingerprints(children) == [(f"s{s}-00000-", 200) for s in range(10)]
+    assert result.outcome == "terminal", result
+    assert result.result == {"n_received": 10, "n_flat": 2000}, result.result
+
+
+class _MjSideIn(BaseModel):
+    tag: str
+    n: int
+
+
+async def _mj_side(ctx: Any, params: _MjSideIn) -> list[str]:
+    return [f"{params.tag}-{k:05d}-".ljust(100, "x") for k in range(params.n)]
+
+
+async def _mj_head(ctx: Any, x: str) -> str:
+    return x[:8]
+
+
+async def _mj_len(ctx: Any, xs: list[str]) -> int:
+    return len(xs)
+
+
+def _mj_heads(n: int) -> list[str]:
+    # the gather's flatten of two _mj_side lists: wiring order, then item order.
+    return [f"{tag}-{k:05d}-" for tag in ("a", "b") for k in range(n)]
+
+
+@pytest.mark.integration
+async def test_pin_map_on_truncated_gather_forks_every_flattened_item(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """#744, the gather face: ``gather`` packs through the same bounded
+    collect (flattening one level when every parent returned a list), so
+    a map wired directly on it reads the same capped envelope. 2 x 400
+    ~100-byte strings overflow the cap; the fork must cover all 800
+    flattened items (the pre-fix fork covered the kept prefix)."""
+    import taskq.workflows as wf
+    from taskq.workflows import Promise, WorkflowApp, build, gather, map_source, step
+
+    app = WorkflowApp()
+
+    @app.workflow("map_on_truncated_gather")
+    def map_on_truncated_gather() -> Promise[object]:
+        both = gather(
+            [
+                step(_mj_side, _MjSideIn(tag="a", n=400), key="a"),
+                step(_mj_side, _MjSideIn(tag="b", n=400), key="b"),
+            ]
+        )
+        return build(step(_mj_len, map_source(both, _mj_head), key="final"))
+
+    result = await wf.run(app.get("map_on_truncated_gather"), wf_pool, wf_schema)
+    (gather_doc,) = await _mj_results(wf_pool, wf_schema, result.flow_id, "gather")
+    assert _mj_truncated(gather_doc) > 0, "the fixture must overflow the gather's envelope cap"
+    children = await _mj_results(wf_pool, wf_schema, result.flow_id, "gather.item")
+    forked = len(children)
+    assert forked == 800, f"the map on the gather forked {forked} of 800 flattened items"
+    assert [doc["value"] for doc in children] == _mj_heads(400)
+    assert result.outcome == "terminal", result
+    assert result.result == 800, result.result
+
+
+@pytest.mark.integration
+async def test_pin_map_on_gather_of_truncated_joins_forks_every_item(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """#744, the nested face: a gather over two truncated map joins
+    collects 20 items (its own pack re-reads each truncated parent off
+    the child rows), and its row is truncated again. The fork over it
+    must see all 20 — the list the gather packed, never the gather row's
+    prefix nor a one-level re-read of the parents' (themselves capped)
+    rows."""
+    import taskq.workflows as wf
+    from taskq.workflows import Promise, WorkflowApp, build, gather, map_source, step
+
+    app = WorkflowApp()
+
+    @app.workflow("map_on_gather_of_truncated_joins")
+    def map_on_gather_of_truncated_joins() -> Promise[object]:
+        m1 = map_source(step(_mj_seeds, _MjSeedsIn(), key="s1"), _mj_expand)
+        m2 = map_source(step(_mj_seeds, _MjSeedsIn(offset=10), key="s2"), _mj_expand)
+        return build(step(_mj_count, map_source(gather([m1, m2]), _mj_ident), key="final"))
+
+    result = await wf.run(app.get("map_on_gather_of_truncated_joins"), wf_pool, wf_schema)
+    for key in ("s1.join", "s2.join", "gather"):
+        (doc,) = await _mj_results(wf_pool, wf_schema, result.flow_id, key)
+        assert _mj_truncated(doc) > 0, f"the fixture must overflow {key}'s envelope cap"
+    children = await _mj_results(wf_pool, wf_schema, result.flow_id, "gather.item")
+    forked = len(children)
+    assert forked == 20, f"the map on the gather forked {forked} of 20 collected items"
+    # s1's ten seeds, then s2's ten (the gather's wiring order).
+    assert _mj_fingerprints(children) == [(f"s{s}-00000-", 200) for s in range(20)]
+    assert result.outcome == "terminal", result
+    assert result.result == {"n_received": 20, "n_flat": 4000}, result.result
+
+
+# ── #744: the fork's bounds count the TRUE total, refused by name ───────
+# (the fan-in bound and the map_index ceiling run on the list the fork
+# reads, so a fork over the full pack can newly cross them; both must
+# terminal-fail the source node through the ladder, never escape it.)
+
+
+async def _mj_node(pool: asyncpg.Pool, schema: str, flow_key: str, step_key: str) -> Any:
+    """``step_key``'s row in the run that owns the (test-unique) ``flow_key``
+    step: a failed run raises out of ``wf.run`` before it hands back a flow id."""
+    # S608 is per-file-ignored for this pack (the fixture's schema identifier).
+    return await pool.fetchrow(
+        f"SELECT j.status::text AS status, j.error_class, j.attempt, "
+        f"(SELECT count(*) FROM \"{schema}\".jobs c WHERE c.step_key = j.step_key || '.item' "
+        "AND c.metadata->>'flow_id' = j.metadata->>'flow_id') AS forked "
+        f"FROM \"{schema}\".jobs j WHERE j.step_key = $2 AND j.metadata->>'flow_id' = "
+        f"(SELECT metadata->>'flow_id' FROM \"{schema}\".jobs WHERE step_key = $1)",
+        flow_key,
+        step_key,
+    )
+
+
+@pytest.mark.integration
+async def test_pin_map_on_truncated_gather_counts_the_true_total_against_the_fan_in_bound(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """#744: 2 x 600 ~100-byte strings — the gather packs 1200, its row
+    spells 634. The fork counts the 1200 against ``MAX_FAN_IN_PER_JOIN``
+    and the gather terminal-fails by name on attempt 1, the refused fork
+    landing nothing. The pre-fix fork saw the 634 prefix, passed the
+    bound and the run succeeded on partial data."""
+    import taskq.workflows as wf
+    from taskq.workflows import (
+        Promise,
+        WorkflowApp,
+        WorkflowRunError,
+        build,
+        gather,
+        map_source,
+        step,
+    )
+
+    app = WorkflowApp()
+
+    @app.workflow("map_on_gather_over_the_fan_in_bound")
+    def map_on_gather_over_the_fan_in_bound() -> Promise[object]:
+        both = gather(
+            [
+                step(_mj_side, _MjSideIn(tag="a", n=600), key="bound_a"),
+                step(_mj_side, _MjSideIn(tag="b", n=600), key="bound_b"),
+            ]
+        )
+        return build(step(_mj_len, map_source(both, _mj_head), key="final"))
+
+    with pytest.raises(
+        WorkflowRunError,
+        match=r"node 'gather' terminal-failed: \[FanInBoundExceededError\] "
+        r"join 'gather\.join' fans in 1200 children",
+    ):
+        await wf.run(app.get("map_on_gather_over_the_fan_in_bound"), wf_pool, wf_schema)
+    node = await _mj_node(wf_pool, wf_schema, "bound_a", "gather")
+    assert node is not None
+    assert (node["status"], node["error_class"], node["attempt"], node["forked"]) == (
+        "failed",
+        "FanInBoundExceededError",
+        1,
+        0,
+    ), dict(node)
+
+
+@pytest.mark.integration
+async def test_pin_child_driven_map_on_truncated_gather_forks_every_item_past_the_bound(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """#744, the bound's escape: the same 2 x 600 gather with
+    ``child_driven=True`` on the nested map forks all 1200 items and
+    succeeds (the pre-fix fork covered the 634-item prefix)."""
+    import taskq.workflows as wf
+    from taskq.workflows import Promise, WorkflowApp, build, gather, map_source, step
+
+    app = WorkflowApp()
+
+    @app.workflow("child_driven_map_on_truncated_gather")
+    def child_driven_map_on_truncated_gather() -> Promise[object]:
+        both = gather(
+            [
+                step(_mj_side, _MjSideIn(tag="a", n=600), key="cd_a"),
+                step(_mj_side, _MjSideIn(tag="b", n=600), key="cd_b"),
+            ]
+        )
+        mapped = map_source(both, _mj_head, child_driven=True)
+        return build(step(_mj_len, mapped, key="final"))
+
+    result = await wf.run(app.get("child_driven_map_on_truncated_gather"), wf_pool, wf_schema)
+    (gather_doc,) = await _mj_results(wf_pool, wf_schema, result.flow_id, "gather")
+    assert _mj_truncated(gather_doc) > 0, "the fixture must overflow the gather's envelope cap"
+    children = await _mj_results(wf_pool, wf_schema, result.flow_id, "gather.item")
+    assert len(children) == 1200, f"the child-driven map forked {len(children)} of 1200"
+    assert [doc["value"] for doc in children] == _mj_heads(600)
+    assert result.outcome == "terminal", result
+    assert result.result == 1200, result.result
+
+
+async def _mj_ints(ctx: Any) -> list[int]:
+    return list(range(1000))
+
+
+async def _mj_too_many(ctx: Any) -> list[int]:
+    return [k % 10 for k in range(32769)]
+
+
+async def _mj_int(ctx: Any, x: int) -> int:
+    return x
+
+
+@pytest.mark.integration
+async def test_pin_map_on_gather_past_the_map_index_ceiling_fails_by_name(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """#744: 34 x 1000 small ints — the gather packs 34,000, past the
+    ``map_index`` smallint ceiling. The fork's ``MapIndexExhaustedError``
+    terminal-fails the gather by name on attempt 1 through the ladder;
+    unrouted, it escaped ``wf.run`` raw and left the gather row running
+    (a reclaim-and-re-crash wedge on a worker). The pre-fix fork saw
+    the row's prefix and failed the fan-in bound instead."""
+    import taskq.workflows as wf
+    from taskq.workflows import (
+        Promise,
+        WorkflowApp,
+        WorkflowRunError,
+        build,
+        gather,
+        map_source,
+        step,
+    )
+
+    app = WorkflowApp()
+
+    @app.workflow("map_on_gather_past_the_map_index_ceiling")
+    def map_on_gather_past_the_map_index_ceiling() -> Promise[object]:
+        ints = gather([step(_mj_ints, key=f"ceil_{k}") for k in range(34)])
+        return build(map_source(ints, _mj_int))
+
+    with pytest.raises(
+        WorkflowRunError,
+        match=r"node 'gather' terminal-failed: \[MapIndexExhaustedError\] "
+        r"the map source 'gather' returned 34000 items",
+    ):
+        await wf.run(app.get("map_on_gather_past_the_map_index_ceiling"), wf_pool, wf_schema)
+    node = await _mj_node(wf_pool, wf_schema, "ceil_0", "gather")
+    assert node is not None
+    assert (node["status"], node["error_class"], node["attempt"], node["forked"]) == (
+        "failed",
+        "MapIndexExhaustedError",
+        1,
+        0,
+    ), dict(node)
+
+
+@pytest.mark.integration
+async def test_pin_map_source_past_the_map_index_ceiling_fails_by_name(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """#744, the same route's body face: a step returning 32,769 items to
+    its own map terminal-fails by name on attempt 1. Before the route it
+    raised ``MapIndexExhaustedError`` raw out of ``wf.run`` with the
+    source row left running."""
+    import taskq.workflows as wf
+    from taskq.workflows import Promise, WorkflowApp, WorkflowRunError, build, map_source, step
+
+    app = WorkflowApp()
+
+    @app.workflow("map_source_past_the_map_index_ceiling")
+    def map_source_past_the_map_index_ceiling() -> Promise[object]:
+        return build(map_source(step(_mj_too_many, key="ceil_src"), _mj_int))
+
+    with pytest.raises(
+        WorkflowRunError,
+        match=r"node 'ceil_src' terminal-failed: \[MapIndexExhaustedError\] "
+        r"the map source 'ceil_src' returned 32769 items",
+    ):
+        await wf.run(app.get("map_source_past_the_map_index_ceiling"), wf_pool, wf_schema)
+    node = await _mj_node(wf_pool, wf_schema, "ceil_src", "ceil_src")
+    assert node is not None
+    assert (node["status"], node["error_class"], node["attempt"], node["forked"]) == (
+        "failed",
+        "MapIndexExhaustedError",
+        1,
+        0,
+    ), dict(node)

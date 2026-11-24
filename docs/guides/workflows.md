@@ -228,7 +228,13 @@ alternative. The refusal's class is
 DETERMINISTIC authoring failure (the run record carries
 `error_class='FanInBoundExceededError'`, the retry ladder never burns —
 re-running cannot shrink the corpus), and its message carries the
-remedy: the child-driven escape below, or partition the map.
+remedy: the child-driven escape below, or partition the map. A map wired
+on a join or `gather` counts the true item count, not the prefix the
+join row spells under the size cap (below): past 1000 items it
+terminal-fails `FanInBoundExceededError` unless the map declares
+`child_driven=True`, and past 32,768 items it terminal-fails
+`MapIndexExhaustedError`, which `child_driven` does not lift (partition
+the source).
 
 THE HONEST DERIVATION (never a line through points that
 don't share one): the three measured points — 200 → 14.9 ms, 1000 →
@@ -362,7 +368,14 @@ compacts the row to the bounded summary (the `"__truncated__": N` marker
 counting the items no longer spelled + the ledger pointer); the FULL
 detail stays on the ledger/attempts — the record never loses it. The
 compacted row stays bounded forever (a later append increments the
-marker).
+marker). The collected result envelope of a map join or `gather` follows
+the same 64 KiB cap: past it the row keeps the prefix that fits,
+`__truncated__: N` and a `detail_home` pointer, and the full collect
+stays on the child rows. A map wired directly on the join forks one
+child per item the join packed, and a consumer step's argument re-reads
+the child rows. Both reads go one level deep: a consumer over a `gather`
+of truncated map joins, and either read over a `gather` whose parent is
+a truncated `gather`, still sees a prefix.
 
 ## The three cancel legs
 
