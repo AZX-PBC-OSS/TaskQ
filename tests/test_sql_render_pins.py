@@ -17,9 +17,18 @@ progress flush. The pins hold the contracts the unification owes:
   on every call — the cache never serves an unvalidated render.
 """
 
+import re
+
 import pytest
 
 from taskq._sql_render import render
+from taskq.backend._dispatch_sql import (
+    DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL,
+    DISPATCH_CLAIMABLE_PROBE_SQL,
+    DISPATCH_ROUND_ROBIN_SQL,
+    DISPATCH_STRICT_FIFO_CURSOR_SQL,
+    DISPATCH_STRICT_FIFO_SQL,
+)
 from taskq.progress._flush import _FLUSH_UPDATE_SQL, _flush_update_sql
 from taskq.worker.cron_loop import (
     CRON_DUE_SQL_TEMPLATE,
@@ -128,6 +137,35 @@ def test_bundle_render_is_the_direct_substitution() -> None:
             .replace("}}", "}")
         )
         assert WorkflowSql.build(schema).ledger_terminal_by_id == expected
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [DISPATCH_STRICT_FIFO_SQL, DISPATCH_STRICT_FIFO_CURSOR_SQL, DISPATCH_ROUND_ROBIN_SQL],
+    ids=["strict_fifo", "strict_fifo_cursor", "round_robin"],
+)
+def test_every_dispatch_fence_render_refuses_a_stamped_row(sql: str) -> None:
+    """Issue #748: every rendered dispatch fence (the candidates and
+    re-pended laterals, the lock steps, the terminal UPDATE's race guard)
+    carries the hold-stamp leg, the in-process claim CAS's twin. The
+    capability InitPlan line is rendered once per fence, so it counts them."""
+    fences = sql.count("(SELECT wf_exec.capable FROM wf_exec_capable wf_exec)")
+    legs = re.findall(r"AND NOT (\w+)\.metadata \? 'hold'", sql)
+    assert fences > 0 and len(legs) == fences, (fences, legs)
+    assert set(legs) == {"j", "j2"}  # the race guard (j) and the lateral/lock sites (j2)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [DISPATCH_CLAIMABLE_PROBE_SQL, DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL],
+    ids=["probe", "probe_cursor"],
+)
+def test_every_claimable_probe_render_refuses_a_stamped_row(sql: str) -> None:
+    """The probe fence agrees with the claim fence on held rows: a stamped
+    row is never counted as routable work."""
+    fences = sql.count("THE DISPATCH FENCE, P3 leg only")
+    legs = re.findall(r"OR (\w+)\.metadata \? 'hold'", sql)
+    assert fences > 0 and len(legs) == fences, (fences, legs)
 
 
 def test_same_inputs_render_the_same_sql() -> None:

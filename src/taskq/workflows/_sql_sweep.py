@@ -532,6 +532,13 @@ SELECT count(*) FROM reaped
 # idempotent, the race is free). The pending/scheduled scope is the
 # wedge's own: terminal rows need no fence and running rows are the
 # lease machinery's.
+#
+# The live-hold filter rides the CTE, ahead of the LIMIT (issue #748):
+# ids are time-ordered, so a batch of older standing holds taking the
+# window would starve every newer dead stamp forever, and the fleet's
+# dispatch fence never claims a stamped row. It is a NOT EXISTS because
+# FOR UPDATE refuses the nullable side of an outer join. The LIMIT bounds
+# the rows cleared; the read is linear in open holds.
 HOLD_STAMP_RECONCILE_SQL = """\
 WITH stamped AS (
     SELECT j.id, j.metadata->>'hold' AS hold_id
@@ -539,6 +546,11 @@ WITH stamped AS (
     WHERE j.metadata ? 'hold'
       AND j.metadata ? 'flow_id'
       AND j.status IN ('pending', 'scheduled')
+      AND NOT EXISTS (
+          SELECT 1 FROM {schema}.wf_signals live
+          WHERE live.id::text = j.metadata->>'hold'
+            AND live.status = 'held'
+      )
     ORDER BY j.id
     LIMIT $1
     FOR UPDATE SKIP LOCKED

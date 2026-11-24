@@ -194,6 +194,7 @@ class CtxTimerOps(WaitHost):
             TIMER_SIGNAL_PREFIX,
             TIMER_WAKE_SCHEMA_NAME,
             mark_awaited,
+            reassert_hold,
             refuse_reserved_timer_name,
             register_timer_hold,
         )
@@ -306,7 +307,7 @@ class CtxTimerOps(WaitHost):
             # step's NULL keeps exact via is not DISTINCT FROM.
             held_row = await conn.fetchrow(
                 render_sql(
-                    "SELECT id FROM {schema}.wf_signals "
+                    "SELECT id, signal_name, expires_at FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
                     "AND map_index IS NOT DISTINCT FROM $4 "
                     "AND status = 'held' ORDER BY hold_epoch DESC LIMIT 1",
@@ -318,6 +319,17 @@ class CtxTimerOps(WaitHost):
                 self._map_index,
             )
             if held_row is not None:
+                # this claim re-entered onto the standing timer: park the row
+                # onto it, at the timer's own wake time.
+                await reassert_hold(
+                    conn,
+                    schema=self._wsql.schema,
+                    node_id=self.job_id,
+                    hold_id=held_row["id"],
+                    signal_name=str(held_row["signal_name"]),
+                    expires_at=held_row["expires_at"],
+                    claim_epoch=self.claim_epoch,
+                )
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=(signal_name,))
                 # no 'abandoned' arm here — the expiry sweep excludes the reserved
             # prefix by law, so a past-due timer is a due timer (the arm fires

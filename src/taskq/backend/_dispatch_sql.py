@@ -359,6 +359,11 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
           __WF_ALIAS__.step_key IS NULL
           OR (
               __WF_ALIAS__.step_key <> '__flow__'
+              -- THE HOLD-STAMP LEG: a stamped row is the held representation
+              -- (the in-process claim CAS's twin; the wake clears the stamp).
+              -- ANDed outside the terminal-flow group, so it fences a stamped
+              -- escalation row too while its stamp stands.
+              AND NOT __WF_ALIAS__.metadata ? 'hold'
               AND (SELECT wf_exec.capable FROM wf_exec_capable wf_exec)
               AND (
                   -- THE ESCALATION-KIND exemption (the why is the
@@ -396,11 +401,14 @@ _WF_PROBE_FENCE_TEMPLATE = """\
       -- carries it (the two fences may not disagree: a probe that
       -- misses the escalation consumer would answer "nothing remains"
       -- for the one row the claim fence admits — the worker sleeps, the
-      -- page never expands a round).
+      -- page never expands a round). A stamped row (the held
+      -- representation) is not routable work either: the claim fence's
+      -- hold-stamp leg, so the two agree on held rows.
       AND NOT (
           __WF_ALIAS__.step_key IS NOT NULL
           AND (
               __WF_ALIAS__.step_key = '__flow__'
+              OR __WF_ALIAS__.metadata ? 'hold'
               OR (
                   __WF_ALIAS__.step_key <> '__WF_ESCALATION_STEP__'
                   AND NOT __WF_ALIAS__.metadata ? 'wf_after_terminal_effect'
@@ -1962,7 +1970,9 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
 # scan the registry at all; see per_actor_capacity) and every inner
 # probe is a LIMIT-1 index read that stops at the first matching entry,
 # so the probe's work is bounded by registered actors x round queues,
-# never by backlog depth. The inner probes carry no ORDER BY: any
+# never by backlog depth, except standing held rows (pending, due when
+# untimed), which the fence filters after a heap visit (issue #748). The
+# inner probes carry no ORDER BY: any
 # single matching row answers the question, so the cheapest first match
 # is the correct one.
 DISPATCH_CLAIMABLE_PROBE_SQL: str = """\

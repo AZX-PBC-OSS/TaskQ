@@ -1983,8 +1983,9 @@ slot a distinct, retry-stable key) and join each — the fork's
 all-members semantics at the flow level.
 
 **The spawn's atomicity face.** The default
-slot is CLAIMED in one atomic statement (the per-attempt cursor's
-increment and the returned slot are one row-CAS), so K CONCURRENT
+slot is CLAIMED in one atomic statement (the increment of the attempt's
+cursor, which restarts at slot 0 on every claim (`claim_epoch`), and the
+returned slot are one row-CAS), so K CONCURRENT
 spawns — `asyncio.gather(*[ctx.spawn_flow(...) for t in tenants])`, the
 natural fan-out spelling — take K DISTINCT slots and mint K DISTINCT
 children, each carrying its own input. A cursor read/write race would
@@ -1993,6 +1994,9 @@ child, and hand every caller tenant-0's verdict wearing K labels —
 silent fabricated results, zero errors, green pins. A SAME-key
 concurrent spawn ADOPTS the same child (the arbiter's run-key CAS) and
 every caller receives THAT child's handle — the shared face.
+A deferral's re-run (`Snooze`, `RetryAfter(consume_budget=False)`) keeps
+the attempt number but is a new claim, so it re-derives slot 0 and
+adopts the child it already minted.
 One discipline applies: a concurrent fan-out that must join STABLY
 across the resume passes `key=` (the slot's allocation order is the
 scheduler's; the author's identity is the caller's — a resumed body

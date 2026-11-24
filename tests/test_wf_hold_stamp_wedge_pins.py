@@ -341,6 +341,30 @@ async def test_hold_stamp_reconcile_statement_is_the_batch_bounded_self_consumin
     assert again == [], "the arm's predicate must self-consume (a cleared row loses the stamp)"
 
 
+async def test_hold_stamp_reconcile_window_never_spends_a_slot_on_a_live_hold(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """Issue #748: the batch window is taken over dead stamps only. An older
+    row whose hold is still 'held' sorts first by id; if it took the LIMIT's
+    slot, every newer dead stamp behind a batch of standing holds would never
+    be examined (the fleet's fence now excludes stamped rows, so that row
+    would wait forever)."""
+    _, node_old, _, _ = await _held_flow(wf_pool, wf_schema, name="wedge_window_old_flow")
+    _, node_new, hold_new, _ = await _held_flow(wf_pool, wf_schema, name="wedge_window_new_flow")
+    await _plant_wedge(wf_pool, wf_schema, node_new, hold_new, signal_status="delivered")
+    assert str(node_old) < str(node_new)  # the live hold sorts first
+
+    rows = await wf_conn.fetch(HOLD_STAMP_RECONCILE_SQL.replace("{schema}", wf_schema), 1)
+    assert [r["id"] for r in rows] == [node_new], (
+        f"LIMIT 1 cleared {[str(r['id']) for r in rows]}, not the dead stamp {node_new}: "
+        f"the live hold on {node_old} took the batch's only slot"
+    )
+    still_stamped = await wf_conn.fetchval(
+        f"SELECT metadata ? 'hold' FROM \"{wf_schema}\".jobs WHERE id = $1", node_old
+    )
+    assert still_stamped is True, "a live hold's stamp is the held representation"
+
+
 async def _node_and_hold(
     conn: asyncpg.Connection, schema: str, flow_id: JobId
 ) -> tuple[JobId, JobId]:

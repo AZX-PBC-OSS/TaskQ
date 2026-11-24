@@ -155,6 +155,7 @@ class MintProbe(CtxWaitOps, CtxTimerOps):
         self.job_id = JobId("00000000-0000-0000-0000-000000000002")
         self.node_key = "probe_node"
         self.attempt = 1
+        self.claim_epoch = 1
         self._is_loop = False
         self._ledger_id = None
         # a plain step's probe carries map_index None (the identity the refusal

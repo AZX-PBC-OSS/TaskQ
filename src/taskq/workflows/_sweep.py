@@ -590,10 +590,12 @@ async def sweep_hold_stamps(
     the answer replay, the typed timeout face, or a fresh hold). Nothing
     wedges; every path lands in a named state.
 
-    Bounded once (LIMIT $1) and self-consuming (a cleared row loses the
-    stamp — the predicate empties behind the arm), so one pass never
-    unbounds and a deeper backlog drains over passes. Returns the CLEARED
-    count (a held-standing row is no work — it is the contract holding)."""
+    Bounded once (LIMIT $1 on the rows cleared; the read is linear in open
+    holds) and self-consuming (a cleared row loses the stamp — the predicate
+    empties behind the arm; a live hold never takes a batch slot), so one
+    pass never unbounds and a deeper backlog drains over passes. Returns the
+    CLEARED count (a held-standing row is no work — it is the contract
+    holding)."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(wsql.hold_stamp_reconcile, batch_size)
     cleared_count = len(rows)

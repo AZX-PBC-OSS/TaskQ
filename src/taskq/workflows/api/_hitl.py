@@ -322,6 +322,7 @@ SET status = 'pending',
     budget_paused = CASE WHEN metadata @> '{"kind": "loop"}'::jsonb THEN true ELSE budget_paused END
 WHERE id = $1
   AND status = 'running'
+  AND ($4::bigint IS NULL OR claim_epoch = $4::bigint)
 RETURNING id
 """
 
@@ -507,6 +508,30 @@ async def mark_awaited(conn: ConnLike, schema: str, ledger_id: JobId) -> None:
     await conn.execute(_render(_HOLD_AWAITED_LEDGER_SQL, schema), ledger_id)
 
 
+async def reassert_hold(
+    conn: ConnLike,
+    *,
+    schema: str,
+    node_id: JobId,
+    hold_id: object,
+    signal_name: str,
+    expires_at: datetime | None,
+    claim_epoch: int,
+) -> None:
+    """A re-entered wait's half of the held representation: the body found
+    its own standing hold, so the node is parked onto it exactly as the mint
+    parked it (pending, unlocked, the stamp, the hold's deadline, a loop's
+    budget paused). Claim-fenced: a row that already rests held, or that a
+    newer claim now runs (a stale body whose lease lapsed), matches nothing."""
+    await conn.execute(
+        _render(_HOLD_HOLD_NODE_SQL, schema),
+        node_id,
+        dumps_jsonb_str({"hold": str(hold_id), "held_signal": signal_name}),
+        expires_at,
+        claim_epoch,
+    )
+
+
 async def register_hold(
     conn: ConnLike,
     *,
@@ -622,6 +647,7 @@ async def register_hold(
             node_id,
             dumps_jsonb_str({"hold": str(hold_id), "held_signal": signal_name}),
             deadline,
+            None,  # no claim fence on the mint: only the re-entry's re-park carries one
         )
         # transactional: the NOTIFY rides this tx, so a rolled-back hold-create
         # is silent; the payload carries the schema + the pointer, never the

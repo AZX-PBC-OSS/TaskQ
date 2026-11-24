@@ -1180,8 +1180,9 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             # the held representation stands; delivered/abandoned/
             # cancelled/absent → the stamp cleared + the row re-claims.
             # not a drain: the predicate self-consumes (a cleared row
-            # loses the stamp), a second pass returns zero, and the
-            # statement is batch-bounded by LIMIT.
+            # loses the stamp; a live hold never takes a batch slot), a
+            # second pass returns zero, and the statement is batch-bounded
+            # by LIMIT.
             name="wf_hold_stamp_reconcile",
             call=wf_hold_stamp_reconcile_call,
             warn_event="sweep-wf-hold-stamp-reconcile-failed",
