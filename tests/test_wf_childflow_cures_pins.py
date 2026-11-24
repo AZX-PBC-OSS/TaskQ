@@ -1014,3 +1014,61 @@ async def test_a_row_stamped_by_the_previous_release_adopts_its_child(
         "the new release rewrote the previous release's cursor: the orphaned key "
         "is left untouched, never migrated or cleared"
     )
+
+
+async def test_a_zero_claim_epoch_is_refused_by_the_spawn_slot_claim(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The spawn cursor's reset law compares the stored epoch against the
+    executing claim's. At 0 every comparison is NULL/false, so a re-claim
+    never resets and every resume mints a duplicate child. The spawn refuses
+    the epoch loudly instead, and mints nothing."""
+    from taskq.workflows.api._ctx import build_step_context
+    from taskq.workflows.api._runner_errors import WorkflowRunError
+    from taskq.workflows.engine import render_workflow_sql
+
+    suffix = new_uuid().hex[:12]
+    child_name = f"k4_child_{suffix}"
+
+    child_app = WorkflowApp()
+
+    @child_app.workflow(child_name)
+    def child() -> Promise[object]:
+        async def leaf(ctx: StepContext) -> _MapLeaf:
+            return _MapLeaf(n=1)
+
+        return build(step(leaf, key="leaf"))
+
+    child_app.get(child_name)
+
+    async def unused(ctx: StepContext) -> int:
+        return 0
+
+    parent_app = WorkflowApp()
+
+    @parent_app.workflow(f"k4_parent_{suffix}")
+    def flow() -> Promise[object]:
+        return build(step(unused, key="wrap"))
+
+    runner = FlowRunner(parent_app.get(f"k4_parent_{suffix}"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    row = await wf_conn.fetchrow(
+        f'SELECT id FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'wrap'",
+        flow_id,
+    )
+    assert row is not None
+    ctx = build_step_context(
+        flow_id=flow_id,
+        job_id=JobId(row["id"]),
+        node_key="wrap",
+        attempt=1,
+        claim_epoch=0,
+        pool=wf_pool,
+        wsql=render_workflow_sql(wf_schema),
+        input=None,
+    )
+    with pytest.raises(WorkflowRunError) as refused:
+        await ctx.spawn_flow(child_name, result=_MapLeaf)
+    assert "claim_epoch" in str(refused.value), refused.value
+    assert await _spawn_keys(wf_conn, wf_schema, flow_id) == []

@@ -91,6 +91,9 @@ def _ctx(
         job_id=node_id,
         node_key="source",
         attempt=1,
+        # a synthetic context (no row claim): the emit/wait doors under test
+        # do not fence on the epoch, so the minimum well-formed value is used.
+        claim_epoch=1,
         pool=pool,
         wsql=wsql,
         input=None,

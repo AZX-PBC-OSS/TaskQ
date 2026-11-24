@@ -283,19 +283,28 @@ async def test_twenty_wedged_runs_all_land_named_terminal_or_resumed(
     wedge; every run then reaches its named state (resumed-and-completed,
     resumed-and-completed, terminal-failed) and nothing is left pending +
     stamped with a dead hold."""
-    runs: list[tuple[JobId, JobId, JobId, FlowRunner, str]] = []
+    # Stage every flow to its hold FIRST, then plant the wedge on all of
+    # them: the dev drive's own tick runs the reconcile (the #748 dev-face
+    # parity), so planting between drives would let a later drive heal an
+    # earlier plant and the one-pass claim below would count a residue.
+    staged: list[tuple[JobId, JobId, JobId, FlowRunner, str]] = []
     for i in range(10):
         fid, nid, hid, runner = await _held_flow(wf_pool, wf_schema, name=f"wedge20_d{i}_flow")
-        await _plant_wedge(wf_pool, wf_schema, nid, hid, signal_status="delivered")
-        runs.append((fid, nid, hid, runner, "delivered"))
+        staged.append((fid, nid, hid, runner, "delivered"))
     for i in range(5):
         fid, nid, hid, runner = await _held_flow(wf_pool, wf_schema, name=f"wedge20_a{i}_flow")
-        await _plant_wedge(wf_pool, wf_schema, nid, hid, signal_status="abandoned")
-        runs.append((fid, nid, hid, runner, "abandoned"))
+        staged.append((fid, nid, hid, runner, "abandoned"))
     for i in range(5):
         fid, nid, hid, runner = await _held_flow(wf_pool, wf_schema, name=f"wedge20_x{i}_flow")
-        await _plant_wedge(wf_pool, wf_schema, nid, hid, delete_signal=True)
-        runs.append((fid, nid, hid, runner, "absent"))
+        staged.append((fid, nid, hid, runner, "absent"))
+
+    runs: list[tuple[JobId, JobId, JobId, FlowRunner, str]] = []
+    for fid, nid, hid, runner, kind in staged:
+        if kind == "absent":
+            await _plant_wedge(wf_pool, wf_schema, nid, hid, delete_signal=True)
+        else:
+            await _plant_wedge(wf_pool, wf_schema, nid, hid, signal_status=kind)
+        runs.append((fid, nid, hid, runner, kind))
 
     cleared = await sweep_hold_stamps(wf_pool, render_workflow_sql(wf_schema))
     assert cleared == 20, cleared
@@ -598,3 +607,38 @@ async def test_reconcile_read_cost_stays_a_single_pass_over_the_two_tables(pg_ds
     finally:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
+
+
+async def test_a_mint_whose_park_matches_nothing_is_named(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The mint's park is a conditional write (``AND status = 'running'``).
+    A body whose lease lapsed, or whose node a concurrent resume/cancel moved,
+    mints a live ``held`` signal while the node update matches nothing — the
+    approval queue then shows a hold for a node that is not waiting. The miss
+    is a named event (the result of the write is read, not discarded)."""
+    from taskq.workflows.api._hitl import register_hold
+
+    _flow_id, node_id, _hold_id, _runner = await _held_flow(
+        wf_pool, wf_schema, name="wedge_mint_miss_flow"
+    )
+    # The node rests pending (the standing hold's held representation): a
+    # second mint's park cannot match.
+    with structlog.testing.capture_logs() as captured:
+        minted = await register_hold(
+            wf_conn,
+            schema=wf_schema,
+            workflow_id=_flow_id,
+            node_id=node_id,
+            node_key="review",
+            signal_name="Approval",
+            hold_epoch=99,
+            call_id="call:1:1",
+            payload_schema={"Approval": {"type": "object"}},
+            timeout_s=None,
+        )
+    assert minted is not None
+    misses = [e for e in captured if e["event"] == "wf-hold-mint-park-missed"]
+    assert misses, [e["event"] for e in captured]
+    assert misses[0]["node_id"] == str(node_id), misses[0]
+    assert misses[0]["hold_id"] == str(minted), misses[0]
