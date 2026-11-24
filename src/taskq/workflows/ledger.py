@@ -268,8 +268,9 @@ async def memoized_step_result(
     map_index: int | None,
 ) -> LedgerClaim | None:
     """The latest TERMINAL ledger row for ``(flow, step[, map_index])`` —
-    the map-child retry's ``ON CONFLICT`` path: the recorded result returns
-    rather than re-executing. ``None`` when no terminal row exists."""
+    the loop driver's iteration memo (``ctx.substep`` reads
+    :func:`memoized_substep_result`): the recorded result returns rather
+    than re-executing. ``None`` when no terminal row exists."""
     rec = await conn.fetchrow(wsql.ledger_memoized, flow_id, step_key, map_index)
     if rec is None:
         return None
@@ -299,8 +300,8 @@ async def memoized_substep_result(
     """The ``ctx.substep`` memo: the latest TERMINAL row of *job_id* under
     ``step_keys[0]`` (the scoped key) or a pre-#743 bare name after it.
     *legacy_iteration_key* (``<loop>.iter<n>``) attributes a bare row to
-    the loop iteration that recorded it. ``None`` when no terminal row
-    exists."""
+    the loop iteration that recorded it. The claim's ``step_key`` is the
+    key of the row that answered. ``None`` when no terminal row exists."""
     rec = await conn.fetchrow(
         wsql.ledger_substep_memoized,
         flow_id,
@@ -314,7 +315,7 @@ async def memoized_substep_result(
     return LedgerClaim(
         flow_id=flow_id,
         job_id=JobId(rec["job_id"]),
-        step_key=step_keys[0],
+        step_key=rec["step_key"],
         map_index=map_index,
         attempt=rec["attempt"],
         status=rec["status"],

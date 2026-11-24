@@ -451,22 +451,33 @@ nodes shared one row; and a loop's later iterations replayed iteration
 Cross-node sharing was never documented. If code relied on it, move the
 shared effect into one node. Two concurrent calls with one name inside
 one body (for example, both in one `asyncio.gather`) used to run both
-`fn`s silently. They now fail the node on its first attempt with
-`DuplicateSubstepError` (a `WorkflowRunError`), and the retry budget is
-not spent.
+`fn`s silently. Now the second raises `DuplicateSubstepError` (a
+`WorkflowRunError`) before it claims anything, and the guard leaves the
+first one running. Uncaught, the error fails the
+node on its first attempt without spending the retry budget; in a loop
+body the loop exhausts as a body failure whose message names it.
+`idempotent=False` calls write no row and are exempt.
 
 **The row shape.** A substep row's `step_key` is now `<job id>/<name>`,
 or `<job id>.iter<n>/<name>` in a loop body. SQL that selected substep
 rows with `step_key = '<name>'` must select
-`step_key = job_id::text || '/<name>'` instead. Node rows keep the node
-key.
+`step_key = job_id::text || '/<name>'` instead, or
+`step_key = job_id::text || '.iter<n>/<name>'` for loop iteration `<n>`.
+To match the name in every shape, loops included, select
+`starts_with(step_key, job_id::text) AND substr(step_key, strpos(step_key, '/') + 1) = '<name>'`.
+Node rows keep the node key. Rows written before the upgrade keep the
+bare name.
 
 **Runs in flight across the upgrade.** A substep the old code recorded
 under the bare name is still replayed by its own node job (the read is
 owner-checked, so another node's bare row is never adopted). Inside a
 loop, a bare row is replayed only by the iteration that recorded it, and
-later iterations run their own `fn`. Three pre-upgrade shapes cannot be
-recovered as written:
+later iterations run their own `fn`. Each such replay logs a
+`workflow-substep-legacy-replay` warning with the run, the job and the
+bare key. Only pre-upgrade code writes bare rows, so the warnings stop
+once no pre-upgrade run is in flight. One for a run started after the
+upgrade means an old executor ran part of that run. Three pre-upgrade
+shapes cannot be recovered as written:
 
 - A substep named after its own node. The old code wrote it onto the
   node's own claim row, and such a node was already wedged. After the
@@ -485,7 +496,9 @@ the same workflow queues at the same time: drain and stop the old
 executors, then start the new ones. In a mixed window an old executor
 that retries, reclaims or resumes a node misses the scoped record and
 re-runs the side effect, and it can still adopt another node's bare row.
-Both failures are silent: no error and no log line.
+Both failures are silent: no error and no log line. (The
+`workflow-substep-legacy-replay` warning fires only when a new executor
+later replays a bare row; it does not see either failure.)
 
 **Rollback is not safe for live runs.** A pre-upgrade binary runs
 workflow rows, and every live node it retries, reclaims or resumes

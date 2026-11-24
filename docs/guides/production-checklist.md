@@ -127,7 +127,9 @@ teaches it. Nothing here is new law; this page COLLECTS.
   → [jobs-clients.md — idempotency](jobs-clients.md), [ops.md §5](ops.md)
 - A workflow run's state is the ROWS — a crash anywhere (worker SIGKILL,
   deploy, failover) resumes from the ledger: succeeded substeps REPLAY
-  free, held waits re-park, the cursor never rewinds (GREATEST).
+  free, held waits re-park, the cursor never rewinds (GREATEST). A deploy
+  across the `ctx.substep` scope change needs its
+  [executor cutover](upgrading.md#ctxsubstep-names-are-scoped-to-the-calling-node).
   → [workflows.md — the resume law](workflows.md), [docshelf.md — the crash scenarios](docshelf.md)
 - A hold is a row: the worker's slot is RELEASED while the body waits on
   a human or a deadline — one worker can carry thousands of parked

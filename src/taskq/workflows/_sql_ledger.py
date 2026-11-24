@@ -40,7 +40,8 @@ RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
 """
 
 
-# The memoized-result read (map-child retries, ctx.step replay): the latest
+# The memoized-result read (the loop driver's iteration memo; ctx.substep
+# reads LEDGER_SUBSTEP_MEMOIZED_SQL below): the latest
 # TERMINAL ledger row for (flow, step[, map_index]) — the ON CONFLICT path
 # returns the recorded result rather than re-executing. attempt is not in
 # this key: a retried map child claims a new attempt row, but the replay
@@ -71,9 +72,10 @@ LIMIT 1
 # iteration's claim key ``<loop>.iter<n>`` inside a loop body (NULL
 # elsewhere): the iteration's first claim row is inserted before its body
 # runs, so a bare row is this iteration's only when it is no older than that.
-# The ordering is the claim history's own, as in LEDGER_MEMOIZED_SQL.
+# The ordering is the claim history's own, as in LEDGER_MEMOIZED_SQL; step_key
+# says which leg answered.
 LEDGER_SUBSTEP_MEMOIZED_SQL = """\
-SELECT attempt, status, result, error_class, error_message, job_id
+SELECT attempt, status, result, error_class, error_message, job_id, step_key
 FROM {schema}.wf_step_ledger
 WHERE flow_id = $1
   AND step_key = ANY($2::text[])

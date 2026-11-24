@@ -37,6 +37,7 @@ from pydantic import BaseModel
 
 from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import JobId
+from taskq.obs import get_logger
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.ledger import (
@@ -46,6 +47,8 @@ from taskq.workflows.ledger import (
 )
 
 __all__ = ["WorkflowSteps"]
+
+logger = get_logger(__name__)
 
 StepFn = Callable[..., Awaitable[Any]]
 
@@ -104,11 +107,20 @@ class WorkflowSteps:
                 self._wsql,
                 flow_id=self._flow_id,
                 job_id=self._job_id,
-                step_keys=[name] + ([self._legacy_step_key] if self._legacy_step_key else []),
+                step_keys=[name]
+                + ([] if self._legacy_step_key is None else [self._legacy_step_key]),
                 map_index=self._map_index,
                 legacy_iteration_key=self._legacy_iteration_key,
             )
             if memo is not None and memo.status == "succeeded":
+                if memo.step_key != name:
+                    # only a pre-#743 executor writes a bare-name substep row
+                    logger.warning(
+                        "workflow-substep-legacy-replay",
+                        flow_id=str(self._flow_id),
+                        job_id=str(self._job_id),
+                        step_key=memo.step_key,
+                    )
                 return memo.result
 
             claim = await claim_step_ledger(

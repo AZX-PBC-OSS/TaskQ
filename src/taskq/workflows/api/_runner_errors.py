@@ -70,8 +70,10 @@ class DuplicateSubstepError(WorkflowRunError):
     with the same name was still running in it (#743). Both calls would
     claim one ledger row, and the second claim's re-stamp drops the first
     call's record. Every retry re-runs the same body, so the refusal is
-    DETERMINISTIC: the node fails on its first attempt with this class on
-    the record. Concurrent substeps need distinct names."""
+    DETERMINISTIC: uncaught, the node fails on its first attempt with this
+    class on the record (a loop body exhausts the loop as a body failure,
+    the class named in its message). Concurrent substeps need distinct
+    names."""
 
 
 class WorkflowRootMissingError(WorkflowRunError):

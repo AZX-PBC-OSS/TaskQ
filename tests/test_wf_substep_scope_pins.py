@@ -29,6 +29,8 @@ import contextlib
 from typing import Any
 
 import asyncpg
+import pytest
+import structlog
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
@@ -47,6 +49,7 @@ from taskq.workflows import (
     step,
 )
 from taskq.workflows.api._hitl import HitlClient
+from taskq.workflows.ledger import memoized_substep_result
 
 
 class Item(BaseModel):
@@ -496,13 +499,16 @@ async def _seed_bare_substep_row(
     )
 
 
+@pytest.mark.parametrize("name", ["x", ""])
 async def test_a_legacy_bare_row_owned_by_this_node_replays_without_rerunning(
-    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, name: str
 ) -> None:
     """In-flight upgrade: the pre-fix code already ran this node's substep
     and recorded it under the bare name (then the attempt died before the
     node's terminal). The post-fix retry must replay that record — never
-    re-run the side effect."""
+    re-run the side effect — and say so: the memo names the bare row it
+    read, and the replay logs ``workflow-substep-legacy-replay``. The empty
+    name is a name too."""
     calls: list[str] = []
 
     async def ret(v: str) -> str:
@@ -510,22 +516,37 @@ async def test_a_legacy_bare_row_owned_by_this_node_replays_without_rerunning(
         return v
 
     async def solo(ctx: StepContext) -> str:
-        return await ctx.substep("x", ret, "fresh")
+        return await ctx.substep(name, ret, "fresh")
 
     app = WorkflowApp()
 
-    @app.workflow("substep_scope_legacy_own")
+    wf_name = f"substep_scope_legacy_own_{len(name)}"  # the registry is process-global
+
+    @app.workflow(wf_name)
     def wf() -> Promise[object]:
         return build(step(solo, key="solo"))
 
-    runner = FlowRunner(app.get("substep_scope_legacy_own"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get(wf_name), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await _seed_bare_substep_row(
-        wf_conn, wf_schema, flow_id=flow_id, owner_key="solo", name="x", value="recorded"
+        wf_conn, wf_schema, flow_id=flow_id, owner_key="solo", name=name, value="recorded"
     )
-    assert await runner.drive(flow_id) == "terminal"
+    job_id = (await _node_row(wf_conn, wf_schema, flow_id, "solo"))["id"]
+    memo = await memoized_substep_result(
+        wf_conn,
+        runner.wsql,
+        flow_id=flow_id,
+        job_id=job_id,
+        step_keys=[f"{job_id}/{name}", name],
+        map_index=None,
+    )
+    assert memo is not None and memo.step_key == name, memo
+    with structlog.testing.capture_logs() as logs:
+        assert await runner.drive(flow_id) == "terminal"
     assert calls == [], f"the retry re-ran a substep the old code had recorded: {calls}"
     assert await runner.result(flow_id) == "recorded"
+    replays = [e for e in logs if e["event"] == "workflow-substep-legacy-replay"]
+    assert [(e["step_key"], e["job_id"]) for e in replays] == [(name, str(job_id))], logs
 
 
 async def test_a_legacy_bare_row_owned_by_another_node_is_never_adopted(
@@ -811,6 +832,59 @@ async def test_concurrent_same_name_substeps_fail_the_node_on_its_first_attempt(
     assert prefix == [1], f"the duplicate spent the retry ladder: {prefix}"
     assert fns == ["slow"], fns
     assert [r["result"] for r in substep_rows] == ['"slow"'], substep_rows
+
+
+async def test_a_duplicate_substep_in_a_loop_body_exhausts_the_loop_naming_the_class(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """Inside a loop body the duplicate refuses the same way, but the loop
+    driver records every body exception as its own body failure: the loop
+    exhausts on attempt 1 with ``LoopBodyFailure``, and the message names
+    ``DuplicateSubstepError``. The duplicate's fn never ran."""
+    fns: list[str] = []
+
+    async def slow() -> str:
+        fns.append("slow")
+        await asyncio.sleep(0.05)
+        return "slow"
+
+    async def fast() -> str:
+        fns.append("fast")
+        return "fast"
+
+    async def body(ctx: StepContext, carry: object) -> object:
+        return Done(list(await asyncio.gather(ctx.substep("x", slow), ctx.substep("x", fast))))
+
+    app = WorkflowApp()
+
+    @app.workflow("substep_scope_loop_duplicate")
+    def wf() -> Promise[object]:
+        return build(loop("dupl", body, max_iterations=3))
+
+    runner = FlowRunner(app.get("substep_scope_loop_duplicate"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id, max_ticks=500) == "terminal"
+    node = await wf_conn.fetchrow(
+        f'SELECT status, attempt, error_class, error_message FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'dupl'",
+        flow_id,
+    )
+    assert node is not None
+    assert (node["status"], node["attempt"], node["error_class"]) == (
+        "failed",
+        1,
+        "LoopBodyFailure",
+    ), dict(node)
+    assert "DuplicateSubstepError" in node["error_message"], dict(node)
+    # the orphaned first call finishes in the background; wait for its record.
+    for _ in range(100):
+        if any(
+            r["step_key"].endswith(".iter0/x") and r["status"] == "succeeded"
+            for r in await _ledger_rows(wf_conn, wf_schema, flow_id)
+        ):
+            break
+        await asyncio.sleep(0.05)
+    assert fns == ["slow"], fns
 
 
 async def test_a_substep_replays_across_a_hold_resume(

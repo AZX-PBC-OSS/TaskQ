@@ -391,10 +391,14 @@ owner is the calling node's job row and, inside a loop body, the loop
 iteration. The same name in two nodes, two map children, two maps or two
 iterations is a different record, so each runs its own `fn`. Within one
 execution, calling the same name again replays a `succeeded` record. A
-re-call after a failed one in the same attempt runs `fn` again. Two
-concurrent calls with one name (for example, both inside one
-`asyncio.gather`) fail the node on its first attempt with
-`DuplicateSubstepError`; give concurrent substeps distinct names. The
+re-call after a failed one in the same attempt runs `fn` again, and that
+run is not recorded. A call made while one with the same name is still
+running (for example, both inside one `asyncio.gather`) raises
+`DuplicateSubstepError` before it claims anything, and the running call
+is left alone. Uncaught, the error fails the node on its first attempt;
+in a loop body the loop exhausts as a body failure whose message names
+it. `idempotent=False` calls write no row and are exempt. Give
+concurrent substeps distinct names. The
 row's `step_key` is `<job id>/<name>`, or `<job id>.iter<n>/<name>` in a
 loop body. Upgrading a fleet across this change needs a workflow-executor
 cutover: see
