@@ -233,6 +233,56 @@ own retry policy; the migration commits the complete object set, no re-apply
 owed). An operator `lock_timeout` bound reduces the exposure but cannot
 eliminate it.
 
+## Widened record identity — `map_index` bigint on all five carriers (01.00.42_02)
+
+`01.00.42_02_post_wf_map_index_bigint.sql` is a **POST** file. It widens
+`map_index` from `smallint` to `bigint` on all five identity carriers
+(`jobs`, `jobs_archive`, `wf_step_ledger`, `wf_outbox`, `wf_signals`) and
+recreates the two identity arbiters in the same transaction:
+`wf_step_ledger_claim_uniq`
+(`(flow_id, step_key, COALESCE(map_index, -1), attempt, claim_epoch)`) and
+`wf_signals_hold_identity_uniq`
+(`(workflow_id, node_key, signal_name, COALESCE(map_index, -1), hold_epoch)
+WHERE resolved_at IS NULL`).
+
+Apply it only after every process that can emit, finalize, directly drive,
+or lead workflow maintenance runs the release with the bigint SQL binds and
+the schema-derived identity gate. An OLD binary's explicit `smallint` binds
+cannot finalize, memoize, count, fence, collect, or drain a high identity,
+and an old elected leader's `smallint[]` outbox bind rejects the whole drain
+batch. **Do not claim old workers are safe above 32767.** Until this POST
+applies, the new gate still refuses identities above 32767 on the old
+schema, so a mixed old/new wave is supported in that window only.
+
+**Lock profile and outage.** Each `ALTER COLUMN ... TYPE bigint` takes
+`ACCESS EXCLUSIVE` and rewrites its table, rebuilding every index on it
+(including unrelated indexes). The one migration transaction retains every
+acquired lock until `COMMIT`, so all five tables block reads and writes for
+their rewrite and every later statement in the file. `ddl_lock_timeout`
+bounds lock acquisition only. Plan an operator-approved maintenance window
+sized from `jobs`, `jobs_archive` and `wf_step_ledger`. Existing `smallint`
+values and `NULL`s are already in-domain and need no backfill; nullable stays
+nullable. There is no down migration — to revert, restore from backup or fix
+forward.
+
+**Diagnostics you may see.** On a pre-POST schema a candidate identity above
+32767 raises `MapIndexExhaustedError` (deterministic, named). A candidate
+above 32767 against a schema whose five carriers are mixed, missing,
+`NOT NULL`, or of an unsupported type raises `MapIndexSchemaError` before any
+row is written — a deployment error, not permission. An ordinary unbounded
+page at or below 32767 takes the no-catalog-read path, so it writes rather than
+detecting a broken carrier shape; inspect the five columns yourself before
+relying on low-identity writes against a schema you have not verified.
+Unbounded is the EXPLICIT opt-out (`max_in_flight=None`): bounded emit is the
+default, and both of its paths — unreserved admission and reserved replay —
+run the capability preflight, which re-reads the five carriers on every
+call, so a bounded low page refuses the same broken shape with
+`WorkflowWorkerCapabilityError` before any write. A hand-run `ALTER`
+that widened the column without recreating
+the claim arbiter leaves the stored `int4` coercion in place; the ledger's
+`ON CONFLICT` then fails with PostgreSQL `42P10`, and the bounded-emit
+preflight refuses with a remedy naming this file.
+
 ## If a migration goes wrong
 
 `taskq migrate up` diagnoses its own failures: it tells you which migration

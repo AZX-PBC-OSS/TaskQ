@@ -1247,7 +1247,7 @@ async def test_reconstruction_succeeded_map_sibling_leaves_the_live_node_pending
     null_rows = await wf_conn.fetch(
         f'''SELECT job_id::text FROM "{wf_schema}".wf_step_ledger
             WHERE flow_id = $1::uuid AND step_key = 'mi.poison'
-              AND COALESCE(map_index, -1) = COALESCE($2::smallint, -1)
+              AND COALESCE(map_index, -1) = COALESCE($2::bigint, -1)
               AND attempt = 1''',
         flow,
         None,
@@ -1255,7 +1255,7 @@ async def test_reconstruction_succeeded_map_sibling_leaves_the_live_node_pending
     zero_rows = await wf_conn.fetch(
         f'''SELECT job_id::text FROM "{wf_schema}".wf_step_ledger
             WHERE flow_id = $1::uuid AND step_key = 'mi.poison'
-              AND COALESCE(map_index, -1) = COALESCE($2::smallint, -1)
+              AND COALESCE(map_index, -1) = COALESCE($2::bigint, -1)
               AND attempt = 1''',
         flow,
         0,

@@ -268,6 +268,17 @@ def _first_declared(*levels: timedelta | None) -> timedelta | None:
     return None
 
 
+def _list_width(value: object) -> int:
+    """The element count of a body-returned list, or 0 for a non-list.
+
+    A map/route body's return is ``Any``-typed, so its elements are Unknown
+    to the checker; only the width is read here (the high-candidate probe's
+    trigger) and the list is never iterated."""
+    if not isinstance(value, list):
+        return 0
+    return len(value)  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk — the list's members are Unknown by construction; only its length is read.
+
+
 class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     """The API's runner: create, drive, read. One engine, many surfaces —
     the runner OWNS no state; every fact is a row. The concern modules
@@ -1582,9 +1593,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # the skip-silent shape is dead.
                     from taskq.workflows.chain import RouterNotTotal
 
+                    # No identity read happens here: this is the BODY failure
+                    # boundary, and a runner-issued catalog statement escaping it
+                    # would be recorded as a body failure. A route's width is
+                    # bounded by jobs.deps_pending (the join counter), refused
+                    # deterministically inside the finalize's machinery boundary.
                     try:
                         route_fork = self._route_fork(
-                            row, node, outcome_value, run_priority=run_priority
+                            row,
+                            node,
+                            outcome_value,
+                            run_priority=run_priority,
                         )
                     except RouterNotTotal as exc:
                         await emitter.aclose()
@@ -1742,6 +1761,35 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             if route in ("cancelled", "fenced"):
                 return route
             return "laddered"
+
+        from taskq.workflows._emit import MapIndexExhaustedError
+        from taskq.workflows._types import MapIndexSchemaError
+
+        async def _route_finalize_refusal(exc: Exception) -> str:
+            """Route a deterministic finalize-face refusal to the ladder.
+
+            The identity/schema/fan-in refusals are deterministic authoring
+            failures: routing them through the machinery reclaim boundary would
+            re-crash the same statement forever. They terminal-fail on the first
+            attempt with the named class on the record."""
+            await emitter.aclose()
+            route = await self._ladder_or_fail(
+                flow_id,
+                row,
+                attempt,
+                node,
+                exc,
+                claim_epoch=claim_epoch,
+                ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
+            )
+            if route == "deferred":
+                return "deferred"
+            record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
+            if route in ("cancelled", "fenced"):
+                return route
+            return "laddered"
+
         try:
             # everything from here to the return is the machinery's own
             # statements (the emitter close, the finalize on either face, the
@@ -1759,19 +1807,26 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             await emitter.aclose()
             if chain_success is not None:
                 chain, chain_outcome, chain_payload = chain_success
-                await self._finalize_chain_step(
-                    flow_id,
-                    row,
-                    attempt,
-                    row["step_key"],
-                    chain,
-                    chain_outcome,
-                    chain_payload,
-                    claim_epoch=claim_epoch,
-                    run_priority=run_priority,
-                    ledger_id=ledger_id,
-                    ledger_claimed_at=ledger_claimed_at,
-                )
+                try:
+                    await self._finalize_chain_step(
+                        flow_id,
+                        row,
+                        attempt,
+                        row["step_key"],
+                        chain,
+                        chain_outcome,
+                        chain_payload,
+                        claim_epoch=claim_epoch,
+                        run_priority=run_priority,
+                        ledger_id=ledger_id,
+                        ledger_claimed_at=ledger_claimed_at,
+                    )
+                except (
+                    FanInBoundExceededError,
+                    MapIndexExhaustedError,
+                    MapIndexSchemaError,
+                ) as exc:
+                    return await _route_finalize_refusal(exc)
                 return "succeeded"
             if cache_hit is not None:
                 # a fault escaping this finalize is the machinery's seat, never
@@ -1784,17 +1839,24 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # ran (the live node failed, InterfaceError on the record, the
                 # run killed UnabsorbedNodeFailure). One fault, one seat: the
                 # infra class — the reclaim, the ladder unburned.
-                final = await self._finalize_success(
-                    flow_id,
-                    row,
-                    attempt,
-                    node,
-                    cache_hit.envelope,
-                    claim_epoch=claim_epoch,
-                    run_priority=run_priority,
-                    ledger_id=ledger_id,
-                    ledger_claimed_at=ledger_claimed_at,
-                )
+                try:
+                    final = await self._finalize_success(
+                        flow_id,
+                        row,
+                        attempt,
+                        node,
+                        cache_hit.envelope,
+                        claim_epoch=claim_epoch,
+                        run_priority=run_priority,
+                        ledger_id=ledger_id,
+                        ledger_claimed_at=ledger_claimed_at,
+                    )
+                except (
+                    FanInBoundExceededError,
+                    MapIndexExhaustedError,
+                    MapIndexSchemaError,
+                ) as exc:
+                    return await _route_finalize_refusal(exc)
                 if final.applied:
                     await self._write_cache_receipt(
                         JobId(row["id"]), row["step_key"], flow_id, cache_hit
@@ -1802,13 +1864,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 return "succeeded"
                 # the map fork's build (and the fork's own validation,
             # insert_fork's door) runs inside _finalize_success — before this
-            # wrapper, the fan-in bound's exceed escaped the ladder's boundary,
-            # the finalize tx rolled back, and the reclaim re-crashed the node
-            # forever (the wedge the finding named). The typed
-            # FanInBoundExceededError is a deterministic authoring failure: the
-            # ladder's deterministic route terminal-fails it on the first
+            # wrapper, the fan-in/identity/schema refusals escaped the ladder's
+            # boundary, the finalize tx rolled back, and the reclaim re-crashed
+            # the node forever (the wedge the finding named).
+            # FanInBoundExceededError, MapIndexExhaustedError and
+            # MapIndexSchemaError are deterministic authoring failures: the
+            # ladder's deterministic route terminal-fails them on the first
             # attempt, the error class on the record — the reclaim path heals
-            # or fails named, never wedges.
+            # or fails named, never wedges. Unwrapped infra faults still escape
+            # this catch to the machinery boundary below.
             try:
                 final = await self._finalize_success(
                     flow_id,
@@ -1822,24 +1886,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     ledger_id=ledger_id,
                     ledger_claimed_at=ledger_claimed_at,
                 )
-            except FanInBoundExceededError as exc:
-                await emitter.aclose()
-                route = await self._ladder_or_fail(
-                    flow_id,
-                    row,
-                    attempt,
-                    node,
-                    exc,
-                    claim_epoch=claim_epoch,
-                    ledger_id=ledger_id,
-                    ledger_claimed_at=ledger_claimed_at,
-                )
-                if route == "deferred":
-                    return "deferred"
-                record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
-                if route in ("cancelled", "fenced"):
-                    return route
-                return "laddered"
+            except (
+                FanInBoundExceededError,
+                MapIndexExhaustedError,
+                MapIndexSchemaError,
+            ) as exc:
+                return await _route_finalize_refusal(exc)
                 # the miss ran the body — the cache fill happens only on the
             # terminal that actually landed (a fenced write is a zombie's,
             # never a terminal-succeeded). The CAS inside the store keeps one
@@ -2181,7 +2233,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         the map's children resolve it as the law's first level)."""
         fork: ForkSpec | None = None
         if node is not None and node.map_item is not None:
-            fork = self._map_fork(row, node, result, run_priority=run_priority)
+            from taskq.constants import SMALLINT_MAX
+            from taskq.workflows._types import MAP_INDEX_CEILING, resolve_map_index_domain
+
+            map_ceiling = MAP_INDEX_CEILING
+            raw_items = result.get("value") if result is not None else None
+            if _list_width(raw_items) > SMALLINT_MAX + 1:
+                # Only a map past the legacy 16-bit window pays for the all-five
+                # schema read; ordinary maps read nothing. A widened schema
+                # activates the bigint identity without a worker restart.
+                async with self.pool.acquire() as probe_conn:
+                    map_ceiling = await resolve_map_index_domain(probe_conn, self.schema)
+            fork = self._map_fork(
+                row, node, result, run_priority=run_priority, map_index_ceiling=map_ceiling
+            )
         elif node is not None and node.map_arms is not None and prebuilt_route_fork is not None:
             # the typed route's fork — built at the body path from
             # the live elements (the arm dispatch reads the element's
@@ -2393,6 +2458,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         result: dict[str, object] | None,
         *,
         run_priority: int | None = None,
+        map_index_ceiling: int | None = None,
     ) -> ForkSpec | None:
         """The map source's finalize fork: N children (the item body,
         one per list element — fresh jobs, per-item ledger identity) +
@@ -2413,23 +2479,23 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         from taskq.workflows._emit import MapIndexExhaustedError
         from taskq.workflows._types import MAP_INDEX_CEILING, ConsumerBinding
 
+        ceiling = MAP_INDEX_CEILING if map_index_ceiling is None else map_index_ceiling
         raw_items = result.get("value") if result is not None else None
         items: list[object] = (
             list(raw_items) if isinstance(raw_items, list) else []  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk — the envelope's value is the body's own return, jsonb-round-tripped.
         )
-        # the map children's ledger identity rides map_index (a smallint) — a
-        # map over more than ceiling+1 items dies as the raw DataError
-        # mid-finalize-tx (the whole fork rolled back, the raw error laddered).
-        # The named refusal, before the tx: the record's identity cannot grow
-        # past the column's domain.
-        if len(items) > MAP_INDEX_CEILING + 1:
+        # the map children's ledger identity rides map_index — a map over more
+        # than ceiling+1 items would mint an identity past the resolved
+        # five-carrier domain (the whole fork rolled back by the raw bind). The
+        # named refusal, before the tx: the record's identity cannot grow past
+        # the schema's own domain.
+        if len(items) > ceiling + 1:
             raise MapIndexExhaustedError(
                 f"the map source {row['step_key']!r} returned "
-                f"{len(items)} items — record #{MAP_INDEX_CEILING + 1} is "
-                f"past the map_index smallint ceiling "
-                f"({MAP_INDEX_CEILING}); the fork refuses BEFORE the "
-                "finalize tx (the ceiling is documented on "
-                "MAP_INDEX_CEILING — split the source's page)"
+                f"{len(items)} items — record #{ceiling + 1} is "
+                f"past the map_index identity ceiling "
+                f"({ceiling}); the fork refuses BEFORE the "
+                "finalize tx (split the source's page)"
             )
         join_key = f"{row['step_key']}.join"
         # the map's children share the source's cohort — the source's
@@ -2596,7 +2662,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         and never folded into the source node) > the
         source node's declaration > the column default; the JOIN (the
         source's own cohort — the arm overrides never retouch it) lands
-        at the SOURCE's resolution."""
+        at the SOURCE's resolution.
+
+        An oversized route is NOT an identity refusal: ``validate_fork``'s
+        join-count bound refuses more than ``SMALLINT_MAX`` children with
+        ``FanInBoundExceededError`` inside the finalize's machinery boundary.
+        The route fork therefore performs no catalog read on the body path."""
         from taskq.workflows._types import ConsumerBinding
         from taskq.workflows.chain import RouterNotTotal, type_tag
 
@@ -2605,6 +2676,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         items: list[object] = cast(
             "list[object]", outcome_value
         )  # Why: the isinstance narrowed the object-typed body return to list[Unknown] — the cast is the declared laundering (the element walk below re-narrows per element; the codec's own seam shape).
+        # The routed arms share the map's fork identity, but a route's binding
+        # limit is jobs.deps_pending's join counter, not the record identity:
+        # validate_fork (inside the finalize's machinery boundary) refuses more
+        # than SMALLINT_MAX children with FanInBoundExceededError. Reading the
+        # identity domain here would put a DB statement inside the BODY failure
+        # boundary, where a transport fault would be mis-recorded as a body
+        # failure.
         # the JOIN's level — the arm overrides apply to the arm children, never
         # the join (the join is the source's own cohort, the placement fields'
         # law).
