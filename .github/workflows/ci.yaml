@@ -555,7 +555,7 @@ jobs:
       - name: Run the load-sensitive suite serially
         run: |
           set -euo pipefail
-          files="$(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4)"
+          files="$(uv run --no-sync python scripts/ci_shard.py --shard ${{ matrix.shard }} --total 4 --include-system-e2e)"
           if [ -z "$files" ]; then
             echo "::error::ci_shard.py returned no modules for shard ${{ matrix.shard }}/4"
             exit 1

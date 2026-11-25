@@ -1034,7 +1034,9 @@ def test_the_shard_partition_does_not_depend_on_discovery_order(
     assert len(modules) > 1, "discovery found no modules; the comparison would be vacuous"
     baseline = ci_shard._partition(4)
 
-    monkeypatch.setattr(ci_shard, "_modules", lambda: list(reversed(modules)))
+    monkeypatch.setattr(
+        ci_shard, "_modules", lambda *, include_system_e2e=False: list(reversed(modules))
+    )
     reordered = ci_shard._partition(4)
 
     differing = sorted(
@@ -1052,8 +1054,12 @@ def test_the_shard_partition_does_not_depend_on_discovery_order(
 def test_load_sensitive_system_modules_are_assigned_to_the_serial_shards() -> None:
     """The system-e2e job excludes ``load_sensitive`` because the serial
     load-sensitive job owns those tests. That ownership is real only when the
-    shard generator hands their modules to that job, which passes
-    ``--system-e2e``; excluding the whole directory strands them in no lane."""
+    shard generator hands their modules to that job (via ``--include-system-e2e``
+    paired with pytest's ``--system-e2e``), while keeping ``tests/system_e2e``
+    OUT of the default shard list used by ``test`` and ``coverage-shard`` (where
+    explicit CLI paths would import ``tests/system_e2e/_wf_app.py`` before
+    deselection and collide with ``examples/deep_research.py`` in the global
+    workflow registry)."""
     from scripts.ci_shard import _partition
 
     marked = []
@@ -1066,7 +1072,19 @@ def test_load_sensitive_system_modules_are_assigned_to_the_serial_shards() -> No
             marked.append(path)
     assert marked, "no load-sensitive system-e2e modules found; this assignment pin is vacuous"
 
-    sharded = {path for shard in _partition(4) for path in shard}
+    default_sharded = {path for shard in _partition(4) for path in shard}
+    leaked_system = sorted(
+        path.relative_to(_REPO_ROOT).as_posix()
+        for path in default_sharded
+        if path.relative_to(_REPO_ROOT / "tests").parts[0] == "system_e2e"
+    )
+    assert not leaked_system, (
+        "default shard list must never pass tests/system_e2e paths to jobs without "
+        "--system-e2e (explicit CLI args import tests/system_e2e/_wf_app.py before "
+        f"deselection and pollute the global workflow registry): {leaked_system}"
+    )
+
+    sharded = {path for shard in _partition(4, include_system_e2e=True) for path in shard}
     missing = sorted(
         path.relative_to(_REPO_ROOT).as_posix() for path in marked if path not in sharded
     )
@@ -1089,6 +1107,10 @@ def test_load_sensitive_system_modules_are_assigned_to_the_serial_shards() -> No
         for step in _steps(jobs["load-sensitive"])
         if "scripts/ci_shard.py" in str(step.get("run", ""))
     )
+    assert "--include-system-e2e" in load_script, (
+        "load-sensitive must pass --include-system-e2e to scripts/ci_shard.py so "
+        "load-sensitive system-e2e modules enter its serial shards"
+    )
     assert "--system-e2e" in load_script, (
         "the serial shard list names system modules, but without --system-e2e pytest "
         "deselects every one of them"
@@ -1100,6 +1122,9 @@ def test_load_sensitive_system_modules_are_assigned_to_the_serial_shards() -> No
             for step in _steps(jobs[job_name])
             if "scripts/ci_shard.py" in str(step.get("run", ""))
         )
+        assert "--include-system-e2e" not in script, (
+            f"{job_name} must not pass --include-system-e2e (it does not pass --system-e2e)"
+        )
         assert "--system-e2e" not in script, (
             f"{job_name} would run the load-sensitive system tier in parallel rather "
             "than leaving it to the serial lane"
@@ -1109,36 +1134,47 @@ def test_load_sensitive_system_modules_are_assigned_to_the_serial_shards() -> No
 def test_the_shard_partition_covers_the_default_tier_but_not_the_optin_lanes() -> None:
     """The shard list IS the file list the sharded legs hand to pytest, so
     discovery decides what CI executes: a module it omits runs nowhere, and a
-    module from an exclusively opt-in lane (which needs ``--e2e`` or
-    ``--otel-validation``, flags the sharded legs never pass) would be collected
-    by a leg that cannot run it. System-e2e's load-sensitive subset is the
-    deliberate exception pinned immediately above: the serial leg passes its
-    flag. The remaining boundary is pinned in both directions."""
+    module from an opt-in lane (``--e2e``, ``--otel-validation``, or
+    ``--system-e2e`` without ``--include-system-e2e``) must not be passed as an
+    explicit CLI path to legs that cannot run it. Both the default partition and
+    the ``--include-system-e2e`` partition are pinned in both directions."""
     from scripts.ci_shard import _DEDICATED_LANE_DIRS, _modules
 
     tests_root = _REPO_ROOT / "tests"
-    discovered = {path.relative_to(_REPO_ROOT).as_posix() for path in _modules()}
+    discovered_default = {path.relative_to(_REPO_ROOT).as_posix() for path in _modules()}
+    discovered_with_sys = {
+        path.relative_to(_REPO_ROOT).as_posix() for path in _modules(include_system_e2e=True)
+    }
     leaked = sorted(
         relative
-        for relative in discovered
+        for relative in discovered_with_sys
         if _DEDICATED_LANE_DIRS.intersection(Path(relative).relative_to("tests").parts[:-1])
     )
     assert not leaked, (
         "the shard partition pulls opt-in-lane modules into legs that cannot run "
         f"them (their own jobs pass the opt-in flag): {leaked}"
     )
-    expected = set()
+    expected_default = set()
+    expected_with_sys = set()
     for path in tests_root.rglob("test_*.py"):
         relative = path.relative_to(tests_root)
         if _DEDICATED_LANE_DIRS.intersection(relative.parts[:-1]):
             continue
-        if relative.parts[0] == "system_e2e" and "pytest.mark.load_sensitive" not in path.read_text(
-            encoding="utf-8"
-        ):
+        rel_posix = path.relative_to(_REPO_ROOT).as_posix()
+        if relative.parts[0] == "system_e2e":
+            if "pytest.mark.load_sensitive" in path.read_text(encoding="utf-8"):
+                expected_with_sys.add(rel_posix)
             continue
-        expected.add(path.relative_to(_REPO_ROOT).as_posix())
-    assert discovered == expected, (
-        "the shard partition no longer covers exactly the default tier plus the "
-        "serial load-sensitive system modules: "
-        f"missing={sorted(expected - discovered)}, unexpected={sorted(discovered - expected)}"
+        expected_default.add(rel_posix)
+        expected_with_sys.add(rel_posix)
+    assert discovered_default == expected_default, (
+        "the default shard partition no longer covers exactly the default tier: "
+        f"missing={sorted(expected_default - discovered_default)}, "
+        f"unexpected={sorted(discovered_default - expected_default)}"
+    )
+    assert discovered_with_sys == expected_with_sys, (
+        "the --include-system-e2e shard partition no longer covers exactly the "
+        "default tier plus load-sensitive system-e2e modules: "
+        f"missing={sorted(expected_with_sys - discovered_with_sys)}, "
+        f"unexpected={sorted(discovered_with_sys - expected_with_sys)}"
     )

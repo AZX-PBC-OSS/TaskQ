@@ -15,9 +15,14 @@ the shards within a small factor of each other.
 
 The partition covers the whole DEFAULT collection tier — nested suites
 included, because a shard list that silently omits a directory removes those
-modules from CI entirely. It also covers the system-e2e modules marked
-``load_sensitive``: their own job deselects them and the serial sharded job
-passes ``--system-e2e`` to collect them.
+modules from CI entirely. With ``--include-system-e2e`` (used ONLY by the
+serial ``load-sensitive`` job, which also passes ``--system-e2e`` to pytest),
+it also includes the ``tests/system_e2e`` modules marked ``load_sensitive``.
+Keeping ``tests/system_e2e`` out of the default shard list is load-bearing:
+passing a ``tests/system_e2e`` path explicitly on the pytest command line
+forces pytest to import the module before ``pytest_collection_modifyitems``
+deselects it, which executes ``tests/system_e2e/_wf_app.py`` and pollutes
+the global workflow registry (colliding with ``examples/deep_research.py``).
 
 Directories belonging exclusively to other lanes stay out: the OPT-IN lanes
 (``tests/e2e`` behind ``--e2e``, ``tests/otel_validation`` behind
@@ -59,22 +64,25 @@ def _weight(path: Path) -> int:
     return max(1, tests) + (_DB_SETUP_WEIGHT if _DB_FIXTURES.search(text) else 0)
 
 
-def _modules() -> list[Path]:
-    """The default tier plus system-e2e's serial load-sensitive modules."""
+def _modules(*, include_system_e2e: bool = False) -> list[Path]:
+    """The default tier, plus system-e2e's load-sensitive modules when requested."""
     modules: list[Path] = []
     for path in TESTS.rglob("test_*.py"):
         relative = path.relative_to(TESTS)
         if _DEDICATED_LANE_DIRS.intersection(relative.parts[:-1]):
             continue
-        if relative.parts[0] == "system_e2e" and "pytest.mark.load_sensitive" not in path.read_text(
-            encoding="utf-8", errors="ignore"
-        ):
-            continue
+        if relative.parts[0] == "system_e2e":
+            if not include_system_e2e:
+                continue
+            if "pytest.mark.load_sensitive" not in path.read_text(
+                encoding="utf-8", errors="ignore"
+            ):
+                continue
         modules.append(path)
     return sorted(modules)
 
 
-def _partition(total: int) -> list[list[Path]]:
+def _partition(total: int, *, include_system_e2e: bool = False) -> list[list[Path]]:
     """Cost-balanced LPT packing.
 
     The tie-break is the module's FULL path, not its basename: recursive
@@ -84,7 +92,7 @@ def _partition(total: int) -> list[list[Path]]:
     must agree. ``(-weight, posix path)`` is a total order over the module set,
     so the partition does not depend on discovery order.
     """
-    files = _modules()
+    files = _modules(include_system_e2e=include_system_e2e)
     if not files:
         raise SystemExit(f"no test modules under {TESTS}")
     weighted = sorted(
@@ -103,11 +111,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--shard", type=int, default=1)
     ap.add_argument("--total", type=int, default=1)
+    ap.add_argument("--include-system-e2e", action="store_true")
     ap.add_argument("--verify", action="store_true")
     args = ap.parse_args()
     if not 1 <= args.shard <= args.total:
         raise SystemExit(f"--shard must be in 1..{args.total}")
-    bins = _partition(args.total)
+    bins = _partition(args.total, include_system_e2e=args.include_system_e2e)
     here = sorted(bins[args.shard - 1])
     if args.verify:
         for index, bin_files in enumerate(bins, start=1):
