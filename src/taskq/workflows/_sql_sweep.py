@@ -24,7 +24,13 @@ from taskq._sql_render import render as shared_render
 # Missing parents (a misnamed-child edge) never fire silently: the blocked
 # arm stamps metadata.blocking_reason='orphan_parent' (the blocked-with-
 # reason state, §17.2's chains render from it) and the firable arm excludes
-# them — the record must never look healthy while the work is wrong.
+# them — the record must never look healthy while the work is wrong. The
+# stamp is a LIVE-FLOW diagnosis: a flow-terminal row is flow_fenced's
+# (its 'flow_dead'/'failed_parent' resolution is the truthful one, and
+# the blocked stamp would destroy the 'join' sentinel that arm keys on),
+# and an edge-less live row defers while another live row can still
+# write its edge (a static consumer of a fork-spawned join is born that
+# way — the nested fork's edge is the only thing that releases it).
 REDERIVE_SWEEP_SQL = """\
 WITH locked AS (
     SELECT c.id, c.step_key, c.metadata->>'flow_id' AS flow_id, c.deps_pending
@@ -43,6 +49,9 @@ WITH locked AS (
 ),
 counts AS (
     SELECT l.id AS child_id,
+           -- the flow link, for the blocked arm's two liveness legs (the
+           -- terminal-flow hand-off and the reserved-consumer deferral).
+           l.flow_id AS flow_id,
            count(*) FILTER (WHERE e.child_id IS NOT NULL) AS edge_count,
            count(*) FILTER (WHERE e.child_id IS NOT NULL AND p.id IS NULL) AS missing_parents,
            count(*) FILTER (
@@ -68,12 +77,14 @@ counts AS (
     -- path that never wrote its edges) must be ENUMERATED — the inner
     -- join made it invisible (never reconciled, never fired, never
     -- stamped blocked-with-reason): silently stranded in join-wait
-    -- forever with a healthy-looking record. The edge-less row blocks
-    -- below (edge_count = 0 → orphan_parent), the 'record healthy, work
-    -- wrong' class rejected with a reason.
+    -- forever with a healthy-looking record. The edge-less row is
+    -- DIAGNOSED by the blocked arm's guarded legs (the misnamed-child
+    -- case, or — once nothing live is left to write the edge — the
+    -- reserved-consumer case), the 'record healthy, work wrong' class
+    -- rejected with a reason.
     LEFT JOIN {schema}.wf_edge e ON e.child_id = l.id
     LEFT JOIN {schema}.jobs p ON p.id = e.parent_id
-    GROUP BY l.id
+    GROUP BY l.id, l.flow_id
 ),
 blocked AS (
     UPDATE {schema}.jobs j
@@ -85,7 +96,42 @@ blocked AS (
         )
     FROM counts c
     WHERE j.id = c.child_id
-      AND (c.missing_parents > 0 OR c.edge_count = 0)
+      AND (
+          -- The misnamed-child edge: a written edge whose parent row does
+          -- not exist can never resolve, whatever else the flow is doing.
+          c.missing_parents > 0
+          -- The edge-less join-wait row: a wiring fault only once nothing
+          -- is left that could still write its edge. A static consumer of
+          -- a fork-spawned join is born exactly this shape — pending, the
+          -- counter reserved, ZERO edges — while the nested fork that
+          -- writes ``FORK_CONSUMER_EDGES_SQL`` has not run yet (its source
+          -- join is still live in the flow). While ANY other live non-root
+          -- row exists in the flow it can still fork and write that edge,
+          -- so this pass DEFERS; when the candidate is the flow's only
+          -- live row, nothing can release it and the stamp is truthful.
+          OR (
+              c.edge_count = 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM {schema}.jobs live
+                  WHERE (live.metadata->>'flow_id')::uuid = (c.flow_id)::uuid
+                    AND live.id <> c.child_id
+                    AND live.step_key <> '__flow__'
+                    AND live.status IN ('pending', 'scheduled', 'running')
+              )
+          )
+      )
+      -- A terminal flow's resolution is the fence's, never this arm's: the
+      -- flow_fenced arm below stamps 'flow_dead'/'failed_parent', and it
+      -- keys on the 'join' sentinel this stamp would overwrite — stamping
+      -- here first made the truthful reason unreachable for the reserved
+      -- consumer of a nested join whose fork never ran (the flow died
+      -- first). 'orphan_parent' is a live-flow diagnosis only.
+      AND NOT EXISTS (
+          SELECT 1 FROM {schema}.jobs f
+          WHERE f.id = (c.flow_id)::uuid
+            AND f.step_key = '__flow__'
+            AND f.status IN {terminal}
+      )
       AND NOT j.metadata @> '{{"blocking_reason": "orphan_parent"}}'::jsonb
     RETURNING j.id
 ),
@@ -155,7 +201,10 @@ flow_fenced AS (
           )
           -- One resolution per row per pass: the arms all see the same
           -- statement snapshot, so the exclusion (not the write order)
-          -- keeps the double-update undefined-result class out.
+          -- keeps the double-update undefined-result class out. The
+          -- blocked arm is flow-live-only (it yields a terminal flow's
+          -- rows to THIS arm), so its exclusion here is a belt; the
+          -- blocked_required exclusion is the load-bearing one.
           AND NOT EXISTS (SELECT 1 FROM blocked b WHERE b.id = jj.id)
           AND NOT EXISTS (SELECT 1 FROM blocked_required br WHERE br.id = jj.id)
     ) cand
