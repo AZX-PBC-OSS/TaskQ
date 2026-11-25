@@ -125,14 +125,52 @@ Depth-flat by construction: one LIMIT-1 first-entry index probe per
 (registered actor × round queue), the same per-round cost class as the
 claim statement's own idle-actor prefilter.
 
+**The standing-held exception (issue #748).** The hold-stamp leg
+(`AND NOT <alias>.metadata ? 'hold'`, and the probe's
+`OR <alias>.metadata ? 'hold'` disjunct) is not indexable: `jobs`' only
+GIN index is `jsonb_path_ops`, which serves `@>` and not `?`, and no
+partial index carries the negation. The leg is therefore a heap-level
+Filter, and a Filter does not let a `LIMIT` stop a scan — the scan stops
+only once it has produced `LIMIT` rows that pass. A standing held backlog
+sorts ahead of the routable rows (`_HOLD_HOLD_NODE_SQL` leaves an untimed
+hold `pending`, due, `deps_pending = 0`, with `scheduled_at` unchanged),
+so it is re-read and discarded on every dispatch round. Measured with
+`EXPLAIN (ANALYZE, BUFFERS)` over the production constants, row work =
+`(Actual Rows + Rows Removed by Filter) × Actual Loops`:
+
+| statement | held rows ahead | widest node row work | control (leg textually removed) |
+|---|---|---|---|
+| `DISPATCH_CLAIMABLE_PROBE_SQL`, idle queue | 1,000 | 1,000 | 1–2 |
+| same | 10,000 | 10,000 | 1–2 |
+| `DISPATCH_STRICT_FIFO_SQL`, 50 routable behind | 1,000 | 2,500 | 1,050 |
+| same | 10,000 | 10,050 | 100 |
+| `DISPATCH_ROUND_ROBIN_SQL`, same seed | 1,000 | 2,500 | 1,050 |
+| same | 10,000 | 10,050 | 100 |
+
+The control (the identical statement with the leg removed, over the same
+seeded rows) stays depth-flat; the delta is the leg, not the population.
+The probe runs only on empty rounds, and an all-held queue is
+permanently an empty round, so the walk is paid at `poll_interval`
+(default 1.0 s) from every dispatching worker for as long as the hold
+stands. The accepted trade for #748: the fence is what stops a stamped
+row from being re-claimed; making the predicate indexable (a partial
+index on the pending population, or mirroring the stamp into a column)
+is the migration that would restore the old bound. The exception is
+pinned by `tests/test_dispatch_fence_hold_backlog_depth.py` (both cost
+tests assert the accepted linear bound and keep the depth-flat control).
+
 ## Verdict
 
 - Two-dispatcher contract: fixed (0 → 5 rows for the second dispatcher;
   fleet yield 5 → 10 per round), with the uncontended round's cost
   unchanged in class (sub-millisecond, ~+16 constant buffers).
 - Depth contract: row work and buffers are depth-independent on both sides
-  of the change; execution time with JIT disabled is flat vs baseline
-  (largest delta +0.22 ms at 30k round-robin). The only large wall-clock
+  of the change for vanilla and routable rows; execution time with JIT
+  disabled is flat vs baseline (largest delta +0.22 ms at 30k round-robin).
+  The one exception is a standing held backlog, priced in Shape D above:
+  both dispatch statements' row work is linear in the held rows ahead of
+  the first routable one (a heap Filter cannot honour a LIMIT), on every
+  round, for as long as the hold stands. The only large wall-clock
   numbers on either side are the pre-existing JIT-compilation artifact,
   reported above.
 - Fleet-scope contract: the round-robin cohort walk no longer grows with

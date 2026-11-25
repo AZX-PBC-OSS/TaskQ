@@ -1507,15 +1507,21 @@ _queue_utilization_gauge = get_meter().create_observable_gauge(
 )
 
 
-type StrandedReason = Literal["no_actor_config", "unserved_queue", "workflow_root_missing"]
+type StrandedReason = Literal[
+    "no_actor_config", "unserved_queue", "workflow_root_missing", "stamp_unresolved"
+]
 """Why a pending/scheduled row cannot make progress, the closed ``reason``
 label set of ``taskq.jobs.stranded``.
 
-The two dispatch-invisible reasons (``no_actor_config`` — the actor has
+The three dispatch-invisible reasons (``no_actor_config`` — the actor has
 no actor_config row, so the dispatch CTE's candidate derivation never
 sees the row; ``unserved_queue`` — no live registered worker serves the
-queue dispatch routes the row on) are conditions NO dispatch round and
-no deadline sweep will ever touch. The third (``workflow_root_missing``)
+queue dispatch routes the row on; ``stamp_unresolved`` — the row carries a
+``metadata.hold`` stamp whose ``wf_signals`` hold is no longer ``'held'``
+(delivered, abandoned, cancelled, or absent), so the fleet's dispatch fence
+refuses it and the leader's hold-stamp reconcile is its only repair) are
+conditions NO dispatch round and no deadline sweep will ever touch. The
+fourth (``workflow_root_missing``)
 is NOT dispatch-invisible: the row can dispatch and be bounded-consumed
 when its actor config and effective routing queue are otherwise served;
 what cannot progress is the row's RUN — its own ``__flow__`` root row is
@@ -1529,13 +1535,16 @@ def update_stranded_jobs_cache(data: Mapping[tuple[str, StrandedReason], int]) -
     """Replace the stranded-jobs cache with fresh data from the leader's query.
 
     Stranded jobs are pending/scheduled rows that cannot make progress.
-    Two reasons are DISPATCH-INVISIBLE: the actor has no `actor_config`
+    Three reasons are DISPATCH-INVISIBLE: the actor has no `actor_config`
     row (the dispatch CTE derives its candidates from
-    `per_actor_capacity`, which is `FROM actor_config`), or the row sits
+    `per_actor_capacity`, which is `FROM actor_config`); the row sits
     on a queue no LIVE registered worker serves (dispatch probes only its
     own subscription's queues, and a worker whose last_seen_at has gone
-    stale is not dispatching). Both shapes accumulate invisibly to
-    dispatch and the deadline sweep. The third reason,
+    stale is not dispatching); or the row carries a `metadata.hold` stamp
+    whose `wf_signals` hold is no longer `'held'` (a dead stamp — the
+    fleet's dispatch fence refuses every stamped row, and the leader's
+    hold-stamp reconcile is its only repair). All three shapes accumulate
+    invisibly to dispatch and the deadline sweep. The fourth reason,
     `workflow_root_missing`, is a WORKFLOW-progress fault, not a
     dispatch fault: the row's own run has lost its `__flow__` root row,
     so the run can make no progress even though the row itself dispatches
@@ -1543,7 +1552,8 @@ def update_stranded_jobs_cache(data: Mapping[tuple[str, StrandedReason], int]) -
     root or quarantine the run), never actor registration or a queue
     move. Keyed by ``(actor, reason)`` so the gauge says which condition
     held, the dispatch-invisible reasons have different remediations
-    (register the actor vs. subscribe a worker to the queue), and a
+    (register the actor, subscribe a worker to the queue, or wait for the
+    hold-stamp reconcile tick), and a
     per-actor total made an operator who found the actor_config row
     present conclude the detector lied.
 
@@ -1571,6 +1581,9 @@ _stranded_jobs_gauge = get_meter().create_observable_gauge(
         "has no actor_config row — the row is invisible to every dispatch "
         "round; 'unserved_queue', the queue dispatch routes the row on has "
         "no live worker subscribed — likewise never dispatched; "
+        "'stamp_unresolved', the row carries a metadata.hold stamp whose "
+        "hold is no longer held, so the dispatch fence refuses it until the "
+        "hold-stamp reconcile clears the stamp; "
         "'workflow_root_missing', the row's own run has lost its __flow__ "
         "root row — the row itself may dispatch and run, but the run can "
         "make no progress and needs control-plane recovery, not a worker "

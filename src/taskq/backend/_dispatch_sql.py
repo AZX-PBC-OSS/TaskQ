@@ -308,12 +308,23 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # widen the cancel transaction's write set. Refusal is the cheap,
 # recoverable direction; that is the asymmetry the doctrine prefers.
 #
-# plan shape (serviceable, EXPLAIN-verified): the leg short-circuits
-# on the step_key probe — vanilla rows (step_key is NULL, the fleet's whole
-# population in the depth oracles) evaluate no subplan, so the candidate
-# chain's row-visit counts and the depth contract are unchanged; workflow
-# rows pay one primary-key EXISTS probe each (a bounded per-row probe, the
-# same cost class as the reservation-headroom fold's pkey laterals).
+# plan shape (serviceable, EXPLAIN-verified): the flow-status/root legs
+# short-circuit on the step_key probe — vanilla rows (step_key is NULL, the
+# fleet's whole population in the depth oracles) evaluate no subplan, so the
+# candidate chain's row-visit counts and the depth contract are unchanged;
+# workflow rows pay one primary-key EXISTS probe each (a bounded per-row
+# probe, the same cost class as the reservation-headroom fold's pkey
+# laterals). THE HOLD-STAMP LEG IS THE ONE EXCEPTION: ``metadata ? 'hold'``
+# is not indexable (the only GIN index on jobs.metadata is jsonb_path_ops,
+# which serves @> and not ?), so it can only be a heap-level Filter — a
+# Filter does not let a LIMIT stop a scan. A standing held backlog that sorts
+# ahead of the routable rows is therefore visited and discarded on every
+# round, and the statement's row work is proportional to that held backlog,
+# not to the round's bound. That is the accepted trade of issue #748 (the
+# fence is what stops a stamped row being re-claimed), priced in
+# perf-evidence-dispatch.md and measured by
+# tests/test_dispatch_fence_hold_backlog_depth.py; the depth contract holds
+# for the population the depth oracles seed (vanilla and routable rows).
 # Rendered per alias by _wf_dispatch_fence; the tokens are substituted in
 # _render_dispatch_sql (never .format — the templates keep {schema} for the
 # call-site render).
@@ -367,6 +378,14 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
           __WF_ALIAS__.step_key IS NULL
           OR (
               __WF_ALIAS__.step_key <> '__flow__'
+              -- THE HOLD-STAMP LEG: a stamped row is the held representation
+              -- (the in-process claim CAS's twin; the wake clears the stamp).
+              -- ANDed outside the terminal-flow group, so it fences a stamped
+              -- escalation row too while its stamp stands. The leg is not
+              -- indexable (a Filter after a heap visit) — the accepted
+              -- per-round cost on a standing held backlog, priced in
+              -- perf-evidence-dispatch.md.
+              AND NOT __WF_ALIAS__.metadata ? 'hold'
               AND (SELECT wf_exec.capable FROM wf_exec_capable wf_exec)
               AND (
                   -- THE ESCALATION-KIND exemption (the why is the
@@ -404,11 +423,14 @@ _WF_PROBE_FENCE_TEMPLATE = """\
       -- carries it (the two fences may not disagree: a probe that
       -- misses the escalation consumer would answer "nothing remains"
       -- for the one row the claim fence admits — the worker sleeps, the
-      -- page never expands a round).
+      -- page never expands a round). A stamped row (the held
+      -- representation) is not routable work either: the claim fence's
+      -- hold-stamp leg, so the two agree on held rows.
       AND NOT (
           __WF_ALIAS__.step_key IS NOT NULL
           AND (
               __WF_ALIAS__.step_key = '__flow__'
+              OR __WF_ALIAS__.metadata ? 'hold'
               OR (
                   __WF_ALIAS__.step_key <> '__WF_ESCALATION_STEP__'
                   AND NOT __WF_ALIAS__.metadata ? 'wf_after_terminal_effect'
@@ -2003,7 +2025,9 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
 # scan the registry at all; see per_actor_capacity) and every inner
 # probe is a LIMIT-1 index read that stops at the first matching entry,
 # so the probe's work is bounded by registered actors x round queues,
-# never by backlog depth. The inner probes carry no ORDER BY: any
+# never by backlog depth, except standing held rows (pending, due when
+# untimed), which the fence filters after a heap visit (issue #748). The
+# inner probes carry no ORDER BY: any
 # single matching row answers the question, so the cheapest first match
 # is the correct one.
 DISPATCH_CLAIMABLE_PROBE_SQL: str = """\

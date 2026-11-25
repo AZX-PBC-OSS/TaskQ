@@ -41,9 +41,11 @@ class _StrandedActorJobs:
     stranded-jobs sweep computes (``_stranded_jobs_loop`` in
     ``taskq/worker/_leader_sweeps.py``): ``no_actor_config`` rows can
     never become dispatch candidates, and ``unserved_queue`` rows route
-    to a queue no live worker serves. The sweep's third leg (the
-    run-scoped ``workflow_root_missing`` detector) is not mirrored here —
-    these two fields answer the dispatch question only.
+    to a queue no live worker serves. The sweep's dead-stamp leg
+    (``stamp_unresolved`` — the hold-stamp reconcile repairs it, not a
+    routing condition) and its run-scoped ``workflow_root_missing``
+    detector are not mirrored here — these two fields answer the dispatch
+    routing question only.
     """
 
     actor: str

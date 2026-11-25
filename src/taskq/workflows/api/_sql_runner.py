@@ -84,8 +84,8 @@ WHERE id = $1
   AND NOT ({wf_emit_park_core})
   AND deps_pending = 0
   -- THE HOLD-STAMP LEG (the fence's last word — the two-driver race's
-  -- wedged-hold fix, the same leg the worker's claimable fence carries
-  -- since the D2 soak's wedge): the claimable SELECT's snapshot can
+  -- wedged-hold fix, the same leg the fleet's dispatch fence carries,
+  -- _WF_DISPATCH_FENCE_TEMPLATE): the claimable SELECT's snapshot can
   -- PREDATE the hold's mint (the other driver's body minted the hold
   -- between this driver's SELECT and this WRITE) — a stamp that rides
   -- the mint's OWN transaction (the signal row + the held representation

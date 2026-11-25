@@ -11,7 +11,10 @@ root + static nodes + edges + ROOT_START land in the child create's own
 transaction; the parent's step never wraps it in a second one).
 
 The spawn's run key is
-``childflow:{parent_flow_id}:{node_key}:{slot}`` under the child's own
+``childflow:{parent_flow_id}:{node_key}:{slot}`` — in a loop body the node
+segment is ``{node_key}.iter{i}`` (the iteration's ledger key), and on a
+map item it is ``{node_key}.item{m}`` (the sibling's ``map_index``; map
+items share one ``step_key``) — under the child's own
 ``workflow-run:<child name>`` scope — the G2 arbiter is the rememberer.
 The SLOT is the spawn site's identity, STABLE ACROSS RETRIES: the body
 re-executes from the top (the hold's resume, the retry's reclaim) and
@@ -20,13 +23,20 @@ never a duplicate (the retry-completion census's law, at the flow
 boundary). A terminal child adopted as-is is the deterministic replay:
 the retried body re-decides off the same terminal child.
 
-The per-attempt spawn cursor on the executing node's
-row (``metadata.spawn_cursor_{attempt}`` — the hold-cursor's exact
-pattern: a fresh attempt restarts at 0, so the retry re-derives the same
-slots). The loop's iteration is ITS own node row (``<loop>.iter<i>``),
-so one rule covers the fan-out in a loop body: distinct iteration rows
-carry distinct cursors. An explicit ``key=`` overrides the slot (the
-author's identity).
+The per-claim spawn cursor on the executing node's
+row (``metadata.spawn_slot_{attempt}`` holds the claim's ``claim_epoch``
+beside the counter): every execution, including a re-claim at a refunded
+attempt number (a ``Snooze``, the lost-claim refund), restarts at slot 0,
+so the re-run re-derives the same slots and the arbiter adopts. A loop's
+iterations run on the loop node's own row under one claim, so each iteration
+keeps its own cursor (``spawn_slot_{attempt}.iter{i}``) and its own run keys:
+a resume or a deferral that re-runs iteration k restarts at k's slot 0 and
+adopts k's children. A map item is its OWN job row, so its cursor is already
+per-sibling; the run key carries the item (``{node_key}.item{m}``) because
+its siblings share one ``step_key``. An explicit ``key=`` overrides the slot
+(the author's identity, never scoped to an iteration) and may not be a bare
+decimal string: that spelling is byte-identical to the slot segment, so the
+spawn refuses it.
 
 The parent's node row
 carries the child's flow id (``metadata.child_flows`` — the idempotent
@@ -71,6 +81,7 @@ bare-unwraps reds the attribute.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Protocol
 
@@ -81,6 +92,7 @@ from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.workflows.api._ctx_wait import Expired, NodeHeldError
 from taskq.workflows.api._runner_codec import decode_result
+from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._sql_runner import render_sql
 
 if TYPE_CHECKING:
@@ -97,6 +109,7 @@ __all__ = [
     "ChildOk",
     "ChildOutcome",
     "ChildWorkflowUnknownError",
+    "SpawnKeyReservedError",
 ]
 
 from taskq.workflows.api._hitl import CHILD_JOIN_SIGNAL_PREFIX
@@ -105,6 +118,14 @@ from taskq.workflows.api._hitl import CHILD_JOIN_SIGNAL_PREFIX
 #: machine's own vocabulary, re-read from the terminal-statuses door at
 #: call time — never a re-spelled literal drift).
 _TERMINAL = frozenset({"succeeded", "failed", "cancelled", "crashed", "abandoned"})
+
+#: An author key shaped exactly like the unkeyed run key's slot segment. The
+#: keyed derivation splices the author's string into the same position the
+#: unkeyed one fills with ``int(slot)``, so this shape aliases the node's
+#: first unkeyed spawn (a plain node with two spawn sites hands one caller
+#: the other's child). The spawn refuses it; every other key keeps its
+#: byte-identical run key.
+_BARE_DECIMAL_KEY_RE: Final = re.compile(r"[0-9]+")
 
 
 class ChildWorkflowUnknownError(RuntimeError):
@@ -142,6 +163,22 @@ class SpawnDepthExceededError(ValueError):
     never burns; the node terminal-fails with this class on the record.
     The remedy: bound the fan-out (raise ``max_depth=`` at the spawn
     site, or flatten the recursion into a loop over a ledgered step)."""
+
+
+class SpawnKeyReservedError(ValueError):
+    """``ctx.spawn_flow(key=...)`` named a BARE DECIMAL string (``"0"``,
+    ``"12"``) — a spelling the unkeyed derivation owns as its slot segment.
+
+    The keyed run key ``childflow:{flow}:{node}:{key}`` and the unkeyed
+    ``childflow:{flow}:{node}:{int(slot)}`` are one string for such a key,
+    so it would alias the node's first unkeyed spawn (or a numeric keyed
+    site's) and hand a caller another site's child. A DETERMINISTIC
+    authoring failure (the ladder's routing never burns a retry):
+    re-executing cannot change the key, so the node terminal-fails with
+    this class on the record. ``ValueError``'s subclass, so a caller that
+    only guarded the older refusal shape keeps working. The remedy: give
+    the key an unmistakable shape (``f"item-{i}"``) or drop ``key=`` to use
+    the slot."""
 
 
 #: the ancestor chain the spawn walks is bounded here; a deeper fan-out is the
@@ -199,9 +236,12 @@ class _SpawnHost(Protocol):
     job_id: JobId
     node_key: str
     attempt: int
+    claim_epoch: int
     _pool: asyncpg.Pool
     _wsql: WorkflowSql
     _ledger_id: JobId | None
+    _loop_iteration: int | None
+    _map_index: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +257,7 @@ class JoinSite:
     node_key: str
     attempt: int
     ledger_id: JobId | None
+    claim_epoch: int
 
 
 class ChildHandle[G: BaseModel]:
@@ -318,7 +359,7 @@ class ChildHandle[G: BaseModel]:
             # the wake) — idempotent, never a second registration of one wait.
             held_row = await conn.fetchrow(
                 render_sql(
-                    "SELECT id FROM {schema}.wf_signals "
+                    "SELECT id, signal_name, expires_at FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
                     "AND status = 'held' ORDER BY hold_epoch DESC LIMIT 1",
                     site.wsql.schema,
@@ -327,14 +368,27 @@ class ChildHandle[G: BaseModel]:
                 site.node_key,
                 signal_name,
             )
+            from taskq.workflows.api._hitl import mark_awaited, reassert_hold, register_hold
+
             if held_row is not None:
+                # this claim re-entered onto the standing hold: park the row
+                # onto it, or it stays 'running' with nothing executing it.
+                if site.ledger_id is not None:
+                    await mark_awaited(conn, site.wsql.schema, site.ledger_id)
+                await reassert_hold(
+                    conn,
+                    schema=site.wsql.schema,
+                    node_id=site.job_id,
+                    hold_id=held_row["id"],
+                    signal_name=str(held_row["signal_name"]),
+                    expires_at=held_row["expires_at"],
+                    claim_epoch=site.claim_epoch,
+                )
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=(signal_name,))
 
             # register: the ledger 'awaited' (resume-not-retry), then the
             # hold — the payload contract is the child's declared result
             # model (mandatory at hold time — the audit hole's law).
-            from taskq.workflows.api._hitl import mark_awaited, register_hold
-
             if site.ledger_id is not None:
                 await mark_awaited(conn, site.wsql.schema, site.ledger_id)
             epoch = await conn.fetchval(
@@ -429,9 +483,19 @@ class CtxSpawnOps(_SpawnHost):
         ``result=`` is the child's typed result contract (type[BaseModel])
         — the join's ``ChildOk.result`` re-validates into it; the spawn
         refuses a terminal-less child (the join could never read a
-        result). ``key=`` overrides the slot (the author's identity);
-        the default slot is the per-attempt spawn cursor (stable across
-        retries). ``max_depth=`` raises the spawn's default depth bound
+        result). ``key=`` overrides the slot (the author's identity, the
+        same key in every loop iteration unless the author puts the
+        iteration in it); the default slot is the per-claim spawn cursor
+        (every execution restarts at slot 0, so a retry or a deferral's
+        re-run adopts; in a loop body the cursor and the run key are per
+        iteration, so a re-run of iteration k adopts k's own children; a
+        map item's cursor is its own row's, and its run key carries the
+        sibling's index). ``key=`` may not be a bare decimal string
+        (``"0"``, ``"12"``): the slot segment of the default run key is
+        exactly that spelling, so a numeric key would alias the node's
+        first unkeyed spawn and hand a caller another site's child — the
+        spawn refuses it instead of minting the collision.
+        ``max_depth=`` raises the spawn's default depth bound
         (:data:`DEFAULT_SPAWN_MAX_DEPTH`) for a fan-out that genuinely
         needs it — the bound's typed arm is
         :class:`SpawnDepthExceededError`.
@@ -507,24 +571,60 @@ class CtxSpawnOps(_SpawnHost):
                 "or declare max_depth= at the spawn site."
             )
 
-            # the per-attempt spawn cursor is claimed in one atomic statement — the
+            # the per-claim spawn cursor is claimed in one atomic statement — the
         # increment and the returned slot are one row-CAS, so concurrent spawns
-        # take distinct slots. A fresh attempt re-derives the same slots (the
-        # cursor is per-attempt; the arbiter adopts).
+        # take distinct slots. The attempt's key carries claim_epoch, because a
+        # refund (a deferral, the lost-claim reconcile) re-uses the attempt
+        # number: every execution restarts at 0 and the arbiter adopts.
         if key is not None:
-            # The author's identity is the key: no slot claimed (the
-            # parent row's counter never moves for a keyed site).
+            # The author's identity is the key: no slot claimed (the parent
+            # row's counter never moves for a keyed site), and the derivation
+            # stays byte-identical for every key that cannot be confused with
+            # the slot segment. A bare decimal key is refused because it WOULD
+            # be that segment.
+            if _BARE_DECIMAL_KEY_RE.fullmatch(key):
+                raise SpawnKeyReservedError(
+                    f"spawn key {key!r} on node {self.node_key!r} is a bare decimal "
+                    "string — the unkeyed run key's slot segment is exactly that "
+                    "spelling, so this key would alias the node's first unkeyed "
+                    "spawn (or any other numeric keyed site's) and hand a caller a "
+                    "different spawn site's child. Give the key an unmistakable "
+                    "shape (e.g. f'item-{key}') or drop key= to use the slot."
+                )
             spawn_key = f"childflow:{self.flow_id}:{self.node_key}:{key}"
         else:
-            cursor_key = f"spawn_cursor_{self.attempt}"
+            # a loop's iterations share one row and one claim: the cursor and
+            # the key carry the iteration (the ledger's <key>.iter<i>), so a
+            # re-run of iteration k restarts at k's slot 0 and adopts k's children.
+            # A map item is its own row (its cursor is already per-sibling);
+            # its run key carries the sibling's map_index, because every map
+            # item shares one step_key (the fork's own :{map_index} law).
+            iter_suffix = "" if self._loop_iteration is None else f".iter{self._loop_iteration}"
+            map_suffix = "" if self._map_index is None else f".item{self._map_index}"
+            cursor_key = f"spawn_slot_{self.attempt}{iter_suffix}"
+            if self.claim_epoch <= 0:
+                # The cursor's reset law compares the stored epoch against the
+                # executing claim's: at 0 every comparison is NULL/false and a
+                # re-claim never resets, minting a duplicate child per resume.
+                # An unsupplied epoch must be loud, never a silent mis-claim.
+                raise WorkflowRunError(
+                    f"spawn_flow on node {self.node_key!r} of flow {self.flow_id} has "
+                    f"claim_epoch={self.claim_epoch!r} — an executing claim's epoch is "
+                    "at least 1 (both claim doors increment it). Building a context "
+                    "without the real claim epoch would leave the spawn slot's reset "
+                    "law inert; pass the claim's granted epoch."
+                )
             async with self._pool.acquire() as conn:
                 slot = await conn.fetchval(
                     render_sql(_SPAWN_SLOT_CLAIM_SQL, self._wsql.schema),
                     self.job_id,
                     cursor_key,
+                    self.claim_epoch,
                 )
             assert slot is not None  # the claim's UPDATE hit the executing node's row
-            spawn_key = f"childflow:{self.flow_id}:{self.node_key}:{int(slot)}"
+            spawn_key = (
+                f"childflow:{self.flow_id}:{self.node_key}{map_suffix}{iter_suffix}:{int(slot)}"
+            )
 
         from taskq.workflows.api._runner import FlowRunner
 
@@ -553,6 +653,7 @@ class CtxSpawnOps(_SpawnHost):
                 node_key=self.node_key,
                 attempt=self.attempt,
                 ledger_id=self._ledger_id,
+                claim_epoch=self.claim_epoch,
             ),
             flow_id=claim.flow_id,
             result_model=result,
@@ -592,20 +693,39 @@ SET metadata = jsonb_set(
 WHERE id = $1
 """
 
-#: the per-attempt cursor's read+write is one statement — the row's jsonb
-#: counter increments in the UPDATE and the allocated slot returns from it.
-#: Concurrent claims serialize on the row lock and each receives a DISTINCT
-#: slot; a same-key spawn never reaches this statement (the explicit key
-#: bypasses the slot).
+#: the per-claim cursor's read+write is one statement — the attempt's key
+#: holds ``{epoch, n}``: the counter increments under the same claim_epoch
+#: and restarts at 0 under any other, and the allocated slot returns from
+#: the UPDATE. Concurrent claims serialize on the row lock and each receives
+#: a DISTINCT slot; a same-key spawn never reaches this statement (the
+#: explicit key bypasses the slot). One key per attempt number keeps the
+#: metadata bounded under a polling deferral; a loop body keys per attempt
+#: and iteration, so a spawning loop adds one key per spawning iteration,
+#: growing at the rate of the ``child_flows`` receipts those spawns append.
+#: The stored epoch only moves forward: a writer with an older epoch on the
+#: same key (a stale body whose lease lapsed, sharing the attempt number as
+#: a chain source's logical attempt does) takes the next slot and never
+#: resets the live claim's counter, or the live claim's next spawn would
+#: re-derive slot 0 and adopt its own first child. The price of that rule is
+#: the slot's meaning: it indexes ARRIVAL order across every writer of the
+#: key, not one execution's logical spawn ordinal. While one execution owns
+#: the key they coincide; after a stale writer interleaves (or a concurrent
+#: unkeyed fan-out permutes), a later claim's slot k is the k-th child in
+#: that interleaved order — which is why a fan-out that must join to a
+#: per-item identity across resumes passes ``key=``.
 _SPAWN_SLOT_CLAIM_SQL = """
 UPDATE {schema}.jobs
 SET metadata = jsonb_set(
     metadata,
     ARRAY[$2::text],
-    to_jsonb(COALESCE((metadata->>$2)::int, -1) + 1)
+    jsonb_build_object(
+        'epoch', GREATEST($3::bigint, (metadata->$2->>'epoch')::bigint),
+        'n', CASE WHEN (metadata->$2->>'epoch')::bigint >= $3::bigint
+                  THEN (metadata->$2->>'n')::int + 1 ELSE 0 END
+    )
 )
 WHERE id = $1
-RETURNING (metadata->>$2)::int
+RETURNING (metadata->$2->>'n')::int
 """
 
 #: a receipt on the parent's rows whose child's root row is gone. one id is

@@ -3,7 +3,7 @@ concurrency, recursion, retention, crash, and redeploy.
 
 * the ASYNCIO.GATHER CONTRACT: the natural
   fan-out spelling ``gather(*[ctx.spawn_flow(...) for t in tenants])``
-  mints K children with K distinct verdicts — the per-attempt spawn
+  mints K children with K distinct verdicts — the per-claim spawn
   cursor's read/write is atomic (non-atomic, K
   concurrent spawns all adopt the same slot (run key), and the
   arbiter's conflict path hands every caller the one child's handle:
@@ -57,6 +57,7 @@ from taskq.workflows import (
     WorkflowApp,
     build,
     cancel_workflow_run,
+    map_source,
     step,
 )
 
@@ -157,7 +158,7 @@ async def _node_row(
     wf_conn: asyncpg.Connection, wf_schema: str, flow_id: JobId, step_key: str
 ) -> dict[str, Any]:
     row = await wf_conn.fetchrow(
-        f'SELECT id, status, metadata, error_class FROM "{wf_schema}".jobs '
+        f'SELECT id, status, attempt, metadata, error_class FROM "{wf_schema}".jobs '
         "WHERE step_key = $1 AND (metadata->>'flow_id')::uuid = $2",
         step_key,
         flow_id,
@@ -804,3 +805,327 @@ class TestDevDriveAdminFaces:
         # terminal).
         (still,) = await client.list(flow_id)
         assert still.hold_id == hold.hold_id and still.status == "held"
+
+
+# ── the spawn run key's identity law (issue #748's review) ─────────────
+
+
+async def _spawn_keys(
+    wf_conn: asyncpg.Connection, wf_schema: str, parent_flow_id: JobId
+) -> list[str]:
+    """The child roots' run keys (the arbiter's own idempotency keys)."""
+    rows = await wf_conn.fetch(
+        f"SELECT idempotency_key FROM \"{wf_schema}\".jobs WHERE step_key = '__flow__' "
+        "AND metadata->>'parent_flow_id' = $1::text ORDER BY idempotency_key",
+        str(parent_flow_id),
+    )
+    return [str(r["idempotency_key"]) for r in rows]
+
+
+class _MapItem(BaseModel):
+    n: int
+
+
+class _MapLeaf(BaseModel):
+    n: int
+
+
+async def test_a_map_item_s_unkeyed_spawn_is_its_own_child(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A map's items are rows that share one ``step_key`` (``src.item``) and
+    differ only by ``map_index``. The run key carries the node key, so before
+    the item segment every sibling derived item 0's key and the arbiter handed
+    items 1..n item 0's child: one child ran, N labels wore its answer. The
+    item segment (``<key>.item<m>``) makes each item's spawn its own child."""
+    suffix = new_uuid().hex[:12]
+    child_name = f"k1_map_child_{suffix}"
+
+    child_app = WorkflowApp()
+
+    @child_app.workflow(child_name)
+    def child() -> Promise[object]:
+        async def leaf(ctx: StepContext) -> _MapLeaf:
+            return _MapLeaf(n=1)
+
+        return build(step(leaf, key="leaf"))
+
+    child_app.get(child_name)  # registers the child the spawn resolves
+
+    async def src(ctx: StepContext) -> list[_MapItem]:
+        return [_MapItem(n=i) for i in range(3)]
+
+    async def per_item(ctx: StepContext, item: _MapItem) -> str:
+        handle = await ctx.spawn_flow(child_name, input=item, result=_MapLeaf)
+        return str(handle.flow_id)
+
+    parent_app = WorkflowApp()
+
+    @parent_app.workflow(f"k1_map_parent_{suffix}")
+    def mapped() -> Promise[object]:
+        return build(map_source(step(src, key="src"), per_item))
+
+    runner = FlowRunner(parent_app.get(f"k1_map_parent_{suffix}"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id, max_ticks=400) == "terminal"
+
+    keys = await _spawn_keys(wf_conn, wf_schema, flow_id)
+    assert keys == [f"childflow:{flow_id}:src.item.item{i}:0" for i in range(3)], (
+        "the map items did not each mint their own child: child run "
+        f"keys={keys}. Every item row derives the same run key unless the "
+        "item's map_index is part of it, so the arbiter adopts item 0's child "
+        "for all three siblings and each one reads its result"
+    )
+    roots = await _child_roots(wf_conn, wf_schema, flow_id)
+    assert sorted(r["payload"]["wf_input"]["n"] for r in roots) == [0, 1, 2], [
+        r["payload"] for r in roots
+    ]
+
+
+async def test_a_bare_decimal_spawn_key_is_refused_and_the_slot_stays_free(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The plain (non-loop) two-site shape: one site keyed ``"0"``, one
+    unkeyed. ``childflow:{flow}:{node}:{key}`` and the unkeyed derivation's
+    ``childflow:{flow}:{node}:{int(slot)}`` are one string for a bare-decimal
+    key, so the unkeyed site's slot 0 adopted the keyed site's child. The
+    spawn refuses the numeric key instead; the slot stays free for the
+    unkeyed site."""
+    suffix = new_uuid().hex[:12]
+    child_name = f"k2_child_{suffix}"
+    refusals: list[str] = []
+
+    child_app = WorkflowApp()
+
+    @child_app.workflow(child_name)
+    def child() -> Promise[object]:
+        async def leaf(ctx: StepContext) -> _MapLeaf:
+            return _MapLeaf(n=1)
+
+        return build(step(leaf, key="leaf"))
+
+    child_app.get(child_name)
+
+    async def two_sites(ctx: StepContext) -> int:
+        try:
+            await ctx.spawn_flow(child_name, result=_MapLeaf, key="0")
+        except ValueError as exc:
+            refusals.append(str(exc))
+        unkeyed = await ctx.spawn_flow(child_name, result=_MapLeaf)
+        assert unkeyed.flow_id is not None
+        return 0
+
+    parent_app = WorkflowApp()
+
+    @parent_app.workflow(f"k2_parent_{suffix}")
+    def flow() -> Promise[object]:
+        return build(step(two_sites, key="wrap"))
+
+    runner = FlowRunner(parent_app.get(f"k2_parent_{suffix}"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id, max_ticks=400) == "terminal"
+
+    assert len(refusals) == 1 and "bare decimal" in refusals[0], refusals
+    assert await _spawn_keys(wf_conn, wf_schema, flow_id) == [f"childflow:{flow_id}:wrap:0"], (
+        "the bare-decimal key was not refused, or the unkeyed site did not take "
+        "slot 0: the two sites collided in one run key"
+    )
+
+
+async def test_a_row_stamped_by_the_previous_release_adopts_its_child(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The cross-release promise: the cursor moved from
+    ``spawn_cursor_{attempt}`` (a bare int) to ``spawn_slot_{attempt}``
+    (``{epoch, n}``) while a spawn outside a loop kept its run key. A row the
+    previous release left mid-attempt — its cursor under the old key, its
+    first child already minted at slot 0 — must re-derive slot 0 and ADOPT
+    that child. Reading the old key would derive slot 1 and mint a duplicate."""
+    from datetime import timedelta
+
+    from taskq.exceptions import Snooze
+
+    suffix = new_uuid().hex[:12]
+    child_name = f"k3_child_{suffix}"
+    entries: list[str] = []
+
+    child_app = WorkflowApp()
+
+    @child_app.workflow(child_name)
+    def child() -> Promise[object]:
+        async def leaf(ctx: StepContext) -> _MapLeaf:
+            return _MapLeaf(n=1)
+
+        return build(step(leaf, key="leaf"))
+
+    child_app.get(child_name)
+
+    async def wrap(ctx: StepContext) -> int:
+        handle = await ctx.spawn_flow(child_name, result=_MapLeaf)
+        entries.append(str(handle.flow_id))
+        if len(entries) == 1:  # the refund repeats the attempt, so count entries
+            raise Snooze(timedelta(0))
+        return 0
+
+    parent_app = WorkflowApp()
+
+    @parent_app.workflow(f"k3_parent_{suffix}")
+    def flow() -> Promise[object]:
+        return build(step(wrap, key="wrap"))
+
+    runner = FlowRunner(parent_app.get(f"k3_parent_{suffix}"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.tick(flow_id) is True  # the first execution defers
+
+    row = await wf_conn.fetchrow(
+        f'SELECT id, metadata FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'wrap'",
+        flow_id,
+    )
+    assert row is not None
+    raw = row["metadata"]
+    meta: dict[str, Any] = json.loads(raw) if isinstance(raw, str) else raw
+    assert "spawn_slot_1" in meta and len(entries) == 1
+    # The row the previous release would have left: the cursor under the OLD
+    # key holding the slot its only spawn took (0), and no new-family key.
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs '
+        "SET metadata = (metadata - 'spawn_slot_1') || '{\"spawn_cursor_1\": 0}'::jsonb, "
+        "scheduled_at = now() WHERE id = $1",
+        row["id"],
+    )
+
+    assert await runner.drive(flow_id, until="terminal", max_ticks=400) == "terminal"
+    keys = await _spawn_keys(wf_conn, wf_schema, flow_id)
+    assert keys == [f"childflow:{flow_id}:wrap:0"], (
+        "the re-claim read the previous release's cursor key and derived a new "
+        f"slot: child run keys={keys}. A spawn outside a loop keeps its key "
+        "across the rename"
+    )
+    assert entries[0] == entries[1], f"the re-run did not adopt its own child: {entries}"
+    after = await wf_conn.fetchrow(
+        f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', row["id"]
+    )
+    assert after is not None
+    after_meta: dict[str, Any] = (
+        json.loads(after["metadata"]) if isinstance(after["metadata"], str) else after["metadata"]
+    )
+    assert after_meta.get("spawn_cursor_1") == 0, (
+        "the new release rewrote the previous release's cursor: the orphaned key "
+        "is left untouched, never migrated or cleared"
+    )
+
+
+async def test_a_zero_claim_epoch_is_refused_by_the_spawn_slot_claim(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The spawn cursor's reset law compares the stored epoch against the
+    executing claim's. At 0 every comparison is NULL/false, so a re-claim
+    never resets and every resume mints a duplicate child. The spawn refuses
+    the epoch loudly instead, and mints nothing."""
+    from taskq.workflows.api._ctx import build_step_context
+    from taskq.workflows.api._runner_errors import WorkflowRunError
+    from taskq.workflows.engine import render_workflow_sql
+
+    suffix = new_uuid().hex[:12]
+    child_name = f"k4_child_{suffix}"
+
+    child_app = WorkflowApp()
+
+    @child_app.workflow(child_name)
+    def child() -> Promise[object]:
+        async def leaf(ctx: StepContext) -> _MapLeaf:
+            return _MapLeaf(n=1)
+
+        return build(step(leaf, key="leaf"))
+
+    child_app.get(child_name)
+
+    async def unused(ctx: StepContext) -> int:
+        return 0
+
+    parent_app = WorkflowApp()
+
+    @parent_app.workflow(f"k4_parent_{suffix}")
+    def flow() -> Promise[object]:
+        return build(step(unused, key="wrap"))
+
+    runner = FlowRunner(parent_app.get(f"k4_parent_{suffix}"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    row = await wf_conn.fetchrow(
+        f'SELECT id FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'wrap'",
+        flow_id,
+    )
+    assert row is not None
+    ctx = build_step_context(
+        flow_id=flow_id,
+        job_id=JobId(row["id"]),
+        node_key="wrap",
+        attempt=1,
+        claim_epoch=0,
+        pool=wf_pool,
+        wsql=render_workflow_sql(wf_schema),
+        input=None,
+    )
+    with pytest.raises(WorkflowRunError) as refused:
+        await ctx.spawn_flow(child_name, result=_MapLeaf)
+    assert "claim_epoch" in str(refused.value), refused.value
+    assert await _spawn_keys(wf_conn, wf_schema, flow_id) == []
+
+
+async def test_a_bare_decimal_spawn_key_terminal_fails_on_attempt_one(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The reserved-key refusal is a DETERMINISTIC authoring failure: an
+    uncaught ``ctx.spawn_flow(..., key="0")`` terminal-fails the node on
+    attempt 1 with the typed class on the record, and the retry budget is
+    not burned (re-executing cannot change the key)."""
+    from taskq.workflows import SpawnKeyReservedError
+
+    suffix = new_uuid().hex[:12]
+    child_name = f"k5_child_{suffix}"
+
+    child_app = WorkflowApp()
+
+    @child_app.workflow(child_name)
+    def child() -> Promise[object]:
+        async def leaf(ctx: StepContext) -> _MapLeaf:
+            return _MapLeaf(n=1)
+
+        return build(step(leaf, key="leaf"))
+
+    child_app.get(child_name)
+
+    async def unguarded(ctx: StepContext) -> int:
+        await ctx.spawn_flow(child_name, result=_MapLeaf, key="0")
+        return 0
+
+    parent_app = WorkflowApp()
+
+    @parent_app.workflow(f"k5_parent_{suffix}")
+    def flow() -> Promise[object]:
+        return build(step(unguarded, key="wrap", max_attempts=3))
+
+    runner = FlowRunner(parent_app.get(f"k5_parent_{suffix}"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id, until="terminal", max_ticks=100) == "terminal"
+
+    node = await _node_row(wf_conn, wf_schema, flow_id, "wrap")
+    assert (node["status"], node["attempt"], node["error_class"]) == (
+        "failed",
+        1,
+        "SpawnKeyReservedError",
+    ), (node["status"], node["attempt"], node["error_class"])
+    assert issubclass(SpawnKeyReservedError, ValueError)
+    ledger = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 AND step_key = $2',
+        flow_id,
+        "wrap",
+    )
+    assert ledger == 1, (
+        f"the deterministic refusal burned {ledger} ledger attempts (expected 1): "
+        "a retryable classification spends the max_attempts=3 budget on a defect "
+        "re-running cannot fix"
+    )
+    assert await _spawn_keys(wf_conn, wf_schema, flow_id) == []

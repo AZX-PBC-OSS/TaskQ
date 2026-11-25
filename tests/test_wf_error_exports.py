@@ -52,3 +52,19 @@ def test_map_index_schema_error_is_a_top_level_workflow_export() -> None:
 
     assert "MapIndexSchemaError" in wf.__all__
     assert MapIndexSchemaError is types_module.MapIndexSchemaError
+
+
+def test_spawn_key_reserved_error_is_a_top_level_workflow_export() -> None:
+    """``SpawnKeyReservedError`` is a top-level ``taskq.workflows`` export by
+    the sibling error classes' convention: the guide documents the bare-
+    decimal refusal, so the package surface carries the class. Importable
+    from the root, IDENTICAL to its defining-module class, in ``__all__``,
+    and a ``ValueError`` subclass (callers that guarded the older plain
+    refusal keep working)."""
+    import taskq.workflows as wf
+    import taskq.workflows._childflow as childflow
+    from taskq.workflows import SpawnKeyReservedError
+
+    assert "SpawnKeyReservedError" in wf.__all__
+    assert SpawnKeyReservedError is childflow.SpawnKeyReservedError
+    assert issubclass(SpawnKeyReservedError, ValueError)
