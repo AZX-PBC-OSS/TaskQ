@@ -1489,6 +1489,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     emitter,
                     claim_epoch=claim_epoch,
                     ledger_claimed_at=ledger_claimed_at,
+                    # the run's per-call override rides into the driver — the
+                    # loop's success finalize forks the map's children, and
+                    # they resolve the run's stamped override like every
+                    # other forked row (the priority surface's first level).
+                    run_priority=run_priority,
                 )
             finally:
                 await emitter.aclose()

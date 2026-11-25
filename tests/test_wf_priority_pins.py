@@ -42,12 +42,15 @@ from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.backend._protocol import JobId
 from taskq.client._args import build_enqueue_args
 from taskq.workflows import (
+    Done,
     FlowRunner,
     Promise,
+    Refine,
     RouteArm,
     StepContext,
     WorkflowApp,
     build,
+    loop,
     map_source,
     run,
     sink,
@@ -1029,3 +1032,306 @@ async def test_the_fleet_door_degrades_an_out_of_domain_stamp(
     item_rows = {k: v for k, v in by_key.items() if k.startswith("src.item")}
     assert item_rows and all(v == 2 for v in item_rows.values()), by_key
     assert by_key["src.join"] == 2, by_key
+
+
+# ── (i) loop-sourced map forks — per-call run priority inheritance ───────
+
+
+def _assert_loop_map_priorities(
+    rows: list[asyncpg.Record],
+    *,
+    loop_key: str,
+    expected_items: int,
+    expected_loop: int,
+    expected_child: int,
+    expected_join: int,
+) -> None:
+    """Assert the loop row, every forked item child row, and the join row
+    individually so duplicate step keys cannot mask a drifted child row."""
+    loop_rows = [row for row in rows if row["step_key"] == loop_key]
+    item_rows = sorted(
+        (row for row in rows if row["step_key"] == f"{loop_key}.item"),
+        key=lambda row: int(row["map_index"]),
+    )
+    join_rows = [row for row in rows if row["step_key"] == f"{loop_key}.join"]
+    assert len(loop_rows) == 1, rows
+    assert int(loop_rows[0]["priority"]) == expected_loop, loop_rows
+    assert len(item_rows) == expected_items, item_rows
+    assert [int(row["priority"]) for row in item_rows] == [expected_child] * expected_items, [
+        (row["map_index"], int(row["priority"])) for row in item_rows
+    ]
+    assert len(join_rows) == 1, join_rows
+    assert int(join_rows[0]["priority"]) == expected_join, join_rows
+
+
+@pytest.mark.integration
+async def test_loop_map_live_done_inherits_run_priority(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A map wired on a loop node finishing via live ``Done`` inherits the
+    run's per-call priority override on the loop row, every forked item
+    child row, and the join row, ahead of the map body's actor declaration."""
+
+    async def refine_then_done(ctx: StepContext, carry: object) -> object:
+        if carry == 0:
+            return Refine(1)
+        return Done(["a", "b"])
+
+    app = WorkflowApp()
+
+    @app.actor(priority=4)
+    async def declared_item_body(ctx: StepContext, item: str) -> str:
+        return item
+
+    @app.workflow("loop-map-live-done-prio-flow")
+    def loop_map_live_done_prio_flow() -> Promise[object]:
+        src = loop("src", refine_then_done, initial=0, max_iterations=3)
+        mapped = map_source(src, declared_item_body)
+        return build(mapped)
+
+    result = await run(app.get("loop-map-live-done-prio-flow"), wf_pool, wf_schema, priority=7)
+    assert result.outcome == "terminal", result.outcome
+    assert result.result == ["a", "b"], result.result
+
+    rows = await _flow_rows(wf_pool, wf_schema, result.flow_id)
+    _assert_loop_map_priorities(
+        rows,
+        loop_key="src",
+        expected_items=2,
+        expected_loop=7,
+        expected_child=7,
+        expected_join=7,
+    )
+
+
+@pytest.mark.integration
+async def test_loop_map_until_predicate_inherits_run_priority(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A map wired on a loop node finishing via ``until=`` inherits the
+    run's per-call priority override on the loop row, every forked item
+    child row, and the join row."""
+    body_calls = 0
+
+    async def unused_body(ctx: StepContext, carry: object) -> object:
+        nonlocal body_calls
+        body_calls += 1
+        return Done(["unexpected"])
+
+    async def already_satisfied() -> bool:
+        return True
+
+    app = WorkflowApp()
+
+    @app.workflow("loop-map-until-prio-flow")
+    def loop_map_until_prio_flow() -> Promise[object]:
+        src = loop(
+            "src",
+            unused_body,
+            initial=["a", "b"],
+            until=already_satisfied,
+            max_iterations=3,
+        )
+        mapped = map_source(src, _item_body)
+        return build(mapped)
+
+    result = await run(app.get("loop-map-until-prio-flow"), wf_pool, wf_schema, priority=8)
+    assert result.outcome == "terminal", result.outcome
+    assert result.result == ["a", "b"], result.result
+    assert body_calls == 0, body_calls
+
+    rows = await _flow_rows(wf_pool, wf_schema, result.flow_id)
+    _assert_loop_map_priorities(
+        rows,
+        loop_key="src",
+        expected_items=2,
+        expected_loop=8,
+        expected_child=8,
+        expected_join=8,
+    )
+
+
+@pytest.mark.integration
+async def test_loop_map_memo_replayed_done_inherits_run_priority(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """A map wired on a loop node finishing via a memo-replayed ``Done``
+    inherits the run's per-call priority override on the loop row, every
+    forked item child row, and the join row."""
+    from taskq.workflows.ledger import claim_step_ledger
+
+    body_calls = 0
+
+    async def must_not_rerun(ctx: StepContext, carry: object) -> object:
+        nonlocal body_calls
+        body_calls += 1
+        return Done(["unexpected"])
+
+    app = WorkflowApp()
+
+    @app.workflow("loop-map-memo-done-prio-flow")
+    def loop_map_memo_done_prio_flow() -> Promise[object]:
+        src = loop("src", must_not_rerun, max_iterations=3)
+        mapped = map_source(src, _item_body)
+        return build(mapped)
+
+    compiled = app.get("loop-map-memo-done-prio-flow")
+    seed_runner = FlowRunner(compiled, wf_pool, wf_schema)
+    run_key = f"loop-map-memo-done:{new_uuid()}"
+    flow_id = (await seed_runner.create_flow(run_key=run_key, priority=9)).flow_id
+
+    # Seed the recorded iteration-0 Done terminal in the step ledger so the
+    # drive takes the memo-replayed Done finalize path without invoking body.
+    async with wf_pool.acquire() as conn:
+        claim = await claim_step_ledger(
+            conn,
+            seed_runner.wsql,
+            flow_id=flow_id,
+            job_id=flow_id,
+            step_key="src.iter0",
+            map_index=None,
+            attempt=1,
+            claim_epoch=0,
+        )
+        await conn.execute(
+            seed_runner.wsql.ledger_terminal_by_id,
+            claim.ledger_id,
+            "succeeded",
+            json.dumps({"done": True, "payload": ["a", "b"]}),
+            None,
+            None,
+            None,
+            claim.claimed_at,
+        )
+
+    result = await run(compiled, wf_pool, wf_schema, key=run_key, priority=9)
+    assert result.outcome == "terminal", result.outcome
+    assert result.result == ["a", "b"], result.result
+    assert body_calls == 0, body_calls
+
+    rows = await _flow_rows(wf_pool, wf_schema, flow_id)
+    _assert_loop_map_priorities(
+        rows,
+        loop_key="src",
+        expected_items=2,
+        expected_loop=9,
+        expected_child=9,
+        expected_join=9,
+    )
+
+
+@pytest.mark.integration
+async def test_loop_map_fleet_claimed_step_inherits_run_priority(
+    wf_schema: str,
+    wf_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """The fleet-claimed execution door resolves the root's ``wf_priority``
+    stamp and threads it through the loop driver so loop-sourced map
+    children and join inherit the run's per-call priority override."""
+
+    async def done_immediately(ctx: StepContext, carry: object) -> object:
+        return Done(["a", "b"])
+
+    app = WorkflowApp()
+
+    @app.workflow("loop-map-fleet-prio-flow")
+    def loop_map_fleet_prio_flow() -> Promise[object]:
+        src = loop("src", done_immediately, max_iterations=3)
+        mapped = map_source(src, _item_body)
+        return build(mapped)
+
+    runner = FlowRunner(app.get("loop-map-fleet-prio-flow"), module_pg_pool, wf_schema)
+    flow_id = (await runner.create_flow(priority=6)).flow_id
+
+    root = await wf_conn.fetchrow(
+        f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1',  # noqa: S608
+        flow_id,
+    )
+    assert root is not None
+    assert _meta(root["metadata"]).get("wf_priority") == 6, _meta(root["metadata"])
+
+    for config in project_workflow_actor_configs():
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".actor_config (actor, queue) VALUES ($1, $2) '  # noqa: S608
+            "ON CONFLICT (actor) DO NOTHING",
+            config.actor,
+            config.queue,
+        )
+    worker_id = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".workers (id, hostname, pid, queues, metadata) '  # noqa: S608
+        "VALUES ($1, 'loop-map-fleet-prio-pin', 1, '{default}', $2::jsonb)",
+        worker_id,
+        json.dumps({"workflow_execution": True}),
+    )
+    dispatched = await dispatch_batch(
+        wf_conn,
+        sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+        queues=["default"],
+        limit_n=5,
+        worker_id=worker_id,
+        lock_lease=timedelta(seconds=30),
+    )
+    assert len(dispatched) == 1, dispatched
+    claimed = dispatched[0]
+    assert claimed["step_key"] == "src", claimed
+
+    from taskq.backend._records import _job_row_from_record
+
+    await execute_flow_job(
+        pool=module_pg_pool,
+        schema=wf_schema,
+        worker_id=JobId(worker_id),
+        job=_job_row_from_record(claimed),
+    )
+
+    rows = await _flow_rows(module_pg_pool, wf_schema, flow_id)
+    _assert_loop_map_priorities(
+        rows,
+        loop_key="src",
+        expected_items=2,
+        expected_loop=6,
+        expected_child=6,
+        expected_join=6,
+    )
+
+
+@pytest.mark.integration
+async def test_loop_map_without_override_honors_the_map_body_declaration(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The control face (no per-call ``priority=``): a loop-sourced map
+    still honors the map body's own ``@app.actor(priority=…)`` declaration
+    on the item children (the actor level), while the loop row and the
+    join row stay at the column default — the handle's value is the
+    children's actor level, never folded into the source's cohort."""
+
+    async def done_immediately(ctx: StepContext, carry: object) -> object:
+        return Done(["a", "b"])
+
+    app = WorkflowApp()
+
+    @app.actor(priority=4)
+    async def prio_item_body(ctx: StepContext, item: str) -> str:
+        return item
+
+    @app.workflow("loop-map-decl-prio-flow")
+    def loop_map_decl_prio_flow() -> Promise[object]:
+        src = loop("src", done_immediately, max_iterations=3)
+        mapped = map_source(src, prio_item_body)
+        return build(mapped)
+
+    result = await run(app.get("loop-map-decl-prio-flow"), wf_pool, wf_schema)
+    assert result.outcome == "terminal", result.outcome
+    assert result.result == ["a", "b"], result.result
+
+    rows = await _flow_rows(wf_pool, wf_schema, result.flow_id)
+    _assert_loop_map_priorities(
+        rows,
+        loop_key="src",
+        expected_items=2,
+        expected_loop=0,
+        expected_child=4,
+        expected_join=0,
+    )

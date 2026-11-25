@@ -98,10 +98,19 @@ class _LoopHost(Protocol):
         *,
         claim_epoch: int = 0,
         prebuilt_route_fork: ForkSpec | None = None,
-        run_priority: int | None = None,
         ledger_id: JobId | None = None,
         ledger_claimed_at: datetime | None = None,
         collected: list[object] | None = None,
+        # Required here (no default) so the loop driver cannot finalize a
+        # loop-sourced fork without the run's per-call override — the
+        # concrete ``FlowRunner._finalize_success`` satisfies the protocol
+        # with its defaulted parameter. The guard's scope is THIS driver:
+        # inside ``LoopOps`` ``self`` types against this signature, so a
+        # loop finalize that omits it fails Pyright. A call on a
+        # ``FlowRunner``-typed ``self`` types against the concrete default
+        # and is not caught statically — the runner's own finalize sites
+        # are held by the priority pins, not by this protocol.
+        run_priority: int | None,
     ) -> FinalizeResult: ...
 
 
@@ -291,6 +300,11 @@ class LoopOps(_LoopHost):
         *,
         claim_epoch: int,
         ledger_claimed_at: Any = None,
+        # Required (no default): the driver's success finalizes fork the
+        # loop-sourced map's children and join, and those rows resolve the
+        # run's per-call override — an omission here re-opens the dropped-
+        # priority defect silently, so the seam refuses it statically.
+        run_priority: int | None,
     ) -> LoopEchoOutcome | None:
         """Fresh jobs per iteration
         (``<loop>.iter<i>`` — the ledger's per-iteration identity); the
@@ -341,6 +355,7 @@ class LoopOps(_LoopHost):
                 emitter,
                 claim_epoch=claim_epoch,
                 ledger_claimed_at=ledger_claimed_at,
+                run_priority=run_priority,
             )
         except Exception as exc:  # Why: the machinery boundary — the classifier reads WHERE the error escaped, never its type (the escape-point contract). BLE001 is the boundary's shape: any machinery exception is classified, then re-raised or reclaimed.
             if is_infra_fault(exc):
@@ -367,6 +382,7 @@ class LoopOps(_LoopHost):
         *,
         claim_epoch: int,
         ledger_claimed_at: Any = None,
+        run_priority: int | None,
     ) -> LoopEchoOutcome | None:
         """The loop driver's own drive (the machinery side of the
         escape-point contract — the escape-point contract): every exception
@@ -475,6 +491,7 @@ class LoopOps(_LoopHost):
                     claim_epoch=claim_epoch,
                     ledger_id=ledger_id,
                     ledger_claimed_at=ledger_claimed_at,
+                    run_priority=run_priority,
                 )
                 return
 
@@ -520,6 +537,7 @@ class LoopOps(_LoopHost):
                         claim_epoch=claim_epoch,
                         ledger_id=ledger_id,
                         ledger_claimed_at=ledger_claimed_at,
+                        run_priority=run_priority,
                     )
                     return
                 carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
@@ -725,6 +743,7 @@ class LoopOps(_LoopHost):
                         claim_epoch=claim_epoch,
                         ledger_id=ledger_id,
                         ledger_claimed_at=ledger_claimed_at,
+                        run_priority=run_priority,
                     )
                     return
                 if not isinstance(outcome, Refine):
