@@ -1676,51 +1676,24 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     )
                     return "succeeded"
                 if node is not None and node.map_arms is not None:
-                    # the typed route's arm dispatch — on the live elements .
-                    # The no-arm element is the loud death: terminal-failed
-                    # with ``error_class='RouterNotTotal'``, NOTHING routes —
-                    # the skip-silent shape is dead.
-                    from taskq.workflows.chain import RouterNotTotal
+                    # the typed route's arm dispatch — on the live elements.
+                    # A non-list return or a no-arm element is the loud death:
+                    # RouterNotTotal escapes into the body-failure boundary
+                    # below and the deterministic ladder terminal-fails the
+                    # source on attempt 1 with ``error_class='RouterNotTotal'``
+                    # — NOTHING routes (the skip-silent shape is dead).
 
                     # No identity read happens here: this is the BODY failure
                     # boundary, and a runner-issued catalog statement escaping it
                     # would be recorded as a body failure. A route's width is
                     # bounded by jobs.deps_pending (the join counter), refused
                     # deterministically inside the finalize's machinery boundary.
-                    try:
-                        route_fork = self._route_fork(
-                            row,
-                            node,
-                            outcome_value,
-                            run_priority=run_priority,
-                        )
-                    except RouterNotTotal as exc:
-                        await emitter.aclose()
-                        logger.warning(
-                            "node.router-not-total",
-                            run_id=str(flow_id),
-                            node=row["step_key"],
-                            outcome=repr(outcome_value)[:200],
-                        )
-                        router_failed = await finalize_node(
-                            self.pool,
-                            self.wsql,
-                            flow_id=flow_id,
-                            job_id=JobId(row["id"]),
-                            step_key=row["step_key"],
-                            worker_id=self._worker_id,
-                            attempt=attempt,
-                            claim_epoch=claim_epoch,
-                            outcome="failed",
-                            error_class="RouterNotTotal",
-                            error_message=str(exc)[:500],
-                            map_index=row["map_index"],
-                            ledger_id=ledger_id,
-                            ledger_claimed_at=ledger_claimed_at,
-                            emit_capacity=self._emit_capacity,
-                        )
-                        await self._drain_created_intent(flow_id, router_failed.intent_created)
-                        return "succeeded"
+                    route_fork = self._route_fork(
+                        row,
+                        node,
+                        outcome_value,
+                        run_priority=run_priority,
+                    )
                 result = encode_result(outcome_value)
         except NodeHeldError as held:
             # the node rests in the held representation (pending + the deadline
@@ -2381,10 +2354,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             fork = self._map_fork(
                 row, node, fork_source, run_priority=run_priority, map_index_ceiling=map_ceiling
             )
-        elif node is not None and node.map_arms is not None and prebuilt_route_fork is not None:
+        elif node is not None and node.map_arms is not None:
             # the typed route's fork — built at the body path from
             # the live elements (the arm dispatch reads the element's
             # runtime type; the encoded envelope's dicts cannot).
+            if prebuilt_route_fork is None:
+                # Fail closed: _route_fork returns a ForkSpec or raises, and
+                # cache=True on a route source is refused at build (E17), so
+                # this branch is unreachable on valid paths. A map_arms node
+                # finalized succeeded with fork=None would silently skip the
+                # join and wedge the flow — never commit that.
+                raise RuntimeError(
+                    "a route source finalized succeeded without its route fork "
+                    f"(the join never spawns, the flow wedges): {row['step_key']!r}"
+                )
             fork = prebuilt_route_fork
         final = await finalize_node(
             self.pool,
@@ -2593,14 +2576,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         *,
         run_priority: int | None = None,
         map_index_ceiling: int | None = None,
-    ) -> ForkSpec | None:
+    ) -> ForkSpec:
         """The map source's finalize fork: N children (the item body,
         one per list element — fresh jobs, per-item ledger identity) +
         the join whose consumers are the wiring's downstream nodes (the
         outbox carries the consumer bindings — the cascade
         fix), except a nested map's join, which its own fork writes
-        (#745). ``None`` when the body returned no list (the map over
-        nothing — the join fires empty, the collect states it).
+        (#745). A body return that is not a list forks ZERO children (the
+        map over nothing — the join fires empty, the collect states it);
+        the typed route's sibling (``_route_fork``) refuses that shape
+        instead, because its source declares ``list[...]``.
 
         ``run_priority`` is the RUN's per-call override (the wf-priority
         fix): the children and the join land at the RESOLVED priority —
@@ -2762,7 +2747,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         outcome_value: object,
         *,
         run_priority: int | None = None,
-    ) -> ForkSpec | None:
+    ) -> ForkSpec:
         """the TYPED ROUTE'S FORK (the map fork's arm-dispatch
         sibling): the source's body returned the elements' LIST; each
         element's RUNTIME type tag picks its arm and the fork stamps the
@@ -2778,15 +2763,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         drain would mint a second row for one step key. ``_map_fork``'s
         comprehension carries the same exclusion — change both or neither.
 
-        LOUD DOOR (R1 — the skip-silent shape is DEAD): an element
-        whose type has no arm raises :class:`RouterNotTotal` before any
-        row is written — the caller converts it to the source's
-        terminal-FAILED finalize with ``error_class='RouterNotTotal'``
-        (the chain face's exact shape; nothing routes, the run fails).
+        LOUD DOOR (R1 — the skip-silent shape is DEAD): a body return
+        that is NOT a list, or an element whose type has no arm, raises
+        :class:`RouterNotTotal` before any row is written — the
+        deterministic ladder terminal-fails the source on attempt 1 with
+        ``error_class='RouterNotTotal'`` (the chain face's exact shape;
+        nothing routes, the run fails). A source annotated
+        ``-> list[...]`` returning ``None`` (the forgotten ``return``) or
+        a bare model is an authoring defect, not an empty corpus.
 
-        ``None`` when the body returned no list (the route over nothing —
-        no fork is carried at all). An EMPTY LIST is not that case (the
-        empty-join precedent): the empty list IS the
+        An EMPTY LIST is the empty-join precedent: the empty list IS the
         typed sum's honest value, so the fork fires its join with zero
         children — the join is born ``deps_pending=0``, fires
         immediately, and ``result() == []`` (the run terminal, SUCCESS
@@ -2813,7 +2799,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         from taskq.workflows.chain import RouterNotTotal, type_tag
 
         if not isinstance(outcome_value, list):
-            return None
+            # The type and remedy precede the unbounded step key: terminal
+            # messages truncate at 500 chars, and the key must not erase them.
+            raise RouterNotTotal(
+                f"route source returned {type(outcome_value).__name__!r}; the route "
+                "is a MAP face and requires the declared ``list[...]`` shape "
+                "(``[]`` for an empty corpus). "
+                f"Step {row['step_key']!r} lied about its return; NOTHING routes: "
+                "the run fails loudly (the skip-silent shape is dead)."
+            )
         items: list[object] = cast(
             "list[object]", outcome_value
         )  # Why: the isinstance narrowed the object-typed body return to list[Unknown] — the cast is the declared laundering (the element walk below re-narrows per element; the codec's own seam shape).
@@ -2886,14 +2880,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             tag = type_tag(type(element))
             arm = node.map_arms.get(tag) if node.map_arms is not None else None
             if arm is None:
+                # The type and remedy precede the unbounded step key: terminal
+                # messages truncate at 500 chars, and the key must not erase them.
                 raise RouterNotTotal(
-                    f"element #{i} of {row['step_key']!r} is "
-                    f"{type(element).__name__!r} — no route arm for it (the "
-                    "route is total over the source's declared union "
-                    "members): this is a defect, not a dead end — the body "
+                    f"element #{i} is {type(element).__name__!r} — no route arm "
+                    "for it (the route is total over the source's declared "
+                    "union members): this is a defect, not a dead end — the body "
                     "lied about its union, or the union drifted from the "
                     "route. NOTHING routes: the run fails loudly (the "
-                    "skip-silent shape is dead)."
+                    f"skip-silent shape is dead). Step {row['step_key']!r}."
                 )
             children.append(
                 ChildSpec(

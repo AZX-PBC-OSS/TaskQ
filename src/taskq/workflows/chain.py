@@ -99,7 +99,15 @@ class RouterNotTotal(Exception):
     record's chain visibly dies instead of silently dropping. (With a
     total route declared over the body's outcome enum this is
     unreachable unless the body lied about its type — exactly the defect
-    the door exists to name.)"""
+    the door exists to name.)
+
+    The GRAPH route (``route(source, arms)``) raises the same class for
+    both of its runtime shape lies: a source return that is not the
+    declared ``list[...]`` at all (``None`` from a forgotten ``return``,
+    a bare model instead of ``[model]``), and an element whose type has
+    no arm. Either is a deterministic authoring failure — the source
+    terminal-fails on the first attempt with the retry ladder unburned,
+    and nothing routes."""
 
 
 class Route:

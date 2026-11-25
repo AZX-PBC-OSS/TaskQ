@@ -121,6 +121,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         VanishedNodeError,
         WorkflowResultDetailUnavailableError,
     )
+    from taskq.workflows.chain import RouterNotTotal
     from taskq.workflows.definitions import FanInBoundExceededError
 
     return (
@@ -131,6 +132,7 @@ def _deterministic_classes() -> tuple[type[BaseException], ...]:
         MapIndexExhaustedError,
         MapIndexSchemaError,
         FanInBoundExceededError,
+        RouterNotTotal,
         ReservedTimerNamespaceError,
         SpawnDepthExceededError,
         SpawnKeyReservedError,
