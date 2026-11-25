@@ -38,7 +38,8 @@ from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.workflows._policy import (
     ExecutionPolicy,
     ResolvedExecutionPolicy,
-    canonical_retry_kind,
+    declared_retry_kind,
+    handle_policy,
     resolve_source_execution_policy,
 )
 from taskq.workflows._types import EdgeFailurePolicy, duration_seconds
@@ -1285,7 +1286,7 @@ def step[R](
             "own payload resolves the key)."
         )
     if retry_kind is not None:
-        retry_kind = canonical_retry_kind(retry_kind, what=f"step {node_key!r}'s retry_kind")
+        retry_kind = declared_retry_kind(retry_kind, what=f"step {node_key!r}'s retry_kind")
     graph.add(
         NodeDecl(
             key=node_key,
@@ -1459,6 +1460,9 @@ def map_source[S, R](
     from taskq.workflows.api._app import WorkflowActor  # the cycle-break (inner_fn's own pattern)
 
     if isinstance(body, WorkflowActor):
+        # The fork owns map-row retry terms, but the wired handle still crosses
+        # this declaration door and must not carry an unrepresentable kind.
+        handle_policy(body)
         _wire_handle_terms_into_node(source_node, body, what=f"map {source.key!r}")
     join_key = f"{source.key}.join"
     graph.add(
@@ -1563,6 +1567,9 @@ def _attach_route[S](
             "RouteArm[object]",
             value if isinstance(value, RouteArm) else RouteArm(body=value),
         )
+        # As above for map bodies: route-row terms come from the fork, while
+        # the handle's own declaration is still validated at this door.
+        handle_policy(arm.body)
         # The priority domain (step()'s own law — the wiring site
         # refuses before any row exists): the arm's override checked at
         # the same door the arms normalize through (both map_source's

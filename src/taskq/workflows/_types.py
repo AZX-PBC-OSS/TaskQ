@@ -484,6 +484,13 @@ class ForkSpec:
     #: never the join). ``None`` = nothing declared — the column NULL.
     start_to_close: timedelta | None = None
 
+    def __post_init__(self) -> None:
+        from taskq.workflows._policy import declared_retry_kind
+
+        object.__setattr__(
+            self, "retry_kind", declared_retry_kind(self.retry_kind, what="ForkSpec.retry_kind")
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class NodeSpec:
@@ -538,7 +545,7 @@ class NodeSpec:
         return self.retry.policy if self.retry is not None else None
 
     def __post_init__(self) -> None:
-        from taskq.workflows._policy import canonical_retry_kind
+        from taskq.workflows._policy import declared_retry_kind
 
         if self.map_index is not None:
             validate_map_index_identity(self.map_index)
@@ -550,13 +557,13 @@ class NodeSpec:
                 raise ValueError("NodeSpec max_attempts contradicts its resolved retry policy")
             if (
                 self.retry_kind != "transient"
-                and canonical_retry_kind(self.retry_kind) != policy.kind
+                and declared_retry_kind(self.retry_kind) != policy.kind
             ):
                 raise ValueError("NodeSpec retry_kind contradicts its resolved retry policy")
             object.__setattr__(self, "max_attempts", policy.max_attempts)
             object.__setattr__(self, "retry_kind", policy.kind)
         else:
-            object.__setattr__(self, "retry_kind", canonical_retry_kind(self.retry_kind))
+            object.__setattr__(self, "retry_kind", declared_retry_kind(self.retry_kind))
 
 
 @dataclass(frozen=True, slots=True)

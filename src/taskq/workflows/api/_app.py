@@ -99,11 +99,11 @@ class WorkflowActor:
         self._fn = fn
         self.name = name
         self.queue = queue
-        from taskq.workflows._policy import canonical_retry_kind
+        from taskq.workflows._policy import declared_retry_kind
 
         check_max_attempts_domain(max_attempts)
         self.max_attempts = max_attempts
-        canonical_retry_kind(
+        declared_retry_kind(
             retry_kind, what="actor retry_kind"
         )  # validate only; preserve the public authoring alias
         self.retry_kind = retry_kind

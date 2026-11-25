@@ -472,6 +472,29 @@ never diverge.
 
 ## Breaking API changes
 
+### New workflow declarations refuse `retry_kind="indefinite"`
+
+> **Unreleased.** Breaking for anyone declaring an indefinite workflow
+> actor or step: on previous releases `@app.actor(retry_kind="indefinite")`,
+> `step(..., retry_kind="indefinite")`, `chain_fork(..., retry_kind=…)`,
+> `ForkSpec`/`NodeSpec(retry_kind=…)`, `RetrySpec(exceptions={…: "indefinite"})`,
+> `WorkflowDef(retry_kind=…)`, `emit_batch(..., retry_kind=…)`,
+> `drain_outbox(..., default_retry_kind=…)` and
+> `insert_flow_run(..., entry.retry_kind=…)` accepted the word; now each raises
+> `WorkflowPolicyError` (`E21-execution-policy`) at decoration, compile or
+> construction time. Switch to `"transient"` with a finite `max_attempts`
+> budget, or to `"non_retryable"` (legacy spelling `"permanent"`).
+
+A workflow row never sets `schedule_to_close`, so an `indefinite` workflow
+row has no crash ceiling under the reclaim sweep: it is re-pended forever
+once a worker dies mid-attempt. `RetrySpec` already refused the kind; the
+remaining declaration and row-authoring doors did not, so a declared
+indefinite step either looped or raised only later, mid-run, where a `map_source`
+or `route` consumer is built. **Already-persisted legacy workflow rows and
+vanilla non-workflow `indefinite` actors are unaffected** — they keep their
+vocabulary in the reclaim SQL, the deferral gate and the ladder's row reads;
+a run-key replay of an existing legacy root still adopts it without a new insert.
+
 ### `map_source` no longer takes `key=`
 
 > **Unreleased.** Breaking for anyone passing `key=` to

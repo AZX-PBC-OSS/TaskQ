@@ -43,7 +43,7 @@ from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
 from taskq.constants import WORKFLOW_NOT_DRAINING_CLASS
 from taskq.obs import get_logger
-from taskq.workflows._policy import canonical_retry_kind, row_retry_curve
+from taskq.workflows._policy import declared_retry_kind, row_retry_curve
 from taskq.workflows._progress import PROGRESS_RING_BOUND
 from taskq.workflows._reducers import forget_flow_reducers, resolve_flow_reducer
 from taskq.workflows._sql import (
@@ -399,6 +399,7 @@ async def _drain_outbox_once(
     reported. The return value counts the deliveries the flip actually
     acknowledged.
     """
+    default_retry_kind = declared_retry_kind(default_retry_kind, what="outbox default_retry_kind")
     async with pool.acquire() as conn, conn.transaction():
         # The rootless class first: it must be reported even when the
         # deliverable set is empty (a pass holding only rootless intents is
@@ -448,9 +449,7 @@ async def _drain_outbox_once(
                 for binding in bindings
             ],
             [
-                binding.retry.policy.kind
-                if binding.retry is not None
-                else canonical_retry_kind(default_retry_kind)
+                binding.retry.policy.kind if binding.retry is not None else default_retry_kind
                 for binding in bindings
             ],
             [r["join_job_id"] for r in rows],
@@ -553,6 +552,7 @@ async def drain_outbox(
     introduced. The delivery contract the pass executes (exactly-once fire,
     idempotent consumer insert, pin 20) lives in :func:`_drain_outbox_once`.
     """
+    default_retry_kind = declared_retry_kind(default_retry_kind, what="outbox default_retry_kind")
     for final_attempt in (False, True):
         try:
             return await _drain_outbox_once(

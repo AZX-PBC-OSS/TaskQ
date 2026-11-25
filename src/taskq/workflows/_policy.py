@@ -41,6 +41,7 @@ __all__ = [
     "WorkflowRetryClassifierHook",
     "WorkflowRetryOverride",
     "canonical_retry_kind",
+    "declared_retry_kind",
     "resolve_source_execution_policy",
     "validate_retry_after_delay",
 ]
@@ -123,6 +124,28 @@ def canonical_retry_kind(value: str, *, what: str = "retry_kind") -> RetryKind:
     return value
 
 
+def declared_retry_kind(value: str, *, what: str = "retry_kind") -> RetryKind:
+    """Validate one new workflow declaration's retry kind: finite kinds only.
+
+    ``canonical_retry_kind`` accepts ``"indefinite"`` because previously
+    persisted rows still carry it on both the workflow and the vanilla paths.
+    A new declaration has no such precedent: workflow rows never stamp
+    ``schedule_to_close``, so an ``"indefinite"`` row has no crash ceiling
+    under ``_RECLAIM_HAS_BUDGET_SQL`` and would be re-pended forever. The
+    read/legacy word and the declaration word are therefore two distinctly
+    named helpers, and every declaration/write-side door calls this one.
+    """
+    kind = canonical_retry_kind(value, what=what)
+    if kind == "indefinite":
+        raise WorkflowPolicyError(
+            f"{what} must be a finite retry kind: new workflow declarations "
+            "require a finite max_attempts budget, and 'indefinite' is not an "
+            "advertised-delay bypass (only previously persisted legacy rows "
+            "carry it)"
+        )
+    return kind
+
+
 class WorkflowRetryOverride(RetryOverride):
     """Workflow-only refinement, including an explicitly advertised free retry.
 
@@ -153,9 +176,13 @@ type WorkflowExceptionOverride = RetryOverride | WorkflowRetryOverride | PolicyR
 def _mapping_override(
     value: WorkflowExceptionOverride,
 ) -> WorkflowRetryOverride | RetryOverride | None:
-    if value is None or isinstance(value, RetryOverride):
+    if value is None:
+        return None
+    if isinstance(value, RetryOverride):
+        if value.kind is not None:
+            declared_retry_kind(value.kind, what="exception retry kind")
         return value
-    return RetryOverride(kind=canonical_retry_kind(value, what="exception retry kind"))
+    return RetryOverride(kind=declared_retry_kind(value, what="exception retry kind"))
 
 
 def _selected_exception_override(
@@ -214,11 +241,7 @@ class RetrySpec:
                 "start_to_close is the supported per-attempt deadline; a full "
                 "wall-clock time budget requires workflow deadline integration"
             )
-        if self.policy.kind == "indefinite":
-            raise WorkflowPolicyError(
-                "new workflow RetrySpec declarations require a finite max_attempts "
-                "budget; kind='indefinite' is not an advertised-delay bypass"
-            )
+        declared_retry_kind(self.policy.kind, what="RetrySpec.policy.kind")
         if self.classifier is not None and not callable(self.classifier):
             raise WorkflowPolicyError("RetrySpec.classifier must be callable or None")
         if self.non_consuming_limit is not None and (
@@ -476,7 +499,7 @@ def handle_policy(body: object) -> ExecutionPolicy | None:
         retry = RetrySpec(
             policy=RetryPolicy(
                 max_attempts=body.max_attempts,
-                kind=canonical_retry_kind(body.retry_kind, what="actor retry_kind"),
+                kind=declared_retry_kind(body.retry_kind, what="actor retry_kind"),
             )
         )
     return ExecutionPolicy(

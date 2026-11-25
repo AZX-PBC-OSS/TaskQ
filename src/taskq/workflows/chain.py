@@ -54,6 +54,8 @@ from taskq.workflows._policy import (
     ExecutionPolicy,
     ResolvedExecutionPolicy,
     WorkflowPolicyError,
+    declared_retry_kind,
+    handle_policy,
     resolve_execution_policy,
 )
 from taskq.workflows._types import ChildSpec, EmitChild, ForkSpec
@@ -266,6 +268,7 @@ class Chain:
         if self.start not in self.steps:
             raise ValueError(f"chain {self.name!r}: start {self.start!r} is not a step")
         for key, step in self.steps.items():
+            handle_policy(step.body)
             if step.route is not None:
                 step.route.bind(step.outcomes, key)
                 for nxt in step.route.targets():
@@ -415,12 +418,18 @@ def chain_fork(
     *,
     trace_id: str | None,
     max_attempts: int = 3,
-    retry_kind: Literal["transient", "indefinite", "non_retryable", "permanent"] = "transient",
+    retry_kind: Literal["transient", "non_retryable", "permanent"] = "transient",
 ) -> ForkSpec | None:
     """The fork a chain step's finalize carries: AT MOST one child (no
     fan-in, no join — the route rides the certified fork-at-finalize
     machinery), the record's trace riding to it. ``None`` = the chain
-    ends here (the finalize carries no fork)."""
+    ends here (the finalize carries no fork).
+
+    The kind is validated before the ``child is None`` early return: the
+    chain's terminal fork still declares a kind, and a declaration door that
+    accepts an unrepresentable one only when it writes nothing teaches the
+    caller the wrong contract."""
+    kind = declared_retry_kind(retry_kind, what="chain_fork retry_kind")
     if child is None:
         return None
     return ForkSpec(
@@ -428,5 +437,5 @@ def chain_fork(
         join=None,
         trace_id=trace_id,
         max_attempts=child.resolved_max_attempts or max_attempts,
-        retry_kind=child.resolved_retry_kind or retry_kind,
+        retry_kind=child.resolved_retry_kind or kind,
     )
