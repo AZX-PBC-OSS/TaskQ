@@ -325,6 +325,17 @@ async def _exercise(pg_dsn: str, record_count: int) -> dict[str, object]:
             *(["awaited"] * (len(source_ledger) - 1)),
             "succeeded",
         ], [dict(row) for row in source_ledger]
+        # That history is satisfied vacuously by a single row, so pin the
+        # runtime trace that the shipped default bound actually refused a page:
+        # ``source_calls`` counts one entry per source attempt (``1 + parks``).
+        # A one-page run parks nothing by construction — the harness drives
+        # call ``_exercise(pg_dsn, _ONE_PAGE)`` — so the floor applies only
+        # above one page.
+        if record_count > _PAGE:
+            assert source_calls > 1, (
+                f"the shipped default bound never refused a page: {record_count} records "
+                f"emitted in one source attempt (source_calls={source_calls})"
+            )
         failed_sources = await control.fetchval(
             f'SELECT count(*) FROM "{schema}".wf_step_ledger '
             "WHERE flow_id = $1 AND step_key = 'source' AND status = 'failed'",
@@ -355,6 +366,7 @@ async def _exercise(pg_dsn: str, record_count: int) -> dict[str, object]:
             "worker_pods": [pod.name for pod in fleet.pods],
             "body_calls": body_calls,
             "source_calls": source_calls,
+            "source_parks": source_calls - 1,
             "maximum_logical_attempt": maximum_logical_attempt,
             "records": dict(record_facts),
             "ledger": dict(ledger_facts),
@@ -388,6 +400,15 @@ async def test_real_200k_unique_records_at_shipped_default_bound(pg_dsn: str) ->
     assert facts["requested_records"] == count
     assert int(records["rows"]) == count
     assert int(records["identities"]) == count
+    if count > _PAGE:
+        # The band artifact must carry *checked* evidence that #717's shipped
+        # default bound bit: one source attempt for a multi-page run means the
+        # source never parked at saturation.
+        assert int(facts["source_calls"]) > 1, (
+            f"the obligated {count}-record run never parked its source "
+            f"(source_calls={facts['source_calls']}, source_parks={facts['source_parks']}), so "
+            "it exercised none of the shipped default backpressure bound"
+        )
     # The obligated evidence run is the 200,000 default: the default arm pins
     # the persisted count to that number, so a shortened ``_RECORDS`` cannot
     # pass itself off as the artifact. An explicit override is a debug run and
